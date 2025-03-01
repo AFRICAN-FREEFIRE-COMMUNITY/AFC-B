@@ -1,0 +1,46 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Match Result",
+    "description": "A schema for representing team match results and player statistics in Free Fire.",
+    "type": "object",
+    "properties": {
+      "teams": {
+        "description": "List of teams with player data",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "teamPosition": {
+              "description": "The position of the team in the match",
+              "type": "integer",
+              "minimum": 1
+            },
+            "players": {
+              "description": "List of players in the team",
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "playerName": {
+                    "description": "The name of the player",
+                    "type": "string"
+                  },
+                  "amountOfKills": {
+                    "description": "The number of kills by the player",
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": ["playerName", "amountOfKills"]
+              }
+            }
+          },
+          "required": ["teamPosition", "players"]
+        },
+        "minItems": 1
+      }
+    },
+    "required": ["teams"]
+  }
