@@ -99,23 +99,23 @@ WSGI_APPLICATION = 'afc.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
-
 # DATABASES = {
 #     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'afc',
-#         'USER': 'admin',
-#         'PASSWORD': 'Trust.2308',
-#         'HOST': 'localhost',  # Or your remote host
-#         'PORT': '3306',       # Or your custom port if different
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
 #     }
 # }
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'AFC$default',
+        'USER': 'AFC',
+        'PASSWORD': 'afc@AFRICANFFC.1234',
+        'HOST': 'AFC.mysql.pythonanywhere-services.com',  # Or your remote host
+        'PORT': '3306',       # Or your custom port if different
+    }
+}
 
 
 # Password validation
