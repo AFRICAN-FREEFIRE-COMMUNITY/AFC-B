@@ -43,12 +43,13 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'afc_auth',
-    'afc_leaderboard_calc',
-    'afc_team',
     'rest_framework',
     'corsheaders',
     'django_celery_beat',
+    'afc_auth',
+    'afc_leaderboard_calc',
+    'afc_team',
+    'afc_tournament_and_scrims',
 ]
 
 MIDDLEWARE = [
