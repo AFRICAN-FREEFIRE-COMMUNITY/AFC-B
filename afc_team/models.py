@@ -3,8 +3,6 @@ from django.db import models
 from afc_auth.models import *
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from afc_auth.models import User
-
 
 # Create your models here.
 
