@@ -14,7 +14,7 @@ from django.contrib.auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from .models import User, UserProfile, BannedPlayer
+from .models import User, UserProfile, BannedPlayer, News
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -39,8 +39,6 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_datetime
-from .models import News
-from afc_auth.models import User
 from afc_tournament_and_scrims.models import Event
 
 
