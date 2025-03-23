@@ -1,5 +1,5 @@
 import os
-from celery_config import Celery
+from celery import Celery
 from celery.schedules import crontab
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "afc.settings")
