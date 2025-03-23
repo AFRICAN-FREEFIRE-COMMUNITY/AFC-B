@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Tournament, Match, MatchLeaderboard, OverallLeaderboard, ResultImage, RegisteredTeams, MatchTeamStats  # Ensure correct model imports
 from afc_auth.models import User
-from celery import shared_task
+from celery_config import shared_task
 import openai
 import json
 import base64
@@ -17,7 +17,7 @@ from django.conf import settings
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from celery import shared_task
+from celery_config import shared_task
 import os
 import json
 import base64
