@@ -12,6 +12,7 @@ class User(AbstractUser):
         ("player", "Player")
     ]
     user_id = models.AutoField(primary_key=True)
+    username = models.CharField(max_length=40, unique=True, null=True, blank=True)
     in_game_name = models.CharField(max_length=12, unique=True)
     uid = models.CharField(max_length=15, unique=True)
     email = models.EmailField(unique=True)
