@@ -147,7 +147,10 @@ def login(request):
         return Response({
             'message': 'Login successful', 
             'session_token': session_token,
-            'user_id': user.user_id
+            'user': {
+                'id': user.user_id,
+                'username': user.username,
+            }
         }, status=status.HTTP_200_OK)
     else:
         # Authentication failed, return error response
