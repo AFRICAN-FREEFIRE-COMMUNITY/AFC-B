@@ -22,7 +22,7 @@ class User(AbstractUser):
     full_name = models.CharField(max_length=40)
     country = models.CharField(max_length=40)
 
-    USERNAME_FIELD = "in_game_name"  # Set in_game_name as username
+    USERNAME_FIELD = "username"  # Set in_game_name as username
     REQUIRED_FIELDS = ["email", "full_name"]
 
     def __str__(self):
