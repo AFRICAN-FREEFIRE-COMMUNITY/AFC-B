@@ -126,7 +126,7 @@ def login(request):
 
     # Authenticate user with either username or email
     user = authenticate(request, username=ign_or_uid, password=password)
-    print("stage 1 complete")
+    print("stage 1 complete", user)
     if user is not None:
         print("stage 2 complete")
         # Check if the user's account is active
