@@ -40,6 +40,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_datetime
 from afc_tournament_and_scrims.models import Event
+from django.contrib.auth.hashers import make_password, check_password
 
 
 def generate_session_token(length=16):
@@ -189,7 +190,7 @@ def signup(request):
             username=in_game_name,
             uid=uid,
             email=email,
-            password=password,
+            password=make_password(password),
             is_active=False,  # Inactive until email verification
             full_name=full_name,
             country=country
