@@ -7,7 +7,7 @@ User = get_user_model()
 class EmailOrUsernameModelBackend(BaseBackend):
     def authenticate(self, request, username=None, password=None, **kwargs):
         try:
-            user = User.objects.get(Q(in_game_name=username) | Q(uid=username))
+            user = User.objects.get(Q(username=username) | Q(uid=username))
         except User.DoesNotExist:
             return None
         

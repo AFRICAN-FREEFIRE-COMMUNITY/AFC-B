@@ -186,7 +186,7 @@ def signup(request):
 
         # Create the User
         user = User.objects.create(
-            in_game_name=in_game_name,
+            username=in_game_name,
             uid=uid,
             email=email,
             password=password,
