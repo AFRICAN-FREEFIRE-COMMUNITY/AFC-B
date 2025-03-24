@@ -18,14 +18,15 @@ class User(AbstractUser):
     password = models.CharField(max_length=40)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False)
     session_token = models.CharField(max_length=16)
+    full_name = models.CharField(max_length=40)
+    country = models.CharField(max_length=40)
 
 
 class UserProfile(models.Model):
     profile_id = models.AutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     date_of_birth = models.DateField(null=True)
-    country = models.CharField(max_length=40)
-    state = models.CharField(max_length=40)
+    state = models.CharField(max_length=40, null=True)
     esports_pic = models.ImageField(upload_to='esports_pictures/', null=True)
 
 
