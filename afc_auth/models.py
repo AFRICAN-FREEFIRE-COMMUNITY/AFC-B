@@ -12,18 +12,18 @@ class User(AbstractUser):
         ("player", "Player")
     ]
     user_id = models.AutoField(primary_key=True)
-    username = models.CharField(max_length=40, unique=True, null=True, blank=True)
-    in_game_name = models.CharField(max_length=12, unique=True)
+    username = models.CharField(max_length=40, unique=True)
+    # in_game_name = models.CharField(max_length=12, unique=True)
     uid = models.CharField(max_length=15, unique=True)
     email = models.EmailField(unique=True)
     password = models.CharField(max_length=40)
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False, default="player")
     session_token = models.CharField(max_length=16)
     full_name = models.CharField(max_length=40)
     country = models.CharField(max_length=40)
 
     USERNAME_FIELD = "in_game_name"  # Set in_game_name as username
-    REQUIRED_FIELDS = ["email", "full_name", "uid"]
+    REQUIRED_FIELDS = ["email", "full_name"]
 
     def __str__(self):
         return self.in_game_name
