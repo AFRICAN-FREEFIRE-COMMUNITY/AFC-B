@@ -222,27 +222,45 @@ If you did not create an account, please ignore this email.
         return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@api_view(['GET'])
+# @api_view(['GET'])
+# def verify_token(request, uidb64, token):
+#     try:
+#         # Decode the UID and retrieve the user
+#         uid = force_str(urlsafe_base64_decode(uidb64))
+#         user = User.objects.get(pk=uid)
+
+#         # Check the token
+#         if default_token_generator.check_token(user, token):
+#             user.is_active = True
+#             user.save()
+#             return Response({"message": "Email verified successfully."}, status=status.HTTP_200_OK)
+#         else:
+#             return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
+
+#     except User.DoesNotExist:
+#         return Response({"error": "Invalid verification link."}, status=status.HTTP_400_BAD_REQUEST)
+
+#     except Exception as e:
+#         return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["GET"])
 def verify_token(request, uidb64, token):
     try:
-        # Decode the UID and retrieve the user
         uid = force_str(urlsafe_base64_decode(uidb64))
         user = User.objects.get(pk=uid)
 
-        # Check the token
+        # Validate token
         if default_token_generator.check_token(user, token):
-            user.is_active = True
+            user.is_active = True  # Activate user after verification
             user.save()
-            return Response({"message": "Email verified successfully."}, status=status.HTTP_200_OK)
+            return Response({"message": "Email verified successfully!"}, status=status.HTTP_200_OK)
         else:
             return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
 
     except User.DoesNotExist:
-        return Response({"error": "Invalid verification link."}, status=status.HTTP_400_BAD_REQUEST)
-
-    except Exception as e:
-        return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+        return Response({"error": "Invalid user."}, status=status.HTTP_400_BAD_REQUEST)
+    
 
 @api_view(["POST"])
 def ban_team(request):
