@@ -26,7 +26,7 @@ class User(AbstractUser):
     REQUIRED_FIELDS = ["email", "full_name"]
 
     def __str__(self):
-        return self.in_game_name
+        return self.username
 
 
 class UserProfile(models.Model):
