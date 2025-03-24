@@ -178,7 +178,7 @@ def signup(request):
         if User.objects.filter(email=email).exists():
             return Response({"error": "Email is already in use."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if User.objects.filter(in_game_name=in_game_name).exists():
+        if User.objects.filter(username=in_game_name).exists():
             return Response({"error": "In-game name is already in use."}, status=status.HTTP_400_BAD_REQUEST)
 
         if User.objects.filter(uid=uid).exists():
