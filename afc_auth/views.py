@@ -190,11 +190,11 @@ def signup(request):
             username=in_game_name,
             uid=uid,
             email=email,
-            password=make_password(password),
             is_active=False,  # Inactive until email verification
             full_name=full_name,
             country=country
         )
+        user.set_password(password)
         user.save()
         user_profile = UserProfile.objects.create(user=user)
         user_profile.save()
