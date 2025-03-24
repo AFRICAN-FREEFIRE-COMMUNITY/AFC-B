@@ -26,7 +26,7 @@ SECRET_KEY = '[secret removed from history 2026-09-23]'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["https://afc.pythonanywhere.com/", "afc.pythonanywhere.com"]
 
 
 MEDIA_URL = '/media/'
