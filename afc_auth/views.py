@@ -189,9 +189,13 @@ def signup(request):
             uid=uid,
             email=email,
             password=password,
-            is_active=False  # Inactive until email verification
+            is_active=False,  # Inactive until email verification
+            full_name=full_name,
+            country=country
         )
         user.save()
+        user_profile = UserProfile.objects.create(user=user)
+        user_profile.save()
 
         # Generate verification link
         token = default_token_generator.make_token(user)
