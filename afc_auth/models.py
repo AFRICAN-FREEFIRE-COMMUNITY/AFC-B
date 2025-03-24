@@ -16,7 +16,7 @@ class User(AbstractUser):
     # in_game_name = models.CharField(max_length=12, unique=True)
     uid = models.CharField(max_length=15, unique=True)
     email = models.EmailField(unique=True)
-    password = models.CharField(max_length=40)
+    password = models.CharField(max_length=120, blank=False, null=False)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False, default="player")
     session_token = models.CharField(max_length=16)
     full_name = models.CharField(max_length=40)
