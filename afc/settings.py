@@ -138,7 +138,8 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-AUTH_USER_MODEL = 'afc_auth.User'
+
+AUTH_USER_MODEL = "afc_auth.User"
 
 AUTHENTICATION_BACKENDS = [
     'afc_auth.backends.EmailOrUsernameModelBackend',
