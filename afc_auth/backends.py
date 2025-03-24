@@ -8,11 +8,15 @@ class EmailOrUsernameModelBackend(BaseBackend):
     def authenticate(self, request, username=None, password=None, **kwargs):
         try:
             user = User.objects.get(Q(username=username) | Q(uid=username))
+            print("user found")
         except User.DoesNotExist:
+            print("user not found")
             return None
         
         if user.check_password(password):
+            print("password correct")
             return user
+        print("password not correct")
         return None
 
     def get_user(self, user_id):
