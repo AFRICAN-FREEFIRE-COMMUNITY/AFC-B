@@ -75,13 +75,14 @@ class Match(models.Model):
     leaderboard = models.ForeignKey(Leaderboard, on_delete=models.CASCADE)
     match_type = models.CharField(max_length=20, choices=MATCH_TYPE_CHOICES)
     map = models.CharField(max_length=50)
-    mvp = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    mvp = models.ForeignKey("afc_auth.User", on_delete=models.CASCADE, related_name="tournament_mvp")
+
 
 
 class MatchTeamStats(models.Model):
     team_stats_id = models.AutoField(primary_key=True)
     match = models.ForeignKey(Match, on_delete=models.CASCADE)
-    team = models.ForeignKey(Team, on_delete=models.CASCADE)
+    team = models.ForeignKey("afc_team.Team", on_delete=models.CASCADE, related_name="tournament_match_stats")
     placement = models.PositiveIntegerField()  # Integer instead of CharField
 
 
