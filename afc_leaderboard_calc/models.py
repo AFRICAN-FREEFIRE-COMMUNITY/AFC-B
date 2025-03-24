@@ -25,7 +25,8 @@ class Match(models.Model):
     match_number = models.PositiveIntegerField()
     processed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
-    mvp = models.ForeignKey(User, on_delete=models.CASCADE, null=True)
+    mvp = models.ForeignKey("afc_auth.User", on_delete=models.CASCADE, related_name="leaderboard_mvp")
+
 
     def __str__(self):
         return f"Match {self.match_number} - {self.tournament.name}"
@@ -63,7 +64,7 @@ class MatchLeaderboard(models.Model):
 class MatchTeamStats(models.Model):
     teamstats_id = models.AutoField(primary_key=True)
     match = models.ForeignKey(Match, on_delete=models.CASCADE)  # Corrected FK
-    team = models.ForeignKey(Team, on_delete=models.CASCADE)
+    team = models.ForeignKey("afc_team.Team", on_delete=models.CASCADE, related_name="leaderboard_match_stats")
     player = models.ForeignKey(User, on_delete=models.CASCADE)
     kills = models.IntegerField(default=0)
 

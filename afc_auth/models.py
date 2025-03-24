@@ -30,7 +30,7 @@ class UserProfile(models.Model):
 
 
 class TeamBan(models.Model):
-    team = models.OneToOneField("Team", on_delete=models.CASCADE)
+    team = models.OneToOneField("afc_team.Team", on_delete=models.CASCADE)
     ban_start_date = models.DateTimeField(default=timezone.now)
     ban_end_date = models.DateTimeField()
     reason = models.CharField(max_length=255)
