@@ -1,5 +1,5 @@
 from django.db import models
-from afc_auth.models import User
+from imports import User
 from afc_team.models import Team
 
 class Tournament(models.Model):

@@ -3,7 +3,6 @@ from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
 from django.utils.timezone import now
-from afc_tournament_and_scrims.models import Event
 
 class User(AbstractUser):
     ROLE_CHOICES = [
@@ -78,7 +77,7 @@ class News(models.Model):
     news_title = models.CharField(max_length=255)
     content = models.TextField()
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
-    related_event = models.ForeignKey(Event, on_delete=models.SET_NULL, null=True, blank=True)
+    related_event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.SET_NULL, null=True, blank=True)
     images = models.ImageField(upload_to="news_images/", null=True, blank=True)
     author = models.ForeignKey(User, on_delete=models.CASCADE)  # Admin, Mod, or Support
     created_at = models.DateTimeField(auto_now_add=True)
