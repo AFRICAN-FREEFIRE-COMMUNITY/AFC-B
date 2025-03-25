@@ -255,7 +255,7 @@ def signup(request):
             else:
                 # If user is inactive, resend the verification code
                 verification_code = random.randint(100000, 999999)
-                cache.set(f"verification_code_{user.id}", verification_code, timeout=600)
+                cache.set(f"verification_code_{user.user_id}", verification_code, timeout=600)
 
                 # Send verification email again
                 subject = 'Resend: Your Verification Code'
@@ -341,7 +341,7 @@ def verify_code(request):
     except User.DoesNotExist:
         return Response({"error": "Invalid email."}, status=status.HTTP_400_BAD_REQUEST)
 
-    stored_code = cache.get(f"verification_code_{user.id}")
+    stored_code = cache.get(f"verification_code_{user.user_id}")
 
     if stored_code is None:
         return Response({"error": "Verification code expired or invalid."}, status=status.HTTP_400_BAD_REQUEST)
@@ -354,7 +354,7 @@ def verify_code(request):
     user.save()
 
     # Remove the verification code after successful verification
-    cache.delete(f"verification_code_{user.id}")
+    cache.delete(f"verification_code_{user.user_id}")
 
     return Response({"message": "Account verified successfully."}, status=status.HTTP_200_OK)
 
