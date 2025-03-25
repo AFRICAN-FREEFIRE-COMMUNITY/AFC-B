@@ -41,7 +41,10 @@ from rest_framework import status
 from django.utils.dateparse import parse_datetime
 from afc_tournament_and_scrims.models import Event
 from django.contrib.auth.hashers import make_password, check_password
-
+from django.core.cache import cache
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 
 def generate_session_token(length=16):
     """Generate a random 16-character token."""
@@ -160,9 +163,73 @@ def login(request):
 
 
 
+# @api_view(["POST"])
+# def signup(request):
+#     # Retrieve data from the request
+#     in_game_name = request.data.get("in_game_name")
+#     uid = request.data.get("uid")
+#     email = request.data.get("email")
+#     password = request.data.get("password")
+#     confirm_password = request.data.get("confirm_password")
+#     full_name = request.data.get("full_name")
+#     country = request.data.get("country")
+    
+#     try:
+#         # Validation
+#         if not all([in_game_name, uid, email, password, confirm_password]):
+#             return Response({"error": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+#         if password != confirm_password:
+#             return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
+
+#         if User.objects.filter(email=email).exists():
+#             return Response({"error": "Email is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+
+#         if User.objects.filter(username=in_game_name).exists():
+#             return Response({"error": "In-game name is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+
+#         if User.objects.filter(uid=uid).exists():
+#             return Response({"error": "UID is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+
+#         # Create the User
+#         user = User.objects.create(
+#             username=in_game_name,
+#             uid=uid,
+#             email=email,
+#             is_active=False,  # Inactive until email verification
+#             full_name=full_name,
+#             country=country
+#         )
+#         user.set_password(password)
+#         user.save()
+#         user_profile = UserProfile.objects.create(user=user)
+#         user_profile.save()
+
+#         # Generate verification link
+#         token = default_token_generator.make_token(user)
+#         uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
+#         verification_link = request.build_absolute_uri(reverse('verify_token', kwargs={'uidb64': uidb64, 'token': token}))
+
+#         # Send verification email
+#         subject = 'Verify Your Email'
+#         message = f'''Hi {in_game_name},
+
+# Please click the link below to verify your email:
+
+# {verification_link}
+
+# If you did not create an account, please ignore this email.
+# '''
+#         send_email(email, subject, message)
+
+#         return Response({"message": "Signup successful. Please check your email to verify your account."}, status=status.HTTP_201_CREATED)
+
+#     except Exception as e:
+#         return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(["POST"])
 def signup(request):
-    # Retrieve data from the request
     in_game_name = request.data.get("in_game_name")
     uid = request.data.get("uid")
     email = request.data.get("email")
@@ -170,7 +237,7 @@ def signup(request):
     confirm_password = request.data.get("confirm_password")
     full_name = request.data.get("full_name")
     country = request.data.get("country")
-    
+
     try:
         # Validation
         if not all([in_game_name, uid, email, password, confirm_password]):
@@ -179,50 +246,67 @@ def signup(request):
         if password != confirm_password:
             return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if User.objects.filter(email=email).exists():
-            return Response({"error": "Email is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+        # Check if user already exists
+        user = User.objects.filter(email=email).first()
 
-        if User.objects.filter(username=in_game_name).exists():
-            return Response({"error": "In-game name is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+        if user:
+            if user.is_active:
+                return Response({"error": "Email is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                # If user is inactive, resend the verification code
+                verification_code = random.randint(100000, 999999)
+                cache.set(f"verification_code_{user.id}", verification_code, timeout=600)
 
-        if User.objects.filter(uid=uid).exists():
-            return Response({"error": "UID is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+                # Send verification email again
+                subject = 'Resend: Your Verification Code'
+                message = f'''Hi {user.username},
 
-        # Create the User
+You previously signed up but did not verify your account.
+
+Your verification code is: {verification_code}
+
+Please enter this code in the app to activate your account.
+
+If you did not create an account, please ignore this email.
+'''
+                send_email(email, subject, message)
+
+                return Response({"message": "A new verification code has been sent to your email."}, status=status.HTTP_200_OK)
+
+        # Create new user if they don't exist
         user = User.objects.create(
             username=in_game_name,
             uid=uid,
             email=email,
-            is_active=False,  # Inactive until email verification
+            is_active=False,
             full_name=full_name,
             country=country
         )
         user.set_password(password)
         user.save()
-        user_profile = UserProfile.objects.create(user=user)
-        user_profile.save()
+        UserProfile.objects.create(user=user)
 
-        # Generate verification link
-        token = default_token_generator.make_token(user)
-        uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
-        verification_link = request.build_absolute_uri(reverse('verify_token', kwargs={'uidb64': uidb64, 'token': token}))
+        # Generate new verification code
+        verification_code = random.randint(100000, 999999)
+        cache.set(f"verification_code_{user.id}", verification_code, timeout=600)
 
         # Send verification email
-        subject = 'Verify Your Email'
+        subject = 'Your Verification Code'
         message = f'''Hi {in_game_name},
 
-Please click the link below to verify your email:
+Your verification code is: {verification_code}
 
-{verification_link}
+Please enter this code in the app to verify your account.
 
 If you did not create an account, please ignore this email.
 '''
         send_email(email, subject, message)
 
-        return Response({"message": "Signup successful. Please check your email to verify your account."}, status=status.HTTP_201_CREATED)
+        return Response({"message": "Signup successful. Please check your email for the verification code."}, status=status.HTTP_201_CREATED)
 
     except Exception as e:
         return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 # @api_view(['GET'])
@@ -245,6 +329,34 @@ If you did not create an account, please ignore this email.
 
 #     except Exception as e:
 #         return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["POST"])
+def verify_code(request):
+    email = request.data.get("email")
+    code = request.data.get("code")
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({"error": "Invalid email."}, status=status.HTTP_400_BAD_REQUEST)
+
+    stored_code = cache.get(f"verification_code_{user.id}")
+
+    if stored_code is None:
+        return Response({"error": "Verification code expired or invalid."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if str(stored_code) != str(code):
+        return Response({"error": "Invalid verification code."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Activate user account
+    user.is_active = True
+    user.save()
+
+    # Remove the verification code after successful verification
+    cache.delete(f"verification_code_{user.id}")
+
+    return Response({"message": "Account verified successfully."}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])
