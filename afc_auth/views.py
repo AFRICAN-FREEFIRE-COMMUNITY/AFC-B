@@ -359,6 +359,44 @@ def verify_code(request):
     return Response({"message": "Account verified successfully."}, status=status.HTTP_200_OK)
 
 
+@api_view(["POST"])
+def resend_verification_code(request):
+    email = request.data.get("email")
+
+    if not email:
+        return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = User.objects.filter(email=email).first()
+
+    if not user:
+        return Response({"error": "No account found with this email."}, status=status.HTTP_404_NOT_FOUND)
+
+    if user.is_active:
+        return Response({"error": "This account is already verified."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Generate new verification code
+    verification_code = random.randint(100000, 999999)
+
+    # Store in cache with a 10-minute expiry
+    cache.set(f"verification_code_{user.user_id}", verification_code, timeout=600)
+
+    # Send the new verification email
+    subject = "Your New Verification Code"
+    message = f'''Hi {user.username},
+
+You requested a new verification code.
+
+Your new verification code is: {verification_code}
+
+Please enter this code in the app to verify your account.
+
+If you did not request this, please ignore this email.
+'''
+    send_email(user.email, subject, message)
+
+    return Response({"message": "A new verification code has been sent to your email."}, status=status.HTTP_200_OK)
+
+
 @api_view(["GET"])
 def verify_token(request, uidb64, token):
     try:

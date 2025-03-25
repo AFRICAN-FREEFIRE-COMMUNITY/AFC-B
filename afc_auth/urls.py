@@ -14,5 +14,6 @@ urlpatterns = [
     # path('forgot-password/', forgot_password, name='forgot_password'),
     # path('reset-password/<uidb64>/<token>/', reset_password, name='reset_password'),
     path('verify-code/', verify_code, name='verify_code'),
+    path('resend-verification-code/', resend_verification_code, name='resend_verification_code'),
     
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
