@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'afc_leaderboard_calc',
     'afc_team',
     'afc_tournament_and_scrims',
+    'afc_shop',
 ]
 
 MIDDLEWARE = [
