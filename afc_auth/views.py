@@ -569,3 +569,72 @@ def edit_news(request):
         "news_title": news.news_title,
         "category": news.category
     }, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def edit_profile(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Extract new profile details
+    full_name = request.data.get("full_name")
+    country = request.data.get("country")
+    in_game_name = request.data.get("in_game_name")
+    email = request.data.get("email")
+    uid = request.data.get("uid")
+
+    # Validate required fields
+    if not all([full_name, country, in_game_name, email, uid]):
+        return Response({"message": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Update user profile
+    user.full_name = full_name
+    user.country = country
+    user.username = in_game_name
+    user.email = email
+    user.uid = uid
+    user.save()
+
+    return Response({
+        "message": "Profile updated successfully.",
+        "user_id": user.user_id,
+        "full_name": user.full_name,
+        "country": user.country,
+        "in_game_name": user.username,
+        "email": user.email,
+        "uid": user.uid,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_user_profile(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Return user info
+    return Response({
+        "user_id": user.user_id,
+        "full_name": user.full_name,
+        "country": user.country,
+        "in_game_name": user.username,
+        "email": user.email,
+        "uid": user.uid,
+    }, status=status.HTTP_200_OK)
