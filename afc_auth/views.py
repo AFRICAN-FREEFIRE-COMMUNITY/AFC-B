@@ -637,4 +637,7 @@ def get_user_profile(request):
         "in_game_name": user.username,
         "email": user.email,
         "uid": user.uid,
+        "team": user.team.team_name if hasattr(user, 'team') else None,
+        "role": user.role,
+        "is_banned": user.is_banned,
     }, status=status.HTTP_200_OK)
