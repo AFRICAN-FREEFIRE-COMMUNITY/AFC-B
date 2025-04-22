@@ -208,7 +208,7 @@ def signup(request):
 
         # Generate new verification code
         verification_code = random.randint(100000, 999999)
-        cache.set(f"verification_code_{user.id}", verification_code, timeout=600)
+        cache.set(f"verification_code_{user.user_id}", verification_code, timeout=600)
 
         # Send verification email
         subject = 'Your Verification Code'
