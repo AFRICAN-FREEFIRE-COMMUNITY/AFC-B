@@ -626,6 +626,7 @@ def get_user_profile(request):
     # Identify the logged-in user using the session token
     try:
         user = User.objects.get(session_token=session_token)
+        print(user.email)
     except User.DoesNotExist:
         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
