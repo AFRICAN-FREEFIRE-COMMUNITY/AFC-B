@@ -654,7 +654,7 @@ def get_user_profile(request):
 
 
 @api_view(["POST"])
-def forgot_password(request):
+def send_verification_token(request):
     email = request.data.get("email")
 
     if not email:
