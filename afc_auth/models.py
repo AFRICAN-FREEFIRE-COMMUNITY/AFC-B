@@ -37,6 +37,15 @@ class UserProfile(models.Model):
     esports_pic = models.ImageField(upload_to='esports_pictures/', null=True)
 
 
+class PasswordResetToken(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    token = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def is_valid(self):
+        return (timezone.now() - self.created_at) <= timedelta(minutes=10)  # token valid for 10 mins
+
+
 class TeamBan(models.Model):
     team = models.OneToOneField("afc_team.Team", on_delete=models.CASCADE)
     ban_start_date = models.DateTimeField(default=timezone.now)
