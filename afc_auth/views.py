@@ -14,7 +14,7 @@ from django.contrib.auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from .models import User, UserProfile, BannedPlayer, News
+from .models import User, UserProfile, BannedPlayer, News, PasswordResetToken
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -653,3 +653,118 @@ def get_user_profile(request):
     }, status=status.HTTP_200_OK)
 
 
+@api_view(["POST"])
+def forgot_password(request):
+    email = request.data.get("email")
+
+    if not email:
+        return Response({"message": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({"message": "User with this email does not exist."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Generate a 6-digit token
+    token = str(random.randint(100000, 999999))
+
+    # Store or update token
+    PasswordResetToken.objects.update_or_create(
+        user=user,
+        defaults={
+            'token': token,
+            'created_at': timezone.now()
+        }
+    )
+
+    # Send email
+    subject = "Your Password Reset Token"
+    message = f"Your password reset token is: {token}"
+    send_email(email, subject, message)
+
+    return Response({"message": "Password reset token has been sent to your email."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def verify_token(request):
+    email = request.data.get("email")
+    token = request.data.get("token")
+
+    if not email or not token:
+        return Response({"message": "Email and token are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(email=email)
+        reset_token = PasswordResetToken.objects.get(user=user, token=token)
+    except (User.DoesNotExist, PasswordResetToken.DoesNotExist):
+        return Response({"message": "Invalid email or token."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not reset_token.is_valid():
+        return Response({"message": "Token has expired."}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({"message": "Token is valid."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def reset_password(request):
+    email = request.data.get("email")
+    token = request.data.get("token")
+    new_password = request.data.get("new_password")
+
+    if not all([email, token, new_password]):
+        return Response({"message": "Email, token, and new password are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(email=email)
+        reset_token = PasswordResetToken.objects.get(user=user, token=token)
+    except (User.DoesNotExist, PasswordResetToken.DoesNotExist):
+        return Response({"message": "Invalid email or token."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not reset_token.is_valid():
+        return Response({"message": "Token has expired."}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(new_password)
+    user.save()
+
+    reset_token.delete()  # remove token after successful password reset
+
+    return Response({"message": "Password has been reset successfully."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def resend_token(request):
+    email = request.data.get("email")
+
+    if not email:
+        return Response({"message": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({"message": "User with this email does not exist."}, status=status.HTTP_404_NOT_FOUND)
+    
+
+    existing = PasswordResetToken.objects.filter(user=user).first()
+    if existing and (timezone.now() - existing.created_at).seconds < 60:
+        return Response({"message": "You must wait at least 1 minute before requesting a new token."},
+                        status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+
+    # Generate a new token
+    token = str(random.randint(100000, 999999))
+
+    # Update or create a reset token
+    PasswordResetToken.objects.update_or_create(
+        user=user,
+        defaults={
+            'token': token,
+            'created_at': timezone.now()
+        }
+    )
+
+    # Resend email
+    subject = "Your New Password Reset Token"
+    message = f"Your new password reset token is: {token}\nIt will expire in 10 minutes."
+    send_email(email, subject, message)
+
+    return Response({"message": "A new password reset token has been sent to your email."}, status=status.HTTP_200_OK)
