@@ -596,18 +596,36 @@ def edit_profile(request):
     in_game_name = request.data.get("in_game_name")
     email = request.data.get("email")
     uid = request.data.get("uid")
+    profile_pic = request.FILES.get("profile_pic")
 
     # Validate required fields
     if not all([full_name, country, in_game_name, email, uid]):
         return Response({"message": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Update user profile
+    # Check for uniqueness conflicts
+    if User.objects.exclude(pk=user.pk).filter(uid=uid).exists():
+        return Response({"message": "UID is already in use by another user."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if User.objects.exclude(pk=user.pk).filter(email=email).exists():
+        return Response({"message": "Email is already registered to another user."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if User.objects.exclude(pk=user.pk).filter(username=in_game_name).exists():
+        return Response({"message": "In-game name is already taken."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Update User fields
     user.full_name = full_name
     user.country = country
     user.username = in_game_name
     user.email = email
     user.uid = uid
     user.save()
+
+    # Update or create UserProfile
+    user_profile, created = UserProfile.objects.get_or_create(user=user)
+
+    if profile_pic:
+        user_profile.profile_pic = profile_pic
+        user_profile.save()
 
     return Response({
         "message": "Profile updated successfully.",
@@ -617,7 +635,9 @@ def edit_profile(request):
         "in_game_name": user.username,
         "email": user.email,
         "uid": user.uid,
+        "profile_pic_url": request.build_absolute_uri(user_profile.profile_pic.url) if user_profile.profile_pic else None
     }, status=status.HTTP_200_OK)
+
 
 
 @api_view(["GET"])

@@ -34,6 +34,7 @@ class UserProfile(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     date_of_birth = models.DateField(null=True)
     state = models.CharField(max_length=40, null=True)
+    profile_pic = models.ImageField(upload_to='profile_pictures/', null=True)
     esports_pic = models.ImageField(upload_to='esports_pictures/', null=True)
 
 
