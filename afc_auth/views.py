@@ -656,9 +656,15 @@ def get_user_profile(request):
     # Identify the logged-in user using the session token
     try:
         user = User.objects.get(session_token=session_token)
-        print(user.email)
     except User.DoesNotExist:
         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Try to get UserProfile
+    try:
+        profile = UserProfile.objects.get(user=user)
+        profile_pic_url = request.build_absolute_uri(profile.profile_pic.url) if profile.profile_pic else None
+    except UserProfile.DoesNotExist:
+        profile_pic_url = None
 
     # Return user info
     return Response({
@@ -670,6 +676,7 @@ def get_user_profile(request):
         "uid": user.uid,
         "team": user.team.team_name if hasattr(user, 'team') else None,
         "role": user.role,
+        "profile_pic": profile_pic_url,
     }, status=status.HTTP_200_OK)
 
 
