@@ -795,3 +795,21 @@ def resend_token(request):
     send_email(email, subject, message)
 
     return Response({"message": "A new password reset token has been sent to your email."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def contact_us(request):
+    name = request.data.get("name")
+    email = request.data.get("email")
+    message = request.data.get("message")
+
+    if not all([email, name, message]):
+        return Response({"message": "Email, name, and message are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Send email to support
+    support_email = 'support@afcdatabase.com'
+    email_subject = f"Contact Us Form Submission from {name}"
+    email_body = f"Name: {name}\nEmail: {email}\nMessage: {message}"
+    send_email(support_email, email_subject, email_body)
+
+    return Response({"message": "Your message has been sent successfully."}, status=status.HTTP_200_OK)

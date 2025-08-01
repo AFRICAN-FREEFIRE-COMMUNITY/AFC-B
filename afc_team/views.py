@@ -134,7 +134,7 @@ def invite_member(request):
 
 
 @api_view(["POST"])
-def review_invite(request):
+def review_invitation(request):
     # Retrieve session token from headers
     session_token = request.headers.get("Authorization")
     invite_id = request.data.get("invite_id")
@@ -319,7 +319,7 @@ def disband_team(request):
 def transfer_ownership(request):
     # Retrieve session token from headers
     session_token = request.headers.get("Authorization")
-    new_owner_id = request.data.get("new_owner_id")  # ID of the new owner
+    new_owner_ign = request.data.get("new_owner_ign")  # ID of the new owner
 
     if not session_token:
         return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
@@ -332,7 +332,7 @@ def transfer_ownership(request):
         team = Team.objects.get(team_owner=current_owner)
 
         # Ensure the new owner exists and is part of the team
-        new_owner = User.objects.get(user_id=new_owner_id)
+        new_owner = User.objects.get(username=new_owner_ign)
         if not TeamMembers.objects.filter(team=team, member=new_owner).exists():
             return Response({"message": "New owner must be a member of the team."}, status=status.HTTP_400_BAD_REQUEST)
 

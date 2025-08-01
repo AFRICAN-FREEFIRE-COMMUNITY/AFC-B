@@ -21,4 +21,6 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path("auth/", include('afc_auth.urls')),
     path("tournament-leaderboard/", include('afc_leaderboard_calc.urls')),
+    path("events/", include('afc_tournament_and_scrims.urls')),
+    path("team/", include('afc_team.urls')),
 ]

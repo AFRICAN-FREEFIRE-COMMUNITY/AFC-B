@@ -20,5 +20,6 @@ urlpatterns = [
     path('resend-verification-code/', resend_verification_code, name='resend_verification_code'),
     path('edit-profile/', edit_profile, name='edit_profile'),
     path('get-user-profile/', get_user_profile, name='get_user_profile'),
+    path('contact-us/', contact_us, name='contact_us'),
     
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
