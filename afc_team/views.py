@@ -14,10 +14,16 @@ from .models import Team, TeamMembers, Invite, User, TeamSocialMediaLinks
 def create_team(request):
     # Retrieve session token
     session_token = request.headers.get("Authorization")
-    if not session_token:
-        return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
 
-    # Identify logged-in user
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
     try:
         user = User.objects.get(session_token=session_token)
     except User.DoesNotExist:
@@ -87,13 +93,26 @@ def create_team(request):
 
 @api_view(["POST"])
 def invite_member(request):
-    # Retrieve session token from headers
+   # Retrieve session token
     session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # # Identify the logged-in user using the session token
+    # try:
+    #     user = User.objects.get(session_token=session_token)
+    # except User.DoesNotExist:
+    #     return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
     invitee_email_or_ign = request.data.get("invitee_email_or_ign")
     team_id = request.data.get("team_id")
 
-    if not session_token:
-        return Response({'message': 'Session token is required.'}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not invitee_email_or_ign or not team_id:
         return Response({'message': 'Invitee and team ID are required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -135,13 +154,20 @@ def invite_member(request):
 
 @api_view(["POST"])
 def review_invitation(request):
-    # Retrieve session token from headers
+    # Retrieve session token
     session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+    
     invite_id = request.data.get("invite_id")
     decision = request.data.get("decision")  # 'accepted' or 'declined'
 
-    if not session_token:
-        return Response({'message': 'Session token is required.'}, status=status.HTTP_401_UNAUTHORIZED)
 
     if decision not in ['accepted', 'declined']:
         return Response({'message': 'Invalid decision. Must be "accepted" or "declined".'}, status=status.HTTP_400_BAD_REQUEST)
@@ -184,13 +210,22 @@ def review_invitation(request):
 
 @api_view(["POST"])
 def rank_teams_into_tiers(request):
-    session_token = request.data.get("session_token")
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
 
-    # Validate session token
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
     try:
-        user = User.objects.get(login_session_token=session_token)
+        user = User.objects.get(session_token=session_token)
     except User.DoesNotExist:
-        return Response({"error": "Invalid session token."}, status=401)
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
     # Fetch all teams and calculate points
     team_points = {}
@@ -274,12 +309,18 @@ def rank_teams_into_tiers(request):
 
 @api_view(["POST"])
 def disband_team(request):
-    # Retrieve session token from headers
+    # Retrieve session token
     session_token = request.headers.get("Authorization")
-    team_id = request.data.get("team_id")
 
     if not session_token:
-        return Response({'message': 'Session token is required.'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+    
+    team_id = request.data.get("team_id")
 
     if not team_id:
         return Response({'message': 'Team ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -317,12 +358,21 @@ def disband_team(request):
 
 @api_view(["POST"])
 def transfer_ownership(request):
-    # Retrieve session token from headers
+    # Retrieve session token
     session_token = request.headers.get("Authorization")
-    new_owner_ign = request.data.get("new_owner_ign")  # ID of the new owner
 
     if not session_token:
-        return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+    
+    new_owner_ign = request.data.get("new_owner_ign")  # ID of the new owner
+
+    if not new_owner_ign:
+        return Response({"message": "New owner ID is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         # Identify the logged-in user (current owner)
@@ -363,13 +413,19 @@ def transfer_ownership(request):
 
 @api_view(["POST"])
 def send_join_request(request):
-    # Retrieve session token from headers
+    # Retrieve session token
     session_token = request.headers.get("Authorization")
-    team_id = request.data.get("team_id")
-    message = request.data.get("message")
 
     if not session_token:
-        return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+    
+    team_id = request.data.get("team_id")
+    message = request.data.get("message")
 
     try:
         # Identify the requester
@@ -401,13 +457,31 @@ def send_join_request(request):
 
 @api_view(["POST"])
 def review_join_request(request):
-    # Retrieve session token from headers
+    # Retrieve session token
     session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
     request_id = request.data.get("request_id")
     decision = request.data.get("decision")  # 'approved' or 'denied'
 
-    if not session_token:
-        return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
+    if not request_id:
+        return Response({"message": "Request ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not decision:
+        return Response({"message": "Decision is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     if decision not in ["approved", "denied"]:
         return Response({"message": "Invalid decision. Must be 'approved' or 'denied'."}, status=status.HTTP_400_BAD_REQUEST)
@@ -461,11 +535,16 @@ def review_join_request(request):
 
 @api_view(["POST"])
 def edit_team(request):
-    # Retrieve session token from the request
+    # Retrieve session token
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
     try:
