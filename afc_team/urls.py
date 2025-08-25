@@ -16,5 +16,7 @@ urlpatterns = [
     path('send-join-request/', send_join_request, name='send_join_request'),
     path('review-join-request/', review_join_request, name='review_join_request'),
     path('edit-team', edit_team, name='edit_team'),
-    
+    path('get-all-teams/', get_all_teams, name='get_all_teams'),
+    path('get-team-details/', get_team_details, name='get_team_details')
+
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

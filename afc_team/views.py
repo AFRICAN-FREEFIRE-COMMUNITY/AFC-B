@@ -611,3 +611,54 @@ def edit_team(request):
 
     return Response({"message": "Team details updated successfully."}, status=status.HTTP_200_OK)
 
+
+@api_view(["GET"])
+def get_all_teams(request):
+    teams = Team.objects.all()
+    teams_data = []
+
+    for team in teams:
+        teams_data.append({
+            "team_name": team.team_name,
+            "team_logo": team.team_logo.url if team.team_logo else None,
+            "team_tag": team.team_tag,
+            "join_settings": team.join_settings,
+            "creation_date": team.creation_date,
+            "team_creator": team.team_creator.username,
+            "team_owner": team.team_owner.username,
+            "is_banned": team.is_banned,
+            "team_tier": team.team_tier,
+            "team_description": team.team_description,
+            "country": team.country
+        })
+
+    return Response({"teams": teams_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def get_team_details(request):
+    team_name = request.data.get("team_name")
+
+    if not team_name:
+        return Response({"message": "Team name is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        team = Team.objects.get(team_name=team_name)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    team_data = {
+        "team_name": team.team_name,
+        "team_logo": team.team_logo.url if team.team_logo else None,
+        "team_tag": team.team_tag,
+        "join_settings": team.join_settings,
+        "creation_date": team.creation_date,
+        "team_creator": team.team_creator.username,
+        "team_owner": team.team_owner.username,
+        "is_banned": team.is_banned,
+        "team_tier": team.team_tier,
+        "team_description": team.team_description,
+        "country": team.country
+    }
+
+    return Response({"team": team_data}, status=status.HTTP_200_OK)
