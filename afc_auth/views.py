@@ -639,7 +639,7 @@ def get_news_detail(request):
         "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
         "author": news.author.username,
         "created_at": news.created_at,
-        "updated_at": news.updated_at
+        # "updated_at": news.updated_at
     }
 
     return Response({"news": news_data}, status=status.HTTP_200_OK)
