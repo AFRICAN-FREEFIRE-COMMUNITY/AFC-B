@@ -21,5 +21,10 @@ urlpatterns = [
     path('edit-profile/', edit_profile, name='edit_profile'),
     path('get-user-profile/', get_user_profile, name='get_user_profile'),
     path('contact-us/', contact_us, name='contact_us'),
-    
+    path('create-news/', create_news, name='create_news'),
+    path('edit-news/', edit_news, name='edit_news'),
+    path('get-news-detail/', get_news_detail, name='get_news_detail'),
+    path('get-all-news/', get_all_news, name='get_all_news')
+
+
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

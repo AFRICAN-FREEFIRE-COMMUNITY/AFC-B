@@ -571,6 +571,52 @@ def edit_news(request):
     }, status=status.HTTP_200_OK)
 
 
+@api_view(["GET"])
+def get_all_news(request):
+    news_list = News.objects.all().order_by('-created_at')
+    news_data = []
+
+    for news in news_list:
+        news_data.append({
+            "news_id": news.news_id,
+            "news_title": news.news_title,
+            "content": news.content,
+            "category": news.category,
+            "related_event": news.related_event.event_name if news.related_event else None,
+            "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
+            "author": news.author.username,
+            "created_at": news.created_at,
+            "updated_at": news.updated_at
+        })
+
+    return Response({"news": news_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def get_news_detail(request):
+    news_id = request.data.get("news_id")
+    if not news_id:
+        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        news = News.objects.get(news_id=news_id)
+    except News.DoesNotExist:
+        return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    news_data = {
+        "news_id": news.news_id,
+        "news_title": news.news_title,
+        "content": news.content,
+        "category": news.category,
+        "related_event": news.related_event.event_name if news.related_event else None,
+        "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
+        "author": news.author.username,
+        "created_at": news.created_at,
+        "updated_at": news.updated_at
+    }
+
+    return Response({"news": news_data}, status=status.HTTP_200_OK)
+
 @api_view(["POST"])
 def edit_profile(request):
     # Retrieve session token
