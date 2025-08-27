@@ -19,8 +19,12 @@ def create_event(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
 
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
     # Identify the logged-in user using the session token
     try:
         user = User.objects.get(session_token=session_token)
