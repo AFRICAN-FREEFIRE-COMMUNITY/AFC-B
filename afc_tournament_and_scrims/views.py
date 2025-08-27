@@ -214,3 +214,16 @@ def create_leaderboard(request):
 
     return Response({"message": "Leaderboard created successfully", "leaderboard_id": leaderboard.leaderboard_id}, status=status.HTTP_201_CREATED)
 
+
+@api_view(["GET"])
+def get_all_events(request):
+    events = Event.objects.all()
+    event_list = []
+    for event in events:
+        event_list.append({
+            "event_id": event.event_id,
+            "event_name": event.event_name,
+            "event_date": event.start_date,
+            "event_status": event.event_status,
+        })
+    return Response({"events": event_list}, status=status.HTTP_200_OK)
