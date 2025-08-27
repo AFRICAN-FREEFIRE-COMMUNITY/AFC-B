@@ -10,5 +10,6 @@ urlpatterns = [
     path('create-event/', create_event, name='create_event'),
     path('edit-event', edit_event, name='edit_event'),
     path('create-leaderboard/', create_leaderboard, name='create_leaderboard'),
-    
+    path('get-all-events/', get_all_events, name='get_all_events')
+
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
