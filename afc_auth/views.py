@@ -526,7 +526,11 @@ def create_news(request):
         "message": "News created successfully.",
         "news_id": news.news_id,
         "news_title": news.news_title,
-        "category": news.category
+        "category": news.category,
+        "author_name": user.username,
+        "author_pic": request.build_absolute_uri(user.userprofile.profile_pic.url) if hasattr(user, 'userprofile') and user.userprofile.profile_pic else None
+
+
     }, status=status.HTTP_201_CREATED)
 
 
