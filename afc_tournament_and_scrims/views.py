@@ -1,3 +1,4 @@
+import json
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -45,7 +46,7 @@ def create_event(request):
     registration_open_date = parse_date(request.data.get("registration_open_date"))
     registration_end_date = parse_date(request.data.get("registration_end_date"))
     prizepool = request.data.get("prizepool")
-    prize_distribution = request.data.get("prize_distribution", {})
+    prize_distribution = json.loads(request.data.get("prize_distribution", "{}"))
     event_rules = request.data.get("event_rules")
     event_status = request.data.get("event_status", "upcoming")
     registration_link = request.data.get("registration_link")
@@ -231,3 +232,37 @@ def get_all_events(request):
             "event_status": event.event_status,
         })
     return Response({"events": event_list}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def get_event_details(request):
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "Event ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        event = Event.objects.get(event_id=event_id)
+    except Event.DoesNotExist:
+        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    event_data = {
+        "event_id": event.event_id,
+        "event_name": event.event_name,
+        "event_type": event.event_type,
+        "format": event.format,
+        "location": event.location,
+        "start_date": event.start_date,
+        "end_date": event.end_date,
+        "registration_open_date": event.registration_open_date,
+        "registration_end_date": event.registration_end_date,
+        "prizepool": event.prizepool,
+        "prize_distribution": event.prize_distribution,
+        "event_rules": event.event_rules,
+        "event_status": event.event_status,
+        "registration_link": event.registration_link,
+        "tournament_tier": event.tournament_tier,
+        "event_banner": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
+        "stream_channel": event.stream_channel,
+    }
+
+    return Response({"event": event_data}, status=status.HTTP_200_OK)
