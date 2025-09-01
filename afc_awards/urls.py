@@ -19,11 +19,15 @@ urlpatterns = [
         path('add/', add_nominee_to_category),
         path('view/', view_nominee_in_category),
         path('remove/', remove_nominee_from_category),
+        path('all/', view_all_nominee_in_each_category),
     ])),
     path('votes/', include([
         path('submit/', submit_votes),
     ])),
     path('sections/', include([
         path('add/', add_section),
+        path('all/', list_sections),
+        path('view/', get_section),
     ])),
+
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

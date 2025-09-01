@@ -81,12 +81,13 @@ def add_new_nominee(request):
             return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
         name = request.data.get('name')
-    
+        video_url = request.data.get('video_url')
+
         if not name:
             return Response({"error": "Name is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        nominee = Nominee.objects.create(name=name)
-        return Response({"id": nominee.nominee_id, "name": nominee.name}, status=status.HTTP_201_CREATED)
+        nominee = Nominee.objects.create(name=name, video_url=video_url)
+        return Response({"id": nominee.nominee_id, "name": nominee.name, "video_url": nominee.video_url}, status=status.HTTP_201_CREATED)
     
 
 @api_view(['GET'])
@@ -309,3 +310,27 @@ def view_all_nominee_in_each_category(request):
         })
 
     return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def list_sections(request):
+    sections = Section.objects.all()
+    data = [{"id": section.id, "name": section.name} for section in sections]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def get_section(request):
+    section_id = request.data.get("section_id")
+    if not section_id:
+        return Response({"error": "Section ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        section = Section.objects.get(id=section_id)
+        data = {
+            "id": section.id,
+            "name": section.name
+        }
+        return Response(data, status=status.HTTP_200_OK)
+    except Section.DoesNotExist:
+        return Response({"error": "Section not found"}, status=status.HTTP_404_NOT_FOUND)
