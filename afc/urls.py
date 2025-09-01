@@ -23,4 +23,5 @@ urlpatterns = [
     path("tournament-leaderboard/", include('afc_leaderboard_calc.urls')),
     path("events/", include('afc_tournament_and_scrims.urls')),
     path("team/", include('afc_team.urls')),
+    path("awards/", include('afc_awards.urls')),
 ]
