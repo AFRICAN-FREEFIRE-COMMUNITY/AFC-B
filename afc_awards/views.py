@@ -10,6 +10,17 @@ from afc_awards.models import Category, CategoryNominee, Nominee, Section, Vote
 @api_view(['POST'])
 def add_new_category(request):
     if request.method == 'POST':
+        # --- Authenticate user ---
+        session_token = request.headers.get("Authorization")
+        if not session_token or not session_token.startswith("Bearer "):
+            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+
+        session_token = session_token.split(" ")[1]
+        try:
+            user = User.objects.get(session_token=session_token)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+
         name = request.data.get('name')
         section_id = request.data.get('section_id')
     
@@ -35,6 +46,17 @@ def view_all_categories(request):
 
 @api_view(['DELETE'])
 def delete_category(request):
+    # --- Authenticate user ---
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+
     try:
         category_id = request.data.get('category_id')
         category = Category.objects.get(category_id=category_id)
@@ -47,6 +69,17 @@ def delete_category(request):
 @api_view(['POST'])
 def add_new_nominee(request):
     if request.method == 'POST':
+        # --- Authenticate user ---
+        session_token = request.headers.get("Authorization")
+        if not session_token or not session_token.startswith("Bearer "):
+            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+
+        session_token = session_token.split(" ")[1]
+        try:
+            user = User.objects.get(session_token=session_token)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+
         name = request.data.get('name')
     
         if not name:
@@ -65,6 +98,17 @@ def view_all_nominees(request):
 
 @api_view(['DELETE'])
 def delete_nominee(request):
+    # --- Authenticate user ---
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+
     try:
         nominee_id = request.data.get('nominee_id')
         nominee = Nominee.objects.get(nominee_id=nominee_id)
@@ -77,6 +121,17 @@ def delete_nominee(request):
 @api_view(['POST'])
 def add_nominee_to_category(request):
     if request.method == 'POST':
+        # --- Authenticate user ---
+        session_token = request.headers.get("Authorization")
+        if not session_token or not session_token.startswith("Bearer "):
+            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+
+        session_token = session_token.split(" ")[1]
+        try:
+            user = User.objects.get(session_token=session_token)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+
         category_id = request.data.get('category_id')
         nominee_id = request.data.get('nominee_id')
 
@@ -108,6 +163,17 @@ def view_nominee_in_category(request):
 @api_view(['DELETE'])
 def remove_nominee_from_category(request):
     if request.method == 'DELETE':
+        # --- Authenticate user ---
+        session_token = request.headers.get("Authorization")
+        if not session_token or not session_token.startswith("Bearer "):
+            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+
+        session_token = session_token.split(" ")[1]
+        try:
+            user = User.objects.get(session_token=session_token)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+
         category_id = request.data.get('category_id')
         nominee_id = request.data.get('nominee_id')
 
@@ -127,6 +193,17 @@ def remove_nominee_from_category(request):
 @api_view(['POST'])
 def add_section(request):
     if request.method == 'POST':
+        # --- Authenticate user ---
+        session_token = request.headers.get("Authorization")
+        if not session_token or not session_token.startswith("Bearer "):
+            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+
+        session_token = session_token.split(" ")[1]
+        try:
+            user = User.objects.get(session_token=session_token)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+
         name = request.data.get('name')
         max_votes = request.data.get('max_votes')
 
