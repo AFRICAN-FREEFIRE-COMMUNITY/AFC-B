@@ -24,7 +24,14 @@ urlpatterns = [
     path('create-news/', create_news, name='create_news'),
     path('edit-news/', edit_news, name='edit_news'),
     path('get-news-detail/', get_news_detail, name='get_news_detail'),
-    path('get-all-news/', get_all_news, name='get_all_news')
-
+    path('get-all-news/', get_all_news, name='get_all_news'),
+    path('add-role/', add_role, name='add_role'),
+    path('get-admin-info/', get_admin_info, name='get_admin_info'),
+    path('get-all-roles/', get_all_roles, name='get_all_roles'),
+    path('get-all-user-and-user-roles/', get_all_user_and_user_roles, name='get_all_user_and_user_roles'),
+    path('suspend-user/', suspend_user, name='suspend_user'),
+    path('activate-user/', activate_user, name='activate_user'),
+    path('assign-roles-to-user/', assign_roles_to_user, name='assign_roles_to_user'),
+    path('edit-user-roles/', edit_user_roles, name='edit_user_roles'),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

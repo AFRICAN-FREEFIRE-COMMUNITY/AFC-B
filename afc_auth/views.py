@@ -14,7 +14,7 @@ from django.contrib.auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from .models import User, UserProfile, BannedPlayer, News, PasswordResetToken
+from .models import Roles, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -890,3 +890,273 @@ def contact_us(request):
     send_email(support_email, email_subject, email_body)
 
     return Response({"message": "Your message has been sent successfully."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def get_admin_info(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if not user.is_admin:
+        return Response({"message": "User is not an admin."}, status=status.HTTP_403_FORBIDDEN)
+
+    # Return admin information
+    admin_info = {
+        "id": user.id,
+        "email": user.email,
+        "name": user.username,
+        "is_active": user.is_active,
+        "status": user.status,
+        "admin_roles": [role.name for role in user.roles.all()]
+    }
+
+    return Response({"message": "Admin information retrieved successfully.", "data": admin_info}, status=status.HTTP_200_OK)
+
+
+
+@api_view(["GET"])
+def get_all_roles(request):
+    roles = Roles.objects.all()
+    roles_data = [{"role_id": role.role_id, "role_name": role.role_name, "description": role.description} for role in roles]
+    return Response({"roles": roles_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_all_user_and_user_roles(request):
+    users = User.objects.all()
+    users_data = []
+
+    for user in users:
+        user_roles = UserRoles.objects.filter(user=user)
+        roles = [ur.role.role_name for ur in user_roles]
+        users_data.append({
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
+            "status": user.status,
+            "roles": roles
+        })
+
+    return Response({"users": users_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def suspend_user(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if user.role != "admin":
+        return Response({"message": "You do not have permission to suspend a user."}, status=status.HTTP_403_FORBIDDEN)
+
+    user_id = request.data.get("user_id")
+    if not user_id:
+        return Response({"message": "User ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(user_id=user_id)
+    except User.DoesNotExist:
+        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    user.status = "suspended"
+    user.save()
+
+    return Response({"message": f"User {user.username} has been suspended."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def activate_user(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if user.role != "admin":
+        return Response({"message": "You do not have permission to activate a user."}, status=status.HTTP_403_FORBIDDEN)
+
+    user_id = request.data.get("user_id")
+    if not user_id:
+        return Response({"message": "User ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(user_id=user_id)
+    except User.DoesNotExist:
+        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    user.status = "active"
+    user.save()
+
+    return Response({"message": f"User {user.username} has been activated."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def assign_roles_to_user(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        admin_user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if admin_user.role != "admin":
+        return Response({"message": "You do not have permission to assign roles."}, status=status.HTTP_403_FORBIDDEN)
+
+    username = request.data.get("username")
+    email = request.data.get("email")
+    role_ids = request.data.get("role_ids", [])
+
+    if not email or not username or not role_ids:
+        return Response({"message": "Email, username, and role IDs are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(email=email, username=username)
+    except User.DoesNotExist:
+        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    for role_id in role_ids:
+        try:
+            role = Roles.objects.get(role_id=role_id)
+            UserRoles.objects.get_or_create(user=user, role=role)
+        except Roles.DoesNotExist:
+            return Response({"message": f"Role with ID {role_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response({"message": f"Roles assigned to user {user.username} successfully."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def edit_user_roles(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        admin_user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if admin_user.role != "admin":
+        return Response({"message": "You do not have permission to edit user roles."}, status=status.HTTP_403_FORBIDDEN)
+
+    username = request.data.get("username")
+    email = request.data.get("email")
+    new_role_ids = request.data.get("new_role_ids", [])
+
+    if not email or not username or not new_role_ids:
+        return Response({"message": "Email, username, and new role IDs are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(email=email, username=username)
+    except User.DoesNotExist:
+        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Clear existing roles
+    UserRoles.objects.filter(user=user).delete()
+
+    # Assign new roles
+    for role_id in new_role_ids:
+        try:
+            role = Roles.objects.get(role_id=role_id)
+            UserRoles.objects.create(user=user, role=role)
+        except Roles.DoesNotExist:
+            return Response({"message": f"Role with ID {role_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response({"message": f"User {user.username}'s roles updated successfully."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def add_role(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        admin_user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if admin_user.role != "admin":
+        return Response({"message": "You do not have permission to add roles."}, status=status.HTTP_403_FORBIDDEN)
+
+    role_name = request.data.get("role_name")
+    description = request.data.get("description", "")
+
+    if not role_name:
+        return Response({"message": "Role name is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if Roles.objects.filter(role_name=role_name).exists():
+        return Response({"message": "Role name already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+    role = Roles.objects.create(role_name=role_name, description=description)
+
+    return Response({
+        "message": "Role added successfully.",
+        "role_id": role.role_id,
+        "role_name": role.role_name,
+        "description": role.description
+    }, status=status.HTTP_201_CREATED)

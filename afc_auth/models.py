@@ -11,6 +11,12 @@ class User(AbstractUser):
         ("support", "Support"),
         ("player", "Player")
     ]
+
+    STATUS_CHOICES = [
+        ("active", "Active")
+        ("suspended", "Suspended")
+    ]
+
     user_id = models.AutoField(primary_key=True)
     username = models.CharField(max_length=40, unique=True)
     # in_game_name = models.CharField(max_length=12, unique=True)
@@ -21,6 +27,7 @@ class User(AbstractUser):
     session_token = models.CharField(max_length=16)
     full_name = models.CharField(max_length=40)
     country = models.CharField(max_length=40)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=False, default="active")
 
     USERNAME_FIELD = "username"  # Set in_game_name as username
     REQUIRED_FIELDS = ["email", "full_name"]
@@ -36,6 +43,33 @@ class UserProfile(models.Model):
     state = models.CharField(max_length=40, null=True)
     profile_pic = models.ImageField(upload_to='profile_pictures/', null=True)
     esports_pic = models.ImageField(upload_to='esports_pictures/', null=True)
+
+
+class Roles(models.Model):
+    ROLES = [
+        ("head_admin", "Head Admin"),
+        ("shop_admin", "Shop Admin"),
+        ("news_admin", "News Admin"),
+        ("event_admin", "Event Admin"),
+        ("teams_admin", "Teams Admin"),
+        ("partner_admin", "Partner Admin"),
+
+    ]
+    
+    role_id = models.AutoField(primary_key=True)
+    role_name = models.CharField(max_length=20, choices=ROLES, unique=True)
+    description = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.role_name
+    
+
+class UserRoles(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    role = models.ForeignKey(Roles, on_delete=models.CASCADE)
+    date_assigned = models.DateTimeField(auto_now=True)
 
 
 class PasswordResetToken(models.Model):
