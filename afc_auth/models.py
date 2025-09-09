@@ -13,7 +13,7 @@ class User(AbstractUser):
     ]
 
     STATUS_CHOICES = [
-        ("active", "Active")
+        ("active", "Active"),
         ("suspended", "Suspended")
     ]
 
@@ -55,7 +55,7 @@ class Roles(models.Model):
         ("partner_admin", "Partner Admin"),
 
     ]
-    
+
     role_id = models.AutoField(primary_key=True)
     role_name = models.CharField(max_length=20, choices=ROLES, unique=True)
     description = models.TextField()
