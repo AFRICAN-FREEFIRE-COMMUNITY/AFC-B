@@ -14,6 +14,7 @@ from django.contrib.auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+from sympy import Q
 from .models import Roles, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
@@ -144,6 +145,7 @@ def login(request):
         
         # Save session token to the user model
         user.session_token = session_token
+        user.last_login = timezone.now()
         user.save()
 
         # Return success response with the session token
@@ -1160,3 +1162,49 @@ def add_role(request):
         "role_name": role.role_name,
         "description": role.description
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+def search_admin_users(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        admin_user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if admin_user.role != "admin":
+        return Response({"message": "You do not have permission to search users."}, status=status.HTTP_403_FORBIDDEN)
+
+    query = request.data.get("query", "")
+    if not query:
+        return Response({"message": "Search query is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    users = User.objects.filter(
+        Q(username__icontains=query) | Q(email__icontains=query) | Q(full_name__icontains=query)
+    )
+
+    users_data = []
+    for user in users:
+        user_roles = UserRoles.objects.filter(user=user)
+        roles = [ur.role.role_name for ur in user_roles]
+        users_data.append({
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role,
+            "status": user.status,
+            "roles": roles
+        })
+
+    return Response({"users": users_data}, status=status.HTTP_200_OK)

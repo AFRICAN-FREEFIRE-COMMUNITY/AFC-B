@@ -28,6 +28,8 @@ class User(AbstractUser):
     full_name = models.CharField(max_length=40)
     country = models.CharField(max_length=40)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=False, default="active")
+    last_login = models.DateTimeField(null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     USERNAME_FIELD = "username"  # Set in_game_name as username
     REQUIRED_FIELDS = ["email", "full_name"]
