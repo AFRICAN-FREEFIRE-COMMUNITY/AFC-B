@@ -951,6 +951,7 @@ def get_all_user_and_user_roles(request):
             "email": user.email,
             "role": user.role,
             "status": user.status,
+            "last_login": user.last_login,
             "roles": roles
         })
 
@@ -1031,16 +1032,60 @@ def activate_user(request):
     return Response({"message": f"User {user.username} has been activated."}, status=status.HTTP_200_OK)
 
 
+# @api_view(["POST"])
+# def assign_roles_to_user(request):
+#     # Retrieve session token
+#     session_token = request.headers.get("Authorization")
+
+#     if not session_token:
+#         return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+#     if not session_token.startswith("Bearer "):
+#         return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+#     session_token = session_token.split(" ")[1]
+
+#     # Identify the logged-in user using the session token
+#     try:
+#         admin_user = User.objects.get(session_token=session_token)
+#     except User.DoesNotExist:
+#         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+#     if admin_user.role != "admin":
+#         return Response({"message": "You do not have permission to assign roles."}, status=status.HTTP_403_FORBIDDEN)
+
+#     username = request.data.get("username")
+#     email = request.data.get("email")
+#     role_ids = request.data.get("role_ids", [])
+
+#     if not email or not username or not role_ids:
+#         return Response({"message": "Email, username, and role IDs are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+#     try:
+#         user = User.objects.get(email=email, username=username)
+#     except User.DoesNotExist:
+#         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+#     for role_id in role_ids:
+#         try:
+#             role = Roles.objects.get(role_id=role_id)
+#             UserRoles.objects.get_or_create(user=user, role=role)
+#         except Roles.DoesNotExist:
+#             return Response({"message": f"Role with ID {role_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+
+#     return Response({"message": f"Roles assigned to user {user.username} successfully."}, status=status.HTTP_200_OK)
+
+
 @api_view(["POST"])
 def assign_roles_to_user(request):
     # Retrieve session token
     session_token = request.headers.get("Authorization")
 
-    if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response(
+            {"status": "error", "message": "Authorization token is missing or invalid."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     session_token = session_token.split(" ")[1]
 
@@ -1048,31 +1093,62 @@ def assign_roles_to_user(request):
     try:
         admin_user = User.objects.get(session_token=session_token)
     except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response(
+            {"status": "error", "message": "Invalid session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     
     if admin_user.role != "admin":
-        return Response({"message": "You do not have permission to assign roles."}, status=status.HTTP_403_FORBIDDEN)
+        return Response(
+            {"status": "error", "message": "You do not have permission to assign roles."},
+            status=status.HTTP_403_FORBIDDEN
+        )
 
     username = request.data.get("username")
     email = request.data.get("email")
     role_ids = request.data.get("role_ids", [])
 
     if not email or not username or not role_ids:
-        return Response({"message": "Email, username, and role IDs are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"status": "error", "message": "Email, username, and role IDs are required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     try:
         user = User.objects.get(email=email, username=username)
     except User.DoesNotExist:
-        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"status": "error", "message": "User not found."},
+            status=status.HTTP_404_NOT_FOUND
+        )
 
-    for role_id in role_ids:
-        try:
-            role = Roles.objects.get(role_id=role_id)
-            UserRoles.objects.get_or_create(user=user, role=role)
-        except Roles.DoesNotExist:
-            return Response({"message": f"Role with ID {role_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+    # Ensure role_ids is a list of integers
+    if not isinstance(role_ids, list) or not all(isinstance(r, int) for r in role_ids):
+        return Response(
+            {"status": "error", "message": "role_ids must be a list of integers."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
-    return Response({"message": f"Roles assigned to user {user.username} successfully."}, status=status.HTTP_200_OK)
+    # Validate all roles first
+    roles = Roles.objects.filter(role_id__in=role_ids)
+    if len(roles) != len(role_ids):
+        return Response(
+            {"status": "error", "message": "One or more role IDs are invalid."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    # 🔑 Reset: remove all existing roles first
+    UserRoles.objects.filter(user=user).delete()
+
+    # Assign new roles
+    for role in roles:
+        UserRoles.objects.create(user=user, role=role)
+
+    return Response(
+        {"status": "success", "message": f"Roles reset and assigned to user {user.username} successfully."},
+        status=status.HTTP_200_OK
+    )
+
 
 
 @api_view(["POST"])
@@ -1204,6 +1280,7 @@ def search_admin_users(request):
             "email": user.email,
             "role": user.role,
             "status": user.status,
+            "last_login": user.last_login,
             "roles": roles
         })
 
