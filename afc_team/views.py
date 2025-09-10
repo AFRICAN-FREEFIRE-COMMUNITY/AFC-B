@@ -635,6 +635,36 @@ def get_all_teams(request):
     return Response({"teams": teams_data}, status=status.HTTP_200_OK)
 
 
+# @api_view(["POST"])
+# def get_team_details(request):
+#     team_name = request.data.get("team_name")
+
+#     if not team_name:
+#         return Response({"message": "Team name is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+#     try:
+#         team = Team.objects.get(team_name=team_name)
+#     except Team.DoesNotExist:
+#         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+#     team_data = {
+#         "team_id": team.team_id,
+#         "team_name": team.team_name,
+#         "team_logo": request.build_absolute_uri(team.team_logo.url) if team.team_logo else None,
+#         "team_tag": team.team_tag,
+#         "join_settings": team.join_settings,
+#         "creation_date": team.creation_date,
+#         "team_creator": team.team_creator.username,
+#         "team_owner": team.team_owner.username,
+#         "is_banned": team.is_banned,
+#         "team_tier": team.team_tier,
+#         "team_description": team.team_description,
+#         "country": team.country
+#     }
+
+#     return Response({"team": team_data}, status=status.HTTP_200_OK)
+
+
 @api_view(["POST"])
 def get_team_details(request):
     team_name = request.data.get("team_name")
@@ -646,6 +676,28 @@ def get_team_details(request):
         team = Team.objects.get(team_name=team_name)
     except Team.DoesNotExist:
         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Team members
+    members_qs = TeamMembers.objects.filter(team=team).select_related("member")
+    members_data = [
+        {
+            "username": member.member.username,
+            "management_role": member.management_role,
+            "in_game_role": member.in_game_role,
+            "join_date": member.join_date,
+        }
+        for member in members_qs
+    ]
+
+    # Social media links
+    social_links_qs = TeamSocialMediaLinks.objects.filter(team=team)
+    social_links = [
+        {
+            "platform": link.platform,
+            "link": link.link,
+        }
+        for link in social_links_qs
+    ]
 
     team_data = {
         "team_id": team.team_id,
@@ -659,7 +711,10 @@ def get_team_details(request):
         "is_banned": team.is_banned,
         "team_tier": team.team_tier,
         "team_description": team.team_description,
-        "country": team.country
+        "country": team.country,
+        "total_members": members_qs.count(),
+        "members": members_data,
+        "social_media_links": social_links,
     }
 
     return Response({"team": team_data}, status=status.HTTP_200_OK)
