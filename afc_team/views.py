@@ -337,7 +337,7 @@ def disband_team(request):
             team=team,
             user=user,
             action="team_disbanded",
-            description=f"Team '{team.team_name}' was disbanded by {user.in_game_name} on {now()}."
+            description=f"Team '{team.team_name}' was disbanded by {user.username} on {now()}."
         )
 
         # Remove all team members
