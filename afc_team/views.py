@@ -718,3 +718,50 @@ def get_team_details(request):
     }
 
     return Response({"team": team_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def get_user_current_team(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        team_member = TeamMembers.objects.select_related("team").get(member=user)
+        team = team_member.team
+
+        team_data = {
+            "team_id": team.team_id,
+            "team_name": team.team_name,
+            "team_logo": request.build_absolute_uri(team.team_logo.url) if team.team_logo else None,
+            "team_tag": team.team_tag,
+            "join_settings": team.join_settings,
+            "creation_date": team.creation_date,
+            "team_creator": team.team_creator.username,
+            "team_owner": team.team_owner.username,
+            "is_banned": team.is_banned,
+            "team_tier": team.team_tier,
+            "team_description": team.team_description,
+            "country": team.country,
+            "user_role_in_team": team_member.management_role,
+            "in_game_role": team_member.in_game_role,
+            "join_date": team_member.join_date,
+        }
+
+        return Response({"team": team_data}, status=status.HTTP_200_OK)
+
+    except TeamMembers.DoesNotExist:
+        return Response({"message": "You are not currently a member of any team."}, status=status.HTTP_404_NOT_FOUND)
