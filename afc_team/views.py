@@ -629,7 +629,8 @@ def get_all_teams(request):
             "is_banned": team.is_banned,
             "team_tier": team.team_tier,
             "team_description": team.team_description,
-            "country": team.country
+            "country": team.country,
+            "member_count": TeamMembers.objects.filter(team=team).count()
         })
 
     return Response({"teams": teams_data}, status=status.HTTP_200_OK)
