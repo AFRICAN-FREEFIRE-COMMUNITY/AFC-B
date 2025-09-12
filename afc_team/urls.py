@@ -17,6 +17,7 @@ urlpatterns = [
     path('review-join-request/', review_join_request, name='review_join_request'),
     path('edit-team', edit_team, name='edit_team'),
     path('get-all-teams/', get_all_teams, name='get_all_teams'),
-    path('get-team-details/', get_team_details, name='get_team_details')
+    path('get-team-details/', get_team_details, name='get_team_details'),
+    path('get-user-current-team/', get_user_current_team, name='get_user_current_team'),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
