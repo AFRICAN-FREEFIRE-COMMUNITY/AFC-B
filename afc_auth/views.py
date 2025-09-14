@@ -756,6 +756,7 @@ def get_user_profile(request):
         "team": user.team.team_name if hasattr(user, 'team') else None,
         "role": user.role,
         "profile_pic": profile_pic_url,
+        "roles": list(UserRoles.objects.filter(user=user).values_list('role__name', flat=True))
     }, status=status.HTTP_200_OK)
 
 
