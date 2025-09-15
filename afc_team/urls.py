@@ -19,6 +19,6 @@ urlpatterns = [
     path('get-all-teams/', get_all_teams, name='get_all_teams'),
     path('get-team-details/', get_team_details, name='get_team_details'),
     path('get-user-current-team/', get_user_current_team, name='get_user_current_team'),
-    path('get-player-details-in-team', get_player_details_in_team, name='get_player_details_in_team')
+    path('get-player-details-in-team/', get_player_details_in_team, name='get_player_details_in_team')
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
