@@ -619,6 +619,7 @@ def get_all_teams(request):
 
     for team in teams:
         teams_data.append({
+            "team_id": team.team_id,
             "team_name": team.team_name,
             "team_logo": team.team_logo.url if team.team_logo else None,
             "team_tag": team.team_tag,
@@ -766,3 +767,34 @@ def get_user_current_team(request):
 
     except TeamMembers.DoesNotExist:
         return Response({"message": "You are not currently a member of any team."}, status=status.HTTP_404_NOT_FOUND)
+    
+
+@api_view(["POST"])
+def get_player_details_in_team(request):
+    team_id = request.data.get("team_id")
+    player_ign = request.data.get("player_ign")
+
+    if not team_id or not player_ign:
+        return Response({"message": "Team ID and player IGN are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        team = Team.objects.get(team_id=team_id)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        user = User.objects.get(username=player_ign)
+    except User.DoesNotExist:
+        return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        team_member = TeamMembers.objects.get(team=team, member=user)
+        member_data = {
+            "username": user.username,
+            "management_role": team_member.management_role,
+            "in_game_role": team_member.in_game_role,
+            "join_date": team_member.join_date,
+        }
+        return Response({"member": member_data}, status=status.HTTP_200_OK)
+    except TeamMembers.DoesNotExist:
+        return Response({"message": "Player is not a member of the specified team."}, status=status.HTTP_404_NOT_FOUND)
