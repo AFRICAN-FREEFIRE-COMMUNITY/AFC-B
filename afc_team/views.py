@@ -531,6 +531,50 @@ def review_join_request(request):
         return Response({"message": "Join request not found."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(["GET"])
+def view_join_requests(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        # Find the team where the user is the owner
+        team = Team.objects.get(team_owner=user)
+
+        # Fetch all pending join requests for the team
+        join_requests = JoinRequest.objects.filter(team=team, status_of_request="unattended_to")
+
+        requests_data = []
+        for req in join_requests:
+            requests_data.append({
+                "request_id": req.request_id,
+                "requester": req.requester.username,
+                "uid": req.requester.uid,
+                "message": req.message,
+                "request_date": req.created_at
+            })
+
+        return Response({"join_requests": requests_data}, status=status.HTTP_200_OK)
+
+    except Team.DoesNotExist:
+        return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(["POST"])
@@ -770,31 +814,37 @@ def get_user_current_team(request):
     
 
 @api_view(["POST"])
-def get_player_details_in_team(request):
-    team_id = request.data.get("team_id")
+def get_player_details(request):
     player_ign = request.data.get("player_ign")
 
-    if not team_id or not player_ign:
-        return Response({"message": "Team ID and player IGN are required."}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        team = Team.objects.get(team_id=team_id)
-    except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not player_ign:
+        return Response({"message": "Player IGN is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         user = User.objects.get(username=player_ign)
     except User.DoesNotExist:
         return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+    
+    
+    team_member = TeamMembers.objects.select_related("team").get(member=user)
+    team = team_member.team
 
-    try:
-        team_member = TeamMembers.objects.get(team=team, member=user)
-        member_data = {
-            "username": user.username,
-            "management_role": team_member.management_role,
-            "in_game_role": team_member.in_game_role,
-            "join_date": team_member.join_date,
-        }
-        return Response({"member": member_data}, status=status.HTTP_200_OK)
-    except TeamMembers.DoesNotExist:
-        return Response({"message": "Player is not a member of the specified team."}, status=status.HTTP_404_NOT_FOUND)
+    player_data = {
+        "username": user.username,
+        "in_game_name": user.in_game_name,
+        "email": user.email,
+        "country": user.country,
+        "profile_picture": request.build_absolute_uri(user.profile_picture.url) if user.profile_picture else None,
+        "team_id": team.team_id,
+        "team_name": team.team_name,
+        "team_logo": request.build_absolute_uri(team.team_logo.url) if team.team_logo else None,
+        "management_role": team_member.management_role,
+        "in_game_role": team_member.in_game_role,
+        "join_date": team_member.join_date,
+    }
+
+    return Response({"player": player_data}, status=status.HTTP_200_OK)
+
+
+    
+
