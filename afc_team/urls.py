@@ -16,6 +16,7 @@ urlpatterns = [
     path('send-join-request/', send_join_request, name='send_join_request'),
     path('review-join-request/', review_join_request, name='review_join_request'),
     path('view-join-requests/', view_join_requests, name='view_join_requests'),
+    path('view-join-requests-for-a-team/', view_join_requests_for_a_team, name='view_join_requests_for_a_team'),
     path('edit-team', edit_team, name='edit_team'),
     path('get-all-teams/', get_all_teams, name='get_all_teams'),
     path('get-team-details/', get_team_details, name='get_team_details'),
