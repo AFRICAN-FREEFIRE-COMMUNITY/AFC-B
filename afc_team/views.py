@@ -5,7 +5,7 @@ from rest_framework import status
 from afc_leaderboard_calc import models
 from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
-from afc_auth.models import User
+from afc_auth.models import User, UserProfile
 from django.utils.timezone import now
 from django.db.models import Q
 from .models import Team, TeamMembers, Invite, User, TeamSocialMediaLinks
@@ -857,6 +857,11 @@ def get_player_details(request):
     except User.DoesNotExist:
         return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
     
+    try:
+        profile = UserProfile.objects.get(user=user)
+    except UserProfile.DoesNotExist:
+        return Response({"message": "User profile not found."}, status=status.HTTP_404_NOT_FOUND)
+    
     
     team_member = TeamMembers.objects.select_related("team").get(member=user)
     team = team_member.team
@@ -865,8 +870,8 @@ def get_player_details(request):
         "username": user.username,
         "email": user.email,
         "country": user.country,
-        "profile_picture": request.build_absolute_uri(user.userprofile.profile_pic.url) if user.userprofile.profile_pic else None,
-        "esports_picture": request.build_absolute_uri(user.userprofile.esports_pic.url) if user.userprofile.esports_pic else None,
+        "profile_picture": request.build_absolute_uri(profile.profile_pic.url) if profile.profile_pic else None,
+        "esports_picture": request.build_absolute_uri(profile.esports_pic.url) if profile.esports_pic else None,
         "uid": user.uid,
         "team_id": team.team_id,
         "team_name": team.team_name,
@@ -880,4 +885,3 @@ def get_player_details(request):
 
 
     
-
