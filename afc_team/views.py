@@ -575,6 +575,38 @@ def view_join_requests(request):
         return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(["POST"])
+def view_join_requests_for_a_team(request):
+    team_id = request.data.get("team_id")
+
+    if not team_id:
+        return Response({"message": "Team ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        # Ensure the team exists
+        team = Team.objects.get(team_id=team_id)
+
+        # Fetch all pending join requests for the team
+        join_requests = JoinRequest.objects.filter(team=team, status_of_request="unattended_to")
+
+        requests_data = []
+        for req in join_requests:
+            requests_data.append({
+                "request_id": req.request_id,
+                "requester": req.requester.username,
+                "uid": req.requester.uid,
+                "message": req.message,
+                "request_date": req.created_at
+            })
+
+        return Response({"join_requests": requests_data}, status=status.HTTP_200_OK)
+
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(["POST"])
@@ -831,7 +863,6 @@ def get_player_details(request):
 
     player_data = {
         "username": user.username,
-        "in_game_name": user.in_game_name,
         "email": user.email,
         "country": user.country,
         "profile_picture": request.build_absolute_uri(user.profile_picture.url) if user.profile_picture else None,
