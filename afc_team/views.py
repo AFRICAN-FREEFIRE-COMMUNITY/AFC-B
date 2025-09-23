@@ -520,7 +520,7 @@ def review_join_request(request):
             team=team,
             user=join_request.requester,
             action="player_joined" if decision == "approved" else "player_removed",
-            description=f"Join request {decision} by {join_request.requester.in_game_name}."
+            description=f"Join request {decision} by {join_request.requester.username}."
         )
 
         return Response({"message": f"Join request {decision} successfully."}, status=status.HTTP_200_OK)

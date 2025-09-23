@@ -138,3 +138,11 @@ class News(models.Model):
 
     def __str__(self):
         return self.news_title
+    
+
+class AdminHistory(models.Model):
+    action_id = models.AutoField(primary_key=True)
+    admin_user = models.ForeignKey(User, on_delete=models.CASCADE)
+    action = models.CharField(max_length=50)  # e.g., "banned_player", "edited_news"
+    description = models.TextField()
+    timestamp = models.DateTimeField(auto_now_add=True)
