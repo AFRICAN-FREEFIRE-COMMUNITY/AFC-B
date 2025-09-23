@@ -15,7 +15,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
-from .models import Roles, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import AdminHistory, Roles, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -331,9 +331,15 @@ def ban_team(request):
     try:
         user = User.objects.get(session_token=session_token)
         if user.role not in ["admin", "moderator"]:
-            return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)            
     except User.DoesNotExist:
         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
+        pass  # User has permission
+    else:
+        return Response({"message": "You do not have permission to ban a team."}, status=status.HTTP_403_FORBIDDEN)
+                    
 
     team_id = request.data.get("team_id")
     ban_duration = request.data.get("ban_duration")  # Duration in hours
@@ -366,6 +372,12 @@ def ban_team(request):
         banned_by=user
     )
 
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="banned_team",
+        description=f"Team {team.team_name} (ID: {team.team_id}) banned until {ban_end_date} for reason: {reason}"
+    )
+
     return Response({
         "message": "Team banned successfully.",
         "team_id": team.team_id,
@@ -394,6 +406,12 @@ def unban_team(request):
             return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
     except User.DoesNotExist:
         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
+        pass  # User has permission
+    else:
+        return Response({"message": "You do not have permission to ban a team."}, status=status.HTTP_403_FORBIDDEN)
+
 
     team_id = request.data.get("team_id")
 
@@ -439,6 +457,11 @@ def ban_player(request):
 
     # Check if the user has permission to ban a player
     if user.role not in ["admin", "moderator", "support"]:
+        return Response({"message": "You do not have permission to ban a player."}, status=status.HTTP_403_FORBIDDEN)
+    
+    if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
+        pass  # User has permission
+    else:
         return Response({"message": "You do not have permission to ban a player."}, status=status.HTTP_403_FORBIDDEN)
 
     # Extract player IGN and ban details
@@ -649,6 +672,47 @@ def get_news_detail(request):
     }
 
     return Response({"news": news_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def delete_news(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Extract news ID
+    news_id = request.data.get("news_id")
+    if not news_id:
+        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Fetch news
+    try:
+        news = News.objects.get(news_id=news_id)
+    except News.DoesNotExist:
+        return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Check if user is the author or an admin
+    if news.author != user and user.role != "admin":
+        if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='news_admin').exists():
+            pass  # User has news_editor role, allow deletion
+        return Response({"message": "You do not have permission to delete this news."}, status=status.HTTP_403_FORBIDDEN)
+
+    news.delete()
+
+    return Response({"message": "News deleted successfully."}, status=status.HTTP_200_OK)
 
 @api_view(["POST"])
 def edit_profile(request):
@@ -1122,6 +1186,9 @@ def assign_roles_to_user(request):
             {"status": "error", "message": "User not found."},
             status=status.HTTP_404_NOT_FOUND
         )
+
+    user.role = "admin"
+    user.save()
 
     # Ensure role_ids is a list of integers
     if not isinstance(role_ids, list) or not all(isinstance(r, int) for r in role_ids):
