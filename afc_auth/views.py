@@ -432,6 +432,12 @@ def unban_team(request):
         team.save()
     except TeamBan.DoesNotExist:
         return Response({"message": "Team is not banned."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="unbanned_team",
+        description=f"Team {team.team_name} (ID: {team.team_id}) unbanned"
+    )
 
     return Response({"message": "Team unbanned successfully."}, status=status.HTTP_200_OK)
 
@@ -484,10 +490,76 @@ def ban_player(request):
         reason=reason
     )
 
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="banned_player",
+        description=f"Player {player_ign} (ID: {player.user_id}) banned for {duration} days for reason: {reason}"
+    )
+
     return Response({
         "message": f"Player {player_ign} has been banned for {duration} days.",
         "ban_id": ban_entry.ban_id
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+def unban_player(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Check if the user has permission to unban a player
+    if user.role not in ["admin", "moderator", "support"]:
+        return Response({"message": "You do not have permission to unban a player."}, status=status.HTTP_403_FORBIDDEN)
+    
+    if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
+        pass  # User has permission
+    else:
+        return Response({"message": "You do not have permission to unban a player."}, status=status.HTTP_403_FORBIDDEN)
+
+    # Extract player IGN
+    player_ign = request.data.get("player_ign")
+
+    if not player_ign:
+        return Response({"message": "Player IGN is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        player = User.objects.get(username=player_ign)
+    except User.DoesNotExist:
+        return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Check if the player is banned
+    try:
+        ban_entry = BannedPlayer.objects.get(banned_player=player, is_active=True)
+    except BannedPlayer.DoesNotExist:
+        return Response({"message": "Player is not currently banned."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Unban the player
+    ban_entry.is_active = False
+    ban_entry.save()
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="unbanned_player",
+        description=f"Player {player_ign} (ID: {player.user_id}) unbanned"
+    )
+
+    return Response({
+        "message": f"Player {player_ign} has been unbanned."
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -511,6 +583,11 @@ def create_news(request):
 
     # Check if the user has permission to create news
     if user.role not in ["admin", "moderator", "support"]:
+        return Response({"message": "You do not have permission to create news."}, status=status.HTTP_403_FORBIDDEN)
+    
+    if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='news_admin').exists():
+        pass  # User has permission
+    else:
         return Response({"message": "You do not have permission to create news."}, status=status.HTTP_403_FORBIDDEN)
 
     # Extract news details
@@ -545,6 +622,12 @@ def create_news(request):
         related_event=related_event,
         images=images,
         author=user
+    )
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="created_news",
+        description=f"News '{news_title}' created in category '{category}'"
     )
 
     return Response({
@@ -592,6 +675,11 @@ def edit_news(request):
     # Check if user is the author or an admin
     if news.author != user and user.role != "admin":
         return Response({"message": "You do not have permission to edit this news."}, status=status.HTTP_403_FORBIDDEN)
+    
+    if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='news_admin').exists():
+        pass  # User has permission
+    else:
+        return Response({"message": "You do not have permission to edit this news."}, status=status.HTTP_403_FORBIDDEN)
 
     # Extract new values (if provided)
     news_title = request.data.get("news_title", news.news_title)
@@ -618,6 +706,12 @@ def edit_news(request):
     news.category = category
     news.images = images
     news.save()
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="edited_news",
+        description=f"News '{news_title}' (ID: {news.news_id}) edited"
+    )
 
     return Response({
         "message": "News updated successfully.",
@@ -692,6 +786,7 @@ def delete_news(request):
         user = User.objects.get(session_token=session_token)
     except User.DoesNotExist:
         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
 
     # Extract news ID
     news_id = request.data.get("news_id")
@@ -1057,6 +1152,12 @@ def suspend_user(request):
     user.status = "suspended"
     user.save()
 
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="suspended_user",
+        description=f"User {user.username} (ID: {user.user_id}) suspended"
+    )
+
     return Response({"message": f"User {user.username} has been suspended."}, status=status.HTTP_200_OK)
 
 
@@ -1093,6 +1194,12 @@ def activate_user(request):
 
     user.status = "active"
     user.save()
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="activated_user",
+        description=f"User {user.username} (ID: {user.user_id}) activated"
+    )
 
     return Response({"message": f"User {user.username} has been activated."}, status=status.HTTP_200_OK)
 
@@ -1212,6 +1319,14 @@ def assign_roles_to_user(request):
     for role in roles:
         UserRoles.objects.create(user=user, role=role)
 
+
+
+    AdminHistory.objects.create(
+        admin_user=admin_user,
+        action="assigned_roles",
+        description=f"Assigned roles {', '.join([role.role_name for role in roles])} to user {user.username} (ID: {user.user_id})"
+    )
+
     return Response(
         {"status": "success", "message": f"Roles reset and assigned to user {user.username} successfully."},
         status=status.HTTP_200_OK
@@ -1263,6 +1378,12 @@ def edit_user_roles(request):
             UserRoles.objects.create(user=user, role=role)
         except Roles.DoesNotExist:
             return Response({"message": f"Role with ID {role_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+    
+    AdminHistory.objects.create(
+        admin_user=admin_user,
+        action="edited_user_roles",
+        description=f"Edited roles for user {user.username} (ID: {user.user_id})"
+    )
 
     return Response({"message": f"User {user.username}'s roles updated successfully."}, status=status.HTTP_200_OK)
 
@@ -1288,6 +1409,9 @@ def add_role(request):
     
     if admin_user.role != "admin":
         return Response({"message": "You do not have permission to add roles."}, status=status.HTTP_403_FORBIDDEN)
+    
+    if not admin_user.userroles.filter(role__role_name='head_admin').exists():
+        return Response({"message": "You do not have permission to add roles."}, status=status.HTTP_403_FORBIDDEN)
 
     role_name = request.data.get("role_name")
     description = request.data.get("description", "")
@@ -1300,12 +1424,90 @@ def add_role(request):
 
     role = Roles.objects.create(role_name=role_name, description=description)
 
+    AdminHistory.objects.create(
+        admin_user=admin_user,
+        action="added_role",
+        description=f"Added new role '{role_name}' (ID: {role.role_id})"
+    )
+
     return Response({
         "message": "Role added successfully.",
         "role_id": role.role_id,
         "role_name": role.role_name,
         "description": role.description
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+def delete_role(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        admin_user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if admin_user.role != "admin":
+        return Response({"message": "You do not have permission to delete roles."}, status=status.HTTP_403_FORBIDDEN)
+    
+    if not admin_user.userroles.filter(role__role_name='head_admin').exists():
+        return Response({"message": "You do not have permission to delete roles."}, status=status.HTTP_403_FORBIDDEN)
+
+    role_id = request.data.get("role_id")
+    if not role_id:
+        return Response({"message": "Role ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        role = Roles.objects.get(role_id=role_id)
+    except Roles.DoesNotExist:
+        return Response({"message": "Role not found."}, status=status.HTTP_404_NOT_FOUND)
+    
+    users_with_role = UserRoles.objects.filter(role=role)
+    if users_with_role.exists():
+        return Response({"message": "Cannot delete role assigned to users. Remove role from users first."}, status=status.HTTP_400_BAD_REQUEST)
+
+    role_name = role.role_name
+    role.delete()
+
+    AdminHistory.objects.create(
+        admin_user=admin_user,
+        action="deleted_role",
+        description=f"Deleted role '{role_name}' (ID: {role_id})"
+    )
+
+    return Response({"message": f"Role '{role_name}' has been deleted."}, status=status.HTTP_200_OK)
+
+@api_view(["GET"])
+def get_all_roles(request):
+    roles = Roles.objects.all()
+    roles_data = [{"role_id": role.role_id, "role_name": role.role_name, "description": role.description} for role in roles]
+    return Response({"roles": roles_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_admin_history(request):
+    histories = AdminHistory.objects.all().order_by('-timestamp')
+    history_data = []
+
+    for history in histories:
+        history_data.append({
+            "admin_user": history.admin_user.username,
+            "action": history.action,
+            "description": history.description,
+            "timestamp": history.timestamp
+        })
+
+    return Response({"admin_history": history_data}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])

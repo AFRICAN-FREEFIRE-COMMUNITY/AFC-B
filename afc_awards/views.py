@@ -3,7 +3,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-from afc_auth.models import User
+from afc_auth.models import AdminHistory, User
 from afc_awards.models import Category, CategoryNominee, Nominee, Section, Vote
 # Create your views here.
 
@@ -33,6 +33,12 @@ def add_new_category(request):
             return Response({"error": "Section not found"}, status=status.HTTP_404_NOT_FOUND)
 
         category = Category.objects.create(name=name, section=section)
+
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="added_category",
+            description=f"Added new category '{name}' (ID: {category.category_id}) in section '{section.name}' (ID: {section.id})"
+        )
         return Response({"id": category.category_id, "name": category.name, "section": category.section.name}, status=status.HTTP_201_CREATED)
 
 
@@ -61,6 +67,12 @@ def delete_category(request):
         category_id = request.data.get('category_id')
         category = Category.objects.get(category_id=category_id)
         category.delete()
+
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="deleted_category",
+            description=f"Deleted category '{category.name}' (ID: {category_id})"
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
     except Category.DoesNotExist:
         return Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -87,6 +99,12 @@ def add_new_nominee(request):
             return Response({"error": "Name is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         nominee = Nominee.objects.create(name=name, video_url=video_url)
+
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="added_nominee",
+            description=f"Added nominee '{nominee.name}' (ID: {nominee.nominee_id})"
+        )
         return Response({"id": nominee.nominee_id, "name": nominee.name, "video_url": nominee.video_url}, status=status.HTTP_201_CREATED)
     
 
@@ -114,6 +132,11 @@ def delete_nominee(request):
         nominee_id = request.data.get('nominee_id')
         nominee = Nominee.objects.get(nominee_id=nominee_id)
         nominee.delete()
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="removed_nominee",
+            description=f"Removed nominee '{nominee.name}' (ID: {nominee_id}) from category '{category.name}' (ID: {category_id})"
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
     except Nominee.DoesNotExist:
         return Response({"error": "Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -143,6 +166,12 @@ def add_nominee_to_category(request):
             category = Category.objects.get(category_id=category_id)
             nominee = Nominee.objects.get(nominee_id=nominee_id)
             CategoryNominee.objects.create(category=category, nominee=nominee)
+
+            AdminHistory.objects.create(
+                admin_user=user,
+                action="added_nominee",
+                description=f"Added nominee '{nominee.name}' (ID: {nominee_id}) to category '{category.name}' (ID: {category_id})"
+            )
             return Response({"message": "Nominee added to category successfully"}, status=status.HTTP_201_CREATED)
         except (Category.DoesNotExist, Nominee.DoesNotExist):
             return Response({"error": "Category or Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -186,6 +215,13 @@ def remove_nominee_from_category(request):
             nominee = Nominee.objects.get(nominee_id=nominee_id)
             category_nominee = CategoryNominee.objects.get(category=category, nominee=nominee)
             category_nominee.delete()
+
+            AdminHistory.objects.create(
+                admin_user=user,
+                action="removed_nominee",
+                description=f"Removed nominee '{nominee.name}' (ID: {nominee_id}) from category '{category.name}' (ID: {category_id})"
+            )
+
             return Response({"message": "Nominee removed from category successfully"}, status=status.HTTP_204_NO_CONTENT)
         except (Category.DoesNotExist, Nominee.DoesNotExist, CategoryNominee.DoesNotExist):
             return Response({"error": "Category or Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -212,6 +248,13 @@ def add_section(request):
             return Response({"error": "Name and max_votes are required"}, status=status.HTTP_400_BAD_REQUEST)
 
         section = Section.objects.create(name=name, max_votes=max_votes)
+
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="added_section",
+            description=f"Added new section '{name}' (ID: {section.id}) with max votes {max_votes}"
+        )
+
         return Response({"id": section.id, "name": section.name, "max_votes": section.max_votes}, status=status.HTTP_201_CREATED)
 
 

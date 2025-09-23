@@ -34,5 +34,6 @@ urlpatterns = [
     path('activate-user/', activate_user, name='activate_user'),
     path('assign-roles-to-user/', assign_roles_to_user, name='assign_roles_to_user'),
     path('edit-user-roles/', edit_user_roles, name='edit_user_roles'),
+    path('get-admin-history/', get_admin_history, name='get_admin_history'),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
