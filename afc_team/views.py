@@ -82,6 +82,13 @@ def create_team(request):
         if platform and link:
             TeamSocialMediaLinks.objects.create(team=team, platform=platform, link=link)
 
+    Report.objects.create(
+        team=team,
+        user=user,
+        action="team_created",
+        description=f"Team '{team.team_name}' was created by {user.username} on {now()}."
+    )
+
     return Response({
         "message": "Team created successfully.",
         "team_id": team.team_id,
@@ -197,6 +204,13 @@ def review_invitation(request):
         # Mark the invite as attended
         invite.status_of_invite = 'attended_to'
         invite.save()
+
+        Report.objects.create(
+            team=invite.team,
+            user=user,
+            action="invitation_reviewed",
+            description=f"Invitation {invite.invite_id} was {decision} by {user.username}."
+        )
 
         return Response({'message': f'Invitation {decision} successfully.'}, status=status.HTTP_200_OK)
 
@@ -345,6 +359,13 @@ def disband_team(request):
 
         # Delete the team
         team.delete()
+
+        Report.objects.create(
+            team=team,
+            user=user,
+            action="team_deleted",
+            description=f"Team '{team.team_name}' was deleted by {user.username} on {now()}."
+        )
 
         return Response({'message': 'Team disbanded successfully, and a report has been recorded.'}, status=status.HTTP_200_OK)
 
