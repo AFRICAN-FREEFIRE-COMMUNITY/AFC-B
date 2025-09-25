@@ -377,3 +377,9 @@ def get_section(request):
         return Response(data, status=status.HTTP_200_OK)
     except Section.DoesNotExist:
         return Response({"error": "Section not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+def get_total_votes(request):
+    total_votes = Vote.objects.count()
+    return Response({"total_votes": total_votes}, status=status.HTTP_200_OK)
