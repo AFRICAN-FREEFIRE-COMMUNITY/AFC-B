@@ -360,13 +360,6 @@ def disband_team(request):
         # Delete the team
         team.delete()
 
-        Report.objects.create(
-            team=team,
-            user=user,
-            action="team_deleted",
-            description=f"Team '{team.team_name}' was deleted by {user.username} on {now()}."
-        )
-
         return Response({'message': 'Team disbanded successfully, and a report has been recorded.'}, status=status.HTTP_200_OK)
 
     except User.DoesNotExist:
@@ -905,4 +898,47 @@ def get_player_details(request):
     return Response({"player": player_data}, status=status.HTTP_200_OK)
 
 
-    
+@api_view(["POST"])
+def exit_team(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        team_member = TeamMembers.objects.select_related("team").get(member=user)
+        team = team_member.team
+
+        # Prevent the team owner from exiting the team
+        if team.team_owner == user:
+            return Response({"message": "Team owners cannot exit their own team. Please transfer ownership or disband the team."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Remove the user from the team
+        team_member.delete()
+
+        # Log the action in the Report table
+        Report.objects.create(
+            team=team,
+            user=user,
+            action="player_removed",
+            description=f"{user.username} exited the team {team.team_name}."
+        )
+
+        return Response({"message": "You have successfully exited the team."}, status=status.HTTP_200_OK)
+
+    except TeamMembers.DoesNotExist:
+        return Response({"message": "You are not currently a member of any team."}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
