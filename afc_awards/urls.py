@@ -29,6 +29,8 @@ urlpatterns = [
         path('all/', list_sections),
         path('view/', get_section),
     ])),
-    path('get-total-votes/', get_total_votes),
+    path('get-total-votes_cast/', get_total_votes_cast),
+    path('get-total-voters/', get_total_voters),
+    path('get-votes-per-category/', get_votes_per_category),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

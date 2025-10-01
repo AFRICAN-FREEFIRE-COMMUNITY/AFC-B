@@ -2,8 +2,10 @@ from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-
+from django.db.models import Count
 from afc_auth.models import AdminHistory, User
+from django.db.models.functions import TruncDate
+from django.db.models import Count
 from afc_awards.models import Category, CategoryNominee, Nominee, Section, Vote
 # Create your views here.
 
@@ -380,6 +382,40 @@ def get_section(request):
 
 
 @api_view(['GET'])
-def get_total_votes(request):
+def get_total_votes_cast(request):
     total_votes = Vote.objects.count()
     return Response({"total_votes": total_votes}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def get_total_voters(request):
+    total_voters = User.objects.filter(votes__isnull=False).distinct().count()
+    return Response({"total_voters": total_voters}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def get_votes_per_category(request):
+    category_votes = Vote.objects.values('category__name').annotate(vote_count=Count('id')).order_by('-vote_count')
+    data = [{"category": item['category__name'], "votes": item['vote_count']} for item in category_votes]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def get_votes_per_section(request):
+    section_votes = Vote.objects.values('section__name').annotate(vote_count=Count('id')).order_by('-vote_count')
+    data = [{"section": item['section__name'], "votes": item['vote_count']} for item in section_votes]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def get_votes_per_nominee(request):
+    nominee_votes = Vote.objects.values('nominee__name').annotate(vote_count=Count('id')).order_by('-vote_count')
+    data = [{"nominee": item['nominee__name'], "percentage": (item['vote_count'] / Vote.objects.count()) * 100 if Vote.objects.count() > 0 else 0} for item in nominee_votes]
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def get_voting_timeline(request):
+    timeline = Vote.objects.annotate(date=TruncDate('created_at')).values('date').annotate(vote_count=Count('id')).order_by('date')
+    data = [{"date": item['date'], "votes": item['vote_count']} for item in timeline]
+    return Response(data, status=status.HTTP_200_OK)
