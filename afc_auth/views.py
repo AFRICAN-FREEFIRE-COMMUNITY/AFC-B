@@ -1535,23 +1535,3 @@ def search_admin_users(request):
     query = request.data.get("query", "")
     if not query:
         return Response({"message": "Search query is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-    users = User.objects.filter(
-        Q(username__icontains=query) | Q(email__icontains=query) | Q(full_name__icontains=query)
-    )
-
-    users_data = []
-    for user in users:
-        user_roles = UserRoles.objects.filter(user=user)
-        roles = [ur.role.role_name for ur in user_roles]
-        users_data.append({
-            "user_id": user.user_id,
-            "username": user.username,
-            "email": user.email,
-            "role": user.role,
-            "status": user.status,
-            "last_login": user.last_login,
-            "roles": roles
-        })
-
-    return Response({"users": users_data}, status=status.HTTP_200_OK)
