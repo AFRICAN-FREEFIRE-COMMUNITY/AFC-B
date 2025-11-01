@@ -112,13 +112,24 @@ WSGI_APPLICATION = 'afc.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'AFC$default',
-        'USER': 'AFC',
-        'PASSWORD': 'afc@AFRICANFFC.1234',
-        'HOST': 'AFC.mysql.pythonanywhere-services.com',  # Or your remote host
+        'NAME': 'database-1',
+        'USER': 'admin',
+        'PASSWORD': 'YellowMonkey69.',
+        'HOST': 'database-1.c0t8i0cyoxuq.us-east-1.rds.amazonaws.com',  # Or your remote host
         'PORT': '3306',       # Or your custom port if different
     }
 }
+
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': 'AFC$default',
+#         'USER': 'AFC',
+#         'PASSWORD': 'afc@AFRICANFFC.1234',
+#         'HOST': 'AFC.mysql.pythonanywhere-services.com',  # Or your remote host
+#         'PORT': '3306',       # Or your custom port if different
+#     }
+# }
 
 
 # Password validation
