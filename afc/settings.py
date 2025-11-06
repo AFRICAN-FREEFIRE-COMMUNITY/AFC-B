@@ -109,13 +109,24 @@ WSGI_APPLICATION = 'afc.wsgi.application'
 #     }
 # }
 
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.mysql',
+#         'NAME': 'database-1',
+#         'USER': 'admin',
+#         'PASSWORD': 'YellowMonkey69.',
+#         'HOST': 'database-1.c0t8i0cyoxuq.us-east-1.rds.amazonaws.com',  # Or your remote host
+#         'PORT': '3306',       # Or your custom port if different
+#     }
+# }
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'database-1',
-        'USER': 'admin',
-        'PASSWORD': 'YellowMonkey69.',
-        'HOST': 'database-1.c0t8i0cyoxuq.us-east-1.rds.amazonaws.com',  # Or your remote host
+        'NAME': 'afc_db',
+        'USER': 'root',
+        'PASSWORD': 'sALT5@waTer6.',
+        'HOST': '98.94.15.73',  # Or your remote host
         'PORT': '3306',       # Or your custom port if different
     }
 }
