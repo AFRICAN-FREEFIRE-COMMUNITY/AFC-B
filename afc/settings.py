@@ -126,7 +126,7 @@ DATABASES = {
         'NAME': 'afc_db',
         'USER': 'admin',
         'PASSWORD': 'sALT5@waTer6.',
-        'HOST': '98.94.15.73',  # Or your remote host
+        'HOST': 'localhost',  # Or your remote host
         'PORT': '3306',       # Or your custom port if different
     }
 }
