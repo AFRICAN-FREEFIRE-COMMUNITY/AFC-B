@@ -26,7 +26,7 @@ SECRET_KEY = 'django-insecure-al*a1qpu75zbfu!p7aki6)(p34yc=6(r18uhc)#zxv9oo!pi2)
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["https://afc.pythonanywhere.com/", "afc.pythonanywhere.com", "98.91.0.214", "*"]
+ALLOWED_HOSTS = ["https://afc.pythonanywhere.com/", "afc.pythonanywhere.com", "98.94.15.73", "*"]
 
 
 MEDIA_URL = '/media/'
