@@ -389,7 +389,7 @@ def get_total_votes_cast(request):
 
 @api_view(['GET'])
 def get_total_voters(request):
-    total_voters = User.objects.filter(votes__isnull=False).distinct().count()
+    total_voters = User.objects.filter(vote__isnull=False).distinct().count()
     return Response({"total_voters": total_voters}, status=status.HTTP_200_OK)
 
 
