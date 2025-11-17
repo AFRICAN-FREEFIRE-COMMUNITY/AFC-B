@@ -57,7 +57,10 @@ def delete_category(request):
     # --- Authenticate user ---
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"error": "Invalid or missing Authorization header"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     session_token = session_token.split(" ")[1]
     try:
@@ -65,19 +68,28 @@ def delete_category(request):
     except User.DoesNotExist:
         return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    try:
-        category_id = request.data.get('category_id')
-        category = Category.objects.get(category_id=category_id)
-        category.delete()
+    # --- Validate category_id ---
+    category_id = request.data.get("category_id")
+    if not category_id:
+        return Response({"error": "category_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        AdminHistory.objects.create(
-            admin_user=user,
-            action="deleted_category",
-            description=f"Deleted category '{category.name}' (ID: {category_id})"
-        )
-        return Response(status=status.HTTP_204_NO_CONTENT)
+    try:
+        category = Category.objects.get(category_id=category_id)
     except Category.DoesNotExist:
         return Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # --- Delete the category ---
+    category_name = category.name  # store name BEFORE deleting
+    category.delete()
+
+    # --- Log admin action ---
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="deleted_category",
+        description=f"Deleted category '{category_name}' (ID: {category_id})"
+    )
+
+    return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @api_view(['POST'])
@@ -113,7 +125,21 @@ def add_new_nominee(request):
 @api_view(['GET'])
 def view_all_nominees(request):
     nominees = Nominee.objects.all()
-    data = [{"id": nominee.nominee_id, "name": nominee.name} for nominee in nominees]
+
+    data = []
+    for nominee in nominees:
+        # Get all category objects linked through CategoryNominee
+        categories = Category.objects.filter(categorynominee__nominee=nominee)
+        
+        data.append({
+            "id": nominee.nominee_id,
+            "name": nominee.name,
+            "categories": [
+                {"id": cat.category_id, "name": cat.name, "section": cat.section.name}
+                for cat in categories
+            ]
+        })
+
     return Response(data, status=status.HTTP_200_OK)
 
 
@@ -130,18 +156,26 @@ def delete_nominee(request):
     except User.DoesNotExist:
         return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
+    nominee_id = request.data.get('nominee_id')
+    if not nominee_id:
+        return Response({"error": "nominee_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
     try:
-        nominee_id = request.data.get('nominee_id')
         nominee = Nominee.objects.get(nominee_id=nominee_id)
-        nominee.delete()
-        AdminHistory.objects.create(
-            admin_user=user,
-            action="removed_nominee",
-            description=f"Removed nominee '{nominee.name}' (ID: {nominee_id}) from category '{category.name}' (ID: {category_id})"
-        )
-        return Response(status=status.HTTP_204_NO_CONTENT)
     except Nominee.DoesNotExist:
         return Response({"error": "Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    nominee_name = nominee.name
+    nominee.delete()
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="deleted_nominee",
+        description=f"Deleted nominee '{nominee_name}' (ID: {nominee_id})"
+    )
+
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
     
 
 @api_view(['POST'])
@@ -419,3 +453,91 @@ def get_voting_timeline(request):
     timeline = Vote.objects.annotate(date=TruncDate('created_at')).values('date').annotate(vote_count=Count('id')).order_by('date')
     data = [{"date": item['date'], "votes": item['vote_count']} for item in timeline]
     return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def edit_category(request):
+    if request.method == 'POST':
+        # --- Authenticate user ---
+        session_token = request.headers.get("Authorization")
+        if not session_token or not session_token.startswith("Bearer "):
+            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+
+        session_token = session_token.split(" ")[1]
+        try:
+            user = User.objects.get(session_token=session_token)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        category_id = request.data.get('category_id')
+        new_name = request.data.get('name')
+        new_section_id = request.data.get('section_id')
+
+        if not category_id:
+            return Response({"error": "Category ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            category = Category.objects.get(category_id=category_id)
+        except Category.DoesNotExist:
+            return Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if new_name:
+            category.name = new_name
+
+        if new_section_id:
+            try:
+                new_section = Section.objects.get(id=new_section_id)
+                category.section = new_section
+            except Section.DoesNotExist:
+                return Response({"error": "New section not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        category.save()
+
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="edited_category",
+            description=f"Edited category '{category.name}' (ID: {category_id})"
+        )
+        return Response({"message": "Category updated successfully"}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def edit_nominee(request):
+    if request.method == 'POST':
+        # --- Authenticate user ---
+        session_token = request.headers.get("Authorization")
+        if not session_token or not session_token.startswith("Bearer "):
+            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+
+        session_token = session_token.split(" ")[1]
+        try:
+            user = User.objects.get(session_token=session_token)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        nominee_id = request.data.get('nominee_id')
+        new_name = request.data.get('name')
+        new_video_url = request.data.get('video_url')
+
+        if not nominee_id:
+            return Response({"error": "Nominee ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            nominee = Nominee.objects.get(nominee_id=nominee_id)
+        except Nominee.DoesNotExist:
+            return Response({"error": "Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if new_name:
+            nominee.name = new_name
+
+        if new_video_url is not None:
+            nominee.video_url = new_video_url
+
+        nominee.save()
+
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="edited_nominee",
+            description=f"Edited nominee '{nominee.name}' (ID: {nominee_id})"
+        )
+        return Response({"message": "Nominee updated successfully"}, status=status.HTTP_200_OK)
