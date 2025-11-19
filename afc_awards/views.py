@@ -315,7 +315,7 @@ def submit_votes(request):
         return Response({"error": "Section ID and votes are required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        section = Section.objects.get(id=section_id)
+        section = Section.objects.get(section_id=section_id)
     except Section.DoesNotExist:
         return Response({"error": "Section not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -340,8 +340,8 @@ def submit_votes(request):
                 if not category_id or not nominee_id:
                     raise ValueError("Each vote must include category_id and nominee_id")
 
-                category = Category.objects.get(id=category_id, section=section)
-                nominee = Nominee.objects.get(id=nominee_id)
+                category = Category.objects.get(category_id=category_id, section=section)
+                nominee = Nominee.objects.get(nominee_id=nominee_id)
 
                 Vote.objects.create(
                     user=user,
