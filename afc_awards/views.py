@@ -52,7 +52,7 @@ def view_all_categories(request):
 
 
 
-@api_view(['DELETE'])
+@api_view(['POST'])
 def delete_category(request):
     # --- Authenticate user ---
     session_token = request.headers.get("Authorization")
