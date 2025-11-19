@@ -143,7 +143,7 @@ def view_all_nominees(request):
     return Response(data, status=status.HTTP_200_OK)
 
 
-@api_view(['DELETE'])
+@api_view(['POST'])
 def delete_nominee(request):
     # --- Authenticate user ---
     session_token = request.headers.get("Authorization")
@@ -226,9 +226,9 @@ def view_nominee_in_category(request):
         return Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
     
 
-@api_view(['DELETE'])
+@api_view(['POST'])
 def remove_nominee_from_category(request):
-    if request.method == 'DELETE':
+    if request.method == 'POST':
         # --- Authenticate user ---
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
