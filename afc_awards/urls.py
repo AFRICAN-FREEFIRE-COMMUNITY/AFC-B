@@ -9,11 +9,13 @@ urlpatterns = [
         path('add/', add_new_category),
         path('view/', view_all_categories),
         path('delete/', delete_category),
+        path('edit/', edit_category),
     ])),
     path('nominees/', include([
         path('add/', add_new_nominee),
         path('view/', view_all_nominees),
         path('delete/', delete_nominee),
+        path('edit/', edit_nominee),
     ])),
     path('category-nominee/', include([
         path('add/', add_nominee_to_category),
