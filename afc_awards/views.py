@@ -324,11 +324,11 @@ def submit_votes(request):
         return Response({"error": "You have already voted in this section"}, status=status.HTTP_403_FORBIDDEN)
 
     # --- Validate number of votes ---
-    if len(votes_data) != section.max_votes:
-        return Response(
-            {"error": f"You must submit exactly {section.max_votes} votes for {section.name}"},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    # if len(votes_data) != section.max_votes:
+    #     return Response(
+    #         {"error": f"You must submit exactly {section.max_votes} votes for {section.name}"},
+    #         status=status.HTTP_400_BAD_REQUEST
+    #     )
 
     # --- Save votes in one transaction ---
     from django.db import transaction
