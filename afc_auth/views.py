@@ -164,7 +164,6 @@ def login(request):
         }, status=status.HTTP_401_UNAUTHORIZED)
 
 
-
 @api_view(["POST"])
 def signup(request):
     in_game_name = request.data.get("in_game_name")
@@ -183,19 +182,39 @@ def signup(request):
         if password != confirm_password:
             return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check if email is already in use
-        if User.objects.filter(email=email).exists():
-            return Response({"error": "Email is already in use."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Check if in_game_name is already in use
-        if User.objects.filter(username=in_game_name).exists():
+        # Check if in-game name or UID are already in use by **active users**
+        if User.objects.filter(username=in_game_name, is_active=True).exists():
             return Response({"error": "In-game name is already in use."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check if uid is already in use
-        if User.objects.filter(uid=uid).exists():
+        if User.objects.filter(uid=uid, is_active=True).exists():
             return Response({"error": "UID is already in use."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create new user if they don't exist
+        # Check for email
+        existing_user = User.objects.filter(email=email).first()
+        if existing_user:
+            if existing_user.is_active:
+                return Response({"error": "Email is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                # User exists but not verified → resend verification code
+                verification_code = random.randint(100000, 999999)
+                cache.set(f"verification_code_{existing_user.user_id}", verification_code, timeout=600)
+
+                subject = 'Your Verification Code'
+                message = f'''Hi {existing_user.username},
+
+Your verification code is: {verification_code}
+
+Please enter this code in the app to verify your account.
+
+If you did not create an account, please ignore this email.
+'''
+                send_email(email, subject, message)
+
+                return Response({
+                    "message": "You already signed up but didn't verify your email. A new verification code has been sent."
+                }, status=status.HTTP_200_OK)
+
+        # Create new user
         user = User.objects.create(
             username=in_game_name,
             uid=uid,
@@ -208,7 +227,7 @@ def signup(request):
         user.save()
         UserProfile.objects.create(user=user)
 
-        # Generate new verification code
+        # Generate verification code
         verification_code = random.randint(100000, 999999)
         cache.set(f"verification_code_{user.user_id}", verification_code, timeout=600)
 
