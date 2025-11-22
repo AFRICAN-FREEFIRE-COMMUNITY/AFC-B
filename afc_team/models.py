@@ -62,8 +62,11 @@ class TeamMembers(models.Model):
     join_date = models.DateTimeField(default=now)
 
 
+    class Meta:
+        unique_together = ('team', 'member')  # <-- prevents duplicates
+
     def __str__(self):
-        return f"{self.member.username} - {self.team.team_name} ({self.role})"
+        return f"{self.member.username} - {self.team.team_name} ({self.management_role})"
 
 
 # class JoinRequests(models.Model):
