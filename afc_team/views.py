@@ -10,6 +10,7 @@ from afc_auth.models import User, UserProfile
 from django.utils.timezone import now
 from django.db.models import Q
 from .models import Team, TeamMembers, Invite, User, TeamSocialMediaLinks
+import json
 
 @api_view(["POST"])
 def create_team(request):
@@ -649,6 +650,8 @@ def edit_team(request):
     team_logo = request.FILES.get("team_logo")
     join_settings = request.data.get("join_settings")
     social_media_links = request.data.get("social_media_links", [])  # Expecting a list of dicts [{'platform': 'Twitter', 'link': 'https://twitter.com/...'}]
+    if social_media_links:
+        social_media_links = json.loads(social_media_links)
 
     # Validate team ID
     try:
