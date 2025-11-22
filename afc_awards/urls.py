@@ -37,5 +37,6 @@ urlpatterns = [
     path('get-votes-per-nominee/', get_votes_per_nominee),
     path('get-votes-per-section/', get_votes_per_section),
     path('get-voting-timeline/', get_voting_timeline),
+    path('get-total-votes-per-nominee-per-category/', get_total_votes_per_nominee_per_category),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
