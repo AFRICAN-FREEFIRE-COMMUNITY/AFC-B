@@ -1410,7 +1410,7 @@ def add_role(request):
     if admin_user.role != "admin":
         return Response({"message": "You do not have permission to add roles."}, status=status.HTTP_403_FORBIDDEN)
     
-    if not admin_user.userroles_set.filter(role__role_name='head_admin').exists():
+    if not admin_user.userroles.filter(role__role_name='head_admin').exists():
         return Response({"message": "You do not have permission to add roles."}, status=status.HTTP_403_FORBIDDEN)
 
     role_name = request.data.get("role_name")
