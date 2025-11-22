@@ -1046,7 +1046,7 @@ def contact_us(request):
         return Response({"message": "Email, name, and message are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     # Send email to support
-    support_email = 'support@afcdatabase.com'
+    support_email = 'africanfreefirecommunity1@gmail.com'
     email_subject = f"Contact Us Form Submission from {name}"
     email_body = f"Name: {name}\nEmail: {email}\nMessage: {message}"
     send_email(support_email, email_subject, email_body)
