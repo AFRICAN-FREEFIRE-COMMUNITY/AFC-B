@@ -1049,3 +1049,76 @@ def get_team_details_based_on_invite(request, invite_id):
     }
 
     return Response({"team": team_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def manage_team_roster(request):
+    try:
+        session_token = request.headers.get("Authorization")
+        if not session_token or not session_token.startswith("Bearer "):
+            return Response({"error": "Authorization token missing or invalid"}, status=400)
+
+        session_token = session_token.split(" ")[1]
+
+        # Get logged-in user
+        try:
+            user = User.objects.get(session_token=session_token)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid session"}, status=401)
+
+        team_id = request.data.get("team_id")
+        member_id = request.data.get("member_id")
+        new_management_role = request.data.get("management_role")
+        new_in_game_role = request.data.get("in_game_role")
+
+        if not team_id or not member_id:
+            return Response({"error": "team_id and member_id are required"}, status=400)
+
+        # Get team
+        try:
+            team = Team.objects.get(team_id=team_id)
+        except Team.DoesNotExist:
+            return Response({"error": "Team not found"}, status=404)
+
+        # Only team owner can change roles
+        if team.team_owner != user:
+            return Response({"error": "Only the team owner can manage roles"}, status=403)
+
+        # Get member in team
+        try:
+            team_member = TeamMembers.objects.get(team=team, member_id=member_id)
+        except TeamMembers.DoesNotExist:
+            return Response({"error": "This player is not in the team"}, status=404)
+
+        # Optional: Prevent owner from removing/demoting themselves
+        if team_member.member == team.team_owner and new_management_role and new_management_role != "team_owner":
+            return Response({"error": "Team owner cannot change their own management role"}, status=400)
+
+        # Validate management role
+        if new_management_role:
+            valid_management_roles = [choice[0] for choice in TeamMembers.MANAGEMENT_ROLE_CHOICES]
+            if new_management_role not in valid_management_roles:
+                return Response({"error": "Invalid management role"}, status=400)
+            team_member.management_role = new_management_role
+
+        # Validate in-game role
+        if new_in_game_role:
+            valid_in_game_roles = [choice[0] for choice in TeamMembers.IN_GAME_ROLE_CHOICES]
+            if new_in_game_role not in valid_in_game_roles:
+                return Response({"error": "Invalid in-game role"}, status=400)
+            team_member.in_game_role = new_in_game_role
+
+        team_member.save()
+
+        return Response({
+            "message": "Team member updated successfully",
+            "updated_member": {
+                "member_id": team_member.member.user_id,
+                "username": team_member.member.username,
+                "management_role": team_member.management_role,
+                "in_game_role": team_member.in_game_role,
+            }
+        }, status=200)
+
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
