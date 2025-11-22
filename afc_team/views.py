@@ -385,10 +385,10 @@ def transfer_ownership(request):
 
     session_token = session_token.split(" ")[1]
     
-    new_owner_ign = request.data.get("new_owner_ign")  # ID of the new owner
+    new_owner_ign = request.data.get("new_owner_ign")  # Username of the new owner
 
     if not new_owner_ign:
-        return Response({"message": "New owner ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "New owner username is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         # Identify the logged-in user (current owner)
@@ -399,33 +399,43 @@ def transfer_ownership(request):
 
         # Ensure the new owner exists and is part of the team
         new_owner = User.objects.get(username=new_owner_ign)
-        if not TeamMembers.objects.filter(team=team, member=new_owner).exists():
+        try:
+            new_owner_member = TeamMembers.objects.get(team=team, member=new_owner)
+        except TeamMembers.DoesNotExist:
             return Response({"message": "New owner must be a member of the team."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update roles in TeamMembers
+        # 1. Old owner -> member
+        TeamMembers.objects.filter(team=team, member=current_owner).update(management_role="member")
+
+        # 2. New owner -> team_owner
+        new_owner_member.management_role = "team_owner"
+        new_owner_member.save()
 
         # Transfer ownership
         team.team_owner = new_owner
         team.save()
 
-        # Log the action in the Report table
+        # Log the action
         Report.objects.create(
             team=team,
             user=current_owner,
             action="role_changed",
-            description=f"Ownership transferred from {current_owner.in_game_name} to {new_owner.in_game_name}."
+            description=f"Ownership transferred from {current_owner.username} to {new_owner.username}."
         )
 
         return Response({
             "message": "Team ownership transferred successfully.",
-            "new_owner": new_owner.in_game_name
+            "new_owner": new_owner.username
         }, status=status.HTTP_200_OK)
 
     except User.DoesNotExist:
-        return Response({"message": "Invalid session token or new owner ID."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Invalid session token or new owner username."}, status=status.HTTP_404_NOT_FOUND)
     except Team.DoesNotExist:
         return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+
 
 @api_view(["POST"])
 def send_join_request(request):
@@ -1021,6 +1031,8 @@ def respond_invite(request, invite_id):
                 member=user,
                 management_role='member'
             )
+        else:
+            return Response({"message": "You are already a member of this team."}, status=400)
         return Response({"message": f"You have joined {invite.team.team_name} successfully."})
 
     else:
