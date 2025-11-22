@@ -777,7 +777,7 @@ def get_team_details(request):
     members_qs = TeamMembers.objects.filter(team=team).select_related("member")
     members_data = [
         {
-            "id": member.id,
+            "id": member.member.user_id,
             "uid": member.member.uid,
             "username": member.member.username,
             "management_role": member.management_role,
@@ -1013,12 +1013,15 @@ def respond_invite(request, invite_id):
     invite.save()
 
     if action == "accept":
-        TeamMembers.objects.create(
-            team=invite.team,
-            member=user,
-            management_role='member'
-        )
+        # Only add if not already in the team
+        if not TeamMembers.objects.filter(team=invite.team, member=user).exists():
+            TeamMembers.objects.create(
+                team=invite.team,
+                member=user,
+                management_role='member'
+            )
         return Response({"message": f"You have joined {invite.team.team_name} successfully."})
+
     else:
         return Response({"message": "You declined the invite."})
 
