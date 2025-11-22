@@ -857,6 +857,7 @@ def get_user_current_team(request):
             "user_role_in_team": team_member.management_role,
             "in_game_role": team_member.in_game_role,
             "join_date": team_member.join_date,
+            "member_count": TeamMembers.objects.filter(team=team).count()
         }
 
         return Response({"team": team_data}, status=status.HTTP_200_OK)
