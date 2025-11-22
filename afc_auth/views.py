@@ -1535,3 +1535,9 @@ def search_admin_users(request):
     query = request.data.get("query", "")
     if not query:
         return Response({"message": "Search query is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["GET"])
+def get_total_number_of_users(request):
+    total_users = User.objects.count()
+    return Response({"total_users": total_users}, status=status.HTTP_200_OK)
