@@ -1016,3 +1016,33 @@ def respond_invite(request, invite_id):
         return Response({"message": f"You have joined {invite.team.team_name} successfully."})
     else:
         return Response({"message": "You declined the invite."})
+
+
+@api_view(["GET"])
+def get_team_details_based_on_invite(request, invite_id):
+    try:
+        invite = Invite.objects.get(invite_id=invite_id)
+    except Invite.DoesNotExist:
+        return Response({"message": "Invite not found."}, status=404)
+
+    if invite.is_expired():
+        return Response({"message": "Invite has expired."}, status=400)
+
+    team = invite.team
+    team_data = {
+        "team_id": team.team_id,
+        "team_name": team.team_name,
+        "team_logo": request.build_absolute_uri(team.team_logo.url) if team.team_logo else None,
+        "team_tag": team.team_tag,
+        "join_settings": team.join_settings,
+        "creation_date": team.creation_date,
+        "team_creator": team.team_creator.username,
+        "team_owner": team.team_owner.username,
+        "is_banned": team.is_banned,
+        "team_tier": team.team_tier,
+        "team_description": team.team_description,
+        "country": team.country,
+        "inviter": invite.inviter.username,
+    }
+
+    return Response({"team": team_data}, status=status.HTTP_200_OK)
