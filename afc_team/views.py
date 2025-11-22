@@ -777,6 +777,8 @@ def get_team_details(request):
     members_qs = TeamMembers.objects.filter(team=team).select_related("member")
     members_data = [
         {
+            "id": member.id,
+            "uid": member.member.uid,
             "username": member.member.username,
             "management_role": member.management_role,
             "in_game_role": member.in_game_role,
