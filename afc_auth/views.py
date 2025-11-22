@@ -1560,5 +1560,5 @@ def search_admin_users(request):
 @api_view(["GET"])
 def get_total_number_of_users(request):
     total_users = User.objects.count()
-    verified_users = User.objects.filter(is_verified=True).count()
+    verified_users = User.objects.filter(status="active").count()
     return Response({"total_users": total_users, "verified_users": verified_users}, status=status.HTTP_200_OK)
