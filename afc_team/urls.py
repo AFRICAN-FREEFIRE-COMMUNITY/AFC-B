@@ -26,5 +26,6 @@ urlpatterns = [
     path('respond-invite/<str:invite_id>/', respond_invite, name='respond_invite'),
     path('get-team-details-based-on-invite/<str:invite_id>/', get_team_details_based_on_invite, name='get_team_details_based_on_invite'),
     path('manage-team-roster/', manage_team_roster, name='manage_team_roster'),
+    path('kick-team-member/', kick_team_member, name='kick_team_member'),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -1150,3 +1150,61 @@ def manage_team_roster(request):
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+
+
+@api_view(["POST"])
+def kick_team_member(request):
+    try:
+        # Authorization
+        session_token = request.headers.get("Authorization")
+        if not session_token or not session_token.startswith("Bearer "):
+            return Response({"error": "Authorization token missing or invalid"}, status=400)
+
+        session_token = session_token.split(" ")[1]
+
+        try:
+            user = User.objects.get(session_token=session_token)
+        except User.DoesNotExist:
+            return Response({"error": "Invalid session"}, status=401)
+
+        team_id = request.data.get("team_id")
+        member_id = request.data.get("member_id")
+
+        if not team_id or not member_id:
+            return Response({"error": "team_id and member_id are required"}, status=400)
+
+        # Get team
+        try:
+            team = Team.objects.get(team_id=team_id)
+        except Team.DoesNotExist:
+            return Response({"error": "Team not found"}, status=404)
+
+        # Only team owner allowed
+        if team.team_owner != user:
+            return Response({"error": "Only the team owner can kick members"}, status=403)
+
+        # Get team member to kick
+        try:
+            tm = TeamMembers.objects.get(team=team, member_id=member_id)
+        except TeamMembers.DoesNotExist:
+            return Response({"error": "Member not in team"}, status=404)
+
+        # Prevent owner from kicking themselves
+        if tm.member == user:
+            return Response({"error": "Owner cannot kick themselves"}, status=400)
+
+        kicked_member_username = tm.member.username
+        tm.delete()
+
+        # Log the action in the Report table
+        Report.objects.create(
+            team=team,
+            user=user,
+            action="player_removed",
+            description=f"{kicked_member_username} was kicked from the team {team.team_name} by {user.username}."
+        )
+
+        return Response({"message": f"Member {kicked_member_username} has been kicked from the team."}, status=200)
+
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
