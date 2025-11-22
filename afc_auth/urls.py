@@ -37,5 +37,9 @@ urlpatterns = [
     path('edit-user-roles/', edit_user_roles, name='edit_user_roles'),
     path('get-admin-history/', get_admin_history, name='get_admin_history'),
     path('get-total-number-of-users/', get_total_number_of_users, name='get_total_number_of_users'),
+    path('ban-team/', ban_team, name='ban_team'),
+    path('unban-team/', unban_team, name='unban_team'),
+    path('ban-player/', ban_player, name='ban_player'),
+    path('unban-player/', unban_player, name='unban_player'),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
