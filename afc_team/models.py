@@ -1,3 +1,4 @@
+import uuid
 from django.utils.timezone import now
 from django.db import models
 from afc_auth.models import *
@@ -84,22 +85,35 @@ class TeamMembers(models.Model):
 
 
 class Invite(models.Model):
-    invite_id = models.AutoField(primary_key=True)
-    inviter = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_invites')
-    invitee = models.ForeignKey(User, on_delete=models.CASCADE, related_name='received_invites')
-    team = models.ForeignKey(Team, on_delete=models.CASCADE)
-    status_of_invite = models.CharField(max_length=20, choices=[
+    STATUS_CHOICES = [
         ('unattended_to', 'Unattended To'),
-        ('attended_to', 'Attended To')
-    ], default='unattended_to')
-    decision = models.CharField(max_length=20, choices=[
+        ('attended_to', 'Attended To'),
+    ]
+    DECISION_CHOICES = [
         ('accepted', 'Accepted'),
-        ('declined', 'Declined')
-    ], null=True, blank=True)
+        ('declined', 'Declined'),
+    ]
+
+    invite_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    inviter = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_invites')
+    invitee = models.ForeignKey(User, on_delete=models.CASCADE, related_name='received_invites', null=True, blank=True)
+    team = models.ForeignKey('Team', on_delete=models.CASCADE)
+    status_of_invite = models.CharField(max_length=20, choices=STATUS_CHOICES, default='unattended_to')
+    decision = models.CharField(max_length=20, choices=DECISION_CHOICES, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()  # When the invite expires
+
+    def save(self, *args, **kwargs):
+        # Default expiration: 7 days from creation
+        if not self.expires_at:
+            self.expires_at = timezone.now() + timedelta(days=7)
+        super().save(*args, **kwargs)
+
+    def is_expired(self):
+        return timezone.now() > self.expires_at
 
     def __str__(self):
-        return f"Invite: {self.inviter.username} -> {self.invitee.username} ({self.team.team_name})"
+        return f"Invite: {self.inviter.username} -> {self.invitee.username if self.invitee else 'Pending'} ({self.team.team_name})"
 
 
 class Report(models.Model):

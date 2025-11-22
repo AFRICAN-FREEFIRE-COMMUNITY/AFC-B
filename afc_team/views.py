@@ -1,3 +1,4 @@
+import uuid
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -942,3 +943,76 @@ def exit_team(request):
         return Response({"message": "You are not currently a member of any team."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["POST"])
+def generate_invite_link(request):
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid token"}, status=400)
+    
+    session_token = session_token.split(" ")[1]
+
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=401)
+
+    try:
+        team = Team.objects.get(team_owner=user)
+        invite = Invite.objects.create(
+            inviter=user,
+            team=team
+        )
+        invite_link = f"https://africanfreefirecommunity.com/invite/{invite.invite_id}"
+        return Response({"invite_link": invite_link, "invite_id": str(invite.invite_id)}, status=200)
+    except Team.DoesNotExist:
+        return Response({"message": "You do not own any team."}, status=403)
+
+
+@api_view(["POST"])
+def respond_invite(request, invite_id):
+    """
+    Accept or decline an invite based on user's choice.
+    Expects JSON: {"action": "accept"} or {"action": "decline"}
+    """
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid token"}, status=400)
+    
+    session_token = session_token.split(" ")[1]
+    
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=401)
+
+    try:
+        invite = Invite.objects.get(invite_id=invite_id)
+    except Invite.DoesNotExist:
+        return Response({"message": "Invite not found."}, status=404)
+
+    if invite.is_expired():
+        return Response({"message": "Invite has expired."}, status=400)
+
+    if invite.status_of_invite == 'attended_to':
+        return Response({"message": "Invite already used."}, status=400)
+
+    action = request.data.get("action")
+    if action not in ["accept", "decline"]:
+        return Response({"message": "Invalid action."}, status=400)
+
+    invite.invitee = user
+    invite.status_of_invite = 'attended_to'
+    invite.decision = 'accepted' if action == "accept" else 'declined'
+    invite.save()
+
+    if action == "accept":
+        TeamMembers.objects.create(
+            team=invite.team,
+            member=user,
+            management_role='member'
+        )
+        return Response({"message": f"You have joined {invite.team.team_name} successfully."})
+    else:
+        return Response({"message": "You declined the invite."})
