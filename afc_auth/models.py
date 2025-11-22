@@ -69,7 +69,7 @@ class Roles(models.Model):
     
 
 class UserRoles(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="userroles")
     role = models.ForeignKey(Roles, on_delete=models.CASCADE)
     date_assigned = models.DateTimeField(auto_now=True)
 
