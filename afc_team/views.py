@@ -1190,7 +1190,7 @@ def kick_team_member(request):
 
         # Get team member to kick
         try:
-            tm = TeamMembers.objects.get(team=team, member_id=member_id)
+            tm = TeamMembers.objects.get(team=team, member=member_id)
         except TeamMembers.DoesNotExist:
             return Response({"error": "Member not in team"}, status=404)
 
