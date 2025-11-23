@@ -57,9 +57,12 @@ def send_email(to_address, subject, html_body):
     # Gmail SMTP server credentials
     smtp_server = 'smtp.gmail.com'
     smtp_port = 465  # or 587 for TLS
-    from_address = 'africanfreefirecommunity2@gmail.com' #vermillioninformation@gmail.com, Info@v-ent.co
-    password = 'yyzm prff sjfo bcmg'
-# 'rvgn rzha ihli dfdp'  # Or your actual Gmail password (if less secure apps are enabled)
+    from_address = 'africanfreefirecommunity3@gmail.com' #vermillioninformation@gmail.com, Info@v-ent.co
+    password = 'wobd dlxw riuh tsnm'
+    #'yyzm prff sjfo bcmg2'
+    # 'rvgn rzha ihli dfdp1'  # Or your actual Gmail password (if less secure apps are enabled)
+
+# wobd dlxw riuh tsnm africanfreefirecommunity3@gmail.com
 
     try:
         # Create a MIMEMultipart email object
