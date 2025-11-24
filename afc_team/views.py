@@ -1226,3 +1226,12 @@ def kick_team_member(request):
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)
+
+
+@api_view(["GET"])
+def get_number_of_teams(request):
+    try:
+        total_teams = Team.objects.count()
+        return Response({"total_teams": total_teams}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

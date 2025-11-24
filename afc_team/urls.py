@@ -28,5 +28,6 @@ urlpatterns = [
     path('manage-team-roster/', manage_team_roster, name='manage_team_roster'),
     path('kick-team-member/', kick_team_member, name='kick_team_member'),
     path('exit-team/', exit_team, name='exit_team'),
+    path('get-number-of-teams/', get_number_of_teams, name='get_number_of_teams'),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
