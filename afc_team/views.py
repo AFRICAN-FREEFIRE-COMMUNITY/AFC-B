@@ -43,6 +43,8 @@ def create_team(request):
     join_settings = request.data.get("join_settings", "by_request")
     list_of_players_to_invite = request.data.getlist("list_of_players_to_invite", [])
     team_social_media_links = request.data.get("team_social_media_links", [])
+    if team_social_media_links:
+        team_social_media_links = json.loads(team_social_media_links)
 
     # Validate required fields
     if not team_name or not country:
@@ -77,10 +79,16 @@ def create_team(request):
             Invite.objects.create(inviter=user, invitee=invitee, team=team)
             invited_players.append(invitee.username)
 
-    # Save social media links
-    for sm_link in team_social_media_links:
-        platform = sm_link.get("platform")
-        link = sm_link.get("link")
+    # # Save social media links
+    # for sm_link in team_social_media_links:
+    #     platform = sm_link.get("platform")
+    #     link = sm_link.get("link")
+    #     if platform and link:
+    #         TeamSocialMediaLinks.objects.create(team=team, platform=platform, link=link)
+
+    for link_data in team_social_media_links:
+        platform = link_data.get("platform")
+        link = link_data.get("link")
         if platform and link:
             TeamSocialMediaLinks.objects.create(team=team, platform=platform, link=link)
 
