@@ -1243,3 +1243,48 @@ def get_number_of_teams(request):
         return Response({"total_teams": total_teams}, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["POST"])
+def join_team(request):
+    team_id = request.data.get("team_id")
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        team = Team.objects.get(team_id=team_id)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Check if user is already in a team
+    if TeamMembers.objects.filter(member=user).exists():
+        return Response({"message": "You are already a member of a team."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Check join settings
+    if team.join_settings == "by_request":
+        return Response({"message": "This team requires a join request. Please send a join request instead."}, status=status.HTTP_403_FORBIDDEN)
+
+    # Add user to team
+    TeamMembers.objects.create(team=team, member=user, management_role='member')
+
+    # Log the action in the Report table
+    Report.objects.create(
+        team=team,
+        user=user,
+        action="player_joined",
+        description=f"{user.username} joined the team {team.team_name}."
+    )
+
+    return Response({"message": f"You have successfully joined the team {team.team_name}."}, status=status.HTTP_200_OK)

@@ -29,5 +29,6 @@ urlpatterns = [
     path('kick-team-member/', kick_team_member, name='kick_team_member'),
     path('exit-team/', exit_team, name='exit_team'),
     path('get-number-of-teams/', get_number_of_teams, name='get_number_of_teams'),
+    path('join-team/', join_team, name='join_team'),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
