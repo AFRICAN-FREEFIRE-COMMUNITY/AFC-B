@@ -938,7 +938,7 @@ def get_user_profile(request):
         "team": user.team.team_name if hasattr(user, 'team') else None,
         "role": user.role,
         "profile_pic": profile_pic_url,
-        "roles": list(UserRoles.objects.filter(user=user).values_list('role__role_name', flat=True))
+        "roles": list(UserRoles.objects.filter(user=user).values_list('role__role_name', flat=True)),
         "is_banned": BannedPlayer.objects.filter(banned_player=user, is_active=True).exists()
     }, status=status.HTTP_200_OK)
 
