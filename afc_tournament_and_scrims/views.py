@@ -601,7 +601,6 @@ def get_event_details(request):
     for stage in stages:
         groups = stage.stagegroups_set.all().order_by("group_name")
         group_list = [{
-            "id": group.id,
             "group_name": group.group_name,
             "playing_date": group.playing_date,
             "playing_time": group.playing_time,
