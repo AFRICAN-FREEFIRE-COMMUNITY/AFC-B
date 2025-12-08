@@ -25,4 +25,5 @@ urlpatterns = [
     path('get-completed-events-count/', get_completed_events_count, name='get_completed_events_count'),
     path('get-average-participants-per-event/', get_average_participants_per_event, name='get_average_participants_per_event'),
     path('get-most-popular-event-format/', get_most_popular_event_format, name='get_most_popular_event_format'),
+    path('register-for-event/', register_for_event, name='register_for_event'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -1,4 +1,4 @@
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.contrib.auth import authenticate
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -46,6 +46,8 @@ from django.core.cache import cache
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
+import requests
+from django.conf import settings
 
 def generate_session_token(length=16):
     """Generate a random 16-character token."""
@@ -1566,3 +1568,111 @@ def get_total_number_of_users(request):
     total_users = User.objects.count()
     verified_users = User.objects.filter(status="active").count()
     return Response({"total_users": total_users, "verified_users": verified_users}, status=status.HTTP_200_OK)
+
+
+def connect_discord(request):
+    session_token = request.GET.get("session_token")  # frontend must pass this
+
+    if not session_token:
+        return Response({"message": "session_token is required"}, status=400)
+
+    client_id = settings.DISCORD_CLIENT_ID
+    redirect_uri = settings.DISCORD_REDIRECT_URI
+
+    scope = "identify guilds.join"
+
+    discord_oauth_url = (
+        f"https://discord.com/api/oauth2/authorize?client_id={client_id}"
+        f"&redirect_uri={redirect_uri}"
+        f"&response_type=code&scope={scope}"
+        f"&state={session_token}"  # important – send it back to callback
+    )
+
+    return redirect(discord_oauth_url)
+
+
+DISCORD_GUILD_ID = settings.DISCORD_GUILD_ID
+DISCORD_BOT_TOKEN = settings.DISCORD_BOT_TOKEN
+
+def check_discord_membership(discord_id):
+    url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    r = requests.get(url, headers=headers)
+    return r.status_code == 200  # 200 means they are in the server
+
+
+def assign_discord_role(discord_id, role_id):
+    url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    r = requests.put(url, headers=headers)
+    return r.status_code == 204  # 204 = success
+
+
+@api_view(["GET"])
+def discord_callback(request):
+    code = request.GET.get("code")
+    session_token = request.GET.get("state")  # state contains session_token
+
+    if not code or not session_token:
+        return Response({"message": "Missing code or session_token"}, status=400)
+
+    # Get user
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session"}, status=401)
+
+    # Exchange code → access token
+    data = {
+        "client_id": settings.DISCORD_CLIENT_ID,
+        "client_secret": settings.DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": settings.DISCORD_REDIRECT_URI
+    }
+
+    token_res = requests.post(
+        "https://discord.com/api/oauth2/token",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+
+    if token_res.status_code != 200:
+        return Response({"message": "Failed to get Discord token"}, status=400)
+
+    token_data = token_res.json()
+    access_token = token_data["access_token"]
+
+    # Fetch Discord user
+    me = requests.get(
+        "https://discord.com/api/users/@me",
+        headers={"Authorization": f"Bearer {access_token}"}
+    ).json()
+
+    discord_id = me["id"]
+
+    # Auto-join them to discord server
+    join_payload = {
+        "access_token": access_token
+    }
+
+    join_res = requests.put(
+        f"https://discord.com/api/guilds/{settings.DISCORD_GUILD_ID}/members/{discord_id}",
+        json=join_payload,
+        headers={"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"}
+    )
+
+    # (200, 201, 204) = success
+    if join_res.status_code not in [200, 201, 204]:
+        return Response({"message": "Failed to join Discord server"}, status=400)
+
+    # Save Discord info
+    user.discord_id = discord_id
+    user.discord_username = me["username"]
+    user.discord_connected = True
+    user.save()
+
+    return Response({
+        "message": "Discord connected successfully",
+        "discord_username": me["username"]
+    })
