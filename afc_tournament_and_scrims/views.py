@@ -601,6 +601,7 @@ def get_event_details(request):
     for stage in stages:
         groups = stage.stagegroups_set.all().order_by("group_name")
         group_list = [{
+            "id": group.group_id,
             "group_name": group.group_name,
             "playing_date": group.playing_date,
             "playing_time": group.playing_time,
@@ -608,7 +609,7 @@ def get_event_details(request):
         } for group in groups]
 
         stage_list.append({
-            "id": stage.id,
+            "id": stage.stage_id,
             "stage_name": stage.stage_name,
             "start_date": stage.start_date,
             "end_date": stage.end_date,
