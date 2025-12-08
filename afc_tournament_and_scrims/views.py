@@ -1,10 +1,13 @@
+from datetime import date
 import json
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_date
-from .models import Event, Leaderboard, StageGroups, Stages, StreamChannel
+
+from afc_team.models import Team
+from .models import Event, Leaderboard, RegisteredCompetitors, StageGroups, Stages, StreamChannel
 from afc_auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -294,7 +297,7 @@ def create_event(request):
         event_type=request.data.get("event_type"),
         max_teams_or_players=request.data.get("max_teams_or_players"),
         event_name=request.data.get("event_name"),
-        format=request.data.get("format"),
+        # format=request.data.get("format"),
         event_mode=request.data.get("event_mode"),
         start_date=start_date,
         end_date=end_date,
@@ -308,7 +311,7 @@ def create_event(request):
         tournament_tier=request.data.get("tournament_tier"),
         event_banner=request.FILES.get("event_banner"),
         number_of_stages=request.data.get("number_of_stages"),
-        rules=request.data.get("rules", "")
+        uploaded_rules=request.FILES.get("uploaded_rules") if "uploaded_rules" in request.FILES else None
     )
 
     # Create stream channels
@@ -545,9 +548,9 @@ def get_most_popular_event_format(request):
     return Response({"most_popular_format": most_popular_format}, status=status.HTTP_200_OK)
 
 
-@api_view(["GET"])
+@api_view(["POST"])
 def get_event_details(request):
-    event_id = request.GET.get("event_id")
+    event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
 
@@ -622,3 +625,87 @@ def get_event_details(request):
     event_data["stages"] = stage_list
 
     return Response({"event_details": event_data}, status=200)
+
+
+@api_view(["POST"])
+def register_for_event(request):
+    event_id = request.data.get("event_id")
+    user_id = request.data.get("user_id")
+    team_id = request.data.get("team_id")
+
+    # Validate event_id
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    try:
+        event = Event.objects.get(event_id=event_id)
+    except Event.DoesNotExist:
+        return Response({"message": "Event not found."}, status=404)
+
+    participant_type = event.participant_type  # solo, duo, squad
+
+    # Validate registration window
+    today = date.today()
+    if not (event.registration_open_date <= today <= event.registration_end_date):
+        return Response({"message": "Registration is closed for this event."}, status=403)
+
+    # SOLO EVENT ─ user must be provided
+    if participant_type == "solo":
+        if not user_id:
+            return Response({"message": "user_id is required for solo events."}, status=400)
+
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({"message": "User not found."}, status=404)
+
+        # Prevent duplicate solo registration
+        if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
+            return Response({"message": "User already registered for this event."}, status=409)
+
+        # Check max participants
+        if RegisteredCompetitors.objects.filter(event=event).count() >= event.max_teams_or_players:
+            return Response({"message": "Registration limit reached."}, status=403)
+
+        # Register user
+        competitor = RegisteredCompetitors.objects.create(
+            event=event,
+            user=user
+        )
+
+        return Response({
+            "message": "Successfully registered.",
+            "registration_id": competitor.id
+        }, status=201)
+
+    # DUO / SQUAD ─ team registration
+    if participant_type in ["duo", "squad"]:
+        if not team_id:
+            return Response({"message": "team_id is required for this event."}, status=400)
+
+        try:
+            team = Team.objects.get(team_id=team_id)
+        except Team.DoesNotExist:
+            return Response({"message": "Team not found."}, status=404)
+
+        # Prevent duplicate team registration
+        if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
+            return Response({"message": "Team already registered for this event."}, status=409)
+
+        # Check max teams
+        registered_teams = RegisteredCompetitors.objects.filter(event=event).count()
+        if registered_teams >= event.max_teams_or_players:
+            return Response({"message": "Registration limit reached."}, status=403)
+
+        # Register team
+        competitor = RegisteredCompetitors.objects.create(
+            event=event,
+            team=team
+        )
+
+        return Response({
+            "message": "Team successfully registered.",
+            "registration_id": competitor.id
+        }, status=201)
+
+    return Response({"message": "Invalid participant type configuration."}, status=400)
