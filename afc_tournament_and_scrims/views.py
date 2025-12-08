@@ -259,7 +259,7 @@ def create_event(request):
         "max_teams_or_players", "event_name", "format",
         "event_mode", "start_date", "end_date",
         "registration_open_date", "registration_end_date",
-        "prizepool", "event_rules", "registration_link",
+        "prizepool", "registration_link",
         "tournament_tier", "number_of_stages"
     ]
 
