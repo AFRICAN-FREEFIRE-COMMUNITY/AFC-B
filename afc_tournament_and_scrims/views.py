@@ -308,7 +308,7 @@ def create_event(request):
         event_rules=request.data.get("event_rules"),
         event_status=request.data.get("event_status", "upcoming"),
         registration_link=request.data.get("registration_link"),
-        tournament_tier=request.data.get("tournament_tier"),
+        tournament_tier=request.data.get("tournament_tier", "tier_3"),
         event_banner=request.FILES.get("event_banner"),
         number_of_stages=request.data.get("number_of_stages"),
         uploaded_rules=request.FILES.get("uploaded_rules") if "uploaded_rules" in request.FILES else None
