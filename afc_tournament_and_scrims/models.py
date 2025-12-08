@@ -68,6 +68,8 @@ class Event(models.Model):
     event_banner = models.ImageField(upload_to='event_banner/', null=True)
     number_of_stages = models.PositiveIntegerField()
     uploaded_rules = models.FileField(upload_to='event_rules/', null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
 
 class StreamChannel(models.Model):

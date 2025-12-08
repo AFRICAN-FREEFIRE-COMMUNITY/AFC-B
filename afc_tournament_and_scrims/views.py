@@ -573,7 +573,6 @@ def get_event_details(request):
         "event_type": event.event_type,
         "max_teams_or_players": event.max_teams_or_players,
         "event_name": event.event_name,
-        "format": event.format,
         "event_mode": event.event_mode,
         "start_date": event.start_date,
         "end_date": event.end_date,
@@ -587,7 +586,8 @@ def get_event_details(request):
         "tournament_tier": event.tournament_tier,
         "event_banner_url": event.event_banner.url if event.event_banner else None,
         "number_of_stages": event.number_of_stages,
-        "rules": event.rules,
+        "uploaded_rules_url": event.uploaded_rules.url if event.uploaded_rules else None,
+        "created_at": event.created_at,
     }
 
     # Stream Channels
