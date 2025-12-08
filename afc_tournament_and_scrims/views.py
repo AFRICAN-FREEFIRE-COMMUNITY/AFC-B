@@ -77,7 +77,6 @@ def get_all_events(request):
             "event_date": event.start_date,
             "event_status": event.event_status,
             "competition_type": event.competition_type,
-            "format": event.format,
             "number_of_participants": event.max_teams_or_players
         })
     return Response({"events": event_list}, status=status.HTTP_200_OK)
@@ -100,7 +99,6 @@ def get_all_events_paginated(request):
         "event_date": event.start_date,
         "event_status": event.event_status,
         "competition_type": event.competition_type,
-        "format": event.format,
         "number_of_participants": event.max_teams_or_players,
     } for event in paginated]
 
