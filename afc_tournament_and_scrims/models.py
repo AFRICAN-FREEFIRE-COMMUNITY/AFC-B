@@ -6,9 +6,20 @@ from afc_auth.models import User
 
 
 class Event(models.Model):
-    EVENT_TYPE_CHOICES = [
+    COMPETITION_TYPE_CHOICES = [
         ("tournament", "Tournament"),
         ("scrims", "Scrims")
+    ]
+
+    PARTICIPANT_TYPE_CHOICES = [
+        ("solo", "Solo"),
+        ("duo", "Duo"),
+        ("squad", "Squad")
+    ]
+
+    EVENT_TYPE_CHOICES = [
+        ("internal", "Internal"),
+        ("external", "External")
     ]
 
     FORMAT_CHOICES = [
@@ -17,9 +28,9 @@ class Event(models.Model):
         ("hybrid", "Hybrid")
     ]
 
-    LOCATION_CHOICES = [
-        ("online", "Online"),
-        ("physical", "Physical"),
+    EVENT_MODE_CHOICES = [
+        ("virtual", "Online"),
+        ("physical(lan)", "Physical(LAN)"),
         ("hybrid", "Hybrid")
     ]
 
@@ -37,10 +48,13 @@ class Event(models.Model):
 
 
     event_id = models.AutoField(primary_key=True)
+    competition_type = models.CharField(max_length=10, choices=COMPETITION_TYPE_CHOICES)
+    participant_type = models.CharField(max_length=10, choices=PARTICIPANT_TYPE_CHOICES)
     event_type = models.CharField(max_length=10, choices=EVENT_TYPE_CHOICES)
+    max_teams_or_players = models.PositiveIntegerField()
     event_name = models.CharField(max_length=40)
     format = models.CharField(max_length=20, choices=FORMAT_CHOICES)
-    location = models.CharField(max_length=20, choices=LOCATION_CHOICES)
+    event_mode = models.CharField(max_length=20, choices=EVENT_MODE_CHOICES)
     start_date = models.DateField()
     end_date = models.DateField()
     registration_open_date = models.DateField()
@@ -52,8 +66,48 @@ class Event(models.Model):
     registration_link = models.URLField()
     tournament_tier = models.CharField(max_length=20, choices=TOURNAMENT_TIER_CHOICES, null=False)
     event_banner = models.ImageField(upload_to='event_banner/', null=True)
-    stream_channel = models.URLField()
+    number_of_stages = models.PositiveIntegerField()
+    rules = models.TextField()
+    uploaded_rules = models.FileField(upload_to='event_rules/', null=True, blank=True)
 
+
+class StreamChannel(models.Model):
+    channel_id = models.AutoField(primary_key=True)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE)
+    channel_url = models.URLField()
+
+
+class Stages(models.Model):
+    STAGE_FORMAT_CHOICES = [
+        ("br - normal", "Battle Royale - Normal"),
+        ("br - roundrobin", "Battle Royale - Knockout"),
+        ("br - point rush", "Battle Royale - Point Rush"),
+        ("br - champion rush", "Battle Royale - Champion Rush"),
+        ("cs - normal", "Clash Squad - Normal"),
+        ("cs  - league", "Clash Squad - League"),
+        ("cs - knockout", "Clash Squad - Knockout"),
+        ("cs - double elimination", "Clash Squad - Double Elimination"),
+        ("cs - round robin", "Clash Squad - Round Robin")
+    ]
+
+
+    stage_id = models.AutoField(primary_key=True)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE)
+    stage_name = models.CharField(max_length=50)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    number_of_groups = models.PositiveIntegerField()
+    stage_format = models.CharField(max_length=100, choices=STAGE_FORMAT_CHOICES)
+    teams_qualifying_from_stage = models.PositiveIntegerField()
+
+
+class StageGroups(models.Model):
+    group_id = models.AutoField(primary_key=True)
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE)
+    group_name = models.CharField(max_length=50)
+    playing_date = models.DateField()
+    playing_time = models.TimeField()
+    teams_qualifying = models.PositiveIntegerField()
 
 class Leaderboard(models.Model):
     STAGE_CHOICES = [("group_stage", "Group Stage"), ("finals", "Finals")]
