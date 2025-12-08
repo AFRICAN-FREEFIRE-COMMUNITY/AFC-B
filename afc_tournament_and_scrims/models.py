@@ -53,7 +53,7 @@ class Event(models.Model):
     event_type = models.CharField(max_length=10, choices=EVENT_TYPE_CHOICES)
     max_teams_or_players = models.PositiveIntegerField()
     event_name = models.CharField(max_length=40)
-    format = models.CharField(max_length=20, choices=FORMAT_CHOICES)
+    # format = models.CharField(max_length=20, choices=FORMAT_CHOICES)
     event_mode = models.CharField(max_length=20, choices=EVENT_MODE_CHOICES)
     start_date = models.DateField()
     end_date = models.DateField()
@@ -64,10 +64,9 @@ class Event(models.Model):
     event_rules = models.CharField(max_length=200)
     event_status = models.CharField(max_length=20, choices=EVENT_STATUS_CHOICES, null=False)
     registration_link = models.URLField()
-    tournament_tier = models.CharField(max_length=20, choices=TOURNAMENT_TIER_CHOICES, null=False)
+    tournament_tier = models.CharField(max_length=20, choices=TOURNAMENT_TIER_CHOICES, null=False, default="tier_3")
     event_banner = models.ImageField(upload_to='event_banner/', null=True)
     number_of_stages = models.PositiveIntegerField()
-    rules = models.TextField()
     uploaded_rules = models.FileField(upload_to='event_rules/', null=True, blank=True)
 
 
@@ -108,6 +107,14 @@ class StageGroups(models.Model):
     playing_date = models.DateField()
     playing_time = models.TimeField()
     teams_qualifying = models.PositiveIntegerField()
+
+
+class RegisteredCompetitors(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
+    registration_date = models.DateTimeField(auto_now_add=True)
+
 
 class Leaderboard(models.Model):
     STAGE_CHOICES = [("group_stage", "Group Stage"), ("finals", "Finals")]
