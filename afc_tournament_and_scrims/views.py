@@ -1,12 +1,14 @@
 from datetime import date
 import json
+from django.conf import settings
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_date
 
-from afc_team.models import Team
+from afc_auth.views import assign_discord_role, check_discord_membership
+from afc_team.models import Team, TeamMembers
 from .models import Event, Leaderboard, RegisteredCompetitors, StageGroups, Stages, StreamChannel
 from afc_auth.models import User
 from rest_framework.decorators import api_view
@@ -626,83 +628,132 @@ def get_event_details(request):
 
 @api_view(["POST"])
 def register_for_event(request):
+    # -------------------------
+    # 1. GET USER FROM SESSION TOKEN
+    # -------------------------
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=400)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=400)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify logged-in user
+    try:
+        user = User.objects.get(session_token=session_token)
+    except User.DoesNotExist:
+        return Response({'status': 'error', 'message': 'Invalid or expired session token'}, status=401)
+
+    # -------------------------
+    # 2. GET EVENT & TEAM
+    # -------------------------
     event_id = request.data.get("event_id")
-    user_id = request.data.get("user_id")
-    team_id = request.data.get("team_id")
+    team_id = request.data.get("team_id")  # only for team events
 
-    # Validate event_id
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required"}, status=400)
 
+    # Fetch event
     try:
         event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found"}, status=404)
 
     participant_type = event.participant_type  # solo, duo, squad
 
-    # Validate registration window
+    # -------------------------
+    # 3. CHECK REGISTRATION WINDOW
+    # -------------------------
     today = date.today()
     if not (event.registration_open_date <= today <= event.registration_end_date):
-        return Response({"message": "Registration is closed for this event."}, status=403)
+        return Response({"message": "Registration is closed."}, status=403)
 
-    # SOLO EVENT ─ user must be provided
+    # ======================================================
+    #                    SOLO REGISTRATION
+    # ======================================================
     if participant_type == "solo":
-        if not user_id:
-            return Response({"message": "user_id is required for solo events."}, status=400)
 
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
-            return Response({"message": "User not found."}, status=404)
+        # Discord must be connected
+        if not user.discord_connected:
+            return Response({"message": "Connect your Discord account first."}, status=403)
 
-        # Prevent duplicate solo registration
+        # Must join the Discord server
+        if not check_discord_membership(user.discord_id):
+            return Response({"message": "You must join the Discord server before registering."}, status=403)
+
+        # Prevent duplicate registration
         if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
-            return Response({"message": "User already registered for this event."}, status=409)
+            return Response({"message": "You are already registered."}, status=409)
 
-        # Check max participants
+        # Check event capacity
         if RegisteredCompetitors.objects.filter(event=event).count() >= event.max_teams_or_players:
             return Response({"message": "Registration limit reached."}, status=403)
 
         # Register user
-        competitor = RegisteredCompetitors.objects.create(
-            event=event,
-            user=user
-        )
+        competitor = RegisteredCompetitors.objects.create(event=event, user=user)
+
+        # Assign Discord role
+        assign_discord_role(user.discord_id, settings.DISCORD_TOURNAMENT_ROLE_ID)
 
         return Response({
             "message": "Successfully registered.",
             "registration_id": competitor.id
         }, status=201)
 
-    # DUO / SQUAD ─ team registration
+    # ======================================================
+    #                 TEAM (DUO / SQUAD) REGISTRATION
+    # ======================================================
     if participant_type in ["duo", "squad"]:
+
         if not team_id:
-            return Response({"message": "team_id is required for this event."}, status=400)
+            return Response({"message": "team_id is required."}, status=400)
 
         try:
             team = Team.objects.get(team_id=team_id)
         except Team.DoesNotExist:
-            return Response({"message": "Team not found."}, status=404)
+            return Response({"message": "Team not found"}, status=404)
+
+        # The user must be part of the team
+        if not TeamMembers.objects.filter(team=team, user=user).exists():
+            return Response({"message": "You are not a member of this team."}, status=403)
 
         # Prevent duplicate team registration
         if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
-            return Response({"message": "Team already registered for this event."}, status=409)
+            return Response({"message": "Team already registered."}, status=409)
 
-        # Check max teams
-        registered_teams = RegisteredCompetitors.objects.filter(event=event).count()
-        if registered_teams >= event.max_teams_or_players:
+        # Check event capacity
+        if RegisteredCompetitors.objects.filter(event=event).count() >= event.max_teams_or_players:
             return Response({"message": "Registration limit reached."}, status=403)
 
-        # Register team
-        competitor = RegisteredCompetitors.objects.create(
-            event=event,
-            team=team
-        )
+        # Validate Discord for all team members
+        members = TeamMembers.objects.filter(team=team)
+
+        for m in members:
+            if not m.user.discord_connected:
+                return Response({
+                    "message": f"{m.user.username} has not connected Discord.",
+                    "user_id": m.user.id
+                }, status=403)
+
+            if not check_discord_membership(m.user.discord_id):
+                return Response({
+                    "message": f"{m.user.username} has not joined the Discord server.",
+                    "user_id": m.user.id
+                }, status=403)
+
+        # Register the team
+        competitor = RegisteredCompetitors.objects.create(event=event, team=team)
+
+        # Assign roles to all members
+        for m in members:
+            assign_discord_role(m.user.discord_id, settings.DISCORD_TOURNAMENT_ROLE_ID)
 
         return Response({
             "message": "Team successfully registered.",
             "registration_id": competitor.id
         }, status=201)
 
-    return Response({"message": "Invalid participant type configuration."}, status=400)
+    return Response({"message": "Invalid event participant type."}, status=400)

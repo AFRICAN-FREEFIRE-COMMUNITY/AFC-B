@@ -41,5 +41,6 @@ urlpatterns = [
     path('unban-team/', unban_team, name='unban_team'),
     path('ban-player/', ban_player, name='ban_player'),
     path('unban-player/', unban_player, name='unban_player'),
+    path("connect-discord/callback/", discord_callback, name="discord_callback"),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
