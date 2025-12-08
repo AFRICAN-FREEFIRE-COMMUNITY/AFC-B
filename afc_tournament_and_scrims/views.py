@@ -304,7 +304,7 @@ def create_event(request):
         prize_distribution=prize_distribution,
         event_rules=request.data.get("event_rules"),
         event_status=request.data.get("event_status", "upcoming"),
-        registration_link=request.data.get("registration_link") if "registration_link" in request.data and event.event_type == "external" else "",
+        registration_link=request.data.get("registration_link") if "registration_link" in request.data else "",
         tournament_tier=request.data.get("tournament_tier", "tier_3"),
         event_banner=request.FILES.get("event_banner"),
         number_of_stages=request.data.get("number_of_stages"),
