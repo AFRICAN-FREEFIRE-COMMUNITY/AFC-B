@@ -256,11 +256,10 @@ def create_event(request):
     # Extract event data
     required_fields = [
         "competition_type", "participant_type", "event_type",
-        "max_teams_or_players", "event_name", "format",
+        "max_teams_or_players", "event_name",
         "event_mode", "start_date", "end_date",
         "registration_open_date", "registration_end_date",
-        "prizepool", "registration_link",
-        "tournament_tier", "number_of_stages"
+        "prizepool", "number_of_stages"
     ]
 
     for field in required_fields:
@@ -307,7 +306,7 @@ def create_event(request):
         prize_distribution=prize_distribution,
         event_rules=request.data.get("event_rules"),
         event_status=request.data.get("event_status", "upcoming"),
-        registration_link=request.data.get("registration_link"),
+        registration_link=request.data.get("registration_link") if "registration_link" in request.data and event.event_type == "external" else "",
         tournament_tier=request.data.get("tournament_tier", "tier_3"),
         event_banner=request.FILES.get("event_banner"),
         number_of_stages=request.data.get("number_of_stages"),
