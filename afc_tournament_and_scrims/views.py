@@ -285,7 +285,8 @@ def create_event(request):
         return Response({"message": "Prizepool must be a number."}, status=400)
 
     # Parse prize distribution
-    prize_distribution = request.data.get("prize_distribution", {})
+    prize_distribution = request.data.get("prize_distribution")
+    prize_distribution = json.loads(prize_distribution) if isinstance(prize_distribution, str) else prize_distribution
     if not isinstance(prize_distribution, dict):
         return Response({"message": "Prize distribution must be a JSON object."}, status=400)
 
