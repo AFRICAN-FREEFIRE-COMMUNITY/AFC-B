@@ -68,7 +68,7 @@ class StreamChannel(models.Model):
     channel_url = models.URLField()
 
 # ---------------- Stages ----------------
-class Stage(models.Model):
+class Stages(models.Model):
     STAGE_FORMAT_CHOICES = [
         ("br - normal", "Battle Royale - Normal"),
         ("br - roundrobin", "Battle Royale - Knockout"),
@@ -89,7 +89,7 @@ class Stage(models.Model):
     stage_format = models.CharField(max_length=100, choices=STAGE_FORMAT_CHOICES)
     teams_qualifying_from_stage = models.PositiveIntegerField()
 
-class StageGroup(models.Model):
+class StageGroups(models.Model):
     group_id = models.AutoField(primary_key=True)
     stage = models.ForeignKey(Stage, on_delete=models.CASCADE, related_name="groups")
     group_name = models.CharField(max_length=50)
@@ -98,7 +98,7 @@ class StageGroup(models.Model):
     teams_qualifying = models.PositiveIntegerField()
 
 # ---------------- Registered Competitors ----------------
-class RegisteredCompetitor(models.Model):
+class RegisteredCompetitors(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="registrations")
     user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
