@@ -119,24 +119,18 @@ class RegisteredCompetitors(models.Model):
 
 
 class Leaderboard(models.Model):
-    STAGE_CHOICES = [("group_stage", "Group Stage"), ("finals", "Finals")]
-    GROUP_CHOICES = [("A", "Group A"), ("B", "Group B"), ("C", "Group C")]
-
     leaderboard_id = models.AutoField(primary_key=True)
     leaderboard_name = models.CharField(max_length=120)
     event = models.ForeignKey(Event, on_delete=models.CASCADE)
-    stage = models.CharField(max_length=50, choices=STAGE_CHOICES)
-    group = models.CharField(max_length=10, choices=GROUP_CHOICES, null=True, blank=True)
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE)
+    group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, null=True, blank=True)
     creation_date = models.DateField(auto_now=True)
     creator = models.ForeignKey(User, on_delete=models.CASCADE)
 
 
 class Match(models.Model):
-    MATCH_TYPE_CHOICES = [("battle_royale", "Battle Royale"), ("clash_squad", "Clash Squad")]
-
     match_id = models.AutoField(primary_key=True)
     leaderboard = models.ForeignKey(Leaderboard, on_delete=models.CASCADE)
-    match_type = models.CharField(max_length=20, choices=MATCH_TYPE_CHOICES)
     map = models.CharField(max_length=50)
     mvp = models.ForeignKey("afc_auth.User", on_delete=models.CASCADE, related_name="tournament_mvp")
 
