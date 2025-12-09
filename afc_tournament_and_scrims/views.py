@@ -744,11 +744,15 @@ def get_event_details(request):
         return Response({"message": "event_id is required."}, status=400)
 
     try:
-        event = Event.objects.prefetch_related(
-            "stream_channels",
-            "stages__groups__leaderboards__matches__team_stats__player_stats",
-            "registeredcompetitors__team__teammembers__member"  # prefetch for registered teams and players
-        ).get(event_id=event_id)
+        event = (
+            Event.objects.prefetch_related(
+                "stream_channels",
+                "stages__groups__leaderboards__matches__team_stats__player_stats",
+                "registered_teams__team__teammembers__player",     # TournamentTeam → Team → TeamMembers → Player
+                "registered_teams__members__player"                 # TournamentTeamMember → Player
+            )
+            .get(event_id=event_id)
+        )
     except Event.DoesNotExist:
         return Response({"message": "Event not found."}, status=404)
 
@@ -784,28 +788,33 @@ def get_event_details(request):
 
     # Registered Competitors
     registered = []
+
+    # SOLO MODE = individual players
     if event.participant_type == "solo":
-        # Show individual users
-        for reg in event.registeredcompetitors.all():
-            if reg.user:
+        for reg in event.registered_teams.all():
+            for member in reg.members.all():  # TournamentTeamMember
                 registered.append({
-                    "player_id": reg.user.id,
-                    "username": reg.user.username,
+                    "player_id": member.player.player_id,
+                    "username": member.player.username,
                     "status": "registered"
                 })
-    else:  # duo or squad
-        for reg in event.registeredcompetitors.all():
-            if reg.team:
-                members = reg.team.teammembers.all()
-                registered.append({
-                    "team_id": reg.team.team_id,
-                    "team_name": reg.team.team_name,
-                    "status": "registered",
-                    "members": [
-                        {"player_id": m.member.id, "username": m.member.username, "role": m.in_game_role}
-                        for m in members
-                    ]
-                })
+
+    # DUO / SQUAD MODE = teams + members
+    else:
+        for reg in event.registered_teams.all():  # TournamentTeam
+            member_list = [{
+                "player_id": m.player.player_id,
+                "username": m.player.username,
+                "role": m.player.in_game_role if hasattr(m.player, "in_game_role") else None,
+                "status": m.status
+            } for m in reg.members.all()]
+
+            registered.append({
+                "team_id": reg.team.team_id,
+                "team_name": reg.team.team_name,
+                "team_status": reg.status,   # squad / duo
+                "members": member_list
+            })
 
     event_data["registered_competitors"] = registered
 
@@ -820,7 +829,7 @@ def get_event_details(request):
                     team_stats_data = []
                     for team_stat in match.team_stats.all():
                         player_stats_data = [{
-                            "player_id": ps.player.id,
+                            "player_id": ps.player.player_id,
                             "username": ps.player.username,
                             "kills": ps.kills,
                             "damage": ps.damage
@@ -836,7 +845,7 @@ def get_event_details(request):
                     matches_data.append({
                         "match_id": match.match_id,
                         "map": match.map,
-                        "mvp": match.mvp.username,
+                        "mvp": match.mvp.username if match.mvp else None,
                         "teams": team_stats_data
                     })
 
@@ -863,6 +872,7 @@ def get_event_details(request):
     event_data["stages"] = stage_list
 
     return Response({"event_details": event_data}, status=200)
+
 
 
 
