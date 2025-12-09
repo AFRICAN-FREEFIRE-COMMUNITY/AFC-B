@@ -682,7 +682,7 @@ def get_event_details(request):
     # Stream Channels
     event_data["stream_channels"] = [
         channel.channel_url
-        for channel in event.streamchannel_set.all()
+        for channel in event.stream_channel.all()
     ]
 
     # Stages + Groups + Match Stats
