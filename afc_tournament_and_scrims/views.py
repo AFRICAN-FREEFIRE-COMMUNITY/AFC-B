@@ -323,6 +323,9 @@ def create_event(request):
     stages_data = request.data.get("stages", [])
 
     for stage_data in stages_data:
+        if isinstance(stage_data, str):
+            stage_data = json.loads(stage_data)
+
         stage = Stages.objects.create(
             event=event,
             stage_name=stage_data["stage_name"],
@@ -335,7 +338,10 @@ def create_event(request):
 
         # Create groups inside this stage
         groups = stage_data.get("groups", [])
+        
         for group in groups:
+            if isinstance(group, str):
+                group = json.loads(group)
             StageGroups.objects.create(
                 stage=stage,
                 group_name=group["group_name"],
