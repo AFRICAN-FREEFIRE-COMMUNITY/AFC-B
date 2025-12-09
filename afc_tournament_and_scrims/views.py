@@ -79,7 +79,8 @@ def get_all_events(request):
             "event_date": event.start_date,
             "event_status": event.event_status,
             "competition_type": event.competition_type,
-            "number_of_participants": event.max_teams_or_players
+            "number_of_participants": event.max_teams_or_players,
+            "prizepool": event.prizepool,
         })
     return Response({"events": event_list}, status=status.HTTP_200_OK)
 
@@ -102,6 +103,7 @@ def get_all_events_paginated(request):
         "event_status": event.event_status,
         "competition_type": event.competition_type,
         "number_of_participants": event.max_teams_or_players,
+        "prizepool": event.prizepool,
     } for event in paginated]
 
     return Response({
@@ -642,15 +644,10 @@ def get_event_details(request):
         return Response({"message": "event_id is required."}, status=400)
 
     try:
-        event = (
-            Event.objects
-            .prefetch_related(
-                "stream_channels",  # updated
-                "stages__groups__leaderboards__matches__team_stats__player_stats"
-)
-
-            .get(event_id=event_id)
-        )
+        event = Event.objects.prefetch_related(
+            "stream_channels",
+            "stages__groups__leaderboards__matches__team_stats__player_stats"
+        ).get(event_id=event_id)
     except Event.DoesNotExist:
         return Response({"message": "Event not found."}, status=404)
 
@@ -681,33 +678,25 @@ def get_event_details(request):
 
     # Stream Channels
     event_data["stream_channels"] = [
-        channel.channel_url
-        for channel in event.stream_channel.all()
+        channel.channel_url for channel in event.stream_channels.all()
     ]
 
     # Stages + Groups + Match Stats
-    stages = event.stages_set.all().order_by("start_date")
     stage_list = []
-
-    for stage in stages:
-        groups = stage.stagegroups_set.all().order_by("group_name")
+    for stage in event.stages.all().order_by("start_date"):
         group_list = []
-
-        for group in groups:
-            # Get leaderboards for this stage & group
-            leaderboards = group.leaderboard_set.all()
+        for group in stage.groups.all().order_by("group_name"):
             matches_data = []
-
-            for lb in leaderboards:
-                for match in lb.match_set.all():
+            for lb in group.leaderboards.all():
+                for match in lb.matches.all():
                     team_stats_data = []
-                    for team_stat in match.matchteamstats_set.all():
+                    for team_stat in match.team_stats.all():
                         player_stats_data = [{
                             "player_id": ps.player.id,
                             "username": ps.player.username,
                             "kills": ps.kills,
                             "damage": ps.damage
-                        } for ps in team_stat.matchplayerstats_set.all()]
+                        } for ps in team_stat.player_stats.all()]
 
                         team_stats_data.append({
                             "team_id": team_stat.team.team_id,
@@ -740,12 +729,13 @@ def get_event_details(request):
             "number_of_groups": stage.number_of_groups,
             "stage_format": stage.stage_format,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
-            "groups": group_list,
+            "groups": group_list
         })
 
     event_data["stages"] = stage_list
 
     return Response({"event_details": event_data}, status=200)
+
 
 
 @api_view(["POST"])
