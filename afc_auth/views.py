@@ -1570,6 +1570,7 @@ def get_total_number_of_users(request):
     return Response({"total_users": total_users, "verified_users": verified_users}, status=status.HTTP_200_OK)
 
 
+@api_view(["GET"])
 def connect_discord(request):
     session_token = request.GET.get("session_token")  # frontend must pass this
 
