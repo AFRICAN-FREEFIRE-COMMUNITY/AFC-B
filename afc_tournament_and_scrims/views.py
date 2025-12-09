@@ -594,9 +594,9 @@ def get_event_details(request):
         "event_status": event.event_status,
         "registration_link": event.registration_link,
         "tournament_tier": event.tournament_tier,
-        "event_banner_url": event.event_banner.url if event.event_banner else None,
+        "event_banner_url": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
+        "uploaded_rules_url": request.build_absolute_uri(event.uploaded_rules.url) if event.uploaded_rules else None,
         "number_of_stages": event.number_of_stages,
-        "uploaded_rules_url": event.uploaded_rules.url if event.uploaded_rules else None,
         "created_at": event.created_at,
     }
 
