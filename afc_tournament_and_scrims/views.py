@@ -1,6 +1,6 @@
 from datetime import date
 import json
-from django.conf import settings
+from afc import settings
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
