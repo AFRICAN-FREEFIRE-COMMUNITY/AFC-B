@@ -748,8 +748,14 @@ def get_event_details(request):
             Event.objects.prefetch_related(
                 "stream_channels",
                 "stages__groups__leaderboards__matches__team_stats__player_stats",
-                "registered_teams__team__teammembers__player",     # TournamentTeam → Team → TeamMembers → Player
-                "registered_teams__members__player"                 # TournamentTeamMember → Player
+
+                # Registered competitors (solo or team)
+                "registrations__user",
+                "registrations__team__teammembers__member",
+
+                # Tournament teams + members
+                "tournament_teams__team__teammembers__member",
+                "tournament_teams__members__user",
             )
             .get(event_id=event_id)
         )
@@ -781,70 +787,92 @@ def get_event_details(request):
         "created_at": event.created_at,
     }
 
-    # Stream Channels
+    # Stream channels
     event_data["stream_channels"] = [
-        channel.channel_url for channel in event.stream_channels.all()
+        ch.channel_url for ch in event.stream_channels.all()
     ]
 
-    # Registered Competitors
+    # Registered Competitors (for event registration)
     registered = []
-
-    # SOLO MODE = individual players
     if event.participant_type == "solo":
-        for reg in event.registered_teams.all():
-            for member in reg.members.all():  # TournamentTeamMember
+        for reg in event.registrations.all():
+            if reg.user:
                 registered.append({
-                    "player_id": member.player.player_id,
-                    "username": member.player.username,
+                    "player_id": reg.user.id,
+                    "username": reg.user.username,
                     "status": "registered"
                 })
-
-    # DUO / SQUAD MODE = teams + members
-    else:
-        for reg in event.registered_teams.all():  # TournamentTeam
-            member_list = [{
-                "player_id": m.player.player_id,
-                "username": m.player.username,
-                "role": m.player.in_game_role if hasattr(m.player, "in_game_role") else None,
-                "status": m.status
-            } for m in reg.members.all()]
-
-            registered.append({
-                "team_id": reg.team.team_id,
-                "team_name": reg.team.team_name,
-                "team_status": reg.status,   # squad / duo
-                "members": member_list
-            })
+    else:  # duo or squad
+        for reg in event.registrations.all():
+            if reg.team:
+                members = reg.team.teammembers.all()
+                registered.append({
+                    "team_id": reg.team.team_id,
+                    "team_name": reg.team.team_name,
+                    "status": "registered",
+                    "members": [
+                        {
+                            "player_id": m.member.id,
+                            "username": m.member.username,
+                            "role": m.in_game_role
+                        }
+                        for m in members
+                    ]
+                })
 
     event_data["registered_competitors"] = registered
 
-    # Stages + Groups + Match Stats
+    # Tournament Teams (official accepted teams)
+    tournament_teams_list = []
+    for tt in event.tournament_teams.all():
+        members = tt.members.all()
+        tournament_teams_list.append({
+            "tournament_team_id": tt.tournament_team_id,
+            "team_id": tt.team.team_id,
+            "team_name": tt.team.team_name,
+            "members": [
+                {
+                    "player_id": m.user.id,
+                    "username": m.user.username
+                }
+                for m in members
+            ]
+        })
+
+    event_data["tournament_teams"] = tournament_teams_list
+
+    # Stages, Groups, Matches
     stage_list = []
     for stage in event.stages.all().order_by("start_date"):
         group_list = []
         for group in stage.groups.all().order_by("group_name"):
             matches_data = []
+
             for lb in group.leaderboards.all():
                 for match in lb.matches.all():
                     team_stats_data = []
                     for team_stat in match.team_stats.all():
-                        player_stats_data = [{
-                            "player_id": ps.player.player_id,
-                            "username": ps.player.username,
-                            "kills": ps.kills,
-                            "damage": ps.damage
-                        } for ps in team_stat.player_stats.all()]
+
+                        player_stats_data = [
+                            {
+                                "player_id": ps.player.id,
+                                "username": ps.player.username,
+                                "kills": ps.kills,
+                                "damage": ps.damage
+                            }
+                            for ps in team_stat.player_stats.all()
+                        ]
 
                         team_stats_data.append({
-                            "team_id": team_stat.team.team_id,
-                            "team_name": team_stat.team.team_name,
+                            "tournament_team_id": team_stat.tournament_team.tournament_team_id,
+                            "team_name": team_stat.tournament_team.team.team_name,
                             "placement": team_stat.placement,
                             "players": player_stats_data
                         })
 
                     matches_data.append({
                         "match_id": match.match_id,
-                        "map": match.map,
+                        "map_name": match.map_name,
                         "mvp": match.mvp.username if match.mvp else None,
                         "teams": team_stats_data
                     })
@@ -872,7 +900,6 @@ def get_event_details(request):
     event_data["stages"] = stage_list
 
     return Response({"event_details": event_data}, status=200)
-
 
 
 
