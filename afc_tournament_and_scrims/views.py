@@ -557,6 +557,84 @@ def get_most_popular_event_format(request):
     return Response({"most_popular_format": most_popular_format}, status=status.HTTP_200_OK)
 
 
+# @api_view(["POST"])
+# def get_event_details(request):
+#     event_id = request.data.get("event_id")
+#     if not event_id:
+#         return Response({"message": "event_id is required."}, status=400)
+
+#     try:
+#         event = (
+#             Event.objects
+#             .prefetch_related(
+#                 "streamchannel_set",
+#                 "stages_set__stagegroups_set"
+#             )
+#             .get(event_id=event_id)
+#         )
+#     except Event.DoesNotExist:
+#         return Response({"message": "Event not found."}, status=404)
+
+#     # Base Event Data
+#     event_data = {
+#         "event_id": event.event_id,
+#         "competition_type": event.competition_type,
+#         "participant_type": event.participant_type,
+#         "event_type": event.event_type,
+#         "max_teams_or_players": event.max_teams_or_players,
+#         "event_name": event.event_name,
+#         "event_mode": event.event_mode,
+#         "start_date": event.start_date,
+#         "end_date": event.end_date,
+#         "registration_open_date": event.registration_open_date,
+#         "registration_end_date": event.registration_end_date,
+#         "prizepool": event.prizepool,
+#         "prize_distribution": event.prize_distribution,
+#         "event_rules": event.event_rules,
+#         "event_status": event.event_status,
+#         "registration_link": event.registration_link,
+#         "tournament_tier": event.tournament_tier,
+#         "event_banner_url": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
+#         "uploaded_rules_url": request.build_absolute_uri(event.uploaded_rules.url) if event.uploaded_rules else None,
+#         "number_of_stages": event.number_of_stages,
+#         "created_at": event.created_at,
+#     }
+
+#     # Stream Channels
+#     event_data["stream_channels"] = [
+#         channel.channel_url
+#         for channel in event.streamchannel_set.all()
+#     ]
+
+#     # Stages + Groups
+#     stages = event.stages_set.all().order_by("start_date")
+#     stage_list = []
+
+#     for stage in stages:
+#         groups = stage.stagegroups_set.all().order_by("group_name")
+#         group_list = [{
+#             "id": group.group_id,
+#             "group_name": group.group_name,
+#             "playing_date": group.playing_date,
+#             "playing_time": group.playing_time,
+#             "teams_qualifying": group.teams_qualifying,
+#         } for group in groups]
+
+#         stage_list.append({
+#             "id": stage.stage_id,
+#             "stage_name": stage.stage_name,
+#             "start_date": stage.start_date,
+#             "end_date": stage.end_date,
+#             "number_of_groups": stage.number_of_groups,
+#             "stage_format": stage.stage_format,
+#             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
+#             "groups": group_list,
+#         })
+
+#     event_data["stages"] = stage_list
+
+#     return Response({"event_details": event_data}, status=200)
+
 @api_view(["POST"])
 def get_event_details(request):
     event_id = request.data.get("event_id")
@@ -568,7 +646,7 @@ def get_event_details(request):
             Event.objects
             .prefetch_related(
                 "streamchannel_set",
-                "stages_set__stagegroups_set"
+                "stages_set__stagegroups_set__leaderboard_set__match_set__matchteamstats_set__matchplayerstats_set"
             )
             .get(event_id=event_id)
         )
@@ -606,19 +684,52 @@ def get_event_details(request):
         for channel in event.streamchannel_set.all()
     ]
 
-    # Stages + Groups
+    # Stages + Groups + Match Stats
     stages = event.stages_set.all().order_by("start_date")
     stage_list = []
 
     for stage in stages:
         groups = stage.stagegroups_set.all().order_by("group_name")
-        group_list = [{
-            "id": group.group_id,
-            "group_name": group.group_name,
-            "playing_date": group.playing_date,
-            "playing_time": group.playing_time,
-            "teams_qualifying": group.teams_qualifying,
-        } for group in groups]
+        group_list = []
+
+        for group in groups:
+            # Get leaderboards for this stage & group
+            leaderboards = group.leaderboard_set.all()
+            matches_data = []
+
+            for lb in leaderboards:
+                for match in lb.match_set.all():
+                    team_stats_data = []
+                    for team_stat in match.matchteamstats_set.all():
+                        player_stats_data = [{
+                            "player_id": ps.player.id,
+                            "username": ps.player.username,
+                            "kills": ps.kills,
+                            "damage": ps.damage
+                        } for ps in team_stat.matchplayerstats_set.all()]
+
+                        team_stats_data.append({
+                            "team_id": team_stat.team.team_id,
+                            "team_name": team_stat.team.team_name,
+                            "placement": team_stat.placement,
+                            "players": player_stats_data
+                        })
+
+                    matches_data.append({
+                        "match_id": match.match_id,
+                        "map": match.map,
+                        "mvp": match.mvp.username,
+                        "teams": team_stats_data
+                    })
+
+            group_list.append({
+                "id": group.group_id,
+                "group_name": group.group_name,
+                "playing_date": group.playing_date,
+                "playing_time": group.playing_time,
+                "teams_qualifying": group.teams_qualifying,
+                "matches": matches_data
+            })
 
         stage_list.append({
             "id": stage.stage_id,
