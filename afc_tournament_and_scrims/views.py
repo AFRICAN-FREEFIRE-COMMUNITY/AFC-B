@@ -311,11 +311,14 @@ def create_event(request):
         tournament_tier=request.data.get("tournament_tier", "tier_3"),
         event_banner=request.FILES.get("event_banner"),
         number_of_stages=request.data.get("number_of_stages"),
-        uploaded_rules=request.FILES.get("uploaded_rules") if "uploaded_rules" in request.FILES else None
+        uploaded_rules=request.FILES.get("uploaded_rules")
     )
 
     # Create stream channels
     stream_channels = request.data.get("stream_channels", [])
+
+    if isinstance(stream_channels, str):
+        stream_channels = json.loads(stream_channels)
     for url in stream_channels:
         StreamChannel.objects.create(event=event, channel_url=url)
 
