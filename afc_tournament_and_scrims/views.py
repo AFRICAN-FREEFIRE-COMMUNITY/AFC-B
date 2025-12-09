@@ -645,9 +645,10 @@ def get_event_details(request):
         event = (
             Event.objects
             .prefetch_related(
-                "streamchannel_set",
-                "stages_set__stagegroups_set__leaderboard_set__match_set__matchteamstats_set__matchplayerstats_set"
-            )
+                "stream_channels",  # updated
+                "stages__groups__leaderboards__matches__team_stats__player_stats"
+)
+
             .get(event_id=event_id)
         )
     except Event.DoesNotExist:
