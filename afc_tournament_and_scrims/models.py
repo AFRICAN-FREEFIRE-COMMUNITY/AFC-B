@@ -91,7 +91,7 @@ class Stages(models.Model):
 
 class StageGroups(models.Model):
     group_id = models.AutoField(primary_key=True)
-    stage = models.ForeignKey(Stage, on_delete=models.CASCADE, related_name="groups")
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="groups")
     group_name = models.CharField(max_length=50)
     playing_date = models.DateField()
     playing_time = models.TimeField()
@@ -109,8 +109,8 @@ class Leaderboard(models.Model):
     leaderboard_id = models.AutoField(primary_key=True)
     leaderboard_name = models.CharField(max_length=120)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="leaderboards")
-    stage = models.ForeignKey(Stage, on_delete=models.CASCADE, related_name="leaderboards")
-    group = models.ForeignKey(StageGroup, on_delete=models.CASCADE, null=True, blank=True, related_name="leaderboards")
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="leaderboards")
+    group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, null=True, blank=True, related_name="leaderboards")
     creation_date = models.DateField(auto_now=True)
     creator = models.ForeignKey(User, on_delete=models.CASCADE)
 
