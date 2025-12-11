@@ -798,7 +798,7 @@ def get_event_details(request):
         for reg in event.registrations.all():
             if reg.user:
                 registered.append({
-                    "player_id": reg.user.id,
+                    "player_id": reg.user.user_id,
                     "username": reg.user.username,
                     "status": "registered"
                 })
