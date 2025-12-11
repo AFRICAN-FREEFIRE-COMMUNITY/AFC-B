@@ -70,7 +70,7 @@ def create_leaderboard(request):
 
 @api_view(["GET"])
 def get_all_events(request):
-    events = Event.objects.all()
+    events = Event.objects.filter(is_draft=False)
     event_list = []
     for event in events:
         event_list.append({
@@ -90,7 +90,7 @@ def get_all_events_paginated(request):
     limit = int(request.GET.get("limit", 10))
     offset = int(request.GET.get("offset", 0))
 
-    events = Event.objects.all().order_by("-start_date")
+    events = Event.objects.filter(is_draft=False).order_by("-start_date")
     total = events.count()
 
     # slice manually (faster than Paginator for large tables)
@@ -118,7 +118,7 @@ def get_all_events_paginated(request):
 
 @api_view(["GET"])
 def get_all_tournaments_and_scrims(request):
-    events = Event.objects.all()
+    events = Event.objects.filter(is_draft=False)
     event_list = []
     for event in events:
         event_list.append({
@@ -135,7 +135,7 @@ def get_all_tournaments_and_scrims_paginated(request):
     limit = int(request.GET.get("limit", 10))
     offset = int(request.GET.get("offset", 0))
 
-    events = Event.objects.all().order_by("-start_date")
+    events = Event.objects.filter(is_draft=False).order_by("-start_date")
     total = events.count()
 
     paginated = events[offset: offset + limit]
@@ -160,8 +160,8 @@ def get_all_tournaments_and_scrims_paginated(request):
 
 @api_view(["GET"])
 def get_all_tournaments_and_scrims_separated(request):
-    tournaments = Event.objects.filter(competition_type="tournament")
-    scrims = Event.objects.filter(competition_type="scrim")
+    tournaments = Event.objects.filter(competition_type="tournament", is_draft=False)
+    scrims = Event.objects.filter(competition_type="scrim", is_draft=False)
 
     tournament_list = []
     for event in tournaments:
@@ -192,8 +192,8 @@ def get_all_tournaments_and_scrims_separated_paginated(request):
     limit = int(request.GET.get("limit", 10))
     offset = int(request.GET.get("offset", 0))
 
-    tournaments = Event.objects.filter(competition_type="tournament").order_by("-start_date")
-    scrims = Event.objects.filter(competition_type="scrim").order_by("-start_date")
+    tournaments = Event.objects.filter(competition_type="tournament", is_draft=False).order_by("-start_date")
+    scrims = Event.objects.filter(competition_type="scrim", is_draft=False).order_by("-start_date")
 
     total_tournaments = tournaments.count()
     total_scrims = scrims.count()
