@@ -361,6 +361,143 @@ def create_event(request):
     }, status=201)
 
 
+# @api_view(["POST"])
+# def edit_event(request):
+#     session_token = request.headers.get("Authorization")
+
+#     if not session_token or not session_token.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     token = session_token.split(" ")[1]
+
+#     # Authenticate user
+#     try:
+#         user = User.objects.get(session_token=token)
+#     except User.DoesNotExist:
+#         return Response({"message": "Invalid session token."}, status=401)
+
+#     # Permission check
+#     if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
+#         return Response({"message": "You do not have permission to edit an event."}, status=403)
+
+#     # Event ID needed
+#     event_id = request.data.get("event_id")
+#     if not event_id:
+#         return Response({"message": "event_id is required."}, status=400)
+
+#     # Fetch event
+#     try:
+#         event = Event.objects.get(event_id=event_id)
+#     except Event.DoesNotExist:
+#         return Response({"message": "Event not found."}, status=404)
+
+#     # Helper function to update only if provided
+#     def update_field(field_name, parser=None):
+#         if field_name in request.data:
+#             value = request.data.get(field_name)
+#             if parser:
+#                 value = parser(value)
+#             setattr(event, field_name, value)
+
+#     # Update simple fields
+#     update_field("competition_type")
+#     update_field("participant_type")
+#     update_field("event_type")
+#     update_field("max_teams_or_players")
+#     update_field("event_name")
+#     update_field("event_mode")
+#     update_field("event_status")
+#     update_field("registration_link")
+#     update_field("tournament_tier")
+#     update_field("rules")
+#     update_field("event_rules")
+
+#     # Date fields
+#     update_field("start_date", parse_date)
+#     update_field("end_date", parse_date)
+#     update_field("registration_open_date", parse_date)
+#     update_field("registration_end_date", parse_date)
+
+#     # Validate dates
+#     if event.registration_open_date > event.registration_end_date:
+#         return Response({"message": "Registration open date cannot be after registration end date."}, status=400)
+
+#     if event.start_date > event.end_date:
+#         return Response({"message": "Event start date cannot be after end date."}, status=400)
+
+#     # Prizepool
+#     if "prizepool" in request.data:
+#         try:
+#             event.prizepool = float(request.data.get("prizepool"))
+#         except:
+#             return Response({"message": "Prizepool must be a number."}, status=400)
+
+#     # Prize distribution
+#     if "prize_distribution" in request.data:
+#         prize_distribution = request.data.get("prize_distribution")
+#         prize_distribution = json.loads(prize_distribution) if isinstance(prize_distribution, str) else prize_distribution
+#         if not isinstance(prize_distribution, dict):
+#             return Response({"message": "Prize distribution must be a JSON object."}, status=400)
+#         event.prize_distribution = prize_distribution
+
+#     # Update event banner (optional)
+#     if "event_banner" in request.FILES:
+#         event.event_banner = request.FILES.get("event_banner")
+
+#     # Update number_of_stages if provided
+#     if "number_of_stages" in request.data:
+#         event.number_of_stages = int(request.data.get("number_of_stages"))
+
+#     event.save()
+
+#     # ============================
+#     # STREAM CHANNEL UPDATES
+#     # ============================
+#     if "stream_channels" in request.data:
+#         StreamChannel.objects.filter(event=event).delete()
+#         if isinstance(stream_channels, str):
+#             stream_channels = json.loads(stream_channels)
+#         for url in request.data.get("stream_channels", []):
+#             StreamChannel.objects.create(event=event, channel_url=url)
+
+#     # ============================
+#     # STAGES + GROUPS UPDATE
+#     # ============================
+#     if "stages" in request.data:
+#         stages_data = request.data["stages"]
+#         if isinstance(stages_data, str):
+#             stages_data = json.loads(stages_data)
+
+#         # Remove old stages + groups
+#         Stages.objects.filter(event=event).delete()
+
+#         for stage_data in stages_data:
+#             stage = Stages.objects.create(
+#                 event=event,
+#                 stage_name=stage_data["stage_name"],
+#                 start_date=parse_date(stage_data["start_date"]),
+#                 end_date=parse_date(stage_data["end_date"]),
+#                 number_of_groups=stage_data["number_of_groups"],
+#                 stage_format=stage_data["stage_format"],
+#                 teams_qualifying_from_stage=stage_data["teams_qualifying_from_stage"]
+#             )
+
+#             # Add groups under this stage
+#             for group in stage_data.get("groups", []):
+#                 StageGroups.objects.create(
+#                     stage=stage,
+#                     group_name=group["group_name"],
+#                     playing_date=parse_date(group["playing_date"]),
+#                     playing_time=group["playing_time"],
+#                     teams_qualifying=group["teams_qualifying"]
+#                 )
+
+#     return Response({
+#         "message": "Event updated successfully.",
+#         "event_id": event.event_id
+#     }, status=200)
+
+
 @api_view(["POST"])
 def edit_event(request):
     session_token = request.headers.get("Authorization")
@@ -400,30 +537,29 @@ def edit_event(request):
             setattr(event, field_name, value)
 
     # Update simple fields
-    update_field("competition_type")
-    update_field("participant_type")
-    update_field("event_type")
-    update_field("max_teams_or_players")
-    update_field("event_name")
-    update_field("event_mode")
-    update_field("event_status")
-    update_field("registration_link")
-    update_field("tournament_tier")
-    update_field("rules")
-    update_field("event_rules")
+    for field in [
+        "competition_type", "participant_type", "event_type",
+        "max_teams_or_players", "event_name", "event_mode",
+        "event_status", "registration_link", "tournament_tier",
+        "rules", "event_rules"
+    ]:
+        update_field(field)
 
     # Date fields
-    update_field("start_date", parse_date)
-    update_field("end_date", parse_date)
-    update_field("registration_open_date", parse_date)
-    update_field("registration_end_date", parse_date)
+    for date_field in [
+        "start_date", "end_date",
+        "registration_open_date", "registration_end_date"
+    ]:
+        update_field(date_field, parse_date)
 
-    # Validate dates
-    if event.registration_open_date > event.registration_end_date:
-        return Response({"message": "Registration open date cannot be after registration end date."}, status=400)
+    # Date validation
+    if event.registration_open_date and event.registration_end_date:
+        if event.registration_open_date > event.registration_end_date:
+            return Response({"message": "Registration open date cannot be after registration end date."}, status=400)
 
-    if event.start_date > event.end_date:
-        return Response({"message": "Event start date cannot be after end date."}, status=400)
+    if event.start_date and event.end_date:
+        if event.start_date > event.end_date:
+            return Response({"message": "Event start date cannot be after end date."}, status=400)
 
     # Prizepool
     if "prizepool" in request.data:
@@ -435,15 +571,17 @@ def edit_event(request):
     # Prize distribution
     if "prize_distribution" in request.data:
         prize_distribution = request.data.get("prize_distribution")
+        if isinstance(prize_distribution, str):
+            prize_distribution = json.loads(prize_distribution)
         if not isinstance(prize_distribution, dict):
             return Response({"message": "Prize distribution must be a JSON object."}, status=400)
         event.prize_distribution = prize_distribution
 
-    # Update event banner (optional)
+    # Banner
     if "event_banner" in request.FILES:
         event.event_banner = request.FILES.get("event_banner")
 
-    # Update number_of_stages if provided
+    # Number of stages
     if "number_of_stages" in request.data:
         event.number_of_stages = int(request.data.get("number_of_stages"))
 
@@ -454,18 +592,30 @@ def edit_event(request):
     # ============================
     if "stream_channels" in request.data:
         StreamChannel.objects.filter(event=event).delete()
-        for url in request.data.get("stream_channels", []):
-            StreamChannel.objects.create(event=event, channel_url=url)
+
+        stream_channels = request.data.get("stream_channels")
+
+        # Parse JSON if string
+        if isinstance(stream_channels, str):
+            stream_channels = json.loads(stream_channels)
+
+        if isinstance(stream_channels, list):
+            for url in stream_channels:
+                StreamChannel.objects.create(event=event, channel_url=url)
 
     # ============================
     # STAGES + GROUPS UPDATE
     # ============================
     if "stages" in request.data:
-        stages_data = request.data["stages"]
+        stages_data = request.data.get("stages")
 
-        # Remove old stages + groups
+        if isinstance(stages_data, str):
+            stages_data = json.loads(stages_data)
+
+        # Delete all existing stages/groups
         Stages.objects.filter(event=event).delete()
 
+        # Recreate stages + groups
         for stage_data in stages_data:
             stage = Stages.objects.create(
                 event=event,
@@ -477,7 +627,7 @@ def edit_event(request):
                 teams_qualifying_from_stage=stage_data["teams_qualifying_from_stage"]
             )
 
-            # Add groups under this stage
+            # Add groups
             for group in stage_data.get("groups", []):
                 StageGroups.objects.create(
                     stage=stage,
