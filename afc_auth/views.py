@@ -1570,24 +1570,58 @@ def get_total_number_of_users(request):
     return Response({"total_users": total_users, "verified_users": verified_users}, status=status.HTTP_200_OK)
 
 
+# @api_view(["GET"])
+# def connect_discord(request):
+#     session_token = request.GET.get("session_token")  # frontend must pass this
+#     tournament_id = request.GET.get("tournament_id")
+
+#     if not session_token:
+#         return Response({"message": "session_token is required"}, status=400)
+
+#     client_id = settings.DISCORD_CLIENT_ID
+#     redirect_uri = settings.DISCORD_REDIRECT_URI
+
+#     scope = "identify guilds.join"
+
+#     discord_oauth_url = (
+#         f"https://discord.com/api/oauth2/authorize?client_id={client_id}"
+#         f"&redirect_uri={redirect_uri}"
+#         f"&response_type=code&scope={scope}"
+#         f"&state={session_token}|https://africanfreefirecommunity.com/tournaments/{tournament_id}" 
+#     )
+
+#     return redirect(discord_oauth_url)
+
+
+
 @api_view(["GET"])
 def connect_discord(request):
-    session_token = request.GET.get("session_token")  # frontend must pass this
+    session_token = request.GET.get("session_token")
     tournament_id = request.GET.get("tournament_id")
 
-    if not session_token:
-        return Response({"message": "session_token is required"}, status=400)
+    if not session_token or not tournament_id:
+        return Response({"message": "session_token and tournament_id required"}, status=400)
 
     client_id = settings.DISCORD_CLIENT_ID
     redirect_uri = settings.DISCORD_REDIRECT_URI
 
     scope = "identify guilds.join"
 
+    # Encode the custom redirect URL
+    from urllib.parse import quote
+    return_url = quote(f"{settings.FRONTEND_URL}/tournaments/{tournament_id}")
+
+    # state = session_token + return_url
+    state = f"{session_token}|{return_url}"
+
+    # Build OAuth URL
     discord_oauth_url = (
-        f"https://discord.com/api/oauth2/authorize?client_id={client_id}"
+        f"https://discord.com/api/oauth2/authorize"
+        f"?client_id={client_id}"
         f"&redirect_uri={redirect_uri}"
-        f"&response_type=code&scope={scope}"
-        f"&state={session_token}|https://africanfreefirecommunity.com/tournaments/{tournament_id}" 
+        f"&response_type=code"
+        f"&scope={scope}"
+        f"&state={state}"
     )
 
     return redirect(discord_oauth_url)
@@ -1610,14 +1644,98 @@ def assign_discord_role(discord_id, role_id):
     return r.status_code == 204  # 204 = success
 
 
+# @api_view(["GET"])
+# def discord_callback(request):
+#     code = request.GET.get("code")
+#     session_token = request.GET.get("state")  # state contains session_token
+#     tournament_id = request.GET.get("tournament_id")
+
+#     if not code or not session_token:
+#         return Response({"message": "Missing code or session_token"}, status=400)
+
+#     # Get user
+#     try:
+#         user = User.objects.get(session_token=session_token)
+#     except User.DoesNotExist:
+#         return Response({"message": "Invalid session"}, status=401)
+
+#     # Exchange code → access token
+#     data = {
+#         "client_id": settings.DISCORD_CLIENT_ID,
+#         "client_secret": settings.DISCORD_CLIENT_SECRET,
+#         "grant_type": "authorization_code",
+#         "code": code,
+#         "redirect_uri": settings.DISCORD_REDIRECT_URI
+#     }
+
+#     token_res = requests.post(
+#         "https://discord.com/api/oauth2/token",
+#         data=data,
+#         headers={"Content-Type": "application/x-www-form-urlencoded"}
+#     )
+
+#     if token_res.status_code != 200:
+#         return Response({"message": "Failed to get Discord token"}, status=400)
+
+#     token_data = token_res.json()
+#     access_token = token_data["access_token"]
+
+#     # Fetch Discord user
+#     me = requests.get(
+#         "https://discord.com/api/users/@me",
+#         headers={"Authorization": f"Bearer {access_token}"}
+#     ).json()
+
+#     discord_id = me["id"]
+
+#     # Auto-join them to discord server
+#     join_payload = {
+#         "access_token": access_token
+#     }
+
+#     join_res = requests.put(
+#         f"https://discord.com/api/guilds/{settings.DISCORD_GUILD_ID}/members/{discord_id}",
+#         json=join_payload,
+#         headers={"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"}
+#     )
+
+#     # (200, 201, 204) = success
+#     if join_res.status_code not in [200, 201, 204]:
+#         return Response({"message": "Failed to join Discord server"}, status=400)
+
+#     # Save Discord info
+#     user.discord_id = discord_id
+#     user.discord_username = me["username"]
+#     user.discord_connected = True
+#     user.save()
+
+#     final_redirect = f"{settings.FRONTEND_URL}/tournaments/{tournament_id}?discord=connected"
+
+#     return redirect(final_redirect)
+
+#     # return Response({
+#     #     "message": "Discord connected successfully",
+#     #     "discord_username": me["username"]
+#     # })
+
+
+
 @api_view(["GET"])
 def discord_callback(request):
     code = request.GET.get("code")
-    session_token = request.GET.get("state")  # state contains session_token
-    tournament_id = request.GET.get("tournament_id")
+    state = request.GET.get("state")
 
-    if not code or not session_token:
-        return Response({"message": "Missing code or session_token"}, status=400)
+    if not code or not state:
+        return Response({"message": "Missing code or state"}, status=400)
+
+    # Extract session_token and encoded return_url
+    try:
+        session_token, encoded_return_url = state.split("|")
+    except ValueError:
+        return Response({"message": "Invalid state format"}, status=400)
+
+    from urllib.parse import unquote
+    return_url = unquote(encoded_return_url)
 
     # Get user
     try:
@@ -1625,7 +1743,7 @@ def discord_callback(request):
     except User.DoesNotExist:
         return Response({"message": "Invalid session"}, status=401)
 
-    # Exchange code → access token
+    # Exchange code → token
     data = {
         "client_id": settings.DISCORD_CLIENT_ID,
         "client_secret": settings.DISCORD_CLIENT_SECRET,
@@ -1643,8 +1761,7 @@ def discord_callback(request):
     if token_res.status_code != 200:
         return Response({"message": "Failed to get Discord token"}, status=400)
 
-    token_data = token_res.json()
-    access_token = token_data["access_token"]
+    access_token = token_res.json()["access_token"]
 
     # Fetch Discord user
     me = requests.get(
@@ -1654,10 +1771,8 @@ def discord_callback(request):
 
     discord_id = me["id"]
 
-    # Auto-join them to discord server
-    join_payload = {
-        "access_token": access_token
-    }
+    # Auto-join Discord Guild
+    join_payload = {"access_token": access_token}
 
     join_res = requests.put(
         f"https://discord.com/api/guilds/{settings.DISCORD_GUILD_ID}/members/{discord_id}",
@@ -1665,7 +1780,6 @@ def discord_callback(request):
         headers={"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"}
     )
 
-    # (200, 201, 204) = success
     if join_res.status_code not in [200, 201, 204]:
         return Response({"message": "Failed to join Discord server"}, status=400)
 
@@ -1675,11 +1789,7 @@ def discord_callback(request):
     user.discord_connected = True
     user.save()
 
-    final_redirect = f"{settings.FRONTEND_URL}/tournaments/{tournament_id}?discord=connected"
+    # Redirect back with success flag
+    final_redirect = f"{return_url}?discord=connected"
 
     return redirect(final_redirect)
-
-    # return Response({
-    #     "message": "Discord connected successfully",
-    #     "discord_username": me["username"]
-    # })
