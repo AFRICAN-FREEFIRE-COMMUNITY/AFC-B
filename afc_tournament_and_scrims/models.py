@@ -60,6 +60,7 @@ class Event(models.Model):
     uploaded_rules = models.FileField(upload_to='event_rules/', null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    is_draft = models.BooleanField(default=True)
 
 # ---------------- Stream Channels ----------------
 class StreamChannel(models.Model):
