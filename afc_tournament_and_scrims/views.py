@@ -377,8 +377,7 @@ def edit_event(request):
         return Response({"message": "Invalid session token."}, status=401)
 
     # Permission check
-    if user.role not in ["admin", "moderator", "support"] and \
-       not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
+    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
         return Response({"message": "You do not have permission to edit an event."}, status=403)
 
     # Event ID needed
@@ -406,7 +405,6 @@ def edit_event(request):
     update_field("event_type")
     update_field("max_teams_or_players")
     update_field("event_name")
-    update_field("format")
     update_field("event_mode")
     update_field("event_status")
     update_field("registration_link")

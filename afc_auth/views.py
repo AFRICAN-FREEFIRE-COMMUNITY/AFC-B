@@ -1609,7 +1609,7 @@ def connect_discord(request):
 
     # Encode the custom redirect URL
     from urllib.parse import quote
-    return_url = quote(f"{settings.FRONTEND_URL_LOCAL}/tournaments/{tournament_id}")
+    return_url = quote(f"{settings.FRONTEND_URL}/tournaments/{tournament_id}")
 
     # state = session_token + return_url
     state = f"{session_token}|{return_url}"
