@@ -1573,6 +1573,7 @@ def get_total_number_of_users(request):
 @api_view(["GET"])
 def connect_discord(request):
     session_token = request.GET.get("session_token")  # frontend must pass this
+    tournament_id = request.GET.get("tournament_id")
 
     if not session_token:
         return Response({"message": "session_token is required"}, status=400)
@@ -1586,7 +1587,7 @@ def connect_discord(request):
         f"https://discord.com/api/oauth2/authorize?client_id={client_id}"
         f"&redirect_uri={redirect_uri}"
         f"&response_type=code&scope={scope}"
-        f"&state={session_token}"  # important – send it back to callback
+        f"&state={session_token}|https://africanfreefirecommunity.com/tournaments/{tournament_id}" 
     )
 
     return redirect(discord_oauth_url)
@@ -1613,6 +1614,7 @@ def assign_discord_role(discord_id, role_id):
 def discord_callback(request):
     code = request.GET.get("code")
     session_token = request.GET.get("state")  # state contains session_token
+    tournament_id = request.GET.get("tournament_id")
 
     if not code or not session_token:
         return Response({"message": "Missing code or session_token"}, status=400)
@@ -1673,7 +1675,11 @@ def discord_callback(request):
     user.discord_connected = True
     user.save()
 
-    return Response({
-        "message": "Discord connected successfully",
-        "discord_username": me["username"]
-    })
+    final_redirect = f"{settings.FRONTEND_URL}/tournaments/{tournament_id}?discord=connected"
+
+    return redirect(final_redirect)
+
+    # return Response({
+    #     "message": "Discord connected successfully",
+    #     "discord_username": me["username"]
+    # })
