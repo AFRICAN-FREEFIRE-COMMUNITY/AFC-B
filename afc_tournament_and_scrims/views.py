@@ -581,6 +581,10 @@ def edit_event(request):
     if "event_banner" in request.FILES:
         event.event_banner = request.FILES.get("event_banner")
 
+    # Uploaded Rules
+    if "uploaded_rules" in request.FILES:
+        event.uploaded_rules = request.FILES.get("uploaded_rules")
+
     # Number of stages
     if "number_of_stages" in request.data:
         event.number_of_stages = int(request.data.get("number_of_stages"))
