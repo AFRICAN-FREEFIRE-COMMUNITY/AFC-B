@@ -1720,76 +1720,184 @@ def assign_discord_role(discord_id, role_id):
 
 
 
+# @api_view(["GET"])
+# def discord_callback(request):
+#     code = request.GET.get("code")
+#     state = request.GET.get("state")
+
+#     if not code or not state:
+#         # Redirect back with success flag
+#         error_redirect = f"{return_url}?discord=failed"
+#         return redirect(error_redirect)
+#         # return Response({"message": "Missing code or state"}, status=400)
+
+#     # Extract session_token and encoded return_url
+#     try:
+#         session_token, encoded_return_url = state.split("|")
+#     except ValueError:
+#         return Response({"message": "Invalid state format"}, status=400)
+
+#     from urllib.parse import unquote
+#     return_url = unquote(encoded_return_url)
+
+#     # Get user
+#     try:
+#         user = User.objects.get(session_token=session_token)
+#     except User.DoesNotExist:
+#         return Response({"message": "Invalid session"}, status=401)
+
+#     # Exchange code → token
+#     data = {
+#         "client_id": settings.DISCORD_CLIENT_ID,
+#         "client_secret": settings.DISCORD_CLIENT_SECRET,
+#         "grant_type": "authorization_code",
+#         "code": code,
+#         "redirect_uri": settings.DISCORD_REDIRECT_URI
+#     }
+
+#     token_res = requests.post(
+#         "https://discord.com/api/oauth2/token",
+#         data=data,
+#         headers={"Content-Type": "application/x-www-form-urlencoded"}
+#     )
+
+#     if token_res.status_code != 200:
+#         return Response({"message": "Failed to get Discord token"}, status=400)
+
+#     access_token = token_res.json()["access_token"]
+
+#     # Fetch Discord user
+#     me = requests.get(
+#         "https://discord.com/api/users/@me",
+#         headers={"Authorization": f"Bearer {access_token}"}
+#     ).json()
+
+#     discord_id = me["id"]
+
+#     # Auto-join Discord Guild
+#     join_payload = {"access_token": access_token}
+
+#     join_res = requests.put(
+#         f"https://discord.com/api/guilds/{settings.DISCORD_GUILD_ID}/members/{discord_id}",
+#         json=join_payload,
+#         headers={"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"}
+#     )
+
+#     if join_res.status_code not in [200, 201, 204]:
+#         return Response({"message": "Failed to join Discord server"}, status=400)
+
+#     # Save Discord info
+#     user.discord_id = discord_id
+#     user.discord_username = me["username"]
+#     user.discord_connected = True
+#     user.save()
+
+#     # Redirect back with success flag
+#     final_redirect = f"{return_url}?discord=connected"
+
+#     return redirect(final_redirect)
+
+
+
 @api_view(["GET"])
 def discord_callback(request):
     code = request.GET.get("code")
     state = request.GET.get("state")
+    error = request.GET.get("error")   
 
+    # If the user clicked "Cancel", Discord sends ?error=access_denied
+    if error:
+        # state may still be valid, so try parsing return URL
+        try:
+            session_token, encoded_return_url = state.split("|")
+            from urllib.parse import unquote
+            return_url = unquote(encoded_return_url)
+        except:
+            return redirect(f"{settings.FRONTEND_URL}?discord=failed")
+
+        return redirect(f"{return_url}?discord=failed")
+
+    # If state/code missing → fail safe
     if not code or not state:
-        return Response({"message": "Missing code or state"}, status=400)
+        return redirect(f"{settings.FRONTEND_URL}?discord=failed")
 
-    # Extract session_token and encoded return_url
+    # Extract session_token and encoded return URL
     try:
         session_token, encoded_return_url = state.split("|")
-    except ValueError:
-        return Response({"message": "Invalid state format"}, status=400)
+        from urllib.parse import unquote
+        return_url = unquote(encoded_return_url)
+    except:
+        return redirect(f"{settings.FRONTEND_URL}?discord=failed")
 
-    from urllib.parse import unquote
-    return_url = unquote(encoded_return_url)
+    fail_redirect = f"{return_url}?discord=failed"
 
-    # Get user
+    # Validate user session
     try:
         user = User.objects.get(session_token=session_token)
     except User.DoesNotExist:
-        return Response({"message": "Invalid session"}, status=401)
+        return redirect(fail_redirect)
 
-    # Exchange code → token
-    data = {
-        "client_id": settings.DISCORD_CLIENT_ID,
-        "client_secret": settings.DISCORD_CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": settings.DISCORD_REDIRECT_URI
-    }
+    # ---- Exchange code → access token ----
+    try:
+        token_res = requests.post(
+            "https://discord.com/api/oauth2/token",
+            data={
+                "client_id": settings.DISCORD_CLIENT_ID,
+                "client_secret": settings.DISCORD_CLIENT_SECRET,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": settings.DISCORD_REDIRECT_URI
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10
+        )
+        if token_res.status_code != 200:
+            return redirect(fail_redirect)
 
-    token_res = requests.post(
-        "https://discord.com/api/oauth2/token",
-        data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"}
-    )
+        access_token = token_res.json().get("access_token")
+        if not access_token:
+            return redirect(fail_redirect)
+    except:
+        return redirect(fail_redirect)
 
-    if token_res.status_code != 200:
-        return Response({"message": "Failed to get Discord token"}, status=400)
+    # ---- Fetch Discord user ----
+    try:
+        me = requests.get(
+            "https://discord.com/api/users/@me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10
+        )
+        if me.status_code != 200:
+            return redirect(fail_redirect)
 
-    access_token = token_res.json()["access_token"]
+        me = me.json()
+        discord_id = me.get("id")
+        if not discord_id:
+            return redirect(fail_redirect)
+    except:
+        return redirect(fail_redirect)
 
-    # Fetch Discord user
-    me = requests.get(
-        "https://discord.com/api/users/@me",
-        headers={"Authorization": f"Bearer {access_token}"}
-    ).json()
+    # ---- Add to Discord server ----
+    try:
+        join_res = requests.put(
+            f"https://discord.com/api/guilds/{settings.DISCORD_GUILD_ID}/members/{discord_id}",
+            json={"access_token": access_token},
+            headers={"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"},
+            timeout=10
+        )
+        if join_res.status_code not in [200, 201, 204]:
+            return redirect(fail_redirect)
+    except:
+        return redirect(fail_redirect)
 
-    discord_id = me["id"]
+    # ---- Save user ----
+    try:
+        user.discord_id = discord_id
+        user.discord_username = me.get("username", "")
+        user.discord_connected = True
+        user.save()
+    except:
+        return redirect(fail_redirect)
 
-    # Auto-join Discord Guild
-    join_payload = {"access_token": access_token}
-
-    join_res = requests.put(
-        f"https://discord.com/api/guilds/{settings.DISCORD_GUILD_ID}/members/{discord_id}",
-        json=join_payload,
-        headers={"Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"}
-    )
-
-    if join_res.status_code not in [200, 201, 204]:
-        return Response({"message": "Failed to join Discord server"}, status=400)
-
-    # Save Discord info
-    user.discord_id = discord_id
-    user.discord_username = me["username"]
-    user.discord_connected = True
-    user.save()
-
-    # Redirect back with success flag
-    final_redirect = f"{return_url}?discord=connected"
-
-    return redirect(final_redirect)
+    # ---- SUCCESS ----
+    return redirect(f"{return_url}?discord=connected")
