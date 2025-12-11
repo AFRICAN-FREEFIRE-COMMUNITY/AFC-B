@@ -261,7 +261,7 @@ def create_event(request):
         "max_teams_or_players", "event_name",
         "event_mode", "start_date", "end_date",
         "registration_open_date", "registration_end_date",
-        "prizepool", "number_of_stages"
+        "prizepool", "number_of_stages", "is_draft"
     ]
 
     for field in required_fields:
@@ -313,7 +313,8 @@ def create_event(request):
         tournament_tier=request.data.get("tournament_tier", "tier_3"),
         event_banner=request.FILES.get("event_banner"),
         number_of_stages=request.data.get("number_of_stages"),
-        uploaded_rules=request.FILES.get("uploaded_rules")
+        uploaded_rules=request.FILES.get("uploaded_rules"),
+        is_draft=request.data.get("is_draft", True)
     )
 
     # Create stream channels
