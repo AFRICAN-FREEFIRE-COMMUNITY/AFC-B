@@ -973,7 +973,7 @@ def register_for_event(request):
         competitor = RegisteredCompetitors.objects.create(event=event, user=user)
 
         # Assign Discord role
-        assign_discord_role(user.discord_id, settings.DISCORD_TOURNAMENT_ROLE_ID)
+        assign_discord_role(user.discord_id, settings.DISCORD_TOURNAMENT_DETTY_SOLOS_ROLE_ID)
 
         return Response({
             "message": "Successfully registered.",
