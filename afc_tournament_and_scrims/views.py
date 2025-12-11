@@ -892,6 +892,18 @@ def get_most_popular_event_format(request):
 
 @api_view(["POST"])
 def get_event_details(request):
+    session_token = request.headers.get("Authorization")
+
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    token = session_token.split(" ")[1]
+
+    # Authenticate user
+    try:
+        user = User.objects.get(session_token=token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=401)
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
@@ -914,6 +926,12 @@ def get_event_details(request):
         )
     except Event.DoesNotExist:
         return Response({"message": "Event not found."}, status=404)
+    
+    # check if user is registered for the event
+    is_registered = False
+    if event.participant_type == "solo":
+        is_registered = RegisteredCompetitors.objects.filter(user=user).exists()
+
 
     # Base Event Data
     event_data = {
@@ -938,6 +956,7 @@ def get_event_details(request):
         "uploaded_rules_url": request.build_absolute_uri(event.uploaded_rules.url) if event.uploaded_rules else None,
         "number_of_stages": event.number_of_stages,
         "created_at": event.created_at,
+        "is_registered": is_registered
     }
 
     # Stream channels
