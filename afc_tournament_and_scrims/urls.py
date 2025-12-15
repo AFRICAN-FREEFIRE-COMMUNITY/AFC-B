@@ -27,4 +27,7 @@ urlpatterns = [
     path('get-most-popular-event-format/', get_most_popular_event_format, name='get_most_popular_event_format'),
     path('register-for-event/', register_for_event, name='register_for_event'),
     path('get-event-details-for-admin/', get_event_details_for_admin, name='get_event_details_for_admin'),
+    path('seed-solo-players-to-stage/', seed_solo_players_to_stage, name='seed_solo_players_to_stage'),
+    path('seed-stage-competitors-to-groups/', seed_stage_competitors_to_groups, name='seed_stage_competitors_to_groups'),
+    
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

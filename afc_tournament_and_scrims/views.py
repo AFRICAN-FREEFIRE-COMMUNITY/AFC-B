@@ -1,7 +1,7 @@
 from datetime import date
 import json
 from afc import settings
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -10,7 +10,7 @@ from django.utils.dateparse import parse_date
 from afc_auth.views import assign_discord_role, check_discord_membership
 from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, Leaderboard, RegisteredCompetitors, StageGroups, Stages, StreamChannel, TournamentTeamMatchStats
+from .models import Event, Leaderboard, RegisteredCompetitors, StageCompetitor, StageGroups, Stages, StreamChannel, TournamentTeamMatchStats
 from afc_auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -2186,4 +2186,102 @@ def get_event_details_for_admin(request):
             "social_shares": social_shares,
             "stream_links": streams
         }
+    }, status=200)
+
+
+@api_view(["POST"])
+def seed_solo_players_to_stage(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    token = session_token.split(" ")[1]
+    try:
+        admin = User.objects.get(session_token=token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+    
+    event_id = request.data.get("event_id")
+    stage_id = request.data.get("stage_id")
+
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    
+    event = get_object_or_404(Event, event_id=event_id)
+
+    # # Get first stage (assuming stage ordering by start_date)
+    # first_stage = event.stages.all().order_by("start_date").first()
+    # if not first_stage:
+    #     return Response({"message": "No stages found for this event."}, status=400)
+    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+    # Get all registered solo players
+    solo_players = RegisteredCompetitors.objects.filter(event=event, user__isnull=False, team__isnull=True, status="registered")
+
+    seeded_count = 0
+    for reg in solo_players:
+        # Avoid duplicates
+        obj, created = StageCompetitor.objects.get_or_create(
+            stage=stage,
+            player=reg,
+            defaults={"status": "active"}
+        )
+        if created:
+            seeded_count += 1
+
+    return Response({
+        "message": f"Seeded {seeded_count} solo players into stage '{stage.stage_name}'."
+    }, status=200)
+
+
+from random import shuffle
+from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, StageGroupCompetitor
+
+@api_view(["POST"])
+def seed_stage_competitors_to_groups(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    token = session_token.split(" ")[1]
+    try:
+        admin = User.objects.get(session_token=token)
+    except User.DoesNotExist:
+        return Response({"message": "Invalid session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+    
+
+    stage_id = request.data.get("stage_id")
+    if not stage_id:
+        return Response({"message": "stage_id is required."}, status=400)
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+    groups = list(stage.groups.all())
+    if not groups:
+        return Response({"message": "No groups found for this stage."}, status=400)
+
+    competitors = list(stage.competitors.filter(status="active", player__isnull=False))
+    if not competitors:
+        return Response({"message": "No competitors found to seed."}, status=400)
+
+    shuffle(competitors)  # randomize order
+
+    group_count = len(groups)
+    seeded_count = 0
+
+    for idx, competitor in enumerate(competitors):
+        group = groups[idx % group_count]  # simple round-robin assignment
+        obj, created = StageGroupCompetitor.objects.get_or_create(
+            stage_group=group,
+            player=competitor.player,
+            defaults={"status": "active"}
+        )
+        if created:
+            seeded_count += 1
+
+    return Response({
+        "message": f"Seeded {seeded_count} competitors into {group_count} groups for stage '{stage.stage_name}'."
     }, status=200)

@@ -98,6 +98,7 @@ class StageGroups(models.Model):
     playing_time = models.TimeField()
     teams_qualifying = models.PositiveIntegerField()
 
+
 # ---------------- Registered Competitors ----------------
 class RegisteredCompetitors(models.Model):
     STATUS_CHOICES = [
@@ -110,6 +111,7 @@ class RegisteredCompetitors(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="registered")
     registration_date = models.DateTimeField(auto_now_add=True)
+
 
 # ---------------- Leaderboard ----------------
 class Leaderboard(models.Model):
@@ -195,3 +197,31 @@ class SocialShare(models.Model):
     platform = models.CharField(max_length=50, null=True, blank=True) # facebook/twitter/whatsapp...
     user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class StageCompetitor(models.Model):
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="competitors")
+    tournament_team = models.ForeignKey(TournamentTeam, null=True, blank=True, on_delete=models.CASCADE)
+    player = models.ForeignKey(RegisteredCompetitors, null=True, blank=True, on_delete=models.CASCADE)
+    status = models.CharField(
+        max_length=20,
+        choices=[("active", "Active"), ("disqualified", "Disqualified"), ("withdrawn", "Withdrawn")],
+        default="active"
+    )
+
+    class Meta:
+        unique_together = ("stage", "tournament_team", "player")
+
+
+class StageGroupCompetitor(models.Model):
+    stage_group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, related_name="competitors")
+    tournament_team = models.ForeignKey(TournamentTeam, null=True, blank=True, on_delete=models.CASCADE)
+    player = models.ForeignKey(RegisteredCompetitors, null=True, blank=True, on_delete=models.CASCADE)
+    status = models.CharField(
+        max_length=20,
+        choices=[("active", "Active"), ("disqualified", "Disqualified"), ("withdrawn", "Withdrawn")],
+        default="active"
+    )
+
+    class Meta:
+        unique_together = ("stage_group", "tournament_team", "player")
