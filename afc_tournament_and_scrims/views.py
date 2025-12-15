@@ -1641,7 +1641,6 @@ def get_event_details_for_admin(request):
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
-
     token = session_token.split(" ")[1]
 
     try:
@@ -1666,19 +1665,19 @@ def get_event_details_for_admin(request):
     # ---------------- OVERVIEW ----------------
     reg_qs = RegisteredCompetitors.objects.filter(event=event, status="registered")
     total_registered = reg_qs.count()
+
     max_competitors = event.max_teams_or_players or 0
     registration_percentage = round((total_registered / max_competitors) * 100, 2) if max_competitors else 0
 
     days_until_start = (event.start_date - today).days if event.start_date else None
-    event_duration_days = ((event.end_date - event.start_date).days + 1) if event.start_date and event.end_date else None
+    event_duration_days = (event.end_date - event.start_date).days + 1 if event.start_date and event.end_date else None
     registration_close_date = event.registration_end_date
-    days_until_registration_close = ((registration_close_date - today).days) if registration_close_date else None
+    days_until_registration_close = (registration_close_date - today).days if registration_close_date else None
 
+    avg_reg_per_day = 0
     if event.registration_open_date:
         days_since_open = max(1, (today - event.registration_open_date).days + 1)
         avg_reg_per_day = round(total_registered / days_since_open, 2)
-    else:
-        avg_reg_per_day = 0
 
     try:
         prizepool_val = float(event.prizepool)
@@ -1686,7 +1685,10 @@ def get_event_details_for_admin(request):
         prizepool_val = event.prizepool
 
     # ---------------- REGISTRATION TIMELINE ----------------
-    registration_window_days = ((event.registration_end_date - event.registration_open_date).days + 1) if event.registration_open_date and event.registration_end_date else None
+    registration_window_days = (
+        (event.registration_end_date - event.registration_open_date).days + 1
+        if event.registration_open_date and event.registration_end_date else None
+    )
 
     reg_by_day = (
         reg_qs
@@ -1694,7 +1696,6 @@ def get_event_details_for_admin(request):
         .values("day")
         .annotate(count=Count("id"))
     )
-
     peak_registration = max([r["count"] for r in reg_by_day], default=0)
 
     timeseries = []
@@ -1730,9 +1731,13 @@ def get_event_details_for_admin(request):
         total_teams_in_stage = 0
 
         for group in groups:
-            # Get all matches in this group via FK chain: Match -> Leaderboard -> StageGroups
-            matches_qs = Match.objects.filter(leaderboard__group=group)
+            # Get all leaderboards for this group
+            leaderboards_qs = group.leaderboards.all()
 
+            # Get all matches under these leaderboards
+            matches_qs = Match.objects.filter(leaderboard__in=leaderboards_qs)
+
+            # Count distinct teams in this group
             teams_in_group = (
                 TournamentTeamMatchStats.objects
                 .filter(match__in=matches_qs)
@@ -1741,7 +1746,6 @@ def get_event_details_for_admin(request):
                 .count()
             )
 
-            # Fallback if no stats recorded yet
             if teams_in_group == 0:
                 teams_in_group = event.tournament_teams.count()
 
@@ -1777,7 +1781,7 @@ def get_event_details_for_admin(request):
     streams = list(event.stream_channels.values_list("channel_url", flat=True))
 
     # ---------------- RESPONSE ----------------
-    payload = {
+    return Response({
         "overview": {
             "event_id": event.event_id,
             "event_name": event.event_name,
@@ -1818,6 +1822,4 @@ def get_event_details_for_admin(request):
             "social_shares": social_shares,
             "stream_links": streams
         }
-    }
-
-    return Response(payload, status=200)
+    }, status=200)
