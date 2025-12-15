@@ -1331,8 +1331,17 @@ def get_event_details_for_admin(request):
             teams_in_group = 0
             # try using leaderboards -> teams recorded in matches/stats:
             # count distinct tournament_team referenced in TournamentTeamMatchStats for matches in this group
-            matches_qs = Match.objects.filter(leaderboard__group=group)
-            teams_in_group = TournamentTeamMatchStats.objects.filter(match__in=matches_qs).values("tournament_team").distinct().count()
+            leaderboards = group.leaderboards.all()
+
+            matches_qs = Match.objects.filter(leaderboard__in=leaderboards)
+
+            teams_in_group = (
+                TournamentTeamMatchStats.objects
+                .filter(match__in=matches_qs)
+                .values("tournament_team")
+                .distinct()
+                .count()
+            )
             # fallback: if none, use how many teams exist in tournament_teams (approx)
             if teams_in_group == 0:
                 teams_in_group = event.tournament_teams.count()
