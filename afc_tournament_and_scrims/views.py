@@ -8,7 +8,7 @@ from rest_framework import status
 from django.utils.dateparse import parse_date
 
 from afc_auth.views import assign_discord_role, check_discord_membership
-from afc_leaderboard_calc.models import Match
+from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, Leaderboard, RegisteredCompetitors, StageGroups, Stages, StreamChannel, TournamentTeamMatchStats
 from afc_auth.models import User
@@ -1544,7 +1544,15 @@ def get_event_details_for_admin(request):
         total_teams_in_stage = 0
 
         for group in groups:
-            matches_qs = Match.objects.filter(leaderboard__group=group)
+            leaderboards = group.leaderboards.all()
+
+            match_leaderboards = Leaderboard.objects.filter(
+                leaderboard__in=leaderboards
+            )
+
+            matches_qs = Match.objects.filter(
+                leaderboard__in=match_leaderboards
+            )
 
             teams_in_group = (
                 TournamentTeamMatchStats.objects
