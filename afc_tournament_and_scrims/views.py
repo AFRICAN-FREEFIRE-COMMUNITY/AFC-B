@@ -1333,7 +1333,10 @@ def get_event_details_for_admin(request):
             # count distinct tournament_team referenced in TournamentTeamMatchStats for matches in this group
             leaderboards = group.leaderboards.all()
 
-            matches_qs = Match.objects.filter(leaderboard__in=leaderboards)
+            matches_qs = Match.objects.filter(
+            leaderboard__group=group
+            )
+
 
             teams_in_group = (
                 TournamentTeamMatchStats.objects
