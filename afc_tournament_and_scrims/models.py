@@ -100,9 +100,15 @@ class StageGroups(models.Model):
 
 # ---------------- Registered Competitors ----------------
 class RegisteredCompetitors(models.Model):
+    STATUS_CHOICES = [
+        ("registered", "Registered"),
+        ("disqualified", "Disqualified"),
+        ("withdrawn", "Withdrawn")
+    ]
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="registrations")
     user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="registered")
     registration_date = models.DateTimeField(auto_now_add=True)
 
 # ---------------- Leaderboard ----------------
@@ -127,12 +133,19 @@ class TournamentTeam(models.Model):
     """
     Links a Team to a Tournament Event.
     """
+    TEAM_STATUS = [
+        ("active", "Active"),
+        ("disqualified", "Disqualified"),
+        ("withdrawn", "Withdrawn"),
+    ]
     tournament_team_id = models.AutoField(primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="tournament_teams")
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="tournament_entries")
+    status = models.CharField(max_length=20, choices=TEAM_STATUS, default="active")
 
     def __str__(self):
         return f"{self.team.team_name} in {self.event.event_name}"
+    
 
 class TournamentTeamMember(models.Model):
     """
@@ -169,3 +182,16 @@ class TournamentPlayerMatchStats(models.Model):
     kills = models.PositiveIntegerField(default=0)
     damage = models.PositiveIntegerField(default=0)
     assists = models.PositiveIntegerField(default=0)
+
+
+class EventPageView(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="pageviews")
+    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)  # if available
+    ip_address = models.CharField(max_length=45, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class SocialShare(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="social_shares")
+    platform = models.CharField(max_length=50, null=True, blank=True) # facebook/twitter/whatsapp...
+    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
