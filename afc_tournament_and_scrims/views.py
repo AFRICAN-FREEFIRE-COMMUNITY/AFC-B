@@ -1544,14 +1544,8 @@ def get_event_details_for_admin(request):
         total_teams_in_stage = 0
 
         for group in groups:
-            leaderboards = group.leaderboards.all()
-
-            match_leaderboards = Leaderboard.objects.filter(
-                leaderboard__in=leaderboards
-            )
-
             matches_qs = Match.objects.filter(
-                leaderboard__in=match_leaderboards
+                leaderboard__group=group
             )
 
             teams_in_group = (
