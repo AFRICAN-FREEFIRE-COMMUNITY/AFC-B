@@ -1825,6 +1825,192 @@ def register_for_event(request):
 #     }, status=200)
 
 
+# @api_view(["POST"])
+# def get_event_details_for_admin(request):
+#     # ---------------- AUTH ----------------
+#     session_token = request.headers.get("Authorization")
+#     if not session_token or not session_token.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#     token = session_token.split(" ")[1]
+
+#     try:
+#         admin = User.objects.get(session_token=token)
+#     except User.DoesNotExist:
+#         return Response({"message": "Invalid session token."}, status=401)
+
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to access this data."}, status=403)
+
+#     event_id = request.data.get("event_id")
+#     if not event_id:
+#         return Response({"message": "event_id is required."}, status=400)
+
+#     try:
+#         event = Event.objects.prefetch_related(
+#             "stages__groups__leaderboards__matches__team_stats"
+#         ).get(event_id=event_id)
+#     except Event.DoesNotExist:
+#         return Response({"message": "Event not found."}, status=404)
+
+#     today = timezone.localdate()
+
+#     # ---------------- OVERVIEW ----------------
+#     reg_qs = RegisteredCompetitors.objects.filter(event=event, status="registered")
+#     total_registered = reg_qs.count()
+
+#     max_competitors = event.max_teams_or_players or 0
+#     registration_percentage = round((total_registered / max_competitors) * 100, 2) if max_competitors else 0
+
+#     days_until_start = (event.start_date - today).days if event.start_date else None
+#     event_duration_days = (event.end_date - event.start_date).days + 1 if event.start_date and event.end_date else None
+#     registration_close_date = event.registration_end_date
+#     days_until_registration_close = (registration_close_date - today).days if registration_close_date else None
+
+#     avg_reg_per_day = 0
+#     if event.registration_open_date:
+#         days_since_open = max(1, (today - event.registration_open_date).days + 1)
+#         avg_reg_per_day = round(total_registered / days_since_open, 2)
+
+#     try:
+#         prizepool_val = float(event.prizepool)
+#     except Exception:
+#         prizepool_val = event.prizepool
+
+#     # ---------------- REGISTRATION TIMELINE ----------------
+#     registration_window_days = (
+#         (event.registration_end_date - event.registration_open_date).days + 1
+#         if event.registration_open_date and event.registration_end_date else None
+#     )
+
+#     reg_by_day = (
+#         reg_qs
+#         .annotate(day=TruncDate("registration_date"))
+#         .values("day")
+#         .annotate(count=Count("id"))
+#     )
+#     peak_registration = max([r["count"] for r in reg_by_day], default=0)
+
+#     timeseries = []
+#     if event.registration_open_date:
+#         current = event.registration_open_date
+#         end_ts = min(event.registration_end_date or today, today)
+#         reg_map = {r["day"]: r["count"] for r in reg_by_day}
+
+#         while current <= end_ts:
+#             timeseries.append({
+#                 "date": str(current),
+#                 "count": reg_map.get(current, 0)
+#             })
+#             current += timedelta(days=1)
+
+#     # ---------------- TEAM STATUS ----------------
+#     active_teams = event.tournament_teams.filter(status="active").count()
+#     disqualified_teams = event.tournament_teams.filter(status="disqualified").count()
+#     withdrawn_teams = event.tournament_teams.filter(status="withdrawn").count()
+
+#     # ---------------- STAGE PROGRESS ----------------
+#     total_stages = event.stages.count()
+#     completed_stages = event.stages.filter(end_date__lt=today).count()
+#     ongoing_stages = event.stages.filter(start_date__lte=today, end_date__gte=today).count()
+#     upcoming_stages = event.stages.filter(start_date__gt=today).count()
+
+#     # ---------------- STAGES DETAIL ----------------
+#     stages_data = []
+
+#     for stage in event.stages.all().order_by("start_date"):
+#         groups = stage.groups.all()
+#         group_details = []
+#         total_teams_in_stage = 0
+
+#         for group in groups:
+#             # Get all leaderboards for this group
+#             leaderboards = group.leaderboards.all()
+#             matches = Match.objects.filter(leaderboard__in=leaderboards)
+
+#             # Count distinct teams in matches
+#             teams_in_group = TournamentTeamMatchStats.objects.filter(
+#                 match__in=matches
+#             ).values("tournament_team").distinct().count()
+
+#             if teams_in_group == 0:
+#                 teams_in_group = event.tournament_teams.count()
+
+#             total_teams_in_stage += teams_in_group
+
+#             group_details.append({
+#                 "group_id": group.group_id,
+#                 "group_name": group.group_name,
+#                 "playing_date": group.playing_date,
+#                 "playing_time": group.playing_time,
+#                 "teams_qualifying": group.teams_qualifying,
+#                 "total_teams_in_group": teams_in_group
+#             })
+
+#         stages_data.append({
+#             "stage_id": stage.stage_id,
+#             "stage_name": stage.stage_name,
+#             "start_date": stage.start_date,
+#             "end_date": stage.end_date,
+#             "number_of_groups": stage.number_of_groups,
+#             "total_groups": groups.count(),
+#             "total_teams_in_stage": total_teams_in_stage,
+#             "groups": group_details
+#         })
+
+#     # ---------------- ENGAGEMENT ----------------
+#     pageviews = event.pageviews.count()
+#     unique_users = event.pageviews.filter(user__isnull=False).values("user").distinct().count()
+#     unique_ips = event.pageviews.filter(user__isnull=True).values("ip_address").distinct().count()
+#     unique_visitors = unique_users + unique_ips
+#     conversion_rate = round((total_registered / unique_visitors) * 100, 2) if unique_visitors else 0
+#     social_shares = event.social_shares.count()
+#     streams = list(event.stream_channels.values_list("channel_url", flat=True))
+
+#     # ---------------- RESPONSE ----------------
+#     return Response({
+#         "overview": {
+#             "event_id": event.event_id,
+#             "event_name": event.event_name,
+#             "total_registered": total_registered,
+#             "max_competitors": max_competitors,
+#             "registration_percentage": registration_percentage,
+#             "days_until_start": days_until_start,
+#             "event_duration_days": event_duration_days,
+#             "registration_close_date": registration_close_date,
+#             "days_until_registration_close": days_until_registration_close,
+#             "average_registrations_per_day": avg_reg_per_day,
+#             "prizepool": prizepool_val,
+#         },
+#         "registration_timeline": {
+#             "registration_start_date": event.registration_open_date,
+#             "registration_end_date": event.registration_end_date,
+#             "registration_window_days": registration_window_days,
+#             "days_left_for_registration": days_until_registration_close,
+#             "registration_timeseries": timeseries,
+#             "peak_registration": peak_registration
+#         },
+#         "team_status": {
+#             "active": active_teams,
+#             "disqualified": disqualified_teams,
+#             "withdrawn": withdrawn_teams
+#         },
+#         "stage_progress": {
+#             "total_stages": total_stages,
+#             "completed": completed_stages,
+#             "ongoing": ongoing_stages,
+#             "upcoming": upcoming_stages
+#         },
+#         "stages": stages_data,
+#         "engagement": {
+#             "pageviews": pageviews,
+#             "unique_visitors": unique_visitors,
+#             "conversion_rate": conversion_rate,
+#             "social_shares": social_shares,
+#             "stream_links": streams
+#         }
+#     }, status=200)
+
+
 @api_view(["POST"])
 def get_event_details_for_admin(request):
     # ---------------- AUTH ----------------
@@ -1846,9 +2032,7 @@ def get_event_details_for_admin(request):
         return Response({"message": "event_id is required."}, status=400)
 
     try:
-        event = Event.objects.prefetch_related(
-            "stages__groups__leaderboards__matches__team_stats"
-        ).get(event_id=event_id)
+        event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
         return Response({"message": "Event not found."}, status=404)
 
@@ -1857,19 +2041,18 @@ def get_event_details_for_admin(request):
     # ---------------- OVERVIEW ----------------
     reg_qs = RegisteredCompetitors.objects.filter(event=event, status="registered")
     total_registered = reg_qs.count()
-
     max_competitors = event.max_teams_or_players or 0
     registration_percentage = round((total_registered / max_competitors) * 100, 2) if max_competitors else 0
-
     days_until_start = (event.start_date - today).days if event.start_date else None
     event_duration_days = (event.end_date - event.start_date).days + 1 if event.start_date and event.end_date else None
     registration_close_date = event.registration_end_date
     days_until_registration_close = (registration_close_date - today).days if registration_close_date else None
 
-    avg_reg_per_day = 0
     if event.registration_open_date:
         days_since_open = max(1, (today - event.registration_open_date).days + 1)
         avg_reg_per_day = round(total_registered / days_since_open, 2)
+    else:
+        avg_reg_per_day = 0
 
     try:
         prizepool_val = float(event.prizepool)
@@ -1895,7 +2078,6 @@ def get_event_details_for_admin(request):
         current = event.registration_open_date
         end_ts = min(event.registration_end_date or today, today)
         reg_map = {r["day"]: r["count"] for r in reg_by_day}
-
         while current <= end_ts:
             timeseries.append({
                 "date": str(current),
@@ -1916,21 +2098,17 @@ def get_event_details_for_admin(request):
 
     # ---------------- STAGES DETAIL ----------------
     stages_data = []
-
     for stage in event.stages.all().order_by("start_date"):
         groups = stage.groups.all()
         group_details = []
         total_teams_in_stage = 0
 
         for group in groups:
-            # Get all leaderboards for this group
-            leaderboards = group.leaderboards.all()
-            matches = Match.objects.filter(leaderboard__in=leaderboards)
-
-            # Count distinct teams in matches
-            teams_in_group = TournamentTeamMatchStats.objects.filter(
-                match__in=matches
-            ).values("tournament_team").distinct().count()
+            teams_in_group = 0
+            # iterate over leaderboards manually
+            for leaderboard in group.leaderboards.all():
+                for match in leaderboard.matches.all():
+                    teams_in_group += TournamentTeamMatchStats.objects.filter(match=match).values("tournament_team").distinct().count()
 
             if teams_in_group == 0:
                 teams_in_group = event.tournament_teams.count()
