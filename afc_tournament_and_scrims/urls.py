@@ -26,4 +26,5 @@ urlpatterns = [
     path('get-average-participants-per-event/', get_average_participants_per_event, name='get_average_participants_per_event'),
     path('get-most-popular-event-format/', get_most_popular_event_format, name='get_most_popular_event_format'),
     path('register-for-event/', register_for_event, name='register_for_event'),
+    path('get-event-details-for-admin/', get_event_details_for_admin, name='get_event_details_for_admin'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
