@@ -13,10 +13,13 @@ def lookup_ip(ip):
     try:
         response = reader.city(ip)
         return {
-            "country": response.country.name,
-            "country_code": response.country.iso_code,
-            "continent": response.continent.name
+            "response": response,
         }
+        # return {
+        #     "country": response.country.name,
+        #     "country_code": response.country.iso_code,
+        #     "continent": response.continent.name
+        # }
     except geoip2.errors.AddressNotFoundError:
         # IP not in database
         return None
