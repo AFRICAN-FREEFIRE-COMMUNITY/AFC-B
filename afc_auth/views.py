@@ -172,17 +172,17 @@ def login(request):
         response = requests.get(f"https://ipinfo.io/{ip}/json")
         response = response.json()
 
-        # if geo:
-        #     print(geo["country_code"], geo["country"])
+        
 
-        # LoginHistory.objects.create(
-        #     user=user,
-        #     ip_address=ip,
-        #     continent=geo["continent"] if geo else None,
-        #     country_code=geo["country_code"] if geo else None,
-        #     country=geo["country"] if geo else None,
-        #     user_agent=request.META.get("HTTP_USER_AGENT")
-        # )
+        LoginHistory.objects.create(
+            user=user,
+            ip_address=ip,
+            user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            country=response.get("country"),
+            city=response.get("city"),
+            region=response.get("region"),
+            timezone=response.get("timezone")
+        )
 
         # Return success response with the session token
         return Response({

@@ -56,8 +56,10 @@ class LoginHistory(models.Model):
     ip_address = models.CharField(max_length=45)
     user_agent = models.TextField(null=True, blank=True)
     continent = models.CharField(max_length=50, null=True, blank=True)
-    country_code = models.CharField(max_length=5, null=True, blank=True)
     country = models.CharField(max_length=50, null=True, blank=True)
+    city = models.CharField(max_length=50, null=True, blank=True)
+    region = models.CharField(max_length=50, null=True, blank=True)
+    timezone = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
