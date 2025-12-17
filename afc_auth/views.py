@@ -51,6 +51,10 @@ from django.utils.http import urlsafe_base64_encode
 import requests
 from django.conf import settings
 
+
+from utils.ipinfo_lookup import lookup_ip
+
+
 def generate_session_token(length=16):
     """Generate a random 16-character token."""
     characters = string.ascii_letters + string.digits
@@ -156,9 +160,18 @@ def login(request):
         user.last_login = timezone.now()
         user.save()
 
+        ip = get_client_ip(request)
+        geo = lookup_ip(ip)
+
+        if geo:
+            print(geo["country_code"], geo["country"])
+
         LoginHistory.objects.create(
             user=user,
             ip_address=get_client_ip(request),
+            continent=geo["continent"] if geo else None,
+            country_code=geo["country_code"] if geo else None,
+            country=geo["country"] if geo else None,
             user_agent=request.META.get("HTTP_USER_AGENT")
         )
 
