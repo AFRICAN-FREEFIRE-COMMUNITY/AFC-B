@@ -43,5 +43,7 @@ urlpatterns = [
     path('unban-player/', unban_player, name='unban_player'),
     path("connect-discord/callback/", discord_callback, name="discord_callback"),
     path("connect-discord/", connect_discord, name="connect_discord"),
+    path("get-all-login-history/", get_all_login_history, name="get_all_login_history"),
+    path("get-user-login-history/", get_user_login_history, name="get_user_login_history"),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

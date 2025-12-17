@@ -1910,3 +1910,45 @@ def discord_callback(request):
 
     # ---- SUCCESS ----
     return redirect(f"{return_url}?discord=connected")
+
+
+@api_view(["GET"])
+def get_all_login_history(request):
+    histories = LoginHistory.objects.all().order_by('-timestamp')
+    history_data = []
+
+    for history in histories:
+        history_data.append({
+            "user": history.user.username,
+            "ip_address": history.ip_address,
+            "user_agent": history.user_agent,
+            "timestamp": history.created_at
+        })
+
+    return Response({"login_history": history_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def get_user_login_history(request):
+    username = request.data.get("username")
+    email = request.data.get("email")
+
+    if not username or not email:
+        return Response({"message": "Username and email are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(username=username, email=email)
+    except User.DoesNotExist:
+        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    histories = LoginHistory.objects.filter(user=user).order_by('-timestamp')
+    history_data = []
+
+    for history in histories:
+        history_data.append({
+            "ip_address": history.ip_address,
+            "user_agent": history.user_agent,
+            "timestamp": history.created_at
+        })
+
+    return Response({"login_history": history_data}, status=status.HTTP_200_OK)
