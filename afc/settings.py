@@ -232,4 +232,5 @@ FRONTEND_URL_LOCAL = "http://localhost:3000"
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
-GEOIP_PATH = "/home/ubuntu/geoip"
+# GEOIP_PATH = "/home/ubuntu/geoip"
+GEOIP_PATH = "/home/ubuntu/ipinfo"
