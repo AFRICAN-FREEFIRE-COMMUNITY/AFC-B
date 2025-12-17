@@ -16,7 +16,6 @@ from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
 
-from afc_auth.utils import get_client_ip
 from .models import AdminHistory, LoginHistory, LoginHistory, Roles, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
@@ -53,6 +52,15 @@ from django.conf import settings
 
 
 from utils.ipinfo_lookup import lookup_ip
+
+def get_client_ip(request):
+    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+    if x_forwarded_for:
+        # X-Forwarded-For may contain multiple IPs
+        ip = x_forwarded_for.split(",")[0].strip()
+    else:
+        ip = request.META.get("REMOTE_ADDR")
+    return ip
 
 
 def generate_session_token(length=16):
@@ -168,7 +176,7 @@ def login(request):
 
         LoginHistory.objects.create(
             user=user,
-            ip_address=get_client_ip(request),
+            ip_address=ip,
             continent=geo["continent"] if geo else None,
             country_code=geo["country_code"] if geo else None,
             country=geo["country"] if geo else None,
