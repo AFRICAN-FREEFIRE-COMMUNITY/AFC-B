@@ -1914,7 +1914,7 @@ def discord_callback(request):
 
 @api_view(["GET"])
 def get_all_login_history(request):
-    histories = LoginHistory.objects.all().order_by('-timestamp')
+    histories = LoginHistory.objects.all().order_by('-created_at')
     history_data = []
 
     for history in histories:
@@ -1941,7 +1941,7 @@ def get_user_login_history(request):
     except User.DoesNotExist:
         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    histories = LoginHistory.objects.filter(user=user).order_by('-timestamp')
+    histories = LoginHistory.objects.filter(user=user).order_by('-created_at')
     history_data = []
 
     for history in histories:
