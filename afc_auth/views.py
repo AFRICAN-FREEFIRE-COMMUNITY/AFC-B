@@ -190,7 +190,8 @@ def login(request):
             'user': {
                 'id': user.user_id,
                 'username': user.username,
-            }
+            },
+            "geo": geo
         }, status=status.HTTP_200_OK)
     else:
         # Authentication failed, return error response
