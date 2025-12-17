@@ -15,7 +15,9 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
-from .models import AdminHistory, Roles, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+
+from afc_auth.utils import get_client_ip
+from .models import AdminHistory, LoginHistory, LoginHistory, Roles, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -153,6 +155,12 @@ def login(request):
         user.session_token = session_token
         user.last_login = timezone.now()
         user.save()
+
+        LoginHistory.objects.create(
+            user=user,
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get("HTTP_USER_AGENT")
+        )
 
         # Return success response with the session token
         return Response({
@@ -1138,7 +1146,8 @@ def get_all_user_and_user_roles(request):
             "role": user.role,
             "status": user.status,
             "last_login": user.last_login,
-            "roles": roles
+            "roles": roles,
+            "created_at": user.created_at
         })
 
     return Response({"users": users_data}, status=status.HTTP_200_OK)
