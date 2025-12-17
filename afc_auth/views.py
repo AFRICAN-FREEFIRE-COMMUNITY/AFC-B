@@ -1946,8 +1946,10 @@ def get_all_login_history(request):
             "ip_address": history.ip_address,
             "user_agent": history.user_agent,
             "country": history.country,
-            "country_code": history.country_code,
+            "region": history.region,
+            "city": history.city,
             "continent": history.continent,
+            "timezone": history.timezone,
             "timestamp": history.created_at
         })
 
