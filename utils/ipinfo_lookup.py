@@ -1,59 +1,30 @@
 # utils/ipinfo_lookup.py
-
 import pandas as pd
-import ipaddress
-from functools import lru_cache
+from ipaddress import ip_network, ip_address
 
-IPINFO_CSV_PATH = "/home/ubuntu/ipinfo/ipinfo_lite.csv"
+IPINFO_FILE = "/home/ubuntu/ipinfo/ipinfo_lite.csv"
 
-_ip_networks = None  # in-memory cache
+print("Loading IP info CSV...")  # will print when server starts
+df = pd.read_csv(IPINFO_FILE)
+networks = []
 
+for _, row in df.iterrows():
+    networks.append({
+        "network": ip_network(row["network"]),
+        "country": row["country"],
+        "country_code": row["country_code"],
+        "continent": row.get("continent", None)
+    })
 
-def load_ipinfo():
-    """
-    Load IPinfo CSV ONCE into memory.
-    """
-    global _ip_networks
+print(f"Loaded {len(networks)} IP ranges.")
 
-    if _ip_networks is not None:
-        return
-
-    df = pd.read_csv(IPINFO_CSV_PATH)
-
-    networks = []
-    for row in df.itertuples(index=False):
-        try:
-            networks.append({
-                "network": ipaddress.ip_network(row.network),
-                "country": row.country,
-                "country_code": row.country_code,
-            })
-        except ValueError:
-            continue
-
-    _ip_networks = networks
-
-
-@lru_cache(maxsize=5000)
-def lookup_ip(ip_address: str):
-    """
-    Lookup country info for an IP.
-    """
-    if not ip_address:
-        return None
-
-    load_ipinfo()  # LAZY LOAD
-
+def lookup_ip(ip):
     try:
-        ip = ipaddress.ip_address(ip_address)
+        ip_obj = ip_address(ip)
     except ValueError:
         return None
 
-    for net in _ip_networks:
-        if ip in net["network"]:
-            return {
-                "country": net["country"],
-                "country_code": net["country_code"],
-            }
-
+    for net in networks:
+        if ip_obj in net["network"]:
+            return net
     return None
