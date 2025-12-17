@@ -2085,6 +2085,14 @@ def get_event_details_for_admin(request):
             })
             current += timedelta(days=1)
 
+    
+    # Recent Registrations (last 5)
+    recent_registrations = (
+        reg_qs
+        .order_by("-registration_date")[:5]
+        .values("competitor_name", "registration_date", "status")
+    )
+
     # ---------------- TEAM STATUS ----------------
     active_teams = event.tournament_teams.filter(status="active").count()
     disqualified_teams = event.tournament_teams.filter(status="disqualified").count()
@@ -2165,7 +2173,8 @@ def get_event_details_for_admin(request):
             "registration_window_days": registration_window_days,
             "days_left_for_registration": days_until_registration_close,
             "registration_timeseries": timeseries,
-            "peak_registration": peak_registration
+            "peak_registration": peak_registration,
+            "recent_registrations": list(recent_registrations)
         },
         "team_status": {
             "active": active_teams,
