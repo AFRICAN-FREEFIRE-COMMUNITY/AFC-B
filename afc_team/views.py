@@ -139,7 +139,13 @@ def invite_member(request):
 
     try:
         # Validate inviter
-        inviter = User.objects.get(session_token=session_token)
+        # inviter = User.objects.get(session_token=session_token)
+        inviter = validate_token(session_token)
+        if not inviter:
+            return Response(
+                {"message": "Invalid or expired session token."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         # Validate the team and check if the inviter is the owner or captain
         team = Team.objects.get(team_id=team_id, team_owner=inviter)
@@ -194,7 +200,12 @@ def review_invitation(request):
 
     try:
         # Validate the user
-        user = User.objects.get(session_token=session_token)
+        user = validate_token(session_token)
+        if not user:
+            return Response(
+                {"message": "Invalid or expired session token."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         # Validate the invite
         invite = Invite.objects.get(invite_id=invite_id, invitee=user)
@@ -249,10 +260,12 @@ def rank_teams_into_tiers(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Fetch all teams and calculate points
     team_points = {}
@@ -354,7 +367,12 @@ def disband_team(request):
 
     try:
         # Validate user
-        user = User.objects.get(session_token=session_token)
+        user = validate_token(session_token)
+        if not user:
+            return Response(
+                {"message": "Invalid or expired session token."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         # Validate team ownership
         team = Team.objects.get(team_id=team_id, team_owner=user)
@@ -403,7 +421,13 @@ def transfer_ownership(request):
 
     try:
         # Identify the logged-in user (current owner)
-        current_owner = User.objects.get(session_token=session_token)
+        # current_owner = User.objects.get(session_token=session_token)
+        current_owner = validate_token(session_token)
+        if not current_owner:
+            return Response(
+                {"message": "Invalid or expired session token."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         # Find the team where the user is the owner
         team = Team.objects.get(team_owner=current_owner)
@@ -466,7 +490,13 @@ def send_join_request(request):
 
     try:
         # Identify the requester
-        requester = User.objects.get(session_token=session_token)
+        # requester = User.objects.get(session_token=session_token)
+        requester = validate_token(session_token)
+        if not requester:
+            return Response(
+                {"message": "Invalid or expired session token."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         # Ensure the team exists
         team = Team.objects.get(team_id=team_id)
@@ -506,10 +536,12 @@ def review_join_request(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     
     request_id = request.data.get("request_id")
     decision = request.data.get("decision")  # 'approved' or 'denied'
@@ -584,10 +616,12 @@ def view_join_requests(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     try:
         # Find the team where the user is the owner
@@ -660,10 +694,12 @@ def edit_team(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Extract data from request
     team_id = request.data.get("team_id")
@@ -853,10 +889,12 @@ def get_user_current_team(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     try:
         team_member = TeamMembers.objects.select_related("team").get(member=user)
@@ -940,10 +978,12 @@ def exit_team(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     try:
         team_member = TeamMembers.objects.select_related("team").get(member=user)
@@ -980,10 +1020,12 @@ def generate_invite_link(request):
     
     session_token = session_token.split(" ")[1]
 
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     try:
         team = Team.objects.get(team_owner=user)
@@ -1009,10 +1051,12 @@ def respond_invite(request, invite_id):
     
     session_token = session_token.split(" ")[1]
     
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     try:
         invite = Invite.objects.get(invite_id=invite_id)
@@ -1090,10 +1134,12 @@ def manage_team_roster(request):
 
         session_token = session_token.split(" ")[1]
 
-        try:
-            user = User.objects.get(session_token=session_token)
-        except User.DoesNotExist:
-            return Response({"error": "Invalid session"}, status=401)
+        user = validate_token(session_token)
+        if not user:
+            return Response(
+                {"message": "Invalid or expired session token."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         team_id = request.data.get("team_id")
         updates = request.data.get("updates", [])
@@ -1191,10 +1237,12 @@ def kick_team_member(request):
 
         session_token = session_token.split(" ")[1]
 
-        try:
-            user = User.objects.get(session_token=session_token)
-        except User.DoesNotExist:
-            return Response({"error": "Invalid session"}, status=401)
+        user = validate_token(session_token)
+        if not user:
+            return Response(
+                {"message": "Invalid or expired session token."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         team_id = request.data.get("team_id")
         member_id = request.data.get("member_id")
@@ -1261,10 +1309,12 @@ def join_team(request):
 
     session_token = session_token.split(" ")[1]
 
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     try:
         team = Team.objects.get(team_id=team_id)
