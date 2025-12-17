@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_date
 
-from afc_auth.views import assign_discord_role, check_discord_membership
+from afc_auth.views import assign_discord_role, check_discord_membership, validate_token
 from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, Leaderboard, RegisteredCompetitors, StageCompetitor, StageGroups, Stages, StreamChannel, TournamentTeamMatchStats
@@ -44,9 +44,12 @@ def create_leaderboard(request):
     if not session_token:
         return Response({"error": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    user = User.objects.filter(login_session_token=session_token).first()
+    user = validate_token(session_token)
     if not user:
-        return Response({"error": "Invalid session"}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Ensure only admins and moderators can create leaderboards
     if user.role not in ["admin", "moderator"]:
@@ -254,10 +257,12 @@ def create_event(request):
     token = session_token.split(" ")[1]
 
     # Authenticate user
-    try:
-        user = User.objects.get(session_token=token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Permissions
     if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
@@ -517,10 +522,12 @@ def edit_event(request):
     token = session_token.split(" ")[1]
 
     # Authenticate user
-    try:
-        user = User.objects.get(session_token=token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Permission check
     if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
@@ -908,10 +915,13 @@ def get_event_details(request):
     token = session_token.split(" ")[1]
 
     # Authenticate user
-    try:
-        user = User.objects.get(session_token=token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
@@ -1099,10 +1109,12 @@ def register_for_event(request):
     session_token = session_token.split(" ")[1]
 
     # Identify logged-in user
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({'status': 'error', 'message': 'Invalid or expired session token'}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # -------------------------
     # 2. GET EVENT & TEAM
@@ -2019,10 +2031,12 @@ def get_event_details_for_admin(request):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
     token = session_token.split(" ")[1]
 
-    try:
-        admin = User.objects.get(session_token=token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=401)
+    admin = validate_token(session_token)
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     if admin.role != "admin":
         return Response({"message": "You do not have permission to access this data."}, status=403)
@@ -2205,10 +2219,12 @@ def seed_solo_players_to_stage(request):
     if not session_token or not session_token.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
     token = session_token.split(" ")[1]
-    try:
-        admin = User.objects.get(session_token=token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=401)
+    admin = validate_token(token)
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     if admin.role != "admin":
         return Response({"message": "You do not have permission to perform this action."}, status=403)
     
@@ -2255,10 +2271,12 @@ def seed_stage_competitors_to_groups(request):
     if not session_token or not session_token.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
     token = session_token.split(" ")[1]
-    try:
-        admin = User.objects.get(session_token=token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=401)
+    admin = validate_token(token)
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     if admin.role != "admin":
         return Response({"message": "You do not have permission to perform this action."}, status=403)
     

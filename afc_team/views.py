@@ -3,6 +3,7 @@ from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+from afc_auth.views import validate_token
 from afc_leaderboard_calc import models
 from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
@@ -26,10 +27,12 @@ def create_team(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Ensure user is not in another team
     if TeamMembers.objects.filter(member=user).exists():
