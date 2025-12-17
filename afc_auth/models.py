@@ -55,8 +55,9 @@ class LoginHistory(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     ip_address = models.CharField(max_length=45)
     user_agent = models.TextField(null=True, blank=True)
+    continent = models.CharField(max_length=50, null=True, blank=True)
     country_code = models.CharField(max_length=5, null=True, blank=True)
-    country_name = models.CharField(max_length=50, null=True, blank=True)
+    country = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
