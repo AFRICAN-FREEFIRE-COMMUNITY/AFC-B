@@ -16,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
 
-from .models import AdminHistory, LoginHistory, LoginHistory, Roles, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import AdminHistory, LoginHistory, LoginHistory, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -61,6 +61,16 @@ def get_client_ip(request):
     else:
         ip = request.META.get("REMOTE_ADDR")
     return ip
+
+def validate_token(token):
+    try:
+        session = SessionToken.objects.get(token=token)
+        if session.is_expired():
+            return None
+        return session.user
+    except SessionToken.DoesNotExist:
+        return None
+
 
 
 def generate_session_token(length=16):
@@ -162,6 +172,8 @@ def login(request):
 
         # Generate a session token
         session_token = generate_session_token()
+
+        SessionToken.objects.create(user=user, token=session_token)
         
         # Save session token to the user model
         user.session_token = session_token
@@ -382,14 +394,20 @@ def ban_team(request):
         return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
-
+    
     # Identify admin/moderator
-    try:
-        user = User.objects.get(session_token=session_token)
-        if user.role not in ["admin", "moderator"]:
-            return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)            
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+
+    
+
+    if user.role not in ["admin", "moderator"]:
+            return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)           
+
 
     if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
         pass  # User has permission
@@ -456,12 +474,15 @@ def unban_team(request):
     session_token = session_token.split(" ")[1]
 
     # Identify admin/moderator
-    try:
-        user = User.objects.get(session_token=session_token)
-        if user.role not in ["admin", "moderator"]:
-            return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
+    if user.role not in ["admin", "moderator"]:
+            return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)           
     
     if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
         pass  # User has permission
@@ -512,10 +533,12 @@ def ban_player(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Check if the user has permission to ban a player
     if user.role not in ["admin", "moderator", "support"]:
@@ -572,10 +595,12 @@ def unban_player(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Check if the user has permission to unban a player
     if user.role not in ["admin", "moderator", "support"]:
@@ -632,10 +657,12 @@ def create_news(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Check if the user has permission to create news
     if user.role not in ["admin", "moderator", "support"]:
@@ -712,10 +739,12 @@ def edit_news(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Extract news ID
     news_id = request.data.get("news_id")
@@ -838,10 +867,12 @@ def delete_news(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     
 
     # Extract news ID
@@ -879,10 +910,12 @@ def edit_profile(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Extract new profile details
     full_name = request.data.get("full_name")
@@ -948,10 +981,12 @@ def get_user_profile(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Try to get UserProfile
     try:
@@ -1125,10 +1160,13 @@ def get_admin_info(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+
 
     if not user.is_admin:
         return Response({"message": "User is not an admin."}, status=status.HTTP_403_FORBIDDEN)
@@ -1190,10 +1228,12 @@ def suspend_user(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     
     if user.role != "admin":
         return Response({"message": "You do not have permission to suspend a user."}, status=status.HTTP_403_FORBIDDEN)
@@ -1233,10 +1273,12 @@ def activate_user(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     
     if user.role != "admin":
         return Response({"message": "You do not have permission to activate a user."}, status=status.HTTP_403_FORBIDDEN)
@@ -1320,11 +1362,10 @@ def assign_roles_to_user(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        admin_user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
+    admin_user = validate_token(session_token)
+    if not admin_user:
         return Response(
-            {"status": "error", "message": "Invalid session token."},
+            {"message": "Invalid or expired session token."},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
@@ -1406,10 +1447,12 @@ def edit_user_roles(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        admin_user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    admin_user = validate_token(session_token)
+    if not admin_user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     
     if admin_user.role != "admin":
         return Response({"message": "You do not have permission to edit user roles."}, status=status.HTTP_403_FORBIDDEN)
@@ -1460,10 +1503,12 @@ def add_role(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        admin_user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    admin_user = validate_token(session_token)
+    if not admin_user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     
     if admin_user.role != "admin":
         return Response({"message": "You do not have permission to add roles."}, status=status.HTTP_403_FORBIDDEN)
@@ -1510,10 +1555,12 @@ def delete_role(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        admin_user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    admin_user = validate_token(session_token)
+    if not admin_user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     
     if admin_user.role != "admin":
         return Response({"message": "You do not have permission to delete roles."}, status=status.HTTP_403_FORBIDDEN)
@@ -1582,10 +1629,12 @@ def search_admin_users(request):
     session_token = session_token.split(" ")[1]
 
     # Identify the logged-in user using the session token
-    try:
-        admin_user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    admin_user = validate_token(session_token)
+    if not admin_user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
     
     if admin_user.role != "admin":
         return Response({"message": "You do not have permission to search users."}, status=status.HTTP_403_FORBIDDEN)
@@ -1864,9 +1913,8 @@ def discord_callback(request):
     fail_redirect = f"{return_url}?discord=failed"
 
     # Validate user session
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
+    user = validate_token(session_token)
+    if not user:
         return redirect(fail_redirect)
 
     # ---- Exchange code → access token ----
