@@ -169,19 +169,20 @@ def login(request):
         user.save()
 
         ip = get_client_ip(request)
-        geo = lookup_ip(ip)  # Replace with 'ip' for real IP lookup
+        response = requests.get(f"https://ipinfo.io/{ip}/json")
+        response = response.json()
 
-        if geo:
-            print(geo["country_code"], geo["country"])
+        # if geo:
+        #     print(geo["country_code"], geo["country"])
 
-        LoginHistory.objects.create(
-            user=user,
-            ip_address=ip,
-            continent=geo["continent"] if geo else None,
-            country_code=geo["country_code"] if geo else None,
-            country=geo["country"] if geo else None,
-            user_agent=request.META.get("HTTP_USER_AGENT")
-        )
+        # LoginHistory.objects.create(
+        #     user=user,
+        #     ip_address=ip,
+        #     continent=geo["continent"] if geo else None,
+        #     country_code=geo["country_code"] if geo else None,
+        #     country=geo["country"] if geo else None,
+        #     user_agent=request.META.get("HTTP_USER_AGENT")
+        # )
 
         # Return success response with the session token
         return Response({
@@ -191,13 +192,12 @@ def login(request):
                 'id': user.user_id,
                 'username': user.username,
             },
-            "geo": geo
+            "geo": response
         }, status=status.HTTP_200_OK)
     else:
         # Authentication failed, return error response
         return Response({
-            'message': 'Invalid username/email or password',
-            'geo': geo
+            'message': 'Invalid username/email or password'
         }, status=status.HTTP_401_UNAUTHORIZED)
 
 
