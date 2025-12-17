@@ -33,7 +33,7 @@ class User(AbstractUser):
     discord_username = models.CharField(max_length=100, null=True, blank=True)
     discord_avatar = models.URLField(null=True, blank=True)
     discord_connected = models.BooleanField(default=False)
-    # created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     USERNAME_FIELD = "username"  # Set in_game_name as username
     REQUIRED_FIELDS = ["email", "full_name"]
@@ -49,6 +49,13 @@ class UserProfile(models.Model):
     state = models.CharField(max_length=40, null=True)
     profile_pic = models.ImageField(upload_to='profile_pictures/', null=True)
     esports_pic = models.ImageField(upload_to='esports_pictures/', null=True)
+
+
+class LoginHistory(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    ip_address = models.CharField(max_length=45)
+    user_agent = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
 
 class Roles(models.Model):
