@@ -24,7 +24,7 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)
     password = models.CharField(max_length=120, blank=False, null=False)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False, default="player")
-    session_token = models.CharField(max_length=16)
+    # session_token = models.CharField(max_length=16)
     full_name = models.CharField(max_length=40)
     country = models.CharField(max_length=40)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=False, default="active")
@@ -42,42 +42,42 @@ class User(AbstractUser):
         return self.username
 
 
-class User(AbstractUser):
-    ROLE_CHOICES = [
-        ("admin", "Admin"),
-        ("moderator", "Moderator"),
-        ("support", "Support"),
-        ("player", "Player")
-    ]
+# class User(AbstractUser):
+#     ROLE_CHOICES = [
+#         ("admin", "Admin"),
+#         ("moderator", "Moderator"),
+#         ("support", "Support"),
+#         ("player", "Player")
+#     ]
 
-    STATUS_CHOICES = [
-        ("active", "Active"),
-        ("suspended", "Suspended")
-    ]
+#     STATUS_CHOICES = [
+#         ("active", "Active"),
+#         ("suspended", "Suspended")
+#     ]
 
-    user_id = models.AutoField(primary_key=True)
-    username = models.CharField(max_length=40, unique=True)
-    # in_game_name = models.CharField(max_length=12, unique=True)
-    uid = models.CharField(max_length=15, unique=True)
-    email = models.EmailField(unique=True)
-    password = models.CharField(max_length=120, blank=False, null=False)
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False, default="player")
-    session_token = models.CharField(max_length=16)
-    full_name = models.CharField(max_length=40)
-    country = models.CharField(max_length=40)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=False, default="active")
-    last_login = models.DateTimeField(null=True)
-    discord_id = models.CharField(max_length=50, null=True, blank=True)
-    discord_username = models.CharField(max_length=100, null=True, blank=True)
-    discord_avatar = models.URLField(null=True, blank=True)
-    discord_connected = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
+#     user_id = models.AutoField(primary_key=True)
+#     username = models.CharField(max_length=40, unique=True)
+#     # in_game_name = models.CharField(max_length=12, unique=True)
+#     uid = models.CharField(max_length=15, unique=True)
+#     email = models.EmailField(unique=True)
+#     password = models.CharField(max_length=120, blank=False, null=False)
+#     role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False, default="player")
+#     session_token = models.CharField(max_length=16)
+#     full_name = models.CharField(max_length=40)
+#     country = models.CharField(max_length=40)
+#     status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=False, default="active")
+#     last_login = models.DateTimeField(null=True)
+#     discord_id = models.CharField(max_length=50, null=True, blank=True)
+#     discord_username = models.CharField(max_length=100, null=True, blank=True)
+#     discord_avatar = models.URLField(null=True, blank=True)
+#     discord_connected = models.BooleanField(default=False)
+#     created_at = models.DateTimeField(auto_now_add=True)
 
-    USERNAME_FIELD = "username"  # Set in_game_name as username
-    REQUIRED_FIELDS = ["email", "full_name"]
+#     USERNAME_FIELD = "username"  # Set in_game_name as username
+#     REQUIRED_FIELDS = ["email", "full_name"]
 
-    def __str__(self):
-        return self.username
+#     def __str__(self):
+#         return self.username
 
 
 class SessionToken(models.Model):

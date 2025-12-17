@@ -1,6 +1,8 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+
+from afc_auth.views import validate_token
 from .models import Tournament, Match, MatchLeaderboard, OverallLeaderboard, ResultImage, RegisteredTeams, MatchTeamStats  # Ensure correct model imports
 from afc_auth.models import User
 from celery import shared_task
@@ -361,10 +363,12 @@ def add_match(request):
     tournament_id = request.data.get("tournament_id")
 
     # Validate session token
-    try:
-        user = User.objects.get(login_session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"error": "Invalid session token."}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Validate tournament
     try:
@@ -400,10 +404,12 @@ def upload_team_result_based_on_match(request):
     players_kills = request.data.getlist("players_kills")
 
     # Validate session token
-    try:
-        user = User.objects.get(login_session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"error": "Invalid session token."}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Find the match based on match number
     try:
@@ -455,10 +461,12 @@ def get_match_leaderboard(request):
     match_id = request.data.get("match_id")
 
     # Validate session token
-    try:
-        user = User.objects.get(login_session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"error": "Invalid session token."}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Fetch match leaderboard
     try:
@@ -484,10 +492,12 @@ def get_overall_leaderboard(request):
     tournament_id = request.data.get("tournament_id")
 
     # Validate session token
-    try:
-        user = User.objects.get(login_session_token=session_token)
-    except User.DoesNotExist:
-        return Response({"error": "Invalid session token."}, status=401)
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     # Fetch overall leaderboard
     try:
