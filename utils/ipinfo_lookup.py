@@ -1,30 +1,25 @@
-# utils/ipinfo_lookup.py
-import pandas as pd
-from ipaddress import ip_network, ip_address
+import geoip2.database
+import os
 
-IPINFO_FILE = "/home/ubuntu/ipinfo/ipinfo_lite.csv"
+# Path to your MMDB file
+MMDB_PATH = "/home/ubuntu/ipinfo/ipinfo_lite.mmdb"
 
-print("Loading IP info CSV...")  # will print when server starts
-df = pd.read_csv(IPINFO_FILE)
-networks = []
-
-for _, row in df.iterrows():
-    networks.append({
-        "network": ip_network(row["network"]),
-        "country": row["country"],
-        "country_code": row["country_code"],
-        "continent": row.get("continent", None)
-    })
-
-print(f"Loaded {len(networks)} IP ranges.")
+reader = geoip2.database.Reader(MMDB_PATH)
 
 def lookup_ip(ip):
+    """
+    Returns country, country_code, and continent from an IP
+    """
     try:
-        ip_obj = ip_address(ip)
-    except ValueError:
+        response = reader.city(ip)
+        return {
+            "country": response.country.name,
+            "country_code": response.country.iso_code,
+            "continent": response.continent.name
+        }
+    except geoip2.errors.AddressNotFoundError:
+        # IP not in database
         return None
-
-    for net in networks:
-        if ip_obj in net["network"]:
-            return net
-    return None
+    except Exception as e:
+        print("IP lookup error:", e)
+        return None

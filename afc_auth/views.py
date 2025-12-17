@@ -168,21 +168,18 @@ def login(request):
         user.last_login = timezone.now()
         user.save()
 
-                # Get client IP
         ip = get_client_ip(request)
-        geo = lookup_ip(ip) if ip else {}
+        geo = lookup_ip(ip)
 
-        # Optional: print for debugging
         if geo:
-            print(geo.get("country_code"), geo.get("country"))
+            print(geo["country_code"], geo["country"])
 
-        # Save login history safely
         LoginHistory.objects.create(
             user=user,
             ip_address=ip,
-            continent=None,  # your lookup does not provide continent yet
-            country_code=geo.get("country_code") if geo else None,
-            country=geo.get("country") if geo else None,
+            continent=geo["continent"] if geo else None,
+            country_code=geo["country_code"] if geo else None,
+            country=geo["country"] if geo else None,
             user_agent=request.META.get("HTTP_USER_AGENT")
         )
 
