@@ -169,7 +169,7 @@ def login(request):
         user.save()
 
         ip = get_client_ip(request)
-        geo = lookup_ip("8.8.8.8")  # Replace with 'ip' for real IP lookup
+        geo = lookup_ip(ip)  # Replace with 'ip' for real IP lookup
 
         if geo:
             print(geo["country_code"], geo["country"])
