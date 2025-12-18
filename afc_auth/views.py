@@ -170,13 +170,16 @@ def login(request):
                 'message': 'Your account is not confirmed. Please verify your email address.'
             }, status=status.HTTP_403_FORBIDDEN)
 
+
+        # 🔥 CLEAR OLD SESSIONS
+        SessionToken.objects.filter(user=user).delete()
+
         # Generate a session token
         session_token = generate_session_token()
 
         SessionToken.objects.create(user=user, token=session_token)
         
         # Save session token to the user model
-        user.session_token = session_token
         user.last_login = timezone.now()
         user.save()
 
