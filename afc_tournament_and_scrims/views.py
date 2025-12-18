@@ -257,7 +257,7 @@ def create_event(request):
     token = session_token.split(" ")[1]
 
     # Authenticate user
-    user = validate_token(session_token)
+    user = validate_token(token)
     if not user:
         return Response(
             {"message": "Invalid or expired session token."},
@@ -522,7 +522,7 @@ def edit_event(request):
     token = session_token.split(" ")[1]
 
     # Authenticate user
-    user = validate_token(session_token)
+    user = validate_token(token)
     if not user:
         return Response(
             {"message": "Invalid or expired session token."},
@@ -915,7 +915,7 @@ def get_event_details(request):
     token = session_token.split(" ")[1]
 
     # Authenticate user
-    user = validate_token(session_token)
+    user = validate_token(token)
     if not user:
         return Response(
             {"message": "Invalid or expired session token."},
@@ -2031,7 +2031,7 @@ def get_event_details_for_admin(request):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
     token = session_token.split(" ")[1]
 
-    admin = validate_token(session_token)
+    admin = validate_token(token)
     if not admin:
         return Response(
             {"message": "Invalid or expired session token."},
