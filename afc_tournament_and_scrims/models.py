@@ -133,7 +133,7 @@ class Match(models.Model):
     mvp = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="mvp_matches")
     match_date = models.DateTimeField(auto_now_add=True)
     match_number = models.PositiveIntegerField()
-        match_map = models.CharField(
+    match_map = models.CharField(
         max_length=50,
         choices=[
             ('bermuda', 'Bermuda'),
