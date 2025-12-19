@@ -31,4 +31,5 @@ urlpatterns = [
     path('seed-stage-competitors-to-groups/', seed_stage_competitors_to_groups, name='seed_stage_competitors_to_groups'),
     path('disqualify-registered-competitor/', disqualify_registered_competitor, name='disqualify_registered_competitor'),
     path('reactivate-registered-competitor/', reactivate_registered_competitor, name='reactivate_registered_competitor'),
+    path('delete-event/', delete_event, name='delete_event'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
