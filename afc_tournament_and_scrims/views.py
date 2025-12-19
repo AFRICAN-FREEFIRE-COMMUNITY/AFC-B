@@ -1031,7 +1031,7 @@ def get_event_details(request):
                 registered.append({
                     "player_id": reg.user.user_id,
                     "username": reg.user.username,
-                    "status": "registered"
+                    "status": reg.status
                 })
     else:  # duo or squad
         for reg in event.registrations.all():
