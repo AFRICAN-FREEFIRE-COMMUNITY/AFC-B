@@ -2420,7 +2420,8 @@ def get_event_details_for_admin(request):
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,
-                "total_teams_in_group": teams_in_group
+                "total_teams_in_group": teams_in_group,
+                "group_discord_role_id": group.group_discord_role_id,
             })
 
         stages_data.append({
@@ -2431,6 +2432,7 @@ def get_event_details_for_admin(request):
             "number_of_groups": stage.number_of_groups,
             "total_groups": groups.count(),
             "total_teams_in_stage": total_teams_in_stage,
+            "stage_discord_role_id": stage.stage_discord_role_id,
             "groups": group_details
         })
 
