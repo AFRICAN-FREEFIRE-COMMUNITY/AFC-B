@@ -2354,18 +2354,22 @@ def disqualify_registered_competitor(request):
     
     # stage_id = request.data.get("stage_id")
     competitor_id = request.data.get("competitor_id")
+    event_id = request.data.get("event_id")
 
-    if not competitor_id:
-        return Response({"message": "competitor_id is required."}, status=400)
+    if not competitor_id or not event_id:
+        return Response({"message": "competitor_id and event_id are required."}, status=400)
     
+    user = get_object_or_404(User, user_id=competitor_id)
+
+    event = get_object_or_404(Event, event_id=event_id)
     # stage = get_object_or_404(Stages, stage_id=stage_id)
-    competitor = get_object_or_404(RegisteredCompetitors, id=competitor_id)
+    competitor = get_object_or_404(RegisteredCompetitors, user=user, event=event)
 
     competitor.status = "disqualified"
     competitor.save()
 
     return Response({
-        "message": f"Competitor '{competitor.player.competitor_name}' has been disqualified from event '{competitor.event.event_name}'."
+        "message": f"Competitor '{user.username}' has been disqualified from event '{competitor.event.event_name}'."
     }, status=200)
 
 
@@ -2387,12 +2391,17 @@ def reactivate_registered_competitor(request):
     
     # stage_id = request.data.get("stage_id")
     competitor_id = request.data.get("competitor_id")
+    event_id = request.data.get("event_id")
 
-    if not competitor_id:
-        return Response({"message": "competitor_id is required."}, status=400)
-    
+    if not competitor_id or not event_id:
+        return Response({"message": "competitor_id and event_id are required."}, status=400)
+
     # stage = get_object_or_404(Stages, stage_id=stage_id)
-    competitor = get_object_or_404(RegisteredCompetitors, id=competitor_id)
+
+    user = get_object_or_404(User, user_id=competitor_id)
+    event = get_object_or_404(Event, event_id=event_id)
+
+    competitor = get_object_or_404(RegisteredCompetitors, user=user, event=event)
 
     competitor.status = "registered"
     competitor.save()
