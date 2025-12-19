@@ -354,7 +354,8 @@ def create_event(request):
             end_date=parse_date(stage_data["end_date"]),
             number_of_groups=stage_data["number_of_groups"],
             stage_format=stage_data["stage_format"],
-            teams_qualifying_from_stage=stage_data["teams_qualifying_from_stage"]
+            teams_qualifying_from_stage=stage_data["teams_qualifying_from_stage"],
+            stage_discord_role_id = stage_data["stage_discord_role_id"],
         )
 
         # Create groups inside this stage
@@ -367,6 +368,7 @@ def create_event(request):
                 playing_date=parse_date(group["playing_date"]),
                 playing_time=group["playing_time"],
                 teams_qualifying=group["teams_qualifying"],
+                group_discord_role_id =  group["group_discord_role_id"],
             )
 
     return Response({
@@ -644,7 +646,8 @@ def edit_event(request):
                 end_date=parse_date(stage_data["end_date"]),
                 number_of_groups=stage_data["number_of_groups"],
                 stage_format=stage_data["stage_format"],
-                teams_qualifying_from_stage=stage_data["teams_qualifying_from_stage"]
+                teams_qualifying_from_stage=stage_data["teams_qualifying_from_stage"],
+                stage_discord_role_id = stage_data["stage_discord_role_id"],
             )
 
             # Add groups
@@ -654,7 +657,8 @@ def edit_event(request):
                     group_name=group["group_name"],
                     playing_date=parse_date(group["playing_date"]),
                     playing_time=group["playing_time"],
-                    teams_qualifying=group["teams_qualifying"]
+                    teams_qualifying=group["teams_qualifying"],
+                    group_discord_role_id =  group["group_discord_role_id"],
                 )
 
     return Response({
