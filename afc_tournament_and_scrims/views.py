@@ -377,6 +377,40 @@ def create_event(request):
     }, status=201)
 
 
+@api_view(["POST"])
+def delete_event(request):
+    session_token = request.headers.get("Authorization")
+
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    token = session_token.split(" ")[1]
+
+    # Authenticate user
+    user = validate_token(token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+
+    # Permission check
+    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
+        return Response({"message": "You do not have permission to delete an event."}, status=403)
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    try:
+        event = Event.objects.get(event_id=event_id)
+    except Event.DoesNotExist:
+        return Response({"message": "Event not found."}, status=404)
+
+    event.delete()
+
+    return Response({"message": "Event deleted successfully."}, status=200)
+
 # @api_view(["POST"])
 # def edit_event(request):
 #     session_token = request.headers.get("Authorization")
@@ -512,6 +546,9 @@ def create_event(request):
 #         "message": "Event updated successfully.",
 #         "event_id": event.event_id
 #     }, status=200)
+
+
+
 
 
 @api_view(["POST"])
