@@ -89,6 +89,7 @@ class Stages(models.Model):
     number_of_groups = models.PositiveIntegerField()
     stage_format = models.CharField(max_length=100, choices=STAGE_FORMAT_CHOICES)
     teams_qualifying_from_stage = models.PositiveIntegerField()
+    stage_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
 
 class StageGroups(models.Model):
     group_id = models.AutoField(primary_key=True)
@@ -97,6 +98,7 @@ class StageGroups(models.Model):
     playing_date = models.DateField()
     playing_time = models.TimeField()
     teams_qualifying = models.PositiveIntegerField()
+    group_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
 
 
 # ---------------- Registered Competitors ----------------
