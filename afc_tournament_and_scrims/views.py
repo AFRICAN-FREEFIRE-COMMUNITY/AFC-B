@@ -10,7 +10,7 @@ from django.utils.dateparse import parse_date
 from afc_auth.views import assign_discord_role, check_discord_membership, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroups, Stages, StreamChannel
+from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats
 from afc_auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -24,7 +24,6 @@ from django.db.models.functions import TruncDate
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from afc_leaderboard.models import Leaderboard, Match, TournamentTeam, TournamentTeamMember, TournamentTeamMatchStats
 # Create your views here.
 
 from rest_framework.pagination import PageNumberPagination
