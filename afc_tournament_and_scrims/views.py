@@ -8,9 +8,9 @@ from rest_framework import status
 from django.utils.dateparse import parse_date
 
 from afc_auth.views import assign_discord_role, check_discord_membership, remove_discord_role, validate_token
-from afc_leaderboard_calc.models import Match, MatchLeaderboard
+# from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, Leaderboard, RegisteredCompetitors, StageCompetitor, StageGroups, Stages, StreamChannel, TournamentTeamMatchStats
+from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroups, Stages, StreamChannel
 from afc_auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -24,6 +24,7 @@ from django.db.models.functions import TruncDate
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+from afc_leaderboard.models import Leaderboard, Match, TournamentTeam, TournamentTeamMember, TournamentTeamMatchStats
 # Create your views here.
 
 from rest_framework.pagination import PageNumberPagination
@@ -2374,6 +2375,21 @@ def get_event_details_for_admin(request):
         .values("competitor_name", "registration_date", "status")
     )
 
+    # ---------------- All REGISTRATIONS (ADDED) ----------------
+    all_registrations = (
+        reg_qs
+        .annotate(
+            competitor_name=Case(
+                When(user__isnull=False, then=F("user__username")),
+                When(team__isnull=False, then=F("team__team_name")),
+                default=Value("Unknown"),
+                output_field=CharField()
+            )
+        )
+        .order_by("-registration_date")
+        .values("competitor_name", "registration_date", "status")
+    )
+
     # ---------------- TEAM STATUS ----------------
     active_teams = event.tournament_teams.filter(status="active").count()
     disqualified_teams = event.tournament_teams.filter(status="disqualified").count()
@@ -2481,6 +2497,7 @@ def get_event_details_for_admin(request):
             "days_until_registration_close": days_until_registration_close,
             "average_registrations_per_day": avg_reg_per_day,
             "prizepool": prizepool_val,
+            "prize_distribution": event.prize_distribution,
         },
         "registration_timeline": {
             "registration_start_date": event.registration_open_date,
@@ -2490,6 +2507,7 @@ def get_event_details_for_admin(request):
             "registration_timeseries": timeseries,
             "peak_registration": peak_registration,
             "recent_registrations": list(recent_registrations),
+            "all_registrations": list(all_registrations),
         },
         "team_status": {
             "active": active_teams,
