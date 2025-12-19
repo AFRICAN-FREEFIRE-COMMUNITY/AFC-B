@@ -29,5 +29,6 @@ urlpatterns = [
     path('get-event-details-for-admin/', get_event_details_for_admin, name='get_event_details_for_admin'),
     path('seed-solo-players-to-stage/', seed_solo_players_to_stage, name='seed_solo_players_to_stage'),
     path('seed-stage-competitors-to-groups/', seed_stage_competitors_to_groups, name='seed_stage_competitors_to_groups'),
-    
+    path('disqualify-registered-competitor/', disqualify_registered_competitor, name='disqualify_registered_competitor'),
+    path('reactivate-registered-competitor/', reactivate_registered_competitor, name='reactivate_registered_competitor'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

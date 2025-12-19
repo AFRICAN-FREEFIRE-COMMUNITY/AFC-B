@@ -2219,50 +2219,59 @@ def get_event_details_for_admin(request):
 @api_view(["POST"])
 def seed_solo_players_to_stage(request):
     # ---------------- AUTH ----------------
-    session_token = request.headers.get("Authorization")
-    if not session_token or not session_token.startswith("Bearer "):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
-    token = session_token.split(" ")[1]
-    admin = validate_token(token)
-    if not admin:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+
+    try:
+        admin = validate_token(auth.split(" ")[1])
+    except:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
     if admin.role != "admin":
         return Response({"message": "You do not have permission to perform this action."}, status=403)
-    
+
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
 
-    if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
-    
+    if not event_id or not stage_id:
+        return Response({"message": "event_id and stage_id are required."}, status=400)
+
     event = get_object_or_404(Event, event_id=event_id)
 
-    # # Get first stage (assuming stage ordering by start_date)
-    # first_stage = event.stages.all().order_by("start_date").first()
-    # if not first_stage:
-    #     return Response({"message": "No stages found for this event."}, status=400)
+    # ✅ ENSURE SOLO EVENT
+    if event.participant_type != "solo":
+        return Response({"message": "This event is not a solo event."}, status=400)
+
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
-    # Get all registered solo players
-    solo_players = RegisteredCompetitors.objects.filter(event=event, user__isnull=False, team__isnull=True, status="registered")
+    solo_players = RegisteredCompetitors.objects.filter(
+        event=event,
+        user__isnull=False,
+        team__isnull=True,
+        status="registered"
+    )
 
     seeded_count = 0
+
     for reg in solo_players:
-        # Avoid duplicates
-        obj, created = StageCompetitor.objects.get_or_create(
+        _, created = StageCompetitor.objects.get_or_create(
             stage=stage,
             player=reg,
             defaults={"status": "active"}
         )
+
         if created:
             seeded_count += 1
+
+            # ✅ SAFE DISCORD ASSIGN
+            if reg.user.discord_id and stage.stage_discord_role_id:
+                assign_discord_role(reg.user.discord_id, stage.stage_discord_role_id)
 
     return Response({
         "message": f"Seeded {seeded_count} solo players into stage '{stage.stage_name}'."
     }, status=200)
+
 
 
 from random import shuffle
@@ -2270,6 +2279,65 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 
 @api_view(["POST"])
 def seed_stage_competitors_to_groups(request):
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    try:
+        admin = validate_token(auth.split(" ")[1])
+    except:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    stage_id = request.data.get("stage_id")
+    if not stage_id:
+        return Response({"message": "stage_id is required."}, status=400)
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+
+    groups = list(stage.groups.all())
+    if not groups:
+        return Response({"message": "No groups found for this stage."}, status=400)
+
+    competitors = list(
+        stage.competitors.filter(status="active", player__isnull=False)
+    )
+
+    if not competitors:
+        return Response({"message": "No competitors found to seed."}, status=400)
+
+    shuffle(competitors)
+
+    group_count = len(groups)
+    seeded_count = 0
+
+    for idx, competitor in enumerate(competitors):
+        group = groups[idx % group_count]
+
+        _, created = StageGroupCompetitor.objects.get_or_create(
+            stage_group=group,
+            player=competitor.player,
+            defaults={"status": "active"}
+        )
+
+        if created:
+            seeded_count += 1
+
+            # ✅ SAFE DISCORD ASSIGN
+            user = competitor.player.user
+            if user.discord_id and group.group_discord_role_id:
+                assign_discord_role(user.discord_id, group.group_discord_role_id)
+
+    return Response({
+        "message": f"Seeded {seeded_count} competitors into {group_count} groups for stage '{stage.stage_name}'."
+    }, status=200)
+
+
+@api_view(["POST"])
+def disqualify_registered_competitor(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
@@ -2284,35 +2352,51 @@ def seed_stage_competitors_to_groups(request):
     if admin.role != "admin":
         return Response({"message": "You do not have permission to perform this action."}, status=403)
     
+    # stage_id = request.data.get("stage_id")
+    competitor_id = request.data.get("competitor_id")
 
-    stage_id = request.data.get("stage_id")
-    if not stage_id:
-        return Response({"message": "stage_id is required."}, status=400)
+    if not competitor_id:
+        return Response({"message": "competitor_id is required."}, status=400)
+    
+    # stage = get_object_or_404(Stages, stage_id=stage_id)
+    competitor = get_object_or_404(RegisteredCompetitors, id=competitor_id)
 
-    stage = get_object_or_404(Stages, stage_id=stage_id)
-    groups = list(stage.groups.all())
-    if not groups:
-        return Response({"message": "No groups found for this stage."}, status=400)
-
-    competitors = list(stage.competitors.filter(status="active", player__isnull=False))
-    if not competitors:
-        return Response({"message": "No competitors found to seed."}, status=400)
-
-    shuffle(competitors)  # randomize order
-
-    group_count = len(groups)
-    seeded_count = 0
-
-    for idx, competitor in enumerate(competitors):
-        group = groups[idx % group_count]  # simple round-robin assignment
-        obj, created = StageGroupCompetitor.objects.get_or_create(
-            stage_group=group,
-            player=competitor.player,
-            defaults={"status": "active"}
-        )
-        if created:
-            seeded_count += 1
+    competitor.status = "disqualified"
+    competitor.save()
 
     return Response({
-        "message": f"Seeded {seeded_count} competitors into {group_count} groups for stage '{stage.stage_name}'."
+        "message": f"Competitor '{competitor.player.competitor_name}' has been disqualified from event '{competitor.event.event_name}'."
+    }, status=200)
+
+
+@api_view(["POST"])
+def reactivate_registered_competitor(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    token = session_token.split(" ")[1]
+    admin = validate_token(token)
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+    
+    # stage_id = request.data.get("stage_id")
+    competitor_id = request.data.get("competitor_id")
+
+    if not competitor_id:
+        return Response({"message": "competitor_id is required."}, status=400)
+    
+    # stage = get_object_or_404(Stages, stage_id=stage_id)
+    competitor = get_object_or_404(RegisteredCompetitors, id=competitor_id)
+
+    competitor.status = "registered"
+    competitor.save()
+
+    return Response({
+        "message": f"Competitor '{competitor.player.competitor_name}' has been reactivated for event '{competitor.event.event_name}'."
     }, status=200)
