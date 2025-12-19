@@ -669,32 +669,32 @@ def edit_event(request):
 
 @api_view(["GET"])
 def get_total_events_count(request):
-    total_events = Event.objects.count()
+    total_events = Event.objects.count(is_draft=False)
     return Response({"total_events": total_events}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
 def get_total_tournaments_count(request):
-    total_tournaments = Event.objects.filter(competition_type="tournament").count()
+    total_tournaments = Event.objects.filter(competition_type="tournament", is_draft=False).count()
     return Response({"total_tournaments": total_tournaments}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
 def get_total_scrims_count(request):
-    total_scrims = Event.objects.filter(competition_type="scrim").count()
+    total_scrims = Event.objects.filter(competition_type="scrim", is_draft=False).count()
     return Response({"total_scrims": total_scrims}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
 def get_upcoming_events_count(request):
-    upcoming_events = Event.objects.filter(event_status="upcoming").count()
+    upcoming_events = Event.objects.filter(event_status="upcoming", is_draft=False).count()
     return Response({"upcoming_events": upcoming_events}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
 def get_ongoing_events_count(request):
-    ongoing_events = Event.objects.filter(event_status="ongoing").count()
+    ongoing_events = Event.objects.filter(event_status="ongoing", is_draft=False).count()
     return Response({"ongoing_events": ongoing_events}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
 def get_completed_events_count(request):
-    completed_events = Event.objects.filter(event_status="completed").count()
+    completed_events = Event.objects.filter(event_status="completed", is_draft=False).count()
     return Response({"completed_events": completed_events}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])

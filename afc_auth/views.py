@@ -1727,6 +1727,17 @@ def assign_discord_role(discord_id, role_id):
     r = requests.put(url, headers=headers)
     return r.status_code == 204  # 204 = success
 
+def remove_discord_role(discord_id, role_id):
+    url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+
+    r = requests.delete(url, headers=headers)
+
+    if r.status_code != 204:
+        print(f"Failed to remove role {role_id} from {discord_id}: {r.status_code} - {r.text}")
+
+    return r.status_code == 204
+
 
 # @api_view(["GET"])
 # def discord_callback(request):
