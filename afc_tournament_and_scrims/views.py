@@ -2666,7 +2666,6 @@ def disqualify_registered_competitor(request):
     if admin.role != "admin":
         return Response({"message": "You do not have permission to perform this action."}, status=403)
     
-    stage_id = request.data.get("stage_id")
     competitor_id = request.data.get("competitor_id")
     event_id = request.data.get("event_id")
 
@@ -2676,28 +2675,22 @@ def disqualify_registered_competitor(request):
     user = get_object_or_404(User, user_id=competitor_id)
 
     event = get_object_or_404(Event, event_id=event_id)
-    stage = get_object_or_404(Stages, stage_id=stage_id)
     competitor = get_object_or_404(RegisteredCompetitors, user=user, event=event)
 
+    
+    # remove all stage and group roles related to this event
+    stages = Stages.objects.filter(event=event)
+    for stage in stages:
+        if user.discord_id and stage.stage_discord_role_id:
+            remove_discord_role(user.discord_id, stage.stage_discord_role_id)
+        groups = StageGroups.objects.filter(stage=stage)
+        for group in groups:
+            if user.discord_id and group.group_discord_role_id:
+                remove_discord_role(user.discord_id, group.group_discord_role_id)
+    
     competitor.status = "disqualified"
     competitor.save()
-    # remove all stage and group roles related to this event
-    stage_competitor_qs = StageCompetitor.objects.filter(stage=stage, player=competitor)
-    for stage_competitor in stage_competitor_qs:
-        stage_competitor.status = "disqualified"
-        stage_competitor.save()
-        # remove group roles
-        group_competitor_qs = StageGroupCompetitor.objects.filter(
-            stage_group__stage=stage,
-            player=competitor
-        )
-        for group_competitor in group_competitor_qs:
-            group_competitor.status = "disqualified"
-            group_competitor.save()
-            # remove discord role
-            if user.discord_id and group_competitor.stage_group.group_discord_role_id:
-                remove_discord_role(user.discord_id, group_competitor.stage_group.group_discord_role_id)
-
+    
     return Response({
         "message": f"Competitor '{user.username}' has been disqualified from event '{competitor.event.event_name}'."
     }, status=200)
@@ -2739,3 +2732,5 @@ def reactivate_registered_competitor(request):
     return Response({
         "message": f"Competitor '{competitor.player.competitor_name}' has been reactivated for event '{competitor.event.event_name}'."
     }, status=200)
+
+
