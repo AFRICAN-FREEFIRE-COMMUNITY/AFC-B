@@ -81,6 +81,14 @@ class Stages(models.Model):
         ("cs - double elimination", "Clash Squad - Double Elimination"),
         ("cs - round robin", "Clash Squad - Round Robin")
     ]
+
+    STAGE_STATUS_CHOICES = [
+        ("upcoming", "Upcoming"),
+        ("ongoing", "Ongoing"),
+        ("completed", "Completed")
+    ]
+
+
     stage_id = models.AutoField(primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="stages")
     stage_name = models.CharField(max_length=50)
@@ -90,6 +98,7 @@ class Stages(models.Model):
     stage_format = models.CharField(max_length=100, choices=STAGE_FORMAT_CHOICES)
     teams_qualifying_from_stage = models.PositiveIntegerField()
     stage_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
+    stage_status = models.CharField(max_length=20, choices=STAGE_STATUS_CHOICES, default="upcoming")
 
 class StageGroups(models.Model):
     group_id = models.AutoField(primary_key=True)
@@ -99,6 +108,8 @@ class StageGroups(models.Model):
     playing_time = models.TimeField()
     teams_qualifying = models.PositiveIntegerField()
     group_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
+    match_count = models.PositiveIntegerField()
+    match_maps = models.JSONField(default=list)  # List of maps for the matches
 
 
 # ---------------- Registered Competitors ----------------
@@ -128,8 +139,8 @@ class Leaderboard(models.Model):
 # ---------------- Matches & Stats ----------------
 class Match(models.Model):
     match_id = models.AutoField(primary_key=True)
-    leaderboard = models.ForeignKey(Leaderboard, on_delete=models.CASCADE, related_name="matches")
-    map_name = models.CharField(max_length=50)
+    leaderboard = models.ForeignKey(Leaderboard, on_delete=models.CASCADE, related_name="matches", null=True, blank=True)
+    group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, related_name="matches", null=True, blank=True)
     mvp = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="mvp_matches")
     match_date = models.DateTimeField(auto_now_add=True)
     match_number = models.PositiveIntegerField()
