@@ -2462,7 +2462,7 @@ def get_event_details_for_admin(request):
 
                 # get stage group competitor from stagegroupcompetitor model
                 "competitors_in_group": list(StageGroupCompetitor.objects.filter(
-                    group=group
+                    stage_group=group
                 ).values_list("competitor__competitor_name", flat=True))
             })
 
