@@ -2575,11 +2575,11 @@ def get_event_details_for_admin(request):
     }, status=200)
 
 
-@shared_task(bind=True, rate_limit="2/s")
+@shared_task(bind=True, rate_limit="1/s")
 def assign_stage_role_task(self, discord_id, role_id):
     assign_discord_role(discord_id, role_id)
 
-@shared_task(bind=True, rate_limit="2/s")
+@shared_task(bind=True, rate_limit="1/s")
 def assign_group_role_task(self, discord_id, role_id):
     assign_discord_role(discord_id, role_id)
 
