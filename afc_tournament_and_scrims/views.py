@@ -383,7 +383,7 @@ def create_event(request):
                     Match.objects.create(
                         leaderboard=None,
                         group=StageGroups.objects.get(stage=stage, group_name=group["group_name"]),
-                        map_name=match_map,
+                        match_map=match_map,
                         match_number=match_number
                     )
 
