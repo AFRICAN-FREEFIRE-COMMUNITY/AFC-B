@@ -2767,7 +2767,7 @@ def seed_stage_competitors_to_groups(request):
 
             # Assign discord role safely
             if competitor.player.user and competitor.player.user.discord_id and group.group_discord_role_id:
-                assign_discord_role(competitor.player.user.discord_id, group.group_discord_role_id)
+                assign_group_role_task.delay(competitor.player.user.discord_id, group.group_discord_role_id)
 
     return Response({
         "message": f"Seeded {seeded_count} competitors into {group_count} groups for stage '{stage.stage_name}'."
