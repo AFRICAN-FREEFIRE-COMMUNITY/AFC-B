@@ -1,5 +1,7 @@
 from datetime import date
 import json
+
+from celery import shared_task
 from afc import settings
 from django.shortcuts import get_object_or_404, render
 from rest_framework.decorators import api_view
@@ -2552,6 +2554,12 @@ def get_event_details_for_admin(request):
     }, status=200)
 
 
+@shared_task(bind=True, rate_limit="5/s")
+def assign_stage_role_task(self, discord_id, role_id):
+    assign_discord_role(discord_id, role_id)
+
+
+
 @api_view(["POST"])
 def seed_solo_players_to_stage(request):
     # ---------------- AUTH ----------------
@@ -2599,18 +2607,18 @@ def seed_solo_players_to_stage(request):
     seeded_count = 0
 
     for reg in solo_players:
-        _, created = StageCompetitor.objects.get_or_create(
-            stage=stage,
-            player=reg,
-            defaults={"status": "active"}
-        )
 
-        if created:
+        if reg.user.discord_id and stage.stage_discord_role_id:
+            try:
+                assign_stage_role_task.delay(
+                    reg.user.discord_id,
+                    stage.stage_discord_role_id
+                )
+            except Exception as e:
+                return Response({"message": f"Failed to assign Discord role: {str(e)}"}, status=500)
+
             seeded_count += 1
 
-            # ✅ SAFE DISCORD ASSIGN
-            if reg.user.discord_id and stage.stage_discord_role_id:
-                assign_discord_role(reg.user.discord_id, stage.stage_discord_role_id)
 
     return Response({
         "message": f"Seeded {seeded_count} solo players into stage '{stage.stage_name}'."

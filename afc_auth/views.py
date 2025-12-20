@@ -1721,11 +1721,27 @@ def check_discord_membership(discord_id):
     return r.status_code == 200  # 200 means they are in the server
 
 
+# def assign_discord_role(discord_id, role_id):
+#     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
+#     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+#     r = requests.put(url, headers=headers)
+#     return r.status_code == 204  # 204 = success
+
 def assign_discord_role(discord_id, role_id):
     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+
     r = requests.put(url, headers=headers)
-    return r.status_code == 204  # 204 = success
+
+    if r.status_code == 429:
+        print("⚠️ Discord rate limited:", r.text)
+
+    if r.status_code not in (204, 200):
+        print("❌ Discord error:", r.status_code, r.text)
+
+    return r.status_code in (204, 200)
+
+
 
 def remove_discord_role(discord_id, role_id):
     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
