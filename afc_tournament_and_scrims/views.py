@@ -2461,9 +2461,15 @@ def get_event_details_for_admin(request):
                 "match_maps": group.match_maps,
 
                 # get stage group competitor from stagegroupcompetitor model
-                "competitors_in_group": list(StageGroupCompetitor.objects.filter(
-                    stage_group=group
-                ).values_list("competitor__competitor_name", flat=True))
+                "competitors_in_group": list(
+                    StageGroupCompetitor.objects.filter(
+                        stage_group=group,
+                        player__isnull=False
+                    ).values_list(
+                        "player__user__username",
+                        flat=True
+                    )
+                )
             })
 
         stages_data.append({
@@ -2478,9 +2484,16 @@ def get_event_details_for_admin(request):
             "groups": group_details,
             "stage_format": stage.stage_format,
             "stage_status": stage.stage_status,
-            "competitors_in_stage": list(StageCompetitor.objects.filter(
-                stage=stage
-            ).values_list("competitor__competitor_name", flat=True))
+            "competitors_in_stage": list(
+                StageCompetitor.objects.filter(
+                    stage=stage,
+                    player__isnull=False
+                ).values_list(
+                    "player__user__username",
+                    flat=True
+                )
+            )
+
         })
 
     # ---------------- ENGAGEMENT ----------------
