@@ -2559,13 +2559,21 @@ def seed_solo_players_to_stage(request):
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
-    try:
-        admin = validate_token(auth.split(" ")[1])
-    except:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+    token = auth.split(" ")[1]
+    admin = validate_token(token)
+
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+        return Response(
+            {"message": "You do not have permission to perform this action."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
