@@ -2583,6 +2583,9 @@ def assign_stage_role_task(self, discord_id, role_id):
 def assign_group_role_task(self, discord_id, role_id):
     assign_discord_role(discord_id, role_id)
 
+@shared_task(bind=True, rate_limit="1/s")
+def remove_group_role_task(self, discord_id, role_id):  
+    remove_discord_role(discord_id, role_id)
 
 @api_view(["POST"])
 def seed_solo_players_to_stage(request):
@@ -2646,6 +2649,9 @@ def seed_solo_players_to_stage(request):
                     # Log error, but don't fail the whole seeding
                     error_disc.append(f"Failed to queue Discord role for {reg.user.username}: {e}")
                     print(f"Failed to queue Discord role for {reg.user.username}: {e}")
+
+    stage.stage_status = "ongoing"
+    stage.save()
 
     return Response({
         "message": f"Seeded {seeded_count} solo players into stage '{stage.stage_name}'.",
@@ -2947,3 +2953,41 @@ def send_match_room_details_notifications_to_competitors(request):
     
     event_id = request.data.get("event_id")
 
+
+@api_view(["POST"])
+def remove_all_stage_competitors_from_groups_and_their_discord_roles(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    token = session_token.split(" ")[1]
+    admin = validate_token(token)
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+    
+    stage_id = request.data.get("stage_id")
+    if not stage_id:
+        return Response({"message": "stage_id is required."}, status=400)
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+
+    groups = stage.groups.all()
+    total_removed = 0
+
+    for group in groups:
+        competitors = StageGroupCompetitor.objects.filter(stage_group=group)
+        for competitor in competitors:
+            user = competitor.player.user
+            if user.discord_id and group.group_discord_role_id:
+                remove_group_role_task.delay(user.discord_id, group.group_discord_role_id)
+            competitor.delete()
+            total_removed += 1
+
+    return Response({
+        "message": f"Removed {total_removed} competitors from all groups in stage '{stage.stage_name}' and their Discord roles."
+    }, status=200)
