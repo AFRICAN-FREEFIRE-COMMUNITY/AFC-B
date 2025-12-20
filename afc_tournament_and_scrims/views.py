@@ -13,7 +13,7 @@ from afc_auth.views import assign_discord_role, check_discord_membership, remove
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match
-from afc_auth.models import User
+from afc_auth.models import Notifications, User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -689,32 +689,50 @@ def edit_event(request):
         if isinstance(stages_data, str):
             stages_data = json.loads(stages_data)
 
-        # Delete all existing stages/groups
-        Stages.objects.filter(event=event).delete()
 
         # Recreate stages + groups
         for stage_data in stages_data:
-            stage = Stages.objects.create(
+            stage, created = Stages.objects.update_or_create(
                 event=event,
-                stage_name=stage_data["stage_name"],
-                start_date=parse_date(stage_data["start_date"]),
-                end_date=parse_date(stage_data["end_date"]),
-                number_of_groups=stage_data["number_of_groups"],
-                stage_format=stage_data["stage_format"],
-                teams_qualifying_from_stage=stage_data["teams_qualifying_from_stage"],
-                stage_discord_role_id = stage_data["stage_discord_role_id"],
+                stage_id=stage_data.get("stage_id"),  # use existing ID if provided
+                defaults={
+                    "stage_name": stage_data["stage_name"],
+                    "start_date": parse_date(stage_data["start_date"]),
+                    "end_date": parse_date(stage_data["end_date"]),
+                    "number_of_groups": stage_data["number_of_groups"],
+                    "stage_format": stage_data["stage_format"],
+                    "teams_qualifying_from_stage": stage_data["teams_qualifying_from_stage"],
+                    "stage_discord_role_id": stage_data.get("stage_discord_role_id")
+                }
             )
 
-            # Add groups
-            for group in stage_data.get("groups", []):
-                StageGroups.objects.create(
+            # Groups
+            for group_data in stage_data.get("groups", []):
+                group, created = StageGroups.objects.update_or_create(
                     stage=stage,
-                    group_name=group["group_name"],
-                    playing_date=parse_date(group["playing_date"]),
-                    playing_time=group["playing_time"],
-                    teams_qualifying=group["teams_qualifying"],
-                    group_discord_role_id =  group["group_discord_role_id"],
+                    group_id=group_data.get("group_id"),  # use existing ID if provided
+                    defaults={
+                        "group_name": group_data["group_name"],
+                        "playing_date": parse_date(group_data["playing_date"]),
+                        "playing_time": group_data["playing_time"],
+                        "teams_qualifying": group_data["teams_qualifying"],
+                        "group_discord_role_id": group_data.get("group_discord_role_id"),
+                        "match_count": group_data.get("match_count"),
+                        "match_maps": group_data.get("match_maps"),
+                    }
                 )
+
+                # Matches
+                total_matches = group_data.get("match_count", 0)
+                match_maps = group_data.get("match_maps", [])
+                for match_map in match_maps:
+                    for match_number in range(1, total_matches + 1):
+                        Match.objects.update_or_create(
+                            group=group,
+                            match_number=match_number,
+                            match_map=match_map,
+                            defaults={"leaderboard": None}
+                        )
 
     return Response({
         "message": "Event updated successfully.",
@@ -2936,22 +2954,76 @@ def reactivate_registered_competitor(request):
 
 
 @api_view(["POST"])
-def send_match_room_details_notifications_to_competitors(request):
+def send_match_room_details_notification_to_competitor(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    
     if admin.role != "admin":
         return Response({"message": "You do not have permission to perform this action."}, status=403)
-    
+
+    # ---------------- EVENT ----------------
     event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    # ---------------- GET MATCHES ----------------
+    matches = Match.objects.filter(group__stage__event=event)
+    if not matches.exists():
+        return Response({"message": "No matches found for this event."}, status=400)
+
+    total_notifications = 0
+
+    for match in matches:
+        # Ensure match has room details
+        if not match.room_id or not match.room_name or not match.room_password:
+            continue
+
+        # Solo event
+        if event.participant_type == "solo":
+            competitors = StageCompetitor.objects.filter(stage=match.group.stage, status="active", player__isnull=False)
+            for sc in competitors:
+                user = sc.player.user
+                if user:
+                    message = (
+                        f"Hello {user.username}, your match details for '{event.event_name}' (Stage: {match.group.stage.stage_name}, "
+                        f"Group: {match.group.group_name}, Match: {match.match_number}) are:\n"
+                        f"Room ID: {match.room_id}\n"
+                        f"Room Name: {match.room_name}\n"
+                        f"Password: {match.room_password}"
+                    )
+                    Notifications.objects.create(user=user, message=message)
+                    total_notifications += 1
+
+        # Team event
+        else:
+            teams = StageGroupCompetitor.objects.filter(stage_group=match.group, tournament_team__isnull=False)
+            for sgc in teams:
+                team = sgc.tournament_team
+                for player in team.players.all():
+                    if player.user:
+                        message = (
+                            f"Hello {player.user.username}, your match details for '{event.event_name}' (Stage: {match.group.stage.stage_name}, "
+                            f"Group: {match.group.group_name}, Match: {match.match_number}) are:\n"
+                            f"Room ID: {match.room_id}\n"
+                            f"Room Name: {match.room_name}\n"
+                            f"Password: {match.room_password}"
+                        )
+                        Notifications.objects.create(user=player.user, message=message)
+                        total_notifications += 1
+
+    return Response({
+        "message": f"Sent match room notifications to {total_notifications} users for event '{event.event_name}'."
+    }, status=200)
+
 
 
 @api_view(["POST"])
