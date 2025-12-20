@@ -2990,7 +2990,7 @@ def send_match_room_details_notification_to_competitor(request):
 
         # Solo event
         if event.participant_type == "solo":
-            competitors = StageCompetitor.objects.filter(stage=match.group.stage, status="active", player__isnull=False)
+            competitors = StageGroupCompetitor.objects.filter(stage_group=match.group, player__isnull=False)
             for sc in competitors:
                 user = sc.player.user
                 if user:
