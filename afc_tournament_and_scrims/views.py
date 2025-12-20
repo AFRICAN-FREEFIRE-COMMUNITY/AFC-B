@@ -2575,11 +2575,11 @@ def get_event_details_for_admin(request):
     }, status=200)
 
 
-@shared_task(bind=True, rate_limit="5/s")
+@shared_task(bind=True, rate_limit="2/s")
 def assign_stage_role_task(self, discord_id, role_id):
     assign_discord_role(discord_id, role_id)
 
-@shared_task(bind=True, rate_limit="5/s")
+@shared_task(bind=True, rate_limit="2/s")
 def assign_group_role_task(self, discord_id, role_id):
     assign_discord_role(discord_id, role_id)
 
@@ -2595,17 +2595,10 @@ def seed_solo_players_to_stage(request):
     admin = validate_token(token)
 
     if not admin:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        return Response({"message": "Invalid or expired session token."}, status=401)
 
     if admin.role != "admin":
-        return Response(
-            {"message": "You do not have permission to perform this action."},
-            status=status.HTTP_403_FORBIDDEN
-        )
-
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
@@ -2615,7 +2608,6 @@ def seed_solo_players_to_stage(request):
 
     event = get_object_or_404(Event, event_id=event_id)
 
-    # ✅ ENSURE SOLO EVENT
     if event.participant_type != "solo":
         return Response({"message": "This event is not a solo event."}, status=400)
 
@@ -2631,22 +2623,96 @@ def seed_solo_players_to_stage(request):
     seeded_count = 0
 
     for reg in solo_players:
+        # ✅ Avoid duplicate StageCompetitor
+        obj, created = StageCompetitor.objects.get_or_create(
+            stage=stage,
+            player=reg,
+            defaults={"status": "active"}
+        )
 
-        if reg.user.discord_id and stage.stage_discord_role_id:
-            try:
-                assign_stage_role_task.delay(
-                    reg.user.discord_id,
-                    stage.stage_discord_role_id
-                )
-            except Exception as e:
-                return Response({"message": f"Failed to assign Discord role: {str(e)}"}, status=500)
-
+        if created:
             seeded_count += 1
 
+            # ✅ Assign Discord role in background
+            if reg.user.discord_id and stage.stage_discord_role_id:
+                try:
+                    assign_stage_role_task.delay(
+                        reg.user.discord_id,
+                        stage.stage_discord_role_id
+                    )
+                except Exception as e:
+                    # Log error, but don't fail the whole seeding
+                    print(f"Failed to queue Discord role for {reg.user.username}: {e}")
 
     return Response({
         "message": f"Seeded {seeded_count} solo players into stage '{stage.stage_name}'."
     }, status=200)
+
+
+
+# @api_view(["POST"])
+# def seed_solo_players_to_stage(request):
+#     # ---------------- AUTH ----------------
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     token = auth.split(" ")[1]
+#     admin = validate_token(token)
+
+#     if not admin:
+#         return Response(
+#             {"message": "Invalid or expired session token."},
+#             status=status.HTTP_401_UNAUTHORIZED
+#         )
+
+#     if admin.role != "admin":
+#         return Response(
+#             {"message": "You do not have permission to perform this action."},
+#             status=status.HTTP_403_FORBIDDEN
+#         )
+
+
+#     event_id = request.data.get("event_id")
+#     stage_id = request.data.get("stage_id")
+
+#     if not event_id or not stage_id:
+#         return Response({"message": "event_id and stage_id are required."}, status=400)
+
+#     event = get_object_or_404(Event, event_id=event_id)
+
+#     # ✅ ENSURE SOLO EVENT
+#     if event.participant_type != "solo":
+#         return Response({"message": "This event is not a solo event."}, status=400)
+
+#     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+#     solo_players = RegisteredCompetitors.objects.filter(
+#         event=event,
+#         user__isnull=False,
+#         team__isnull=True,
+#         status="registered"
+#     )
+
+#     seeded_count = 0
+
+#     for reg in solo_players:
+
+#         if reg.user.discord_id and stage.stage_discord_role_id:
+#             try:
+#                 assign_stage_role_task.delay(
+#                     reg.user.discord_id,
+#                     stage.stage_discord_role_id
+#                 )
+#             except Exception as e:
+#                 return Response({"message": f"Failed to assign Discord role: {str(e)}"}, status=500)
+
+#             seeded_count += 1
+
+
+#     return Response({
+#         "message": f"Seeded {seeded_count} solo players into stage '{stage.stage_name}'."
+#     }, status=200)
 
 
 
