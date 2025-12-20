@@ -12,7 +12,7 @@ from django.utils.dateparse import parse_date
 from afc_auth.views import assign_discord_role, check_discord_membership, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match
+from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match
 from afc_auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -2458,7 +2458,12 @@ def get_event_details_for_admin(request):
                 "total_teams_in_group": teams_in_group,
                 "group_discord_role_id": group.group_discord_role_id,
                 "match_count": group.match_count,
-                "match_maps": group.match_maps
+                "match_maps": group.match_maps,
+
+                # get stage group competitor from stagegroupcompetitor model
+                "competitors_in_group": list(StageGroupCompetitor.objects.filter(
+                    group=group
+                ).values_list("competitor__competitor_name", flat=True))
             })
 
         stages_data.append({
@@ -2473,6 +2478,9 @@ def get_event_details_for_admin(request):
             "groups": group_details,
             "stage_format": stage.stage_format,
             "stage_status": stage.stage_status,
+            "competitors_in_stage": list(StageCompetitor.objects.filter(
+                stage=stage
+            ).values_list("competitor__competitor_name", flat=True))
         })
 
     # ---------------- ENGAGEMENT ----------------
