@@ -2970,13 +2970,14 @@ def send_match_room_details_notification_to_competitor(request):
 
     # ---------------- EVENT ----------------
     event_id = request.data.get("event_id")
+    group_id = request.data.get("group_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
     # ---------------- GET MATCHES ----------------
-    matches = Match.objects.filter(group__stage__event=event)
+    matches = Match.objects.filter(group=group_id)
     if not matches.exists():
         return Response({"message": "No matches found for this event."}, status=400)
 
