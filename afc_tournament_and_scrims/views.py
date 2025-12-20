@@ -10,7 +10,7 @@ from django.utils.dateparse import parse_date
 from afc_auth.views import assign_discord_role, check_discord_membership, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats
+from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match
 from afc_auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -369,7 +369,23 @@ def create_event(request):
                 playing_time=group["playing_time"],
                 teams_qualifying=group["teams_qualifying"],
                 group_discord_role_id =  group["group_discord_role_id"],
+                match_count = group["match_count"],
+                match_maps = group["match_maps"],
             )
+
+            # create matches for the group
+
+            total_number_of_matches_to_be_played = group.get("match_count", 0)
+            match_maps = group.get("match_maps", [])
+
+            for match_map in match_maps:
+                for match_number in range(1, total_number_of_matches_to_be_played + 1):
+                    Match.objects.create(
+                        leaderboard=None,
+                        group=StageGroups.objects.get(stage=stage, group_name=group["group_name"]),
+                        map_name=match_map,
+                        match_number=match_number
+                    )
 
     return Response({
         "message": "Event created successfully.",
@@ -1114,7 +1130,9 @@ def get_event_details(request):
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,
-                "matches": matches_data
+                "matches": matches_data,
+                "match_count": group.match_count,
+                "match_maps": group.match_maps,
             })
 
         stage_list.append({
@@ -2437,6 +2455,8 @@ def get_event_details_for_admin(request):
                 "teams_qualifying": group.teams_qualifying,
                 "total_teams_in_group": teams_in_group,
                 "group_discord_role_id": group.group_discord_role_id,
+                "match_count": group.match_count,
+                "match_maps": group.match_maps
             })
 
         stages_data.append({
@@ -2448,7 +2468,9 @@ def get_event_details_for_admin(request):
             "total_groups": groups.count(),
             "total_teams_in_stage": total_teams_in_stage,
             "stage_discord_role_id": stage.stage_discord_role_id,
-            "groups": group_details
+            "groups": group_details,
+            "stage_format": stage.stage_format,
+            "stage_status": stage.stage_status,
         })
 
     # ---------------- ENGAGEMENT ----------------
