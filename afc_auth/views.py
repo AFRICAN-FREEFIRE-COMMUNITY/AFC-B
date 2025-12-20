@@ -2058,3 +2058,5 @@ def get_user_login_history(request):
         })
 
     return Response({"login_history": history_data}, status=status.HTTP_200_OK)
+
+

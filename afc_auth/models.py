@@ -219,3 +219,15 @@ class AdminHistory(models.Model):
     action = models.CharField(max_length=50)  # e.g., "banned_player", "edited_news"
     description = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
+
+
+class Notifications(models.Model):
+    notification_id = models.AutoField(primary_key=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
+    message = models.TextField()
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def mark_as_read(self):
+        self.is_read = True
+        self.save()

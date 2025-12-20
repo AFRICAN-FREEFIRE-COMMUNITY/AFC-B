@@ -2579,6 +2579,9 @@ def get_event_details_for_admin(request):
 def assign_stage_role_task(self, discord_id, role_id):
     assign_discord_role(discord_id, role_id)
 
+@shared_task(bind=True, rate_limit="5/s")
+def assign_group_role_task(self, discord_id, role_id):
+    assign_discord_role(discord_id, role_id)
 
 
 @api_view(["POST"])
@@ -2657,14 +2660,20 @@ def seed_stage_competitors_to_groups(request):
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
-    try:
-        admin = validate_token(auth.split(" ")[1])
-    except:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+    token = auth.split(" ")[1]
+    admin = validate_token(token)
+
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
 
     if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
-
+        return Response(
+            {"message": "You do not have permission to perform this action."},
+            status=status.HTTP_403_FORBIDDEN
+        )
     stage_id = request.data.get("stage_id")
     if not stage_id:
         return Response({"message": "stage_id is required."}, status=400)
@@ -2702,7 +2711,7 @@ def seed_stage_competitors_to_groups(request):
             # ✅ SAFE DISCORD ASSIGN
             user = competitor.player.user
             if user.discord_id and group.group_discord_role_id:
-                assign_discord_role(user.discord_id, group.group_discord_role_id)
+                assign_group_role_task.delay(user.discord_id, group.group_discord_role_id)
 
     return Response({
         "message": f"Seeded {seeded_count} competitors into {group_count} groups for stage '{stage.stage_name}'."
@@ -2792,4 +2801,22 @@ def reactivate_registered_competitor(request):
         "message": f"Competitor '{competitor.player.competitor_name}' has been reactivated for event '{competitor.event.event_name}'."
     }, status=200)
 
+
+@api_view(["POST"])
+def send_match_room_details_notifications_to_competitors(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    token = session_token.split(" ")[1]
+    admin = validate_token(token)
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+    
+    event_id = request.data.get("event_id")
 
