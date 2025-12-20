@@ -33,4 +33,5 @@ urlpatterns = [
     path('reactivate-registered-competitor/', reactivate_registered_competitor, name='reactivate_registered_competitor'),
     path('delete-event/', delete_event, name='delete_event'),
     path('remove-all-stage-competitors-from-groups-with-their-discord-roles/', remove_all_stage_competitors_from_groups_and_their_discord_roles, name='remove_all_stage_competitors_from_groups'),
+    path('send-match-room-details-notification-to-competitor/', send_match_room_details_notification_to_competitor, name='send_match_room_details_notification_to_competitor'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
