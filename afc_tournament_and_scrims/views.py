@@ -2622,6 +2622,8 @@ def seed_solo_players_to_stage(request):
 
     seeded_count = 0
 
+    error_disc = []
+
     for reg in solo_players:
         # ✅ Avoid duplicate StageCompetitor
         obj, created = StageCompetitor.objects.get_or_create(
@@ -2642,10 +2644,12 @@ def seed_solo_players_to_stage(request):
                     )
                 except Exception as e:
                     # Log error, but don't fail the whole seeding
+                    error_disc.append(f"Failed to queue Discord role for {reg.user.username}: {e}")
                     print(f"Failed to queue Discord role for {reg.user.username}: {e}")
 
     return Response({
-        "message": f"Seeded {seeded_count} solo players into stage '{stage.stage_name}'."
+        "message": f"Seeded {seeded_count} solo players into stage '{stage.stage_name}'.",
+        "errors": error_disc
     }, status=200)
 
 
