@@ -16,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
 
-from .models import AdminHistory, LoginHistory, LoginHistory, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import AdminHistory, LoginHistory, LoginHistory, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -49,6 +49,7 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 import requests
 from django.conf import settings
+from .models import Notifications
 
 
 from utils.ipinfo_lookup import lookup_ip
@@ -2060,3 +2061,36 @@ def get_user_login_history(request):
     return Response({"login_history": history_data}, status=status.HTTP_200_OK)
 
 
+@api_view(["GET"])
+def get_notifications(request):
+    # Retrieve session token
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    session_token = session_token.split(" ")[1]
+
+    # Identify the logged-in user using the session token
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+
+    notifications = Notifications.objects.filter(user=user).order_by('-created_at')
+    notifications_data = []
+
+    for notification in notifications:
+        notifications_data.append({
+            "title": notification.title,
+            "message": notification.message,
+            "is_read": notification.is_read,
+            "created_at": notification.created_at
+        })
+
+    return Response({"notifications": notifications_data}, status=status.HTTP_200_OK)
