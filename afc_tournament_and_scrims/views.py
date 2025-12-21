@@ -2685,6 +2685,25 @@ def get_stage_role_assignment_progress(request):
     })
 
 
+@api_view(["GET"])
+def get_all_role_progress(request):
+    progresses = DiscordStageRoleAssignmentProgress.objects.all().order_by("-created_at")[:10]
+
+    data = []
+    for progress in progresses:
+        data.append({
+            "id": progress.id,
+            "stage_id": progress.stage.stage_id,
+            "stage_name": progress.stage.stage_name,
+            "total": progress.total,
+            "completed": progress.completed,
+            "failed": progress.failed,
+            "status": progress.status,
+            "created_at": progress.created_at,
+        })
+
+    return Response(data)
+
 
 @api_view(["POST"])
 def retry_failed_discord_roles(request):
