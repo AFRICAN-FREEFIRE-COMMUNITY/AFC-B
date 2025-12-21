@@ -1,5 +1,6 @@
 from datetime import timedelta
 import uuid
+from django.conf import settings
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
@@ -244,6 +245,42 @@ class DiscordRoleAssignment(models.Model):
     )
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)
+    discord_id = models.CharField(max_length=50)
+    role_id = models.CharField(max_length=50)
+
+    stage = models.ForeignKey(Stages, null=True, blank=True, on_delete=models.CASCADE)
+    group = models.ForeignKey(StageGroups, null=True, blank=True, on_delete=models.CASCADE)
+
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="pending")
+    error_message = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+
+class DiscordStageRoleAssignmentProgress(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE)
+    total = models.PositiveIntegerField(default=0)
+    completed = models.PositiveIntegerField(default=0)
+    failed = models.PositiveIntegerField(default=0)
+    status = models.CharField(
+        max_length=20,
+        choices=[("pending", "pending"), ("running", "running"), ("done", "done")],
+        default="pending"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class DiscordRoleAssignment(models.Model):
+    STATUS_CHOICES = (
+        ("pending", "Pending"),
+        ("success", "Success"),
+        ("failed", "Failed"),
+    )
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     discord_id = models.CharField(max_length=50)
     role_id = models.CharField(max_length=50)
 
