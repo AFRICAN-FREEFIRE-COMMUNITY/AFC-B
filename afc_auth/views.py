@@ -1785,6 +1785,20 @@ def remove_discord_role(discord_id, role_id):
     return r.status_code == 204
 
 
+import requests
+
+def discord_member_has_role(discord_id, role_id):
+    url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    r = requests.get(url, headers=headers, timeout=15)
+    if r.status_code != 200:
+        return None, r
+    roles = r.json().get("roles", [])
+    return (role_id in roles), r
+
+
+
+
 # @api_view(["GET"])
 # def discord_callback(request):
 #     code = request.GET.get("code")
