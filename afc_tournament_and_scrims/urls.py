@@ -46,4 +46,5 @@ urlpatterns = [
     path('check-if-user-registered-in-event/', check_if_user_registered_in_event, name='check_if_user_registered_in_event'),
     path('upload-solo-match-result/', upload_solo_match_result, name='upload_solo_match_result'),
     path('get-all-leaderboards/', get_all_leaderboards, name='get_all_leaderboards'),
+    path('sync-group-discord-roles/', sync_group_discord_roles, name='sync_group_discord_roles'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
