@@ -34,7 +34,7 @@ from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from afc_team.models import Team, TeamBan
+from afc_team.models import Team
 from django.utils import timezone
 from .models import TeamBan
 from rest_framework.decorators import api_view
