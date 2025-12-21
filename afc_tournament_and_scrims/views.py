@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_date
 
-from afc_auth.views import assign_discord_role, check_discord_membership, discord_member_has_role, member_has_role, remove_discord_role, validate_token
+from afc_auth.views import assign_discord_role, check_discord_membership, discord_member_has_role, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, RegisteredCompetitors, SoloPlayerMatchStats, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match
