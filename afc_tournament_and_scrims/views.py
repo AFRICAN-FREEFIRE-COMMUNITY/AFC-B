@@ -3160,78 +3160,165 @@ def reactivate_registered_competitor(request):
     }, status=200)
 
 
+# @api_view(["POST"])
+# def send_match_room_details_notification_to_competitor(request):
+#     # ---------------- AUTH ----------------
+#     session_token = request.headers.get("Authorization")
+#     if not session_token or not session_token.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    
+#     token = session_token.split(" ")[1]
+#     admin = validate_token(token)
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+    
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+#     # ---------------- EVENT ----------------
+#     event_id = request.data.get("event_id")
+#     group_id = request.data.get("group_id")
+#     if not event_id:
+#         return Response({"message": "event_id is required."}, status=400)
+
+#     event = get_object_or_404(Event, event_id=event_id)
+
+#     # ---------------- GET MATCHES ----------------
+#     matches = Match.objects.filter(group=group_id)
+#     if not matches.exists():
+#         return Response({"message": "No matches found for this event."}, status=400)
+
+#     total_notifications = 0
+
+#     for match in matches:
+#         # Ensure match has room details
+#         if not match.room_id or not match.room_name or not match.room_password:
+#             continue
+
+#         # Solo event
+#         if event.participant_type == "solo":
+#             competitors = StageGroupCompetitor.objects.filter(stage_group=match.group, player__isnull=False)
+#             for sc in competitors:
+#                 user = sc.player.user
+#                 if user:
+#                     message = (
+#                         f"Hello {user.username}, your match details for '{event.event_name}' (Stage: {match.group.stage.stage_name}, "
+#                         f"Group: {match.group.group_name}, Match: {match.match_number}) are:\n"
+#                         f"Room ID: {match.room_id}\n"
+#                         f"Room Name: {match.room_name}\n"
+#                         f"Password: {match.room_password}"
+#                     )
+#                     Notifications.objects.create(user=user, message=message)
+#                     total_notifications += 1
+
+#         # Team event
+#         else:
+#             teams = StageGroupCompetitor.objects.filter(stage_group=match.group, tournament_team__isnull=False)
+#             for sgc in teams:
+#                 team = sgc.tournament_team
+#                 for player in team.players.all():
+#                     if player.user:
+#                         message = (
+#                             f"Hello {player.user.username}, your match details for '{event.event_name}' (Stage: {match.group.stage.stage_name}, "
+#                             f"Group: {match.group.group_name}, Match: {match.match_number}) are:\n"
+#                             f"Room ID: {match.room_id}\n"
+#                             f"Room Name: {match.room_name}\n"
+#                             f"Password: {match.room_password}"
+#                         )
+#                         Notifications.objects.create(user=player.user, message=message)
+#                         total_notifications += 1
+
+#     return Response({
+#         "message": f"Sent match room notifications to {total_notifications} users for event '{event.event_name}'."
+#     }, status=200)
+
 @api_view(["POST"])
 def send_match_room_details_notification_to_competitor(request):
     # ---------------- AUTH ----------------
-    session_token = request.headers.get("Authorization")
-    if not session_token or not session_token.startswith("Bearer "):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
-    
-    token = session_token.split(" ")[1]
-    admin = validate_token(token)
+
+    admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    
+
     if admin.role != "admin":
         return Response({"message": "You do not have permission to perform this action."}, status=403)
 
-    # ---------------- EVENT ----------------
+    # ---------------- INPUT ----------------
     event_id = request.data.get("event_id")
     group_id = request.data.get("group_id")
-    if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+
+    if not event_id or not group_id:
+        return Response({"message": "event_id and group_id are required."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+    group = get_object_or_404(StageGroups, group_id=group_id)
 
-    # ---------------- GET MATCHES ----------------
-    matches = Match.objects.filter(group=group_id)
+    matches = Match.objects.filter(group=group)
     if not matches.exists():
-        return Response({"message": "No matches found for this event."}, status=400)
+        return Response({"message": "No matches found for this group."}, status=400)
 
     total_notifications = 0
 
     for match in matches:
-        # Ensure match has room details
-        if not match.room_id or not match.room_name or not match.room_password:
+        if not all([match.room_id, match.room_name, match.room_password]):
             continue
 
-        # Solo event
+        # SOLO EVENT
         if event.participant_type == "solo":
-            competitors = StageGroupCompetitor.objects.filter(stage_group=match.group, player__isnull=False)
+            competitors = StageGroupCompetitor.objects.select_related(
+                "player__user"
+            ).filter(stage_group=group, player__isnull=False)
+
             for sc in competitors:
                 user = sc.player.user
-                if user:
-                    message = (
-                        f"Hello {user.username}, your match details for '{event.event_name}' (Stage: {match.group.stage.stage_name}, "
-                        f"Group: {match.group.group_name}, Match: {match.match_number}) are:\n"
+                if not user:
+                    continue
+
+                Notifications.objects.create(
+                    user=user,
+                    message=(
+                        f"Hello {user.username}, your match details for '{event.event_name}'\n"
+                        f"Stage: {group.stage.stage_name}\n"
+                        f"Group: {group.group_name}\n"
+                        f"Match: {match.match_number}\n\n"
                         f"Room ID: {match.room_id}\n"
                         f"Room Name: {match.room_name}\n"
                         f"Password: {match.room_password}"
                     )
-                    Notifications.objects.create(user=user, message=message)
-                    total_notifications += 1
+                )
+                total_notifications += 1
 
-        # Team event
+        # TEAM EVENT
         else:
-            teams = StageGroupCompetitor.objects.filter(stage_group=match.group, tournament_team__isnull=False)
+            teams = StageGroupCompetitor.objects.select_related(
+                "tournament_team"
+            ).filter(stage_group=group, tournament_team__isnull=False)
+
             for sgc in teams:
-                team = sgc.tournament_team
-                for player in team.players.all():
-                    if player.user:
-                        message = (
-                            f"Hello {player.user.username}, your match details for '{event.event_name}' (Stage: {match.group.stage.stage_name}, "
-                            f"Group: {match.group.group_name}, Match: {match.match_number}) are:\n"
+                for player in sgc.tournament_team.players.select_related("user").all():
+                    if not player.user:
+                        continue
+
+                    Notifications.objects.create(
+                        user=player.user,
+                        message=(
+                            f"Hello {player.user.username}, your match details for '{event.event_name}'\n"
+                            f"Stage: {group.stage.stage_name}\n"
+                            f"Group: {group.group_name}\n"
+                            f"Match: {match.match_number}\n\n"
                             f"Room ID: {match.room_id}\n"
                             f"Room Name: {match.room_name}\n"
                             f"Password: {match.room_password}"
                         )
-                        Notifications.objects.create(user=player.user, message=message)
-                        total_notifications += 1
+                    )
+                    total_notifications += 1
 
     return Response({
-        "message": f"Sent match room notifications to {total_notifications} users for event '{event.event_name}'."
+        "message": f"Sent match room notifications to {total_notifications} users."
     }, status=200)
-
 
 
 @api_view(["POST"])
@@ -3397,4 +3484,30 @@ def get_all_user_id_in_group(request):
         "group_id": group.group_id,
         "group_name": group.group_name,
         "user_ids": user_ids
+    }, status=200)
+
+
+@api_view(["POST"])
+def delete_notifications_from_users_in_a_group(request):
+    group_id = request.data.get("group_id")
+    if not group_id:
+        return Response({"message": "group_id is required."}, status=400)
+
+    group = get_object_or_404(StageGroups, group_id=group_id)
+
+    competitors = StageGroupCompetitor.objects.filter(
+        stage_group=group,
+        player__isnull=False
+    ).select_related("player__user")
+
+    user_ids = [
+        competitor.player.user.user_id
+        for competitor in competitors
+        if competitor.player.user is not None
+    ]
+
+    deleted_count = Notifications.objects.filter(user__user_id__in=user_ids).delete()[0]
+
+    return Response({
+        "message": f"Deleted {deleted_count} notifications for users in group '{group.group_name}'."
     }, status=200)
