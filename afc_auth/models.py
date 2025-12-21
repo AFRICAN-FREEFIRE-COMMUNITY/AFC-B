@@ -1,4 +1,5 @@
 from datetime import timedelta
+import uuid
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
@@ -254,3 +255,18 @@ class DiscordRoleAssignment(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+
+class DiscordStageRoleAssignmentProgress(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE)
+    total = models.PositiveIntegerField(default=0)
+    completed = models.PositiveIntegerField(default=0)
+    failed = models.PositiveIntegerField(default=0)
+    status = models.CharField(
+        max_length=20,
+        choices=[("pending", "pending"), ("running", "running"), ("done", "done")],
+        default="pending"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
