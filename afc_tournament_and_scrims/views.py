@@ -2773,6 +2773,82 @@ def retry_failed_discord_roles(request):
     return Response({"message": f"Retrying {failed.count()} failed assignments"})
 
 
+from celery import shared_task
+from django.db import transaction
+from django.db.models import F
+
+@shared_task(bind=True, rate_limit="1/s", autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 10})
+def assign_stage_roles_from_db_task(self, progress_id, stage_id):
+    progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
+    stage = Stages.objects.get(stage_id=stage_id)
+
+    # get a small batch of pending assignments
+    qs = DiscordRoleAssignment.objects.filter(stage=stage, status="pending").order_by("created_at")[:50]
+    if not qs.exists():
+        # maybe done
+        with transaction.atomic():
+            progress.refresh_from_db()
+            if progress.completed + progress.failed >= progress.total:
+                progress.status = "done"
+                progress.save(update_fields=["status"])
+        return
+
+    for assignment in qs:
+        r = assign_discord_role(assignment.discord_id, assignment.role_id)
+
+        if r.status_code == 429:
+            retry_after = 2
+            try:
+                retry_after = float(r.json().get("retry_after", 2))
+            except Exception:
+                pass
+            raise self.retry(countdown=retry_after)
+
+        if r.status_code in (200, 204):
+            assignment.status = "success"
+            assignment.error_message = None
+            assignment.save(update_fields=["status", "error_message", "updated_at"])
+            DiscordStageRoleAssignmentProgress.objects.filter(id=progress_id).update(completed=F("completed") + 1)
+        else:
+            assignment.status = "failed"
+            assignment.error_message = f"{r.status_code} {r.text[:300]}"
+            assignment.save(update_fields=["status", "error_message", "updated_at"])
+            DiscordStageRoleAssignmentProgress.objects.filter(id=progress_id).update(failed=F("failed") + 1)
+
+    # re-run until queue empty
+    assign_stage_roles_from_db_task.delay(progress_id, stage_id)
+
+
+
+@shared_task(bind=True, rate_limit="1/s", autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 10})
+def assign_group_roles_from_db_task(self, stage_id):
+    stage = Stages.objects.get(stage_id=stage_id)
+
+    qs = DiscordRoleAssignment.objects.filter(stage=stage, group__isnull=False, status="pending").order_by("created_at")[:50]
+    if not qs.exists():
+        return
+
+    for assignment in qs:
+        r = assign_discord_role(assignment.discord_id, assignment.role_id)
+
+        if r.status_code == 429:
+            retry_after = 2
+            try:
+                retry_after = float(r.json().get("retry_after", 2))
+            except Exception:
+                pass
+            raise self.retry(countdown=retry_after)
+
+        if r.status_code in (200, 204):
+            assignment.status = "success"
+            assignment.error_message = None
+        else:
+            assignment.status = "failed"
+            assignment.error_message = f"{r.status_code} {r.text[:300]}"
+
+        assignment.save(update_fields=["status", "error_message", "updated_at"])
+
+    assign_group_roles_from_db_task.delay(stage_id)
 
 
 # @api_view(["POST"])
@@ -2854,15 +2930,107 @@ def retry_failed_discord_roles(request):
 #     }, status=200)
 
 
-import math
+# import math
+# from django.db import transaction
+# from django.shortcuts import get_object_or_404
+# from rest_framework.decorators import api_view
+# from rest_framework.response import Response
+# from rest_framework import status
+
+# @api_view(["POST"])
+# def seed_solo_players_to_stage(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+#     event_id = request.data.get("event_id")
+#     stage_id = request.data.get("stage_id")
+#     if not event_id or not stage_id:
+#         return Response({"message": "event_id and stage_id are required."}, status=400)
+
+#     event = get_object_or_404(Event, event_id=event_id)
+#     if event.participant_type != "solo":
+#         return Response({"message": "This event is not a solo event."}, status=400)
+
+#     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+#     # all registered solo players
+#     solo_regs = list(
+#         RegisteredCompetitors.objects.select_related("user").filter(
+#             event=event,
+#             status="registered",
+#             user__isnull=False,
+#             team__isnull=True
+#         )
+#     )
+
+#     if not solo_regs:
+#         return Response({"message": "No solo registrations found."}, status=400)
+
+#     # Existing StageCompetitors -> avoid duplicates without per-row get_or_create
+#     existing_reg_ids = set(
+#         StageCompetitor.objects.filter(stage=stage, player__in=solo_regs)
+#         .values_list("player_id", flat=True)
+#     )
+
+#     to_create = [
+#         StageCompetitor(stage=stage, player=reg, status="active")
+#         for reg in solo_regs
+#         if reg.id not in existing_reg_ids
+#     ]
+
+#     # Create ONE progress row (NOT inside the loop)
+#     progress = DiscordStageRoleAssignmentProgress.objects.create(
+#         stage=stage,
+#         total=len(solo_regs),
+#         completed=0,
+#         failed=0,
+#         status="running"
+#     )
+
+#     # Create StageCompetitors in bulk
+#     with transaction.atomic():
+#         if to_create:
+#             StageCompetitor.objects.bulk_create(to_create, ignore_conflicts=True, batch_size=1000)
+
+#     # Queue role assignments (Celery handles rate-limit safely)
+#     role_id = stage.stage_discord_role_id
+#     if role_id:
+#         for reg in solo_regs:
+#             if reg.user and reg.user.discord_id:
+#                 assign_stage_role_task.delay(progress.id, reg.user.discord_id, role_id)
+#             else:
+#                 # still count it so progress finishes
+#                 progress.failed += 1
+#         progress.save()
+
+#     stage.stage_status = "ongoing"
+#     stage.save(update_fields=["stage_status"])
+
+#     return Response({
+#         "message": f"Seed complete for stage '{stage.stage_name}'. Roles queued.",
+#         "stage_id": stage.stage_id,
+#         "total_registrations": len(solo_regs),
+#         "created_stage_competitors": len(to_create),
+#         "progress_id": str(progress.id),
+#     }, status=200)
+
+
 from django.db import transaction
-from django.shortcuts import get_object_or_404
+from django.db.models import F
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
 @api_view(["POST"])
 def seed_solo_players_to_stage(request):
+    # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
@@ -2884,67 +3052,65 @@ def seed_solo_players_to_stage(request):
 
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
-    # all registered solo players
-    solo_regs = list(
-        RegisteredCompetitors.objects.select_related("user").filter(
-            event=event,
-            status="registered",
-            user__isnull=False,
-            team__isnull=True
-        )
+    solo_players_qs = RegisteredCompetitors.objects.select_related("user").filter(
+        event=event,
+        user__isnull=False,
+        team__isnull=True,
+        status="registered"
     )
 
-    if not solo_regs:
-        return Response({"message": "No solo registrations found."}, status=400)
+    total = solo_players_qs.count()
+    if total == 0:
+        return Response({"message": "No registered solo players found."}, status=400)
 
-    # Existing StageCompetitors -> avoid duplicates without per-row get_or_create
-    existing_reg_ids = set(
-        StageCompetitor.objects.filter(stage=stage, player__in=solo_regs)
-        .values_list("player_id", flat=True)
-    )
-
-    to_create = [
-        StageCompetitor(stage=stage, player=reg, status="active")
-        for reg in solo_regs
-        if reg.id not in existing_reg_ids
-    ]
-
-    # Create ONE progress row (NOT inside the loop)
+    # ✅ Create ONE progress row
     progress = DiscordStageRoleAssignmentProgress.objects.create(
         stage=stage,
-        total=len(solo_regs),
-        completed=0,
-        failed=0,
+        total=total,
         status="running"
     )
 
-    # Create StageCompetitors in bulk
-    with transaction.atomic():
-        if to_create:
-            StageCompetitor.objects.bulk_create(to_create, ignore_conflicts=True, batch_size=1000)
+    seeded_count = 0
+    role_assignments = []
 
-    # Queue role assignments (Celery handles rate-limit safely)
-    role_id = stage.stage_discord_role_id
-    if role_id:
-        for reg in solo_regs:
-            if reg.user and reg.user.discord_id:
-                assign_stage_role_task.delay(progress.id, reg.user.discord_id, role_id)
-            else:
-                # still count it so progress finishes
-                progress.failed += 1
-        progress.save()
+    # ✅ Preload existing StageCompetitor to avoid duplicates
+    existing_ids = set(
+        StageCompetitor.objects.filter(stage=stage, player__in=solo_players_qs)
+        .values_list("player_id", flat=True)
+    )
+
+    # ✅ Seed + queue role assignments
+    for reg in solo_players_qs:
+        if reg.id not in existing_ids:
+            StageCompetitor.objects.create(stage=stage, player=reg, status="active")
+            seeded_count += 1
+
+        if reg.user and reg.user.discord_id and stage.stage_discord_role_id:
+            role_assignments.append(
+                DiscordRoleAssignment(
+                    user=reg.user,
+                    discord_id=reg.user.discord_id,
+                    role_id=stage.stage_discord_role_id,
+                    stage=stage,
+                    status="pending",
+                )
+            )
+
+    if role_assignments:
+        DiscordRoleAssignment.objects.bulk_create(role_assignments, batch_size=500)
+
+        # enqueue processing (chunking helps huge loads)
+        assign_stage_roles_from_db_task.delay(str(progress.id), stage.stage_id)
 
     stage.stage_status = "ongoing"
-    stage.save(update_fields=["stage_status"])
+    stage.save()
 
     return Response({
-        "message": f"Seed complete for stage '{stage.stage_name}'. Roles queued.",
-        "stage_id": stage.stage_id,
-        "total_registrations": len(solo_regs),
-        "created_stage_competitors": len(to_create),
+        "message": f"Seeded {seeded_count} solo players into stage '{stage.stage_name}'.",
+        "total_registered": total,
         "progress_id": str(progress.id),
+        "queued_role_assignments": len(role_assignments),
     }, status=200)
-
 
 
 
@@ -3218,8 +3384,97 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #     }, status=200)
 
 
+# from random import shuffle
+# from django.db import transaction
+
+# @api_view(["POST"])
+# def seed_stage_competitors_to_groups(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+#     stage_id = request.data.get("stage_id")
+#     if not stage_id:
+#         return Response({"message": "stage_id is required."}, status=400)
+
+#     stage = get_object_or_404(Stages, stage_id=stage_id)
+#     groups = list(stage.groups.all().order_by("group_id"))
+#     if not groups:
+#         return Response({"message": "No groups found for this stage."}, status=400)
+
+#     # stage competitors (solo)
+#     competitors = list(
+#         StageCompetitor.objects.select_related("player__user").filter(
+#             stage=stage, status="active", player__isnull=False
+#         )
+#     )
+#     if not competitors:
+#         return Response({"message": "No competitors found to seed."}, status=400)
+
+#     # players already seeded into ANY group in THIS stage
+#     already_seeded_ids = set(
+#         StageGroupCompetitor.objects.filter(stage_group__stage=stage, player__isnull=False)
+#         .values_list("player_id", flat=True)
+#     )
+
+#     unseeded = [c for c in competitors if c.player_id not in already_seeded_ids]
+#     if not unseeded:
+#         return Response({"message": "All competitors are already seeded into groups for this stage."}, status=200)
+
+#     shuffle(unseeded)
+
+#     group_count = len(groups)
+#     group_role_jobs = []   # (discord_id, role_id, stage, group)
+#     to_create = []
+
+#     for idx, comp in enumerate(unseeded):
+#         group = groups[idx % group_count]
+#         to_create.append(StageGroupCompetitor(
+#             stage_group=group,
+#             player=comp.player,
+#             status="active"
+#         ))
+
+#         user = comp.player.user
+#         if user and user.discord_id and group.group_discord_role_id:
+#             group_role_jobs.append((user, user.discord_id, group.group_discord_role_id, stage, group))
+
+#     with transaction.atomic():
+#         StageGroupCompetitor.objects.bulk_create(to_create, ignore_conflicts=True, batch_size=1000)
+
+#         # create assignment rows in bulk too (fast)
+#         assignments = [
+#             DiscordRoleAssignment(
+#                 user=u,
+#                 discord_id=discord_id,
+#                 role_id=role_id,
+#                 stage=stage,
+#                 group=group,
+#                 status="pending"
+#             )
+#             for (u, discord_id, role_id, stage, group) in group_role_jobs
+#         ]
+#         DiscordRoleAssignment.objects.bulk_create(assignments, batch_size=1000)
+
+#     # queue celery jobs
+#     for a in DiscordRoleAssignment.objects.filter(stage=stage, group__isnull=False, status="pending"):
+#         assign_group_role_task.delay(a.id)
+
+#     return Response({
+#         "message": f"Seeded {len(unseeded)} competitors into {group_count} groups for stage '{stage.stage_name}'.",
+#         "seeded": len(unseeded),
+#         "groups": group_count,
+#         "discord_assignments_queued": len(group_role_jobs),
+#     }, status=200)
+
+
 from random import shuffle
-from django.db import transaction
 
 @api_view(["POST"])
 def seed_stage_competitors_to_groups(request):
@@ -3238,74 +3493,61 @@ def seed_stage_competitors_to_groups(request):
         return Response({"message": "stage_id is required."}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
-    groups = list(stage.groups.all().order_by("group_id"))
+    groups = list(stage.groups.all())
     if not groups:
         return Response({"message": "No groups found for this stage."}, status=400)
 
-    # stage competitors (solo)
-    competitors = list(
-        StageCompetitor.objects.select_related("player__user").filter(
-            stage=stage, status="active", player__isnull=False
-        )
-    )
+    competitors = list(stage.competitors.select_related("player__user").filter(status="active", player__isnull=False))
     if not competitors:
         return Response({"message": "No competitors found to seed."}, status=400)
 
-    # players already seeded into ANY group in THIS stage
-    already_seeded_ids = set(
+    shuffle(competitors)
+
+    # ✅ already seeded in ANY group in this stage
+    already_seeded_player_ids = set(
         StageGroupCompetitor.objects.filter(stage_group__stage=stage, player__isnull=False)
         .values_list("player_id", flat=True)
     )
 
-    unseeded = [c for c in competitors if c.player_id not in already_seeded_ids]
-    if not unseeded:
-        return Response({"message": "All competitors are already seeded into groups for this stage."}, status=200)
-
-    shuffle(unseeded)
-
-    group_count = len(groups)
-    group_role_jobs = []   # (discord_id, role_id, stage, group)
+    seeded_idx = 0
     to_create = []
+    role_assignments = []
 
-    for idx, comp in enumerate(unseeded):
-        group = groups[idx % group_count]
-        to_create.append(StageGroupCompetitor(
-            stage_group=group,
-            player=comp.player,
-            status="active"
-        ))
+    for competitor in competitors:
+        player = competitor.player
+        if player.id in already_seeded_player_ids:
+            continue
 
-        user = comp.player.user
+        group = groups[seeded_idx % len(groups)]
+        seeded_idx += 1
+        already_seeded_player_ids.add(player.id)
+
+        to_create.append(StageGroupCompetitor(stage_group=group, player=player, status="active"))
+
+        user = player.user
         if user and user.discord_id and group.group_discord_role_id:
-            group_role_jobs.append((user, user.discord_id, group.group_discord_role_id, stage, group))
-
-    with transaction.atomic():
-        StageGroupCompetitor.objects.bulk_create(to_create, ignore_conflicts=True, batch_size=1000)
-
-        # create assignment rows in bulk too (fast)
-        assignments = [
-            DiscordRoleAssignment(
-                user=u,
-                discord_id=discord_id,
-                role_id=role_id,
-                stage=stage,
-                group=group,
-                status="pending"
+            role_assignments.append(
+                DiscordRoleAssignment(
+                    user=user,
+                    discord_id=user.discord_id,
+                    role_id=group.group_discord_role_id,
+                    stage=stage,
+                    group=group,
+                    status="pending",
+                )
             )
-            for (u, discord_id, role_id, stage, group) in group_role_jobs
-        ]
-        DiscordRoleAssignment.objects.bulk_create(assignments, batch_size=1000)
 
-    # queue celery jobs
-    for a in DiscordRoleAssignment.objects.filter(stage=stage, group__isnull=False, status="pending"):
-        assign_group_role_task.delay(a.id)
+    StageGroupCompetitor.objects.bulk_create(to_create, batch_size=500, ignore_conflicts=True)
+    if role_assignments:
+        DiscordRoleAssignment.objects.bulk_create(role_assignments, batch_size=500)
+
+        assign_group_roles_from_db_task.delay(stage.stage_id)  # process pending for this stage
 
     return Response({
-        "message": f"Seeded {len(unseeded)} competitors into {group_count} groups for stage '{stage.stage_name}'.",
-        "seeded": len(unseeded),
-        "groups": group_count,
-        "discord_assignments_queued": len(group_role_jobs),
+        "message": f"Seeded {len(to_create)} competitors into {len(groups)} groups for stage '{stage.stage_name}'.",
+        "queued_role_assignments": len(role_assignments),
     }, status=200)
+
 
 
 
