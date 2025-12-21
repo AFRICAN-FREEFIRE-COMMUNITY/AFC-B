@@ -3653,6 +3653,8 @@ def create_leaderboard(request):
     stage_id = request.data.get("stage_id")
     group_id = request.data.get("group_id")
     leaderboard_name = request.data.get("leaderboard_name")  # optional
+    leaderboard_method = request.data.get("leaderboard_method")  # optional
+    file_type = request.data.get("file_type")  # optional
 
     if not event_id or not stage_id or not group_id:
         return Response({"message": "event_id, stage_id and group_id are required."}, status=400)
@@ -3669,6 +3671,8 @@ def create_leaderboard(request):
             event=event,
             stage=stage,
             group=group,
+            leaderboard_method=leaderboard_method,
+            file_type=file_type,
             defaults={
                 "leaderboard_name": leaderboard_name,
                 "creator": admin,

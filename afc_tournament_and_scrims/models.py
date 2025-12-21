@@ -128,6 +128,17 @@ class RegisteredCompetitors(models.Model):
 
 # ---------------- Leaderboard ----------------
 class Leaderboard(models.Model):
+    LEADERBOARD_METHOD_CHOICES = [
+        ("manual", "Manual"),
+        ("room_file_upload", "Room File Upload"),
+        ("image_upload", "Image Upload")
+    ]
+
+    FILE_TYPE_CHOICES = [
+        ("math_result_file", "Match Result File"),
+        ("debugger_file", "Debugger File")
+    ]
+
     leaderboard_id = models.AutoField(primary_key=True)
     leaderboard_name = models.CharField(max_length=120)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="leaderboards")
@@ -138,6 +149,10 @@ class Leaderboard(models.Model):
     placement_points = models.JSONField(default=dict, blank=True)  
     # example: {"1": 12, "2": 9, "3": 8, ..., "10": 1}
     kill_point = models.FloatField(default=1.0)
+    leaderboard_method = models.CharField(max_length=30, choices=LEADERBOARD_METHOD_CHOICES)
+    file_type = models.CharField(max_length=30, choices=FILE_TYPE_CHOICES, null=True, blank=True)
+    last_updated = models.DateTimeField(auto_now=True)
+
     class Meta:
         unique_together = ("event", "stage", "group")
 
