@@ -1,5 +1,5 @@
 from django.db import models
-from imports import User
+from django.conf import settings
 from afc_team.models import Team
 
 class Tournament(models.Model):
@@ -7,7 +7,7 @@ class Tournament(models.Model):
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    creator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tournaments')
+    creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='tournaments')
     tournament_type = models.CharField(max_length=10) # tournament or scrims
 
     def __str__(self):
@@ -65,7 +65,7 @@ class MatchTeamStats(models.Model):
     teamstats_id = models.AutoField(primary_key=True)
     match = models.ForeignKey(Match, on_delete=models.CASCADE)  # Corrected FK
     team = models.ForeignKey("afc_team.Team", on_delete=models.CASCADE, related_name="leaderboard_match_stats")
-    player = models.ForeignKey(User, on_delete=models.CASCADE)
+    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     kills = models.IntegerField(default=0)
 
     def __str__(self):
