@@ -2598,9 +2598,14 @@ def get_event_details_for_admin(request):
 def assign_stage_role_task(self, discord_id, role_id):
     assign_discord_role(discord_id, role_id)
 
-@shared_task(bind=True, rate_limit="1/s")
+# @shared_task(bind=True, rate_limit="1/s")
+# def assign_group_role_task(self, discord_id, role_id):
+#     assign_discord_role(discord_id, role_id)
+
+@shared_task(bind=True, rate_limit="1/s", autoretry_for=(Exception,), retry_kwargs={"max_retries": 5, "countdown": 10})
 def assign_group_role_task(self, discord_id, role_id):
     assign_discord_role(discord_id, role_id)
+
 
 @shared_task(bind=True, rate_limit="1/s")
 def remove_group_role_task(self, discord_id, role_id):  
@@ -2813,6 +2818,61 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #     }, status=200)
 
 
+# @api_view(["POST"])
+# def seed_stage_competitors_to_groups(request):
+#     # ---------------- AUTH ----------------
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     token = auth.split(" ")[1]
+#     admin = validate_token(token)
+
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+#     stage_id = request.data.get("stage_id")
+#     if not stage_id:
+#         return Response({"message": "stage_id is required."}, status=400)
+
+#     stage = get_object_or_404(Stages, stage_id=stage_id)
+#     groups = list(stage.groups.all())
+#     if not groups:
+#         return Response({"message": "No groups found for this stage."}, status=400)
+
+#     # Get all active StageCompetitors (players only)
+#     competitors = list(stage.competitors.filter(status="active", player__isnull=False))
+#     if not competitors:
+#         return Response({"message": "No competitors found to seed."}, status=400)
+
+#     shuffle(competitors)  # randomize
+
+#     group_count = len(groups)
+#     seeded_count = 0
+
+#     for idx, competitor in enumerate(competitors):
+#         group = groups[idx % group_count]
+
+#         # Create or skip if already in group
+#         obj, created = StageGroupCompetitor.objects.get_or_create(
+#             stage_group=group,
+#             player=competitor.player,
+#             defaults={"status": "active"}
+#         )
+
+#         if created:
+#             seeded_count += 1
+
+#             # Assign discord role safely
+#             if competitor.player.user and competitor.player.user.discord_id and group.group_discord_role_id:
+#                 assign_group_role_task.delay(competitor.player.user.discord_id, group.group_discord_role_id)
+
+#     return Response({
+#         "message": f"Seeded {seeded_count} competitors into {group_count} groups for stage '{stage.stage_name}'."
+#     }, status=200)
+
 @api_view(["POST"])
 def seed_stage_competitors_to_groups(request):
     # ---------------- AUTH ----------------
@@ -2834,39 +2894,54 @@ def seed_stage_competitors_to_groups(request):
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
     groups = list(stage.groups.all())
+
     if not groups:
         return Response({"message": "No groups found for this stage."}, status=400)
 
-    # Get all active StageCompetitors (players only)
-    competitors = list(stage.competitors.filter(status="active", player__isnull=False))
+    competitors = list(
+        stage.competitors.filter(status="active", player__isnull=False)
+    )
+
     if not competitors:
         return Response({"message": "No competitors found to seed."}, status=400)
 
-    shuffle(competitors)  # randomize
+    shuffle(competitors)
 
     group_count = len(groups)
     seeded_count = 0
 
     for idx, competitor in enumerate(competitors):
+        player = competitor.player
+
+        # 🚫 Prevent player being in more than one group
+        if StageGroupCompetitor.objects.filter(
+            stage_group__stage=stage,
+            player=player
+        ).exists():
+            continue
+
         group = groups[idx % group_count]
 
-        # Create or skip if already in group
-        obj, created = StageGroupCompetitor.objects.get_or_create(
+        StageGroupCompetitor.objects.create(
             stage_group=group,
-            player=competitor.player,
-            defaults={"status": "active"}
+            player=player,
+            status="active"
         )
 
-        if created:
-            seeded_count += 1
+        seeded_count += 1
 
-            # Assign discord role safely
-            if competitor.player.user and competitor.player.user.discord_id and group.group_discord_role_id:
-                assign_group_role_task.delay(competitor.player.user.discord_id, group.group_discord_role_id)
+        # ✅ Discord role (async)
+        user = player.user
+        if user and user.discord_id and group.group_discord_role_id:
+            assign_group_role_task.delay(
+                user.discord_id,
+                group.group_discord_role_id
+            )
 
     return Response({
         "message": f"Seeded {seeded_count} competitors into {group_count} groups for stage '{stage.stage_name}'."
     }, status=200)
+
 
 
 
