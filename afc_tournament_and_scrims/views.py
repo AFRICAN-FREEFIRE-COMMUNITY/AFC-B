@@ -13,7 +13,7 @@ from afc_auth.views import assign_discord_role, check_discord_membership, remove
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match
-from afc_auth.models import DiscordRoleAssignment, Notifications, User
+from afc_auth.models import DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, Notifications, User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -2594,9 +2594,29 @@ def get_event_details_for_admin(request):
     }, status=200)
 
 
-@shared_task(bind=True, rate_limit="1/s")
-def assign_stage_role_task(self, discord_id, role_id):
-    assign_discord_role(discord_id, role_id)
+# @shared_task(bind=True, rate_limit="1/s")
+# def assign_stage_role_task(self, discord_id, role_id):
+#     assign_discord_role(discord_id, role_id)
+
+@shared_task(bind=True, rate_limit="1/s", autoretry_for=(Exception,), retry_kwargs={"max_retries": 5})
+def assign_stage_role_task(self, progress_id, discord_id, role_id):
+    from afc_auth.models import DiscordStageRoleAssignmentProgress
+
+    progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
+
+    try:
+        assign_discord_role(discord_id, role_id)
+        progress.completed += 1
+    except Exception:
+        progress.failed += 1
+        raise
+    finally:
+        progress.save()
+
+    if progress.completed + progress.failed >= progress.total:
+        progress.status = "done"
+        progress.save()
+
 
 # @shared_task(bind=True, rate_limit="1/s")
 # def assign_group_role_task(self, discord_id, role_id):
@@ -2649,6 +2669,20 @@ def discord_role_progress(request):
         "success": qs.filter(status="success").count(),
         "failed": qs.filter(status="failed").count(),
     })
+
+
+@api_view(["GET"])
+def get_stage_role_assignment_progress(request, progress_id):
+    progress = get_object_or_404(DiscordStageRoleAssignmentProgress, id=progress_id)
+
+    return Response({
+        "total": progress.total,
+        "completed": progress.completed,
+        "failed": progress.failed,
+        "status": progress.status,
+        "percentage": round((progress.completed / progress.total) * 100, 2) if progress.total else 0
+    })
+
 
 
 @api_view(["POST"])
@@ -2723,8 +2757,15 @@ def seed_solo_players_to_stage(request):
 
             # ✅ Assign Discord role in background
             if reg.user.discord_id and stage.stage_discord_role_id:
+                progress = DiscordStageRoleAssignmentProgress.objects.create(
+                    stage=stage,
+                    total=solo_players.count(),
+                    status="running"
+                )
+
                 try:
                     assign_stage_role_task.delay(
+                        progress.id,
                         reg.user.discord_id,
                         stage.stage_discord_role_id
                     )
