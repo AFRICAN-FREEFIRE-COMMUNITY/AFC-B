@@ -10,7 +10,7 @@ from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMe
 from afc_auth.models import User, UserProfile
 from django.utils.timezone import now
 from django.db.models import Q
-from .models import Team, TeamMembers, Invite, User, TeamSocialMediaLinks
+from .models import Team, TeamMembers, Invite, TeamSocialMediaLinks
 import json
 
 @api_view(["POST"])
