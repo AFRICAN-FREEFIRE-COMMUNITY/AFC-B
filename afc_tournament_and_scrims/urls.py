@@ -43,4 +43,5 @@ urlpatterns = [
     path('get-all-user-id-in-stage/', get_all_user_id_in_stage, name='get_all_user_id_in_stage'),
     path('get-all-user-id-in-group/', get_all_user_id_in_group, name='get_all_user_id_in_group'),
     path('delete-notifications-from-users-in-a-group/', delete_notifications_from_users_in_a_group, name='delete_notification_from_users_in_a_group'),
+    path('check-if-user-registered-in-event/', check_if_user_registered_in_event, name='check_if_user_registered_in_event'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
