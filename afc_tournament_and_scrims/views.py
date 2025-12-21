@@ -3635,84 +3635,381 @@ def create_leaderboard(request):
         "created": created,
     }, status=200)
 
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-from django.shortcuts import get_object_or_404
-from django.db import transaction
+# from rest_framework.decorators import api_view
+# from rest_framework.response import Response
+# from rest_framework import status
+# from django.shortcuts import get_object_or_404
+# from django.db import transaction
 
-@api_view(["POST"])
-def create_leaderboard(request):
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+# @api_view(["POST"])
+# def create_leaderboard(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
-    admin = validate_token(auth.split(" ")[1])
-    if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to perform this action."}, status=403)
 
-    event_id = request.data.get("event_id")
-    stage_id = request.data.get("stage_id")
-    group_id = request.data.get("group_id")
-    leaderboard_name = request.data.get("leaderboard_name")  # optional
-    leaderboard_method = request.data.get("leaderboard_method")  # optional
-    file_type = request.data.get("file_type")  # optional
+#     event_id = request.data.get("event_id")
+#     stage_id = request.data.get("stage_id")
+#     group_id = request.data.get("group_id")
+#     leaderboard_name = request.data.get("leaderboard_name")  # optional
+#     leaderboard_method = request.data.get("leaderboard_method")  # optional
+#     file_type = request.data.get("file_type")  # optional
 
-    if not event_id or not stage_id or not group_id:
-        return Response({"message": "event_id, stage_id and group_id are required."}, status=400)
+#     if not event_id or not stage_id or not group_id:
+#         return Response({"message": "event_id, stage_id and group_id are required."}, status=400)
 
-    event = get_object_or_404(Event, event_id=event_id)
-    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
-    group = get_object_or_404(StageGroups, group_id=group_id, stage=stage)
+#     event = get_object_or_404(Event, event_id=event_id)
+#     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+#     group = get_object_or_404(StageGroups, group_id=group_id, stage=stage)
 
-    if not leaderboard_name:
-        leaderboard_name = f"{event.event_name} - {stage.stage_name} - {group.group_name}"
+#     if not leaderboard_name:
+#         leaderboard_name = f"{event.event_name} - {stage.stage_name} - {group.group_name}"
 
-    with transaction.atomic():
-        leaderboard, created = Leaderboard.objects.get_or_create(
-            event=event,
-            stage=stage,
-            group=group,
-            leaderboard_method=leaderboard_method,
-            file_type=file_type,
-            defaults={
-                "leaderboard_name": leaderboard_name,
-                "creator": admin,
-            }
-        )
+#     with transaction.atomic():
+#         leaderboard, created = Leaderboard.objects.get_or_create(
+#             event=event,
+#             stage=stage,
+#             group=group,
+#             leaderboard_method=leaderboard_method,
+#             file_type=file_type,
+#             defaults={
+#                 "leaderboard_name": leaderboard_name,
+#                 "creator": admin,
+#             }
+#         )
 
-        # attach matches for this group to this leaderboard (no N+1)
-        updated = (
-            Match.objects
-            .filter(group=group)
-            .exclude(leaderboard=leaderboard)
-            .update(leaderboard=leaderboard)
-        )
+#         # attach matches for this group to this leaderboard (no N+1)
+#         updated = (
+#             Match.objects
+#             .filter(group=group)
+#             .exclude(leaderboard=leaderboard)
+#             .update(leaderboard=leaderboard)
+#         )
 
-    return Response({
-        "message": "Leaderboard created." if created else "Leaderboard already existed; updated matches.",
-        "leaderboard_id": leaderboard.leaderboard_id,
-        "matches_linked": updated,
-    }, status=200)
+#     return Response({
+#         "message": "Leaderboard created." if created else "Leaderboard already existed; updated matches.",
+#         "leaderboard_id": leaderboard.leaderboard_id,
+#         "matches_linked": updated,
+#     }, status=200)
 
 
 
-import re
+# import re
+# import json
+# from django.db import transaction
+# from rest_framework.decorators import api_view, parser_classes
+# from rest_framework.parsers import MultiPartParser, FormParser
+# from rest_framework.response import Response
+# from rest_framework import status
+# from django.shortcuts import get_object_or_404
+
+# SOLO_BLOCK_RE = re.compile(
+#     r"Rank:\s*(?P<rank>\d+).*?"
+#     r"KillScore:\s*(?P<kill_score>\d+).*?"
+#     r"RankScore:\s*(?P<rank_score>\d+).*?"
+#     r"TotalScore:\s*(?P<total_score>\d+).*?\n"
+#     r"NAME:\s*(?P<name>.+?)\s+ID:\s*(?P<uid>\d+)\s+KILL:\s*(?P<kills>\d+)",
+#     re.DOTALL
+# )
+
+# @api_view(["POST"])
+# @parser_classes([MultiPartParser, FormParser])
+# def upload_solo_match_result(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+#     match_id = request.data.get("match_id")
+#     if not match_id:
+#         return Response({"message": "match_id is required."}, status=400)
+
+#     uploaded_file = request.FILES.get("file")
+#     if not uploaded_file:
+#         return Response({"message": "file is required."}, status=400)
+
+#     # placement_points can be JSON string or omitted (use default)
+#     placement_points_raw = request.data.get("placement_points")
+#     if placement_points_raw:
+#         if isinstance(placement_points_raw, str):
+#             placement_points = json.loads(placement_points_raw)
+#         else:
+#             placement_points = placement_points_raw
+#         # normalize keys to int
+#         placement_points = {int(k): int(v) for k, v in placement_points.items()}
+#     else:
+#         placement_points = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
+
+#     kill_point_value = int(request.data.get("kill_point_value", 1))  # 1 point per kill by default
+
+#     match = get_object_or_404(Match, match_id=match_id)
+#     event = match.group.stage.event if match.group else (match.leaderboard.event if match.leaderboard else None)
+#     if not event:
+#         return Response({"message": "Match is not linked to a group/leaderboard with an event."}, status=400)
+
+#     if event.participant_type != "solo":
+#         return Response({"message": "This API is for SOLO events only."}, status=400)
+
+#     text = uploaded_file.read().decode("utf-8", errors="ignore")
+
+#     parsed = []
+#     for m in SOLO_BLOCK_RE.finditer(text):
+#         parsed.append({
+#             "placement": int(m.group("rank")),
+#             "kills": int(m.group("kills")),
+#             "uid": m.group("uid").strip(),
+#             "name": m.group("name").strip(),
+#             "raw_kill_score": int(m.group("kill_score")),
+#             "raw_rank_score": int(m.group("rank_score")),
+#             "raw_total_score": int(m.group("total_score")),
+#         })
+
+#     if not parsed:
+#         return Response({
+#             "message": "No results parsed from file. File format may not match expected SOLO layout."
+#         }, status=400)
+
+#     # Map uid -> RegisteredCompetitors
+#     uids = [p["uid"] for p in parsed]
+#     reg_map = {
+#         rc.user.uid: rc
+#         for rc in RegisteredCompetitors.objects.select_related("user")
+#         .filter(event=event, status="registered", user__uid__in=uids)
+#     }
+
+#     missing = [p for p in parsed if p["uid"] not in reg_map]
+
+#     stats_to_create = []
+#     for p in parsed:
+#         rc = reg_map.get(p["uid"])
+#         if not rc:
+#             continue
+
+#         placement_pts = placement_points.get(p["placement"], 0)
+#         kill_pts = p["kills"] * kill_point_value
+#         total_pts = placement_pts + kill_pts
+
+#         stats_to_create.append(SoloPlayerMatchStats(
+#             match=match,
+#             competitor=rc,
+#             placement=p["placement"],
+#             kills=p["kills"],
+#             placement_points=placement_pts,
+#             kill_points=kill_pts,
+#             total_points=total_pts,
+#             raw_kill_score=p["raw_kill_score"],
+#             raw_rank_score=p["raw_rank_score"],
+#             raw_total_score=p["raw_total_score"],
+#         ))
+
+#     with transaction.atomic():
+#         # wipe and replace ensures no duplicates and makes re-upload safe
+#         SoloPlayerMatchStats.objects.filter(match=match).delete()
+#         SoloPlayerMatchStats.objects.bulk_create(stats_to_create, batch_size=500)
+
+#     return Response({
+#         "message": "Solo match results uploaded.",
+#         "match_id": match.match_id,
+#         "parsed_rows": len(parsed),
+#         "saved_rows": len(stats_to_create),
+#         "missing_registered_competitors": [
+#             {"uid": p["uid"], "name": p["name"], "placement": p["placement"]}
+#             for p in missing[:30]
+#         ],
+#         "missing_count": len(missing),
+#     }, status=200)
+
+
+
+# import json
+# import re
+# from django.db import transaction
+# from django.shortcuts import get_object_or_404
+# from rest_framework.decorators import api_view, parser_classes
+# from rest_framework.parsers import MultiPartParser, FormParser
+# from rest_framework.response import Response
+# from rest_framework import status
+
+# # Matches the 2-line SOLO blocks in your log file:
+# # TeamName: Rank: X KillScore: Y RankScore: Z TotalScore: T
+# # NAME: <name> ID: <uid> KILL: <kills>
+# SOLO_BLOCK_RE = re.compile(
+#     r"TeamName:\s*Rank:\s*(?P<rank>\d+)\s*"
+#     r"KillScore:\s*(?P<kill_score>\d+)\s*"
+#     r"RankScore:\s*(?P<rank_score>\d+)\s*"
+#     r"TotalScore:\s*(?P<total_score>\d+)\s*"
+#     r"\s*[\r\n]+"
+#     r"NAME:\s*(?P<name>.*?)\s*"
+#     r"ID:\s*(?P<uid>\d+)\s*"
+#     r"KILL:\s*(?P<kills>\d+)",
+#     re.MULTILINE
+# )
+
+# @api_view(["POST"])
+# @parser_classes([MultiPartParser, FormParser])
+# def upload_solo_match_result(request):
+#     # ---------------- AUTH ----------------
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+#     # ---------------- INPUT ----------------
+#     match_id = request.data.get("match_id")
+#     if not match_id:
+#         return Response({"message": "match_id is required."}, status=400)
+
+#     uploaded_file = request.FILES.get("file")
+#     if not uploaded_file:
+#         return Response({"message": "file is required."}, status=400)
+
+#     match = get_object_or_404(Match, match_id=match_id)
+
+#     # ---------------- EVENT + LEADERBOARD ----------------
+#     if not match.group:
+#         return Response({"message": "This match is not linked to a group."}, status=400)
+
+#     event = match.group.stage.event
+#     if event.participant_type != "solo":
+#         return Response({"message": "This API is for SOLO events only."}, status=400)
+
+#     # Prefer match.leaderboard; else use unique leaderboard (event, stage, group)
+#     leaderboard = match.leaderboard
+#     if not leaderboard:
+#         leaderboard = Leaderboard.objects.filter(
+#             event=event,
+#             stage=match.group.stage,
+#             group=match.group
+#         ).first()
+
+#     if not leaderboard:
+#         return Response(
+#             {"message": "No leaderboard found for this group. Create/link leaderboard first."},
+#             status=400
+#         )
+
+#     # placement_points stored as JSONField like {"1": 12, "2": 9, ...}
+#     placement_points_raw = leaderboard.placement_points or {}
+#     try:
+#         placement_points = {int(k): int(v) for k, v in placement_points_raw.items()}
+#     except Exception:
+#         return Response(
+#             {"message": "Leaderboard placement_points must be a JSON object like {'1': 12, '2': 9, ...}"},
+#             status=400
+#         )
+
+#     if not placement_points:
+#         # fallback default (rank 1-10)
+#         placement_points = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
+
+#     kill_point_value = float(getattr(leaderboard, "kill_point", 1.0) or 1.0)
+
+#     # ---------------- PARSE FILE ----------------
+#     text = uploaded_file.read().decode("utf-8", errors="ignore")
+
+#     parsed = []
+#     for m in SOLO_BLOCK_RE.finditer(text):
+#         parsed.append({
+#             "placement": int(m.group("rank")),
+#             "uid": m.group("uid").strip(),
+#             "name": m.group("name").strip(),
+#             "kills": int(m.group("kills")),
+#             "raw_kill_score": int(m.group("kill_score")),
+#             "raw_rank_score": int(m.group("rank_score")),
+#             "raw_total_score": int(m.group("total_score")),
+#         })
+
+#     if not parsed:
+#         return Response(
+#             {"message": "No results parsed. Your log format didn't match SOLO_BLOCK_RE."},
+#             status=400
+#         )
+
+#     # ---------------- MAP UID -> REGISTERED COMPETITOR ----------------
+#     uids = [p["uid"] for p in parsed]
+
+#     reg_qs = RegisteredCompetitors.objects.select_related("user").filter(
+#         event=event,
+#         status="registered",
+#         user__uid__in=uids
+#     )
+#     reg_map = {str(rc.user.uid): rc for rc in reg_qs}
+
+#     missing = [p for p in parsed if p["uid"] not in reg_map]
+
+#     # ---------------- SAVE ----------------
+#     stats_to_create = []
+#     for p in parsed:
+#         rc = reg_map.get(p["uid"])
+#         if not rc:
+#             continue
+
+#         placement_pts = placement_points.get(p["placement"], 0)
+#         kill_pts = p["kills"] * kill_point_value  # keep float support
+#         total_pts = placement_pts + kill_pts
+
+#         stats_to_create.append(SoloPlayerMatchStats(
+#             match=match,
+#             competitor=rc,
+#             placement=p["placement"],
+#             kills=p["kills"],
+#             placement_points=placement_pts,
+#             kill_points=kill_pts,
+#             total_points=total_pts,
+#             raw_kill_score=p["raw_kill_score"],
+#             raw_rank_score=p["raw_rank_score"],
+#             raw_total_score=p["raw_total_score"],
+#         ))
+
+#     with transaction.atomic():
+#         # re-upload safe
+#         SoloPlayerMatchStats.objects.filter(match=match).delete()
+#         SoloPlayerMatchStats.objects.bulk_create(stats_to_create, batch_size=500)
+
+#     return Response({
+#         "message": "Solo match results uploaded using leaderboard scoring config.",
+#         "match_id": match.match_id,
+#         "leaderboard_id": leaderboard.leaderboard_id,
+#         "kill_point": kill_point_value,
+#         "parsed_rows": len(parsed),
+#         "saved_rows": len(stats_to_create),
+#         "missing_count": len(missing),
+#         "missing_registered_competitors_preview": [
+#             {"uid": p["uid"], "name": p["name"], "placement": p["placement"]}
+#             for p in missing[:30]
+#         ],
+#     }, status=200)
+
+
 import json
+import re
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework import status
-from django.shortcuts import get_object_or_404
 
+# Matches your file format like:
+# Rank: 1  ... TotalScore: 120
+# NAME: VT KingHydra  ID: 490350075  KILL: 6
 SOLO_BLOCK_RE = re.compile(
-    r"Rank:\s*(?P<rank>\d+).*?"
-    r"KillScore:\s*(?P<kill_score>\d+).*?"
-    r"RankScore:\s*(?P<rank_score>\d+).*?"
-    r"TotalScore:\s*(?P<total_score>\d+).*?\n"
+    r"Rank:\s*(?P<placement>\d+).*?\n"
     r"NAME:\s*(?P<name>.+?)\s+ID:\s*(?P<uid>\d+)\s+KILL:\s*(?P<kills>\d+)",
     re.DOTALL
 )
@@ -3720,6 +4017,7 @@ SOLO_BLOCK_RE = re.compile(
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
 def upload_solo_match_result(request):
+    # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
@@ -3727,9 +4025,11 @@ def upload_solo_match_result(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
+
     if admin.role != "admin":
         return Response({"message": "You do not have permission to perform this action."}, status=403)
 
+    # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
     if not match_id:
         return Response({"message": "match_id is required."}, status=400)
@@ -3738,93 +4038,115 @@ def upload_solo_match_result(request):
     if not uploaded_file:
         return Response({"message": "file is required."}, status=400)
 
-    # placement_points can be JSON string or omitted (use default)
-    placement_points_raw = request.data.get("placement_points")
-    if placement_points_raw:
-        if isinstance(placement_points_raw, str):
-            placement_points = json.loads(placement_points_raw)
-        else:
-            placement_points = placement_points_raw
-        # normalize keys to int
-        placement_points = {int(k): int(v) for k, v in placement_points.items()}
-    else:
-        placement_points = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
-
-    kill_point_value = int(request.data.get("kill_point_value", 1))  # 1 point per kill by default
-
     match = get_object_or_404(Match, match_id=match_id)
-    event = match.group.stage.event if match.group else (match.leaderboard.event if match.leaderboard else None)
-    if not event:
-        return Response({"message": "Match is not linked to a group/leaderboard with an event."}, status=400)
 
+    # ---------------- EVENT + LEADERBOARD ----------------
+    # In your DB, SOLO matches should be linked to a group
+    if not match.group:
+        return Response({"message": "This match is not linked to a group."}, status=400)
+
+    event = match.group.stage.event
     if event.participant_type != "solo":
         return Response({"message": "This API is for SOLO events only."}, status=400)
 
+    # Find leaderboard (match.leaderboard preferred)
+    leaderboard = match.leaderboard
+    if not leaderboard:
+        leaderboard = Leaderboard.objects.filter(
+            event=event,
+            stage=match.group.stage,
+            group=match.group
+        ).first()
+
+    if not leaderboard:
+        return Response(
+            {"message": "No leaderboard found for this group. Create leaderboard first."},
+            status=400
+        )
+
+    # Use scoring config from leaderboard
+    placement_points_raw = leaderboard.placement_points or {}
+    try:
+        placement_points = {int(k): int(v) for k, v in placement_points_raw.items()}
+    except Exception:
+        return Response(
+            {"message": "Leaderboard placement_points must be a JSON object like {'1':12,'2':9,...}"},
+            status=400
+        )
+
+    if not placement_points:
+        placement_points = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
+
+    kill_point_value = float(getattr(leaderboard, "kill_point", 1.0) or 1.0)
+
+    # ---------------- PARSE FILE ----------------
     text = uploaded_file.read().decode("utf-8", errors="ignore")
 
     parsed = []
     for m in SOLO_BLOCK_RE.finditer(text):
         parsed.append({
-            "placement": int(m.group("rank")),
+            "placement": int(m.group("placement")),
             "kills": int(m.group("kills")),
             "uid": m.group("uid").strip(),
             "name": m.group("name").strip(),
-            "raw_kill_score": int(m.group("kill_score")),
-            "raw_rank_score": int(m.group("rank_score")),
-            "raw_total_score": int(m.group("total_score")),
         })
 
     if not parsed:
-        return Response({
-            "message": "No results parsed from file. File format may not match expected SOLO layout."
-        }, status=400)
+        return Response(
+            {"message": "No results parsed. Your log format may differ from SOLO_BLOCK_RE."},
+            status=400
+        )
 
-    # Map uid -> RegisteredCompetitors
+    # ---------------- MAP UID -> RegisteredCompetitors ----------------
     uids = [p["uid"] for p in parsed]
-    reg_map = {
-        rc.user.uid: rc
-        for rc in RegisteredCompetitors.objects.select_related("user")
-        .filter(event=event, status="registered", user__uid__in=uids)
-    }
+
+    reg_qs = RegisteredCompetitors.objects.select_related("user").filter(
+        event=event,
+        status="registered",
+        user__uid__in=uids
+    )
+    reg_map = {rc.user.uid: rc for rc in reg_qs}
 
     missing = [p for p in parsed if p["uid"] not in reg_map]
 
+    # ---------------- SAVE ----------------
     stats_to_create = []
     for p in parsed:
         rc = reg_map.get(p["uid"])
         if not rc:
             continue
 
-        placement_pts = placement_points.get(p["placement"], 0)
-        kill_pts = p["kills"] * kill_point_value
+        placement_pts = int(placement_points.get(p["placement"], 0))
+        kill_pts = int(round(p["kills"] * kill_point_value))
         total_pts = placement_pts + kill_pts
 
-        stats_to_create.append(SoloPlayerMatchStats(
-            match=match,
-            competitor=rc,
-            placement=p["placement"],
-            kills=p["kills"],
-            placement_points=placement_pts,
-            kill_points=kill_pts,
-            total_points=total_pts,
-            raw_kill_score=p["raw_kill_score"],
-            raw_rank_score=p["raw_rank_score"],
-            raw_total_score=p["raw_total_score"],
-        ))
+        stats_to_create.append(
+            SoloPlayerMatchStats(
+                match=match,
+                competitor=rc,
+                placement=p["placement"],
+                kills=p["kills"],
+                placement_points=placement_pts,
+                total_points=total_pts
+            )
+        )
 
     with transaction.atomic():
-        # wipe and replace ensures no duplicates and makes re-upload safe
+        # re-upload safe: prevents duplicates and makes upload idempotent
         SoloPlayerMatchStats.objects.filter(match=match).delete()
         SoloPlayerMatchStats.objects.bulk_create(stats_to_create, batch_size=500)
 
     return Response({
-        "message": "Solo match results uploaded.",
+        "message": "Solo match results uploaded (scoring pulled from leaderboard).",
         "match_id": match.match_id,
+        "leaderboard_id": leaderboard.leaderboard_id,
+        "kill_point": kill_point_value,
+        "placement_points_used": placement_points,
         "parsed_rows": len(parsed),
         "saved_rows": len(stats_to_create),
-        "missing_registered_competitors": [
+        "missing_count": len(missing),
+        "missing_registered_competitors_preview": [
             {"uid": p["uid"], "name": p["name"], "placement": p["placement"]}
             for p in missing[:30]
         ],
-        "missing_count": len(missing),
     }, status=200)
