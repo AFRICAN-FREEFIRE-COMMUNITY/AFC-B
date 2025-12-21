@@ -13,7 +13,7 @@ from afc_auth.views import assign_discord_role, check_discord_membership, remove
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match
-from afc_auth.models import DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, Notifications, User
+from afc_auth.models import Notifications, User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -2600,7 +2600,7 @@ def get_event_details_for_admin(request):
 
 @shared_task(bind=True, rate_limit="1/s", autoretry_for=(Exception,), retry_kwargs={"max_retries": 5})
 def assign_stage_role_task(self, progress_id, discord_id, role_id):
-    from afc_auth.models import DiscordStageRoleAssignmentProgress
+    from .models import DiscordStageRoleAssignmentProgress
 
     progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
 
