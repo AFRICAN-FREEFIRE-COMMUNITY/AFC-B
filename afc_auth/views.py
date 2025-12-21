@@ -1743,20 +1743,33 @@ def check_discord_membership(discord_id):
 #     return r.status_code in (204, 200)
 
 
+# def assign_discord_role(discord_id, role_id):
+#     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
+#     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+
+#     r = requests.put(url, headers=headers)
+
+#     if r.status_code == 429:
+#         retry_after = float(r.headers.get("Retry-After", "2"))
+#         return {"ok": False, "rate_limited": True, "retry_after": retry_after, "status": 429, "text": r.text}
+
+#     if r.status_code in (204, 200):
+#         return {"ok": True, "rate_limited": False, "status": r.status_code}
+
+#     return {"ok": False, "rate_limited": False, "status": r.status_code, "text": r.text}
+
+import requests
+import time
+
 def assign_discord_role(discord_id, role_id):
     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
 
     r = requests.put(url, headers=headers)
 
-    if r.status_code == 429:
-        retry_after = float(r.headers.get("Retry-After", "2"))
-        return {"ok": False, "rate_limited": True, "retry_after": retry_after, "status": 429, "text": r.text}
+    # Return both success flag + response details for better retries/logging
+    return r
 
-    if r.status_code in (204, 200):
-        return {"ok": True, "rate_limited": False, "status": r.status_code}
-
-    return {"ok": False, "rate_limited": False, "status": r.status_code, "text": r.text}
 
 
 
