@@ -1728,6 +1728,21 @@ def check_discord_membership(discord_id):
 #     r = requests.put(url, headers=headers)
 #     return r.status_code == 204  # 204 = success
 
+# def assign_discord_role(discord_id, role_id):
+#     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
+#     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+
+#     r = requests.put(url, headers=headers)
+
+#     if r.status_code == 429:
+#         print("⚠️ Discord rate limited:", r.text)
+
+#     if r.status_code not in (204, 200):
+#         print("❌ Discord error:", r.status_code, r.text)
+
+#     return r.status_code in (204, 200)
+
+
 def assign_discord_role(discord_id, role_id):
     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
@@ -1735,12 +1750,13 @@ def assign_discord_role(discord_id, role_id):
     r = requests.put(url, headers=headers)
 
     if r.status_code == 429:
-        print("⚠️ Discord rate limited:", r.text)
+        retry_after = float(r.headers.get("Retry-After", "2"))
+        return {"ok": False, "rate_limited": True, "retry_after": retry_after, "status": 429, "text": r.text}
 
-    if r.status_code not in (204, 200):
-        print("❌ Discord error:", r.status_code, r.text)
+    if r.status_code in (204, 200):
+        return {"ok": True, "rate_limited": False, "status": r.status_code}
 
-    return r.status_code in (204, 200)
+    return {"ok": False, "rate_limited": False, "status": r.status_code, "text": r.text}
 
 
 
