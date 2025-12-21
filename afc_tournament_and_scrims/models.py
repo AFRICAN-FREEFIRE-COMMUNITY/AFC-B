@@ -135,7 +135,11 @@ class Leaderboard(models.Model):
     group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, null=True, blank=True, related_name="leaderboards")
     creation_date = models.DateField(auto_now=True)
     creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-
+    placement_points = models.JSONField(default=dict, blank=True)  
+    # example: {"1": 12, "2": 9, "3": 8, ..., "10": 1}
+    kill_point = models.FloatField(default=1.0)
+    class Meta:
+        unique_together = ("event", "stage", "group")
 
 # ---------------- Matches & Stats ----------------
 class Match(models.Model):
@@ -257,3 +261,22 @@ class StageGroupCompetitor(models.Model):
         unique_together = ("stage_group", "tournament_team", "player")
 
 
+# class PlacementPointSystem(models.Model):
+#     leaderboard = models.ForeignKey(Leaderboard, on_delete=models.CASCADE, related_name="point_system")
+#     placement = models.PositiveIntegerField()  # 1,2,3...
+#     points = models.PositiveIntegerField()
+
+#     class Meta:
+#         unique_together = ("leaderboard", "placement")
+
+
+class SoloPlayerMatchStats(models.Model):
+    match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="solo_stats")
+    competitor = models.ForeignKey(RegisteredCompetitors, on_delete=models.CASCADE)
+    placement = models.PositiveIntegerField()
+    kills = models.PositiveIntegerField(default=0)
+    placement_points = models.PositiveIntegerField(default=0)
+    total_points = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ("match", "competitor")
