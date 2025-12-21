@@ -2087,10 +2087,43 @@ def get_notifications(request):
 
     for notification in notifications:
         notifications_data.append({
-            "title": notification.title,
+            "id": notification.notification_id,
             "message": notification.message,
             "is_read": notification.is_read,
             "created_at": notification.created_at
         })
 
     return Response({"notifications": notifications_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def view_notification(request):
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+    session_token = session_token.split(" ")[1]
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
+    notification_id = request.data.get("notification_id")
+
+    if not notification_id:
+        return Response({"message": "Notification ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        notification = Notifications.objects.get(notification_id=notification_id)
+    except Notifications.DoesNotExist:
+        return Response({"message": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    notification.is_read = True
+    notification.save()
+
+    return Response({"message": "Notification marked as read."}, status=status.HTTP_200_OK)

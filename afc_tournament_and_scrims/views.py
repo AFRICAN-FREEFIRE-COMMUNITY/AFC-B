@@ -2502,6 +2502,7 @@ def get_event_details_for_admin(request):
             "groups": group_details,
             "stage_format": stage.stage_format,
             "stage_status": stage.stage_status,
+            "teams_qualifying": stage.teams_qualifying,
             "competitors_in_stage": list(
                 StageCompetitor.objects.filter(
                     stage=stage,
