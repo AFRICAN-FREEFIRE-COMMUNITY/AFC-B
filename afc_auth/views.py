@@ -2127,3 +2127,78 @@ def view_notification(request):
     notification.save()
 
     return Response({"message": "Notification marked as read."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def send_notification(request):
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+    session_token = session_token.split(" ")[1]
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
+    if user.role != "admin":
+        return Response({"message": "You do not have permission to send notifications."}, status=status.HTTP_403_FORBIDDEN)
+
+    recipient_id = request.data.get("recipient_id")
+    message = request.data.get("message")
+
+    if not recipient_id or not message:
+        return Response({"message": "Recipient ID and message are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        recipient = User.objects.get(user_id=recipient_id)
+    except User.DoesNotExist:
+        return Response({"message": "Recipient user not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    notification = Notifications.objects.create(
+        user=recipient,
+        message=message
+    )
+
+    return Response({"message": "Notification sent successfully.", "notification_id": notification.notification_id}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+def send_notification_to_multiple_users(request):
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+    session_token = session_token.split(" ")[1]
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
+    if user.role != "admin":
+        return Response({"message": "You do not have permission to send notifications."}, status=status.HTTP_403_FORBIDDEN)
+
+    recipient_ids = request.data.get("recipient_ids", [])
+    message = request.data.get("message")
+
+    if not recipient_ids or not message:
+        return Response({"message": "Recipient IDs and message are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    recipients = User.objects.filter(user_id__in=recipient_ids)
+    for recipient in recipients:
+        Notifications.objects.create(
+            user=recipient,
+            message=message
+        )
+
+    return Response({"message": "Notifications sent successfully."}, status=status.HTTP_201_CREATED)

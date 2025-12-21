@@ -46,6 +46,7 @@ urlpatterns = [
     path("get-all-login-history/", get_all_login_history, name="get_all_login_history"),
     path("get-user-login-history/", get_user_login_history, name="get_user_login_history"),
     path("get-notifications/", get_notifications, name="get_notifications"),
-    path("send")
+    path("send-notification/", send_notification, name="send_notification"),
+    path("send-notification-to-multiple-users/", send_notification_to_multiple_users, name="send_notification_to_multiple_users"),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
