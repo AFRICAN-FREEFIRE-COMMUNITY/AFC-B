@@ -4,6 +4,8 @@ from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
 from django.utils.timezone import now
 
+from afc_tournament_and_scrims.models import Stages, StageGroups
+
 class User(AbstractUser):
     ROLE_CHOICES = [
         ("admin", "Admin"),
@@ -231,3 +233,24 @@ class Notifications(models.Model):
     def mark_as_read(self):
         self.is_read = True
         self.save()
+
+    
+class DiscordRoleAssignment(models.Model):
+    STATUS_CHOICES = (
+        ("pending", "Pending"),
+        ("success", "Success"),
+        ("failed", "Failed"),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    discord_id = models.CharField(max_length=50)
+    role_id = models.CharField(max_length=50)
+
+    stage = models.ForeignKey(Stages, null=True, blank=True, on_delete=models.CASCADE)
+    group = models.ForeignKey(StageGroups, null=True, blank=True, on_delete=models.CASCADE)
+
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="pending")
+    error_message = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
