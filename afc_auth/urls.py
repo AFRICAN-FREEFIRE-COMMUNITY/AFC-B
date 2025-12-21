@@ -48,5 +48,6 @@ urlpatterns = [
     path("get-notifications/", get_notifications, name="get_notifications"),
     path("send-notification/", send_notification, name="send_notification"),
     path("send-notification-to-multiple-users/", send_notification_to_multiple_users, name="send_notification_to_multiple_users"),
+    path("view-notification/", view_notification, name="view_notification"),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
