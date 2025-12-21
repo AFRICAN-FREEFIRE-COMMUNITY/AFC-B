@@ -3346,3 +3346,29 @@ def delete_group(request):
     return Response({
         "message": f"Group '{group.group_name}' has been removed along with all associated competitor roles."
     }, status=200)
+
+
+@api_view(["POST"])
+def get_all_user_id_in_stage(request):
+    stage_id = request.data.get("stage_id")
+    if not stage_id:
+        return Response({"message": "stage_id is required."}, status=400)
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+
+    competitors = StageCompetitor.objects.filter(
+        stage=stage,
+        player__isnull=False
+    ).select_related("player__user")
+
+    user_ids = [
+        competitor.player.user.user_id
+        for competitor in competitors
+        if competitor.player.user is not None
+    ]
+
+    return Response({
+        "stage_id": stage.stage_id,
+        "stage_name": stage.stage_name,
+        "user_ids": user_ids
+    }, status=200)

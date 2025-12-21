@@ -40,4 +40,5 @@ urlpatterns = [
     path('retry-failed-discord-roles/', retry_failed_discord_roles, name='retry_failed_discord_roles'),
     path('get-stage-role-assignment-progress/', get_stage_role_assignment_progress, name='get_stage_role_assignment_progress'),
     path('get-all-role-progress/', get_all_role_progress, name='get_all_role_progress'),
+    path('get-all-user-id-in-stage/', get_all_user_id_in_stage, name='get_all_user_id_in_stage'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
