@@ -1,4 +1,4 @@
-from celery_config import shared_task
+from celery import shared_task
 from django.utils.timezone import now
 from afc_auth.models import BannedPlayer, TeamBan
 
