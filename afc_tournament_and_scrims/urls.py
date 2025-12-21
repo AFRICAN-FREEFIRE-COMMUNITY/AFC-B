@@ -41,4 +41,5 @@ urlpatterns = [
     path('get-stage-role-assignment-progress/', get_stage_role_assignment_progress, name='get_stage_role_assignment_progress'),
     path('get-all-role-progress/', get_all_role_progress, name='get_all_role_progress'),
     path('get-all-user-id-in-stage/', get_all_user_id_in_stage, name='get_all_user_id_in_stage'),
+    path('get-all-user-id-in-group/', get_all_user_id_in_group, name='get_all_user_id_in_group'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

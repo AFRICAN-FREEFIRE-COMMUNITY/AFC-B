@@ -3372,3 +3372,29 @@ def get_all_user_id_in_stage(request):
         "stage_name": stage.stage_name,
         "user_ids": user_ids
     }, status=200)
+
+
+@api_view(["POST"])
+def get_all_user_id_in_group(request):
+    group_id = request.data.get("group_id")
+    if not group_id:
+        return Response({"message": "group_id is required."}, status=400)
+
+    group = get_object_or_404(StageGroups, group_id=group_id)
+
+    competitors = StageGroupCompetitor.objects.filter(
+        stage_group=group,
+        player__isnull=False
+    ).select_related("player__user")
+
+    user_ids = [
+        competitor.player.user.user_id
+        for competitor in competitors
+        if competitor.player.user is not None
+    ]
+
+    return Response({
+        "group_id": group.group_id,
+        "group_name": group.group_name,
+        "user_ids": user_ids
+    }, status=200)
