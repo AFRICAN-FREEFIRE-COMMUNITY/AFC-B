@@ -1,7 +1,7 @@
 import uuid
 from django.db import models
 from afc_team.models import Team, TeamMembers
-from afc_auth.models import User
+from django.conf import settings
 
 # ---------------- Event ----------------
 class Event(models.Model):
@@ -121,7 +121,7 @@ class RegisteredCompetitors(models.Model):
         ("withdrawn", "Withdrawn")
     ]
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="registrations")
-    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="registered")
     registration_date = models.DateTimeField(auto_now_add=True)
@@ -134,7 +134,7 @@ class Leaderboard(models.Model):
     stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="leaderboards")
     group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, null=True, blank=True, related_name="leaderboards")
     creation_date = models.DateField(auto_now=True)
-    creator = models.ForeignKey(User, on_delete=models.CASCADE)
+    creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
 
 # ---------------- Matches & Stats ----------------
@@ -142,7 +142,7 @@ class Match(models.Model):
     match_id = models.AutoField(primary_key=True)
     leaderboard = models.ForeignKey(Leaderboard, on_delete=models.CASCADE, related_name="matches", null=True, blank=True)
     group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, related_name="matches", null=True, blank=True)
-    mvp = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="mvp_matches")
+    mvp = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="mvp_matches")
     match_date = models.DateTimeField(auto_now_add=True)
     match_number = models.PositiveIntegerField()
     room_id = models.CharField(max_length=50, null=True, blank=True)
@@ -183,7 +183,7 @@ class TournamentTeamMember(models.Model):
     Members of the team for this tournament.
     """
     tournament_team = models.ForeignKey(TournamentTeam, on_delete=models.CASCADE, related_name="members")
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
     class Meta:
         unique_together = ("tournament_team", "user")
@@ -209,7 +209,7 @@ class TournamentPlayerMatchStats(models.Model):
     """
     player_stats_id = models.AutoField(primary_key=True)
     team_stats = models.ForeignKey(TournamentTeamMatchStats, on_delete=models.CASCADE, related_name="player_stats")
-    player = models.ForeignKey(User, on_delete=models.CASCADE)
+    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     kills = models.PositiveIntegerField(default=0)
     damage = models.PositiveIntegerField(default=0)
     assists = models.PositiveIntegerField(default=0)
@@ -218,14 +218,14 @@ class TournamentPlayerMatchStats(models.Model):
 
 class EventPageView(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="pageviews")
-    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)  # if available
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)  # if available
     ip_address = models.CharField(max_length=45, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 class SocialShare(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="social_shares")
     platform = models.CharField(max_length=50, null=True, blank=True) # facebook/twitter/whatsapp...
-    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -264,7 +264,7 @@ class DiscordRoleAssignment(models.Model):
         ("failed", "Failed"),
     )
 
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     discord_id = models.CharField(max_length=50)
     role_id = models.CharField(max_length=50)
 
