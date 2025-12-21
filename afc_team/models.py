@@ -2,10 +2,11 @@ from datetime import timedelta, timezone
 import uuid
 from django.utils.timezone import now
 from django.db import models
-# from afc_auth.models import *
+from afc_auth.models import *
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from imports import User
+# from imports import User
+from django.conf import settings
 
 # Create your models here.
 
@@ -20,8 +21,8 @@ class Team(models.Model):
     team_tag = models.CharField(max_length=5, null=True)
     join_settings = models.CharField(max_length=20, choices=JOIN_SETTINGS_CHOICES)
     creation_date = models.DateTimeField(default=now)
-    team_creator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_teams')
-    team_owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_teams')
+    team_creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_teams')
+    team_owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='owned_teams')
     is_banned = models.BooleanField(default=False)
     team_tier = models.CharField(max_length=1, default="3")
     team_description = models.CharField(max_length=200, default="We Love Playing Free Fire")
@@ -57,7 +58,7 @@ class TeamMembers(models.Model):
     ]
 
     team = models.ForeignKey(Team, on_delete=models.CASCADE)
-    member = models.ForeignKey(User, on_delete=models.CASCADE)
+    member = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     management_role = models.CharField(max_length=20, choices=MANAGEMENT_ROLE_CHOICES, default='member')
     in_game_role = models.CharField(max_length=20, choices=IN_GAME_ROLE_CHOICES, null=True, blank=True)
     join_date = models.DateTimeField(default=now)
@@ -99,8 +100,8 @@ class Invite(models.Model):
     ]
 
     invite_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    inviter = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_invites')
-    invitee = models.ForeignKey(User, on_delete=models.CASCADE, related_name='received_invites', null=True, blank=True)
+    inviter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='sent_invites')
+    invitee = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='received_invites', null=True, blank=True)
     team = models.ForeignKey('Team', on_delete=models.CASCADE)
     status_of_invite = models.CharField(max_length=20, choices=STATUS_CHOICES, default='unattended_to')
     decision = models.CharField(max_length=20, choices=DECISION_CHOICES, null=True, blank=True)
@@ -136,7 +137,7 @@ class Report(models.Model):
 
     report_id = models.AutoField(primary_key=True)
     team = models.ForeignKey(Team, on_delete=models.CASCADE)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     action = models.CharField(max_length=50, choices=ACTION_CHOICES)
     description = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
@@ -147,7 +148,7 @@ class Report(models.Model):
 
 class JoinRequest(models.Model):
     request_id = models.AutoField(primary_key=True)
-    requester = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_request')
+    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='sent_request')
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='received_request')
     status_of_request = models.CharField(max_length=20, choices=[
         ('unattended_to', 'Unattended To'),
