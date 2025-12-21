@@ -4411,7 +4411,6 @@ def get_all_leaderboards(request):
             "kill_point": lb.kill_point,
             "file_type": lb.file_type,
             "leaderboard_method": lb.leaderboard_method,
-            "created_at": lb.created_at,
-            "updated_at": lb.updated_at,
+            "created_at": lb.creation_date
         })
     return Response({"leaderboards": data}, status=200) 
