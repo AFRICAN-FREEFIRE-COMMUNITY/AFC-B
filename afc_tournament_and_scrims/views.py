@@ -3065,3 +3065,78 @@ def remove_all_stage_competitors_from_groups_and_their_discord_roles(request):
     return Response({
         "message": f"Removed {total_removed} competitors from all groups in stage '{stage.stage_name}' and their Discord roles."
     }, status=200)
+
+
+@api_view(["POST"])
+def delete_stage(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    token = session_token.split(" ")[1]
+    admin = validate_token(token)
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+    
+    stage_id = request.data.get("stage_id")
+    if not stage_id:
+        return Response({"message": "stage_id is required."}, status=400)
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+
+    # Remove all group roles from competitors
+    groups = stage.groups.all()
+    for group in groups:
+        competitors = StageGroupCompetitor.objects.filter(stage_group=group)
+        for competitor in competitors:
+            user = competitor.player.user
+            if user.discord_id and group.group_discord_role_id:
+                remove_group_role_task.delay(user.discord_id, group.group_discord_role_id)
+
+    stage.delete()
+
+    return Response({
+        "message": f"Stage '{stage.stage_name}' has been removed along with all associated groups and competitor roles."
+    }, status=200)
+
+
+
+@api_view(["POST"])
+def delete_group(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    token = session_token.split(" ")[1]
+    admin = validate_token(token)
+    if not admin:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+    
+    group_id = request.data.get("group_id")
+    if not group_id:
+        return Response({"message": "group_id is required."}, status=400)
+
+    group = get_object_or_404(StageGroups, group_id=group_id)
+
+    # Remove all group roles from competitors
+    competitors = StageGroupCompetitor.objects.filter(stage_group=group)
+    for competitor in competitors:
+        user = competitor.player.user
+        if user.discord_id and group.group_discord_role_id:
+            remove_group_role_task.delay(user.discord_id, group.group_discord_role_id)
+
+    group.delete()
+
+    return Response({
+        "message": f"Group '{group.group_name}' has been removed along with all associated competitor roles."
+    }, status=200)
