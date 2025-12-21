@@ -38,4 +38,5 @@ urlpatterns = [
     path('delete-group/', delete_group, name='delete_group'),
     path('discord-role-progress/', discord_role_progress, name='discord_role_progress'),
     path('retry-failed-discord-roles/', retry_failed_discord_roles, name='retry_failed_discord_roles'),
+    path('get-stage-role-assignment- progress/', get_stage_role_assignment_progress, name='get_stage_role_assignment_progress'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
