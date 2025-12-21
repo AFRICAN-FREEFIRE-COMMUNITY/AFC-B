@@ -1,10 +1,11 @@
+from datetime import timedelta, timezone
 import uuid
 from django.utils.timezone import now
 from django.db import models
-from afc_auth.models import *
+# from afc_auth.models import *
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-# from afc_auth.models import User
+from imports import User
 
 # Create your models here.
 
