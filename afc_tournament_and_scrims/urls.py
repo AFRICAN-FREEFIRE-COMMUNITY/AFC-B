@@ -36,4 +36,6 @@ urlpatterns = [
     path('send-match-room-details-notification-to-competitor/', send_match_room_details_notification_to_competitor, name='send_match_room_details_notification_to_competitor'),
     path('delete-stage/', delete_stage, name='delete_stage'),
     path('delete-group/', delete_group, name='delete_group'),
+    path('discord-role-progress/', discord_role_progress, name='discord_role_progress'),
+    path('retry-failed-discord-roles/', retry_failed_discord_roles, name='retry_failed_discord_roles'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

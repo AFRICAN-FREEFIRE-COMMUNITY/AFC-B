@@ -13,7 +13,7 @@ from afc_auth.views import assign_discord_role, check_discord_membership, remove
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, RegisteredCompetitors, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match
-from afc_auth.models import Notifications, User
+from afc_auth.models import DiscordRoleAssignment, Notifications, User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -2602,14 +2602,73 @@ def assign_stage_role_task(self, discord_id, role_id):
 # def assign_group_role_task(self, discord_id, role_id):
 #     assign_discord_role(discord_id, role_id)
 
-@shared_task(bind=True, rate_limit="1/s", autoretry_for=(Exception,), retry_kwargs={"max_retries": 5, "countdown": 10})
-def assign_group_role_task(self, discord_id, role_id):
-    assign_discord_role(discord_id, role_id)
+# @shared_task(bind=True, rate_limit="1/s", autoretry_for=(Exception,), retry_kwargs={"max_retries": 5, "countdown": 10})
+# def assign_group_role_task(self, discord_id, role_id):
+#     assign_discord_role(discord_id, role_id)
+
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=10, retry_kwargs={"max_retries": 5})
+def assign_group_role_task(self, assignment_id):
+    assignment = DiscordRoleAssignment.objects.get(id=assignment_id)
+
+    try:
+        success = assign_discord_role(
+            assignment.discord_id,
+            assignment.role_id
+        )
+
+        if success:
+            assignment.status = "success"
+        else:
+            assignment.status = "failed"
+            assignment.error_message = "Discord API returned non-204"
+
+    except Exception as e:
+        assignment.status = "failed"
+        assignment.error_message = str(e)
+        raise  # allows retry
+
+    finally:
+        assignment.save()
 
 
 @shared_task(bind=True, rate_limit="1/s")
 def remove_group_role_task(self, discord_id, role_id):  
     remove_discord_role(discord_id, role_id)
+
+
+@api_view(["POST"])
+def discord_role_progress(request):
+    stage_id = request.query_params.get("stage_id")
+
+    qs = DiscordRoleAssignment.objects.filter(stage_id=stage_id)
+
+    return Response({
+        "total": qs.count(),
+        "pending": qs.filter(status="pending").count(),
+        "success": qs.filter(status="success").count(),
+        "failed": qs.filter(status="failed").count(),
+    })
+
+
+@api_view(["POST"])
+def retry_failed_discord_roles(request):
+    stage_id = request.data.get("stage_id")
+
+    failed = DiscordRoleAssignment.objects.filter(
+        stage_id=stage_id,
+        status="failed"
+    )
+
+    for assignment in failed:
+        assignment.status = "pending"
+        assignment.save()
+        assign_group_role_task.delay(assignment.id)
+
+    return Response({"message": f"Retrying {failed.count()} failed assignments"})
+
+
+
 
 @api_view(["POST"])
 def seed_solo_players_to_stage(request):
@@ -2933,10 +2992,21 @@ def seed_stage_competitors_to_groups(request):
         # ✅ Discord role (async)
         user = player.user
         if user and user.discord_id and group.group_discord_role_id:
-            assign_group_role_task.delay(
-                user.discord_id,
-                group.group_discord_role_id
-            )
+            assignment = DiscordRoleAssignment.objects.create(
+            user=competitor.player.user,
+            discord_id=competitor.player.user.discord_id,
+            role_id=group.group_discord_role_id,
+            stage=stage,
+            group=group,
+            status="pending"
+        )
+
+        assign_group_role_task.delay(assignment.id)
+
+            # assign_group_role_task.delay(
+            #     user.discord_id,
+            #     group.group_discord_role_id
+            # )
 
     return Response({
         "message": f"Seeded {seeded_count} competitors into {group_count} groups for stage '{stage.stage_name}'."
