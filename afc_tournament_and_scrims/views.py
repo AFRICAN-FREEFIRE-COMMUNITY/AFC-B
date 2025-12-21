@@ -3513,3 +3513,44 @@ def delete_notifications_from_users_in_a_group(request):
     return Response({
         "message": f"Deleted {deleted_count} notifications for users in group '{group.group_name}'."
     }, status=200)
+
+
+# @api_view(["POST"])
+# def create_leaderboard(request):
+#     session_token = request.headers.get("Authorization")
+#     if not session_token or not session_token.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#     token = session_token.split(" ")[1]
+#     admin = validate_token(token)
+#     if not admin:
+#         return Response(
+#             {"message": "Invalid or expired session token."},
+#             status=status.HTTP_401_UNAUTHORIZED
+#         )
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+    
+#     event_id = request.data.get("event_id")
+#     stage_id = request.data.get("stage_id")
+#     group_id = request.data.get("group_id")
+
+
+@api_view(["POST"])
+def check_if_user_registered_in_event(request):
+    email = request.data.get("email")
+    event_id = request.data.get("event_id")
+
+    if not email or not event_id:
+        return Response({"message": "email and event_id are required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    user = get_object_or_404(User, email=email)
+    is_registered = RegisteredCompetitors.objects.filter(
+        event=event,
+        user=user,
+        status="registered"
+    ).exists()
+    return Response({
+        "email": email,
+        "event_id": event_id,
+        "is_registered": is_registered
+    }, status=200)
