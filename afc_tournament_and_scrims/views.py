@@ -94,6 +94,7 @@ def get_all_events(request):
             "competition_type": event.competition_type,
             "number_of_participants": event.max_teams_or_players,
             "prizepool": event.prizepool,
+            "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
         })
     return Response({"events": event_list}, status=status.HTTP_200_OK)
 
@@ -117,6 +118,7 @@ def get_all_events_paginated(request):
         "competition_type": event.competition_type,
         "number_of_participants": event.max_teams_or_players,
         "prizepool": event.prizepool,
+        "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(), 
     } for event in paginated]
 
     return Response({
