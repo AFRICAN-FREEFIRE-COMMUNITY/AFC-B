@@ -42,4 +42,5 @@ urlpatterns = [
     path('get-all-role-progress/', get_all_role_progress, name='get_all_role_progress'),
     path('get-all-user-id-in-stage/', get_all_user_id_in_stage, name='get_all_user_id_in_stage'),
     path('get-all-user-id-in-group/', get_all_user_id_in_group, name='get_all_user_id_in_group'),
+    path('delete-notifications-from-users-in-a-group/', delete_notifications_from_users_in_a_group, name='delete_notification_from_users_in_a_group'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
