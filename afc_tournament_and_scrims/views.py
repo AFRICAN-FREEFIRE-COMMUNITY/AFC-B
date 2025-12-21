@@ -3562,74 +3562,78 @@ from rest_framework import status
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 
-# @api_view(["POST"])
-# def create_leaderboard(request):
-#     auth = request.headers.get("Authorization")
-#     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+@api_view(["POST"])
+def create_leaderboard(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
-#     admin = validate_token(auth.split(" ")[1])
-#     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
-#     if admin.role != "admin":
-#         return Response({"message": "You do not have permission."}, status=403)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
 
-#     event_id = request.data.get("event_id")
-#     stage_id = request.data.get("stage_id")
-#     group_id = request.data.get("group_id")
-#     leaderboard_name = request.data.get("leaderboard_name")
+    event_id = request.data.get("event_id")
+    stage_id = request.data.get("stage_id")
+    group_id = request.data.get("group_id")
+    leaderboard_name = request.data.get("leaderboard_name")
+    leaderboard_method = request.data.get("leaderboard_method")  # optional
+    file_type = request.data.get("file_type")  # optional
 
-#     if not event_id or not stage_id or not group_id:
-#         return Response({"message": "event_id, stage_id and group_id are required."}, status=400)
+    if not event_id or not stage_id or not group_id:
+        return Response({"message": "event_id, stage_id and group_id are required."}, status=400)
 
-#     event = get_object_or_404(Event, event_id=event_id)
-#     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
-#     group = get_object_or_404(StageGroups, group_id=group_id, stage=stage)
+    event = get_object_or_404(Event, event_id=event_id)
+    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+    group = get_object_or_404(StageGroups, group_id=group_id, stage=stage)
 
-#     if not leaderboard_name:
-#         leaderboard_name = f"{event.event_name} - {stage.stage_name} - {group.group_name}"
+    if not leaderboard_name:
+        leaderboard_name = f"{event.event_name} - {stage.stage_name} - {group.group_name}"
 
-#     # Optional: placement_points passed from frontend
-#     placement_points = request.data.get("placement_points", {})
-#     if isinstance(placement_points, str):
-#         import json
-#         placement_points = json.loads(placement_points)
+    # Optional: placement_points passed from frontend
+    placement_points = request.data.get("placement_points", {})
+    if isinstance(placement_points, str):
+        import json
+        placement_points = json.loads(placement_points)
 
-#     kill_point = request.data.get("kill_point", 1)
-#     try:
-#         kill_point = float(kill_point)
-#     except:
-#         kill_point = 1.0
+    kill_point = request.data.get("kill_point", 1)
+    try:
+        kill_point = float(kill_point)
+    except:
+        kill_point = 1.0
 
-#     with transaction.atomic():
-#         leaderboard, created = Leaderboard.objects.get_or_create(
-#             event=event,
-#             stage=stage,
-#             group=group,
-#             defaults={
-#                 "leaderboard_name": leaderboard_name,
-#                 "creator": admin,
-#                 "placement_points": placement_points or {},
-#                 "kill_point": kill_point,
-#             }
-#         )
+    with transaction.atomic():
+        leaderboard, created = Leaderboard.objects.get_or_create(
+            event=event,
+            stage=stage,
+            group=group,
+            defaults={
+                "leaderboard_name": leaderboard_name,
+                "creator": admin,
+                "placement_points": placement_points or {},
+                "kill_point": kill_point,
+            },
+            leaderboard_method=leaderboard_method,
+            file_type=file_type
+        )
 
-#         # If it already exists, you may want to update the points config:
-#         if not created:
-#             if placement_points:
-#                 leaderboard.placement_points = placement_points
-#             leaderboard.kill_point = kill_point
-#             leaderboard.leaderboard_name = leaderboard_name
-#             leaderboard.save()
+        # If it already exists, you may want to update the points config:
+        if not created:
+            if placement_points:
+                leaderboard.placement_points = placement_points
+            leaderboard.kill_point = kill_point
+            leaderboard.leaderboard_name = leaderboard_name
+            leaderboard.save()
 
-#         # OPTIONAL: attach leaderboard to this group's matches (only if not already set)
-#         Match.objects.filter(group=group, leaderboard__isnull=True).update(leaderboard=leaderboard)
+        # OPTIONAL: attach leaderboard to this group's matches (only if not already set)
+        Match.objects.filter(group=group, leaderboard__isnull=True).update(leaderboard=leaderboard)
 
-#     return Response({
-#         "message": "Leaderboard created successfully." if created else "Leaderboard already existed. Updated config.",
-#         "leaderboard_id": leaderboard.leaderboard_id,
-#         "created": created,
-#     }, status=200)
+    return Response({
+        "message": "Leaderboard created successfully." if created else "Leaderboard already existed. Updated config.",
+        "leaderboard_id": leaderboard.leaderboard_id,
+        "created": created,
+    }, status=200)
 
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
