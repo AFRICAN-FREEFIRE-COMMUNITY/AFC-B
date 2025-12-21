@@ -39,5 +39,5 @@ urlpatterns = [
     path('discord-role-progress/', discord_role_progress, name='discord_role_progress'),
     path('retry-failed-discord-roles/', retry_failed_discord_roles, name='retry_failed_discord_roles'),
     path('get-stage-role-assignment-progress/', get_stage_role_assignment_progress, name='get_stage_role_assignment_progress'),
-    path('get-all-role-progress', get_all_role_progress, name='get_all_role_progress'),
+    path('get-all-role-progress/', get_all_role_progress, name='get_all_role_progress'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
