@@ -2659,7 +2659,7 @@ def remove_group_role_task(self, discord_id, role_id):
 
 @api_view(["POST"])
 def discord_role_progress(request):
-    stage_id = request.query_params.get("stage_id")
+    stage_id = request.data.get("stage_id")
 
     qs = DiscordRoleAssignment.objects.filter(stage_id=stage_id)
 
@@ -2671,8 +2671,9 @@ def discord_role_progress(request):
     })
 
 
-@api_view(["GET"])
-def get_stage_role_assignment_progress(request, progress_id):
+@api_view(["POST"])
+def get_stage_role_assignment_progress(request):
+    progress_id = request.data.get("progress_id")
     progress = get_object_or_404(DiscordStageRoleAssignmentProgress, id=progress_id)
 
     return Response({
