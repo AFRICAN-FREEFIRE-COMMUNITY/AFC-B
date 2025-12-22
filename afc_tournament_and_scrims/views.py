@@ -6511,7 +6511,7 @@ def remove_non_nigeria_registered_competitors(request):
             .filter(event=event, user__isnull=False, status="registered")
             .annotate(last_country=Subquery(latest_country)))
 
-    to_remove = regs.exclude(last_country__iexact="Nigeria")
+    to_remove = regs.exclude(last_country__iexact="NG")
 
     preview = list(to_remove.values("id", "user__user_id", "user__username", "last_country")[:50])
 
