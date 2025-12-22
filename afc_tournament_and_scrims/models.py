@@ -298,7 +298,10 @@ class SoloPlayerMatchStats(models.Model):
 
     placement_points = models.PositiveIntegerField(default=0)
     kill_points = models.PositiveIntegerField(default=0)
-    total_points = models.PositiveIntegerField(default=0)
+
+    bonus_points = models.IntegerField(default=0)   # ✅ +
+    penalty_points = models.IntegerField(default=0) # ✅ -
+    total_points = models.IntegerField(default=0)
 
     class Meta:
         unique_together = ("match", "competitor")
