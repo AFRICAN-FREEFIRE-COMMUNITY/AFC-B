@@ -2879,35 +2879,101 @@ def assign_stage_roles_from_db_task(self, progress_id, stage_id):
 
 
 
-@shared_task(bind=True, rate_limit="1/s", autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 10})
-def assign_group_roles_from_db_task(self, stage_id):
+# @shared_task(bind=True, rate_limit="1/s", autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 10})
+# def assign_group_roles_from_db_task(self, stage_id):
+#     stage = Stages.objects.get(stage_id=stage_id)
+
+#     qs = DiscordRoleAssignment.objects.filter(stage=stage, group__isnull=False, status="pending").order_by("created_at")[:50]
+#     if not qs.exists():
+#         return
+
+#     for assignment in qs:
+#         r = assign_discord_role(assignment.discord_id, assignment.role_id)
+
+#         if r.status_code == 429:
+#             retry_after = 2
+#             try:
+#                 retry_after = float(r.json().get("retry_after", 2))
+#             except Exception:
+#                 pass
+#             raise self.retry(countdown=retry_after)
+
+#         if r.status_code in (200, 204):
+#             assignment.status = "success"
+#             assignment.error_message = None
+#         else:
+#             assignment.status = "failed"
+#             assignment.error_message = f"{r.status_code} {r.text[:300]}"
+
+#         assignment.save(update_fields=["status", "error_message", "updated_at"])
+
+#     assign_group_roles_from_db_task.delay(stage_id)
+
+
+from celery import shared_task
+from django.db import transaction
+from django.db.models import F
+from django.utils import timezone
+
+@shared_task(bind=True, max_retries=50)
+def assign_group_roles_from_db_task(self, stage_id, batch_size=25):
+    from afc_tournament_and_scrims.models import Stages
+    from afc_auth.models import DiscordRoleAssignment
+
     stage = Stages.objects.get(stage_id=stage_id)
 
-    qs = DiscordRoleAssignment.objects.filter(stage=stage, group__isnull=False, status="pending").order_by("created_at")[:50]
-    if not qs.exists():
-        return
+    with transaction.atomic():
+        qs = (
+            DiscordRoleAssignment.objects
+            .select_for_update(skip_locked=True)
+            .filter(stage=stage, group__isnull=False, status="pending")
+            .order_by("created_at")[:batch_size]
+        )
+        assignments = list(qs)
 
-    for assignment in qs:
-        r = assign_discord_role(assignment.discord_id, assignment.role_id)
+        # mark these as "processing" to avoid re-picking (optional)
+        # if you want, add "processing" to STATUS_CHOICES.
+        # DiscordRoleAssignment.objects.filter(id__in=[a.id for a in assignments]).update(status="processing")
 
+    if not assignments:
+        return {"message": "No pending assignments."}
+
+    for a in assignments:
+        r = assign_discord_role(a.discord_id, a.role_id)
+
+        # RATE LIMIT
         if r.status_code == 429:
-            retry_after = 2
+            retry_after = 2.0
             try:
                 retry_after = float(r.json().get("retry_after", 2))
             except Exception:
                 pass
+
+            # put it back to pending
+            a.status = "pending"
+            a.error_message = f"429 rate limited: {r.text[:200]}"
+            a.save(update_fields=["status", "error_message", "updated_at"])
+
+            # IMPORTANT: stop processing, retry later
             raise self.retry(countdown=retry_after)
 
+        # SUCCESS
         if r.status_code in (200, 204):
-            assignment.status = "success"
-            assignment.error_message = None
+            a.status = "success"
+            a.error_message = None
+            a.save(update_fields=["status", "error_message", "updated_at"])
         else:
-            assignment.status = "failed"
-            assignment.error_message = f"{r.status_code} {r.text[:300]}"
+            a.status = "failed"
+            a.error_message = f"{r.status_code} {r.text[:300]}"
+            a.save(update_fields=["status", "error_message", "updated_at"])
 
-        assignment.save(update_fields=["status", "error_message", "updated_at"])
+    # If there might be more pending, requeue gently
+    remaining = DiscordRoleAssignment.objects.filter(stage=stage, group__isnull=False, status="pending").count()
+    if remaining > 0:
+        assign_group_roles_from_db_task.apply_async(args=[stage_id], countdown=1)
 
-    assign_group_roles_from_db_task.delay(stage_id)
+    return {"processed": len(assignments), "remaining": remaining}
+
 
 
 # @api_view(["POST"])
