@@ -2479,6 +2479,13 @@ def get_event_details_for_admin(request):
                 "group_discord_role_id": group.group_discord_role_id,
                 "match_count": group.match_count,
                 "match_maps": group.match_maps,
+                "match": {
+                    "room_id": group.match.room_id if group.match else None,
+                    "status": group.match.status if group.match else None,
+                    "room_name": group.match.room_name if group.match else None,
+                    "room_password": group.match.password if group.match else None,
+                    "match_map": group.match.match_map if group.match else None,
+                },
 
                 # get stage group competitor from stagegroupcompetitor model
                 "competitors_in_group": list(
@@ -2491,6 +2498,8 @@ def get_event_details_for_admin(request):
                     )
                 )
             })
+            
+           
 
         stages_data.append({
             "stage_id": stage.stage_id,
