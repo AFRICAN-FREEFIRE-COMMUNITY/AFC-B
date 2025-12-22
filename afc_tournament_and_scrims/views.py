@@ -4972,6 +4972,7 @@ def upload_solo_match_result(request):
                 kills=p["kills"],
                 placement_points=placement_pts,
                 total_points=total_pts
+                kill_points=kill_pts,
             )
         )
 
@@ -5705,7 +5706,8 @@ def get_all_leaderboard_details_for_event(request):
                         penalty_sum=Coalesce(Sum("penalty_points"), 0),
                         total_points=Coalesce(Sum("total_points"), 0),
                         effective_total=(
-                            Coalesce(Sum("total_points"), 0) +
+                            Coalesce(Sum("placement_points"), 0) +
+                            Coalesce(Sum("kill_points"), 0) +
                             Coalesce(Sum("bonus_points"), 0) -
                             Coalesce(Sum("penalty_points"), 0)
                         )
