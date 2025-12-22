@@ -6513,7 +6513,7 @@ def remove_non_nigeria_registered_competitors(request):
 
     to_remove = regs.exclude(last_country__iexact="Nigeria")
 
-    preview = list(to_remove.values("user__id", "user__username", "last_country")[:50])
+    preview = list(to_remove.values("id", "user__user_id", "user__username", "last_country")[:50])
 
     if dry_run:
         return Response({
