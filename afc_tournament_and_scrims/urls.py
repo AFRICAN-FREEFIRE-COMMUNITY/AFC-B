@@ -52,4 +52,5 @@ urlpatterns = [
     path('advance-group-competitors-to-next-stage/', advance_group_competitors_to_next_stage, name='advance_group_competitors_to_next_stage'),
     path('edit-solo-match-result/', edit_solo_match_result, name='edit_solo_match_result'),
     path('edit-leaderboard/', edit_leaderboard, name='edit_leaderboard'),
+    path('remove-non-nigeria-registered-competitors/', remove_non_nigeria_registered_competitors, name='remove_non_nigeria_registered_competitors'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
