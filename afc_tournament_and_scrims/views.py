@@ -5529,18 +5529,13 @@ def get_all_leaderboard_details_for_event(request):
 
             # overall leaderboard for this group
             if event.participant_type == "solo":
-                overall = (SoloPlayerMatchStats.objects
-                           .filter(match__group=group)
-                           .values(
-                               competitor_id=F("competitor_id"),
-                               username=F("competitor__user__username"),
-                           )
-                           .annotate(
-                               matches_played=Count("match_id"),
-                               total_points=Sum("total_points"),
-                               total_kills=Sum("kills"),
-                           )
-                           .order_by("-total_points", "-total_kills", "username"))
+                overall = SoloPlayerMatchStats.objects.filter(match__group__stage__event=event).values(
+                    "match__group_id",
+                    "competitor_id",  # keep the real field name here in values()
+                    ).annotate(
+                        comp_id=F("competitor_id"),          # ✅ safe alias
+                        total_pts=Sum("total_points"),
+                    ).order_by("-total_points", "-total_kills", "username")
             else:
                 overall = (TournamentTeamMatchStats.objects
                            .filter(match__group=group)
