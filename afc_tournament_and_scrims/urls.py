@@ -47,4 +47,5 @@ urlpatterns = [
     path('upload-solo-match-result/', upload_solo_match_result, name='upload_solo_match_result'),
     path('get-all-leaderboards/', get_all_leaderboards, name='get_all_leaderboards'),
     path('sync-group-discord-roles/', sync_group_discord_roles, name='sync_group_discord_roles'),
+    path('reconcile-group-roles/', reconcile_group_roles, name='reconcile_group_roles'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

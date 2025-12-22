@@ -2768,7 +2768,7 @@ def retry_failed_discord_roles(request):
     for assignment in failed:
         assignment.status = "pending"
         assignment.save()
-        assign_group_role_task.delay(assignment.id)
+        assign_group_roles_from_db_task.delay(assignment.id)
 
     return Response({"message": f"Retrying {failed.count()} failed assignments"})
 
@@ -4945,3 +4945,69 @@ def sync_group_discord_roles(request):
 
 # @api_view(["GET"])
 # def get_all_leaderboard_details_for_event(request):
+
+
+@api_view(["POST"])
+def reconcile_group_roles(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin or admin.role != "admin":
+        return Response({"message": "Forbidden."}, status=403)
+
+    stage_id = request.data.get("stage_id")
+    if not stage_id:
+        return Response({"message": "stage_id is required."}, status=400)
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+
+    created = 0
+    skipped = 0
+
+    # all players in groups
+    qs = StageGroupCompetitor.objects.select_related("player__user", "stage_group").filter(
+        stage_group__stage=stage,
+        player__isnull=False
+    )
+
+    for sgc in qs:
+        user = sgc.player.user
+        group = sgc.stage_group
+
+        if not user or not user.discord_id or not group.group_discord_role_id:
+            skipped += 1
+            continue
+
+        # already success?
+        exists = DiscordRoleAssignment.objects.filter(
+            user=user,
+            stage=stage,
+            group=group,
+            role_id=group.group_discord_role_id,
+            status="success"
+        ).exists()
+
+        if exists:
+            skipped += 1
+            continue
+
+        DiscordRoleAssignment.objects.get_or_create(
+            user=user,
+            discord_id=user.discord_id,
+            role_id=group.group_discord_role_id,
+            stage=stage,
+            group=group,
+            defaults={"status": "pending"}
+        )
+        created += 1
+
+    # kick worker
+    assign_group_roles_from_db_task.delay(stage.stage_id)
+
+    return Response({
+        "message": "Reconcile started.",
+        "created_pending": created,
+        "skipped": skipped
+    }, status=200)
