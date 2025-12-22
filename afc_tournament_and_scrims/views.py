@@ -5962,3 +5962,4 @@ def advance_group_competitors_to_next_stage(request):
         "seeded_into_next_stage": created_count,
         "discord_roles_queued": queued_roles,
     }, status=200)
+
