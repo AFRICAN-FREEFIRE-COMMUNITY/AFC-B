@@ -4943,5 +4943,5 @@ def sync_group_discord_roles(request):
     }, status=200)
 
 
-@api_view(["GET"])
-def get_all_leaderboard_details_for_event(request):
+# @api_view(["GET"])
+# def get_all_leaderboard_details_for_event(request):
