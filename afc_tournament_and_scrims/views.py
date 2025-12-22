@@ -2470,16 +2470,16 @@ def get_event_details_for_admin(request):
             total_teams_in_stage += teams_in_group
 
             group_matches = list(
-            group.matches.order_by("match_number").values(
-                "match_id",
-                "match_number",
-                "match_map",
-                "room_id",
-                "room_name",
-                "room_password",
-                "result_inputted",
-                "match_date",
-            )
+                group.matches.order_by("match_number").values(
+                    "match_id",
+                    "match_number",
+                    "match_map",
+                    "room_id",
+                    "room_name",
+                    "room_password",
+                    "result_inputted",
+                    "match_date",
+                ))
 
             group_details.append({
                 "group_id": group.group_id,
