@@ -2469,6 +2469,18 @@ def get_event_details_for_admin(request):
 
             total_teams_in_stage += teams_in_group
 
+            group_matches = list(
+            group.matches.order_by("match_number").values(
+                "match_id",
+                "match_number",
+                "match_map",
+                "room_id",
+                "room_name",
+                "room_password",
+                "result_inputted",
+                "match_date",
+            )
+
             group_details.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
@@ -2479,13 +2491,7 @@ def get_event_details_for_admin(request):
                 "group_discord_role_id": group.group_discord_role_id,
                 "match_count": group.match_count,
                 "match_maps": group.match_maps,
-                "match": {
-                    "room_id": group.match.room_id if group.match else None,
-                    "status": group.match.status if group.match else None,
-                    "room_name": group.match.room_name if group.match else None,
-                    "room_password": group.match.password if group.match else None,
-                    "match_map": group.match.match_map if group.match else None,
-                },
+                "matches": group_matches,
 
                 # get stage group competitor from stagegroupcompetitor model
                 "competitors_in_group": list(
