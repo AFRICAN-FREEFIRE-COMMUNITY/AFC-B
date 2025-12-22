@@ -113,6 +113,7 @@ class StageGroups(models.Model):
     match_maps = models.JSONField(default=list)  # List of maps for the matches
 
 
+
 # ---------------- Registered Competitors ----------------
 class RegisteredCompetitors(models.Model):
     STATUS_CHOICES = [
@@ -167,6 +168,7 @@ class Match(models.Model):
     room_id = models.CharField(max_length=50, null=True, blank=True)
     room_password = models.CharField(max_length=50, null=True, blank=True)
     room_name = models.CharField(max_length=100, null=True, blank=True)
+    result_inputted = models.BooleanField(default=False)
     match_map = models.CharField(
         max_length=50,
         choices=[
@@ -221,6 +223,9 @@ class TournamentTeamMatchStats(models.Model):
     kills = models.PositiveIntegerField(default=0)
     damage = models.PositiveIntegerField(default=0)
     assists = models.PositiveIntegerField(default=0)
+    placement_points = models.PositiveIntegerField(default=0)
+    kill_points = models.PositiveIntegerField(default=0)
+    total_points = models.PositiveIntegerField(default=0)
 
 class TournamentPlayerMatchStats(models.Model):
     """
@@ -290,7 +295,9 @@ class SoloPlayerMatchStats(models.Model):
     competitor = models.ForeignKey(RegisteredCompetitors, on_delete=models.CASCADE)
     placement = models.PositiveIntegerField()
     kills = models.PositiveIntegerField(default=0)
+
     placement_points = models.PositiveIntegerField(default=0)
+    kill_points = models.PositiveIntegerField(default=0)
     total_points = models.PositiveIntegerField(default=0)
 
     class Meta:

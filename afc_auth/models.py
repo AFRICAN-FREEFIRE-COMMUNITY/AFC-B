@@ -240,6 +240,7 @@ class Notifications(models.Model):
 class DiscordRoleAssignment(models.Model):
     STATUS_CHOICES = (
         ("pending", "Pending"),
+        ("processing", "Processing"),
         ("success", "Success"),
         ("failed", "Failed"),
     )
