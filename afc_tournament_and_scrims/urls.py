@@ -48,4 +48,6 @@ urlpatterns = [
     path('get-all-leaderboards/', get_all_leaderboards, name='get_all_leaderboards'),
     path('sync-group-discord-roles/', sync_group_discord_roles, name='sync_group_discord_roles'),
     path('reconcile-group-roles/', reconcile_group_roles, name='reconcile_group_roles'),
+    path('get-all-leaderboard-details-for-event/', get_all_leaderboard_details_for_event, name='get_all_leaderboard_details_for_event'),
+    path('advance-group-competitors-to-next-stage/', advance_group_competitors_to_next_stage, name='advance_group_competitors_to_next_stage'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
