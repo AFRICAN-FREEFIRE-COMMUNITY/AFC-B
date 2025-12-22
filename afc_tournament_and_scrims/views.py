@@ -4971,7 +4971,7 @@ def upload_solo_match_result(request):
                 placement=p["placement"],
                 kills=p["kills"],
                 placement_points=placement_pts,
-                total_points=total_pts
+                total_points=total_pts,
                 kill_points=kill_pts,
             )
         )
