@@ -50,4 +50,6 @@ urlpatterns = [
     path('reconcile-group-roles/', reconcile_group_roles, name='reconcile_group_roles'),
     path('get-all-leaderboard-details-for-event/', get_all_leaderboard_details_for_event, name='get_all_leaderboard_details_for_event'),
     path('advance-group-competitors-to-next-stage/', advance_group_competitors_to_next_stage, name='advance_group_competitors_to_next_stage'),
+    path('edit-solo-match-result/', edit_solo_match_result, name='edit_solo_match_result'),
+    path('edit-leaderboard/', edit_leaderboard, name='edit_leaderboard'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
