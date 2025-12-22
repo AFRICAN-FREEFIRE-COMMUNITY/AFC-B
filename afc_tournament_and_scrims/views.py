@@ -2620,26 +2620,26 @@ def get_event_details_for_admin(request):
 #         progress.save()
 
 
-@shared_task(bind=True, rate_limit="1/s", max_retries=10)
-def assign_stage_role_task(self, progress_id, discord_id, role_id):
-    progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
+# @shared_task(bind=True, rate_limit="1/s", max_retries=10)
+# def assign_stage_role_task(self, progress_id, discord_id, role_id):
+#     progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
 
-    result = assign_discord_role(discord_id, role_id)
+#     result = assign_discord_role(discord_id, role_id)
 
-    if result.get("rate_limited"):
-        countdown = int(result.get("retry_after", 2)) + 1
-        raise self.retry(countdown=countdown)
+#     if result.get("rate_limited"):
+#         countdown = int(result.get("retry_after", 2)) + 1
+#         raise self.retry(countdown=countdown)
 
-    if result.get("ok"):
-        progress.completed += 1
-    else:
-        progress.failed += 1
+#     if result.get("ok"):
+#         progress.completed += 1
+#     else:
+#         progress.failed += 1
 
-    # mark done when finished
-    if progress.completed + progress.failed >= progress.total:
-        progress.status = "done"
+#     # mark done when finished
+#     if progress.completed + progress.failed >= progress.total:
+#         progress.status = "done"
 
-    progress.save()
+#     progress.save()
 
 
 
@@ -2676,30 +2676,30 @@ def assign_stage_role_task(self, progress_id, discord_id, role_id):
 #     finally:
 #         assignment.save()
 
-@shared_task(bind=True, rate_limit="1/s", max_retries=10)
-def assign_group_role_task(self, assignment_id):
-    assignment = DiscordRoleAssignment.objects.select_related("user").get(id=assignment_id)
+# @shared_task(bind=True, rate_limit="1/s", max_retries=10)
+# def assign_group_role_task(self, assignment_id):
+#     assignment = DiscordRoleAssignment.objects.select_related("user").get(id=assignment_id)
 
-    # already done?
-    if assignment.status == "success":
-        return
+#     # already done?
+#     if assignment.status == "success":
+#         return
 
-    result = assign_discord_role(assignment.discord_id, assignment.role_id)
+#     result = assign_discord_role(assignment.discord_id, assignment.role_id)
 
-    if result.get("rate_limited"):
-        # don’t mark failed; just retry after Discord says so
-        countdown = int(result.get("retry_after", 2)) + 1
-        raise self.retry(countdown=countdown)
+#     if result.get("rate_limited"):
+#         # don’t mark failed; just retry after Discord says so
+#         countdown = int(result.get("retry_after", 2)) + 1
+#         raise self.retry(countdown=countdown)
 
-    if result.get("ok"):
-        assignment.status = "success"
-        assignment.error_message = ""
-        assignment.save(update_fields=["status", "error_message"])
-        return
+#     if result.get("ok"):
+#         assignment.status = "success"
+#         assignment.error_message = ""
+#         assignment.save(update_fields=["status", "error_message"])
+#         return
 
-    assignment.status = "failed"
-    assignment.error_message = f'{result.get("status")} {result.get("text","")}'
-    assignment.save(update_fields=["status", "error_message"])
+#     assignment.status = "failed"
+#     assignment.error_message = f'{result.get("status")} {result.get("text","")}'
+#     assignment.save(update_fields=["status", "error_message"])
 
 
 
@@ -4941,3 +4941,7 @@ def sync_group_discord_roles(request):
         "missing_discord_id": missing_discord,
         "discord_errors": discord_errors,
     }, status=200)
+
+
+@api_view(["GET"])
+def get_all_leaderboard_details_for_event(request):
