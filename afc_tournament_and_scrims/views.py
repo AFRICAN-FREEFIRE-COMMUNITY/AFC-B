@@ -5535,7 +5535,7 @@ def get_all_leaderboard_details_for_event(request):
                     ).annotate(
                         comp_id=F("competitor_id"),          # ✅ safe alias
                         total_pts=Sum("total_points"),
-                    ).order_by("-total_points", "-total_kills", "username")
+                    ).order_by("-total_points", "-kills", "username")
             else:
                 overall = (TournamentTeamMatchStats.objects
                            .filter(match__group=group)
