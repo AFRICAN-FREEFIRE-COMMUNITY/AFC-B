@@ -5705,8 +5705,7 @@ def get_all_leaderboard_details_for_event(request):
                         penalty_sum=Coalesce(Sum("penalty_points"), 0),
                         total_points=Coalesce(Sum("total_points"), 0),
                         effective_total=(
-                            Coalesce(Sum("placement_points"), 0) +
-                            Coalesce(Sum("kill_points"), 0) +
+                            Coalesce(Sum("total_points"), 0) +
                             Coalesce(Sum("bonus_points"), 0) -
                             Coalesce(Sum("penalty_points"), 0)
                         )
