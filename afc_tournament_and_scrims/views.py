@@ -5538,6 +5538,7 @@ def get_all_leaderboard_details_for_event(request):
                 overall = SoloPlayerMatchStats.objects.filter(match__group__stage__event=event).values(
                     "match__group_id",
                     "competitor_id",  # keep the real field name here in values()
+                    "competitor__user__username",
                     ).annotate(
                         comp_id=F("competitor_id"),          # ✅ safe alias
                         total_pts=Sum("total_points"),
