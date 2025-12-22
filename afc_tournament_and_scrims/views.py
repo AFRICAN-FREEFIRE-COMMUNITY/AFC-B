@@ -13,7 +13,7 @@ from afc_auth.views import assign_discord_role, check_discord_membership, discor
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, RegisteredCompetitors, SoloPlayerMatchStats, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
-from afc_auth.models import DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, Notifications, User
+from afc_auth.models import DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -571,39 +571,216 @@ def delete_event(request):
 
 
 
+# @api_view(["POST"])
+# def edit_event(request):
+#     session_token = request.headers.get("Authorization")
+
+#     if not session_token or not session_token.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     token = session_token.split(" ")[1]
+
+#     # Authenticate user
+#     user = validate_token(token)
+#     if not user:
+#         return Response(
+#             {"message": "Invalid or expired session token."},
+#             status=status.HTTP_401_UNAUTHORIZED
+#         )
+
+#     # Permission check
+#     if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
+#         return Response({"message": "You do not have permission to edit an event."}, status=403)
+
+#     # Event ID needed
+#     event_id = request.data.get("event_id")
+#     if not event_id:
+#         return Response({"message": "event_id is required."}, status=400)
+
+#     # Fetch event
+#     try:
+#         event = Event.objects.get(event_id=event_id)
+#     except Event.DoesNotExist:
+#         return Response({"message": "Event not found."}, status=404)
+
+#     # Helper function to update only if provided
+#     def update_field(field_name, parser=None):
+#         if field_name in request.data:
+#             value = request.data.get(field_name)
+#             if parser:
+#                 value = parser(value)
+#             setattr(event, field_name, value)
+
+#     # Update simple fields
+#     for field in [
+#         "competition_type", "participant_type", "event_type",
+#         "max_teams_or_players", "event_name", "event_mode",
+#         "event_status", "registration_link", "tournament_tier",
+#         "rules", "event_rules"
+#     ]:
+#         update_field(field)
+
+#     # Date fields
+#     for date_field in [
+#         "start_date", "end_date",
+#         "registration_open_date", "registration_end_date"
+#     ]:
+#         update_field(date_field, parse_date)
+
+#     # Date validation
+#     if event.registration_open_date and event.registration_end_date:
+#         if event.registration_open_date > event.registration_end_date:
+#             return Response({"message": "Registration open date cannot be after registration end date."}, status=400)
+
+#     if event.start_date and event.end_date:
+#         if event.start_date > event.end_date:
+#             return Response({"message": "Event start date cannot be after end date."}, status=400)
+
+#     # Prizepool
+#     if "prizepool" in request.data:
+#         try:
+#             event.prizepool = float(request.data.get("prizepool"))
+#         except:
+#             return Response({"message": "Prizepool must be a number."}, status=400)
+
+#     # Prize distribution
+#     if "prize_distribution" in request.data:
+#         prize_distribution = request.data.get("prize_distribution")
+#         if isinstance(prize_distribution, str):
+#             prize_distribution = json.loads(prize_distribution)
+#         if not isinstance(prize_distribution, dict):
+#             return Response({"message": "Prize distribution must be a JSON object."}, status=400)
+#         event.prize_distribution = prize_distribution
+
+#     # Banner
+#     if "event_banner" in request.FILES:
+#         event.event_banner = request.FILES.get("event_banner")
+
+#     # Uploaded Rules
+#     if "uploaded_rules" in request.FILES:
+#         event.uploaded_rules = request.FILES.get("uploaded_rules")
+
+#     # Number of stages
+#     if "number_of_stages" in request.data:
+#         event.number_of_stages = int(request.data.get("number_of_stages"))
+
+#     event.save()
+
+#     # ============================
+#     # STREAM CHANNEL UPDATES
+#     # ============================
+#     if "stream_channels" in request.data:
+#         StreamChannel.objects.filter(event=event).delete()
+
+#         stream_channels = request.data.get("stream_channels")
+
+#         # Parse JSON if string
+#         if isinstance(stream_channels, str):
+#             stream_channels = json.loads(stream_channels)
+
+#         if isinstance(stream_channels, list):
+#             for url in stream_channels:
+#                 StreamChannel.objects.create(event=event, channel_url=url)
+
+#     # ============================
+#     # STAGES + GROUPS UPDATE
+#     # ============================
+#     if "stages" in request.data:
+#         stages_data = request.data.get("stages")
+
+#         if isinstance(stages_data, str):
+#             stages_data = json.loads(stages_data)
+
+
+#         # Recreate stages + groups
+#         for stage_data in stages_data:
+#             stage, created = Stages.objects.update_or_create(
+#                 event=event,
+#                 stage_id=stage_data.get("stage_id"),  # use existing ID if provided
+#                 defaults={
+#                     "stage_name": stage_data["stage_name"],
+#                     "start_date": parse_date(stage_data["start_date"]),
+#                     "end_date": parse_date(stage_data["end_date"]),
+#                     "number_of_groups": stage_data["number_of_groups"],
+#                     "stage_format": stage_data["stage_format"],
+#                     "teams_qualifying_from_stage": stage_data["teams_qualifying_from_stage"],
+#                     "stage_discord_role_id": stage_data.get("stage_discord_role_id")
+#                 }
+#             )
+
+#             # Groups
+#             for group_data in stage_data.get("groups", []):
+#                 group, created = StageGroups.objects.update_or_create(
+#                     stage=stage,
+#                     group_id=group_data.get("group_id"),  # use existing ID if provided
+#                     defaults={
+#                         "group_name": group_data["group_name"],
+#                         "playing_date": parse_date(group_data["playing_date"]),
+#                         "playing_time": group_data["playing_time"],
+#                         "teams_qualifying": group_data["teams_qualifying"],
+#                         "group_discord_role_id": group_data.get("group_discord_role_id"),
+#                         "match_count": group_data.get("match_count"),
+#                         "match_maps": group_data.get("match_maps"),
+#                     }
+#                 )
+
+#                 # Matches
+#                 total_matches = group_data.get("match_count", 0)
+#                 match_maps = group_data.get("match_maps", [])
+#                 for match_map in match_maps:
+#                     for match_number in range(1, total_matches + 1):
+#                         Match.objects.update_or_create(
+#                             group=group,
+#                             match_number=match_number,
+#                             match_map=match_map,
+#                             defaults={"leaderboard": None}
+#                         )
+
+#     return Response({
+#         "message": "Event updated successfully.",
+#         "event_id": event.event_id
+#     }, status=200)
+
+
+import json
+from django.db import transaction
+from django.utils.dateparse import parse_date, parse_time
+from rest_framework import status
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
 @api_view(["POST"])
 def edit_event(request):
     session_token = request.headers.get("Authorization")
-
     if not session_token or not session_token.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
     token = session_token.split(" ")[1]
-
-    # Authenticate user
     user = validate_token(token)
     if not user:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
-    # Permission check
-    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
+    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(
+        role_name__in=["event_admin", "head_admin"]
+    ).exists():
         return Response({"message": "You do not have permission to edit an event."}, status=403)
 
-    # Event ID needed
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
 
-    # Fetch event
-    try:
-        event = Event.objects.get(event_id=event_id)
-    except Event.DoesNotExist:
+    event = Event.objects.filter(event_id=event_id).first()
+    if not event:
         return Response({"message": "Event not found."}, status=404)
 
-    # Helper function to update only if provided
+    def maybe_json(val):
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except Exception:
+                return val
+        return val
+
     def update_field(field_name, parser=None):
         if field_name in request.data:
             value = request.data.get(field_name)
@@ -611,135 +788,164 @@ def edit_event(request):
                 value = parser(value)
             setattr(event, field_name, value)
 
-    # Update simple fields
+    # ---- Update event fields (only if provided) ----
     for field in [
         "competition_type", "participant_type", "event_type",
         "max_teams_or_players", "event_name", "event_mode",
         "event_status", "registration_link", "tournament_tier",
-        "rules", "event_rules"
+        "event_rules", "is_draft",
     ]:
         update_field(field)
 
-    # Date fields
-    for date_field in [
-        "start_date", "end_date",
-        "registration_open_date", "registration_end_date"
-    ]:
+    for date_field in ["start_date", "end_date", "registration_open_date", "registration_end_date"]:
         update_field(date_field, parse_date)
 
-    # Date validation
+    # validate dates (only if both exist)
     if event.registration_open_date and event.registration_end_date:
         if event.registration_open_date > event.registration_end_date:
-            return Response({"message": "Registration open date cannot be after registration end date."}, status=400)
+            return Response({"message": "registration_open_date cannot be after registration_end_date."}, status=400)
 
     if event.start_date and event.end_date:
         if event.start_date > event.end_date:
-            return Response({"message": "Event start date cannot be after end date."}, status=400)
+            return Response({"message": "start_date cannot be after end_date."}, status=400)
 
-    # Prizepool
     if "prizepool" in request.data:
         try:
-            event.prizepool = float(request.data.get("prizepool"))
-        except:
-            return Response({"message": "Prizepool must be a number."}, status=400)
+            event.prizepool = str(float(request.data.get("prizepool")))
+        except Exception:
+            return Response({"message": "prizepool must be a number."}, status=400)
 
-    # Prize distribution
     if "prize_distribution" in request.data:
-        prize_distribution = request.data.get("prize_distribution")
-        if isinstance(prize_distribution, str):
-            prize_distribution = json.loads(prize_distribution)
-        if not isinstance(prize_distribution, dict):
-            return Response({"message": "Prize distribution must be a JSON object."}, status=400)
-        event.prize_distribution = prize_distribution
+        pd = maybe_json(request.data.get("prize_distribution"))
+        if not isinstance(pd, dict):
+            return Response({"message": "prize_distribution must be a JSON object."}, status=400)
+        event.prize_distribution = pd
 
-    # Banner
     if "event_banner" in request.FILES:
         event.event_banner = request.FILES.get("event_banner")
 
-    # Uploaded Rules
     if "uploaded_rules" in request.FILES:
         event.uploaded_rules = request.FILES.get("uploaded_rules")
 
-    # Number of stages
     if "number_of_stages" in request.data:
         event.number_of_stages = int(request.data.get("number_of_stages"))
 
-    event.save()
+    # optionally delete items not in payload
+    delete_missing = str(request.data.get("delete_missing", "false")).lower() in ("1", "true", "yes")
 
-    # ============================
-    # STREAM CHANNEL UPDATES
-    # ============================
-    if "stream_channels" in request.data:
-        StreamChannel.objects.filter(event=event).delete()
+    with transaction.atomic():
+        event.save()
 
-        stream_channels = request.data.get("stream_channels")
+        # ---- Stream channels ----
+        if "stream_channels" in request.data:
+            StreamChannel.objects.filter(event=event).delete()
+            stream_channels = maybe_json(request.data.get("stream_channels"))
+            if isinstance(stream_channels, list):
+                StreamChannel.objects.bulk_create(
+                    [StreamChannel(event=event, channel_url=url) for url in stream_channels if url],
+                    batch_size=200
+                )
 
-        # Parse JSON if string
-        if isinstance(stream_channels, str):
-            stream_channels = json.loads(stream_channels)
+        # ---- Stages + Groups + Matches ----
+        if "stages" in request.data:
+            stages_data = maybe_json(request.data.get("stages"))
+            if not isinstance(stages_data, list):
+                return Response({"message": "stages must be a JSON list."}, status=400)
 
-        if isinstance(stream_channels, list):
-            for url in stream_channels:
-                StreamChannel.objects.create(event=event, channel_url=url)
+            kept_stage_ids = []
+            kept_group_ids = []
 
-    # ============================
-    # STAGES + GROUPS UPDATE
-    # ============================
-    if "stages" in request.data:
-        stages_data = request.data.get("stages")
+            for stage_data in stages_data:
+                stage_id = stage_data.get("stage_id")
 
-        if isinstance(stages_data, str):
-            stages_data = json.loads(stages_data)
-
-
-        # Recreate stages + groups
-        for stage_data in stages_data:
-            stage, created = Stages.objects.update_or_create(
-                event=event,
-                stage_id=stage_data.get("stage_id"),  # use existing ID if provided
-                defaults={
+                stage_defaults = {
                     "stage_name": stage_data["stage_name"],
                     "start_date": parse_date(stage_data["start_date"]),
                     "end_date": parse_date(stage_data["end_date"]),
-                    "number_of_groups": stage_data["number_of_groups"],
+                    "number_of_groups": int(stage_data["number_of_groups"]),
                     "stage_format": stage_data["stage_format"],
-                    "teams_qualifying_from_stage": stage_data["teams_qualifying_from_stage"],
-                    "stage_discord_role_id": stage_data.get("stage_discord_role_id")
+                    "teams_qualifying_from_stage": int(stage_data["teams_qualifying_from_stage"]),
+                    "stage_discord_role_id": stage_data.get("stage_discord_role_id"),
+                    "stage_status": stage_data.get("stage_status", "upcoming"),
                 }
-            )
 
-            # Groups
-            for group_data in stage_data.get("groups", []):
-                group, created = StageGroups.objects.update_or_create(
-                    stage=stage,
-                    group_id=group_data.get("group_id"),  # use existing ID if provided
-                    defaults={
+                if stage_id:
+                    stage, _ = Stages.objects.update_or_create(
+                        stage_id=stage_id,
+                        defaults={**stage_defaults, "event": event},
+                    )
+                else:
+                    stage = Stages.objects.create(event=event, **stage_defaults)
+
+                kept_stage_ids.append(stage.stage_id)
+
+                # ---- groups ----
+                groups = stage_data.get("groups", [])
+                if not isinstance(groups, list):
+                    groups = []
+
+                for group_data in groups:
+                    group_id = group_data.get("group_id")
+
+                    group_defaults = {
                         "group_name": group_data["group_name"],
                         "playing_date": parse_date(group_data["playing_date"]),
-                        "playing_time": group_data["playing_time"],
-                        "teams_qualifying": group_data["teams_qualifying"],
+                        "playing_time": parse_time(group_data["playing_time"]) if isinstance(group_data["playing_time"], str) else group_data["playing_time"],
+                        "teams_qualifying": int(group_data["teams_qualifying"]),
                         "group_discord_role_id": group_data.get("group_discord_role_id"),
-                        "match_count": group_data.get("match_count"),
-                        "match_maps": group_data.get("match_maps"),
+                        "match_count": int(group_data.get("match_count", 0)),
+                        "match_maps": group_data.get("match_maps", []),
                     }
-                )
 
-                # Matches
-                total_matches = group_data.get("match_count", 0)
-                match_maps = group_data.get("match_maps", [])
-                for match_map in match_maps:
-                    for match_number in range(1, total_matches + 1):
-                        Match.objects.update_or_create(
-                            group=group,
-                            match_number=match_number,
-                            match_map=match_map,
-                            defaults={"leaderboard": None}
+                    if group_id:
+                        group, _ = StageGroups.objects.update_or_create(
+                            group_id=group_id,
+                            defaults={**group_defaults, "stage": stage},
                         )
+                    else:
+                        group = StageGroups.objects.create(stage=stage, **group_defaults)
 
-    return Response({
-        "message": "Event updated successfully.",
-        "event_id": event.event_id
-    }, status=200)
+                    kept_group_ids.append(group.group_id)
+
+                    # ---- Matches (FIXED) ----
+                    # Create exactly match_count matches total.
+                    # Map selection: match_maps[i % len(match_maps)] if provided else keep existing or default to 'bermuda'
+                    match_count = group.match_count or 0
+                    match_maps = group.match_maps or []
+                    default_map = match_maps[0] if match_maps else "bermuda"
+
+                    existing = {m.match_number: m for m in Match.objects.filter(group=group)}
+                    want_numbers = set(range(1, match_count + 1))
+
+                    # delete missing matches if enabled
+                    if delete_missing:
+                        Match.objects.filter(group=group).exclude(match_number__in=want_numbers).delete()
+
+                    for num in range(1, match_count + 1):
+                        chosen_map = default_map
+                        if match_maps:
+                            chosen_map = match_maps[(num - 1) % len(match_maps)]
+
+                        if num in existing:
+                            m = existing[num]
+                            # only update map if not already set or you want to force update
+                            m.match_map = chosen_map
+                            m.save(update_fields=["match_map"])
+                        else:
+                            Match.objects.create(
+                                group=group,
+                                match_number=num,
+                                match_map=chosen_map,
+                                leaderboard=None
+                            )
+
+            # delete stages/groups not present in payload if enabled
+            if delete_missing:
+                StageGroups.objects.filter(stage__event=event).exclude(group_id__in=kept_group_ids).delete()
+                Stages.objects.filter(event=event).exclude(stage_id__in=kept_stage_ids).delete()
+
+    return Response({"message": "Event updated successfully.", "event_id": event.event_id}, status=200)
+
 
 
 @api_view(["GET"])
@@ -6266,3 +6472,75 @@ def edit_solo_match_result(request):
         match.save(update_fields=["result_inputted"])
 
     return Response({"message": "Solo match result updated.", "match_id": match.match_id}, status=200)
+
+
+from django.db import transaction
+from django.db.models import OuterRef, Subquery
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
+@api_view(["POST"])
+def remove_non_nigeria_registered_competitors(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin or admin.role != "admin":
+        return Response({"message": "Not authorized."}, status=403)
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    dry_run = str(request.data.get("dry_run", "true")).lower() in ("1", "true", "yes")
+
+    event = Event.objects.filter(event_id=event_id).first()
+    if not event:
+        return Response({"message": "Event not found."}, status=404)
+
+    # latest country per user
+    latest_country = LoginHistory.objects.filter(
+        user_id=OuterRef("user_id")
+    ).order_by("-created_at").values("country")[:1]
+
+    # event regs that have users
+    regs = (RegisteredCompetitors.objects
+            .select_related("user")
+            .filter(event=event, user__isnull=False, status="registered")
+            .annotate(last_country=Subquery(latest_country)))
+
+    to_remove = regs.exclude(last_country__iexact="Nigeria")
+
+    preview = list(to_remove.values("id", "user__id", "user__username", "last_country")[:50])
+
+    if dry_run:
+        return Response({
+            "message": "Dry run only. Set dry_run=false to actually delete.",
+            "event_id": event.event_id,
+            "would_remove_count": to_remove.count(),
+            "preview_first_50": preview
+        }, status=200)
+
+    # Actually delete + clean related tables
+    reg_ids = list(to_remove.values_list("id", flat=True))
+    user_ids = list(to_remove.values_list("user_id", flat=True))
+
+    with transaction.atomic():
+        # remove stats linked to those competitors (solo)
+        SoloPlayerMatchStats.objects.filter(competitor_id__in=reg_ids).delete()
+
+        # remove stage/group competitor rows
+        StageGroupCompetitor.objects.filter(player_id__in=reg_ids).delete()
+        StageCompetitor.objects.filter(player_id__in=reg_ids).delete()
+
+        # finally remove registrations
+        deleted, _ = RegisteredCompetitors.objects.filter(id__in=reg_ids).delete()
+
+    return Response({
+        "message": "Removed non-Nigeria registered competitors (based on latest login country).",
+        "event_id": event.event_id,
+        "removed_registrations_count": len(reg_ids),
+        "preview_first_50": preview
+    }, status=200)
