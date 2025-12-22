@@ -1761,14 +1761,25 @@ def check_discord_membership(discord_id):
 import requests
 import time
 
+# def assign_discord_role(discord_id, role_id):
+#     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
+#     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+
+#     r = requests.put(url, headers=headers)
+
+#     # Return both success flag + response details for better retries/logging
+#     return r
+
+import requests
+
 def assign_discord_role(discord_id, role_id):
-    url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
-    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    url = f"https://discord.com/api/v10/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
+    headers = {
+        "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    return requests.put(url, headers=headers, timeout=15)
 
-    r = requests.put(url, headers=headers)
-
-    # Return both success flag + response details for better retries/logging
-    return r
 
 
 
