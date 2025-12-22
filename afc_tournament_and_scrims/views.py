@@ -1141,7 +1141,7 @@ def get_event_details(request):
 
                     matches_data.append({
                         "match_id": match.match_id,
-                        "map_name": match.map_name,
+                        "map_name": match.match_map,
                         "mvp": match.mvp.username if match.mvp else None,
                         "teams": team_stats_data
                     })
