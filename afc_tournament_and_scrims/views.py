@@ -6219,6 +6219,7 @@ def advance_group_competitors_to_next_stage(request):
 
     event_id = request.data.get("event_id")
     group_id = request.data.get("group_id")
+    next_stage_id = request.data.get("next_stage_id")
 
     if not event_id or not group_id:
         return Response({"message": "event_id and group_id are required."}, status=400)
@@ -6240,10 +6241,12 @@ def advance_group_competitors_to_next_stage(request):
         }, status=400)
 
     # 2) get next stage
-    next_stage = (Stages.objects
-                  .filter(event=event, stage_id__gt=stage.stage_id)
-                  .order_by("stage_id")
-                  .first())
+    # next_stage = (Stages.objects
+    #               .filter(event=event, stage_id__gt=stage.stage_id)
+    #               .order_by("stage_id")
+    #               .first())
+    if next_stage_id:
+        next_stage = get_object_or_404(Stages, stage_id=next_stage_id, event=event)
     if not next_stage:
         return Response({"message": "No next stage found after this stage."}, status=400)
 
