@@ -918,8 +918,16 @@ def edit_event(request):
                     want_numbers = set(range(1, match_count + 1))
 
                     # delete missing matches if enabled
+                    force_delete_results = str(request.data.get("force_delete_results", "false")).lower() in ("1","true","yes")
+
                     if delete_missing:
-                        Match.objects.filter(group=group).exclude(match_number__in=want_numbers).delete()
+                        qs = Match.objects.filter(group=group).exclude(match_number__in=want_numbers)
+                        if not force_delete_results:
+                            qs = qs.filter(result_inputted=False)
+                        qs.delete()
+
+                    # if delete_missing:
+                    #     Match.objects.filter(group=group).exclude(match_number__in=want_numbers).delete()
 
                     for num in range(1, match_count + 1):
                         chosen_map = default_map
@@ -6781,4 +6789,69 @@ def remove_non_nigeria_registered_competitors(request):
         "event_id": event.event_id,
         "removed_registrations_count": len(reg_ids),
         "preview_first_50": preview
+    }, status=200)
+
+
+from django.db import transaction
+from django.db.models import F
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
+@api_view(["POST"])
+def delete_match(request):
+    # -------------- AUTH --------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
+
+    # -------------- INPUT --------------
+    match_id = request.data.get("match_id")
+    if not match_id:
+        return Response({"message": "match_id is required."}, status=400)
+
+    force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
+    renumber = str(request.data.get("renumber", "true")).lower() in ("1", "true", "yes")
+
+    match = get_object_or_404(Match, match_id=match_id)
+
+    if match.result_inputted and not force:
+        return Response({
+            "message": "This match already has results. Pass force=true to delete anyway.",
+            "match_id": match.match_id,
+        }, status=400)
+
+    group = match.group
+    deleted_number = match.match_number
+
+    with transaction.atomic():
+        # delete the match (stats will cascade because of FK on_delete=models.CASCADE)
+        match.delete()
+
+        # optional: renumber remaining matches in that group to avoid gaps
+        if renumber and group:
+            # shift down any match_number greater than deleted one
+            Match.objects.filter(group=group, match_number__gt=deleted_number).update(
+                match_number=F("match_number") - 1
+            )
+
+            # keep group.match_count aligned (optional, but recommended)
+            if group.match_count and group.match_count > 0:
+                group.match_count = max(0, group.match_count - 1)
+                group.save(update_fields=["match_count"])
+
+    return Response({
+        "message": "Match deleted successfully.",
+        "deleted_match_number": deleted_number,
+        "group_id": getattr(group, "group_id", None),
+        "renumbered": renumber,
+        "force": force,
     }, status=200)
