@@ -1198,53 +1198,219 @@ def get_most_popular_event_format(request):
 #     return Response({"event_details": event_data}, status=200)
 
 
+# @api_view(["POST"])
+# def get_event_details(request):
+#     session_token = request.headers.get("Authorization")
+
+#     if not session_token or not session_token.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     token = session_token.split(" ")[1]
+
+#     # Authenticate user
+#     user = validate_token(token)
+#     if not user:
+#         return Response(
+#             {"message": "Invalid or expired session token."},
+#             status=status.HTTP_401_UNAUTHORIZED
+#         )
+    
+#     event_id = request.data.get("event_id")
+#     if not event_id:
+#         return Response({"message": "event_id is required."}, status=400)
+
+#     try:
+#         event = (
+#             Event.objects.prefetch_related(
+#                 "stream_channels",
+#                 "stages__groups__leaderboards__matches__team_stats__player_stats",
+
+#                 # Registered competitors (solo or team)
+#                 "registrations__user",
+#                 "registrations__team__teammembers__member",
+
+#                 # Tournament teams + members
+#                 "tournament_teams__team__teammembers__member",
+#                 "tournament_teams__members__user",
+#             )
+#             .get(event_id=event_id)
+#         )
+#     except Event.DoesNotExist:
+#         return Response({"message": "Event not found."}, status=404)
+    
+#     # check if user is registered for the event
+#     is_registered = False
+#     if event.participant_type == "solo":
+#         is_registered = RegisteredCompetitors.objects.filter(user=user).exists()
+
+
+#     # Base Event Data
+#     event_data = {
+#         "event_id": event.event_id,
+#         "competition_type": event.competition_type,
+#         "participant_type": event.participant_type,
+#         "event_type": event.event_type,
+#         "max_teams_or_players": event.max_teams_or_players,
+#         "event_name": event.event_name,
+#         "event_mode": event.event_mode,
+#         "start_date": event.start_date,
+#         "end_date": event.end_date,
+#         "registration_open_date": event.registration_open_date,
+#         "registration_end_date": event.registration_end_date,
+#         "prizepool": event.prizepool,
+#         "prize_distribution": event.prize_distribution,
+#         "event_rules": event.event_rules,
+#         "event_status": event.event_status,
+#         "registration_link": event.registration_link,
+#         "tournament_tier": event.tournament_tier,
+#         "event_banner_url": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
+#         "uploaded_rules_url": request.build_absolute_uri(event.uploaded_rules.url) if event.uploaded_rules else None,
+#         "number_of_stages": event.number_of_stages,
+#         "created_at": event.created_at,
+#         "is_registered": is_registered
+#     }
+
+#     # Stream channels
+#     event_data["stream_channels"] = [
+#         ch.channel_url for ch in event.stream_channels.all()
+#     ]
+
+#     # Registered Competitors (for event registration)
+#     registered = []
+#     if event.participant_type == "solo":
+#         for reg in event.registrations.all():
+#             if reg.user:
+#                 registered.append({
+#                     "player_id": reg.user.user_id,
+#                     "username": reg.user.username,
+#                     "status": reg.status
+#                 })
+#     else:  # duo or squad
+#         for reg in event.registrations.all():
+#             if reg.team:
+#                 members = reg.team.teammembers.all()
+#                 registered.append({
+#                     "team_id": reg.team.team_id,
+#                     "team_name": reg.team.team_name,
+#                     "status": "registered",
+#                     "members": [
+#                         {
+#                             "player_id": m.member.id,
+#                             "username": m.member.username,
+#                             "role": m.in_game_role
+#                         }
+#                         for m in members
+#                     ]
+#                 })
+
+#     event_data["registered_competitors"] = registered
+
+#     # Tournament Teams (official accepted teams)
+#     tournament_teams_list = []
+#     for tt in event.tournament_teams.all():
+#         members = tt.members.all()
+#         tournament_teams_list.append({
+#             "tournament_team_id": tt.tournament_team_id,
+#             "team_id": tt.team.team_id,
+#             "team_name": tt.team.team_name,
+#             "members": [
+#                 {
+#                     "player_id": m.user.id,
+#                     "username": m.user.username
+#                 }
+#                 for m in members
+#             ]
+#         })
+
+#     event_data["tournament_teams"] = tournament_teams_list
+
+#     # Stages, Groups, Matches
+#     stage_list = []
+#     for stage in event.stages.all().order_by("start_date"):
+#         group_list = []
+#         for group in stage.groups.all().order_by("group_name"):
+#             matches_data = []
+
+#             for lb in group.leaderboards.all():
+#                 for match in lb.matches.all():
+#                     team_stats_data = []
+#                     for team_stat in match.team_stats.all():
+
+#                         player_stats_data = [
+#                             {
+#                                 "player_id": ps.player.id,
+#                                 "username": ps.player.username,
+#                                 "kills": ps.kills,
+#                                 "damage": ps.damage
+#                             }
+#                             for ps in team_stat.player_stats.all()
+#                         ]
+
+#                         team_stats_data.append({
+#                             "tournament_team_id": team_stat.tournament_team.tournament_team_id,
+#                             "team_name": team_stat.tournament_team.team.team_name,
+#                             "placement": team_stat.placement,
+#                             "players": player_stats_data
+#                         })
+
+#                     matches_data.append({
+#                         "match_id": match.match_id,
+#                         "map_name": match.match_map,
+#                         "mvp": match.mvp.username if match.mvp else None,
+#                         "teams": team_stats_data
+#                     })
+
+#             group_list.append({
+#                 "id": group.group_id,
+#                 "group_name": group.group_name,
+#                 "playing_date": group.playing_date,
+#                 "playing_time": group.playing_time,
+#                 "teams_qualifying": group.teams_qualifying,
+#                 "matches": matches_data,
+#                 "match_count": group.match_count,
+#                 "match_maps": group.match_maps,
+#             })
+
+#         stage_list.append({
+#             "id": stage.stage_id,
+#             "stage_name": stage.stage_name,
+#             "start_date": stage.start_date,
+#             "end_date": stage.end_date,
+#             "number_of_groups": stage.number_of_groups,
+#             "stage_format": stage.stage_format,
+#             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
+#             "groups": group_list
+#         })
+
+#     event_data["stages"] = stage_list
+
+#     return Response({"event_details": event_data}, status=200)
+
+from django.db.models import Sum, Count
+
 @api_view(["POST"])
 def get_event_details(request):
     session_token = request.headers.get("Authorization")
-
     if not session_token or not session_token.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
     token = session_token.split(" ")[1]
-
-    # Authenticate user
     user = validate_token(token)
     if not user:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
-    
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
 
-    try:
-        event = (
-            Event.objects.prefetch_related(
-                "stream_channels",
-                "stages__groups__leaderboards__matches__team_stats__player_stats",
+    event = get_object_or_404(Event, event_id=event_id)
 
-                # Registered competitors (solo or team)
-                "registrations__user",
-                "registrations__team__teammembers__member",
-
-                # Tournament teams + members
-                "tournament_teams__team__teammembers__member",
-                "tournament_teams__members__user",
-            )
-            .get(event_id=event_id)
-        )
-    except Event.DoesNotExist:
-        return Response({"message": "Event not found."}, status=404)
-    
-    # check if user is registered for the event
-    is_registered = False
+    # ✅ correct registration check
     if event.participant_type == "solo":
-        is_registered = RegisteredCompetitors.objects.filter(user=user).exists()
+        is_registered = RegisteredCompetitors.objects.filter(event=event, user=user, status="registered").exists()
+    else:
+        is_registered = RegisteredCompetitors.objects.filter(event=event, team__teammembers__member=user, status="registered").exists()
 
-
-    # Base Event Data
     event_data = {
         "event_id": event.event_id,
         "competition_type": event.competition_type,
@@ -1267,98 +1433,101 @@ def get_event_details(request):
         "uploaded_rules_url": request.build_absolute_uri(event.uploaded_rules.url) if event.uploaded_rules else None,
         "number_of_stages": event.number_of_stages,
         "created_at": event.created_at,
-        "is_registered": is_registered
+        "is_registered": is_registered,
+        "stream_channels": [ch.channel_url for ch in event.stream_channels.all()],
     }
 
-    # Stream channels
-    event_data["stream_channels"] = [
-        ch.channel_url for ch in event.stream_channels.all()
-    ]
-
-    # Registered Competitors (for event registration)
-    registered = []
-    if event.participant_type == "solo":
-        for reg in event.registrations.all():
-            if reg.user:
-                registered.append({
-                    "player_id": reg.user.user_id,
-                    "username": reg.user.username,
-                    "status": reg.status
-                })
-    else:  # duo or squad
-        for reg in event.registrations.all():
-            if reg.team:
-                members = reg.team.teammembers.all()
-                registered.append({
-                    "team_id": reg.team.team_id,
-                    "team_name": reg.team.team_name,
-                    "status": "registered",
-                    "members": [
-                        {
-                            "player_id": m.member.id,
-                            "username": m.member.username,
-                            "role": m.in_game_role
-                        }
-                        for m in members
-                    ]
-                })
-
-    event_data["registered_competitors"] = registered
-
-    # Tournament Teams (official accepted teams)
-    tournament_teams_list = []
-    for tt in event.tournament_teams.all():
-        members = tt.members.all()
-        tournament_teams_list.append({
-            "tournament_team_id": tt.tournament_team_id,
-            "team_id": tt.team.team_id,
-            "team_name": tt.team.team_name,
-            "members": [
-                {
-                    "player_id": m.user.id,
-                    "username": m.user.username
-                }
-                for m in members
-            ]
-        })
-
-    event_data["tournament_teams"] = tournament_teams_list
-
-    # Stages, Groups, Matches
+    # Stages, Groups, Matches + Stats
     stage_list = []
     for stage in event.stages.all().order_by("start_date"):
         group_list = []
         for group in stage.groups.all().order_by("group_name"):
+
+            # leaderboard config (0 or 1 typically)
+            leaderboard = group.leaderboards.filter(event=event, stage=stage).first()
+
             matches_data = []
+            for match in group.matches.all().order_by("match_number"):
 
-            for lb in group.leaderboards.all():
-                for match in lb.matches.all():
+                match_payload = {
+                    "match_id": match.match_id,
+                    "match_number": match.match_number,
+                    "map_name": match.match_map,
+                    "mvp": match.mvp.username if match.mvp else None,
+                    "result_inputted": match.result_inputted,
+                }
+
+                if event.participant_type == "solo":
+                    stats = (SoloPlayerMatchStats.objects
+                             .filter(match=match)
+                             .select_related("competitor__user")
+                             .values(
+                                 "competitor_id",
+                                 "competitor__user__username",
+                                 "placement",
+                                 "kills",
+                                 "placement_points",
+                                 "kill_points",
+                                 "total_points",
+                             )
+                             .order_by("-total_points", "-kills", "competitor__user__username"))
+                    match_payload["solo_stats"] = list(stats)
+
+                else:
                     team_stats_data = []
-                    for team_stat in match.team_stats.all():
-
+                    for team_stat in match.team_stats.select_related("tournament_team__team").all():
                         player_stats_data = [
                             {
                                 "player_id": ps.player.id,
                                 "username": ps.player.username,
                                 "kills": ps.kills,
-                                "damage": ps.damage
+                                "damage": ps.damage,
+                                "assists": ps.assists,
                             }
-                            for ps in team_stat.player_stats.all()
+                            for ps in team_stat.player_stats.select_related("player").all()
                         ]
 
                         team_stats_data.append({
                             "tournament_team_id": team_stat.tournament_team.tournament_team_id,
                             "team_name": team_stat.tournament_team.team.team_name,
                             "placement": team_stat.placement,
+                            "kills": team_stat.kills,
+                            "total_points": team_stat.total_points,
                             "players": player_stats_data
                         })
 
-                    matches_data.append({
-                        "match_id": match.match_id,
-                        "map_name": match.match_map,
-                        "mvp": match.mvp.username if match.mvp else None,
-                        "teams": team_stats_data
-                    })
+                    # optional sort by points
+                    team_stats_data.sort(key=lambda x: (x["total_points"], x["kills"]), reverse=True)
+
+                    match_payload["teams"] = team_stats_data
+
+                matches_data.append(match_payload)
+
+            # optional overall leaderboard per group
+            if event.participant_type == "solo":
+                overall = (SoloPlayerMatchStats.objects
+                    .filter(match__group=group)
+                    .values("competitor_id", "competitor__user__username")
+                    .annotate(
+                        matches_played=Count("match_id"),
+                        total_points=Sum("total_points"),
+                        total_kills=Sum("kills"),
+                    )
+                    .order_by("-total_points", "-total_kills", "competitor__user__username")
+                )
+                overall_payload = list(overall)
+            else:
+                overall = (TournamentTeamMatchStats.objects
+                    .filter(match__group=group)
+                    .values("tournament_team_id", "tournament_team__team__team_name")
+                    .annotate(
+                        matches_played=Count("match_id"),
+                        total_points=Sum("total_points"),
+                        total_kills=Sum("kills"),
+                    )
+                    .order_by("-total_points", "-total_kills", "tournament_team__team__team_name")
+                )
+                overall_payload = list(overall)
 
             group_list.append({
                 "id": group.group_id,
@@ -1366,9 +1535,19 @@ def get_event_details(request):
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,
-                "matches": matches_data,
                 "match_count": group.match_count,
                 "match_maps": group.match_maps,
+                "leaderboard": None if not leaderboard else {
+                    "leaderboard_id": leaderboard.leaderboard_id,
+                    "leaderboard_name": leaderboard.leaderboard_name,
+                    "placement_points": leaderboard.placement_points,
+                    "kill_point": leaderboard.kill_point,
+                    "leaderboard_method": leaderboard.leaderboard_method,
+                    "file_type": leaderboard.file_type,
+                    "last_updated": leaderboard.last_updated,
+                },
+                "matches": matches_data,
+                "overall_leaderboard": overall_payload,
             })
 
         stage_list.append({
@@ -1383,9 +1562,7 @@ def get_event_details(request):
         })
 
     event_data["stages"] = stage_list
-
     return Response({"event_details": event_data}, status=200)
-
 
 
 @api_view(["POST"])
@@ -2515,6 +2692,15 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 
+from django.db.models import Count, Sum, F, Value, Case, When, CharField
+from django.db.models.functions import TruncDate
+from django.utils import timezone
+from datetime import timedelta
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
 @api_view(["POST"])
 def get_event_details_for_admin(request):
     # ---------------- AUTH ----------------
@@ -2526,16 +2712,10 @@ def get_event_details_for_admin(request):
     admin = validate_token(token)
 
     if not admin:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
     if admin.role != "admin":
-        return Response(
-            {"message": "You do not have permission to access this data."},
-            status=status.HTTP_403_FORBIDDEN
-        )
+        return Response({"message": "You do not have permission to access this data."}, status=status.HTTP_403_FORBIDDEN)
 
     # ---------------- EVENT ----------------
     event_id = request.data.get("event_id")
@@ -2550,26 +2730,13 @@ def get_event_details_for_admin(request):
     total_registered = reg_qs.count()
 
     max_competitors = event.max_teams_or_players or 0
-    registration_percentage = (
-        round((total_registered / max_competitors) * 100, 2)
-        if max_competitors else 0
-    )
+    registration_percentage = round((total_registered / max_competitors) * 100, 2) if max_competitors else 0
 
-    days_until_start = (
-        (event.start_date - today).days
-        if event.start_date else None
-    )
-
-    event_duration_days = (
-        (event.end_date - event.start_date).days + 1
-        if event.start_date and event.end_date else None
-    )
+    days_until_start = (event.start_date - today).days if event.start_date else None
+    event_duration_days = (event.end_date - event.start_date).days + 1 if event.start_date and event.end_date else None
 
     registration_close_date = event.registration_end_date
-    days_until_registration_close = (
-        (registration_close_date - today).days
-        if registration_close_date else None
-    )
+    days_until_registration_close = (registration_close_date - today).days if registration_close_date else None
 
     if event.registration_open_date:
         days_since_open = max(1, (today - event.registration_open_date).days + 1)
@@ -2589,34 +2756,24 @@ def get_event_details_for_admin(request):
     )
 
     reg_by_day = (
-        reg_qs
-        .annotate(day=TruncDate("registration_date"))
+        reg_qs.annotate(day=TruncDate("registration_date"))
         .values("day")
         .annotate(count=Count("id"))
     )
 
-    peak_registration = max(
-        [r["count"] for r in reg_by_day],
-        default=0
-    )
+    peak_registration = max([r["count"] for r in reg_by_day], default=0)
 
     timeseries = []
     if event.registration_open_date:
         current = event.registration_open_date
         end_ts = min(event.registration_end_date or today, today)
         reg_map = {r["day"]: r["count"] for r in reg_by_day}
-
         while current <= end_ts:
-            timeseries.append({
-                "date": str(current),
-                "count": reg_map.get(current, 0)
-            })
+            timeseries.append({"date": str(current), "count": reg_map.get(current, 0)})
             current += timedelta(days=1)
 
-    # ---------------- RECENT REGISTRATIONS (FIXED) ----------------
     recent_registrations = (
-        reg_qs
-        .annotate(
+        reg_qs.annotate(
             competitor_name=Case(
                 When(user__isnull=False, then=F("user__username")),
                 When(team__isnull=False, then=F("team__team_name")),
@@ -2628,10 +2785,8 @@ def get_event_details_for_admin(request):
         .values("competitor_name", "registration_date", "status")
     )
 
-    # ---------------- All REGISTRATIONS (ADDED) ----------------
     all_registrations = (
-        reg_qs
-        .annotate(
+        reg_qs.annotate(
             competitor_name=Case(
                 When(user__isnull=False, then=F("user__username")),
                 When(team__isnull=False, then=F("team__team_name")),
@@ -2651,49 +2806,87 @@ def get_event_details_for_admin(request):
     # ---------------- STAGE PROGRESS ----------------
     total_stages = event.stages.count()
     completed_stages = event.stages.filter(end_date__lt=today).count()
-    ongoing_stages = event.stages.filter(
-        start_date__lte=today,
-        end_date__gte=today
-    ).count()
+    ongoing_stages = event.stages.filter(start_date__lte=today, end_date__gte=today).count()
     upcoming_stages = event.stages.filter(start_date__gt=today).count()
 
     # ---------------- STAGES DETAIL ----------------
     stages_data = []
 
-    for stage in event.stages.all().order_by("start_date"):
-        groups = stage.groups.all()
+    stages = event.stages.all().order_by("start_date", "stage_id")
+    for stage in stages:
+        groups = stage.groups.all().order_by("group_id")
         group_details = []
         total_teams_in_stage = 0
 
         for group in groups:
-            teams_in_group = 0
+            # leaderboard (unique_together => at most 1)
+            leaderboard = Leaderboard.objects.filter(event=event, stage=stage, group=group).first()
 
-            for leaderboard in group.leaderboards.all():
-                for match in leaderboard.matches.all():
-                    teams_in_group += (
-                        TournamentTeamMatchStats.objects
-                        .filter(match=match)
-                        .values("tournament_team")
-                        .distinct()
-                        .count()
-                    )
+            group_matches_qs = group.matches.order_by("match_number", "match_id")
+            group_matches = []
+            for match in group_matches_qs:
+                match_obj = {
+                    "match_id": match.match_id,
+                    "match_number": match.match_number,
+                    "match_map": match.match_map,
+                    "room_id": match.room_id,
+                    "room_name": match.room_name,
+                    "room_password": match.room_password,
+                    "result_inputted": match.result_inputted,
+                    "match_date": match.match_date,
+                }
 
-            if teams_in_group == 0:
-                teams_in_group = event.tournament_teams.count()
+                # Attach stats (this is what you were missing)
+                if event.participant_type == "solo":
+                    stats = (SoloPlayerMatchStats.objects
+                             .filter(match=match)
+                             .select_related("competitor__user")
+                             .values(
+                                 "competitor_id",
+                                 "competitor__user__username",
+                                 "placement",
+                                 "kills",
+                                 "placement_points",
+                                 "kill_points",
+                                 "total_points",
+                             )
+                             .order_by("-total_points", "-kills", "placement"))
+                    match_obj["stats"] = list(stats)
+                    total_teams_in_stage += 0  # solo doesn't count as teams
+                else:
+                    stats = (TournamentTeamMatchStats.objects
+                             .filter(match=match)
+                             .select_related("tournament_team__team")
+                             .values(
+                                 "tournament_team_id",
+                                 "tournament_team__team__team_name",
+                                 "placement",
+                                 "kills",
+                                 "placement_points",
+                                 "kill_points",
+                                 "total_points",
+                             )
+                             .order_by("-total_points", "-kills", "placement"))
+                    match_obj["stats"] = list(stats)
 
-            total_teams_in_stage += teams_in_group
+                group_matches.append(match_obj)
 
-            group_matches = list(
-                group.matches.order_by("match_number").values(
-                    "match_id",
-                    "match_number",
-                    "match_map",
-                    "room_id",
-                    "room_name",
-                    "room_password",
-                    "result_inputted",
-                    "match_date",
-                ))
+            # Count teams in group (for team events)
+            if event.participant_type != "solo":
+                teams_in_group = (StageGroupCompetitor.objects
+                                  .filter(stage_group=group, tournament_team__isnull=False, status="active")
+                                  .values("tournament_team_id")
+                                  .distinct()
+                                  .count())
+                if teams_in_group == 0:
+                    teams_in_group = event.tournament_teams.filter(status="active").count()
+                total_teams_in_stage += teams_in_group
+            else:
+                teams_in_group = (StageGroupCompetitor.objects
+                                  .filter(stage_group=group, player__isnull=False, status="active")
+                                  .values("player_id")
+                                  .distinct()
+                                  .count())
 
             group_details.append({
                 "group_id": group.group_id,
@@ -2701,25 +2894,29 @@ def get_event_details_for_admin(request):
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,
-                "total_teams_in_group": teams_in_group,
+                "total_competitors_in_group": teams_in_group,
                 "group_discord_role_id": group.group_discord_role_id,
                 "match_count": group.match_count,
                 "match_maps": group.match_maps,
+                "leaderboard": None if not leaderboard else {
+                    "leaderboard_id": leaderboard.leaderboard_id,
+                    "leaderboard_name": leaderboard.leaderboard_name,
+                    "kill_point": leaderboard.kill_point,
+                    "placement_points": leaderboard.placement_points,
+                    "leaderboard_method": leaderboard.leaderboard_method,
+                    "file_type": leaderboard.file_type,
+                    "last_updated": leaderboard.last_updated,
+                },
                 "matches": group_matches,
-
-                # get stage group competitor from stagegroupcompetitor model
                 "competitors_in_group": list(
-                    StageGroupCompetitor.objects.filter(
-                        stage_group=group,
-                        player__isnull=False
-                    ).values_list(
-                        "player__user__username",
-                        flat=True
-                    )
-                )
+                    StageGroupCompetitor.objects.filter(stage_group=group, status="active", player__isnull=False)
+                    .values_list("player__user__username", flat=True)
+                ) if event.participant_type == "solo" else [],
+                "teams_in_group": list(
+                    StageGroupCompetitor.objects.filter(stage_group=group, status="active", tournament_team__isnull=False)
+                    .values_list("tournament_team__team__team_name", flat=True)
+                ) if event.participant_type != "solo" else [],
             })
-            
-           
 
         stages_data.append({
             "stage_id": stage.stage_id,
@@ -2728,60 +2925,37 @@ def get_event_details_for_admin(request):
             "end_date": stage.end_date,
             "number_of_groups": stage.number_of_groups,
             "total_groups": groups.count(),
-            "total_teams_in_stage": total_teams_in_stage,
+            "total_teams_in_stage": total_teams_in_stage if event.participant_type != "solo" else None,
             "stage_discord_role_id": stage.stage_discord_role_id,
             "groups": group_details,
             "stage_format": stage.stage_format,
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
             "competitors_in_stage": list(
-                StageCompetitor.objects.filter(
-                    stage=stage,
-                    player__isnull=False
-                ).values_list(
-                    "player__user__username",
-                    flat=True
-                )
-            )
-
+                StageCompetitor.objects.filter(stage=stage, status="active", player__isnull=False)
+                .values_list("player__user__username", flat=True)
+            ) if event.participant_type == "solo" else [],
+            "teams_in_stage": list(
+                StageCompetitor.objects.filter(stage=stage, status="active", tournament_team__isnull=False)
+                .values_list("tournament_team__team__team_name", flat=True)
+            ) if event.participant_type != "solo" else [],
         })
 
     # ---------------- ENGAGEMENT ----------------
     pageviews = event.pageviews.count()
-
-    unique_users = (
-        event.pageviews
-        .filter(user__isnull=False)
-        .values("user")
-        .distinct()
-        .count()
-    )
-
-    unique_ips = (
-        event.pageviews
-        .filter(user__isnull=True)
-        .values("ip_address")
-        .distinct()
-        .count()
-    )
-
+    unique_users = event.pageviews.filter(user__isnull=False).values("user").distinct().count()
+    unique_ips = event.pageviews.filter(user__isnull=True).values("ip_address").distinct().count()
     unique_visitors = unique_users + unique_ips
-
-    conversion_rate = (
-        round((total_registered / unique_visitors) * 100, 2)
-        if unique_visitors else 0
-    )
+    conversion_rate = round((total_registered / unique_visitors) * 100, 2) if unique_visitors else 0
 
     social_shares = event.social_shares.count()
-    streams = list(
-        event.stream_channels.values_list("channel_url", flat=True)
-    )
+    streams = list(event.stream_channels.values_list("channel_url", flat=True))
 
-    # ---------------- RESPONSE ----------------
     return Response({
         "overview": {
             "event_id": event.event_id,
             "event_name": event.event_name,
+            "participant_type": event.participant_type,
             "total_registered": total_registered,
             "max_competitors": max_competitors,
             "registration_percentage": registration_percentage,
@@ -2807,7 +2981,7 @@ def get_event_details_for_admin(request):
             "active": active_teams,
             "disqualified": disqualified_teams,
             "withdrawn": withdrawn_teams,
-        },
+        } if event.participant_type != "solo" else None,
         "stage_progress": {
             "total_stages": total_stages,
             "completed": completed_stages,
@@ -6889,3 +7063,5 @@ def edit_match_details(request):
         match.save(update_fields=updated_fields)
 
     return Response({"message": "Match details updated.", "match_id": match.match_id}, status=200)
+
+
