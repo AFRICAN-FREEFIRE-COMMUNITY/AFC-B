@@ -54,4 +54,5 @@ urlpatterns = [
     path('edit-leaderboard/', edit_leaderboard, name='edit_leaderboard'),
     path('remove-non-nigeria-registered-competitors/', remove_non_nigeria_registered_competitors, name='remove_non_nigeria_registered_competitors'),
     path('delete-match/', delete_match, name='delete_match'),
+    path('edit-match-details/', edit_match_details, name='edit_match_details'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

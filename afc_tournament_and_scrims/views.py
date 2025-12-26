@@ -3014,7 +3014,7 @@ from django.db import transaction
 from django.db.models import F
 from celery import shared_task
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 10})
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 50})
 def assign_stage_roles_from_db_task(self, progress_id, stage_id):
     progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
     stage = Stages.objects.get(stage_id=stage_id)
@@ -3022,7 +3022,7 @@ def assign_stage_roles_from_db_task(self, progress_id, stage_id):
     if progress.status != "running":
         return
 
-    batch_size = 25
+    batch_size = 10
 
     # 1) lock + claim a batch fast
     with transaction.atomic():
@@ -6855,3 +6855,37 @@ def delete_match(request):
         "renumbered": renumber,
         "force": force,
     }, status=200)
+
+
+@api_view(["POST"])
+def edit_match_details(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin or admin.role != "admin":
+        return Response({"message": "Unauthorized."}, status=403)
+
+    match_id = request.data.get("match_id")
+    room_name = request.data.get("room_name")
+    room_id = request.data.get("room_id")
+    room_password = request.data.get("room_password")
+
+    if not match_id:
+        return Response({"message": "match_id is required."}, status=400)
+    match = get_object_or_404(Match, match_id=match_id)
+    updated_fields = []
+    if room_name is not None:
+        match.room_name = room_name
+        updated_fields.append("room_name")
+    if room_id is not None:
+        match.room_id = room_id
+        updated_fields.append("room_id")
+    if room_password is not None:
+        match.room_password = room_password
+        updated_fields.append("room_password")
+    if updated_fields:
+        match.save(update_fields=updated_fields)
+
+    return Response({"message": "Match details updated.", "match_id": match.match_id}, status=200)
