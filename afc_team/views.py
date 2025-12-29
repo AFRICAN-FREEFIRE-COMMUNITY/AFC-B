@@ -180,7 +180,8 @@ def invite_member(request):
         Notifications.objects.create(
             user=invitee,
             message=notification_message,
-            notification_type="team_invitation"
+            notification_type="team_invitation",
+            invite=Invite.objects.latest('created_at', invitee=invitee, team=team)
         )
 
         return Response({'message': 'Invitation sent successfully.'}, status=status.HTTP_201_CREATED)
