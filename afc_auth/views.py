@@ -2489,3 +2489,19 @@ def get_top_winner_player(request):
         "username": top["username"],
         "total_wins": top["wins"],
     }, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_admin_activities(request):
+    activities = AdminHistory.objects.all().order_by('-timestamp')[:100]  # limit to latest 100 activities
+    activities_data = []
+
+    for activity in activities:
+        activities_data.append({
+            "admin_user": activity.admin_user.username,
+            "action": activity.action,
+            "description": activity.description,
+            "timestamp": activity.timestamp
+        })
+
+    return Response({"admin_activities": activities_data}, status=status.HTTP_200_OK)
