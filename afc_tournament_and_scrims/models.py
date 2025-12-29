@@ -50,7 +50,7 @@ class Event(models.Model):
     end_date = models.DateField()
     registration_open_date = models.DateField()
     registration_end_date = models.DateField()
-    prizepool = models.CharField(max_length=20)
+    prizepool = models.CharField(max_length=40)
     prize_distribution = models.JSONField(default=dict)
     event_rules = models.CharField(max_length=200)
     event_status = models.CharField(max_length=20, choices=EVENT_STATUS_CHOICES)
@@ -246,7 +246,7 @@ class EventPageView(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="pageviews")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)  # if available
     ip_address = models.CharField(max_length=45, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    viewed_at = models.DateTimeField(auto_now_add=True)
 
 class SocialShare(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="social_shares")

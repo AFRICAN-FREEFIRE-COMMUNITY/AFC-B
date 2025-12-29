@@ -4627,6 +4627,10 @@ def disqualify_registered_competitor(request):
     competitor.status = "disqualified"
     competitor.save()
 
+    # Notify user of disqualification
+    message = f"You have been disqualified from the event '{competitor.event.event_name}'. Please contact the event organizers for more information."
+    Notifications.objects.create(user=user, message=message)
+
     return Response({
         "message": f"Competitor '{user.username}' has been disqualified from event '{competitor.event.event_name}'."
     }, status=200)
@@ -7962,3 +7966,171 @@ def edit_match_result(request):
                 "missing_tournament_team_ids": missing[:30],
                 "missing_count": len(missing),
             }, status=200)
+
+
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+@api_view(["POST"])
+def disqualify_player(request):
+    # -------- AUTH --------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
+
+    # -------- INPUT --------
+    event_id = request.data.get("event_id")
+    rc_id = request.data.get("registered_competitor_id")
+    user_id = request.data.get("user_id")
+    reason = (request.data.get("reason") or "").strip()
+
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    if not rc_id and not user_id:
+        return Response({"message": "registered_competitor_id or user_id is required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    if event.participant_type != "solo":
+        return Response({"message": "This endpoint is for SOLO events only."}, status=400)
+
+    # -------- TARGET --------
+    if rc_id:
+        rc = get_object_or_404(RegisteredCompetitors, id=rc_id, event=event, user__isnull=False)
+    else:
+        rc = get_object_or_404(RegisteredCompetitors, event=event, user__user_id=user_id)
+
+    if rc.status == "disqualified":
+        return Response({"message": "Player is already disqualified.", "registered_competitor_id": rc.id}, status=200)
+
+    # -------- UPDATE --------
+    with transaction.atomic():
+        # Event registration status
+        rc.status = "disqualified"
+        rc.save(update_fields=["status"])
+
+        # Remove from any stage(s)
+        stage_rows = StageCompetitor.objects.filter(stage__event=event, player=rc).update(status="disqualified")
+
+        # Remove from any group(s)
+        group_rows = StageGroupCompetitor.objects.filter(stage_group__stage__event=event, player=rc).update(status="disqualified")
+
+        # Optional: store reason somewhere (if you add a model field later)
+        # For now we just return it in response.
+
+
+    # Notify Player
+    Notifications.objects.create(
+        user=rc.user,
+        title="Disqualified from Tournament",
+        message=f"You have been disqualified from the tournament '{event.event_name}'. Reason: {reason or 'No reason provided.'}",
+        notification_type="tournament_disqualification",
+        related_event=event,
+    )
+
+    return Response({
+        "message": "Player disqualified.",
+        "event_id": event.event_id,
+        "registered_competitor_id": rc.id,
+        "username": getattr(rc.user, "username", None),
+        "reason": reason or None,
+        "updated": {
+            "registered_competitors": 1,
+            "stage_competitors_rows": stage_rows,
+            "stage_group_competitors_rows": group_rows,
+        }
+    }, status=200)
+
+
+
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+@api_view(["POST"])
+def disqualify_team(request):
+    # -------- AUTH --------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
+
+    # -------- INPUT --------
+    event_id = request.data.get("event_id")
+    tournament_team_id = request.data.get("tournament_team_id")
+    team_id = request.data.get("team_id")
+    reason = (request.data.get("reason") or "").strip()
+
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    if not tournament_team_id and not team_id:
+        return Response({"message": "tournament_team_id or team_id is required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    if event.participant_type == "solo":
+        return Response({"message": "This endpoint is for TEAM events only (duo/squad)."}, status=400)
+
+    # -------- TARGET --------
+    if tournament_team_id:
+        tt = get_object_or_404(TournamentTeam, tournament_team_id=tournament_team_id, event=event)
+    else:
+        tt = get_object_or_404(TournamentTeam, event=event, team__team_id=team_id)
+
+    if tt.status == "disqualified":
+        return Response({"message": "Team is already disqualified.", "tournament_team_id": tt.tournament_team_id}, status=200)
+
+    # -------- UPDATE --------
+    with transaction.atomic():
+        # Tournament team status
+        tt.status = "disqualified"
+        tt.save(update_fields=["status"])
+
+        # Also disqualify the registration row (if you use it for validation)
+        reg_rows = RegisteredCompetitors.objects.filter(event=event, team=tt.team).update(status="disqualified")
+
+        # Remove from stage(s)
+        stage_rows = StageCompetitor.objects.filter(stage__event=event, tournament_team=tt).update(status="disqualified")
+
+        # Remove from group(s)
+        group_rows = StageGroupCompetitor.objects.filter(stage_group__stage__event=event, tournament_team=tt).update(status="disqualified")
+
+    
+    # Notify Team Members
+    member_users = [m.user for m in tt.members.all() if m.user]
+    for user in member_users:
+        Notifications.objects.create(
+            user=user,
+            title="Team Disqualified from Tournament",
+            message=f"Your team '{tt.team.team_name}' has been disqualified from the tournament '{event.event_name}'. Reason: {reason or 'No reason provided.'}",
+            notification_type="tournament_disqualification",
+            related_event=event,
+        )
+    
+
+    return Response({
+        "message": "Team disqualified.",
+        "event_id": event.event_id,
+        "tournament_team_id": tt.tournament_team_id,
+        "team_id": tt.team.team_id,
+        "team_name": tt.team.team_name,
+        "reason": reason or None,
+        "updated": {
+            "tournament_team": 1,
+            "registered_competitors_rows": reg_rows,
+            "stage_competitors_rows": stage_rows,
+            "stage_group_competitors_rows": group_rows,
+        }
+    }, status=200)
