@@ -17,4 +17,8 @@ app.conf.beat_schedule = {
         'task': 'afc_auth.tasks.check_and_lift_team_bans',
         'schedule': crontab(minute=0, hour='*'),  # Runs every hour
     },
+    "update-event-stage-statuses-hourly": {
+        "task": "afc_tournament_and_scrims.tasks.update_event_and_stage_statuses",
+        "schedule": crontab(minute=0),  # every hour
+    }
 }
