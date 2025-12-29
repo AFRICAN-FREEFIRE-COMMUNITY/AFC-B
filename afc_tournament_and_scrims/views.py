@@ -317,9 +317,11 @@ def create_event(request):
 
     # Parse prizepool
     try:
-        prizepool = float(request.data.get("prizepool"))
+        prizepool_cash_value = float(request.data.get("prizepool_cash_value", 0))
     except:
         return Response({"message": "Prizepool must be a number."}, status=400)
+    
+    prizepool = float(request.data.get("prizepool"))
 
     # Parse prize distribution
     prize_distribution = request.data.get("prize_distribution")
@@ -341,6 +343,7 @@ def create_event(request):
         registration_open_date=open_date,
         registration_end_date=close_date,
         prizepool=prizepool,
+        prizepool_cash_value=prizepool_cash_value,
         prize_distribution=prize_distribution,
         event_rules=request.data.get("event_rules"),
         event_status=request.data.get("event_status", "upcoming"),
@@ -843,9 +846,17 @@ def edit_event(request):
 
     if "prizepool" in request.data:
         try:
-            event.prizepool = str(float(request.data.get("prizepool")))
+            event.prizepool = str(request.data.get("prizepool"))
         except Exception:
-            return Response({"message": "prizepool must be a number."}, status=400)
+            return Response({"message": "prizepool."}, status=400)
+    
+    
+    if "prizepool_cash_value" in request.data:
+        try:
+            event.prizepool_cash_value = float(request.data.get("prizepool_cash_value"))
+        except Exception:
+            return Response({"message": "prizepool_cash_value must be a number."}, status=400)
+
 
     if "prize_distribution" in request.data:
         pd = maybe_json(request.data.get("prize_distribution"))

@@ -51,6 +51,7 @@ class Event(models.Model):
     registration_open_date = models.DateField()
     registration_end_date = models.DateField()
     prizepool = models.CharField(max_length=40)
+    prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     prize_distribution = models.JSONField(default=dict)
     event_rules = models.CharField(max_length=200)
     event_status = models.CharField(max_length=20, choices=EVENT_STATUS_CHOICES)
