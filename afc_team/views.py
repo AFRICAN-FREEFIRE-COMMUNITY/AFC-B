@@ -1,4 +1,5 @@
-from datetime import timedelta, timedelta, timezone
+from datetime import timedelta, timedelta
+from datetime import datetime
 import uuid
 from django.shortcuts import render
 from rest_framework.decorators import api_view
@@ -1460,7 +1461,7 @@ def get_banned_teams_count(request):
 @api_view(["GET"])
 def get_new_teams_count(request):
     try:
-        seven_days_ago = timezone.now() - timedelta(days=7)
+        seven_days_ago = datetime.timezone.now() - timedelta(days=7)
         new_teams = Team.objects.filter(creation_date__gte=seven_days_ago).count()
         return Response({"new_teams_last_7_days": new_teams}, status=status.HTTP_200_OK)
     except Exception as e:
