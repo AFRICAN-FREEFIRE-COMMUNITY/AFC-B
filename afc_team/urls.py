@@ -30,5 +30,11 @@ urlpatterns = [
     path('exit-team/', exit_team, name='exit_team'),
     path('get-number-of-teams/', get_number_of_teams, name='get_number_of_teams'),
     path('join-team/', join_team, name='join_team'),
-
+    path('get-total-teams-count/', get_total_teams_count, name='get_total_teams_count'),
+    path('get-current-active-teams-count/', get_current_active_teams_count, name='get_current_active_teams_count'),
+    path('get-banned-teams-count/', get_banned_teams_count, name='get_banned_teams_count'),
+    path('get-new-teams-count/', get_new_teams_count, name='get_new_teams_count'),
+    path('get-average-members-per-team/', get_average_members_per_team, name='get_average_members_per_team'),
+    path('get-team-with-highest-wins/', get_team_with_highest_wins, name='get_team_with_highest_wins'),
+    path('get-top-earning-teams/', get_top_earning_teams, name='get_top_earning_teams'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

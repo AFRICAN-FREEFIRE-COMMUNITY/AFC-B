@@ -9,11 +9,11 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_date
 
-from afc_auth.views import assign_discord_role, check_discord_membership, discord_member_has_role, remove_discord_role, validate_token
+from afc_auth.views import assign_discord_role, check_discord_membership, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, RegisteredCompetitors, SoloPlayerMatchStats, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
-from afc_auth.models import DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, User
+from .models import Event, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from afc_auth.models import AdminHistory, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -391,6 +391,12 @@ def create_event(request):
                         match_number=match_number
                     )
 
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="create_event",
+        description=f"Created event {event.event_name} (ID: {event.event_id})"
+    )
+
     return Response({
         "message": "Event created successfully.",
         "event_id": event.event_id
@@ -426,8 +432,16 @@ def delete_event(request):
         event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
         return Response({"message": "Event not found."}, status=404)
+    
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="delete_event",
+        description=f"Deleted event {event.event_name} (ID: {event.event_id})"
+    )
 
     event.delete()
+
+    
 
     return Response({"message": "Event deleted successfully."}, status=200)
 
@@ -951,6 +965,12 @@ def edit_event(request):
             if delete_missing:
                 StageGroups.objects.filter(stage__event=event).exclude(group_id__in=kept_group_ids).delete()
                 Stages.objects.filter(event=event).exclude(stage_id__in=kept_stage_ids).delete()
+    
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="edit_event",
+        description=f"Edited event {event.event_name} (ID: {event.event_id})"
+    )
 
     return Response({"message": "Event updated successfully.", "event_id": event.event_id}, status=200)
 
@@ -1600,6 +1620,13 @@ def get_event_details(request):
         })
 
     event_data["stages"] = stages_payload
+
+    EventPageView.objects.create(
+        event=event,
+        user=user,
+        ip_address=get_client_ip(request),
+        viewed_at=timezone.now()
+    )
     return Response({"event_details": event_data}, status=200)
 
 
@@ -3215,6 +3242,8 @@ def get_event_details_for_admin(request):
     social_shares = event.social_shares.count()
     streams = list(event.stream_channels.values_list("channel_url", flat=True))
 
+    EventPageView.objects.create(event=event, ip_address=request.META.get('REMOTE_ADDR'), user=admin)
+
     return Response({
         "overview": {
             "event_id": event.event_id,
@@ -4491,6 +4520,71 @@ def seed_stage_competitors_to_groups(request):
 
 
 
+@api_view(["POST"])
+def sync_group_discord_roles(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid Authorization"}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin or admin.role != "admin":
+        return Response({"message": "Unauthorized"}, status=403)
+
+    group_id = request.data.get("group_id")
+    if not group_id:
+        return Response({"message": "group_id is required"}, status=400)
+
+    group = get_object_or_404(StageGroups, group_id=group_id)
+    role_id = group.group_discord_role_id
+    if not role_id:
+        return Response({"message": "This group has no discord role id."}, status=400)
+
+    competitors = StageGroupCompetitor.objects.select_related("player__user").filter(
+        stage_group=group, player__isnull=False, status="active"
+    )
+
+    checked = 0
+    queued = 0
+    missing_discord = 0
+    discord_errors = 0
+
+    for sc in competitors:
+        user = sc.player.user
+        if not user or not user.discord_id:
+            missing_discord += 1
+            continue
+
+        has_role, resp = discord_member_has_role(user.discord_id, role_id)
+        checked += 1
+
+        if has_role is None:
+            discord_errors += 1
+            continue
+
+        if not has_role:
+            DiscordRoleAssignment.objects.get_or_create(
+                user=user,
+                discord_id=user.discord_id,
+                role_id=role_id,
+                stage=group.stage,
+                group=group,
+                defaults={"status": "pending"}
+            )
+            queued += 1
+
+    if queued:
+        assign_group_roles_from_db_task.delay(group.stage.stage_id)
+
+    return Response({
+        "message": "Sync complete. Missing roles were queued.",
+        "checked": checked,
+        "queued": queued,
+        "missing_discord_id": missing_discord,
+        "discord_errors": discord_errors,
+    }, status=200)
+
+
+
 
 @api_view(["POST"])
 def disqualify_registered_competitor(request):
@@ -5762,68 +5856,7 @@ def get_all_leaderboards(request):
 #     }, status=200)
 
 
-@api_view(["POST"])
-def sync_group_discord_roles(request):
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid Authorization"}, status=400)
 
-    admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
-        return Response({"message": "Unauthorized"}, status=403)
-
-    group_id = request.data.get("group_id")
-    if not group_id:
-        return Response({"message": "group_id is required"}, status=400)
-
-    group = get_object_or_404(StageGroups, group_id=group_id)
-    role_id = group.group_discord_role_id
-    if not role_id:
-        return Response({"message": "This group has no discord role id."}, status=400)
-
-    competitors = StageGroupCompetitor.objects.select_related("player__user").filter(
-        stage_group=group, player__isnull=False, status="active"
-    )
-
-    checked = 0
-    queued = 0
-    missing_discord = 0
-    discord_errors = 0
-
-    for sc in competitors:
-        user = sc.player.user
-        if not user or not user.discord_id:
-            missing_discord += 1
-            continue
-
-        has_role, resp = discord_member_has_role(user.discord_id, role_id)
-        checked += 1
-
-        if has_role is None:
-            discord_errors += 1
-            continue
-
-        if not has_role:
-            DiscordRoleAssignment.objects.get_or_create(
-                user=user,
-                discord_id=user.discord_id,
-                role_id=role_id,
-                stage=group.stage,
-                group=group,
-                defaults={"status": "pending"}
-            )
-            queued += 1
-
-    if queued:
-        assign_group_roles_from_db_task.delay(group.stage.stage_id)
-
-    return Response({
-        "message": "Sync complete. Missing roles were queued.",
-        "checked": checked,
-        "queued": queued,
-        "missing_discord_id": missing_discord,
-        "discord_errors": discord_errors,
-    }, status=200)
 
 
 # @api_view(["GET"])
@@ -7329,3 +7362,603 @@ def edit_match_details(request):
     return Response({"message": "Match details updated.", "match_id": match.match_id}, status=200)
 
 
+# @api_view(["POST"])
+#  def share_event_link(request):
+
+
+import json
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
+DEFAULT_PLACEMENT = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
+
+def _parse_json_or_value(val, default=None):
+    if val is None:
+        return default
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except Exception:
+            return default if default is not None else val
+    return val
+
+def _normalize_placement_points(pp):
+    if not pp:
+        return DEFAULT_PLACEMENT
+    if not isinstance(pp, dict):
+        raise ValueError("placement_points must be a JSON object/dict")
+    # store in DB as strings is fine, but normalize to ints for computation
+    return {int(k): int(v) for k, v in pp.items()}
+
+@api_view(["POST"])
+def create_leaderboard_manually(request):
+    # ---- AUTH (your existing pattern) ----
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
+
+    # ---- INPUT ----
+    event_id = request.data.get("event_id")
+    stage_id = request.data.get("stage_id")
+    group_id = request.data.get("group_id")
+
+    if not (event_id and stage_id and group_id):
+        return Response({"message": "event_id, stage_id, group_id are required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+    group = get_object_or_404(StageGroups, group_id=group_id, stage=stage)
+
+    placement_points_raw = _parse_json_or_value(request.data.get("placement_points"), default=None)
+    kill_point_raw = request.data.get("kill_point", 1.0)
+
+    try:
+        placement_points = _normalize_placement_points(placement_points_raw)
+    except ValueError as e:
+        return Response({"message": str(e)}, status=400)
+
+    try:
+        kill_point = float(kill_point_raw)
+    except Exception:
+        return Response({"message": "kill_point must be a number."}, status=400)
+
+    leaderboard_name = request.data.get("leaderboard_name") or f"{event.event_name} - {stage.stage_name} - {group.group_name}"
+
+    with transaction.atomic():
+        lb, created = Leaderboard.objects.update_or_create(
+            event=event,
+            stage=stage,
+            group=group,
+            defaults={
+                "leaderboard_name": leaderboard_name,
+                "creator": admin,
+                "placement_points": {str(k): int(v) for k, v in placement_points.items()},  # store as JSON
+                "kill_point": kill_point,
+                "leaderboard_method": "manual",
+                "file_type": None,
+            }
+        )
+
+        # Ensure matches exist for this group (match_count) and link them to leaderboard
+        match_count = int(group.match_count or 0)
+        if match_count <= 0:
+            return Response({"message": "group.match_count must be > 0 to create matches."}, status=400)
+
+        existing = {m.match_number: m for m in Match.objects.filter(group=group)}
+        for num in range(1, match_count + 1):
+            if num in existing:
+                m = existing[num]
+                if m.leaderboard_id != lb.leaderboard_id:
+                    m.leaderboard = lb
+                    m.save(update_fields=["leaderboard"])
+            else:
+                Match.objects.create(
+                    leaderboard=lb,
+                    group=group,
+                    match_number=num,
+                    match_map=(group.match_maps[0] if group.match_maps else "bermuda"),
+                )
+
+    return Response({
+        "message": "Leaderboard created/updated (manual).",
+        "leaderboard_id": lb.leaderboard_id,
+        "created": created,
+        "event_id": event.event_id,
+        "stage_id": stage.stage_id,
+        "group_id": group.group_id,
+        "kill_point": lb.kill_point,
+        "placement_points": lb.placement_points,
+    }, status=200)
+
+
+
+from django.db.models import Sum
+from rest_framework.decorators import api_view
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from rest_framework.response import Response
+
+def _get_lb_for_match(match: Match) -> Leaderboard | None:
+    if match.leaderboard_id:
+        return match.leaderboard
+    if match.group_id:
+        return Leaderboard.objects.filter(
+            event=match.group.stage.event,
+            stage=match.group.stage,
+            group=match.group
+        ).first()
+    return None
+
+@api_view(["POST"])
+def enter_team_match_result_manual(request):
+    # ---- AUTH ----
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
+
+    match_id = request.data.get("match_id")
+    teams_payload = _parse_json_or_value(request.data.get("teams"), default=None)
+
+    if not match_id:
+        return Response({"message": "match_id is required."}, status=400)
+    if not isinstance(teams_payload, list) or not teams_payload:
+        return Response({"message": "teams must be a non-empty list."}, status=400)
+
+    match = get_object_or_404(Match, match_id=match_id)
+    lb = _get_lb_for_match(match)
+    if not lb:
+        return Response({"message": "No leaderboard linked/found for this match."}, status=400)
+
+    event = lb.event
+    if event.participant_type == "solo":
+        return Response({"message": "This endpoint is for TEAM events only."}, status=400)
+
+    placement_points = _normalize_placement_points(lb.placement_points or {})
+    kill_point = float(lb.kill_point or 1.0)
+
+    # Validate tournament teams exist for event
+    team_ids = [t.get("tournament_team_id") for t in teams_payload]
+    team_ids = [tid for tid in team_ids if tid is not None]
+    tt_map = {
+        tt.tournament_team_id: tt
+        for tt in TournamentTeam.objects.filter(event=event, tournament_team_id__in=team_ids).prefetch_related("members__user")
+    }
+
+    stats_rows = []
+    player_rows = []
+
+    with transaction.atomic():
+        # wipe existing match stats to make re-entry safe
+        TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
+        TournamentTeamMatchStats.objects.filter(match=match).delete()
+
+        for team_item in teams_payload:
+            tid = team_item.get("tournament_team_id")
+            if tid not in tt_map:
+                continue
+
+            team_played = bool(team_item.get("played", True))
+            placement = int(team_item.get("placement") or 0) if team_played else 0
+
+            # kills come from players who played=True
+            players = team_item.get("players") or []
+            if not isinstance(players, list):
+                players = []
+
+            total_kills = 0
+            total_damage = 0
+            total_assists = 0
+
+            for p in players:
+                p_played = bool(p.get("played", True)) and team_played
+                k = int(p.get("kills") or 0) if p_played else 0
+                d = int(p.get("damage") or 0) if p_played else 0
+                a = int(p.get("assists") or 0) if p_played else 0
+                total_kills += k
+                total_damage += d
+                total_assists += a
+
+            placement_pts = placement_points.get(placement, 0) if team_played else 0
+            kill_pts = int(total_kills * kill_point) if team_played else 0
+            total_pts = placement_pts + kill_pts
+
+            team_stat = TournamentTeamMatchStats(
+                match=match,
+                tournament_team=tt_map[tid],
+                placement=placement,
+                kills=total_kills,
+                damage=total_damage,
+                assists=total_assists,
+                placement_points=placement_pts,
+                kill_points=kill_pts,
+                total_points=total_pts,
+            )
+            stats_rows.append(team_stat)
+
+        created_team_stats = TournamentTeamMatchStats.objects.bulk_create(stats_rows, batch_size=200)
+
+        # Build a quick map so we can attach player_stats
+        created_map = {row.tournament_team_id: row for row in created_team_stats}
+
+        for team_item in teams_payload:
+            tid = team_item.get("tournament_team_id")
+            if tid not in created_map:
+                continue
+
+            team_played = bool(team_item.get("played", True))
+            players = team_item.get("players") or []
+
+            for p in players:
+                user_id = p.get("user_id")
+                if not user_id:
+                    continue
+                p_played = bool(p.get("played", True)) and team_played
+
+                player_rows.append(TournamentPlayerMatchStats(
+                    team_stats=created_map[tid],
+                    player_id=int(user_id),
+                    kills=int(p.get("kills") or 0) if p_played else 0,
+                    damage=int(p.get("damage") or 0) if p_played else 0,
+                    assists=int(p.get("assists") or 0) if p_played else 0,
+                ))
+
+        TournamentPlayerMatchStats.objects.bulk_create(player_rows, batch_size=500)
+
+        match.result_inputted = True
+        # keep match linked to leaderboard (important if it wasn’t)
+        if not match.leaderboard_id:
+            match.leaderboard = lb
+        match.save(update_fields=["result_inputted", "leaderboard"])
+
+    return Response({
+        "message": "Match result saved (manual team entry).",
+        "match_id": match.match_id,
+        "leaderboard_id": lb.leaderboard_id,
+        "teams_saved": len(created_team_stats),
+        "player_rows_saved": len(player_rows),
+    }, status=200)
+
+
+@api_view(["POST"])
+def enter_solo_match_result_manual(request):
+    # ---- AUTH ----
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
+
+    match_id = request.data.get("match_id")
+    players_payload = _parse_json_or_value(request.data.get("players"), default=None)
+
+    if not match_id:
+        return Response({"message": "match_id is required."}, status=400)
+    if not isinstance(players_payload, list) or not players_payload:
+        return Response({"message": "players must be a non-empty list."}, status=400)
+
+    match = get_object_or_404(Match, match_id=match_id)
+    lb = _get_lb_for_match(match)
+    if not lb:
+        return Response({"message": "No leaderboard linked/found for this match."}, status=400)
+
+    event = lb.event
+    if event.participant_type != "solo":
+        return Response({"message": "This endpoint is for SOLO events only."}, status=400)
+
+    placement_points = _normalize_placement_points(lb.placement_points or {})
+    kill_point = float(lb.kill_point or 1.0)
+
+    comp_ids = [p.get("competitor_id") for p in players_payload if p.get("competitor_id")]
+    comp_map = {
+        rc.id: rc
+        for rc in RegisteredCompetitors.objects.filter(event=event, id__in=comp_ids).select_related("user")
+    }
+
+    rows = []
+    with transaction.atomic():
+        SoloPlayerMatchStats.objects.filter(match=match).delete()
+
+        for p in players_payload:
+            cid = p.get("competitor_id")
+            if cid not in comp_map:
+                continue
+
+            played = bool(p.get("played", True))
+            placement = int(p.get("placement") or 0) if played else 0
+            kills = int(p.get("kills") or 0) if played else 0
+
+            placement_pts = placement_points.get(placement, 0) if played else 0
+            kill_pts = int(kills * kill_point) if played else 0
+            total_pts = placement_pts + kill_pts
+
+            rows.append(SoloPlayerMatchStats(
+                match=match,
+                competitor=comp_map[cid],
+                placement=placement,
+                kills=kills,
+                placement_points=placement_pts,
+                kill_points=kill_pts,
+                total_points=total_pts,
+            ))
+
+        SoloPlayerMatchStats.objects.bulk_create(rows, batch_size=500)
+
+        match.result_inputted = True
+        if not match.leaderboard_id:
+            match.leaderboard = lb
+        match.save(update_fields=["result_inputted", "leaderboard"])
+
+    return Response({
+        "message": "Solo match result saved (manual entry).",
+        "match_id": match.match_id,
+        "leaderboard_id": lb.leaderboard_id,
+        "players_saved": len(rows),
+    }, status=200)
+
+
+import json
+from django.db import transaction
+from django.db.models import Sum
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+def _get_leaderboard_for_match(match):
+    # prefer match.leaderboard, else infer from (event, stage, group)
+    if match.leaderboard:
+        return match.leaderboard
+    if not match.group:
+        return None
+    stage = match.group.stage
+    event = stage.event
+    return Leaderboard.objects.filter(event=event, stage=stage, group=match.group).first()
+
+@api_view(["POST"])
+def edit_match_result(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin or admin.role != "admin":
+        return Response({"message": "Unauthorized."}, status=403)
+
+    match_id = request.data.get("match_id")
+    if not match_id:
+        return Response({"message": "match_id is required."}, status=400)
+
+    match = get_object_or_404(Match, match_id=match_id)
+
+    if not match.group or not match.group.stage or not match.group.stage.event:
+        return Response({"message": "Match is not linked to a valid group/stage/event."}, status=400)
+
+    event = match.group.stage.event
+    leaderboard = _get_leaderboard_for_match(match)
+    if not leaderboard:
+        return Response({"message": "No leaderboard found for this match/group."}, status=400)
+
+    placement_points_raw = leaderboard.placement_points or {}
+    try:
+        placement_points = {int(k): int(v) for k, v in placement_points_raw.items()}
+    except Exception:
+        return Response({"message": "Invalid leaderboard placement_points."}, status=400)
+
+    kill_point = float(getattr(leaderboard, "kill_point", 1.0) or 1.0)
+
+    results = request.data.get("results")
+    if isinstance(results, str):
+        results = json.loads(results or "[]")
+
+    if not isinstance(results, list) or not results:
+        return Response({"message": "results must be a non-empty list."}, status=400)
+
+    # basic validation: unique placements among PLAYED competitors
+    played_rows = [r for r in results if r.get("played", True)]
+    placements = [r.get("placement") for r in played_rows]
+    if any(p is None for p in placements):
+        return Response({"message": "Each played row must have placement."}, status=400)
+    if len(set(placements)) != len(placements):
+        return Response({"message": "Placements must be unique (among played rows)."}, status=400)
+
+    with transaction.atomic():
+        if event.participant_type == "solo":
+            # wipe old
+            SoloPlayerMatchStats.objects.filter(match=match).delete()
+
+            # build map of competitors in this event
+            competitor_ids = [int(r["competitor_id"]) for r in results if r.get("competitor_id")]
+            regs = RegisteredCompetitors.objects.select_related("user").filter(
+                event=event, id__in=competitor_ids, status="registered"
+            )
+            reg_map = {rc.id: rc for rc in regs}
+
+            create_rows = []
+            missing = []
+
+            for r in results:
+                cid = r.get("competitor_id")
+                if not cid:
+                    continue
+                cid = int(cid)
+                rc = reg_map.get(cid)
+                if not rc:
+                    missing.append(cid)
+                    continue
+
+                played = bool(r.get("played", True))
+                placement = int(r.get("placement") or 0) if played else 0
+                kills = int(r.get("kills") or 0) if played else 0
+
+                bonus = int(r.get("bonus_points") or 0)
+                penalty = int(r.get("penalty_points") or 0)
+                if bonus < 0 or penalty < 0:
+                    return Response({"message": "bonus_points and penalty_points must be >= 0."}, status=400)
+
+                place_pts = placement_points.get(placement, 0) if played else 0
+                kill_pts = int(kills * kill_point) if played else 0
+                total_pts = place_pts + kill_pts  # base total (adjustment added later in leaderboard calc)
+
+                create_rows.append(SoloPlayerMatchStats(
+                    match=match,
+                    competitor=rc,
+                    placement=placement,
+                    kills=kills,
+                    placement_points=place_pts,
+                    kill_points=kill_pts,
+                    total_points=total_pts,
+                    bonus_points=bonus,
+                    penalty_points=penalty,
+                ))
+
+            SoloPlayerMatchStats.objects.bulk_create(create_rows, batch_size=500)
+            match.result_inputted = True
+            match.leaderboard = leaderboard
+            match.save(update_fields=["result_inputted", "leaderboard"])
+
+            return Response({
+                "message": "Solo match result updated.",
+                "match_id": match.match_id,
+                "saved_rows": len(create_rows),
+                "missing_registered_competitor_ids": missing[:30],
+                "missing_count": len(missing),
+            }, status=200)
+
+        else:
+            # TEAM (duo/squad)
+            TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
+            TournamentTeamMatchStats.objects.filter(match=match).delete()
+
+            team_ids = [int(r["tournament_team_id"]) for r in results if r.get("tournament_team_id")]
+            teams = TournamentTeam.objects.select_related("team").filter(event=event, tournament_team_id__in=team_ids)
+            team_map = {tt.tournament_team_id: tt for tt in teams}
+
+            team_stats_to_create = []
+            player_stats_to_create = []
+            missing = []
+
+            for r in results:
+                ttid = r.get("tournament_team_id")
+                if not ttid:
+                    continue
+                ttid = int(ttid)
+                tt = team_map.get(ttid)
+                if not tt:
+                    missing.append(ttid)
+                    continue
+
+                team_played = bool(r.get("played", True))
+                placement = int(r.get("placement") or 0) if team_played else 0
+
+                players = r.get("players") or []
+                if isinstance(players, str):
+                    players = json.loads(players or "[]")
+                if not isinstance(players, list):
+                    players = []
+
+                # if team_played is False -> force players played False
+                if not team_played:
+                    for p in players:
+                        p["played"] = False
+
+                # optional: enforce max 4 played (BR squad)
+                played_players = [p for p in players if p.get("played", True)]
+                if len(played_players) > 4:
+                    return Response({"message": f"Team {ttid}: max 4 played players allowed."}, status=400)
+
+                # compute team totals from played players
+                team_kills = sum(int(p.get("kills") or 0) for p in played_players) if team_played else 0
+                team_damage = sum(int(p.get("damage") or 0) for p in played_players) if team_played else 0
+                team_assists = sum(int(p.get("assists") or 0) for p in played_players) if team_played else 0
+
+                place_pts = placement_points.get(placement, 0) if team_played else 0
+                kill_pts = int(team_kills * kill_point) if team_played else 0
+                total_pts = place_pts + kill_pts
+
+                ts = TournamentTeamMatchStats(
+                    match=match,
+                    tournament_team=tt,
+                    placement=placement,
+                    kills=team_kills,
+                    damage=team_damage,
+                    assists=team_assists,
+                    placement_points=place_pts,
+                    kill_points=kill_pts,
+                    total_points=total_pts,
+                )
+                team_stats_to_create.append(ts)
+
+            created_team_stats = TournamentTeamMatchStats.objects.bulk_create(team_stats_to_create, batch_size=200)
+
+            # Build a quick mapping tournament_team_id -> created team_stats row
+            ts_by_team = {ts.tournament_team.tournament_team_id: ts for ts in created_team_stats}
+
+            for r in results:
+                ttid = r.get("tournament_team_id")
+                if not ttid:
+                    continue
+                ttid = int(ttid)
+                ts = ts_by_team.get(ttid)
+                if not ts:
+                    continue
+
+                team_played = bool(r.get("played", True))
+                players = r.get("players") or []
+                if isinstance(players, str):
+                    players = json.loads(players or "[]")
+                if not isinstance(players, list):
+                    players = []
+
+                if not team_played:
+                    for p in players:
+                        p["played"] = False
+
+                for p in players:
+                    played = bool(p.get("played", True)) and team_played
+                    uid = p.get("user_id")
+                    if not uid:
+                        continue
+                    kills = int(p.get("kills") or 0) if played else 0
+                    damage = int(p.get("damage") or 0) if played else 0
+                    assists = int(p.get("assists") or 0) if played else 0
+
+                    player_stats_to_create.append(TournamentPlayerMatchStats(
+                        team_stats=ts,
+                        player_id=int(uid),
+                        kills=kills,
+                        damage=damage,
+                        assists=assists,
+                    ))
+
+            TournamentPlayerMatchStats.objects.bulk_create(player_stats_to_create, batch_size=500)
+
+            match.result_inputted = True
+            match.leaderboard = leaderboard
+            match.save(update_fields=["result_inputted", "leaderboard"])
+
+            return Response({
+                "message": "Team match result updated.",
+                "match_id": match.match_id,
+                "saved_team_rows": len(created_team_stats),
+                "saved_player_rows": len(player_stats_to_create),
+                "missing_tournament_team_ids": missing[:30],
+                "missing_count": len(missing),
+            }, status=200)
