@@ -27,6 +27,7 @@ class Team(models.Model):
     team_tier = models.CharField(max_length=1, default="3")
     team_description = models.CharField(max_length=200, default="We Love Playing Free Fire")
     country = models.CharField(max_length=20)
+    total_earnings = models.DecimalField(max_digits=15, decimal_places=2, default=0.0, null=True, blank=True)
 
     def __str__(self):
         return self.team_name
