@@ -1564,6 +1564,26 @@ def edit_user_roles(request):
     # Clear existing roles
     UserRoles.objects.filter(user=user).delete()
 
+    # if the new roles are empty, downgrade user to regular user
+    if not new_role_ids:
+        user.role = "user"
+        user.save()
+        AdminHistory.objects.create(
+            admin_user=admin_user,
+            action="edited_user_roles",
+            description=f"Removed all roles from user {user.username} (ID: {user.user_id})"
+        )
+
+        # Notify the user
+        notification_message = "All your admin roles have been removed. You are now a regular user."
+        Notifications.objects.create(
+            user=user,
+            message=notification_message,
+            notification_type="role_update"
+        )
+
+        return Response({"message": f"User {user.username}'s roles updated successfully."}, status=status.HTTP_200_OK)
+
     # Assign new roles
     for role_id in new_role_ids:
         try:
