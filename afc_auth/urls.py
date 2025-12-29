@@ -56,4 +56,5 @@ urlpatterns = [
     path('get-average-total-kills-per-player/', get_average_total_kills_per_player, name='get_average_total_kills_per_player'),
     path('get-top-mvp-player/', get_top_mvp_player, name='get_top_mvp_player'),
     path('get-top-winner-player/', get_top_winner_player, name='get_top_winner_player'),
+    path('get-admin-activities/', get_admin_activities, name='get_admin_activities'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
