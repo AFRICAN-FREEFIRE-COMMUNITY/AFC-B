@@ -1,3 +1,4 @@
+from datetime import timedelta, timedelta, timezone
 import uuid
 from django.shortcuts import render
 from rest_framework.decorators import api_view
@@ -7,7 +8,7 @@ from afc_auth.views import validate_token
 from afc_leaderboard_calc import models
 from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
-from afc_auth.models import User, UserProfile
+from afc_auth.models import Notifications, User, UserProfile
 from django.utils.timezone import now
 from django.db.models import Q
 from .models import Team, TeamMembers, Invite, TeamSocialMediaLinks
@@ -167,6 +168,14 @@ def invite_member(request):
 
         # Create invitation
         Invite.objects.create(inviter=inviter, invitee=invitee, team=team, status_of_invite='unattended_to')
+
+        # Notify the invitee (optional)
+        notification_message = f"You have been invited to join the team: {team.team_name}."
+        Notifications.objects.create(
+            user=invitee,
+            message=notification_message,
+            notification_type="team_invitation"
+        )
 
         return Response({'message': 'Invitation sent successfully.'}, status=status.HTTP_201_CREATED)
 
@@ -385,6 +394,21 @@ def disband_team(request):
             description=f"Team '{team.team_name}' was disbanded by {user.username} on {now()}."
         )
 
+        # Delete invites related to the team
+        Invite.objects.filter(team=team).delete()
+        # Delete join requests related to the team
+        JoinRequest.objects.filter(team=team).delete()
+
+        # Notify team members (optional)
+        team_members = TeamMembers.objects.filter(team=team)
+        for member in team_members:
+            notification_message = f"The team '{team.team_name}' has been disbanded by the owner."
+            Notifications.objects.create(
+                user=member.member,
+                message=notification_message,
+                notification_type="team_disbanded"
+            )
+
         # Remove all team members
         TeamMembers.objects.filter(team=team).delete()
 
@@ -458,6 +482,29 @@ def transfer_ownership(request):
             action="role_changed",
             description=f"Ownership transferred from {current_owner.username} to {new_owner.username}."
         )
+
+        # Notify the new owner
+        Notifications.objects.create(
+            user=new_owner,
+            message=f"You are now the owner of the team: {team.team_name}.",
+            notification_type="team_owner_transfer"
+        )
+
+        # Notify the old owner
+        Notifications.objects.create(
+            user=current_owner,
+            message=f"You have transferred ownership of the team: {team.team_name} to {new_owner.username}.",
+            notification_type="team_owner_transfer"
+        )
+
+        # Notify other team members
+        other_members = TeamMembers.objects.filter(team=team).exclude(member__in=[current_owner, new_owner])
+        for member in other_members:
+            Notifications.objects.create(
+                user=member.member,
+                message=f"{new_owner.username} is now the owner of the team: {team.team_name}.",
+                notification_type="team_owner_transfer"
+            )
 
         return Response({
             "message": "Team ownership transferred successfully.",
@@ -579,6 +626,7 @@ def review_join_request(request):
             # Add the user to the team
             TeamMembers.objects.create(team=team, member=join_request.requester, management_role='member')
 
+
         # Update join request status
         join_request.status_of_request = "attended_to"
         join_request.decision = decision
@@ -590,6 +638,14 @@ def review_join_request(request):
             user=join_request.requester,
             action="player_joined" if decision == "approved" else "player_removed",
             description=f"Join request {decision} by {join_request.requester.username}."
+        )
+
+        # Notify the requester
+        notification_message = f"Your request to join the team '{team.team_name}' has been {decision}."
+        Notifications.objects.create(
+            user=join_request.requester,
+            message=notification_message,
+            notification_type="join_request_review"
         )
 
         return Response({"message": f"Join request {decision} successfully."}, status=status.HTTP_200_OK)
@@ -1004,6 +1060,13 @@ def exit_team(request):
             description=f"{user.username} exited the team {team.team_name}."
         )
 
+        # Notify the team owner
+        Notifications.objects.create(
+            user=team.team_owner,
+            message=f"{user.username} has exited the team {team.team_name}.",
+            notification_type="team_exit"
+        )
+
         return Response({"message": "You have successfully exited the team."}, status=status.HTTP_200_OK)
 
     except TeamMembers.DoesNotExist:
@@ -1218,6 +1281,15 @@ def manage_team_roster(request):
                 "in_game_role": tm.in_game_role
             })
 
+
+            # Log the action in the Report table
+            Report.objects.create(
+                team=team,
+                user=user,
+                action="roster_updated",
+                description=f"{tm.member.username}'s roles updated to management_role: {tm.management_role}, in_game_role: {tm.in_game_role} by {user.username}."
+            )
+
         return Response({
             "message": "Bulk roster update completed",
             "results": results
@@ -1281,6 +1353,13 @@ def kick_team_member(request):
             description=f"{kicked_member_username} was kicked from the team {team.team_name} by {user.username}."
         )
 
+        # Notify the kicked member
+        Notifications.objects.create(
+            user=tm.member,
+            message=f"You have been kicked from the team {team.team_name} by {user.username}.",
+            notification_type="team_kick"
+        )
+
         return Response({"message": f"Member {kicked_member_username} has been kicked from the team."}, status=200)
 
     except Exception as e:
@@ -1340,4 +1419,100 @@ def join_team(request):
         description=f"{user.username} joined the team {team.team_name}."
     )
 
+    # Notify the team owner
+    Notifications.objects.create(
+        user=team.team_owner,
+        message=f"{user.username} has joined your team {team.team_name}.",
+        notification_type="team_join"
+    )
+
     return Response({"message": f"You have successfully joined the team {team.team_name}."}, status=status.HTTP_200_OK)
+
+
+
+@api_view(["GET"])
+def get_total_teams_count(request):
+    try:
+        total_teams = Team.objects.count()
+        return Response({"total_teams": total_teams}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(["GET"])
+def get_current_active_teams_count(request):
+    try:
+        active_teams = Team.objects.filter(is_banned=False).count()
+        return Response({"active_teams": active_teams}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(["GET"])
+def get_banned_teams_count(request):
+    try:
+        banned_teams = Team.objects.filter(is_banned=True).count()
+        return Response({"banned_teams": banned_teams}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(["GET"])
+def get_new_teams_count(request):
+    try:
+        seven_days_ago = timezone.now() - timedelta(days=7)
+        new_teams = Team.objects.filter(creation_date__gte=seven_days_ago).count()
+        return Response({"new_teams_last_7_days": new_teams}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(["GET"])
+def get_average_members_per_team(request):
+    try:
+        total_teams = Team.objects.count()
+        if total_teams == 0:
+            average_members = 0
+        else:
+            total_members = TeamMembers.objects.count()
+            average_members = total_members / total_teams
+
+        return Response({"average_members_per_team": average_members}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(["GET"])
+def get_team_with_highest_wins(request):
+    try:
+        team_with_most_wins = Team.objects.order_by('-total_wins').first()
+        if not team_with_most_wins:
+            return Response({"message": "No teams found."}, status=status.HTTP_404_NOT_FOUND)
+
+        team_data = {
+            "team_id": team_with_most_wins.team_id,
+            "team_name": team_with_most_wins.team_name,
+            "total_wins": team_with_most_wins.total_wins
+        }
+
+        return Response({"team_with_highest_wins": team_data}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+@api_view(["GET"])
+def get_top_earning_teams(request):
+    try:
+        top_earning_teams = Team.objects.order_by('-total_earnings')[:5]
+        teams_data = []
+
+        for team in top_earning_teams:
+            teams_data.append({
+                "team_id": team.team_id,
+                "team_name": team.team_name,
+                "total_earnings": team.total_earnings
+            })
+
+        return Response({"top_earning_teams": teams_data}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

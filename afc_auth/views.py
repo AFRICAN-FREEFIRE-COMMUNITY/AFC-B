@@ -456,6 +456,24 @@ def ban_team(request):
         description=f"Team {team.team_name} (ID: {team.team_id}) banned until {ban_end_date} for reason: {reason}"
     )
 
+    team_owner = team.team_owner
+    team_members = team.teammembers.all()
+
+    # Notify team owner and members
+    notification_message = f"Your team '{team.team_name}' has been banned until {ban_end_date.strftime('%Y-%m-%d %H:%M:%S')} for the following reason: {reason}."
+    Notifications.objects.create(
+        user=team_owner,
+        message=notification_message,
+        notification_type="team_ban"
+    )
+    for member in team_members:
+        Notifications.objects.create(
+            user=member.user,
+            message=notification_message,
+            notification_type="team_ban"
+        )
+
+
     return Response({
         "message": "Team banned successfully.",
         "team_id": team.team_id,
@@ -520,6 +538,23 @@ def unban_team(request):
         description=f"Team {team.team_name} (ID: {team.team_id}) unbanned"
     )
 
+    # Notify team owner and members
+    team_owner = team.team_owner
+    team_members = team.teammembers.all()
+    notification_message = f"Your team '{team.team_name}' has been unbanned."
+    Notifications.objects.create(
+        user=team_owner,
+        message=notification_message,
+        notification_type="team_unban"
+    )
+
+    for member in team_members:
+        Notifications.objects.create(
+            user=member.user,
+            message=notification_message,
+            notification_type="team_unban"
+        )
+
     return Response({"message": "Team unbanned successfully."}, status=status.HTTP_200_OK)
 
 
@@ -577,6 +612,14 @@ def ban_player(request):
         admin_user=user,
         action="banned_player",
         description=f"Player {player_ign} (ID: {player.user_id}) banned for {duration} days for reason: {reason}"
+    )
+
+    # Notify the player
+    notification_message = f"You have been banned for {duration} days for the following reason: {reason}."
+    Notifications.objects.create(
+        user=player,
+        message=notification_message,
+        notification_type="player_ban"
     )
 
     return Response({
@@ -640,6 +683,14 @@ def unban_player(request):
         admin_user=user,
         action="unbanned_player",
         description=f"Player {player_ign} (ID: {player.user_id}) unbanned"
+    )
+
+    # Notify the player
+    notification_message = "Your ban has been lifted. You can now access your account."
+    Notifications.objects.create(
+        user=player,
+        message=notification_message,
+        notification_type="player_unban"
     )
 
     return Response({
@@ -897,6 +948,12 @@ def delete_news(request):
         return Response({"message": "You do not have permission to delete this news."}, status=status.HTTP_403_FORBIDDEN)
 
     news.delete()
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="deleted_news",
+        description=f"News '{news.news_title}' (ID: {news.news_id}) deleted"
+    )
 
     return Response({"message": "News deleted successfully."}, status=status.HTTP_200_OK)
 
@@ -1260,6 +1317,14 @@ def suspend_user(request):
         description=f"User {user.username} (ID: {user.user_id}) suspended"
     )
 
+    # Notify the user
+    notification_message = "Your account has been suspended. Please contact support for more information."
+    Notifications.objects.create(
+        user=user,
+        message=notification_message,
+        notification_type="account_suspension"
+    )
+
     return Response({"message": f"User {user.username} has been suspended."}, status=status.HTTP_200_OK)
 
 
@@ -1303,6 +1368,14 @@ def activate_user(request):
         admin_user=user,
         action="activated_user",
         description=f"User {user.username} (ID: {user.user_id}) activated"
+    )
+
+    # Notify the user
+    notification_message = "Your account has been activated. You can now access your account."
+    Notifications.objects.create(
+        user=user,
+        message=notification_message,
+        notification_type="account_activation"
     )
 
     return Response({"message": f"User {user.username} has been activated."}, status=status.HTTP_200_OK)
@@ -1430,6 +1503,14 @@ def assign_roles_to_user(request):
         description=f"Assigned roles {', '.join([role.role_name for role in roles])} to user {user.username} (ID: {user.user_id})"
     )
 
+    #Notify the user
+    notification_message = f"You have been assigned new roles: {', '.join([role.role_name for role in roles])}."
+    Notifications.objects.create(
+        user=user,
+        message=notification_message,
+        notification_type="role_assignment"
+    )
+
     return Response(
         {"status": "success", "message": f"Roles reset and assigned to user {user.username} successfully."},
         status=status.HTTP_200_OK
@@ -1490,6 +1571,14 @@ def edit_user_roles(request):
         description=f"Edited roles for user {user.username} (ID: {user.user_id})"
     )
 
+    # Notify the user
+    notification_message = f"Your roles have been updated to: {', '.join([Roles.objects.get(role_id=rid).role_name for rid in new_role_ids])}."
+    Notifications.objects.create(
+        user=user,
+        message=notification_message,
+        notification_type="role_update"
+    )
+
     return Response({"message": f"User {user.username}'s roles updated successfully."}, status=status.HTTP_200_OK)
 
 
@@ -1536,6 +1625,7 @@ def add_role(request):
         action="added_role",
         description=f"Added new role '{role_name}' (ID: {role.role_id})"
     )
+
 
     return Response({
         "message": "Role added successfully.",
@@ -2219,6 +2309,12 @@ def send_notification(request):
         message=message
     )
 
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="sent_notification",
+        description=f"Sent notification to user {recipient.username} (ID: {recipient.user_id})"
+    )
+
     return Response({"message": "Notification sent successfully.", "notification_id": notification.notification_id}, status=status.HTTP_201_CREATED)
 
 
@@ -2254,5 +2350,12 @@ def send_notification_to_multiple_users(request):
             user=recipient,
             message=message
         )
+
+    
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="sent_notification_multiple",
+        description=f"Sent notification to multiple users: {', '.join([str(r.user_id) for r in recipients])}"
+    )
 
     return Response({"message": "Notifications sent successfully."}, status=status.HTTP_201_CREATED)

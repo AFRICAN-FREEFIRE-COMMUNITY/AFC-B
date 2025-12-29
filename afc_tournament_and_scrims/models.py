@@ -226,6 +226,7 @@ class TournamentTeamMatchStats(models.Model):
     placement_points = models.PositiveIntegerField(default=0)
     kill_points = models.PositiveIntegerField(default=0)
     total_points = models.PositiveIntegerField(default=0)
+    played = models.BooleanField(default=True)
 
 class TournamentPlayerMatchStats(models.Model):
     """
@@ -237,6 +238,7 @@ class TournamentPlayerMatchStats(models.Model):
     kills = models.PositiveIntegerField(default=0)
     damage = models.PositiveIntegerField(default=0)
     assists = models.PositiveIntegerField(default=0)
+    played = models.BooleanField(default=True)
 
 
 
@@ -302,6 +304,16 @@ class SoloPlayerMatchStats(models.Model):
     bonus_points = models.IntegerField(default=0)   # ✅ +
     penalty_points = models.IntegerField(default=0) # ✅ -
     total_points = models.IntegerField(default=0)
+    played = models.BooleanField(default=True)
 
     class Meta:
         unique_together = ("match", "competitor")
+
+# # TournamentTeamMatchStats
+# played = models.BooleanField(default=True)
+
+# # TournamentPlayerMatchStats
+# played = models.BooleanField(default=True)
+
+# # SoloPlayerMatchStats
+# played = models.BooleanField(default=True)
