@@ -8,12 +8,17 @@ from rest_framework import status
 from afc_auth.views import validate_token
 from afc_leaderboard_calc import models
 from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
+from afc_tournament_and_scrims.models import TournamentTeamMatchStats
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
 from afc_auth.models import Notifications, User, UserProfile
 from django.utils.timezone import now
 from django.db.models import Q
 from .models import Team, TeamMembers, Invite, TeamSocialMediaLinks
 import json
+from django.db.models import Count, F
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
 
 @api_view(["POST"])
 def create_team(request):
@@ -1485,35 +1490,25 @@ def get_average_members_per_team(request):
 
 @api_view(["GET"])
 def get_team_with_highest_wins(request):
-    try:
-        team_with_most_wins = Team.objects.order_by('-total_wins').first()
-        if not team_with_most_wins:
-            return Response({"message": "No teams found."}, status=status.HTTP_404_NOT_FOUND)
+    top = (
+        TournamentTeamMatchStats.objects
+        .filter(placement=1)
+        .values(team_id=F("tournament_team__team__team_id"),
+                team_name=F("tournament_team__team__team_name"))
+        .annotate(total_wins=Count("id"))
+        .order_by("-total_wins", "team_name")
+        .first()
+    )
 
-        team_data = {
-            "team_id": team_with_most_wins.team_id,
-            "team_name": team_with_most_wins.team_name,
-            "total_wins": team_with_most_wins.total_wins
-        }
+    if not top:
+        return Response({"message": "No team win records found."}, status=status.HTTP_404_NOT_FOUND)
 
-        return Response({"team_with_highest_wins": team_data}, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return Response({"team_with_highest_wins": top}, status=status.HTTP_200_OK)
+
     
 
 @api_view(["GET"])
 def get_top_earning_teams(request):
-    try:
-        top_earning_teams = Team.objects.order_by('-total_earnings')[:5]
-        teams_data = []
-
-        for team in top_earning_teams:
-            teams_data.append({
-                "team_id": team.team_id,
-                "team_name": team.team_name,
-                "total_earnings": team.total_earnings
-            })
-
-        return Response({"top_earning_teams": teams_data}, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    qs = Team.objects.order_by("-total_earnings")[:5]
+    data = [{"team_id": t.team_id, "team_name": t.team_name, "total_earnings": t.total_earnings} for t in qs]
+    return Response({"top_earning_teams": data}, status=status.HTTP_200_OK)

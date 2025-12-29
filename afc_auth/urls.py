@@ -49,5 +49,11 @@ urlpatterns = [
     path("send-notification/", send_notification, name="send_notification"),
     path("send-notification-to-multiple-users/", send_notification_to_multiple_users, name="send_notification_to_multiple_users"),
     path("view-notification/", view_notification, name="view_notification"),
-
+    path('get-total-players-count/', get_total_players_count, name='get_total_players_count'),
+    path('get-active-players-count/', get_active_players_count, name='get_active_players_count'),
+    path('get-banned-players-count/', get_banned_players_count, name='get_banned_players_count'),
+    path('get-new-players-count/', get_new_players_count, name='get_new_players_count'),
+    path('get-average-total-kills-per-player/', get_average_total_kills_per_player, name='get_average_total_kills_per_player'),
+    path('get-top-mvp-player/', get_top_mvp_player, name='get_top_mvp_player'),
+    path('get-top-winner-player/', get_top_winner_player, name='get_top_winner_player'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

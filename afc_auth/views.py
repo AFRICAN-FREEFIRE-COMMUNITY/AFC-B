@@ -41,7 +41,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_datetime
-from afc_tournament_and_scrims.models import Event
+from afc_tournament_and_scrims.models import Event, SoloPlayerMatchStats, TournamentPlayerMatchStats, TournamentTeamMatchStats
 from django.contrib.auth.hashers import make_password, check_password
 from django.core.cache import cache
 from django.contrib.auth.tokens import default_token_generator
@@ -50,7 +50,14 @@ from django.utils.http import urlsafe_base64_encode
 import requests
 from django.conf import settings
 from .models import Notifications
-
+from django.db.models import Count
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from django.db.models import Avg
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
 
 from utils.ipinfo_lookup import lookup_ip
 
@@ -2359,3 +2366,126 @@ def send_notification_to_multiple_users(request):
     )
 
     return Response({"message": "Notifications sent successfully."}, status=status.HTTP_201_CREATED)
+
+
+
+@api_view(["GET"])
+def get_total_players_count(request):
+    total_players = User.objects.filter(role="player").count()
+    return Response({"total_players": total_players}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_active_players_count(request):
+    active_players = User.objects.filter(role="player", status="active").count()
+    return Response({"active_players": active_players}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_banned_players_count(request):
+    banned_players = User.objects.filter(role="player", status="banned").count()
+    return Response({"banned_players": banned_players}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_new_players_count(request):
+    from django.utils import timezone
+    from datetime import timedelta
+
+    now = timezone.now()
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    new_players_this_month = User.objects.filter(
+        role="player",
+        date_joined__gte=start_of_month
+    ).count()
+
+    return Response({"new_players_this_month": new_players_this_month}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_average_total_kills_per_player(request):
+    # solo players
+    solo_avg = SoloPlayerMatchStats.objects.aggregate(avg=Avg("kills"))["avg"] or 0
+
+    # team players (squad/duo)
+    team_avg = TournamentPlayerMatchStats.objects.aggregate(avg=Avg("kills"))["avg"] or 0
+
+    # If you want one combined number:
+    # (simple average of the two averages is not statistically perfect, but OK as a quick metric)
+    combined = (solo_avg + team_avg) / 2 if (solo_avg or team_avg) else 0
+
+    return Response({
+        "solo_avg_kills_per_player_per_match": round(float(solo_avg), 2),
+        "team_avg_kills_per_player_per_match": round(float(team_avg), 2),
+        "combined_avg_kills_per_player_per_match": round(float(combined), 2),
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_top_mvp_player(request):
+    top = (
+        User.objects
+        .filter(mvp_matches__isnull=False)
+        .annotate(total_mvps=Count("mvp_matches"))
+        .order_by("-total_mvps", "username")
+        .first()
+    )
+
+    if not top:
+        return Response({"message": "No MVP records found."}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response({
+        "user_id": top.user_id,
+        "username": top.username,
+        "total_mvps": top.total_mvps,
+    }, status=status.HTTP_200_OK)
+
+
+from django.db.models import Count, Q
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
+@api_view(["GET"])
+def get_top_winner_player(request):
+    # SOLO wins per user (placement 1)
+    solo_wins = (
+        SoloPlayerMatchStats.objects
+        .filter(placement=1, competitor__user__isnull=False)
+        .values("competitor__user_id", "competitor__user__username")
+        .annotate(wins=Count("id"))
+    )
+
+    # TEAM wins per user (team placement 1 -> members)
+    team_wins = (
+        TournamentTeamMatchStats.objects
+        .filter(placement=1)
+        .values("tournament_team__members__user_id", "tournament_team__members__user__username")
+        .annotate(wins=Count("id"))
+    )
+
+    # Merge in python (simple + safe)
+    wins_map = {}
+    for r in solo_wins:
+        uid = r["competitor__user_id"]
+        wins_map[uid] = {"user_id": uid, "username": r["competitor__user__username"], "wins": r["wins"]}
+
+    for r in team_wins:
+        uid = r["tournament_team__members__user_id"]
+        if not uid:
+            continue
+        if uid not in wins_map:
+            wins_map[uid] = {"user_id": uid, "username": r["tournament_team__members__user__username"], "wins": 0}
+        wins_map[uid]["wins"] += r["wins"]
+
+    if not wins_map:
+        return Response({"message": "No win records found."}, status=status.HTTP_404_NOT_FOUND)
+
+    top = max(wins_map.values(), key=lambda x: x["wins"])
+
+    return Response({
+        "user_id": top["user_id"],
+        "username": top["username"],
+        "total_wins": top["wins"],
+    }, status=status.HTTP_200_OK)
