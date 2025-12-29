@@ -235,6 +235,11 @@ def review_invitation(request):
             if TeamMembers.objects.filter(member=user).exists():
                 return Response({'message': 'You are already a member of a team.'}, status=status.HTTP_400_BAD_REQUEST)
 
+            
+            # Ensure the team is not up to 6 players yet
+            if TeamMembers.objects.filter(team=invite.team).count() >= 6:
+                return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
+
             # Add the user to the team
             TeamMembers.objects.create(team=invite.team, member=user, management_role='member', in_game_role='rusher')
             invite.decision = 'accepted'
@@ -562,6 +567,10 @@ def send_join_request(request):
         # Ensure a request isn't already pending
         if JoinRequest.objects.filter(requester=requester, team=team, status_of_request="unattended_to").exists():
             return Response({"message": "You already have a pending join request for this team."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Ensure the team is not up to 6 players yet
+        if TeamMembers.objects.filter(team=team).count() >= 6:
+            return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create a join request
         JoinRequest.objects.create(requester=requester, team=team, message=message)
@@ -629,6 +638,10 @@ def review_join_request(request):
             # Ensure the requester is not already in a team
             if TeamMembers.objects.filter(member=join_request.requester).exists():
                 return Response({"message": "User is already a member of a team."}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Ensure the team is not up to 6 players yet
+            if TeamMembers.objects.filter(team=team).count() >= 6:
+                return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
 
             # Add the user to the team
             TeamMembers.objects.create(team=team, member=join_request.requester, management_role='member')
@@ -1151,6 +1164,10 @@ def respond_invite(request, invite_id):
     if action == "accept":
         # Only add if not already in the team
         if not TeamMembers.objects.filter(team=invite.team, member=user).exists():
+
+            # Ensure the team is not up to 6 players yet
+            if TeamMembers.objects.filter(team=invite.team).count() >= 6:
+                return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
             TeamMembers.objects.create(
                 team=invite.team,
                 member=user,
