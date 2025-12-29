@@ -59,4 +59,6 @@ urlpatterns = [
     path('enter-solo-match-result-manual/', enter_solo_match_result_manual, name='enter_solo_match_result_manual'),
     path('enter-team-match-result-manual/', enter_team_match_result_manual, name='enter_team_match_result_manual'),
     path('edit-match-result/', edit_match_result, name='edit_match_result'),
+    path('disqualify-player/', disqualify_player, name='disqualify_player'),
+    path('disqualify-team/', disqualify_team, name='disqualify_team'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
