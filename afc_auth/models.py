@@ -227,10 +227,13 @@ class AdminHistory(models.Model):
 
 class Notifications(models.Model):
     notification_id = models.AutoField(primary_key=True)
+    notification_type = models.CharField(max_length=50, null=True, blank=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
     message = models.TextField()
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    related_event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.CASCADE, null=True, blank=True)
+    title = models.CharField(max_length=255, null=True, blank=True)
 
     def mark_as_read(self):
         self.is_read = True
