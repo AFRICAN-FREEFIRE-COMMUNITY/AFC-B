@@ -2206,7 +2206,11 @@ def get_user_login_history(request):
         history_data.append({
             "ip_address": history.ip_address,
             "user_agent": history.user_agent,
-            "timestamp": history.created_at
+            "timestamp": history.created_at,
+            "country": history.country,
+            "region": history.region,
+            "city": history.city,
+            "continent": history.continent,
         })
 
     return Response({"login_history": history_data}, status=status.HTTP_200_OK)

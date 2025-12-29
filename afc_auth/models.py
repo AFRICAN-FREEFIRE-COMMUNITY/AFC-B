@@ -234,6 +234,7 @@ class Notifications(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     related_event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.CASCADE, null=True, blank=True)
     title = models.CharField(max_length=255, null=True, blank=True)
+    invite = models.ForeignKey("afc_team.Invite", on_delete=models.CASCADE, null=True, blank=True)
 
     def mark_as_read(self):
         self.is_read = True
