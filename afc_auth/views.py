@@ -1553,8 +1553,8 @@ def edit_user_roles(request):
     email = request.data.get("email")
     new_role_ids = request.data.get("new_role_ids", [])
 
-    if not email or not username or not new_role_ids:
-        return Response({"message": "Email, username, and new role IDs are required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not email or not username:
+        return Response({"message": "Email and username are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         user = User.objects.get(email=email, username=username)
