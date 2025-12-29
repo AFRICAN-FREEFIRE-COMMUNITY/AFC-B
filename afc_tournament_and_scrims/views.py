@@ -6631,6 +6631,16 @@ from django.shortcuts import get_object_or_404
 from django.db.models import Sum, Count, F, Value, IntegerField
 from django.db.models.functions import Coalesce
 
+
+from django.db.models import (
+    F, Sum, Count, Value, IntegerField,
+    Case, When, Subquery, OuterRef
+)
+from django.db.models.functions import Coalesce
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
 @api_view(["POST"])
 def get_all_leaderboard_details_for_event(request):
     auth = request.headers.get("Authorization")
@@ -6660,6 +6670,7 @@ def get_all_leaderboard_details_for_event(request):
             leaderboard = Leaderboard.objects.filter(event=event, stage=stage, group=group).first()
             matches = Match.objects.filter(group=group).order_by("match_number")
 
+            # ---------------- MATCHES (per match stats) ----------------
             matches_payload = []
             for match in matches:
                 if event.participant_type == "solo":
@@ -6670,7 +6681,8 @@ def get_all_leaderboard_details_for_event(request):
                         .annotate(
                             username=F("competitor__user__username"),
                             effective_total=(
-                                F("placement_points") + F("kill_points") +
+                                Coalesce(F("placement_points"), Value(0), output_field=IntegerField()) +
+                                Coalesce(F("kill_points"), Value(0), output_field=IntegerField()) +
                                 Coalesce(F("bonus_points"), Value(0), output_field=IntegerField()) -
                                 Coalesce(F("penalty_points"), Value(0), output_field=IntegerField())
                             )
@@ -6687,6 +6699,7 @@ def get_all_leaderboard_details_for_event(request):
                             "total_points",
                             "effective_total",
                         )
+                        # ✅ sorted by points not placement
                         .order_by("-effective_total", "-kills", "username")
                     )
                 else:
@@ -6694,9 +6707,7 @@ def get_all_leaderboard_details_for_event(request):
                         TournamentTeamMatchStats.objects
                         .filter(match=match)
                         .select_related("tournament_team__team")
-                        .annotate(
-                            team_name=F("tournament_team__team__team_name"),
-                        )
+                        .annotate(team_name=F("tournament_team__team__team_name"))
                         .values(
                             "tournament_team_id",
                             "team_name",
@@ -6706,6 +6717,7 @@ def get_all_leaderboard_details_for_event(request):
                             "kill_points",
                             "total_points",
                         )
+                        # ✅ sorted by points not placement
                         .order_by("-total_points", "-kills", "team_name")
                     )
 
@@ -6720,12 +6732,18 @@ def get_all_leaderboard_details_for_event(request):
                     "stats": list(match_stats),
                 })
 
-            # ✅ overall leaderboard PER GROUP (not whole event)
+            # ---------------- OVERALL LEADERBOARD (PER GROUP) ----------------
             if event.participant_type == "solo":
+                last_placement_subq = Subquery(
+                    SoloPlayerMatchStats.objects
+                    .filter(match__group=group, competitor_id=OuterRef("competitor_id"))
+                    .order_by("-match__match_number")
+                    .values("placement")[:1]
+                )
+
                 overall = (
                     SoloPlayerMatchStats.objects
                     .filter(match__group=group)
-                    .select_related("competitor__user")
                     .values(
                         "competitor_id",
                         "competitor__user__username",
@@ -6733,19 +6751,47 @@ def get_all_leaderboard_details_for_event(request):
                     .annotate(
                         matches_played=Count("match_id"),
                         total_kills=Coalesce(Sum("kills"), 0),
+                        total_booyah=Coalesce(Sum(
+                            Case(
+                                When(placement=1, then=Value(1)),
+                                default=Value(0),
+                                output_field=IntegerField()
+                            )
+                        ), 0),
+
+                        placement_sum=Coalesce(Sum("placement_points"), 0),
+                        kill_sum=Coalesce(Sum("kill_points"), 0),
                         bonus_sum=Coalesce(Sum("bonus_points"), 0),
                         penalty_sum=Coalesce(Sum("penalty_points"), 0),
+
                         total_points=Coalesce(Sum("total_points"), 0),
+
                         effective_total=(
                             Coalesce(Sum("placement_points"), 0) +
                             Coalesce(Sum("kill_points"), 0) +
                             Coalesce(Sum("bonus_points"), 0) -
                             Coalesce(Sum("penalty_points"), 0)
-                        )
+                        ),
+
+                        last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                     )
-                    .order_by("-effective_total", "-total_kills", "competitor__user__username")
+                    .order_by(
+                        "-effective_total",
+                        "-total_booyah",
+                        "-total_kills",
+                        "last_match_placement",
+                        "competitor__user__username",
+                    )
                 )
+
             else:
+                last_placement_subq = Subquery(
+                    TournamentTeamMatchStats.objects
+                    .filter(match__group=group, tournament_team_id=OuterRef("tournament_team_id"))
+                    .order_by("-match__match_number")
+                    .values("placement")[:1]
+                )
+
                 overall = (
                     TournamentTeamMatchStats.objects
                     .filter(match__group=group)
@@ -6756,9 +6802,24 @@ def get_all_leaderboard_details_for_event(request):
                     .annotate(
                         matches_played=Count("match_id"),
                         total_kills=Coalesce(Sum("kills"), 0),
+                        total_booyah=Coalesce(Sum(
+                            Case(
+                                When(placement=1, then=Value(1)),
+                                default=Value(0),
+                                output_field=IntegerField()
+                            )
+                        ), 0),
+
                         total_points=Coalesce(Sum("total_points"), 0),
+                        last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                     )
-                    .order_by("-total_points", "-total_kills", "team_name")
+                    .order_by(
+                        "-total_points",
+                        "-total_booyah",
+                        "-total_kills",
+                        "last_match_placement",
+                        "team_name",
+                    )
                 )
 
             groups_payload.append({
@@ -6795,6 +6856,172 @@ def get_all_leaderboard_details_for_event(request):
         "participant_type": event.participant_type,
         "stages": stages_payload
     }, status=200)
+
+
+# @api_view(["POST"])
+# def get_all_leaderboard_details_for_event(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission."}, status=403)
+
+#     event_id = request.data.get("event_id")
+#     if not event_id:
+#         return Response({"message": "event_id is required."}, status=400)
+
+#     event = get_object_or_404(Event, event_id=event_id)
+
+#     stages_payload = []
+#     stages = event.stages.all().order_by("stage_id")
+
+#     for stage in stages:
+#         groups_payload = []
+#         groups = stage.groups.all().order_by("group_id")
+
+#         for group in groups:
+#             leaderboard = Leaderboard.objects.filter(event=event, stage=stage, group=group).first()
+#             matches = Match.objects.filter(group=group).order_by("match_number")
+
+#             matches_payload = []
+#             for match in matches:
+#                 if event.participant_type == "solo":
+#                     match_stats = (
+#                         SoloPlayerMatchStats.objects
+#                         .filter(match=match)
+#                         .select_related("competitor__user")
+#                         .annotate(
+#                             username=F("competitor__user__username"),
+#                             effective_total=(
+#                                 F("placement_points") + F("kill_points") +
+#                                 Coalesce(F("bonus_points"), Value(0), output_field=IntegerField()) -
+#                                 Coalesce(F("penalty_points"), Value(0), output_field=IntegerField())
+#                             )
+#                         )
+#                         .values(
+#                             "competitor_id",
+#                             "username",
+#                             "placement",
+#                             "kills",
+#                             "placement_points",
+#                             "kill_points",
+#                             "bonus_points",
+#                             "penalty_points",
+#                             "total_points",
+#                             "effective_total",
+#                         )
+#                         .order_by("-effective_total", "-kills", "username")
+#                     )
+#                 else:
+#                     match_stats = (
+#                         TournamentTeamMatchStats.objects
+#                         .filter(match=match)
+#                         .select_related("tournament_team__team")
+#                         .annotate(
+#                             team_name=F("tournament_team__team__team_name"),
+#                         )
+#                         .values(
+#                             "tournament_team_id",
+#                             "team_name",
+#                             "placement",
+#                             "kills",
+#                             "placement_points",
+#                             "kill_points",
+#                             "total_points",
+#                         )
+#                         .order_by("-total_points", "-kills", "team_name")
+#                     )
+
+#                 matches_payload.append({
+#                     "match_id": match.match_id,
+#                     "match_number": match.match_number,
+#                     "match_map": match.match_map,
+#                     "result_inputted": match.result_inputted,
+#                     "room_id": match.room_id,
+#                     "room_name": match.room_name,
+#                     "room_password": match.room_password,
+#                     "stats": list(match_stats),
+#                 })
+
+#             # ✅ overall leaderboard PER GROUP (not whole event)
+#             if event.participant_type == "solo":
+#                 overall = (
+#                     SoloPlayerMatchStats.objects
+#                     .filter(match__group=group)
+#                     .select_related("competitor__user")
+#                     .values(
+#                         "competitor_id",
+#                         "competitor__user__username",
+#                     )
+#                     .annotate(
+#                         matches_played=Count("match_id"),
+#                         total_kills=Coalesce(Sum("kills"), 0),
+#                         bonus_sum=Coalesce(Sum("bonus_points"), 0),
+#                         penalty_sum=Coalesce(Sum("penalty_points"), 0),
+#                         total_points=Coalesce(Sum("total_points"), 0),
+#                         effective_total=(
+#                             Coalesce(Sum("placement_points"), 0) +
+#                             Coalesce(Sum("kill_points"), 0) +
+#                             Coalesce(Sum("bonus_points"), 0) -
+#                             Coalesce(Sum("penalty_points"), 0)
+#                         )
+#                     )
+#                     .order_by("-effective_total", "-total_kills", "competitor__user__username")
+#                 )
+#             else:
+#                 overall = (
+#                     TournamentTeamMatchStats.objects
+#                     .filter(match__group=group)
+#                     .values(
+#                         "tournament_team_id",
+#                         team_name=F("tournament_team__team__team_name"),
+#                     )
+#                     .annotate(
+#                         matches_played=Count("match_id"),
+#                         total_kills=Coalesce(Sum("kills"), 0),
+#                         total_points=Coalesce(Sum("total_points"), 0),
+#                     )
+#                     .order_by("-total_points", "-total_kills", "team_name")
+#                 )
+
+#             groups_payload.append({
+#                 "group_id": group.group_id,
+#                 "group_name": group.group_name,
+#                 "teams_qualifying": group.teams_qualifying,
+#                 "match_count": group.match_count,
+#                 "match_maps": group.match_maps,
+#                 "leaderboard": None if not leaderboard else {
+#                     "leaderboard_id": leaderboard.leaderboard_id,
+#                     "leaderboard_name": leaderboard.leaderboard_name,
+#                     "kill_point": leaderboard.kill_point,
+#                     "placement_points": leaderboard.placement_points,
+#                     "leaderboard_method": leaderboard.leaderboard_method,
+#                     "file_type": leaderboard.file_type,
+#                     "last_updated": leaderboard.last_updated,
+#                 },
+#                 "matches": matches_payload,
+#                 "overall_leaderboard": list(overall),
+#             })
+
+#         stages_payload.append({
+#             "stage_id": stage.stage_id,
+#             "stage_name": stage.stage_name,
+#             "stage_format": stage.stage_format,
+#             "stage_status": stage.stage_status,
+#             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
+#             "groups": groups_payload
+#         })
+
+#     return Response({
+#         "event_id": event.event_id,
+#         "event_name": event.event_name,
+#         "participant_type": event.participant_type,
+#         "stages": stages_payload
+#     }, status=200)
 
 
 
