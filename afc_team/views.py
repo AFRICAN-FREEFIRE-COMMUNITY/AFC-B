@@ -610,7 +610,7 @@ def review_join_request(request):
 
     try:
         # Identify the team owner or captain reviewing the request
-        reviewer = User.objects.get(session_token=session_token)
+        reviewer = user
 
         # Ensure the join request exists and belongs to a team the reviewer owns
         join_request = JoinRequest.objects.get(request_id=request_id)
