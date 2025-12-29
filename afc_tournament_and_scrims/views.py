@@ -38,6 +38,24 @@ def paginate_queryset(request, queryset, serializer_func):
     return paginator.get_paginated_response(serialized)
 
 
+from celery import shared_task
+from django.utils import timezone
+
+@shared_task
+def update_event_and_stage_statuses():
+    today = timezone.localdate()
+
+    # EVENTS
+    Event.objects.filter(is_draft=False, end_date__lt=today).exclude(event_status="completed").update(event_status="completed")
+    Event.objects.filter(is_draft=False, start_date__lte=today, end_date__gte=today).exclude(event_status="ongoing").update(event_status="ongoing")
+    Event.objects.filter(is_draft=False, start_date__gt=today).exclude(event_status="upcoming").update(event_status="upcoming")
+
+    # STAGES
+    Stages.objects.filter(end_date__lt=today).exclude(stage_status="completed").update(stage_status="completed")
+    Stages.objects.filter(start_date__lte=today, end_date__gte=today).exclude(stage_status="ongoing").update(stage_status="ongoing")
+    Stages.objects.filter(start_date__gt=today).exclude(stage_status="upcoming").update(stage_status="upcoming")
+
+
 
 # @api_view(["POST"])
 # def create_leaderboard(request):
@@ -3481,17 +3499,19 @@ from django.db import transaction
 from django.db.models import F
 from celery import shared_task
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 50})
-def assign_stage_roles_from_db_task(self, progress_id, stage_id):
+from celery import shared_task
+from django.db import transaction
+from django.db.models import F
+
+@shared_task(bind=True, max_retries=50)
+def assign_stage_roles_from_db_task(self, progress_id, stage_id, batch_size=10):
     progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
     stage = Stages.objects.get(stage_id=stage_id)
 
     if progress.status != "running":
         return
 
-    batch_size = 10
-
-    # 1) lock + claim a batch fast
+    # 1) claim a batch fast (lock + mark processing)
     with transaction.atomic():
         qs = (DiscordRoleAssignment.objects
               .select_for_update(skip_locked=True)
@@ -3500,7 +3520,6 @@ def assign_stage_roles_from_db_task(self, progress_id, stage_id):
 
         assignments = list(qs)
         if not assignments:
-            # no more pending
             progress.refresh_from_db()
             if progress.completed + progress.failed >= progress.total:
                 progress.status = "done"
@@ -3509,36 +3528,114 @@ def assign_stage_roles_from_db_task(self, progress_id, stage_id):
 
         DiscordRoleAssignment.objects.filter(id__in=[a.id for a in assignments]).update(status="processing")
 
-    # 2) do network calls OUTSIDE the transaction
-    for assignment in assignments:
-        r = assign_discord_role(assignment.discord_id, assignment.role_id)
+    # 2) do network calls OUTSIDE transaction
+    processed_ids = []
+    try:
+        for idx, a in enumerate(assignments):
+            r = assign_discord_role(a.discord_id, a.role_id)
 
-        if r.status_code == 429:
-            retry_after = 2
-            try:
-                retry_after = float(r.json().get("retry_after", 2))
-            except Exception:
-                pass
+            if r.status_code == 429:
+                retry_after = 2.0
+                try:
+                    retry_after = float(r.json().get("retry_after", 2))
+                except Exception:
+                    pass
 
-            # put them back to pending so another run can pick them later
-            DiscordRoleAssignment.objects.filter(id=assignment.id).update(
+                # IMPORTANT: release all not-yet-processed back to pending
+                remaining_ids = [x.id for x in assignments[idx:]]
+                DiscordRoleAssignment.objects.filter(id__in=remaining_ids).update(
+                    status="pending",
+                    error_message="429 rate limited"
+                )
+                raise self.retry(countdown=retry_after)
+
+            if r.status_code in (200, 204):
+                DiscordRoleAssignment.objects.filter(id=a.id).update(status="success", error_message=None)
+                DiscordStageRoleAssignmentProgress.objects.filter(id=progress_id).update(
+                    completed=F("completed") + 1
+                )
+            else:
+                DiscordRoleAssignment.objects.filter(id=a.id).update(
+                    status="failed",
+                    error_message=f"{r.status_code} {r.text[:300]}"
+                )
+                DiscordStageRoleAssignmentProgress.objects.filter(id=progress_id).update(
+                    failed=F("failed") + 1
+                )
+
+            processed_ids.append(a.id)
+
+    finally:
+        # safety: if anything crashes mid-loop, don’t leave “processing” stranded
+        stuck = [a.id for a in assignments if a.id not in processed_ids]
+        if stuck:
+            DiscordRoleAssignment.objects.filter(id__in=stuck, status="processing").update(
                 status="pending",
-                error_message=f"429 rate limited"
+                error_message="Reset from processing after crash"
             )
-            raise self.retry(countdown=retry_after)
-
-        if r.status_code in (200, 204):
-            DiscordRoleAssignment.objects.filter(id=assignment.id).update(status="success", error_message=None)
-            DiscordStageRoleAssignmentProgress.objects.filter(id=progress_id).update(completed=F("completed") + 1)
-        else:
-            DiscordRoleAssignment.objects.filter(id=assignment.id).update(
-                status="failed",
-                error_message=f"{r.status_code} {r.text[:300]}"
-            )
-            DiscordStageRoleAssignmentProgress.objects.filter(id=progress_id).update(failed=F("failed") + 1)
 
     # 3) schedule next batch
-    assign_stage_roles_from_db_task.apply_async(args=[progress_id, stage_id], countdown=1)
+    assign_stage_roles_from_db_task.apply_async(args=[progress_id, stage_id, batch_size], countdown=1)
+
+
+# @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 50})
+# def assign_stage_roles_from_db_task(self, progress_id, stage_id):
+#     progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
+#     stage = Stages.objects.get(stage_id=stage_id)
+
+#     if progress.status != "running":
+#         return
+
+#     batch_size = 10
+
+#     # 1) lock + claim a batch fast
+#     with transaction.atomic():
+#         qs = (DiscordRoleAssignment.objects
+#               .select_for_update(skip_locked=True)
+#               .filter(stage=stage, group__isnull=True, status="pending")
+#               .order_by("created_at")[:batch_size])
+
+#         assignments = list(qs)
+#         if not assignments:
+#             # no more pending
+#             progress.refresh_from_db()
+#             if progress.completed + progress.failed >= progress.total:
+#                 progress.status = "done"
+#                 progress.save(update_fields=["status"])
+#             return
+
+#         DiscordRoleAssignment.objects.filter(id__in=[a.id for a in assignments]).update(status="processing")
+
+#     # 2) do network calls OUTSIDE the transaction
+#     for assignment in assignments:
+#         r = assign_discord_role(assignment.discord_id, assignment.role_id)
+
+#         if r.status_code == 429:
+#             retry_after = 2
+#             try:
+#                 retry_after = float(r.json().get("retry_after", 2))
+#             except Exception:
+#                 pass
+
+#             # put them back to pending so another run can pick them later
+#             DiscordRoleAssignment.objects.filter(id=assignment.id).update(
+#                 status="pending",
+#                 error_message=f"429 rate limited"
+#             )
+#             raise self.retry(countdown=retry_after)
+
+#         if r.status_code in (200, 204):
+#             DiscordRoleAssignment.objects.filter(id=assignment.id).update(status="success", error_message=None)
+#             DiscordStageRoleAssignmentProgress.objects.filter(id=progress_id).update(completed=F("completed") + 1)
+#         else:
+#             DiscordRoleAssignment.objects.filter(id=assignment.id).update(
+#                 status="failed",
+#                 error_message=f"{r.status_code} {r.text[:300]}"
+#             )
+#             DiscordStageRoleAssignmentProgress.objects.filter(id=progress_id).update(failed=F("failed") + 1)
+
+#     # 3) schedule next batch
+#     assign_stage_roles_from_db_task.apply_async(args=[progress_id, stage_id], countdown=1)
 
 
 # @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 10})
@@ -3917,6 +4014,12 @@ from rest_framework import status
 from django.db import transaction
 from django.db.models import F
 
+
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
 @api_view(["POST"])
 def seed_solo_players_to_stage(request):
     auth = request.headers.get("Authorization")
@@ -3949,13 +4052,6 @@ def seed_solo_players_to_stage(request):
     if total == 0:
         return Response({"message": "No registered solo players found."}, status=400)
 
-    # ✅ create ONE progress row
-    progress = DiscordStageRoleAssignmentProgress.objects.create(
-        stage=stage,
-        total=total,
-        status="running"
-    )
-
     assignments = []
     created_stagecompetitors = 0
 
@@ -3964,12 +4060,12 @@ def seed_solo_players_to_stage(request):
             _, created = StageCompetitor.objects.get_or_create(
                 stage=stage,
                 player=reg,
+                tournament_team=None,
                 defaults={"status": "active"}
             )
             if created:
                 created_stagecompetitors += 1
 
-            # queue role assignment only if we have discord + role id
             if reg.user and reg.user.discord_id and stage.stage_discord_role_id:
                 assignments.append(DiscordRoleAssignment(
                     user=reg.user,
@@ -3977,25 +4073,117 @@ def seed_solo_players_to_stage(request):
                     role_id=stage.stage_discord_role_id,
                     stage=stage,
                     group=None,
-                    status="pending"
+                    status="pending",
                 ))
 
-        # bulk create assignments
-        DiscordRoleAssignment.objects.bulk_create(assignments, ignore_conflicts=True, batch_size=1000)
+        if assignments:
+            DiscordRoleAssignment.objects.bulk_create(assignments, batch_size=1000, ignore_conflicts=True)
 
-    # ✅ start the batch worker loop ONCE
-    assign_stage_roles_from_db_task.delay(str(progress.id), stage.stage_id)
+    # ✅ progress total must match queued work
+    queued = len(assignments)
+
+    if queued > 0:
+        progress = DiscordStageRoleAssignmentProgress.objects.create(
+            stage=stage,
+            total=queued,
+            status="running"
+        )
+        assign_stage_roles_from_db_task.delay(str(progress.id), stage.stage_id)
+        progress_id = str(progress.id)
+    else:
+        progress_id = None
 
     stage.stage_status = "ongoing"
     stage.save(update_fields=["stage_status"])
 
     return Response({
-        "message": "Stage competitors seeded and Discord assignments queued.",
+        "message": "Stage competitors seeded. Discord assignments queued (if applicable).",
         "total_registered": total,
         "stagecompetitors_created": created_stagecompetitors,
-        "assignments_queued": len(assignments),
-        "progress_id": str(progress.id),
+        "assignments_queued": queued,
+        "progress_id": progress_id,
     }, status=200)
+
+
+# @api_view(["POST"])
+# def seed_solo_players_to_stage(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin or admin.role != "admin":
+#         return Response({"message": "Unauthorized"}, status=403)
+
+#     event_id = request.data.get("event_id")
+#     stage_id = request.data.get("stage_id")
+#     if not event_id or not stage_id:
+#         return Response({"message": "event_id and stage_id are required."}, status=400)
+
+#     event = get_object_or_404(Event, event_id=event_id)
+#     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+#     if event.participant_type != "solo":
+#         return Response({"message": "This event is not a solo event."}, status=400)
+
+#     solo_players = RegisteredCompetitors.objects.select_related("user").filter(
+#         event=event,
+#         user__isnull=False,
+#         team__isnull=True,
+#         status="registered"
+#     )
+
+#     total = solo_players.count()
+#     if total == 0:
+#         return Response({"message": "No registered solo players found."}, status=400)
+
+#     # ✅ create ONE progress row
+#     progress = DiscordStageRoleAssignmentProgress.objects.create(
+#         stage=stage,
+#         total=total,
+#         status="running"
+#     )
+
+#     assignments = []
+#     created_stagecompetitors = 0
+
+#     with transaction.atomic():
+#         for reg in solo_players:
+#             _, created = StageCompetitor.objects.get_or_create(
+#                 stage=stage,
+#                 player=reg,
+#                 defaults={"status": "active"}
+#             )
+#             if created:
+#                 created_stagecompetitors += 1
+
+#             # queue role assignment only if we have discord + role id
+#             if reg.user and reg.user.discord_id and stage.stage_discord_role_id:
+#                 assignments.append(DiscordRoleAssignment(
+#                     user=reg.user,
+#                     discord_id=reg.user.discord_id,
+#                     role_id=stage.stage_discord_role_id,
+#                     stage=stage,
+#                     group=None,
+#                     status="pending"
+#                 ))
+
+#         # bulk create assignments
+#         DiscordRoleAssignment.objects.bulk_create(assignments, ignore_conflicts=True, batch_size=1000)
+
+#     # ✅ start the batch worker loop ONCE
+#     assign_stage_roles_from_db_task.delay(str(progress.id), stage.stage_id)
+
+#     stage.stage_status = "ongoing"
+#     stage.save(update_fields=["stage_status"])
+
+#     return Response({
+#         "message": "Stage competitors seeded and Discord assignments queued.",
+#         "total_registered": total,
+#         "stagecompetitors_created": created_stagecompetitors,
+#         "assignments_queued": len(assignments),
+#         "progress_id": str(progress.id),
+#     }, status=200)
 
 
 # @api_view(["POST"])
@@ -4446,6 +4634,12 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 
 from random import shuffle
 
+from random import shuffle
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
 @api_view(["POST"])
 def seed_stage_competitors_to_groups(request):
     auth = request.headers.get("Authorization")
@@ -4463,60 +4657,146 @@ def seed_stage_competitors_to_groups(request):
         return Response({"message": "stage_id is required."}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
-    groups = list(stage.groups.all())
+    groups = list(stage.groups.all().order_by("group_id"))
     if not groups:
         return Response({"message": "No groups found for this stage."}, status=400)
 
-    competitors = list(stage.competitors.select_related("player__user").filter(status="active", player__isnull=False))
+    competitors = list(
+        stage.competitors.select_related("player__user")
+        .filter(status="active", player__isnull=False)
+    )
     if not competitors:
         return Response({"message": "No competitors found to seed."}, status=400)
 
-    shuffle(competitors)
-
-    # ✅ already seeded in ANY group in this stage
+    # already in ANY group for this stage
     already_seeded_player_ids = set(
         StageGroupCompetitor.objects.filter(stage_group__stage=stage, player__isnull=False)
         .values_list("player_id", flat=True)
     )
 
+    # only seed the unseeded ones
+    to_seed = [c for c in competitors if c.player_id not in already_seeded_player_ids]
+    if not to_seed:
+        return Response({
+            "message": f"All competitors are already seeded for stage '{stage.stage_name}'.",
+            "seeded": 0,
+            "queued_role_assignments": 0,
+        }, status=200)
+
+    shuffle(to_seed)
+
     seeded_idx = 0
-    to_create = []
-    role_assignments = []
+    sgc_rows = []
+    role_rows = []
 
-    for competitor in competitors:
-        player = competitor.player
-        if player.id in already_seeded_player_ids:
-            continue
-
+    for comp in to_seed:
+        player = comp.player
         group = groups[seeded_idx % len(groups)]
         seeded_idx += 1
-        already_seeded_player_ids.add(player.id)
 
-        to_create.append(StageGroupCompetitor(stage_group=group, player=player, status="active"))
+        sgc_rows.append(StageGroupCompetitor(
+            stage_group=group,
+            player=player,
+            status="active"
+        ))
 
         user = player.user
         if user and user.discord_id and group.group_discord_role_id:
-            role_assignments.append(
-                DiscordRoleAssignment(
-                    user=user,
-                    discord_id=user.discord_id,
-                    role_id=group.group_discord_role_id,
-                    stage=stage,
-                    group=group,
-                    status="pending",
-                )
-            )
+            role_rows.append(DiscordRoleAssignment(
+                user=user,
+                discord_id=user.discord_id,
+                role_id=group.group_discord_role_id,
+                stage=stage,
+                group=group,
+                status="pending",
+            ))
 
-    StageGroupCompetitor.objects.bulk_create(to_create, batch_size=500, ignore_conflicts=True)
-    if role_assignments:
-        DiscordRoleAssignment.objects.bulk_create(role_assignments, batch_size=500)
+    with transaction.atomic():
+        StageGroupCompetitor.objects.bulk_create(sgc_rows, batch_size=500, ignore_conflicts=True)
+        if role_rows:
+            DiscordRoleAssignment.objects.bulk_create(role_rows, batch_size=500, ignore_conflicts=True)
 
-        assign_group_roles_from_db_task.delay(stage.stage_id)  # process pending for this stage
+    if role_rows:
+        assign_group_roles_from_db_task.delay(stage.stage_id)
 
     return Response({
-        "message": f"Seeded {len(to_create)} competitors into {len(groups)} groups for stage '{stage.stage_name}'.",
-        "queued_role_assignments": len(role_assignments),
+        "message": f"Seeded {len(sgc_rows)} competitors into {len(groups)} groups for stage '{stage.stage_name}'.",
+        "seeded": len(sgc_rows),
+        "queued_role_assignments": len(role_rows),
     }, status=200)
+
+
+# @api_view(["POST"])
+# def seed_stage_competitors_to_groups(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+#     stage_id = request.data.get("stage_id")
+#     if not stage_id:
+#         return Response({"message": "stage_id is required."}, status=400)
+
+#     stage = get_object_or_404(Stages, stage_id=stage_id)
+#     groups = list(stage.groups.all())
+#     if not groups:
+#         return Response({"message": "No groups found for this stage."}, status=400)
+
+#     competitors = list(stage.competitors.select_related("player__user").filter(status="active", player__isnull=False))
+#     if not competitors:
+#         return Response({"message": "No competitors found to seed."}, status=400)
+
+#     shuffle(competitors)
+
+#     # ✅ already seeded in ANY group in this stage
+#     already_seeded_player_ids = set(
+#         StageGroupCompetitor.objects.filter(stage_group__stage=stage, player__isnull=False)
+#         .values_list("player_id", flat=True)
+#     )
+
+#     seeded_idx = 0
+#     to_create = []
+#     role_assignments = []
+
+#     for competitor in competitors:
+#         player = competitor.player
+#         if player.id in already_seeded_player_ids:
+#             continue
+
+#         group = groups[seeded_idx % len(groups)]
+#         seeded_idx += 1
+#         already_seeded_player_ids.add(player.id)
+
+#         to_create.append(StageGroupCompetitor(stage_group=group, player=player, status="active"))
+
+#         user = player.user
+#         if user and user.discord_id and group.group_discord_role_id:
+#             role_assignments.append(
+#                 DiscordRoleAssignment(
+#                     user=user,
+#                     discord_id=user.discord_id,
+#                     role_id=group.group_discord_role_id,
+#                     stage=stage,
+#                     group=group,
+#                     status="pending",
+#                 )
+#             )
+
+#     StageGroupCompetitor.objects.bulk_create(to_create, batch_size=500, ignore_conflicts=True)
+#     if role_assignments:
+#         DiscordRoleAssignment.objects.bulk_create(role_assignments, batch_size=500)
+
+#         assign_group_roles_from_db_task.delay(stage.stage_id)  # process pending for this stage
+
+#     return Response({
+#         "message": f"Seeded {len(to_create)} competitors into {len(groups)} groups for stage '{stage.stage_name}'.",
+#         "queued_role_assignments": len(role_assignments),
+#     }, status=200)
 
 
 
@@ -6867,6 +7147,13 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
+
+from django.db import transaction
+from django.db.models import Sum
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
 @api_view(["POST"])
 def advance_group_competitors_to_next_stage(request):
     auth = request.headers.get("Authorization")
@@ -6881,7 +7168,6 @@ def advance_group_competitors_to_next_stage(request):
 
     event_id = request.data.get("event_id")
     group_id = request.data.get("group_id")
-
     if not event_id or not group_id:
         return Response({"message": "event_id and group_id are required."}, status=400)
 
@@ -6901,8 +7187,7 @@ def advance_group_competitors_to_next_stage(request):
             "missing_results_matches_count": not_done,
         }, status=400)
 
-    # 2) Find next stage (best: closest later start_date)
-    # Prefer start_date ordering; fall back to stage_id if start_date missing.
+    # 2) Find next stage
     if stage.start_date:
         next_stage = (Stages.objects
                       .filter(event=event, start_date__gt=stage.start_date)
@@ -6921,46 +7206,37 @@ def advance_group_competitors_to_next_stage(request):
     if qualify_n <= 0:
         return Response({"message": "group.teams_qualifying must be > 0."}, status=400)
 
-    # 3) Compute winners from this group's overall leaderboard
-    if event.participant_type == "solo":
-        overall = (SoloPlayerMatchStats.objects
-                   .filter(match__group=group)
-                   .values("competitor_id")
-                   .annotate(
-                       total_points=Sum("total_points"),
-                       total_kills=Sum("kills"),
-                   )
-                   .order_by("-total_points", "-total_kills")[:qualify_n])
+    created_count = 0
+    queued_roles = 0
+    already_advanced_count = 0
 
-        winner_ids = [row["competitor_id"] for row in overall]  # RegisteredCompetitors.id
-        if not winner_ids:
-            return Response({"message": "No winners found (no stats?)."}, status=400)
+    # 3) Winners + advance
+    with transaction.atomic():
+        if event.participant_type == "solo":
+            overall = (SoloPlayerMatchStats.objects
+                       .filter(match__group=group)
+                       .values("competitor_id")
+                       .annotate(
+                           total_points=Sum("total_points"),
+                           total_kills=Sum("kills"),
+                       )
+                       .order_by("-total_points", "-total_kills")[:qualify_n])
 
-        winners_qs = RegisteredCompetitors.objects.select_related("user").filter(id__in=winner_ids)
+            winner_ids = [row["competitor_id"] for row in overall]
+            if not winner_ids:
+                return Response({"message": "No winners found (no stats?)."}, status=400)
 
-        # Already advanced check
-        already_ids = set(StageCompetitor.objects.filter(
-            stage=next_stage,
-            player_id__in=winner_ids,
-        ).values_list("player_id", flat=True))
+            already_ids = set(
+                StageCompetitor.objects.filter(stage=next_stage, player_id__in=winner_ids)
+                .values_list("player_id", flat=True)
+            )
 
-        to_advance = [rc for rc in winners_qs if rc.id not in already_ids]
-        already_advanced = [rc.id for rc in winners_qs if rc.id in already_ids]
+            winners = RegisteredCompetitors.objects.select_related("user").filter(id__in=winner_ids)
+            to_advance = [rc for rc in winners if rc.id not in already_ids]
+            already_advanced_count = len(winner_ids) - len(to_advance)
 
-        if not to_advance:
-            return Response({
-                "message": "All qualified competitors are already advanced to the next stage.",
-                "to_stage": next_stage.stage_name,
-                "already_advanced_count": len(already_advanced),
-                "already_advanced_ids": already_advanced[:50],
-            }, status=200)
-
-        created_count = 0
-        queued_roles = 0
-
-        with transaction.atomic():
             for rc in to_advance:
-                obj, created = StageCompetitor.objects.get_or_create(
+                _, created = StageCompetitor.objects.get_or_create(
                     stage=next_stage,
                     player=rc,
                     tournament_team=None,
@@ -6980,46 +7256,33 @@ def advance_group_competitors_to_next_stage(request):
                     )
                     queued_roles += 1
 
-    else:
-        overall = (TournamentTeamMatchStats.objects
-                   .filter(match__group=group)
-                   .values("tournament_team_id")
-                   .annotate(
-                       total_points=Sum("total_points"),
-                       total_kills=Sum("kills"),
-                   )
-                   .order_by("-total_points", "-total_kills")[:qualify_n])
+        else:
+            overall = (TournamentTeamMatchStats.objects
+                       .filter(match__group=group)
+                       .values("tournament_team_id")
+                       .annotate(
+                           total_points=Sum("total_points"),
+                           total_kills=Sum("kills"),
+                       )
+                       .order_by("-total_points", "-total_kills")[:qualify_n])
 
-        winner_ids = [row["tournament_team_id"] for row in overall]  # TournamentTeam.tournament_team_id
-        if not winner_ids:
-            return Response({"message": "No winners found (no stats?)."}, status=400)
+            winner_ids = [row["tournament_team_id"] for row in overall]
+            if not winner_ids:
+                return Response({"message": "No winners found (no stats?)."}, status=400)
 
-        winners_qs = TournamentTeam.objects.prefetch_related("members__user").filter(
-            tournament_team_id__in=winner_ids
-        )
+            already_ids = set(
+                StageCompetitor.objects.filter(stage=next_stage, tournament_team_id__in=winner_ids)
+                .values_list("tournament_team_id", flat=True)
+            )
 
-        already_ids = set(StageCompetitor.objects.filter(
-            stage=next_stage,
-            tournament_team_id__in=winner_ids,
-        ).values_list("tournament_team_id", flat=True))
+            winners = TournamentTeam.objects.prefetch_related("members__user").filter(
+                tournament_team_id__in=winner_ids
+            )
+            to_advance = [tt for tt in winners if tt.tournament_team_id not in already_ids]
+            already_advanced_count = len(winner_ids) - len(to_advance)
 
-        to_advance = [tt for tt in winners_qs if tt.tournament_team_id not in already_ids]
-        already_advanced = [tt.tournament_team_id for tt in winners_qs if tt.tournament_team_id in already_ids]
-
-        if not to_advance:
-            return Response({
-                "message": "All qualified teams are already advanced to the next stage.",
-                "to_stage": next_stage.stage_name,
-                "already_advanced_count": len(already_advanced),
-                "already_advanced_team_ids": already_advanced[:50],
-            }, status=200)
-
-        created_count = 0
-        queued_roles = 0
-
-        with transaction.atomic():
             for tt in to_advance:
-                obj, created = StageCompetitor.objects.get_or_create(
+                _, created = StageCompetitor.objects.get_or_create(
                     stage=next_stage,
                     tournament_team=tt,
                     player=None,
@@ -7028,10 +7291,9 @@ def advance_group_competitors_to_next_stage(request):
                 if created:
                     created_count += 1
 
-                # Queue stage role for each team member
                 if next_stage.stage_discord_role_id:
-                    for member in tt.members.all():
-                        u = member.user
+                    for m in tt.members.all():
+                        u = m.user
                         if u and u.discord_id:
                             DiscordRoleAssignment.objects.get_or_create(
                                 user=u,
@@ -7043,7 +7305,8 @@ def advance_group_competitors_to_next_stage(request):
                             )
                             queued_roles += 1
 
-    # 4) Kick off worker batch processing (only if we queued something)
+    # 4) Start worker only if queued
+    progress_id = None
     if queued_roles > 0 and next_stage.stage_discord_role_id:
         progress = DiscordStageRoleAssignmentProgress.objects.create(
             stage=next_stage,
@@ -7051,17 +7314,216 @@ def advance_group_competitors_to_next_stage(request):
             status="running",
         )
         assign_stage_roles_from_db_task.delay(str(progress.id), next_stage.stage_id)
+        progress_id = str(progress.id)
 
     return Response({
-        "message": "Advanced winners to next stage.",
+        "message": "Advance complete.",
         "from_group": group.group_name,
         "from_stage": stage.stage_name,
         "to_stage": next_stage.stage_name,
-        "qualified": qualify_n,
-        "newly_seeded_into_next_stage": created_count,
-        "already_advanced_count": len(already_advanced),
+        "qualified_count": qualify_n,
+        "newly_advanced": created_count,
+        "already_advanced": already_advanced_count,
         "discord_roles_queued": queued_roles,
+        "progress_id": progress_id,
     }, status=200)
+
+
+# @api_view(["POST"])
+# def advance_group_competitors_to_next_stage(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+#     if admin.role != "admin":
+#         return Response({"message": "You do not have permission."}, status=403)
+
+#     event_id = request.data.get("event_id")
+#     group_id = request.data.get("group_id")
+
+#     if not event_id or not group_id:
+#         return Response({"message": "event_id and group_id are required."}, status=400)
+
+#     event = get_object_or_404(Event, event_id=event_id)
+#     group = get_object_or_404(StageGroups, group_id=group_id, stage__event=event)
+#     stage = group.stage
+
+#     # 1) Ensure all match results uploaded
+#     matches = Match.objects.filter(group=group).order_by("match_number")
+#     if not matches.exists():
+#         return Response({"message": "No matches in this group."}, status=400)
+
+#     not_done = matches.filter(result_inputted=False).count()
+#     if not_done > 0:
+#         return Response({
+#             "message": "Cannot advance yet. Some matches have no results uploaded.",
+#             "missing_results_matches_count": not_done,
+#         }, status=400)
+
+#     # 2) Find next stage (best: closest later start_date)
+#     # Prefer start_date ordering; fall back to stage_id if start_date missing.
+#     if stage.start_date:
+#         next_stage = (Stages.objects
+#                       .filter(event=event, start_date__gt=stage.start_date)
+#                       .order_by("start_date", "stage_id")
+#                       .first())
+#     else:
+#         next_stage = (Stages.objects
+#                       .filter(event=event, stage_id__gt=stage.stage_id)
+#                       .order_by("stage_id")
+#                       .first())
+
+#     if not next_stage:
+#         return Response({"message": "No next stage found after this stage."}, status=400)
+
+#     qualify_n = int(group.teams_qualifying or 0)
+#     if qualify_n <= 0:
+#         return Response({"message": "group.teams_qualifying must be > 0."}, status=400)
+
+#     # 3) Compute winners from this group's overall leaderboard
+#     if event.participant_type == "solo":
+#         overall = (SoloPlayerMatchStats.objects
+#                    .filter(match__group=group)
+#                    .values("competitor_id")
+#                    .annotate(
+#                        total_points=Sum("total_points"),
+#                        total_kills=Sum("kills"),
+#                    )
+#                    .order_by("-total_points", "-total_kills")[:qualify_n])
+
+#         winner_ids = [row["competitor_id"] for row in overall]  # RegisteredCompetitors.id
+#         if not winner_ids:
+#             return Response({"message": "No winners found (no stats?)."}, status=400)
+
+#         winners_qs = RegisteredCompetitors.objects.select_related("user").filter(id__in=winner_ids)
+
+#         # Already advanced check
+#         already_ids = set(StageCompetitor.objects.filter(
+#             stage=next_stage,
+#             player_id__in=winner_ids,
+#         ).values_list("player_id", flat=True))
+
+#         to_advance = [rc for rc in winners_qs if rc.id not in already_ids]
+#         already_advanced = [rc.id for rc in winners_qs if rc.id in already_ids]
+
+#         if not to_advance:
+#             return Response({
+#                 "message": "All qualified competitors are already advanced to the next stage.",
+#                 "to_stage": next_stage.stage_name,
+#                 "already_advanced_count": len(already_advanced),
+#                 "already_advanced_ids": already_advanced[:50],
+#             }, status=200)
+
+#         created_count = 0
+#         queued_roles = 0
+
+#         with transaction.atomic():
+#             for rc in to_advance:
+#                 obj, created = StageCompetitor.objects.get_or_create(
+#                     stage=next_stage,
+#                     player=rc,
+#                     tournament_team=None,
+#                     defaults={"status": "active"},
+#                 )
+#                 if created:
+#                     created_count += 1
+
+#                 if rc.user and rc.user.discord_id and next_stage.stage_discord_role_id:
+#                     DiscordRoleAssignment.objects.get_or_create(
+#                         user=rc.user,
+#                         discord_id=rc.user.discord_id,
+#                         role_id=next_stage.stage_discord_role_id,
+#                         stage=next_stage,
+#                         group=None,
+#                         defaults={"status": "pending"},
+#                     )
+#                     queued_roles += 1
+
+#     else:
+#         overall = (TournamentTeamMatchStats.objects
+#                    .filter(match__group=group)
+#                    .values("tournament_team_id")
+#                    .annotate(
+#                        total_points=Sum("total_points"),
+#                        total_kills=Sum("kills"),
+#                    )
+#                    .order_by("-total_points", "-total_kills")[:qualify_n])
+
+#         winner_ids = [row["tournament_team_id"] for row in overall]  # TournamentTeam.tournament_team_id
+#         if not winner_ids:
+#             return Response({"message": "No winners found (no stats?)."}, status=400)
+
+#         winners_qs = TournamentTeam.objects.prefetch_related("members__user").filter(
+#             tournament_team_id__in=winner_ids
+#         )
+
+#         already_ids = set(StageCompetitor.objects.filter(
+#             stage=next_stage,
+#             tournament_team_id__in=winner_ids,
+#         ).values_list("tournament_team_id", flat=True))
+
+#         to_advance = [tt for tt in winners_qs if tt.tournament_team_id not in already_ids]
+#         already_advanced = [tt.tournament_team_id for tt in winners_qs if tt.tournament_team_id in already_ids]
+
+#         if not to_advance:
+#             return Response({
+#                 "message": "All qualified teams are already advanced to the next stage.",
+#                 "to_stage": next_stage.stage_name,
+#                 "already_advanced_count": len(already_advanced),
+#                 "already_advanced_team_ids": already_advanced[:50],
+#             }, status=200)
+
+#         created_count = 0
+#         queued_roles = 0
+
+#         with transaction.atomic():
+#             for tt in to_advance:
+#                 obj, created = StageCompetitor.objects.get_or_create(
+#                     stage=next_stage,
+#                     tournament_team=tt,
+#                     player=None,
+#                     defaults={"status": "active"},
+#                 )
+#                 if created:
+#                     created_count += 1
+
+#                 # Queue stage role for each team member
+#                 if next_stage.stage_discord_role_id:
+#                     for member in tt.members.all():
+#                         u = member.user
+#                         if u and u.discord_id:
+#                             DiscordRoleAssignment.objects.get_or_create(
+#                                 user=u,
+#                                 discord_id=u.discord_id,
+#                                 role_id=next_stage.stage_discord_role_id,
+#                                 stage=next_stage,
+#                                 group=None,
+#                                 defaults={"status": "pending"},
+#                             )
+#                             queued_roles += 1
+
+#     # 4) Kick off worker batch processing (only if we queued something)
+#     if queued_roles > 0 and next_stage.stage_discord_role_id:
+#         progress = DiscordStageRoleAssignmentProgress.objects.create(
+#             stage=next_stage,
+#             total=queued_roles,
+#             status="running",
+#         )
+#         assign_stage_roles_from_db_task.delay(str(progress.id), next_stage.stage_id)
+
+#     return Response({
+#         "message": "Advanced winners to next stage.",
+#         "from_group": group.group_name,
+#         "from_stage": stage.stage_name,
+#         "to_stage": next_stage.stage_name,
+#         "qualified": qualify_n,
+#         "newly_seeded_into_next_stage": created_count,
+#         "already_advanced_count": len(already_advanced),
+#         "discord_roles_queued": queued_roles,
+#     }, status=200)
 
 
 
