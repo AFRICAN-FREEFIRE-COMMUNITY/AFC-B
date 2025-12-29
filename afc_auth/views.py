@@ -1565,7 +1565,7 @@ def edit_user_roles(request):
     UserRoles.objects.filter(user=user).delete()
 
     # if the new roles are empty, downgrade user to regular user
-    if not new_role_ids:
+    if new_role_ids == []:
         user.role = "user"
         user.save()
         AdminHistory.objects.create(
