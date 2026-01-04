@@ -318,3 +318,17 @@ class SoloPlayerMatchStats(models.Model):
 
 # # SoloPlayerMatchStats
 # played = models.BooleanField(default=True)
+
+
+class EventPrizePayout(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="payouts")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
+    tournament_team = models.ForeignKey(TournamentTeam, null=True, blank=True, on_delete=models.CASCADE)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["event", "user"]),
+            models.Index(fields=["event", "tournament_team"]),
+        ]

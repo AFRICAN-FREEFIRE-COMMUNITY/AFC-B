@@ -80,6 +80,21 @@ def validate_token(token):
         return None
 
 
+def require_admin(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+
+    if admin.role != "admin":
+        return None, Response({"message": "You do not have permission."}, status=403)
+
+    return admin, None
+
+
 
 def generate_session_token(length=16):
     """Generate a random 16-character token."""
@@ -1035,35 +1050,182 @@ def edit_profile(request):
 
 
 
+# @api_view(["GET"])
+# def get_user_profile(request):
+#     # Retrieve session token
+#     session_token = request.headers.get("Authorization")
+
+#     if not session_token:
+#         return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+#     if not session_token.startswith("Bearer "):
+#         return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+
+#     session_token = session_token.split(" ")[1]
+
+#     # Identify the logged-in user using the session token
+#     user = validate_token(session_token)
+#     if not user:
+#         return Response(
+#             {"message": "Invalid or expired session token."},
+#             status=status.HTTP_401_UNAUTHORIZED
+#         )
+
+#     # Try to get UserProfile
+#     try:
+#         profile = UserProfile.objects.get(user=user)
+#         profile_pic_url = request.build_absolute_uri(profile.profile_pic.url) if profile.profile_pic else None
+#     except UserProfile.DoesNotExist:
+#         profile_pic_url = None
+
+
+#     # Get Total Kills
+#     total_kills = 0  
+
+#     # Get All Wins
+#     total_wins = 0
+
+#     # Get All Mvps
+#     total_mvps = 0
+
+#     # Get All Booyahs(All Wins{1st place} Player had in matches either solo, duo or squad)
+#     total_booyahs = 0
+
+#     # Get Total Tournaments Played
+#     total_tournaments_played = 0
+
+#     # Get Total Scrims played
+#     total_scrims_played = 0
+
+#     # Return user info
+#     return Response({
+#         "user_id": user.user_id,
+#         "full_name": user.full_name,
+#         "country": user.country,
+#         "in_game_name": user.username,
+#         "email": user.email,
+#         "uid": user.uid,
+#         "team": user.team.team_name if hasattr(user, 'team') else None,
+#         "role": user.role,
+#         "profile_pic": profile_pic_url,
+#         "roles": list(UserRoles.objects.filter(user=user).values_list('role__role_name', flat=True)),
+#         "is_banned": BannedPlayer.objects.filter(banned_player=user, is_active=True).exists()
+#     }, status=status.HTTP_200_OK)
+
+
+from django.db.models import Sum, Count, Q, IntegerField
+from django.db.models.functions import Coalesce
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
 @api_view(["GET"])
 def get_user_profile(request):
-    # Retrieve session token
+    # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
-
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required'},
+                        status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format'},
+                        status=status.HTTP_400_BAD_REQUEST)
 
-    session_token = session_token.split(" ")[1]
-
-    # Identify the logged-in user using the session token
-    user = validate_token(session_token)
+    token = session_token.split(" ")[1]
+    user = validate_token(token)
     if not user:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        return Response({"message": "Invalid or expired session token."},
+                        status=status.HTTP_401_UNAUTHORIZED)
 
-    # Try to get UserProfile
+    # ---------------- PROFILE PIC ----------------
+    profile_pic_url = None
     try:
         profile = UserProfile.objects.get(user=user)
         profile_pic_url = request.build_absolute_uri(profile.profile_pic.url) if profile.profile_pic else None
     except UserProfile.DoesNotExist:
-        profile_pic_url = None
+        pass
 
-    # Return user info
+    # ---------------- SOLO STATS ----------------
+    solo_agg = (SoloPlayerMatchStats.objects
+        .filter(competitor__user=user)
+        .aggregate(
+            total_kills=Coalesce(Sum("kills"), 0, output_field=IntegerField()),
+            total_wins=Coalesce(Count("id", filter=Q(placement=1)), 0, output_field=IntegerField()),
+            total_points=Coalesce(Sum("total_points"), 0, output_field=IntegerField()),
+            matches_played=Coalesce(Count("id"), 0, output_field=IntegerField()),
+        )
+    )
+
+    # ---------------- TEAM STATS ----------------
+    # Player stats (kills/damage/assists) exist in TournamentPlayerMatchStats
+    team_player_agg = (TournamentPlayerMatchStats.objects
+        .filter(player=user)
+        .aggregate(
+            team_kills=Coalesce(Sum("kills"), 0, output_field=IntegerField()),
+            team_damage=Coalesce(Sum("damage"), 0, output_field=IntegerField()),
+            team_assists=Coalesce(Sum("assists"), 0, output_field=IntegerField()),
+            team_matches_played=Coalesce(Count("id"), 0, output_field=IntegerField()),
+        )
+    )
+
+    # Team wins/booyahs: based on TournamentTeamMatchStats placement=1,
+    # but only for teams the user belongs to.
+    team_ids = list(TournamentTeamMember.objects.filter(user=user).values_list("tournament_team_id", flat=True))
+
+    team_wins = 0
+    if team_ids:
+        team_wins = (TournamentTeamMatchStats.objects
+            .filter(tournament_team_id__in=team_ids, placement=1)
+            .count()
+        )
+
+    # ---------------- MVPs ----------------
+    # Match.mvp is a FK to User
+    total_mvps = Match.objects.filter(mvp=user).count()
+
+    # ---------------- BOOYAHs ----------------
+    # booyah = first placement across SOLO + TEAM
+    total_booyahs = int(solo_agg["total_wins"]) + int(team_wins)
+
+    # ---------------- TOURNAMENTS / SCRIMS PLAYED ----------------
+    # SOLO: events where user registered
+    solo_event_ids = list(
+        RegisteredCompetitors.objects.filter(user=user).values_list("event_id", flat=True).distinct()
+    )
+
+    # TEAM: events where user is in a TournamentTeam for that event
+    team_event_ids = []
+    if team_ids:
+        team_event_ids = list(
+            TournamentTeam.objects.filter(tournament_team_id__in=team_ids)
+            .values_list("event_id", flat=True)
+            .distinct()
+        )
+
+    all_event_ids = set(solo_event_ids) | set(team_event_ids)
+
+    total_tournaments_played = Event.objects.filter(event_id__in=all_event_ids, competition_type="tournament").count()
+    total_scrims_played = Event.objects.filter(event_id__in=all_event_ids, competition_type="scrims").count()
+
+    # ---------------- TOTAL EARNINGS ----------------
+    # I don’t see a User.total_earnings field in what you sent.
+    # So we do a safe fallback:
+    # - If user has a team and that Team has total_earnings, use it
+    # - Else 0
+    total_earnings = 0
+    try:
+        if getattr(user, "team", None) and hasattr(user.team, "total_earnings"):
+            total_earnings = user.team.total_earnings or 0
+    except Exception:
+        total_earnings = 0
+
+    # ---------------- TOTAL KILLS ----------------
+    # Total kills = solo kills + team kills
+    total_kills = int(solo_agg["total_kills"]) + int(team_player_agg["team_kills"])
+
+    # Total wins (you can keep separate too)
+    total_wins = int(solo_agg["total_wins"]) + int(team_wins)
+
     return Response({
         "user_id": user.user_id,
         "full_name": user.full_name,
@@ -1071,12 +1233,38 @@ def get_user_profile(request):
         "in_game_name": user.username,
         "email": user.email,
         "uid": user.uid,
-        "team": user.team.team_name if hasattr(user, 'team') else None,
+        "team": user.team.team_name if getattr(user, "team", None) else None,
         "role": user.role,
         "profile_pic": profile_pic_url,
-        "roles": list(UserRoles.objects.filter(user=user).values_list('role__role_name', flat=True)),
-        "is_banned": BannedPlayer.objects.filter(banned_player=user, is_active=True).exists()
+        "roles": list(UserRoles.objects.filter(user=user).values_list("role__role_name", flat=True)),
+        "is_banned": BannedPlayer.objects.filter(banned_player=user, is_active=True).exists(),
+
+        "stats": {
+            "total_kills": total_kills,
+            "total_wins": total_wins,
+            "total_mvps": total_mvps,
+            "total_booyahs": total_booyahs,
+            "total_tournaments_played": total_tournaments_played,
+            "total_scrims_played": total_scrims_played,
+            "total_earnings": total_earnings,
+
+            # optional breakdowns (nice for frontend)
+            "solo": {
+                "kills": int(solo_agg["total_kills"]),
+                "wins": int(solo_agg["total_wins"]),
+                "matches_played": int(solo_agg["matches_played"]),
+                "total_points": int(solo_agg["total_points"]),
+            },
+            "team": {
+                "kills": int(team_player_agg["team_kills"]),
+                "assists": int(team_player_agg["team_assists"]),
+                "damage": int(team_player_agg["team_damage"]),
+                "wins": int(team_wins),
+                "matches_played": int(team_player_agg["team_matches_played"]),
+            }
+        }
     }, status=status.HTTP_200_OK)
+
 
 
 @api_view(["POST"])
