@@ -276,3 +276,5 @@ class DiscordStageRoleAssignmentProgress(models.Model):
         default="pending"
     )
     created_at = models.DateTimeField(auto_now_add=True)
+
+
