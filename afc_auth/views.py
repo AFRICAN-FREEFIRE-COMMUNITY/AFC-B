@@ -41,7 +41,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_datetime
-from afc_tournament_and_scrims.models import Event, SoloPlayerMatchStats, TournamentPlayerMatchStats, TournamentTeamMatchStats
+from afc_tournament_and_scrims.models import Event, Match, RegisteredCompetitors, SoloPlayerMatchStats, TournamentPlayerMatchStats, TournamentTeam, TournamentTeamMatchStats, TournamentTeamMember
 from django.contrib.auth.hashers import make_password, check_password
 from django.core.cache import cache
 from django.contrib.auth.tokens import default_token_generator
@@ -1164,7 +1164,7 @@ def get_user_profile(request):
             team_kills=Coalesce(Sum("kills"), 0, output_field=IntegerField()),
             team_damage=Coalesce(Sum("damage"), 0, output_field=IntegerField()),
             team_assists=Coalesce(Sum("assists"), 0, output_field=IntegerField()),
-            team_matches_played=Coalesce(Count("id"), 0, output_field=IntegerField()),
+            team_matches_played=Coalesce(Count("player_stats_id"), 0, output_field=IntegerField()),
         )
     )
 
