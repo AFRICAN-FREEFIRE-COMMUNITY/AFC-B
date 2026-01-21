@@ -1450,13 +1450,15 @@ from rest_framework import status
 @api_view(["POST"])
 def get_event_details(request):
     session_token = request.headers.get("Authorization")
-    if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    # if not session_token or not session_token.startswith("Bearer "):
+    #     return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
-    token = session_token.split(" ")[1]
-    user = validate_token(token)
-    if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    if session_token and session_token.startswith("Bearer "):
+        token = session_token.split(" ")[1]
+        user = validate_token(token)
+        if not user:
+            return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
 
     event_id = request.data.get("event_id")
     if not event_id:
