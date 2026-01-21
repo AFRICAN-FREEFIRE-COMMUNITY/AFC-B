@@ -2,6 +2,7 @@ import uuid
 from django.db import models
 from afc_team.models import Team, TeamMembers
 from django.conf import settings
+from django.utils.text import slugify
 
 # ---------------- Event ----------------
 class Event(models.Model):
@@ -40,6 +41,7 @@ class Event(models.Model):
     ]
 
     event_id = models.AutoField(primary_key=True)
+    slug = models.SlugField(max_length=80, unique=True, blank=True, db_index=True)
     competition_type = models.CharField(max_length=10, choices=COMPETITION_TYPE_CHOICES)
     participant_type = models.CharField(max_length=10, choices=PARTICIPANT_TYPE_CHOICES)
     event_type = models.CharField(max_length=10, choices=EVENT_TYPE_CHOICES)
@@ -63,6 +65,18 @@ class Event(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_draft = models.BooleanField(default=True)
+
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base = slugify(self.event_name)[:70] or "event"
+            slug = base
+            i = 2
+            while Event.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{i}"
+                i += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
 
 # ---------------- Stream Channels ----------------
 class StreamChannel(models.Model):
