@@ -61,4 +61,5 @@ urlpatterns = [
     path('edit-match-result/', edit_match_result, name='edit_match_result'),
     path('disqualify-player/', disqualify_player, name='disqualify_player'),
     path('disqualify-team/', disqualify_team, name='disqualify_team'),
+    path('sync-event-registrations-with-discord-roles/', sync_event_registrations_with_discord_roles, name='sync_event_registrations_with_discord_roles'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
