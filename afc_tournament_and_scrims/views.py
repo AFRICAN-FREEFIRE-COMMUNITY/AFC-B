@@ -1659,139 +1659,537 @@ def get_event_details(request):
     return Response({"event_details": event_data}, status=200)
 
 
+
+
+import json
+from datetime import date
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
+from django.conf import settings
+
+# your models
+from afc_tournament_and_scrims.models import (
+    Event, RegisteredCompetitors,
+    TournamentTeam, TournamentTeamMember,
+    DiscordRoleAssignment
+)
+from afc_team.models import Team, TeamMembers
+
+# your helpers
+# validate_token(token) -> returns User or None
+# check_discord_membership(discord_id) -> bool
+# (do NOT call assign_discord_role directly here, we queue instead)
+
+
+ALLOWED_REGISTER_ROLES = ["team_owner", "team_captain", "vice_captain"]
+
+
+def _maybe_json_list(val):
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _user_is_team_captain_or_owner(user, team: Team) -> bool:
+    if user.user_id == team.team_owner_id:
+        return True
+    return TeamMembers.objects.filter(
+        team=team,
+        member=user,
+        management_role__in=ALLOWED_REGISTER_ROLES
+    ).exists()
+
+
 @api_view(["POST"])
 def register_for_event(request):
     # -------------------------
-    # 1. GET USER FROM SESSION TOKEN
+    # AUTH
     # -------------------------
-    session_token = request.headers.get("Authorization")
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
-    if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=400)
-
-    if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=400)
-
-    session_token = session_token.split(" ")[1]
-
-    # Identify logged-in user
-    user = validate_token(session_token)
+    user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if user.status != "active":
+        return Response({"message": "Your account is not active."}, status=403)
 
     # -------------------------
-    # 2. GET EVENT & TEAM
+    # INPUT
     # -------------------------
     event_id = request.data.get("event_id")
-    team_id = request.data.get("team_id")  # only for team events
+    team_id = request.data.get("team_id")  # for duo/squad
+    roster_member_ids = _maybe_json_list(request.data.get("roster_member_ids"))
 
     if not event_id:
-        return Response({"message": "event_id is required"}, status=400)
+        return Response({"message": "event_id is required."}, status=400)
 
-    # Fetch event
-    try:
-        event = Event.objects.get(event_id=event_id)
-    except Event.DoesNotExist:
-        return Response({"message": "Event not found"}, status=404)
-
-    participant_type = event.participant_type  # solo, duo, squad
+    event = get_object_or_404(Event, event_id=event_id)
+    participant_type = event.participant_type  # solo/duo/squad
 
     # -------------------------
-    # 3. CHECK REGISTRATION WINDOW
+    # REG WINDOW CHECK
     # -------------------------
     today = date.today()
     if not (event.registration_open_date <= today <= event.registration_end_date):
         return Response({"message": "Registration is closed."}, status=403)
 
-    # ======================================================
-    #                    SOLO REGISTRATION
-    # ======================================================
+    # -------------------------
+    # SOLO
+    # -------------------------
     if participant_type == "solo":
-
-        # Discord must be connected
-        if not user.discord_connected:
+        # Discord checks
+        if not user.discord_connected or not user.discord_id:
             return Response({"message": "Connect your Discord account first."}, status=403)
 
-        # Must join the Discord server
         if not check_discord_membership(user.discord_id):
             return Response({"message": "You must join the Discord server before registering."}, status=403)
 
-        # Prevent duplicate registration
+        # Prevent duplicate solo registration
         if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
             return Response({"message": "You are already registered."}, status=409)
 
-        # Check event capacity
-        if RegisteredCompetitors.objects.filter(event=event).count() >= event.max_teams_or_players:
+        # Capacity check
+        if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
             return Response({"message": "Registration limit reached."}, status=403)
 
-        # Register user
-        competitor = RegisteredCompetitors.objects.create(event=event, user=user)
+        with transaction.atomic():
+            competitor = RegisteredCompetitors.objects.create(
+                event=event,
+                user=user,
+                status="registered"
+            )
 
-        # Assign Discord role
-        assign_discord_role(user.discord_id, settings.DISCORD_TOURNAMENT_DETTY_SOLOS_ROLE_ID)
+            # Queue discord role (event-level role id)
+            # Put your real event role id in settings or event model.
+            # Example: settings.DISCORD_TOURNAMENT_SOLO_ROLE_ID
+            role_id = getattr(settings, "DISCORD_TOURNAMENT_SOLO_ROLE_ID", None)
+            if role_id:
+                DiscordRoleAssignment.objects.get_or_create(
+                    user=user,
+                    discord_id=user.discord_id,
+                    role_id=role_id,
+                    stage=None,
+                    group=None,
+                    defaults={"status": "pending"}
+                )
 
         return Response({
-            "message": "Successfully registered.",
+            "message": "Successfully registered (solo). Discord role queued.",
             "registration_id": competitor.id
         }, status=201)
 
-    # ======================================================
-    #                 TEAM (DUO / SQUAD) REGISTRATION
-    # ======================================================
+    # -------------------------
+    # TEAM (DUO/SQUAD)
+    # -------------------------
     if participant_type in ["duo", "squad"]:
-
         if not team_id:
-            return Response({"message": "team_id is required."}, status=400)
+            return Response({"message": "team_id is required for duo/squad."}, status=400)
 
-        try:
-            team = Team.objects.get(team_id=team_id)
-        except Team.DoesNotExist:
-            return Response({"message": "Team not found"}, status=404)
+        team = get_object_or_404(Team, team_id=team_id)
 
-        # The user must be part of the team
-        if not TeamMembers.objects.filter(team=team, user=user).exists():
+        # captain/owner check
+        if not _user_is_team_captain_or_owner(user, team):
+            return Response({"message": "Only captain/vice-captain/team owner can register the team."}, status=403)
+
+        # Ensure user is in team
+        if not TeamMembers.objects.filter(team=team, member=user).exists():
             return Response({"message": "You are not a member of this team."}, status=403)
 
-        # Prevent duplicate team registration
+        # Prevent duplicate team registration (same team already registered)
         if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
             return Response({"message": "Team already registered."}, status=409)
 
-        # Check event capacity
-        if RegisteredCompetitors.objects.filter(event=event).count() >= event.max_teams_or_players:
+        # Capacity check (by number of registered teams)
+        if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
             return Response({"message": "Registration limit reached."}, status=403)
 
-        # Validate Discord for all team members
-        members = TeamMembers.objects.filter(team=team)
+        # roster rules
+        if participant_type == "duo":
+            min_size, max_size = 2, 2
+        else:
+            min_size, max_size = 4, 6
 
-        for m in members:
-            if not m.user.discord_connected:
-                return Response({
-                    "message": f"{m.user.username} has not connected Discord.",
-                    "user_id": m.user.id
-                }, status=403)
+        if not roster_member_ids:
+            return Response({"message": "roster_member_ids is required for team events."}, status=400)
 
-            if not check_discord_membership(m.user.discord_id):
-                return Response({
-                    "message": f"{m.user.username} has not joined the Discord server.",
-                    "user_id": m.user.id
-                }, status=403)
+        # remove duplicates while keeping order
+        roster_member_ids = list(dict.fromkeys(roster_member_ids))
 
-        # Register the team
-        competitor = RegisteredCompetitors.objects.create(event=event, team=team)
+        if not (min_size <= len(roster_member_ids) <= max_size):
+            return Response({"message": f"Roster must contain {min_size} to {max_size} players."}, status=400)
 
-        # Assign roles to all members
-        for m in members:
-            assign_discord_role(m.user.discord_id, settings.DISCORD_TOURNAMENT_ROLE_ID)
+        # Ensure all selected are members of this team
+        team_member_ids = set(
+            TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
+        )
+        if not set(roster_member_ids).issubset(team_member_ids):
+            return Response({"message": "One or more roster players are not members of this team."}, status=400)
+
+        # Prevent players being in two rosters for the same event
+        already_in_event_roster_ids = set(
+            TournamentTeamMember.objects.filter(
+                user_id__in=roster_member_ids,
+                tournament_team__event=event
+            ).values_list("user_id", flat=True)
+        )
+        if already_in_event_roster_ids:
+            return Response({
+                "message": "One or more players are already in another roster for this event.",
+                "user_ids": list(already_in_event_roster_ids)
+            }, status=409)
+
+        # Fetch users and discord checks
+        roster_users = list(User.objects.filter(user_id__in=roster_member_ids))
+        roster_users_by_id = {u.user_id: u for u in roster_users}
+
+        # Ensure all ids exist
+        missing_ids = [uid for uid in roster_member_ids if uid not in roster_users_by_id]
+        if missing_ids:
+            return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids}, status=400)
+
+        for u in roster_users:
+            if u.status != "active":
+                return Response({"message": f"{u.username} is not active."}, status=403)
+            if not u.discord_connected or not u.discord_id:
+                return Response({"message": f"{u.username} has not connected Discord."}, status=403)
+            if not check_discord_membership(u.discord_id):
+                return Response({"message": f"{u.username} has not joined the Discord server."}, status=403)
+
+        # Register
+        with transaction.atomic():
+            # create event registration row
+            competitor = RegisteredCompetitors.objects.create(
+                event=event,
+                team=team,
+                status="registered"
+            )
+
+            # create TournamentTeam (event roster container)
+            tt = TournamentTeam.objects.create(
+                event=event,
+                team=team,
+                status="active"
+            )
+
+            # bulk create roster members
+            TournamentTeamMember.objects.bulk_create(
+                [TournamentTeamMember(tournament_team=tt, user=roster_users_by_id[uid]) for uid in roster_member_ids],
+                batch_size=200
+            )
+
+            # Queue discord roles for all roster members (event-level team role)
+            role_id = getattr(settings, "DISCORD_TOURNAMENT_TEAM_ROLE_ID", None)
+            assignments = []
+            if role_id:
+                for u in roster_users:
+                    assignments.append(DiscordRoleAssignment(
+                        user=u,
+                        discord_id=u.discord_id,
+                        role_id=role_id,
+                        stage=None,
+                        group=None,
+                        status="pending"
+                    ))
+                DiscordRoleAssignment.objects.bulk_create(assignments, ignore_conflicts=True, batch_size=500)
+
+        # OPTIONAL: kick off a worker if you want immediate processing
+        # If you have a dedicated task for event-level roles, use that.
+        # If not, you can create a generic task, or leave it for admin "sync" API.
+        # Example:
+        # assign_event_roles_from_db_task.delay(event.event_id)
 
         return Response({
-            "message": "Team successfully registered.",
-            "registration_id": competitor.id
+            "message": f"Team successfully registered ({participant_type}). Discord roles queued.",
+            "registration_id": competitor.id,
+            "tournament_team_id": tt.tournament_team_id,
+            "roster_size": len(roster_member_ids),
         }, status=201)
 
-    return Response({"message": "Invalid event participant type."}, status=400)
+    return Response({"message": "Invalid participant type."}, status=400)
+
+
+# @api_view(["POST"])
+# def register_for_event(request):
+#     # -------------------------
+#     # 1. GET USER FROM SESSION TOKEN
+#     # -------------------------
+#     session_token = request.headers.get("Authorization")
+
+#     if not session_token:
+#         return Response({'status': 'error', 'message': 'Authorization header is required'}, status=400)
+
+#     if not session_token.startswith("Bearer "):
+#         return Response({'status': 'error', 'message': 'Invalid token format'}, status=400)
+
+#     session_token = session_token.split(" ")[1]
+
+#     # Identify logged-in user
+#     user = validate_token(session_token)
+#     if not user:
+#         return Response(
+#             {"message": "Invalid or expired session token."},
+#             status=status.HTTP_401_UNAUTHORIZED
+#         )
+
+#     # -------------------------
+#     # 2. GET EVENT & TEAM
+#     # -------------------------
+#     event_id = request.data.get("event_id")
+#     team_id = request.data.get("team_id")  # only for team events
+
+#     if not event_id:
+#         return Response({"message": "event_id is required"}, status=400)
+
+#     # Fetch event
+#     try:
+#         event = Event.objects.get(event_id=event_id)
+#     except Event.DoesNotExist:
+#         return Response({"message": "Event not found"}, status=404)
+
+#     participant_type = event.participant_type  # solo, duo, squad
+
+#     # -------------------------
+#     # 3. CHECK REGISTRATION WINDOW
+#     # -------------------------
+#     today = date.today()
+#     if not (event.registration_open_date <= today <= event.registration_end_date):
+#         return Response({"message": "Registration is closed."}, status=403)
+
+#     # ======================================================
+#     #                    SOLO REGISTRATION
+#     # ======================================================
+#     if participant_type == "solo":
+
+#         # Discord must be connected
+#         if not user.discord_connected:
+#             return Response({"message": "Connect your Discord account first."}, status=403)
+
+#         # Must join the Discord server
+#         if not check_discord_membership(user.discord_id):
+#             return Response({"message": "You must join the Discord server before registering."}, status=403)
+
+#         # Prevent duplicate registration
+#         if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
+#             return Response({"message": "You are already registered."}, status=409)
+
+#         # Check event capacity
+#         if RegisteredCompetitors.objects.filter(event=event).count() >= event.max_teams_or_players:
+#             return Response({"message": "Registration limit reached."}, status=403)
+
+#         # Register user
+#         competitor = RegisteredCompetitors.objects.create(event=event, user=user)
+
+#         # Assign Discord role
+#         assign_discord_role(user.discord_id, settings.DISCORD_TOURNAMENT_DETTY_SOLOS_ROLE_ID)
+
+#         return Response({
+#             "message": "Successfully registered.",
+#             "registration_id": competitor.id
+#         }, status=201)
+
+#     # ======================================================
+#     #                 TEAM (DUO / SQUAD) REGISTRATION
+#     # ======================================================
+#     if participant_type in ["duo", "squad"]:
+
+#         if not team_id:
+#             return Response({"message": "team_id is required."}, status=400)
+
+#         try:
+#             team = Team.objects.get(team_id=team_id)
+#         except Team.DoesNotExist:
+#             return Response({"message": "Team not found"}, status=404)
+
+#         # The user must be part of the team
+#         if not TeamMembers.objects.filter(team=team, user=user).exists():
+#             return Response({"message": "You are not a member of this team."}, status=403)
+
+#         # Prevent duplicate team registration
+#         if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
+#             return Response({"message": "Team already registered."}, status=409)
+
+#         # Check event capacity
+#         if RegisteredCompetitors.objects.filter(event=event).count() >= event.max_teams_or_players:
+#             return Response({"message": "Registration limit reached."}, status=403)
+
+#         # Validate Discord for all team members
+#         members = TeamMembers.objects.filter(team=team)
+
+#         for m in members:
+#             if not m.user.discord_connected:
+#                 return Response({
+#                     "message": f"{m.user.username} has not connected Discord.",
+#                     "user_id": m.user.id
+#                 }, status=403)
+
+#             if not check_discord_membership(m.user.discord_id):
+#                 return Response({
+#                     "message": f"{m.user.username} has not joined the Discord server.",
+#                     "user_id": m.user.id
+#                 }, status=403)
+
+#         # Register the team
+#         competitor = RegisteredCompetitors.objects.create(event=event, team=team)
+
+#         # Assign roles to all members
+#         for m in members:
+#             assign_discord_role(m.user.discord_id, settings.DISCORD_TOURNAMENT_ROLE_ID)
+
+#         return Response({
+#             "message": "Team successfully registered.",
+#             "registration_id": competitor.id
+#         }, status=201)
+
+#     return Response({"message": "Invalid event participant type."}, status=400)
+
+
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
+from afc_tournament_and_scrims.models import Event, RegisteredCompetitors, TournamentTeam, TournamentTeamMember, DiscordRoleAssignment
+
+
+@api_view(["POST"])
+def sync_event_registrations_with_discord_roles(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid Authorization"}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin or admin.role != "admin":
+        return Response({"message": "Unauthorized"}, status=403)
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required"}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    if event.participant_type == "solo":
+        role_id = getattr(settings, "DISCORD_TOURNAMENT_SOLO_ROLE_ID", None)
+        if not role_id:
+            return Response({"message": "Solo role id not configured."}, status=400)
+
+        regs = RegisteredCompetitors.objects.select_related("user").filter(event=event, user__isnull=False, status="registered")
+
+        queued = 0
+        missing_discord = 0
+
+        for r in regs:
+            u = r.user
+            if not u or not u.discord_id or not u.discord_connected:
+                missing_discord += 1
+                continue
+
+            DiscordRoleAssignment.objects.get_or_create(
+                user=u,
+                discord_id=u.discord_id,
+                role_id=role_id,
+                stage=None,
+                group=None,
+                defaults={"status": "pending"}
+            )
+            queued += 1
+
+        return Response({
+            "message": "Queued event roles for registered solo competitors.",
+            "queued": queued,
+            "missing_discord": missing_discord,
+        }, status=200)
+
+    # duo/squad
+    role_id = getattr(settings, "DISCORD_TOURNAMENT_TEAM_ROLE_ID", None)
+    if not role_id:
+        return Response({"message": "Team role id not configured."}, status=400)
+
+    # take from TournamentTeam roster (the actual event roster)
+    members = TournamentTeamMember.objects.select_related("user", "tournament_team").filter(
+        tournament_team__event=event
+    )
+
+    queued = 0
+    missing_discord = 0
+    for m in members:
+        u = m.user
+        if not u or not u.discord_id or not u.discord_connected:
+            missing_discord += 1
+            continue
+
+        DiscordRoleAssignment.objects.get_or_create(
+            user=u,
+            discord_id=u.discord_id,
+            role_id=role_id,
+            stage=None,
+            group=None,
+            defaults={"status": "pending"}
+        )
+        queued += 1
+
+    return Response({
+        "message": "Queued event roles for registered team rosters.",
+        "queued": queued,
+        "missing_discord": missing_discord,
+    }, status=200)
+
+
+
+from celery import shared_task
+from django.db import transaction
+
+@shared_task(bind=True, max_retries=50)
+def assign_event_roles_from_db_task(self, batch_size=10):
+    with transaction.atomic():
+        qs = (DiscordRoleAssignment.objects
+              .select_for_update(skip_locked=True)
+              .filter(stage__isnull=True, group__isnull=True, status="pending")
+              .order_by("created_at")[:batch_size])
+
+        assignments = list(qs)
+
+        if not assignments:
+            return {"message": "No pending event role assignments."}
+
+        DiscordRoleAssignment.objects.filter(id__in=[a.id for a in assignments]).update(status="processing")
+
+    for a in assignments:
+        r = assign_discord_role(a.discord_id, a.role_id)
+
+        if r.status_code == 429:
+            DiscordRoleAssignment.objects.filter(id=a.id).update(status="pending", error_message="429 rate limited")
+            retry_after = 2.0
+            try:
+                retry_after = float(r.json().get("retry_after", 2))
+            except Exception:
+                pass
+            raise self.retry(countdown=retry_after)
+
+        if r.status_code in (200, 204):
+            DiscordRoleAssignment.objects.filter(id=a.id).update(status="success", error_message=None)
+        else:
+            DiscordRoleAssignment.objects.filter(id=a.id).update(status="failed", error_message=f"{r.status_code} {r.text[:300]}")
+
+    remaining = DiscordRoleAssignment.objects.filter(stage__isnull=True, group__isnull=True, status="pending").count()
+    if remaining > 0:
+        assign_event_roles_from_db_task.apply_async(args=[], countdown=1)
+
+    return {"processed": len(assignments), "remaining": remaining}
+
 
 
 # @api_view(["POST"])
