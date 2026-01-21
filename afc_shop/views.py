@@ -238,6 +238,8 @@ def view_all_products(request):
                 "stock_qty": v.stock_qty,
                 "is_active": v.is_active,
                 "in_stock": v.is_in_stock(),
+                "created_at": v.created_at,
+                "updated_at": v.updated_at,
             } for v in p.variants.all()]
         })
     return Response({"products": data}, status=200)
@@ -312,6 +314,22 @@ def deactivate_product(request):
     product.save(update_fields=["status"])
 
     return Response({"message": "Product deactivated (hidden from customers)."}, status=200)
+
+
+@api_view(["POST"])
+def activate_product(request):
+    admin, err = require_admin(request)
+    if err: return err
+
+    product_id = request.data.get("product_id")
+    if not product_id:
+        return Response({"message": "product_id is required."}, status=400)
+
+    product = get_object_or_404(Product, id=product_id)
+    product.status = "active"
+    product.save(update_fields=["status"])
+
+    return Response({"message": "Product activated."}, status=200)
 
 
 @api_view(["GET"])
@@ -471,3 +489,33 @@ def create_coupon(request):
     )
 
     return Response({"message": "Coupon created.", "coupon_id": c.id}, status=201)
+
+@api_view(["GET"])
+def view_product_details(request, product_id):
+    # admin, err = require_admin(request)
+    # if err: return err
+
+    product = get_object_or_404(Product, id=product_id)
+
+    data = {
+        "id": product.id,
+        "name": product.name,
+        "type": product.product_type,
+        "description": product.description,
+        "status": product.status,
+        "is_limited_stock": product.is_limited_stock,
+        "created_at": product.created_at,
+        "updated_at": product.updated_at,
+        "variants": [{
+            "id": v.id,
+            "sku": v.sku,
+            "title": v.title,
+            "price": str(v.price),
+            "diamonds_amount": v.diamonds_amount,
+            "stock_qty": v.stock_qty,
+            "is_active": v.is_active,
+            "in_stock": v.is_in_stock(),
+            "meta": v.meta,
+        } for v in product.variants.all()]
+    }
+    return Response({"product": data}, status=200)

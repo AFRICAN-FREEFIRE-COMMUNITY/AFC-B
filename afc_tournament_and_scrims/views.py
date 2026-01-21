@@ -107,11 +107,14 @@ def get_all_events(request):
         event_list.append({
             "event_id": event.event_id,
             "event_name": event.event_name,
+            "event_banner": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
             "event_date": event.start_date,
             "event_status": event.event_status,
             "competition_type": event.competition_type,
             "number_of_participants": event.max_teams_or_players,
             "prizepool": event.prizepool,
+            "prizepool_cash_value": event.prizepool_cash_value,
+            "prize_distribution": event.prize_distribution,
             "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
         })
     return Response({"events": event_list}, status=status.HTTP_200_OK)
@@ -131,11 +134,14 @@ def get_all_events_paginated(request):
     event_list = [{
         "event_id": event.event_id,
         "event_name": event.event_name,
+        "event_banner": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
         "event_date": event.start_date,
         "event_status": event.event_status,
         "competition_type": event.competition_type,
         "number_of_participants": event.max_teams_or_players,
         "prizepool": event.prizepool,
+        "prizepool_cash_value": event.prizepool_cash_value,
+        "prize_distribution": event.prize_distribution,
         "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(), 
     } for event in paginated]
 
