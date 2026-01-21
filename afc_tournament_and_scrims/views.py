@@ -1670,13 +1670,6 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from django.conf import settings
-
-# your models
-from afc_tournament_and_scrims.models import (
-    Event, RegisteredCompetitors,
-    TournamentTeam, TournamentTeamMember,
-    DiscordRoleAssignment
-)
 from afc_team.models import Team, TeamMembers
 
 # your helpers
