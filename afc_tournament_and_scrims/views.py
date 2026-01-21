@@ -2055,7 +2055,6 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
-from afc_tournament_and_scrims.models import Event, RegisteredCompetitors, TournamentTeam, TournamentTeamMember, DiscordRoleAssignment
 
 
 @api_view(["POST"])
