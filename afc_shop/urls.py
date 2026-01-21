@@ -18,5 +18,6 @@ urlpatterns = [
     path('orders-this-month/', orders_this_month, name='orders_this_month'),
     path('view-all-coupons/', view_all_coupons, name='view_all_coupons'),
     path('create-coupon/', create_coupon, name='create_coupon'),
-
+    path('activate-product/', activate_product, name='activate_product'),
+    path('view-product-details/', view_product_details, name='view_product_details'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
