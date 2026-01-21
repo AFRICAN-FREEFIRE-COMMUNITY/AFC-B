@@ -5,6 +5,7 @@ from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
 from django.utils.timezone import now
+from django.utils.text import slugify
 
 from afc_tournament_and_scrims.models import Stages, StageGroups
 
@@ -205,6 +206,7 @@ class News(models.Model):
     ]
 
     news_id = models.AutoField(primary_key=True)
+    slug = models.SlugField(max_length=220, unique=True, blank=True, db_index=True)
     news_title = models.CharField(max_length=255)
     content = models.TextField()
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
@@ -215,6 +217,17 @@ class News(models.Model):
 
     def __str__(self):
         return self.news_title
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base = slugify(self.title)[:200] or "news"
+            slug = base
+            i = 2
+            while News.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{i}"
+                i += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
     
 
 class AdminHistory(models.Model):
