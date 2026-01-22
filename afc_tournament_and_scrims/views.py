@@ -1449,16 +1449,17 @@ from rest_framework import status
 
 @api_view(["POST"])
 def get_event_details(request):
-    session_token = request.headers.get("Authorization")
+    if request.headers.get("Authorization") is not None:
+        session_token = request.headers.get("Authorization")
+        if session_token and session_token.startswith("Bearer "):
+            token = session_token.split(" ")[1]
+            user = validate_token(token)
+            if not user:
+                return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
     # if not session_token or not session_token.startswith("Bearer "):
     #     return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
-    if session_token and session_token.startswith("Bearer "):
-        token = session_token.split(" ")[1]
-        user = validate_token(token)
-        if not user:
-            return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
-    
 
     event_id = request.data.get("event_id")
     if not event_id:
@@ -9289,8 +9290,10 @@ def disqualify_team(request):
         "reason": reason or None,
         "updated": {
             "tournament_team": 1,
-            "registered_competitors_rows": reg_rows,
+            "registered_competitors_rows": reg_rows, 
             "stage_competitors_rows": stage_rows,
             "stage_group_competitors_rows": group_rows,
         }
     }, status=200)
+
+
