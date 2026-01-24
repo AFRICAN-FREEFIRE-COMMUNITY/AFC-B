@@ -898,6 +898,7 @@ def get_all_news(request):
             "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
             "author": news.author.username,
             "created_at": news.created_at,
+            "slug": news.slug,
             # "updated_at": news.updated_at
         })
 
@@ -906,12 +907,13 @@ def get_all_news(request):
 
 @api_view(["POST"])
 def get_news_detail(request):
-    news_id = request.data.get("news_id")
-    if not news_id:
-        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+    # news_id = request.data.get("news_id")
+    slug = request.data.get("slug")
+    if not slug:
+        return Response({"message": "Slug is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        news = News.objects.get(news_id=news_id)
+        news = News.objects.get(slug=slug)
     except News.DoesNotExist:
         return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
 
