@@ -1690,12 +1690,12 @@ def get_event_details_not_logged_in(request):
     event = get_object_or_404(Event, event_id=event_id)
 
     # ✅ correct "is_registered" (must include event)
-    is_registered = False
-    if event.participant_type == "solo":
-        is_registered = RegisteredCompetitors.objects.filter(event=event, user=user, status="registered").exists()
-    else:
-        # optional: for team events you can check if user is in any registered team for this event
-        is_registered = RegisteredCompetitors.objects.filter(event=event, team__teammembers__member=user, status="registered").exists()
+    # is_registered = False
+    # if event.participant_type == "solo":
+    #     is_registered = RegisteredCompetitors.objects.filter(event=event, user=user, status="registered").exists()
+    # else:
+    #     # optional: for team events you can check if user is in any registered team for this event
+    #     is_registered = RegisteredCompetitors.objects.filter(event=event, team__teammembers__member=user, status="registered").exists()
 
     event_data = {
         "event_id": event.event_id,
@@ -1719,7 +1719,7 @@ def get_event_details_not_logged_in(request):
         "uploaded_rules_url": request.build_absolute_uri(event.uploaded_rules.url) if event.uploaded_rules else None,
         "number_of_stages": event.number_of_stages,
         "created_at": event.created_at,
-        "is_registered": is_registered,
+        # "is_registered": is_registered,
         "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
     }
 
@@ -1881,12 +1881,12 @@ def get_event_details_not_logged_in(request):
 
     event_data["stages"] = stages_payload
 
-    EventPageView.objects.create(
-        event=event,
-        user=user,
-        ip_address=get_client_ip(request),
-        viewed_at=timezone.now()
-    )
+    # EventPageView.objects.create(
+    #     event=event,
+    #     user=user,
+    #     ip_address=get_client_ip(request),
+    #     viewed_at=timezone.now()
+    # )
     return Response({"event_details": event_data}, status=200)
 
 
