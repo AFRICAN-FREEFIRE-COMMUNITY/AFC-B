@@ -116,6 +116,7 @@ def get_all_events(request):
             "prizepool_cash_value": event.prizepool_cash_value,
             "prize_distribution": event.prize_distribution,
             "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
+            "slug": event.slug,
         })
     return Response({"events": event_list}, status=status.HTTP_200_OK)
 
@@ -1461,11 +1462,12 @@ def get_event_details(request):
     #     return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
 
-    event_id = request.data.get("event_id")
-    if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+    # event_id = request.data.get("event_id")
+    slug = request.data.get("slug")
+    if not slug:
+        return Response({"message": "slug is required."}, status=400)
 
-    event = get_object_or_404(Event, event_id=event_id)
+    event = get_object_or_404(Event, slug=slug)
 
     # ✅ correct "is_registered" (must include event)
     is_registered = False
@@ -1683,11 +1685,12 @@ def get_event_details_not_logged_in(request):
     #     return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
 
-    event_id = request.data.get("event_id")
-    if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+    # event_id = request.data.get("event_id")
+    slug = request.data.get("slug")
+    if not slug:
+        return Response({"message": "slug is required."}, status=400)
 
-    event = get_object_or_404(Event, event_id=event_id)
+    event = get_object_or_404(Event, slug=slug)
 
     # ✅ correct "is_registered" (must include event)
     # is_registered = False
@@ -3730,11 +3733,12 @@ def get_event_details_for_admin(request):
     if admin.role != "admin":
         return Response({"message": "You do not have permission to access this data."}, status=status.HTTP_403_FORBIDDEN)
 
-    event_id = request.data.get("event_id")
-    if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+    # event_id = request.data.get("event_id")
+    slug = request.data.get("slug")
+    if not slug:
+        return Response({"message": "slug is required."}, status=400)
 
-    event = get_object_or_404(Event, event_id=event_id)
+    event = get_object_or_404(Event, slug=slug)
     today = timezone.localdate()
 
     reg_qs = RegisteredCompetitors.objects.filter(event=event, status="registered")
