@@ -41,7 +41,7 @@ class Event(models.Model):
     ]
 
     event_id = models.AutoField(primary_key=True)
-    slug = models.SlugField(max_length=80, unique=True, blank=True, db_index=True)
+    slug = models.SlugField(max_length=80, unique=True, blank=True, db_index=True, null=True)
     competition_type = models.CharField(max_length=10, choices=COMPETITION_TYPE_CHOICES)
     participant_type = models.CharField(max_length=10, choices=PARTICIPANT_TYPE_CHOICES)
     event_type = models.CharField(max_length=10, choices=EVENT_TYPE_CHOICES)
