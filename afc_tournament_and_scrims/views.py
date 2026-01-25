@@ -9664,3 +9664,4 @@ def disqualify_team(request):
     }, status=200)
 
 
+# nothing
