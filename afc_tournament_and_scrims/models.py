@@ -40,6 +40,17 @@ class Event(models.Model):
         ("tier_3", "Tier 3")
     ]
 
+    REG_RESTRICTION_CHOICES = [
+        ("none", "No Restriction"),
+        ("by_region", "By Region"),
+        ("by_country", "By Country"),
+    ]
+
+    RESTRICTION_MODE_CHOICES = [
+        ("allow_only", "Allow Only Selected"),
+        ("block_selected", "Block Selected"),
+    ]
+
     event_id = models.AutoField(primary_key=True)
     slug = models.SlugField(max_length=80, unique=True, blank=True, db_index=True, null=True)
     competition_type = models.CharField(max_length=10, choices=COMPETITION_TYPE_CHOICES)
@@ -65,6 +76,21 @@ class Event(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_draft = models.BooleanField(default=True)
+    registration_restriction = models.CharField(
+        max_length=20,
+        choices=REG_RESTRICTION_CHOICES,
+        default="none"
+    )
+
+    restriction_mode = models.CharField(
+        max_length=20,
+        choices=RESTRICTION_MODE_CHOICES,
+        null=True, blank=True
+    )
+
+    # store what frontend picked
+    restricted_regions = models.JSONField(default=list, blank=True)   # ["West Africa", "Europe", ...]
+    restricted_countries = models.JSONField(default=list, blank=True) # ["Nigeria", "Ghana", ...]
 
 
     def save(self, *args, **kwargs):
