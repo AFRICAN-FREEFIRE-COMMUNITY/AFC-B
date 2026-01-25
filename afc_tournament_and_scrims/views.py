@@ -2148,6 +2148,149 @@ def register_for_event(request):
     return Response({"message": "Invalid participant type."}, status=400)
 
 
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+
+# expects you already have:
+# - validate_token(token) -> User or None
+# - check_discord_membership(discord_id) -> bool
+# - _maybe_json_list(value) -> list (handles string JSON / list)
+# - _user_is_team_captain_or_owner(user, team) -> bool
+# models: Event, Team, TeamMembers, User
+
+@api_view(["POST"])
+def validate_team_roster_discord(request):
+    """
+    Checks roster Discord readiness BEFORE registration:
+    - roster players must be members of team
+    - each player: active, discord_connected + discord_id, and is in your Discord server
+    Returns a per-player breakdown so frontend can show who is failing.
+    """
+    # -------- AUTH --------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if user.status != "active":
+        return Response({"message": "Your account is not active."}, status=403)
+
+    # -------- INPUT --------
+    event_id = request.data.get("event_id")
+    team_id = request.data.get("team_id")
+    roster_member_ids = _maybe_json_list(request.data.get("roster_member_ids"))
+
+    if not event_id or not team_id:
+        return Response({"message": "event_id and team_id are required."}, status=400)
+
+    if not roster_member_ids:
+        return Response({"message": "roster_member_ids is required."}, status=400)
+
+    # remove duplicates while keeping order
+    roster_member_ids = list(dict.fromkeys(roster_member_ids))
+
+    event = get_object_or_404(Event, event_id=event_id)
+    if event.participant_type not in ["duo", "squad"]:
+        return Response({"message": "This validation is for duo/squad events only."}, status=400)
+
+    team = get_object_or_404(Team, team_id=team_id)
+
+    # captain/owner check (optional but recommended, so random members can’t spam checks)
+    if not _user_is_team_captain_or_owner(user, team):
+        return Response({"message": "Only captain/vice-captain/team owner can validate the roster."}, status=403)
+
+    # ensure requester is in team
+    if not TeamMembers.objects.filter(team=team, member=user).exists():
+        return Response({"message": "You are not a member of this team."}, status=403)
+
+    # -------- ROSTER SIZE RULES --------
+    if event.participant_type == "duo":
+        min_size, max_size = 2, 2
+    else:
+        min_size, max_size = 4, 6
+
+    if not (min_size <= len(roster_member_ids) <= max_size):
+        return Response({"message": f"Roster must contain {min_size} to {max_size} players."}, status=400)
+
+    # -------- MEMBERSHIP CHECK --------
+    team_member_ids = set(
+        TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
+    )
+    not_in_team = [uid for uid in roster_member_ids if uid not in team_member_ids]
+    if not_in_team:
+        return Response({
+            "message": "One or more roster players are not members of this team.",
+            "not_in_team_user_ids": not_in_team
+        }, status=400)
+
+    # -------- FETCH USERS --------
+    roster_users = list(User.objects.filter(user_id__in=roster_member_ids))
+    by_id = {u.user_id: u for u in roster_users}
+    missing_ids = [uid for uid in roster_member_ids if uid not in by_id]
+    if missing_ids:
+        return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids}, status=400)
+
+    # -------- DISCORD CHECKS (DETAILED) --------
+    results = []
+    all_ok = True
+
+    for uid in roster_member_ids:
+        u = by_id[uid]
+
+        is_active = (u.status == "active")
+        has_discord = bool(u.discord_connected and u.discord_id)
+
+        in_server = False
+        membership_error = None
+
+        # only check server membership if we have discord_id
+        if has_discord:
+            try:
+                in_server = bool(check_discord_membership(u.discord_id))
+            except Exception as e:
+                # if your function can throw, don’t crash API — report it
+                membership_error = str(e)
+                in_server = False
+
+        ok = is_active and has_discord and in_server and (membership_error is None)
+
+        if not ok:
+            all_ok = False
+
+        results.append({
+            "user_id": u.user_id,
+            "username": u.username,
+            "is_active": is_active,
+            "discord_connected": bool(u.discord_connected),
+            "discord_id": u.discord_id,
+            "in_discord_server": in_server,
+            "membership_error": membership_error,
+            "ok": ok,
+            "reasons": (
+                []
+                + ([] if is_active else ["inactive_user"])
+                + ([] if has_discord else ["discord_not_connected"])
+                + ([] if (has_discord and in_server) else (["not_in_discord_server"] if has_discord else []))
+                + ([] if membership_error is None else ["discord_check_error"])
+            )
+        })
+
+    return Response({
+        "event_id": event.event_id,
+        "team_id": team.team_id,
+        "participant_type": event.participant_type,
+        "roster_size": len(roster_member_ids),
+        "all_ok": all_ok,
+        "results": results,
+    }, status=200)
+
+
+
 # @api_view(["POST"])
 # def register_for_event(request):
 #     # -------------------------
