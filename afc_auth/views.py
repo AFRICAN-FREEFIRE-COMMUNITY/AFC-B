@@ -1781,6 +1781,9 @@ def edit_user_roles(request):
             UserRoles.objects.create(user=user, role=role)
         except Roles.DoesNotExist:
             return Response({"message": f"Role with ID {role_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    user.role = "admin"
+    user.save()
     
     AdminHistory.objects.create(
         admin_user=admin_user,
