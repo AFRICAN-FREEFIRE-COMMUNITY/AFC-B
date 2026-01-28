@@ -2022,6 +2022,56 @@ def connect_discord(request):
     return redirect(discord_oauth_url)
 
 
+from django.conf import settings
+from django.shortcuts import redirect
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from urllib.parse import quote
+
+@api_view(["GET"])
+def connect_discord_account(request):
+    # Auth (prefer header, not query param)
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    client_id = settings.DISCORD_CLIENT_ID
+    redirect_uri = settings.DISCORD_REDIRECT_URI  # your backend callback URL
+
+    # Identify user + (optional) join guild automatically if you want
+    # - identify: get user discord profile
+    # - guilds.join: lets your bot add the user to your server after OAuth
+    scope = "identify guilds.join"
+
+    # Where to send user after successful connect (frontend page)
+    # example: /profile or /settings
+    return_to = request.GET.get("return_to") or f"{settings.FRONTEND_URL}/profile"
+    return_to_enc = quote(return_to)
+
+    # state carries user identity + return path
+    # Use your session token (or a short-lived oauth nonce) – session token is okay but better as short-lived nonce.
+    token = auth.split(" ")[1]
+    state = f"{token}|{return_to_enc}"
+
+    discord_oauth_url = (
+        "https://discord.com/api/oauth2/authorize"
+        f"?client_id={client_id}"
+        f"&redirect_uri={quote(redirect_uri, safe='')}"
+        "&response_type=code"
+        f"&scope={quote(scope)}"
+        f"&state={state}"
+        "&prompt=consent"
+    )
+
+    return redirect(discord_oauth_url)
+
+
+
 DISCORD_GUILD_ID = settings.DISCORD_GUILD_ID
 DISCORD_BOT_TOKEN = settings.DISCORD_BOT_TOKEN
 
