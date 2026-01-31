@@ -229,6 +229,8 @@ def view_all_products(request):
             "type": p.product_type,
             "status": p.status,
             "is_limited_stock": p.is_limited_stock,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
             "variants": [{
                 "id": v.id,
                 "sku": v.sku,
