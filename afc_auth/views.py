@@ -2076,6 +2076,32 @@ def connect_discord_account(request):
 
 
 
+@api_view(["GET"])
+def is_discord_account_connected(request):
+    # Auth (prefer header, not query param)
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    session_token = auth.split(" ")[1]
+
+    user = validate_token(session_token)
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    is_connected = bool(user.discord_connected)
+
+    # discord_id = user.discord_id
+    # if not discord_id:
+    #     return Response({"connected": False}, status=status.HTTP_200_OK)
+
+    # # Check if user is in guild
+    # in_guild = check_discord_membership(discord_id)
+    return Response({"connected": is_connected}, status=status.HTTP_200_OK)
+
+
+
+
 DISCORD_GUILD_ID = settings.DISCORD_GUILD_ID
 DISCORD_BOT_TOKEN = settings.DISCORD_BOT_TOKEN
 
@@ -2143,10 +2169,6 @@ def assign_discord_role(discord_id, role_id):
         "Content-Type": "application/json",
     }
     return requests.put(url, headers=headers, timeout=15)
-
-
-
-
 
 def remove_discord_role(discord_id, role_id):
     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
