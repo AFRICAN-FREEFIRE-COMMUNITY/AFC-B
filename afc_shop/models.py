@@ -317,6 +317,7 @@ class ProductVariant(models.Model):
 
     is_active = models.BooleanField(default=True)  # variant can be disabled independently
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def is_in_stock(self):
         if not self.product.is_limited_stock:
