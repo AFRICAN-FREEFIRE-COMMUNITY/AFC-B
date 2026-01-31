@@ -375,13 +375,13 @@ def create_event(request):
         if restriction_mode not in ["allow_only", "block_selected"]:
             return Response({"message": "restriction_mode must be allow_only or block_selected."}, status=400)
 
-        # if registration_restriction == "by_region":
+        if registration_restriction == "by_region":
         #     if not restricted_regions:
         #         return Response({"message": "restricted_regions is required when registration_restriction=by_region."}, status=400)
 
         #     # You’ll enforce using countries, so countries MUST be sent too (final list after frontend removals)
-        #     if not restricted_countries:
-        #         return Response({"message": "restricted_countries is required when restricting by region (final selected countries list)."}, status=400)
+            if not restricted_countries:
+                return Response({"message": "restricted_countries is required when restricting by region (final selected countries list)."}, status=400)
 
         if registration_restriction == "by_country":
             if not restricted_countries:
