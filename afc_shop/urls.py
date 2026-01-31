@@ -21,6 +21,7 @@ urlpatterns = [
     path('activate-product/', activate_product, name='activate_product'),
     path('view-product-details/', view_product_details, name='view_product_details'),
     path("add-product-variant/", add_product_variant, name="add_product_variant"),
+    path("delete-product-variant/", delete_product_variant, name="delete_product_variant"),
     path("add-to-cart/", add_to_cart, name="add_to_cart"),
     path("get-my-cart/", get_my_cart, name="get_my_cart"),
     path("remove-from-cart/", remove_from_cart, name="remove_from_cart"),
