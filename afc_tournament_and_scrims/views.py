@@ -427,7 +427,7 @@ def create_event(request):
             # ✅ restriction fields
             registration_restriction=registration_restriction,
             restriction_mode=restriction_mode,
-            restricted_regions=restricted_regions,
+            # restricted_regions=restricted_regions,
             restricted_countries=restricted_countries,
         )
 
