@@ -20,4 +20,5 @@ urlpatterns = [
     path('create-coupon/', create_coupon, name='create_coupon'),
     path('activate-product/', activate_product, name='activate_product'),
     path('view-product-details/', view_product_details, name='view_product_details'),
+    path("add-product-variant/", add_product_variant, name="add_product_variant"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

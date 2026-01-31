@@ -287,6 +287,39 @@ def edit_product(request):
 
 
 @api_view(["POST"])
+def add_product_variant(request):
+    admin, err = require_admin(request)
+    if err: return err
+
+    product_id = request.data.get("product_id")
+    if not product_id:
+        return Response({"message": "product_id is required."}, status=400)
+
+    product = get_object_or_404(Product, id=product_id)
+
+    sku = request.data.get("sku")
+    price = request.data.get("price")
+    if not sku or price is None:
+        return Response({"message": "sku and price are required."}, status=400)
+
+    pv = ProductVariant.objects.create(
+        product=product,
+        sku=sku,
+        title=request.data.get("title", ""),
+        price=price,
+        diamonds_amount=int(request.data.get("diamonds_amount") or 0),
+        meta=request.data.get("meta") or {},
+        stock_qty=int(request.data.get("stock_qty") or 0),
+        is_active=bool(request.data.get("is_active", True)),
+    )
+
+    return Response({
+        "message": "Variant added to product.",
+        "variant_id": pv.id
+    }, status=201)
+
+
+@api_view(["POST"])
 def delete_product(request):
     admin, err = require_admin(request)
     if err: return err
