@@ -4,8 +4,8 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-from afc_auth.views import require_admin
-from .models import Coupon, Order, Product, ProductVariant
+from afc_auth.views import require_admin, validate_token
+from .models import Cart, CartItem, Coupon, Order, Product, ProductVariant
 from afc_auth.models import User
 
 from rest_framework.decorators import api_view
@@ -555,3 +555,257 @@ def view_product_details(request):
         } for v in product.variants.all()]
     }
     return Response({"product": data}, status=200)
+
+
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from decimal import Decimal
+
+@api_view(["POST"])
+def add_to_cart(request):
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # ---------------- INPUT ----------------
+    variant_id = request.data.get("variant_id")
+    quantity = request.data.get("quantity", 1)
+
+    if not variant_id:
+        return Response({"message": "variant_id is required."}, status=400)
+
+    try:
+        quantity = int(quantity)
+    except:
+        return Response({"message": "quantity must be a number."}, status=400)
+
+    if quantity <= 0:
+        return Response({"message": "quantity must be at least 1."}, status=400)
+
+    variant = get_object_or_404(ProductVariant, id=variant_id)
+
+    # ---------------- VALIDATION ----------------
+    if not variant.is_active:
+        return Response({"message": "This product variant is not available."}, status=400)
+
+    if variant.product.status != "active":
+        return Response({"message": "This product is not available."}, status=400)
+
+    if not variant.is_in_stock():
+        return Response({"message": "This item is out of stock."}, status=400)
+
+    # ---------------- STOCK CHECK ----------------
+    if variant.product.is_limited_stock:
+        if quantity > variant.stock_qty:
+            return Response({
+                "message": f"Only {variant.stock_qty} left in stock."
+            }, status=400)
+
+    # ---------------- CREATE / UPDATE CART ----------------
+    with transaction.atomic():
+
+        cart, _ = Cart.objects.get_or_create(user=user)
+
+        cart_item, created = CartItem.objects.get_or_create(
+            cart=cart,
+            variant=variant,
+            defaults={"quantity": quantity}
+        )
+
+        if not created:
+            new_qty = cart_item.quantity + quantity
+
+            if variant.product.is_limited_stock and new_qty > variant.stock_qty:
+                return Response({
+                    "message": f"Cannot add more. Only {variant.stock_qty} available."
+                }, status=400)
+
+            cart_item.quantity = new_qty
+            cart_item.save(update_fields=["quantity"])
+
+    # ---------------- RESPONSE SUMMARY ----------------
+    items = cart.items.select_related("variant__product")
+
+    subtotal = Decimal("0.00")
+    response_items = []
+
+    for item in items:
+        line_total = item.variant.price * item.quantity
+        subtotal += line_total
+
+        response_items.append({
+            "cart_item_id": item.id,
+            "variant_id": str(item.variant.id),
+            "product_name": item.variant.product.name,
+            "variant_title": item.variant.title,
+            "unit_price": str(item.variant.price),
+            "quantity": item.quantity,
+            "line_total": str(line_total),
+        })
+
+    return Response({
+        "message": "Item added to cart.",
+        "cart": {
+            "cart_id": cart.id,
+            "items": response_items,
+            "subtotal": str(subtotal),
+            "total_items": items.count(),
+        }
+    }, status=200)
+
+
+@api_view(["GET"])
+def get_my_cart(request):
+    # -------- AUTH --------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    cart = Cart.objects.filter(user=user).first()
+
+    if not cart:
+        return Response({
+            "cart": {
+                "cart_id": None,
+                "items": [],
+                "subtotal": "0.00",
+                "total_items": 0
+            }
+        }, status=200)
+
+    items = cart.items.select_related("variant__product")
+
+    subtotal = Decimal("0.00")
+    response_items = []
+
+    for item in items:
+        line_total = item.variant.price * item.quantity
+        subtotal += line_total
+
+        response_items.append({
+            "cart_item_id": item.id,
+            "variant_id": str(item.variant.id),
+            "product_name": item.variant.product.name,
+            "variant_title": item.variant.title,
+            "unit_price": str(item.variant.price),
+            "quantity": item.quantity,
+            "line_total": str(line_total),
+            "in_stock": item.variant.is_in_stock()
+        })
+
+    return Response({
+        "cart": {
+            "cart_id": cart.id,
+            "items": response_items,
+            "subtotal": str(subtotal),
+            "total_items": items.count(),
+        }
+    }, status=200)
+
+
+@api_view(["POST"])
+def remove_from_cart(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    cart_item_id = request.data.get("cart_item_id")
+    if not cart_item_id:
+        return Response({"message": "cart_item_id is required."}, status=400)
+
+    cart = Cart.objects.filter(user=user).first()
+    if not cart:
+        return Response({"message": "Cart not found."}, status=404)
+
+    cart_item = CartItem.objects.filter(id=cart_item_id, cart=cart).first()
+    if not cart_item:
+        return Response({"message": "Item not found in your cart."}, status=404)
+
+    cart_item.delete()
+
+    return Response({"message": "Item removed from cart."}, status=200)
+
+
+@api_view(["POST"])
+def update_cart_item_quantity(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    cart_item_id = request.data.get("cart_item_id")
+    quantity = request.data.get("quantity")
+
+    if not cart_item_id or quantity is None:
+        return Response({"message": "cart_item_id and quantity are required."}, status=400)
+
+    try:
+        quantity = int(quantity)
+    except:
+        return Response({"message": "quantity must be a number."}, status=400)
+
+    cart = Cart.objects.filter(user=user).first()
+    if not cart:
+        return Response({"message": "Cart not found."}, status=404)
+
+    cart_item = CartItem.objects.select_related("variant__product").filter(
+        id=cart_item_id,
+        cart=cart
+    ).first()
+
+    if not cart_item:
+        return Response({"message": "Item not found in your cart."}, status=404)
+
+    variant = cart_item.variant
+
+    if quantity <= 0:
+        cart_item.delete()
+        return Response({"message": "Item removed from cart."}, status=200)
+
+    if variant.product.is_limited_stock and quantity > variant.stock_qty:
+        return Response({
+            "message": f"Only {variant.stock_qty} available in stock."
+        }, status=400)
+
+    cart_item.quantity = quantity
+    cart_item.save(update_fields=["quantity"])
+
+    return Response({"message": "Cart updated successfully."}, status=200)
+
+
+@api_view(["POST"])
+def clear_cart(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    cart = Cart.objects.filter(user=user).first()
+    if not cart:
+        return Response({"message": "Cart already empty."}, status=200)
+
+    cart.items.all().delete()
+
+    return Response({"message": "Cart cleared successfully."}, status=200)
