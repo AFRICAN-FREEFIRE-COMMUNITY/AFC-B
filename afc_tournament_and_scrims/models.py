@@ -89,7 +89,7 @@ class Event(models.Model):
     )
 
     # store what frontend picked
-    restricted_regions = models.JSONField(default=list, blank=True)   # ["West Africa", "Europe", ...]
+    # restricted_regions = models.JSONField(default=list, blank=True)   # ["West Africa", "Europe", ...]
     restricted_countries = models.JSONField(default=list, blank=True) # ["Nigeria", "Ghana", ...]
 
 

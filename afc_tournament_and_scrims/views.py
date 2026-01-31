@@ -361,7 +361,7 @@ def create_event(request):
     registration_restriction = request.data.get("registration_restriction", "none")
     restriction_mode = request.data.get("restriction_mode")  # allow_only / block_selected
 
-    restricted_regions = _as_list(request.data.get("restricted_regions"))
+    # restricted_regions = _as_list(request.data.get("restricted_regions"))
     restricted_countries = _as_list(request.data.get("restricted_countries"))
 
     if registration_restriction not in ["none", "by_region", "by_country"]:
@@ -427,7 +427,7 @@ def create_event(request):
             # ✅ restriction fields
             registration_restriction=registration_restriction,
             restriction_mode=restriction_mode,
-            restricted_regions=restricted_regions,
+            # restricted_regions=restricted_regions,
             restricted_countries=restricted_countries,
         )
 
