@@ -1727,7 +1727,6 @@ def get_event_details(request):
         "tournament_tier": event.tournament_tier,
         "registration_restriction": event.registration_restriction,
         "restriction_mode": event.restriction_mode,
-        "restricted_regions": event.restricted_regions,
         "restricted_countries": event.restricted_countries,
         "event_banner_url": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
         "uploaded_rules_url": request.build_absolute_uri(event.uploaded_rules.url) if event.uploaded_rules else None,
