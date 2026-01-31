@@ -1738,7 +1738,7 @@ def get_event_details(request):
     else:
         regs = (RegisteredCompetitors.objects
                 .select_related("team")
-                .prefetch_related("team__teammembers__member")
+                .prefetch_related("team__teammembers_set__member")
                 .filter(event=event))
         for reg in regs:
             if reg.team:
