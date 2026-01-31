@@ -493,9 +493,10 @@ def create_coupon(request):
     return Response({"message": "Coupon created.", "coupon_id": c.id}, status=201)
 
 @api_view(["GET"])
-def view_product_details(request, product_id):
+def view_product_details(request):
     # admin, err = require_admin(request)
     # if err: return err
+    product_id = request.GET.get("product_id")
 
     product = get_object_or_404(Product, id=product_id)
 
