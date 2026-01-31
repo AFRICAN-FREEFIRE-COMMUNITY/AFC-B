@@ -320,6 +320,19 @@ def add_product_variant(request):
 
 
 @api_view(["POST"])
+def delete_product_variant(request):
+    admin, err = require_admin(request)
+    if err: 
+        return err
+    variant_id = request.data.get("variant_id")
+    if not variant_id:
+        return Response({"message": "variant_id is required."}, status=400)
+    variant = get_object_or_404(ProductVariant, id=variant_id)
+    variant.delete()
+    return Response({"message": "Product variant deleted."}, status=200)
+
+
+@api_view(["POST"])
 def delete_product(request):
     admin, err = require_admin(request)
     if err: return err
