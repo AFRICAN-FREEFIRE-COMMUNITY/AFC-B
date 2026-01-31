@@ -2032,11 +2032,15 @@ from urllib.parse import quote
 @api_view(["GET"])
 def connect_discord_account(request):
     # Auth (prefer header, not query param)
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    # auth = request.headers.get("Authorization")
+    # if not auth or not auth.startswith("Bearer "):
+    #     return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
-    user = validate_token(auth.split(" ")[1])
+    session_token = request.GET.get("session_token")
+    if not session_token:
+        return Response({"message": "session_token is required"}, status=400)
+
+    user = validate_token(session_token)
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -2055,7 +2059,7 @@ def connect_discord_account(request):
 
     # state carries user identity + return path
     # Use your session token (or a short-lived oauth nonce) – session token is okay but better as short-lived nonce.
-    token = auth.split(" ")[1]
+    token = session_token
     state = f"{token}|{return_to_enc}"
 
     discord_oauth_url = (
