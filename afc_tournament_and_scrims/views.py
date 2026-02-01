@@ -10922,4 +10922,48 @@ def disqualify_team(request):
     }, status=200)
 
 
-# nothing
+@api_view(["GET"])
+def get_drafted_events(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    events = Event.objects.filter(is_draft=True).order_by("-created_at")
+    event_list = []
+    for event in events:
+        event_list.append({
+            "event_id": event.event_id,
+            "event_name": event.event_name,
+            "participant_type": event.participant_type,
+            "created_at": event.created_at,
+        })
+    return Response({
+        "message": "Drafted events retrieved.",
+        "drafted_events": event_list,
+    }, status=200)
+
+
+
+@api_view(["GET"])
+def get_my_drafted_events(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    events = Event.objects.filter(is_draft=True, creator=user).order_by("-created_at")
+    event_list = []
+    for event in events:
+        event_list.append({
+            "event_id": event.event_id,
+            "event_name": event.event_name,
+            "participant_type": event.participant_type,
+            "created_at": event.created_at,
+        })
+    return Response({
+        "message": "Your drafted events retrieved.",
+        "drafted_events": event_list,
+    }, status=200)

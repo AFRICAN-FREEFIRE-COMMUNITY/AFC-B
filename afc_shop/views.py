@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from afc_auth.views import require_admin, validate_token
-from .models import Cart, CartItem, Coupon, Order, Product, ProductVariant
+from .models import Cart, CartItem, Coupon, Fulfillment, Order, OrderItem, Product, ProductVariant
 from afc_auth.models import User
 
 from rest_framework.decorators import api_view
@@ -822,3 +822,540 @@ def clear_cart(request):
     cart.items.all().delete()
 
     return Response({"message": "Cart cleared successfully."}, status=200)
+
+
+# import requests
+# from decimal import Decimal
+# from django.db import transaction
+# from rest_framework.decorators import api_view
+# from rest_framework.response import Response
+# from django.conf import settings
+
+
+# @api_view(["POST"])
+# def buy_now(request):
+#     # -------- AUTH --------
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     user = validate_token(auth.split(" ")[1])
+#     if not user:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+
+#     # -------- INPUT --------
+#     variant_id = request.data.get("variant_id")
+#     quantity = request.data.get("quantity", 1)
+#     game_uid = request.data.get("game_uid")
+#     in_game_name = request.data.get("in_game_name", "")
+
+#     if not variant_id:
+#         return Response({"message": "variant_id is required."}, status=400)
+
+#     try:
+#         quantity = int(quantity)
+#         if quantity <= 0:
+#             raise ValueError
+#     except:
+#         return Response({"message": "quantity must be a positive number."}, status=400)
+
+#     variant = ProductVariant.objects.select_related("product").filter(
+#         id=variant_id,
+#         is_active=True
+#     ).first()
+
+#     if not variant:
+#         return Response({"message": "Product not found or inactive."}, status=404)
+
+#     if variant.product.status != "active":
+#         return Response({"message": "Product not available."}, status=400)
+
+#     # -------- STOCK CHECK --------
+#     if variant.product.is_limited_stock and quantity > variant.stock_qty:
+#         return Response({
+#             "message": f"Only {variant.stock_qty} available."
+#         }, status=400)
+
+#     unit_price = variant.price
+#     subtotal = unit_price * quantity
+#     total = subtotal  # coupon logic can be added later
+
+#     # -------- CREATE ORDER --------
+#     with transaction.atomic():
+#         order = Order.objects.create(
+#             user=user,
+#             status="pending",
+#             subtotal=subtotal,
+#             total=total,
+#             game_uid=game_uid,
+#             in_game_name=in_game_name
+#         )
+
+#         OrderItem.objects.create(
+#             order=order,
+#             variant=variant,
+#             quantity=quantity,
+#             unit_price=unit_price,
+#             line_total=subtotal,
+#             product_name_snapshot=variant.product.name,
+#             variant_title_snapshot=variant.title or ""
+#         )
+
+#         # -------- PAYSTACK INIT --------
+#         amount_kobo = int(total * 100)
+
+#         headers = {
+#             "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+#             "Content-Type": "application/json",
+#         }
+
+#         payload = {
+#             "email": user.email,
+#             "amount": amount_kobo,
+#             "reference": f"ORDER-{order.id}",
+#             "callback_url": settings.PAYSTACK_CALLBACK_URL,
+#             "metadata": {
+#                 "order_id": order.id,
+#                 "user_id": user.id
+#             }
+#         }
+
+#         response = requests.post(
+#             "https://api.paystack.co/transaction/initialize",
+#             json=payload,
+#             headers=headers,
+#             timeout=30
+#         )
+
+#         paystack_response = response.json()
+
+#         if not paystack_response.get("status"):
+#             return Response({
+#                 "message": "Failed to initialize payment.",
+#                 "error": paystack_response
+#             }, status=400)
+
+#         authorization_url = paystack_response["data"]["authorization_url"]
+#         reference = paystack_response["data"]["reference"]
+
+#         # Save reference
+#         order.coupon_code = reference  # reuse field or create payment model
+#         order.save(update_fields=["coupon_code"])
+
+#     return Response({
+#         "message": "Payment initialized successfully.",
+#         "authorization_url": authorization_url,
+#         "reference": reference,
+#         "order_id": order.id
+#     }, status=200)
+
+
+# import requests
+# from decimal import Decimal
+# from django.db import transaction
+# from rest_framework.decorators import api_view
+# from rest_framework.response import Response
+# from django.conf import settings
+
+
+# @api_view(["POST"])
+# def buy_now(request):
+#     # -------- AUTH --------
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     user = validate_token(auth.split(" ")[1])
+#     if not user:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+
+#     # -------- INPUT --------
+#     variant_id = request.data.get("variant_id")
+#     quantity = request.data.get("quantity", 1)
+#     game_uid = request.data.get("game_uid")
+#     in_game_name = request.data.get("in_game_name", "")
+
+#     if not variant_id:
+#         return Response({"message": "variant_id is required."}, status=400)
+
+#     try:
+#         quantity = int(quantity)
+#         if quantity <= 0:
+#             raise ValueError
+#     except:
+#         return Response({"message": "quantity must be a positive number."}, status=400)
+
+#     variant = ProductVariant.objects.select_related("product").filter(
+#         id=variant_id,
+#         is_active=True
+#     ).first()
+
+#     if not variant:
+#         return Response({"message": "Product not found or inactive."}, status=404)
+
+#     if variant.product.status != "active":
+#         return Response({"message": "Product not available."}, status=400)
+
+#     # -------- STOCK CHECK --------
+#     if variant.product.is_limited_stock and quantity > variant.stock_qty:
+#         return Response({
+#             "message": f"Only {variant.stock_qty} available."
+#         }, status=400)
+
+#     unit_price = variant.price
+#     subtotal = unit_price * quantity
+#     total = subtotal  # coupon logic can be added later
+
+#     # -------- CREATE ORDER --------
+#     with transaction.atomic():
+#         order = Order.objects.create(
+#             user=user,
+#             status="pending",
+#             subtotal=subtotal,
+#             total=total,
+#             game_uid=game_uid,
+#             in_game_name=in_game_name
+#         )
+
+#         OrderItem.objects.create(
+#             order=order,
+#             variant=variant,
+#             quantity=quantity,
+#             unit_price=unit_price,
+#             line_total=subtotal,
+#             product_name_snapshot=variant.product.name,
+#             variant_title_snapshot=variant.title or ""
+#         )
+
+#         # -------- PAYSTACK INIT --------
+#         amount_kobo = int(total * 100)
+
+#         headers = {
+#             "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+#             "Content-Type": "application/json",
+#         }
+
+#         payload = {
+#             "email": user.email,
+#             "amount": amount_kobo,
+#             "reference": f"ORDER-{order.id}",
+#             "callback_url": settings.PAYSTACK_CALLBACK_URL,
+#             "metadata": {
+#                 "order_id": order.id,
+#                 "user_id": user.id
+#             }
+#         }
+
+#         response = requests.post(
+#             "https://api.paystack.co/transaction/initialize",
+#             json=payload,
+#             headers=headers,
+#             timeout=30
+#         )
+
+#         paystack_response = response.json()
+
+#         if not paystack_response.get("status"):
+#             return Response({
+#                 "message": "Failed to initialize payment.",
+#                 "error": paystack_response
+#             }, status=400)
+
+#         authorization_url = paystack_response["data"]["authorization_url"]
+#         reference = paystack_response["data"]["reference"]
+
+#         # Save reference
+#         order.coupon_code = reference  # reuse field or create payment model
+#         order.save(update_fields=["coupon_code"])
+
+#     return Response({
+#         "message": "Payment initialized successfully.",
+#         "authorization_url": authorization_url,
+#         "reference": reference,
+#         "order_id": order.id
+#     }, status=200)
+
+
+import requests
+import uuid
+from decimal import Decimal
+from django.conf import settings
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
+
+@api_view(["POST"])
+def buy_now(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token"}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session"}, status=401)
+
+    variant_id = request.data.get("variant_id")
+    quantity = int(request.data.get("quantity", 1))
+
+    if quantity <= 0:
+        return Response({"message": "Invalid quantity"}, status=400)
+
+    try:
+        variant = ProductVariant.objects.select_related("product").get(id=variant_id, is_active=True)
+    except ProductVariant.DoesNotExist:
+        return Response({"message": "Product not found"}, status=404)
+
+    if not variant.is_in_stock():
+        return Response({"message": "Out of stock"}, status=400)
+
+    if variant.product.is_limited_stock and variant.stock_qty < quantity:
+        return Response({"message": "Insufficient stock"}, status=400)
+
+    with transaction.atomic():
+
+        unit_price = variant.price
+        subtotal = unit_price * quantity
+        total = subtotal
+
+        order = Order.objects.create(
+            user=user,
+            subtotal=subtotal,
+            total=total,
+            status="pending"
+        )
+
+        OrderItem.objects.create(
+            order=order,
+            variant=variant,
+            quantity=quantity,
+            unit_price=unit_price,
+            line_total=subtotal,
+            product_name_snapshot=variant.product.name,
+            variant_title_snapshot=variant.title or variant.sku,
+        )
+
+    # 🔑 Generate unique reference
+    reference = f"PS_{uuid.uuid4().hex}"
+
+    headers = {
+        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "email": user.email,
+        "amount": int(total * 100),  # kobo
+        "reference": reference,
+        "callback_url": settings.PAYSTACK_CALLBACK_URL,
+        "metadata": {
+            "order_id": str(order.id),
+            "user_id": user.id,
+        }
+    }
+
+    response = requests.post(
+        "https://api.paystack.co/transaction/initialize",
+        headers=headers,
+        json=payload
+    )
+
+    data = response.json()
+
+    if not data.get("status"):
+        order.status = "failed"
+        order.save(update_fields=["status"])
+        return Response({"message": "Payment initialization failed"}, status=400)
+
+    return Response({
+        "authorization_url": data["data"]["authorization_url"],
+        "reference": reference,
+        "order_id": order.id
+    }, status=200)
+
+
+
+import requests
+from decimal import Decimal
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.conf import settings
+
+
+@api_view(["POST"])
+def verify_paystack_payment(request):
+    reference = request.data.get("reference")
+
+    if not reference:
+        return Response({"message": "reference is required."}, status=400)
+
+    # -------- VERIFY WITH PAYSTACK --------
+    headers = {
+        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+    }
+
+    verify_url = f"https://api.paystack.co/transaction/verify/{reference}"
+
+    response = requests.get(verify_url, headers=headers, timeout=30)
+    paystack_response = response.json()
+
+    if not paystack_response.get("status"):
+        return Response({
+            "message": "Failed to verify transaction.",
+            "error": paystack_response
+        }, status=400)
+
+    data = paystack_response.get("data", {})
+
+    if data.get("status") != "success":
+        return Response({"message": "Payment not successful."}, status=400)
+
+    amount_paid_kobo = data.get("amount")
+    metadata = data.get("metadata", {})
+    order_id = metadata.get("order_id")
+
+    if not order_id:
+        return Response({"message": "Invalid metadata from Paystack."}, status=400)
+
+    # -------- FIND ORDER --------
+    order = Order.objects.select_related("user").prefetch_related("items__variant__product").filter(id=order_id).first()
+
+    if not order:
+        return Response({"message": "Order not found."}, status=404)
+
+    if order.status == "paid":
+        return Response({"message": "Order already verified."}, status=200)
+
+    expected_amount_kobo = int(order.total * 100)
+
+    if amount_paid_kobo != expected_amount_kobo:
+        return Response({
+            "message": "Amount mismatch.",
+            "expected": expected_amount_kobo,
+            "paid": amount_paid_kobo
+        }, status=400)
+
+    # -------- SUCCESS → PROCESS ORDER --------
+    with transaction.atomic():
+
+        # Mark order paid
+        order.status = "paid"
+        order.save(update_fields=["status"])
+
+        # Reduce stock if limited
+        for item in order.items.all():
+            variant = item.variant
+
+            if variant.product.is_limited_stock:
+                if variant.stock_qty < item.quantity:
+                    return Response({
+                        "message": f"Stock error for {variant.product.name}"
+                    }, status=400)
+
+                variant.stock_qty -= item.quantity
+                variant.save(update_fields=["stock_qty"])
+
+        # Create fulfillment records
+        for item in order.items.all():
+            Fulfillment.objects.create(
+                order=order,
+                item=item,
+                status="queued"
+            )
+
+    return Response({
+        "message": "Payment verified successfully.",
+        "order_id": order.id,
+        "status": "paid"
+    }, status=200)
+
+
+import hmac
+import hashlib
+import json
+from decimal import Decimal
+from django.http import HttpResponse
+from django.conf import settings
+from django.db import transaction
+from django.views.decorators.csrf import csrf_exempt
+
+
+@csrf_exempt
+def paystack_webhook(request):
+    if request.method != "POST":
+        return HttpResponse(status=400)
+
+    payload = request.body
+    signature = request.headers.get("x-paystack-signature")
+
+    if not signature:
+        return HttpResponse(status=400)
+
+    # 🔐 Verify signature
+    computed_signature = hmac.new(
+        settings.PAYSTACK_SECRET_KEY.encode("utf-8"),
+        payload,
+        hashlib.sha512
+    ).hexdigest()
+
+    if computed_signature != signature:
+        return HttpResponse(status=400)
+
+    event = json.loads(payload)
+    event_type = event.get("event")
+
+    # Only handle successful charge
+    if event_type != "charge.success":
+        return HttpResponse(status=200)
+
+    data = event.get("data", {})
+    reference = data.get("reference")
+    amount_paid_kobo = data.get("amount")
+    metadata = data.get("metadata", {})
+    order_id = metadata.get("order_id")
+
+    if not order_id:
+        return HttpResponse(status=400)
+
+    try:
+        order = Order.objects.select_related("user").prefetch_related(
+            "items__variant__product"
+        ).get(id=order_id)
+    except Order.DoesNotExist:
+        return HttpResponse(status=404)
+
+    # Already processed?
+    if order.status == "paid":
+        return HttpResponse(status=200)
+
+    expected_amount_kobo = int(order.total * 100)
+
+    if amount_paid_kobo != expected_amount_kobo:
+        return HttpResponse(status=400)
+
+    # ✅ Process payment
+    with transaction.atomic():
+
+        order.status = "paid"
+        order.save(update_fields=["status"])
+
+        for item in order.items.all():
+            variant = item.variant
+
+            if variant.product.is_limited_stock:
+                if variant.stock_qty < item.quantity:
+                    return HttpResponse(status=400)
+
+                variant.stock_qty -= item.quantity
+                variant.save(update_fields=["stock_qty"])
+
+        for item in order.items.all():
+            Fulfillment.objects.create(
+                order=order,
+                item=item,
+                status="queued"
+            )
+
+    return HttpResponse(status=200)
