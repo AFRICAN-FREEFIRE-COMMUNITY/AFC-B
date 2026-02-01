@@ -27,4 +27,6 @@ urlpatterns = [
     path("remove-from-cart/", remove_from_cart, name="remove_from_cart"),
     path("update-cart-item-quantity/", update_cart_item_quantity, name="update_cart_item_quantity"),
     path("clear-cart/", clear_cart, name="clear_cart"),
+    path("buy-now/", buy_now, name="buy_now"),
+    path("verify-paystack-payment/", verify_paystack_payment, name="verify_paystack_payment"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

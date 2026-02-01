@@ -64,4 +64,6 @@ urlpatterns = [
     path('sync-event-registrations-with-discord-roles/', sync_event_registrations_with_discord_roles, name='sync_event_registrations_with_discord_roles'),
     path('get-event-details-not-logged-in/', get_event_details_not_logged_in, name='get_event_details_not_logged_in'),
     path('validate-team-roster-discord/', validate_team_roster_discord, name='validate_team_roster_discord'),
+    path('get-drafted-events/', get_drafted_events, name='get_drafted_events'),
+    path('get-my-drafted-events/', get_my_drafted_events, name='get_my_drafted_events'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
