@@ -1151,7 +1151,7 @@ def buy_now(request):
         "callback_url": settings.PAYSTACK_CALLBACK_URL,
         "metadata": {
             "order_id": str(order.id),
-            "user_id": user.id,
+            "user_id": user.user_id,
         }
     }
 
