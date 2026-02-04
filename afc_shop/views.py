@@ -442,52 +442,72 @@ def orders_today(request):
     admin, err = require_admin(request)
     if err: return err
 
-    now = timezone.now()
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
+    orders = _orders_in_range(
+        timezone.now().replace(hour=0, minute=0, second=0, microsecond=0),
+        timezone.now().replace(hour=23, minute=59, second=59, microsecond=999999)
+    )
+    data = [{
+        "order_id": o.id,
+        "user_id": o.user_id,
+        "username": o.user.username if o.user else None,
+        "status": o.status,
+        "subtotal": str(o.subtotal),
+        "discount_total": str(o.discount_total),
+        "total": str(o.total),
+        "coupon_code": o.coupon_code,
+        "created_at": o.created_at,
+    } for o in orders]
+    return Response({"orders": data}, status=200)
 
-    qs = _orders_in_range(start, end)
-    return Response({
-        "count": qs.count(),
-        "paid": qs.filter(status="paid").count(),
-        "revenue_paid": str(qs.filter(status="paid").aggregate(s=Sum("total"))["s"] or 0),
-    }, status=200)
+
+
+
+
+
 
 @api_view(["GET"])
 def orders_this_week(request):
     admin, err = require_admin(request)
     if err: return err
 
-    now = timezone.now()
-    start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)  # Monday
-    end = start + timedelta(days=7)
+    orders = _orders_in_range(
+        timezone.now() - timedelta(days=timezone.now().weekday()),
+        timezone.now()
+    )
+    data = [{
+        "order_id": o.id,
+        "user_id": o.user_id,
+        "username": o.user.username if o.user else None,
+        "status": o.status,
+        "subtotal": str(o.subtotal),
+        "discount_total": str(o.discount_total),
+        "total": str(o.total),
+        "coupon_code": o.coupon_code,
+        "created_at": o.created_at,
+    } for o in orders]
+    return Response({"orders": data}, status=200)
 
-    qs = _orders_in_range(start, end)
-    return Response({
-        "count": qs.count(),
-        "paid": qs.filter(status="paid").count(),
-        "revenue_paid": str(qs.filter(status="paid").aggregate(s=Sum("total"))["s"] or 0),
-    }, status=200)
 
 @api_view(["GET"])
 def orders_this_month(request):
     admin, err = require_admin(request)
     if err: return err
 
-    now = timezone.now()
-    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    # get first day of next month safely
-    if start.month == 12:
-        end = start.replace(year=start.year + 1, month=1)
-    else:
-        end = start.replace(month=start.month + 1)
-
-    qs = _orders_in_range(start, end)
-    return Response({
-        "count": qs.count(),
-        "paid": qs.filter(status="paid").count(),
-        "revenue_paid": str(qs.filter(status="paid").aggregate(s=Sum("total"))["s"] or 0),
-    }, status=200)
+    orders = _orders_in_range(
+        timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+        timezone.now()
+    )
+    data = [{
+        "order_id": o.id,
+        "user_id": o.user_id,
+        "username": o.user.username if o.user else None,
+        "status": o.status,
+        "subtotal": str(o.subtotal),
+        "discount_total": str(o.discount_total),
+        "total": str(o.total),
+        "coupon_code": o.coupon_code,
+        "created_at": o.created_at,
+    } for o in orders]
 
 
 
@@ -1750,3 +1770,47 @@ def get_order_details_for_admin(request):
     }
 
     return Response({"order": data}, status=200)
+
+
+@api_view(["POST"])
+def mark_order_as_paid(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    order_id = request.data.get("order_id")
+    if not order_id:
+        return Response({"message": "order_id is required."}, status=400)
+
+    try:
+        order = Order.objects.select_related().prefetch_related("items__variant__product").get(
+            id=order_id
+        )
+    except Order.DoesNotExist:
+        return Response({"message": "Order not found."}, status=404)
+
+    if order.status == "paid":
+        return Response({"message": "Order is already marked as paid."}, status=200)
+
+    with transaction.atomic():
+        order.status = "paid"
+        order.save(update_fields=["status"])
+
+        # Reduce stock
+        for item in order.items.all():
+            variant = item.variant
+            if variant.product.is_limited_stock:
+                variant.stock_qty -= item.quantity
+                variant.save(update_fields=["stock_qty"])
+
+        # Create fulfillment
+        Fulfillment.objects.create(
+            order=order,
+            status="fulfilled",
+        )
+
+    return Response({"message": "Order marked as paid successfully."}, status=200)
