@@ -389,6 +389,14 @@ class Order(models.Model):
     in_game_name = models.CharField(max_length=80, blank=True)
 
     paystack_reference = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    first_name = models.CharField(max_length=50, blank=True)
+    last_name = models.CharField(max_length=50, blank=True)
+    email = models.EmailField(blank=True)
+    phone_number = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
+    city = models.CharField(max_length=50, blank=True)
+    state = models.CharField(max_length=50, blank=True)
+    postcode = models.CharField(max_length=20, blank=True)
 
 
     def __str__(self):

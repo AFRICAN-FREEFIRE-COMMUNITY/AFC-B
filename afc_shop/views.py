@@ -1112,6 +1112,18 @@ def buy_now(request):
 
     if variant.product.is_limited_stock and variant.stock_qty < quantity:
         return Response({"message": "Insufficient stock"}, status=400)
+    
+    first_name = request.data.get("first_name", "")
+    last_name = request.data.get("last_name", "")
+    email = request.data.get("email", "")
+    phone_number = request.data.get("phone_number", "")
+    address = request.data.get("address", "")
+    city = request.data.get("city", "")
+    state = request.data.get("state", "")
+    postcode = request.data.get("postcode", "")
+
+    if not all([first_name, last_name, email, phone_number, address, city, state, postcode]):
+        return Response({"message": "All customer details are required."}, status=400)
 
     with transaction.atomic():
 
@@ -1123,7 +1135,15 @@ def buy_now(request):
             user=user,
             subtotal=subtotal,
             total=total,
-            status="pending"
+            status="pending",
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            phone_number=phone_number,
+            address=address,
+            city=city,
+            state=state,
+            postcode=postcode
         )
 
         OrderItem.objects.create(
