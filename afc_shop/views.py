@@ -1340,7 +1340,7 @@ def verify_paystack_payment(request):
         for item in order.items.all():
             Fulfillment.objects.create(
                 order=order,
-                order_item=item,
+                item=item,
                 status="queued"
             )
 
