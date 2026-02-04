@@ -415,6 +415,7 @@ def view_all_orders(request):
         data.append({
             "order_id": o.id,
             "user_id": o.user_id,
+            "username": o.user.username if o.user else None,
             "status": o.status,
             "subtotal": str(o.subtotal),
             "discount_total": str(o.discount_total),
