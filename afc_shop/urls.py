@@ -29,4 +29,7 @@ urlpatterns = [
     path("clear-cart/", clear_cart, name="clear_cart"),
     path("buy-now/", buy_now, name="buy_now"),
     path("verify-paystack-payment/", verify_paystack_payment, name="verify_paystack_payment"),
+    path("paystack-webhook/", paystack_webhook, name="paystack_webhook"),
+    path("get-my-orders/", get_my_orders, name="get_my_orders"),
+    path("get-order-details/", get_order_details, name="get_order_details"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
