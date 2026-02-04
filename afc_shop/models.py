@@ -388,7 +388,6 @@ class Order(models.Model):
     game_uid = models.CharField(max_length=80, blank=True)
     in_game_name = models.CharField(max_length=80, blank=True)
 
-    paystack_reference = models.CharField(max_length=100, unique=True, null=True, blank=True)
     first_name = models.CharField(max_length=50, blank=True)
     last_name = models.CharField(max_length=50, blank=True)
     email = models.EmailField(blank=True)
@@ -399,9 +398,9 @@ class Order(models.Model):
     postcode = models.CharField(max_length=20, blank=True)
 
     tax = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
-    
+
     # Paystack data
-    paystack_reference = models.CharField(max_length=120, blank=True)
+    paystack_reference = models.CharField(max_length=100, unique=True, null=True, blank=True)
     paystack_transaction_id = models.CharField(max_length=120, blank=True)
     payment_method = models.CharField(max_length=50, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
