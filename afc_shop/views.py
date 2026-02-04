@@ -1203,6 +1203,9 @@ def buy_now(request):
     # -------- Initialize Paystack --------
     reference = f"PS_{uuid.uuid4().hex}"
 
+    order.paystack_reference = reference
+    order.save(update_fields=["paystack_reference"])
+
     headers = {
         "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
         "Content-Type": "application/json",
@@ -1230,6 +1233,7 @@ def buy_now(request):
     if not data.get("status"):
         order.status = "failed"
         order.save(update_fields=["status"])
+
         return Response({"message": "Payment initialization failed."}, status=400)
 
     return Response({
@@ -1252,6 +1256,9 @@ from rest_framework.response import Response
 from django.conf import settings
 
 
+from django.utils import timezone
+
+
 @api_view(["POST"])
 def verify_paystack_payment(request):
     reference = request.data.get("reference")
@@ -1259,85 +1266,180 @@ def verify_paystack_payment(request):
     if not reference:
         return Response({"message": "reference is required."}, status=400)
 
-    # -------- VERIFY WITH PAYSTACK --------
     headers = {
         "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
     }
 
     verify_url = f"https://api.paystack.co/transaction/verify/{reference}"
-
     response = requests.get(verify_url, headers=headers, timeout=30)
     paystack_response = response.json()
 
     if not paystack_response.get("status"):
-        return Response({
-            "message": "Failed to verify transaction.",
-            "error": paystack_response
-        }, status=400)
+        return Response({"message": "Verification failed."}, status=400)
 
     data = paystack_response.get("data", {})
 
     if data.get("status") != "success":
         return Response({"message": "Payment not successful."}, status=400)
 
-    amount_paid_kobo = data.get("amount")
     metadata = data.get("metadata", {})
     order_id = metadata.get("order_id")
 
-    if not order_id:
-        return Response({"message": "Invalid metadata from Paystack."}, status=400)
-
-    # -------- FIND ORDER --------
-    order = Order.objects.select_related("user").prefetch_related("items__variant__product").filter(id=order_id).first()
+    order = Order.objects.select_related("user").prefetch_related(
+        "items__variant__product"
+    ).filter(id=order_id).first()
 
     if not order:
         return Response({"message": "Order not found."}, status=404)
 
     if order.status == "paid":
-        return Response({"message": "Order already verified."}, status=200)
+        return Response({"message": "Already verified."}, status=200)
 
     expected_amount_kobo = int(order.total * 100)
 
-    if amount_paid_kobo != expected_amount_kobo:
-        return Response({
-            "message": "Amount mismatch.",
-            "expected": expected_amount_kobo,
-            "paid": amount_paid_kobo
-        }, status=400)
+    if data.get("amount") != expected_amount_kobo:
+        return Response({"message": "Amount mismatch."}, status=400)
 
-    # -------- SUCCESS → PROCESS ORDER --------
+    # -------- Extract Paystack Info --------
+    transaction_id = str(data.get("id"))
+    payment_channel = data.get("channel")  # card / bank / ussd / transfer
+    paid_at = data.get("paid_at")
+
+    # Optional: card info
+    authorization = data.get("authorization", {})
+    card_type = authorization.get("card_type")
+    bank = authorization.get("bank")
+
+    payment_method = payment_channel
+
+    if payment_channel == "card" and card_type:
+        payment_method = f"{card_type} ({bank})"
+
+    # -------- Process Order --------
     with transaction.atomic():
 
-        # Mark order paid
         order.status = "paid"
-        order.save(update_fields=["status"])
+        order.paystack_transaction_id = transaction_id
+        order.payment_method = payment_method
+        order.paid_at = timezone.now()
+        order.save(update_fields=[
+            "status",
+            "paystack_transaction_id",
+            "payment_method",
+            "paid_at"
+        ])
 
-        # Reduce stock if limited
+        # Reduce stock
         for item in order.items.all():
             variant = item.variant
-
             if variant.product.is_limited_stock:
-                if variant.stock_qty < item.quantity:
-                    return Response({
-                        "message": f"Stock error for {variant.product.name}"
-                    }, status=400)
-
                 variant.stock_qty -= item.quantity
                 variant.save(update_fields=["stock_qty"])
 
-        # Create fulfillment records
+        # Create fulfillment
         for item in order.items.all():
             Fulfillment.objects.create(
                 order=order,
-                item=item,
+                order_item=item,
                 status="queued"
             )
 
     return Response({
         "message": "Payment verified successfully.",
         "order_id": order.id,
+        "transaction_id": transaction_id,
+        "payment_method": payment_method,
         "status": "paid"
     }, status=200)
+
+
+
+# @api_view(["POST"])
+# def verify_paystack_payment(request):
+#     reference = request.data.get("reference")
+
+#     if not reference:
+#         return Response({"message": "reference is required."}, status=400)
+
+#     # -------- VERIFY WITH PAYSTACK --------
+#     headers = {
+#         "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+#     }
+
+#     verify_url = f"https://api.paystack.co/transaction/verify/{reference}"
+
+#     response = requests.get(verify_url, headers=headers, timeout=30)
+#     paystack_response = response.json()
+
+#     if not paystack_response.get("status"):
+#         return Response({
+#             "message": "Failed to verify transaction.",
+#             "error": paystack_response
+#         }, status=400)
+
+#     data = paystack_response.get("data", {})
+
+#     if data.get("status") != "success":
+#         return Response({"message": "Payment not successful."}, status=400)
+
+#     amount_paid_kobo = data.get("amount")
+#     metadata = data.get("metadata", {})
+#     order_id = metadata.get("order_id")
+
+#     if not order_id:
+#         return Response({"message": "Invalid metadata from Paystack."}, status=400)
+
+#     # -------- FIND ORDER --------
+#     order = Order.objects.select_related("user").prefetch_related("items__variant__product").filter(id=order_id).first()
+
+#     if not order:
+#         return Response({"message": "Order not found."}, status=404)
+
+#     if order.status == "paid":
+#         return Response({"message": "Order already verified."}, status=200)
+
+#     expected_amount_kobo = int(order.total * 100)
+
+#     if amount_paid_kobo != expected_amount_kobo:
+#         return Response({
+#             "message": "Amount mismatch.",
+#             "expected": expected_amount_kobo,
+#             "paid": amount_paid_kobo
+#         }, status=400)
+
+#     # -------- SUCCESS → PROCESS ORDER --------
+#     with transaction.atomic():
+
+#         # Mark order paid
+#         order.status = "paid"
+#         order.save(update_fields=["status"])
+
+#         # Reduce stock if limited
+#         for item in order.items.all():
+#             variant = item.variant
+
+#             if variant.product.is_limited_stock:
+#                 if variant.stock_qty < item.quantity:
+#                     return Response({
+#                         "message": f"Stock error for {variant.product.name}"
+#                     }, status=400)
+
+#                 variant.stock_qty -= item.quantity
+#                 variant.save(update_fields=["stock_qty"])
+
+#         # Create fulfillment records
+#         for item in order.items.all():
+#             Fulfillment.objects.create(
+#                 order=order,
+#                 item=item,
+#                 status="queued"
+#             )
+
+#     return Response({
+#         "message": "Payment verified successfully.",
+#         "order_id": order.id,
+#         "status": "paid"
+#     }, status=200)
 
 
 import hmac
@@ -1393,8 +1495,20 @@ def paystack_webhook(request):
     with transaction.atomic():
 
         # ✅ Mark order paid
+        transaction_id = str(data.get("id"))
+        payment_channel = data.get("channel")
+
         order.status = "paid"
-        order.save(update_fields=["status"])
+        order.paystack_transaction_id = transaction_id
+        order.payment_method = payment_channel
+        order.paid_at = timezone.now()
+        order.save(update_fields=[
+            "status",
+            "paystack_transaction_id",
+            "payment_method",
+            "paid_at"
+        ])
+
 
         # ✅ Reduce stock
         for item in order.items.all():
@@ -1571,6 +1685,58 @@ def get_order_details(request):
         "total": str(order.total),
         "created_at": order.created_at,
         "tax": str(order.tax),
+        "items": [{
+            "product_name": item.product_name_snapshot,
+            "variant_title": item.variant_title_snapshot,
+            "quantity": item.quantity,
+            "unit_price": str(item.unit_price),
+            "line_total": str(item.line_total),
+        } for item in order.items.all()]
+    }
+
+    return Response({"order": data}, status=200)
+
+
+
+@api_view(["GET"])
+def get_order_details_for_admin(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.is_admin:
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    order_id = request.GET.get("order_id")
+    if not order_id:
+        return Response({"message": "order_id is required."}, status=400)
+
+    try:
+        order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(
+            id=order_id
+        )
+    except Order.DoesNotExist:
+        return Response({"message": "Order not found."}, status=404)
+
+    data = {
+        "order_id": order.id,
+        "user_id": order.user.id,
+        "username": order.user.username if order.user else None,
+        "status": order.status,
+        "subtotal": str(order.subtotal),
+        "total": str(order.total),
+        "created_at": order.created_at,
+        "tax": str(order.tax),
+        "first_name": order.first_name,
+        "last_name": order.last_name,
+        "email": order.email,
+        "phone_number": order.phone_number,
+        "address": order.address,
+        "city": order.city,
+        "state": order.state,
+        "date": order.created_at.date(),
+        "status": order.status,
         "items": [{
             "product_name": item.product_name_snapshot,
             "variant_title": item.variant_title_snapshot,
