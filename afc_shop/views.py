@@ -1705,7 +1705,7 @@ def get_order_details_for_admin(request):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
     user = validate_token(auth.split(" ")[1])
-    if not user or not user.is_admin:
+    if not user or not user.role == "admin":
         return Response({"message": "Unauthorized access."}, status=403)
 
     order_id = request.GET.get("order_id")
@@ -1721,7 +1721,7 @@ def get_order_details_for_admin(request):
 
     data = {
         "order_id": order.id,
-        "user_id": order.user.id,
+        "user_id": order.user.user_id,
         "username": order.user.username if order.user else None,
         "status": order.status,
         "subtotal": str(order.subtotal),
