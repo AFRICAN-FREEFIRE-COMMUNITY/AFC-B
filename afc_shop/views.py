@@ -1343,86 +1343,238 @@ import hmac
 import hashlib
 import json
 from decimal import Decimal
-from django.http import HttpResponse
 from django.conf import settings
 from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt
 
 
+@api_view(["POST"])
 @csrf_exempt
 def paystack_webhook(request):
-    if request.method != "POST":
-        return HttpResponse(status=400)
 
-    payload = request.body
+    # -------- Verify Signature --------
     signature = request.headers.get("x-paystack-signature")
+    body = request.body
 
-    if not signature:
-        return HttpResponse(status=400)
-
-    # 🔐 Verify signature
     computed_signature = hmac.new(
-        settings.PAYSTACK_SECRET_KEY.encode("utf-8"),
-        payload,
+        settings.PAYSTACK_SECRET_KEY.encode(),
+        body,
         hashlib.sha512
     ).hexdigest()
 
-    if computed_signature != signature:
-        return HttpResponse(status=400)
+    if signature != computed_signature:
+        return Response({"message": "Invalid signature"}, status=400)
 
-    event = json.loads(payload)
-    event_type = event.get("event")
+    payload = json.loads(body)
+    event = payload.get("event")
 
-    # Only handle successful charge
-    if event_type != "charge.success":
-        return HttpResponse(status=200)
+    if event != "charge.success":
+        return Response({"message": "Event ignored"}, status=200)
 
-    data = event.get("data", {})
+    data = payload.get("data", {})
     reference = data.get("reference")
-    amount_paid_kobo = data.get("amount")
     metadata = data.get("metadata", {})
+
     order_id = metadata.get("order_id")
 
-    if not order_id:
-        return HttpResponse(status=400)
-
     try:
-        order = Order.objects.select_related("user").prefetch_related(
-            "items__variant__product"
-        ).get(id=order_id)
+        order = Order.objects.select_related().prefetch_related("items__variant__product").get(id=order_id)
     except Order.DoesNotExist:
-        return HttpResponse(status=404)
+        return Response({"message": "Order not found"}, status=404)
 
-    # Already processed?
+    # Prevent double processing
     if order.status == "paid":
-        return HttpResponse(status=200)
+        return Response({"message": "Already processed"}, status=200)
 
-    expected_amount_kobo = int(order.total * 100)
-
-    if amount_paid_kobo != expected_amount_kobo:
-        return HttpResponse(status=400)
-
-    # ✅ Process payment
     with transaction.atomic():
 
+        # ✅ Mark order paid
         order.status = "paid"
         order.save(update_fields=["status"])
 
+        # ✅ Reduce stock
         for item in order.items.all():
             variant = item.variant
 
             if variant.product.is_limited_stock:
                 if variant.stock_qty < item.quantity:
-                    return HttpResponse(status=400)
+                    # Critical fail (should not happen normally)
+                    order.status = "failed"
+                    order.save(update_fields=["status"])
+                    return Response({"message": "Stock inconsistency detected"}, status=400)
 
                 variant.stock_qty -= item.quantity
                 variant.save(update_fields=["stock_qty"])
 
+        # ✅ Create fulfillment records
         for item in order.items.all():
             Fulfillment.objects.create(
                 order=order,
-                item=item,
+                order_item=item,
                 status="queued"
             )
 
-    return HttpResponse(status=200)
+    return Response({"message": "Payment processed successfully"}, status=200)
+
+# import hmac
+# import hashlib
+# import json
+# from decimal import Decimal
+# from django.http import HttpResponse
+# from django.conf import settings
+# from django.db import transaction
+# from django.views.decorators.csrf import csrf_exempt
+
+
+# @csrf_exempt
+# def paystack_webhook(request):
+#     if request.method != "POST":
+#         return HttpResponse(status=400)
+
+#     payload = request.body
+#     signature = request.headers.get("x-paystack-signature")
+
+#     if not signature:
+#         return HttpResponse(status=400)
+
+#     # 🔐 Verify signature
+#     computed_signature = hmac.new(
+#         settings.PAYSTACK_SECRET_KEY.encode("utf-8"),
+#         payload,
+#         hashlib.sha512
+#     ).hexdigest()
+
+#     if computed_signature != signature:
+#         return HttpResponse(status=400)
+
+#     event = json.loads(payload)
+#     event_type = event.get("event")
+
+#     # Only handle successful charge
+#     if event_type != "charge.success":
+#         return HttpResponse(status=200)
+
+#     data = event.get("data", {})
+#     reference = data.get("reference")
+#     amount_paid_kobo = data.get("amount")
+#     metadata = data.get("metadata", {})
+#     order_id = metadata.get("order_id")
+
+#     if not order_id:
+#         return HttpResponse(status=400)
+
+#     try:
+#         order = Order.objects.select_related("user").prefetch_related(
+#             "items__variant__product"
+#         ).get(id=order_id)
+#     except Order.DoesNotExist:
+#         return HttpResponse(status=404)
+
+#     # Already processed?
+#     if order.status == "paid":
+#         return HttpResponse(status=200)
+
+#     expected_amount_kobo = int(order.total * 100)
+
+#     if amount_paid_kobo != expected_amount_kobo:
+#         return HttpResponse(status=400)
+
+#     # ✅ Process payment
+#     with transaction.atomic():
+
+#         order.status = "paid"
+#         order.save(update_fields=["status"])
+
+#         for item in order.items.all():
+#             variant = item.variant
+
+#             if variant.product.is_limited_stock:
+#                 if variant.stock_qty < item.quantity:
+#                     return HttpResponse(status=400)
+
+#                 variant.stock_qty -= item.quantity
+#                 variant.save(update_fields=["stock_qty"])
+
+#         for item in order.items.all():
+#             Fulfillment.objects.create(
+#                 order=order,
+#                 item=item,
+#                 status="queued"
+#             )
+
+#     return HttpResponse(status=200)
+
+
+@api_view(["GET"])
+def get_my_orders(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    orders = Order.objects.filter(user=user).order_by("-created_at")
+
+    data = []
+    for order in orders:
+        data.append({
+            "order_id": order.id,
+            "status": order.status,
+            "subtotal": str(order.subtotal),
+            "total": str(order.total),
+            "created_at": order.created_at,
+            "items": [{
+                "product_name": item.product_name_snapshot,
+                "variant_title": item.variant_title_snapshot,
+                "quantity": item.quantity,
+                "unit_price": str(item.unit_price),
+                "line_total": str(item.line_total),
+            } for item in order.items.all()]
+        })
+
+    return Response({"orders": data}, status=200)
+
+
+@api_view(["GET"])
+def get_order_details(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    order_id = request.GET.get("order_id")
+    if not order_id:
+        return Response({"message": "order_id is required."}, status=400)
+
+    try:
+        order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(
+            id=order_id,
+            user=user
+        )
+    except Order.DoesNotExist:
+        return Response({"message": "Order not found."}, status=404)
+
+    data = {
+        "order_id": order.id,
+        "status": order.status,
+        "subtotal": str(order.subtotal),
+        "total": str(order.total),
+        "created_at": order.created_at,
+        "items": [{
+            "product_name": item.product_name_snapshot,
+            "variant_title": item.variant_title_snapshot,
+            "quantity": item.quantity,
+            "unit_price": str(item.unit_price),
+            "line_total": str(item.line_total),
+        } for item in order.items.all()]
+    }
+
+    return Response({"order": data}, status=200)
