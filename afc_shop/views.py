@@ -1737,6 +1737,8 @@ def get_order_details_for_admin(request):
         "state": order.state,
         "date": order.created_at.date(),
         "status": order.status,
+        "transaction_id": order.paystack_transaction_id,
+        "reference": order.paystack_reference,
         "items": [{
             "product_name": item.product_name_snapshot,
             "variant_title": item.variant_title_snapshot,
