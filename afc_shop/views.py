@@ -1076,14 +1076,17 @@ def clear_cart(request):
 #     }, status=200)
 
 
-import requests
 import uuid
+import requests
 from decimal import Decimal
 from django.conf import settings
 from django.db import transaction
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+
+
+TAX_RATE = Decimal("0.075")  # 7.5%
 
 
 @api_view(["POST"])
@@ -1096,40 +1099,74 @@ def buy_now(request):
     if not user:
         return Response({"message": "Invalid session"}, status=401)
 
-    variant_id = request.data.get("variant_id")
-    quantity = int(request.data.get("quantity", 1))
+    items = request.data.get("items", [])
 
-    if quantity <= 0:
-        return Response({"message": "Invalid quantity"}, status=400)
+    if not isinstance(items, list) or not items:
+        return Response({"message": "Items are required."}, status=400)
 
-    try:
-        variant = ProductVariant.objects.select_related("product").get(id=variant_id, is_active=True)
-    except ProductVariant.DoesNotExist:
-        return Response({"message": "Product not found"}, status=404)
+    # -------- Customer Info --------
+    required_fields = [
+        "first_name", "last_name", "email",
+        "phone_number", "address", "city",
+        "state", "postcode"
+    ]
 
-    if not variant.is_in_stock():
-        return Response({"message": "Out of stock"}, status=400)
+    for field in required_fields:
+        if not request.data.get(field):
+            return Response({"message": f"{field} is required."}, status=400)
 
-    if variant.product.is_limited_stock and variant.stock_qty < quantity:
-        return Response({"message": "Insufficient stock"}, status=400)
-    
-    first_name = request.data.get("first_name", "")
-    last_name = request.data.get("last_name", "")
-    email = request.data.get("email", "")
-    phone_number = request.data.get("phone_number", "")
-    address = request.data.get("address", "")
-    city = request.data.get("city", "")
-    state = request.data.get("state", "")
-    postcode = request.data.get("postcode", "")
+    first_name = request.data.get("first_name")
+    last_name = request.data.get("last_name")
+    email = request.data.get("email")
+    phone_number = request.data.get("phone_number")
+    address = request.data.get("address")
+    city = request.data.get("city")
+    state = request.data.get("state")
+    postcode = request.data.get("postcode")
 
-    if not all([first_name, last_name, email, phone_number, address, city, state, postcode]):
-        return Response({"message": "All customer details are required."}, status=400)
+    subtotal = Decimal("0.00")
+    order_items_to_create = []
 
-    with transaction.atomic():
+    # -------- Validate Items --------
+    for item in items:
+        variant_id = item.get("variant_id")
+        quantity = int(item.get("quantity", 1))
+
+        if quantity <= 0:
+            return Response({"message": "Invalid quantity provided."}, status=400)
+
+        try:
+            variant = ProductVariant.objects.select_related("product").get(
+                id=variant_id,
+                is_active=True
+            )
+        except ProductVariant.DoesNotExist:
+            return Response({"message": f"Product {variant_id} not found."}, status=404)
+
+        if not variant.is_in_stock():
+            return Response({"message": f"{variant.title} is out of stock."}, status=400)
+
+        if variant.product.is_limited_stock and variant.stock_qty < quantity:
+            return Response({"message": f"Insufficient stock for {variant.title}."}, status=400)
 
         unit_price = variant.price
-        subtotal = unit_price * quantity
-        total = subtotal
+        line_total = unit_price * quantity
+
+        subtotal += line_total
+
+        order_items_to_create.append({
+            "variant": variant,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "line_total": line_total
+        })
+
+    # -------- Calculate Tax --------
+    tax_amount = (subtotal * TAX_RATE).quantize(Decimal("0.01"))
+    total = subtotal + tax_amount
+
+    # -------- Create Order --------
+    with transaction.atomic():
 
         order = Order.objects.create(
             user=user,
@@ -1146,17 +1183,23 @@ def buy_now(request):
             postcode=postcode
         )
 
-        OrderItem.objects.create(
-            order=order,
-            variant=variant,
-            quantity=quantity,
-            unit_price=unit_price,
-            line_total=subtotal,
-            product_name_snapshot=variant.product.name,
-            variant_title_snapshot=variant.title or variant.sku,
-        )
+        order_items = []
+        for item in order_items_to_create:
+            order_items.append(
+                OrderItem(
+                    order=order,
+                    variant=item["variant"],
+                    quantity=item["quantity"],
+                    unit_price=item["unit_price"],
+                    line_total=item["line_total"],
+                    product_name_snapshot=item["variant"].product.name,
+                    variant_title_snapshot=item["variant"].title or item["variant"].sku,
+                )
+            )
 
-    # 🔑 Generate unique reference
+        OrderItem.objects.bulk_create(order_items)
+
+    # -------- Initialize Paystack --------
     reference = f"PS_{uuid.uuid4().hex}"
 
     headers = {
@@ -1165,8 +1208,8 @@ def buy_now(request):
     }
 
     payload = {
-        "email": user.email,
-        "amount": int(total * 100),  # kobo
+        "email": email,
+        "amount": int(total * 100),  # convert to kobo
         "reference": reference,
         "callback_url": settings.PAYSTACK_CALLBACK_URL,
         "metadata": {
@@ -1186,13 +1229,17 @@ def buy_now(request):
     if not data.get("status"):
         order.status = "failed"
         order.save(update_fields=["status"])
-        return Response({"message": "Payment initialization failed"}, status=400)
+        return Response({"message": "Payment initialization failed."}, status=400)
 
     return Response({
         "authorization_url": data["data"]["authorization_url"],
         "reference": reference,
-        "order_id": order.id
+        "order_id": order.id,
+        "subtotal": str(subtotal),
+        "tax": str(tax_amount),
+        "total": str(total)
     }, status=200)
+
 
 
 
