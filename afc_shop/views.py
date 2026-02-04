@@ -1568,6 +1568,7 @@ def get_order_details(request):
         "subtotal": str(order.subtotal),
         "total": str(order.total),
         "created_at": order.created_at,
+        "tax": str(order.tax),
         "items": [{
             "product_name": item.product_name_snapshot,
             "variant_title": item.variant_title_snapshot,
