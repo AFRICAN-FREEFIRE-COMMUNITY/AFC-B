@@ -1181,7 +1181,8 @@ def buy_now(request):
             address=address,
             city=city,
             state=state,
-            postcode=postcode
+            postcode=postcode,
+            tax=tax_amount
         )
 
         order_items = []
