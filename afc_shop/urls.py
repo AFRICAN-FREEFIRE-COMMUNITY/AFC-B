@@ -32,4 +32,5 @@ urlpatterns = [
     path("paystack-webhook/", paystack_webhook, name="paystack_webhook"),
     path("get-my-orders/", get_my_orders, name="get_my_orders"),
     path("get-order-details/", get_order_details, name="get_order_details"),
+    path("get-order-details-for-admin/", get_order_details_for_admin, name="get_order_details_for_admin"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
