@@ -1807,10 +1807,5 @@ def mark_order_as_paid(request):
                 variant.stock_qty -= item.quantity
                 variant.save(update_fields=["stock_qty"])
 
-        # Create fulfillment
-        Fulfillment.objects.create(
-            order=order,
-            status="fulfilled",
-        )
 
     return Response({"message": "Order marked as paid successfully."}, status=200)
