@@ -2110,3 +2110,45 @@ def get_weekly_usage_and_saving_generated(request):
         "code": coupon.code,
         "weekly_usage_and_saving": result
     }, status=200)
+
+
+from django.db.models import Count
+from decimal import Decimal
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+
+
+@api_view(["GET"])
+def get_coupon_conversion_rate(request, slug):
+
+    coupon = get_object_or_404(Coupon, slug=slug)
+
+    # Orders since coupon was created
+    total_orders = Order.objects.filter(
+        created_at__gte=coupon.start_at if coupon.start_at else coupon.created_at
+    ).count()
+
+    if total_orders == 0:
+        return Response({
+            "coupon": coupon.code,
+            "conversion_rate": "0%",
+            "used_orders": 0,
+            "total_orders_since_creation": 0
+        })
+
+    used_orders = Order.objects.filter(
+        coupon=coupon,
+        status="paid"
+    ).count()
+
+    conversion_rate = (Decimal(used_orders) / Decimal(total_orders)) * 100
+
+    return Response({
+        "coupon": coupon.code,
+        "used_orders": used_orders,
+        "total_orders_since_creation": total_orders,
+        "conversion_rate_percent": round(conversion_rate, 2)
+    })
