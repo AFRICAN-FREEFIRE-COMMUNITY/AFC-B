@@ -258,6 +258,7 @@
 from django.db import models
 from django.utils import timezone
 from decimal import Decimal
+from django.utils.text import slugify
 
 class Product(models.Model):
     PRODUCT_TYPES = (
@@ -338,7 +339,7 @@ class Coupon(models.Model):
     code = models.CharField(max_length=40, unique=True)
     discount_type = models.CharField(max_length=10, choices=DISCOUNT_TYPE)
     discount_value = models.DecimalField(max_digits=10, decimal_places=2)
-    slug = models.SlugField(unique=True)
+    # slug = models.SlugField(unique=True)
 
     active = models.BooleanField(default=True)
     start_at = models.DateTimeField(null=True, blank=True)
@@ -360,6 +361,19 @@ class Coupon(models.Model):
         if self.max_uses is not None and self.used_count >= self.max_uses:
             return False
         return True
+
+    
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base = slugify(self.code)
+            slug = base
+            i = 2
+            while Coupon.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{i}"
+                i += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
+
 
     def __str__(self):
         return self.code
