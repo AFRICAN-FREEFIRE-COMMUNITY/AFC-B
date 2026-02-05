@@ -275,6 +275,7 @@ class Product(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     product_type = models.CharField(max_length=20, choices=PRODUCT_TYPES)
+    slug = models.SlugField(unique=True)  # for SEO-friendly URLs
 
     # product-level image (optional). Variants can also have images.
     image = models.ImageField(upload_to="products/", null=True, blank=True)
@@ -337,6 +338,7 @@ class Coupon(models.Model):
     code = models.CharField(max_length=40, unique=True)
     discount_type = models.CharField(max_length=10, choices=DISCOUNT_TYPE)
     discount_value = models.DecimalField(max_digits=10, decimal_places=2)
+    slug = models.SlugField(unique=True)
 
     active = models.BooleanField(default=True)
     start_at = models.DateTimeField(null=True, blank=True)
@@ -345,6 +347,7 @@ class Coupon(models.Model):
     min_order_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
     max_uses = models.PositiveIntegerField(null=True, blank=True)
     used_count = models.PositiveIntegerField(default=0)
+    description = models.TextField(blank=True)
 
     def is_valid_now(self):
         if not self.active:
@@ -461,3 +464,18 @@ class Fulfillment(models.Model):
 
     def __str__(self):
         return f"Fulfillment {self.id} - Order {self.order.id} - {self.status}"
+
+
+class Redemption(models.Model):
+    """
+    For redeeming codes (e.g. from giveaways or promotions).
+    """
+    code = models.CharField(max_length=50, unique=True)
+    product_variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+    redeemed_by = models.ForeignKey("afc_auth.User", on_delete=models.SET_NULL, null=True, blank=True)
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+    order_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    savings = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+
+    def __str__(self):
+        return f"Redemption {self.code} - {self.product_variant}"

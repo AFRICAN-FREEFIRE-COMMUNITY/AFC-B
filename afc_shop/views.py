@@ -5,7 +5,8 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from afc_auth.views import require_admin, validate_token
-from .models import Cart, CartItem, Coupon, Fulfillment, Order, OrderItem, Product, ProductVariant
+from afc_leaderboard import models
+from .models import Cart, CartItem, Coupon, Fulfillment, Order, OrderItem, Product, ProductVariant, Redemption
 from afc_auth.models import User
 
 from rest_framework.decorators import api_view
@@ -1809,3 +1810,303 @@ def mark_order_as_paid(request):
 
 
     return Response({"message": "Order marked as paid successfully."}, status=200)
+
+
+@api_view(["POST"])
+def delete_coupon(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    coupon_id = request.data.get("coupon_id")
+    if not coupon_id:
+        return Response({"message": "coupon_id is required."}, status=400)
+
+    try:
+        coupon = Coupon.objects.get(id=coupon_id)
+    except Coupon.DoesNotExist:
+        return Response({"message": "Coupon not found."}, status=404)
+
+    coupon.delete()
+
+    return Response({"message": "Coupon deleted successfully."}, status=200)
+
+
+@api_view(["POST"])
+def deactivate_coupon(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    coupon_id = request.data.get("coupon_id")
+    if not coupon_id:
+        return Response({"message": "coupon_id is required."}, status=400)
+
+    try:
+        coupon = Coupon.objects.get(id=coupon_id)
+    except Coupon.DoesNotExist:
+        return Response({"message": "Coupon not found."}, status=404)
+
+    coupon.is_active = False
+    coupon.save(update_fields=["is_active"])
+
+    return Response({"message": "Coupon deactivated successfully."}, status=200)
+
+
+@api_view(["POST"])
+def activate_coupon(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    coupon_id = request.data.get("coupon_id")
+    if not coupon_id:
+        return Response({"message": "coupon_id is required."}, status=400)
+
+    try:
+        coupon = Coupon.objects.get(id=coupon_id)
+    except Coupon.DoesNotExist:
+        return Response({"message": "Coupon not found."}, status=404)
+
+    coupon.is_active = True
+    coupon.save(update_fields=["is_active"])
+
+    return Response({"message": "Coupon activated successfully."}, status=200)
+
+
+@api_view(["POST"])
+def edit_coupon(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    coupon_id = request.data.get("coupon_id")
+    if not coupon_id:
+        return Response({"message": "coupon_id is required."}, status=400)
+
+    try:
+        coupon = Coupon.objects.get(id=coupon_id)
+    except Coupon.DoesNotExist:
+        return Response({"message": "Coupon not found."}, status=404)
+
+    code = request.data.get("code")
+    discount_type = request.data.get("discount_type")
+    discount_value = request.data.get("discount_value")
+    max_uses = request.data.get("max_uses")
+    min_order_amount = request.data.get("min_order_amount")
+    expiry_date = request.data.get("expiry_date")
+    description = request.data.get("description")
+
+    if code:
+        coupon.code = code
+    if discount_type in ["percentage", "fixed"]:
+        coupon.discount_type = discount_type
+    if discount_value:
+        try:
+            coupon.discount_value = Decimal(discount_value)
+        except:
+            return Response({"message": "Invalid discount_value."}, status=400)
+    if max_uses is not None:
+        try:
+            coupon.max_uses = int(max_uses)
+        except:
+            return Response({"message": "Invalid max_uses."}, status=400)
+    if min_order_amount is not None:
+        try:
+            coupon.min_order_amount = Decimal(min_order_amount)
+        except:
+            return Response({"message": "Invalid min_order_amount."}, status=400)
+    if expiry_date:
+        try:
+            coupon.expiry_date = timezone.datetime.fromisoformat(expiry_date)
+        except:
+            return Response({"message": "Invalid expiry_date format."}, status=400)
+    if description is not None:
+        coupon.description = description
+        
+    coupon.save(update_fields=[
+        "code", "discount_type", "discount_value", "max_uses",
+        "min_order_amount", "expiry_date", "description"
+    ])
+
+    return Response({"message": "Coupon updated successfully."}, status=200)
+
+
+@api_view(["POST"])
+def get_total_customer_savings(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    coupon_id = request.data.get("coupon_id")
+    if not coupon_id:
+        return Response({"message": "coupon_id is required."}, status=400)
+
+    try:
+        coupon = Coupon.objects.get(id=coupon_id)
+    except Coupon.DoesNotExist:
+        return Response({"message": "Coupon not found."}, status=404)
+
+    total_savings = Redemption.objects.filter(coupon=coupon).aggregate(
+        total_savings=models.Sum("savings_amount")
+    )["total_savings"] or Decimal("0.00")
+
+    return Response({
+        "coupon_id": coupon.id,
+        "code": coupon.code,
+        "total_customer_savings": str(total_savings)
+    }, status=200)
+
+
+@api_view(["POST"])
+def get_total_coupon_uses(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    coupon_id = request.data.get("coupon_id")
+    if not coupon_id:
+        return Response({"message": "coupon_id is required."}, status=400)
+
+    try:
+        coupon = Coupon.objects.get(id=coupon_id)
+    except Coupon.DoesNotExist:
+        return Response({"message": "Coupon not found."}, status=404)
+
+    total_uses = Redemption.objects.filter(coupon=coupon).count()
+
+    return Response({
+        "coupon_id": coupon.id,
+        "code": coupon.code,
+        "total_uses": total_uses
+    }, status=200)
+
+
+# @api_view(["POST"])
+# def get_total_spent_using_coupon(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     user = validate_token(auth.split(" ")[1])
+#     if not user or not user.role == "admin":
+#         return Response({"message": "Unauthorized access."}, status=403)
+
+#     coupon_id = request.data.get("coupon_id")
+#     if not coupon_id:
+#         return Response({"message": "coupon_id is required."}, status=400)
+
+#     try:
+#         coupon = Coupon.objects.get(id=coupon_id)
+#     except Coupon.DoesNotExist:
+#         return Response({"message": "Coupon not found."}, status=404)
+
+#     total_spent = Redemption.objects.filter(coupon=coupon).aggregate(
+#         total_spent=models.Sum("order_total_at_redemption")
+#     )["total_spent"] or Decimal("0.00")
+
+#     return Response({
+#         "coupon_id": coupon.id,
+#         "code": coupon.code,
+#         "total_spent_using_coupon": str(total_spent)
+#     }, status=200)
+
+
+@api_view(["POST"])
+def get_total_revenue_generated(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    coupon_id = request.data.get("coupon_id")
+    if not coupon_id:
+        return Response({"message": "coupon_id is required."}, status=400)
+
+    try:
+        coupon = Coupon.objects.get(id=coupon_id)
+    except Coupon.DoesNotExist:
+        return Response({"message": "Coupon not found."}, status=404)
+
+    total_revenue = Redemption.objects.filter(coupon=coupon).aggregate(
+        total_revenue=models.Sum("final_amount_after_discount")
+    )["total_revenue"] or Decimal("0.00")
+
+    return Response({
+        "coupon_id": coupon.id,
+        "code": coupon.code,
+        "total_revenue_generated_from_coupon": str(total_revenue)
+    }, status=200)
+
+
+@api_view(["POST"])
+def get_weekly_usage_and_saving_generated(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    coupon_id = request.data.get("coupon_id")
+    if not coupon_id:
+        return Response({"message": "coupon_id is required."}, status=400)
+
+    try:
+        coupon = Coupon.objects.get(id=coupon_id)
+    except Coupon.DoesNotExist:
+        return Response({"message": "Coupon not found."}, status=404)
+
+    one_week_ago = timezone.now() - timezone.timedelta(days=7)
+
+    weekly_data = Redemption.objects.filter(
+        coupon=coupon,
+        redeemed_at__gte=one_week_ago
+    ).annotate(
+        day=models.functions.TruncDay("redeemed_at")
+    ).values("day").annotate(
+        total_uses=models.Count("id"),
+        total_savings=models.Sum("savings_amount")
+    ).order_by("day")
+
+    result = []
+    for entry in weekly_data:
+        result.append({
+            "date": entry["day"].date(),
+            "uses": entry["total_uses"],
+            "savings": str(entry["total_savings"] or Decimal("0.00"))
+        })
+
+    return Response({
+        "coupon_id": coupon.id,
+        "code": coupon.code,
+        "weekly_usage_and_saving": result
+    }, status=200)
