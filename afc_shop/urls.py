@@ -33,4 +33,5 @@ urlpatterns = [
     path("get-my-orders/", get_my_orders, name="get_my_orders"),
     path("get-order-details/", get_order_details, name="get_order_details"),
     path("get-order-details-for-admin/", get_order_details_for_admin, name="get_order_details_for_admin"),
+    path("mark-order-as-paid/", mark_order_as_paid, name="mark_order_as_paid"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
