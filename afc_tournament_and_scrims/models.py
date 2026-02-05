@@ -372,3 +372,5 @@ class EventPrizePayout(models.Model):
             models.Index(fields=["event", "user"]),
             models.Index(fields=["event", "tournament_team"]),
         ]
+
+
