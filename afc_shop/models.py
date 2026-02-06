@@ -276,7 +276,7 @@ class Product(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     product_type = models.CharField(max_length=20, choices=PRODUCT_TYPES)
-    # slug = models.SlugField(unique=True)  # for SEO-friendly URLs
+    slug = models.SlugField(unique=True)  # for SEO-friendly URLs
 
     # product-level image (optional). Variants can also have images.
     image = models.ImageField(upload_to="products/", null=True, blank=True)
@@ -348,7 +348,7 @@ class Coupon(models.Model):
     min_order_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
     max_uses = models.PositiveIntegerField(null=True, blank=True)
     used_count = models.PositiveIntegerField(default=0)
-    # description = models.TextField(blank=True)
+    desc = models.TextField(blank=True)
 
     def is_valid_now(self):
         if not self.active:
