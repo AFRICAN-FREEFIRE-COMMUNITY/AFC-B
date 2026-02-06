@@ -481,10 +481,7 @@ class Fulfillment(models.Model):
 
 
 class Redemption(models.Model):
-    """
-    For redeeming codes (e.g. from giveaways or promotions).
-    """
-    code = models.CharField(max_length=50, unique=True)
+    coupon = models.ForeignKey(Coupon, on_delete=models.CASCADE, related_name="redemptions")
     product_variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
     redeemed_by = models.ForeignKey("afc_auth.User", on_delete=models.SET_NULL, null=True, blank=True)
     redeemed_at = models.DateTimeField(null=True, blank=True)
