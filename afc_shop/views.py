@@ -1532,9 +1532,16 @@ def verify_paystack_payment(request):
     # -------- Process Order --------
     with transaction.atomic():
 
+        # Prevent double processing
+        if order.status == "paid":
+            return Response({"message": "Already processed"}, status=200)
+
+        transaction_id = str(data.get("id"))
+        payment_channel = data.get("channel")
+
         order.status = "paid"
         order.paystack_transaction_id = transaction_id
-        order.payment_method = payment_method
+        order.payment_method = payment_channel
         order.paid_at = timezone.now()
         order.save(update_fields=[
             "status",
@@ -1543,10 +1550,37 @@ def verify_paystack_payment(request):
             "paid_at"
         ])
 
+        # ✅ Increment Coupon Usage
+        if order.coupon:
+            order.coupon.used_count += 1
+            order.coupon.save(update_fields=["used_count"])
+
+            # Create redemption record (avoid duplicates)
+            if not Redemption.objects.filter(
+                coupon=order.coupon,
+                redeemed_by=order.user,
+                redeemed_at__isnull=False,
+                order_amount=order.total
+            ).exists():
+
+                Redemption.objects.create(
+                    coupon=order.coupon,
+                    product_variant=order.items.first().variant,
+                    redeemed_by=order.user,
+                    redeemed_at=timezone.now(),
+                    order_amount=order.total,
+                    savings=order.discount_total
+                )
+
         # Reduce stock
         for item in order.items.all():
             variant = item.variant
             if variant.product.is_limited_stock:
+                if variant.stock_qty < item.quantity:
+                    order.status = "failed"
+                    order.save(update_fields=["status"])
+                    return Response({"message": "Stock inconsistency"}, status=400)
+
                 variant.stock_qty -= item.quantity
                 variant.save(update_fields=["stock_qty"])
 
@@ -1557,6 +1591,7 @@ def verify_paystack_payment(request):
                 item=item,
                 status="queued"
             )
+
 
     return Response({
         "message": "Payment verified successfully.",
@@ -1708,7 +1743,10 @@ def paystack_webhook(request):
 
     with transaction.atomic():
 
-        # ✅ Mark order paid
+        # Prevent double processing
+        if order.status == "paid":
+            return Response({"message": "Already processed"}, status=200)
+
         transaction_id = str(data.get("id"))
         payment_channel = data.get("channel")
 
@@ -1723,26 +1761,45 @@ def paystack_webhook(request):
             "paid_at"
         ])
 
+        # ✅ Increment Coupon Usage
+        if order.coupon:
+            order.coupon.used_count += 1
+            order.coupon.save(update_fields=["used_count"])
 
-        # ✅ Reduce stock
+            # Create redemption record (avoid duplicates)
+            if not Redemption.objects.filter(
+                coupon=order.coupon,
+                redeemed_by=order.user,
+                redeemed_at__isnull=False,
+                order_amount=order.total
+            ).exists():
+
+                Redemption.objects.create(
+                    coupon=order.coupon,
+                    product_variant=order.items.first().variant,
+                    redeemed_by=order.user,
+                    redeemed_at=timezone.now(),
+                    order_amount=order.total,
+                    savings=order.discount_total
+                )
+
+        # Reduce stock
         for item in order.items.all():
             variant = item.variant
-
             if variant.product.is_limited_stock:
                 if variant.stock_qty < item.quantity:
-                    # Critical fail (should not happen normally)
                     order.status = "failed"
                     order.save(update_fields=["status"])
-                    return Response({"message": "Stock inconsistency detected"}, status=400)
+                    return Response({"message": "Stock inconsistency"}, status=400)
 
                 variant.stock_qty -= item.quantity
                 variant.save(update_fields=["stock_qty"])
 
-        # ✅ Create fulfillment records
+        # Create fulfillment
         for item in order.items.all():
             Fulfillment.objects.create(
                 order=order,
-                order_item=item,
+                item=item,
                 status="queued"
             )
 
