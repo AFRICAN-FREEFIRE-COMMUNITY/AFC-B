@@ -276,7 +276,7 @@ class Product(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     product_type = models.CharField(max_length=20, choices=PRODUCT_TYPES)
-    slug = models.SlugField(unique=True)  # for SEO-friendly URLs
+    # slug = models.SlugField(unique=True)  # for SEO-friendly URLs
 
     # product-level image (optional). Variants can also have images.
     image = models.ImageField(upload_to="products/", null=True, blank=True)
