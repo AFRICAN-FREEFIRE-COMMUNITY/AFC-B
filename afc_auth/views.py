@@ -2798,3 +2798,5 @@ def get_admin_activities(request):
         })
 
     return Response({"admin_activities": activities_data}, status=status.HTTP_200_OK)
+
+

@@ -10967,3 +10967,16 @@ def get_my_drafted_events(request):
         "message": "Your drafted events retrieved.",
         "drafted_events": event_list,
     }, status=200)
+
+
+@api_view(["POST"])
+def get_total_kills(request):
+    total_solo_kills = SoloPlayerMatchStats.objects.aggregate(total=Sum("kills"))["total"] or 0
+    total_team_kills = TournamentPlayerMatchStats.objects.aggregate(total=Sum("kills"))["total"] or 0
+    total_kills = total_solo_kills + total_team_kills
+
+    return Response({
+        "total_solo_kills": total_solo_kills,
+        "total_team_kills": total_team_kills,
+        "total_kills": total_kills
+    }, status=status.HTTP_200_OK)
