@@ -489,4 +489,4 @@ class Redemption(models.Model):
     savings = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
 
     def __str__(self):
-        return f"Redemption {self.code} - {self.product_variant}"
+        return f"Redemption {self.coupon.code} - {self.product_variant}"
