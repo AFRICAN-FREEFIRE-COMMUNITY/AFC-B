@@ -10969,7 +10969,7 @@ def get_my_drafted_events(request):
     }, status=200)
 
 
-@api_view(["POST"])
+@api_view(["GET"])
 def get_total_kills(request):
     total_solo_kills = SoloPlayerMatchStats.objects.aggregate(total=Sum("kills"))["total"] or 0
     total_team_kills = TournamentPlayerMatchStats.objects.aggregate(total=Sum("kills"))["total"] or 0
