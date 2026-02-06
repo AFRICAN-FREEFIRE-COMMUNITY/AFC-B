@@ -348,7 +348,7 @@ class Coupon(models.Model):
     min_order_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
     max_uses = models.PositiveIntegerField(null=True, blank=True)
     used_count = models.PositiveIntegerField(default=0)
-    desc = models.TextField(blank=True)
+    description = models.TextField(blank=True)
 
     def is_valid_now(self):
         if not self.active:

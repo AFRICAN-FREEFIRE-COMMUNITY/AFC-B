@@ -1111,6 +1111,11 @@ from rest_framework import status
 TAX_RATE = Decimal("0.075")  # 7.5%
 
 
+from decimal import Decimal, ROUND_HALF_UP
+
+# TAX_RATE = Decimal("0.10")  # 10%
+
+
 @api_view(["POST"])
 def buy_now(request):
     auth = request.headers.get("Authorization")
@@ -1137,25 +1142,20 @@ def buy_now(request):
         if not request.data.get(field):
             return Response({"message": f"{field} is required."}, status=400)
 
-    first_name = request.data.get("first_name")
-    last_name = request.data.get("last_name")
-    email = request.data.get("email")
-    phone_number = request.data.get("phone_number")
-    address = request.data.get("address")
-    city = request.data.get("city")
-    state = request.data.get("state")
-    postcode = request.data.get("postcode")
-
     subtotal = Decimal("0.00")
+    total_tax = Decimal("0.00")
+    total_discount = Decimal("0.00")
+
     order_items_to_create = []
 
-    # -------- Validate Items --------
+    # -------- Validate & Calculate --------
     for item in items:
         variant_id = item.get("variant_id")
         quantity = int(item.get("quantity", 1))
+        coupon_code = item.get("coupon_code")
 
         if quantity <= 0:
-            return Response({"message": "Invalid quantity provided."}, status=400)
+            return Response({"message": "Invalid quantity."}, status=400)
 
         try:
             variant = ProductVariant.objects.select_related("product").get(
@@ -1172,20 +1172,54 @@ def buy_now(request):
             return Response({"message": f"Insufficient stock for {variant.title}."}, status=400)
 
         unit_price = variant.price
-        line_total = unit_price * quantity
+        base_price = (unit_price * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-        subtotal += line_total
+        # -------- TAX (Before Discount) --------
+        tax_amount = (base_price * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        discount_amount = Decimal("0.00")
+        applied_coupon = None
+
+        # -------- COUPON --------
+        if coupon_code:
+            try:
+                coupon = Coupon.objects.get(code=coupon_code, active=True)
+            except Coupon.DoesNotExist:
+                return Response({"message": f"Coupon {coupon_code} invalid."}, status=400)
+
+            if not coupon.is_valid_now():
+                return Response({"message": f"Coupon {coupon_code} expired or invalid."}, status=400)
+
+            if base_price < coupon.min_order_amount:
+                return Response({"message": f"Coupon {coupon_code} minimum not reached."}, status=400)
+
+            if coupon.discount_type == "percent":
+                discount_amount = (base_price * (coupon.discount_value / Decimal("100"))).quantize(Decimal("0.01"))
+            else:
+                discount_amount = coupon.discount_value
+
+            # Prevent over-discount
+            if discount_amount > base_price:
+                discount_amount = base_price
+
+            applied_coupon = coupon
+
+        line_total = base_price + tax_amount - discount_amount
+
+        subtotal += base_price
+        total_tax += tax_amount
+        total_discount += discount_amount
 
         order_items_to_create.append({
             "variant": variant,
             "quantity": quantity,
             "unit_price": unit_price,
-            "line_total": line_total
+            "line_total": line_total,
+            "coupon": applied_coupon,
+            "discount": discount_amount
         })
 
-    # -------- Calculate Tax --------
-    tax_amount = (subtotal * TAX_RATE).quantize(Decimal("0.01"))
-    total = subtotal + tax_amount
+    grand_total = subtotal + total_tax - total_discount
 
     # -------- Create Order --------
     with transaction.atomic():
@@ -1193,17 +1227,18 @@ def buy_now(request):
         order = Order.objects.create(
             user=user,
             subtotal=subtotal,
-            total=total,
+            discount_total=total_discount,
+            total=grand_total,
             status="pending",
-            first_name=first_name,
-            last_name=last_name,
-            email=email,
-            phone_number=phone_number,
-            address=address,
-            city=city,
-            state=state,
-            postcode=postcode,
-            tax=tax_amount
+            coupon_code=None,  # item-level coupons
+            first_name=request.data.get("first_name"),
+            last_name=request.data.get("last_name"),
+            email=request.data.get("email"),
+            phone_number=request.data.get("phone_number"),
+            address=request.data.get("address"),
+            city=request.data.get("city"),
+            state=request.data.get("state"),
+            postcode=request.data.get("postcode"),
         )
 
         order_items = []
@@ -1222,9 +1257,8 @@ def buy_now(request):
 
         OrderItem.objects.bulk_create(order_items)
 
-    # -------- Initialize Paystack --------
+    # -------- Paystack Init --------
     reference = f"PS_{uuid.uuid4().hex}"
-
     order.paystack_reference = reference
     order.save(update_fields=["paystack_reference"])
 
@@ -1234,8 +1268,8 @@ def buy_now(request):
     }
 
     payload = {
-        "email": email,
-        "amount": int(total * 100),  # convert to kobo
+        "email": request.data.get("email"),
+        "amount": int(grand_total * 100),
         "reference": reference,
         "callback_url": settings.PAYSTACK_CALLBACK_URL,
         "metadata": {
@@ -1255,7 +1289,6 @@ def buy_now(request):
     if not data.get("status"):
         order.status = "failed"
         order.save(update_fields=["status"])
-
         return Response({"message": "Payment initialization failed."}, status=400)
 
     return Response({
@@ -1263,9 +1296,168 @@ def buy_now(request):
         "reference": reference,
         "order_id": order.id,
         "subtotal": str(subtotal),
-        "tax": str(tax_amount),
-        "total": str(total)
+        "tax": str(total_tax),
+        "discount": str(total_discount),
+        "total": str(grand_total)
     }, status=200)
+
+
+
+# @api_view(["POST"])
+# def buy_now(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid token"}, status=400)
+
+#     user = validate_token(auth.split(" ")[1])
+#     if not user:
+#         return Response({"message": "Invalid session"}, status=401)
+
+#     items = request.data.get("items", [])
+
+#     if not isinstance(items, list) or not items:
+#         return Response({"message": "Items are required."}, status=400)
+
+#     # -------- Customer Info --------
+#     required_fields = [
+#         "first_name", "last_name", "email",
+#         "phone_number", "address", "city",
+#         "state", "postcode"
+#     ]
+
+#     for field in required_fields:
+#         if not request.data.get(field):
+#             return Response({"message": f"{field} is required."}, status=400)
+
+#     first_name = request.data.get("first_name")
+#     last_name = request.data.get("last_name")
+#     email = request.data.get("email")
+#     phone_number = request.data.get("phone_number")
+#     address = request.data.get("address")
+#     city = request.data.get("city")
+#     state = request.data.get("state")
+#     postcode = request.data.get("postcode")
+
+#     subtotal = Decimal("0.00")
+#     order_items_to_create = []
+
+#     # -------- Validate Items --------
+#     for item in items:
+#         variant_id = item.get("variant_id")
+#         quantity = int(item.get("quantity", 1))
+
+#         if quantity <= 0:
+#             return Response({"message": "Invalid quantity provided."}, status=400)
+
+#         try:
+#             variant = ProductVariant.objects.select_related("product").get(
+#                 id=variant_id,
+#                 is_active=True
+#             )
+#         except ProductVariant.DoesNotExist:
+#             return Response({"message": f"Product {variant_id} not found."}, status=404)
+
+#         if not variant.is_in_stock():
+#             return Response({"message": f"{variant.title} is out of stock."}, status=400)
+
+#         if variant.product.is_limited_stock and variant.stock_qty < quantity:
+#             return Response({"message": f"Insufficient stock for {variant.title}."}, status=400)
+
+#         unit_price = variant.price
+#         line_total = unit_price * quantity
+
+#         subtotal += line_total
+
+#         order_items_to_create.append({
+#             "variant": variant,
+#             "quantity": quantity,
+#             "unit_price": unit_price,
+#             "line_total": line_total
+#         })
+
+#     # -------- Calculate Tax --------
+#     tax_amount = (subtotal * TAX_RATE).quantize(Decimal("0.01"))
+#     total = subtotal + tax_amount
+
+#     # -------- Create Order --------
+#     with transaction.atomic():
+
+#         order = Order.objects.create(
+#             user=user,
+#             subtotal=subtotal,
+#             total=total,
+#             status="pending",
+#             first_name=first_name,
+#             last_name=last_name,
+#             email=email,
+#             phone_number=phone_number,
+#             address=address,
+#             city=city,
+#             state=state,
+#             postcode=postcode,
+#             tax=tax_amount
+#         )
+
+#         order_items = []
+#         for item in order_items_to_create:
+#             order_items.append(
+#                 OrderItem(
+#                     order=order,
+#                     variant=item["variant"],
+#                     quantity=item["quantity"],
+#                     unit_price=item["unit_price"],
+#                     line_total=item["line_total"],
+#                     product_name_snapshot=item["variant"].product.name,
+#                     variant_title_snapshot=item["variant"].title or item["variant"].sku,
+#                 )
+#             )
+
+#         OrderItem.objects.bulk_create(order_items)
+
+#     # -------- Initialize Paystack --------
+#     reference = f"PS_{uuid.uuid4().hex}"
+
+#     order.paystack_reference = reference
+#     order.save(update_fields=["paystack_reference"])
+
+#     headers = {
+#         "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+#         "Content-Type": "application/json",
+#     }
+
+#     payload = {
+#         "email": email,
+#         "amount": int(total * 100),  # convert to kobo
+#         "reference": reference,
+#         "callback_url": settings.PAYSTACK_CALLBACK_URL,
+#         "metadata": {
+#             "order_id": str(order.id),
+#             "user_id": user.user_id,
+#         }
+#     }
+
+#     response = requests.post(
+#         "https://api.paystack.co/transaction/initialize",
+#         headers=headers,
+#         json=payload
+#     )
+
+#     data = response.json()
+
+#     if not data.get("status"):
+#         order.status = "failed"
+#         order.save(update_fields=["status"])
+
+#         return Response({"message": "Payment initialization failed."}, status=400)
+
+#     return Response({
+#         "authorization_url": data["data"]["authorization_url"],
+#         "reference": reference,
+#         "order_id": order.id,
+#         "subtotal": str(subtotal),
+#         "tax": str(tax_amount),
+#         "total": str(total)
+#     }, status=200)
 
 
 
