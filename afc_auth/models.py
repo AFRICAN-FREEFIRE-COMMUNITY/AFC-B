@@ -220,7 +220,7 @@ class News(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            base = slugify(self.title)[:200] or "news"
+            base = slugify(self.news_title)[:200] or "news"
             slug = base
             i = 2
             while News.objects.filter(slug=slug).exclude(pk=self.pk).exists():
