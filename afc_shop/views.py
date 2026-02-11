@@ -2430,10 +2430,9 @@ def get_coupon_details(request):
         "max_uses": coupon.max_uses,
         "used_count": coupon.used_count,
         "min_order_amount": str(coupon.min_order_amount),
-        "expiry_date": coupon.expiry_date,
-        "is_active": coupon.is_active,
-        "description": coupon.description,
-        "created_at": coupon.created_at
+        "expiry_date": coupon.end_at,
+        "is_active": coupon.active,
+        "description": coupon.description
     }
 
     return Response({"coupon_details": data}, status=200)
