@@ -16,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
 
-from .models import AdminHistory, LoginHistory, LoginHistory, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import AdminHistory, LoginHistory, LoginHistory, NewsDislike, NewsLike, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -2800,3 +2800,152 @@ def get_admin_activities(request):
     return Response({"admin_activities": activities_data}, status=status.HTTP_200_OK)
 
 
+@api_view(["POST"])
+def like_news(request):
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+    session_token = session_token.split(" ")[1]
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
+    news_id = request.data.get("news_id")
+
+    if not news_id:
+        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        news_item = News.objects.get(news_id=news_id)
+    except News.DoesNotExist:
+        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Check if user already liked this news
+    existing_like = NewsLike.objects.filter(user=user, news=news_item).first()
+    if existing_like:
+        return Response({"message": "You have already liked this news item."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    existing_dislike = NewsDislike.objects.filter(user=user, news=news_item).first()
+    if existing_dislike:
+        existing_dislike.delete()  # Remove dislike if exists
+
+    NewsLike.objects.create(user=user, news=news_item)
+
+    return Response({"message": "News item liked successfully."}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+def unlike_news(request):
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+    session_token = session_token.split(" ")[1]
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
+    news_id = request.data.get("news_id")
+
+    if not news_id:
+        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        news_item = News.objects.get(news_id=news_id)
+    except News.DoesNotExist:
+        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    existing_like = NewsLike.objects.filter(user=user, news=news_item).first()
+    if not existing_like:
+        return Response({"message": "You have not liked this news item."}, status=status.HTTP_400_BAD_REQUEST)
+
+    existing_like.delete()
+
+    return Response({"message": "News item unliked successfully."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def dislike_news(request):
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+    session_token = session_token.split(" ")[1]
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
+    news_id = request.data.get("news_id")
+
+    if not news_id:
+        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        news_item = News.objects.get(news_id=news_id)
+    except News.DoesNotExist:
+        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Check if user already disliked this news
+    existing_like = NewsLike.objects.filter(user=user, news=news_item).first()
+    if existing_like:
+        existing_like.delete()  # Remove like if exists
+
+    # Here you can implement a NewsDislike model similar to NewsLike if you want to track dislikes separately
+    NewsDislike.objects.create(user=user, news=news_item)
+
+    return Response({"message": "News item disliked successfully."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def undislike_news(request):
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+    session_token = session_token.split(" ")[1]
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
+    news_id = request.data.get("news_id")
+
+    if not news_id:
+        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        news_item = News.objects.get(news_id=news_id)
+    except News.DoesNotExist:
+        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    existing_dislike = NewsDislike.objects.filter(user=user, news=news_item).first()
+    if not existing_dislike:
+        return Response({"message": "You have not disliked this news item."}, status=status.HTTP_400_BAD_REQUEST)
+
+    existing_dislike.delete()
+
+    return Response({"message": "News item undisliked successfully."}, status=status.HTTP_200_OK)

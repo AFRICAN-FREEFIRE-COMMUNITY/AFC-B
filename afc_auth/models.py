@@ -215,6 +215,7 @@ class News(models.Model):
     author = models.ForeignKey(User, on_delete=models.CASCADE)  # Admin, Mod, or Support
     created_at = models.DateTimeField(auto_now_add=True)
 
+
     def __str__(self):
         return self.news_title
 
@@ -228,6 +229,33 @@ class News(models.Model):
                 i += 1
             self.slug = slug
         super().save(*args, **kwargs)
+
+
+class NewsLike(models.Model):
+    news = models.ForeignKey(News, on_delete=models.CASCADE, related_name="likes")
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("news", "user")  # Ensure a user can like a news item only once
+
+
+class NewsDislike(models.Model):
+    news = models.ForeignKey(News, on_delete=models.CASCADE, related_name="dislikes")
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("news", "user")  # Ensure a user can dislike a news item only once
+
+
+class NewsViews(models.Model):
+    news = models.ForeignKey(News, on_delete=models.CASCADE, related_name="views")
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("news", "user")  # Ensure a user can view a news item only once
     
 
 class AdminHistory(models.Model):
