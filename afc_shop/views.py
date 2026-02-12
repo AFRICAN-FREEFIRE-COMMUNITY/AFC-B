@@ -2437,7 +2437,7 @@ def get_coupon_details(request):
         "used_count": coupon.used_count,
         "min_order_amount": str(coupon.min_order_amount),
         "expiry_date": coupon.end_at,
-        "is_active": coupon.active,
+        "is_active": coupon.is_active,
         "description": coupon.description
     }
 
@@ -2472,7 +2472,7 @@ def get_coupon_details_with_code(request):
         "used_count": coupon.used_count,
         "min_order_amount": str(coupon.min_order_amount),
         "expiry_date": coupon.end_at,
-        "is_active": coupon.active,
+        "is_active": coupon.is_active,
         "description": coupon.description
     }
 
