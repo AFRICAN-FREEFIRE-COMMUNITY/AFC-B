@@ -481,13 +481,13 @@ class Fulfillment(models.Model):
         return f"Fulfillment {self.id} - Order {self.order.id} - {self.status}"
 
 
-class Redemption(models.Model):
-    coupon = models.ForeignKey(Coupon, on_delete=models.CASCADE, related_name="redemptions")
-    product_variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
-    redeemed_by = models.ForeignKey("afc_auth.User", on_delete=models.SET_NULL, null=True, blank=True)
-    redeemed_at = models.DateTimeField(null=True, blank=True)
-    order_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
-    savings = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+# class Redemption(models.Model):
+#     coupon = models.ForeignKey(Coupon, on_delete=models.CASCADE, related_name="redemptions")
+#     product_variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+#     redeemed_by = models.ForeignKey("afc_auth.User", on_delete=models.SET_NULL, null=True, blank=True)
+#     redeemed_at = models.DateTimeField(null=True, blank=True)
+#     order_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+#     savings = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
 
-    def __str__(self):
-        return f"Redemption {self.coupon.code} - {self.product_variant}"
+#     def __str__(self):
+#         return f"Redemption {self.coupon.code} - {self.product_variant}"
