@@ -12,7 +12,7 @@ from django.utils.dateparse import parse_date
 from afc_auth.views import assign_discord_role, check_discord_membership, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from .models import Event, EventInviteToken, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 from afc_auth.models import AdminHistory, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -10980,3 +10980,36 @@ def get_total_kills(request):
         "total_team_kills": total_team_kills,
         "total_kills": total_kills
     }, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def generate_single_use_invite_link_for_private_event(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if event.is_draft:
+        return Response({"message": "Cannot generate invite link for draft event."}, status=400
+    )
+    if event.is_public:
+        return Response({"message": "Event is already public. No invite link needed."}, status=400)
+    # Generate a unique token (you can use UUID or any other method)
+    import uuid
+    token = str(uuid.uuid4())
+    # Store the token with an association to the event (you may want to create a model for this)
+    EventInviteToken.objects.create(event=event, token=token, created_by=admin)
+    # Construct the invite link (replace with your frontend URL)
+    invite_link = f"https://yourfrontend.com/join-event/{token}"
+    return Response({
+        "message": "Invite link generated.",
+        "event_id": event.event_id,
+        "invite_link": invite_link,
+    }, status=200)

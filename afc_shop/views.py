@@ -2212,7 +2212,7 @@ def edit_coupon(request):
         
     coupon.save(update_fields=[
         "code", "discount_type", "discount_value", "max_uses",
-        "min_order_amount", "expiry_date", "description"
+        "min_order_amount", "end_at", "description"
     ])
 
     return Response({"message": "Coupon updated successfully."}, status=200)
