@@ -341,7 +341,7 @@ class Coupon(models.Model):
     discount_value = models.DecimalField(max_digits=10, decimal_places=2)
     slug = models.SlugField(unique=True)
 
-    active = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)
     start_at = models.DateTimeField(null=True, blank=True)
     end_at = models.DateTimeField(null=True, blank=True)
 
@@ -351,7 +351,7 @@ class Coupon(models.Model):
     description = models.TextField(blank=True)
 
     def is_valid_now(self):
-        if not self.active:
+        if not self.is_active:
             return False
         now = timezone.now()
         if self.start_at and now < self.start_at:
