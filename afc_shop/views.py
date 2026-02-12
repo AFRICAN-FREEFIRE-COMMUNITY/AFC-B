@@ -2436,3 +2436,38 @@ def get_coupon_details(request):
     }
 
     return Response({"coupon_details": data}, status=200)
+
+
+@api_view(["POST"])
+def get_coupon_details_with_code(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user or not user.role == "admin":
+        return Response({"message": "Unauthorized access."}, status=403)
+
+    coupon_code = request.data.get("coupon_code")
+    if not coupon_code:
+        return Response({"message": "coupon_code is required."}, status=400)
+
+    try:
+        coupon = Coupon.objects.get(code=coupon_code)
+    except Coupon.DoesNotExist:
+        return Response({"message": "Coupon not found."}, status=404)
+
+    data = {
+        "id": coupon.id,
+        "code": coupon.code,
+        "discount_type": coupon.discount_type,
+        "discount_value": str(coupon.discount_value),
+        "max_uses": coupon.max_uses,
+        "used_count": coupon.used_count,
+        "min_order_amount": str(coupon.min_order_amount),
+        "expiry_date": coupon.end_at,
+        "is_active": coupon.active,
+        "description": coupon.description
+    }
+
+    return Response({"coupon_details": data}, status=200)

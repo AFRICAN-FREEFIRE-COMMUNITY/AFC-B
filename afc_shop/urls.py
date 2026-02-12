@@ -44,4 +44,5 @@ urlpatterns = [
     path("get-total-revenue-generated/", get_total_revenue_generated, name="get_total_revenue_generated"),
     path("get-coupon-conversion-rate/", get_coupon_conversion_rate, name="get_coupon_conversion_rate"),
     path("get-coupon-details/", get_coupon_details, name="get_coupon_details"),
+    path('get-coupon-details-with-code/', get_coupon_details_with_code, name='get_coupon_details_with_code'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
