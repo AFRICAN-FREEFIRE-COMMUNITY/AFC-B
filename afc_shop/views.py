@@ -619,6 +619,7 @@ def add_to_cart(request):
     # ---------------- INPUT ----------------
     variant_id = request.data.get("variant_id")
     quantity = request.data.get("quantity", 1)
+    coupon_code = request.data.get("coupon_code", "").strip().upper()
 
     if not variant_id:
         return Response({"message": "variant_id is required."}, status=400)
@@ -649,6 +650,16 @@ def add_to_cart(request):
             return Response({
                 "message": f"Only {variant.stock_qty} left in stock."
             }, status=400)
+        
+    
+    # Coupon validation (if provided)
+    coupon = None
+    if coupon_code:
+        coupon = Coupon.objects.filter(code=coupon_code).first()
+        if not coupon:
+            return Response({"message": "Invalid coupon code."}, status=400)
+        if not coupon.is_valid_now():
+            return Response({"message": "This coupon is not valid at the moment."}, status=400)
 
     # ---------------- CREATE / UPDATE CART ----------------
     with transaction.atomic():
@@ -658,7 +669,8 @@ def add_to_cart(request):
         cart_item, created = CartItem.objects.get_or_create(
             cart=cart,
             variant=variant,
-            defaults={"quantity": quantity}
+            defaults={"quantity": quantity},
+            coupon=coupon
         )
 
         if not created:
@@ -670,7 +682,8 @@ def add_to_cart(request):
                 }, status=400)
 
             cart_item.quantity = new_qty
-            cart_item.save(update_fields=["quantity"])
+            cart_item.coupon = coupon
+            cart_item.save(update_fields=["quantity", "coupon"])
 
     # ---------------- RESPONSE SUMMARY ----------------
     items = cart.items.select_related("variant__product")
@@ -690,6 +703,7 @@ def add_to_cart(request):
             "unit_price": str(item.variant.price),
             "quantity": item.quantity,
             "line_total": str(line_total),
+            "coupon": item.coupon.code if item.coupon else None,
         })
 
     return Response({
@@ -743,7 +757,8 @@ def get_my_cart(request):
             "unit_price": str(item.variant.price),
             "quantity": item.quantity,
             "line_total": str(line_total),
-            "in_stock": item.variant.is_in_stock()
+            "in_stock": item.variant.is_in_stock(),
+            "coupon": item.coupon.code if item.coupon else None,
         })
 
     return Response({
