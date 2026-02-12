@@ -2949,3 +2949,21 @@ def undislike_news(request):
     existing_dislike.delete()
 
     return Response({"message": "News item undisliked successfully."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def get_news_likes_dislikes_count(request):
+    news_id = request.data.get("news_id")
+    try:
+        news_item = News.objects.get(news_id=news_id)
+    except News.DoesNotExist:
+        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    likes_count = NewsLike.objects.filter(news=news_item).count()
+    dislikes_count = NewsDislike.objects.filter(news=news_item).count()
+
+    return Response({
+        "news_id": news_id,
+        "likes": likes_count,
+        "dislikes": dislikes_count
+    }, status=status.HTTP_200_OK)

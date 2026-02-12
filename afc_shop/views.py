@@ -551,7 +551,7 @@ def create_coupon(request):
         code=code,
         discount_type=discount_type,
         discount_value=Decimal(str(discount_value)),
-        active=bool(request.data.get("active", True)),
+        is_active=bool(request.data.get("active", True)),
         min_order_amount=Decimal(str(request.data.get("min_order_amount", "0"))),
         max_uses=request.data.get("max_uses") or None,
         start_at=request.data.get("start_at") or None,  # if you're sending ISO string, parse it properly
@@ -2471,3 +2471,4 @@ def get_coupon_details_with_code(request):
     }
 
     return Response({"coupon_details": data}, status=200)
+
