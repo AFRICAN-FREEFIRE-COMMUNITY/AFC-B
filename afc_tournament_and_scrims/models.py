@@ -92,6 +92,8 @@ class Event(models.Model):
     # restricted_regions = models.JSONField(default=list, blank=True)   # ["West Africa", "Europe", ...]
     restricted_countries = models.JSONField(default=list, blank=True) # ["Nigeria", "Ghana", ...]
 
+    is_public = models.BooleanField(default=True)
+
 
     def save(self, *args, **kwargs):
         if not self.slug:
@@ -103,6 +105,15 @@ class Event(models.Model):
                 i += 1
             self.slug = slug
         super().save(*args, **kwargs)
+
+
+class EventInviteToken(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="invite_tokens")
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    used = models.BooleanField(default=False)
 
 # ---------------- Stream Channels ----------------
 class StreamChannel(models.Model):
