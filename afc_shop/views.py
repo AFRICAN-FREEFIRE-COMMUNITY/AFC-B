@@ -549,7 +549,7 @@ def create_coupon(request):
 
     #check if similar code has ever been used before, if yes and it's inactive, we can allow reuse but if it's active we should reject
     existing = Coupon.objects.filter(code=code).first()
-    if existing and existing.is_active:
+    if existing:
         return Response({"message": "A coupon with this code already exists."}, status=400)
     
 
