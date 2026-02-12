@@ -547,6 +547,12 @@ def create_coupon(request):
     if not code or discount_type not in ["percent", "fixed"] or discount_value is None:
         return Response({"message": "code, discount_type, discount_value are required."}, status=400)
 
+    #check if similar code has ever been used before, if yes and it's inactive, we can allow reuse but if it's active we should reject
+    existing = Coupon.objects.filter(code=code).first()
+    if existing and existing.is_active:
+        return Response({"message": "A coupon with this code already exists."}, status=400)
+    
+
     c = Coupon.objects.create(
         code=code,
         discount_type=discount_type,
