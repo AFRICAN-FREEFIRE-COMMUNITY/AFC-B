@@ -63,4 +63,5 @@ urlpatterns = [
     path('dislike-news/', dislike_news, name='dislike_news'),
     path('unlike-news/', unlike_news, name='unlike_news'),
     path('undislike-news/', undislike_news, name='undislike_news'),
+    path('get-news-likes-dislikes-count/', get_news_likes_dislikes_count, name='get_news_likes_dislikes_count'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
