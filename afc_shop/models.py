@@ -452,6 +452,7 @@ class CartItem(models.Model):
     cart = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name="items")
     variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
+    coupon = models.ForeignKey(Coupon, null=True, blank=True, on_delete=models.SET_NULL)
 
     def __str__(self):
         return f"Cart {self.cart.id} - {self.variant.product.name} x{self.quantity}"
