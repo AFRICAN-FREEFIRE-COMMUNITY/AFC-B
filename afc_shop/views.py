@@ -523,7 +523,7 @@ def view_all_coupons(request):
         "code": c.code,
         "discount_type": c.discount_type,
         "discount_value": str(c.discount_value),
-        "active": c.active,
+        "active": c.is_active,
         "start_at": c.start_at,
         "end_at": c.end_at,
         "min_order_amount": str(c.min_order_amount),
@@ -2183,7 +2183,7 @@ def edit_coupon(request):
             return Response({"message": "Invalid min_order_amount."}, status=400)
     if expiry_date:
         try:
-            coupon.expiry_date = timezone.datetime.fromisoformat(expiry_date)
+            coupon.end_at = timezone.datetime.fromisoformat(expiry_date)
         except:
             return Response({"message": "Invalid expiry_date format."}, status=400)
     if description is not None:
