@@ -399,6 +399,10 @@ def create_event(request):
     if isinstance(is_draft, str):
         is_draft = is_draft.lower() in ("1", "true", "yes")
 
+    is_public = request.data.get("is_public", True)
+    if isinstance(is_public, str):
+        is_public = is_public.lower() in ("1", "true", "yes")
+
     # ---------------- CREATE EVERYTHING ----------------
     with transaction.atomic():
         event = Event.objects.create(
@@ -429,7 +433,7 @@ def create_event(request):
             restriction_mode=restriction_mode,
             # restricted_regions=restricted_regions,
             restricted_countries=restricted_countries,
-            is_public = request.data.get("is_public", True)
+            is_public = is_public,
         )
 
         # stream channels
