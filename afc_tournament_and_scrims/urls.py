@@ -67,4 +67,5 @@ urlpatterns = [
     path('get-drafted-events/', get_drafted_events, name='get_drafted_events'),
     path('get-my-drafted-events/', get_my_drafted_events, name='get_my_drafted_events'),
     path("get-total-kills/", get_total_kills, name="get_total_kills"),
+    path("generate-single-use-invite-link-for-private-event/", generate_single_use_invite_link_for_private_event, name="generate_single_use_invite_link_for_private_event"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
