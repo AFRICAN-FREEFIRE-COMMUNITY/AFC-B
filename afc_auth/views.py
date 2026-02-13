@@ -2958,6 +2958,7 @@ def undislike_news(request):
 
 @api_view(["POST"])
 def get_news_likes_dislikes_count(request):
+    session_token = request.data.get("session_token")
     news_id = request.data.get("news_id")
     try:
         news_item = News.objects.get(news_id=news_id)
@@ -2966,9 +2967,18 @@ def get_news_likes_dislikes_count(request):
 
     likes_count = NewsLike.objects.filter(news=news_item).count()
     dislikes_count = NewsDislike.objects.filter(news=news_item).count()
+    is_liked = False
+    is_disliked = False
+    if session_token:
+        user = validate_token(session_token)
+        if user:
+            is_liked = NewsLike.objects.filter(news=news_item, user=user).exists()
+            is_disliked = NewsDislike.objects.filter(news=news_item, user=user).exists()
 
     return Response({
         "news_id": news_id,
         "likes": likes_count,
-        "dislikes": dislikes_count
+        "dislikes": dislikes_count,
+        "is_liked_by_user": is_liked,
+        "is_disliked_by_user": is_disliked,
     }, status=status.HTTP_200_OK)
