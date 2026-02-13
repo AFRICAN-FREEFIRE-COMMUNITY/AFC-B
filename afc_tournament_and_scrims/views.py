@@ -117,6 +117,7 @@ def get_all_events(request):
             "prize_distribution": event.prize_distribution,
             "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
             "slug": event.slug,
+            "is_public": event.is_public,
         })
     return Response({"events": event_list}, status=status.HTTP_200_OK)
 
@@ -1066,7 +1067,7 @@ def edit_event(request):
         "competition_type", "participant_type", "event_type",
         "max_teams_or_players", "event_name", "event_mode",
         "event_status", "registration_link", "tournament_tier",
-        "event_rules", "is_draft",
+        "event_rules", "is_draft", "is_public"
     ]:
         update_field(field)
 
@@ -1104,6 +1105,12 @@ def edit_event(request):
 
     if "number_of_stages" in request.data:
         event.number_of_stages = int(request.data.get("number_of_stages"))
+
+    if "is_public" in request.data:
+        is_public = request.data.get("is_public")
+        if isinstance(is_public, str):
+            is_public = is_public.lower() in ("1", "true", "yes")
+        event.is_public = is_public
 
     # --------------------------------------------------
     # ✅ REGISTRATION RESTRICTION UPDATE
@@ -1954,6 +1961,7 @@ def get_event_details(request):
         "created_at": event.created_at,
         "is_registered": is_registered,
         "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
+        "is_public": event.is_public,
     }
 
     # ============================================================
@@ -2707,6 +2715,7 @@ def get_event_details_not_logged_in(request):
         "created_at": event.created_at,
         # "is_registered": is_registered,
         "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
+        "is_public": event.is_public
     }
 
     # ✅ KEEP registered competitors section (as you requested)
