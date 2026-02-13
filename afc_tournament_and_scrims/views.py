@@ -3122,7 +3122,7 @@ def register_for_event(request):
             invite_token = request.data.get("invite_token")
             if not invite_token:
                 return Response({"message": "invite_token is required for private events."}, status=400)
-            if not EventInviteToken.objects.filter(event=event, token=invite_token, used=False).exists():
+            if not EventInviteToken.objects.filter(event=event, token=invite_token, is_used=False).exists():
                 return Response({"message": "Invalid or already used invite token."}, status=403)
             
 
