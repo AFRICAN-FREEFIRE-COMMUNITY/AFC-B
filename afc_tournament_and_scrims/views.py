@@ -11041,7 +11041,7 @@ def generate_single_use_invite_link_for_private_event(request):
     # Store the token with an association to the event (you may want to create a model for this)
     EventInviteToken.objects.create(event=event, token=token, created_by=admin)
     # Construct the invite link (replace with your frontend URL)
-    invite_link = f"https://africanfreefirecommunity.com/tournaments/{event_slug}/{token}"
+    invite_link = f"https://africanfreefirecommunity.com/tournaments/{event_slug}?invitation={token}"
     return Response({
         "message": "Invite link generated.",
         "event_id": event.event_id,
@@ -11076,7 +11076,7 @@ def generate_multiple_single_use_invite_links_for_private_event(request):
     for _ in range(count):
         token = str(uuid.uuid4())
         EventInviteToken.objects.create(event=event, token=token, created_by=admin)
-        invite_link = f"https://africanfreefirecommunity.com/tournaments/{event_slug}/{token}"
+        invite_link = f"https://africanfreefirecommunity.com/tournaments/{event_slug}?invitation={token}"
         invite_links.append(invite_link)
     return Response({
         "message": f"{len(invite_links)} invite links generated.",
@@ -11106,7 +11106,7 @@ def get_all_invite_links_for_private_event(request):
     tokens = EventInviteToken.objects.filter(event=event).order_by("-created_at")
     invite_links = []
     for token in tokens:
-        invite_link = f"https://africanfreefirecommunity.com/tournaments/{event.slug}/{token.token}"
+        invite_link = f"https://africanfreefirecommunity.com/tournaments/{event.slug}?invitation={token.token}"
         invite_links.append({
             "invite_link": invite_link,
             "created_at": token.created_at,
