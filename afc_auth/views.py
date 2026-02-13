@@ -1993,6 +1993,7 @@ def get_total_number_of_users(request):
 def connect_discord(request):
     session_token = request.GET.get("session_token")
     tournament_id = request.GET.get("tournament_id")
+    invite_token = request.GET.get("invite_token")
 
     if not session_token or not tournament_id:
         return Response({"message": "session_token and tournament_id required"}, status=400)
@@ -2004,7 +2005,10 @@ def connect_discord(request):
 
     # Encode the custom redirect URL
     from urllib.parse import quote
-    return_url = quote(f"{settings.FRONTEND_URL}/tournaments/{tournament_id}")
+    if invite_token:
+        return_url = quote(f"{settings.FRONTEND_URL}/tournaments/{tournament_id}?invite_token={invite_token}")
+    else:
+        return_url = quote(f"{settings.FRONTEND_URL}/tournaments/{tournament_id}")
 
     # state = session_token + return_url
     state = f"{session_token}|{return_url}"
