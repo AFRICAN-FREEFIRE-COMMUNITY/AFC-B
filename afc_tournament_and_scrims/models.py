@@ -113,7 +113,7 @@ class EventInviteToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    is_ used = models.BooleanField(default=False)
+    is_used = models.BooleanField(default=False)
     used_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="used_invite_tokens")
     used_at = models.DateTimeField(null=True, blank=True)
 
