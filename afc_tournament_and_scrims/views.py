@@ -1064,7 +1064,7 @@ def edit_event(request):
     # --------------------------------------------------
 
     for field in [
-        "competition_type", "participant_type", "event_type",
+        "competition_type", "participant_type",
         "max_teams_or_players", "event_name", "event_mode",
         "event_status", "registration_link", "tournament_tier",
         "event_rules", "is_draft", "is_public"
@@ -1111,6 +1111,15 @@ def edit_event(request):
         if isinstance(is_public, str):
             is_public = is_public.lower() in ("1", "true", "yes")
         event.is_public = is_public
+
+    
+    # ensure the evnt hasnt started if they wanna chnage the event type
+
+    if "event_type" in request.data:
+        if event.start_date and event.start_date <= timezone.now().date():
+            return Response({"message": "Cannot change event_type after the event has started."}, status=400)
+        event.event_type = request.data.get("event_type")
+        
 
     # --------------------------------------------------
     # ✅ REGISTRATION RESTRICTION UPDATE
