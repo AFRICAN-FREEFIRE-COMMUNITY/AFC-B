@@ -3147,7 +3147,7 @@ def register_for_event(request):
 
             # update the token as used
             if is_public == False:
-                EventInviteToken.objects.filter(event=event, token=invite_token).update(used=True, used_by=user, used_at=timezone.now())
+                EventInviteToken.objects.filter(event=event, token=invite_token).update(is_used=True, used_by=user, used_at=timezone.now())
 
             # Queue discord roles
             role_id = getattr(settings, "DISCORD_TOURNAMENT_TEAM_ROLE_ID", None)
