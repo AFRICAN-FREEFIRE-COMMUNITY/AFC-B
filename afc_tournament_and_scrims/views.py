@@ -429,6 +429,7 @@ def create_event(request):
             restriction_mode=restriction_mode,
             # restricted_regions=restricted_regions,
             restricted_countries=restricted_countries,
+            is_public = request.data.get("is_public", True)
         )
 
         # stream channels
@@ -2960,6 +2961,7 @@ def register_for_event(request):
 
     event = get_object_or_404(Event, event_id=event_id)
     participant_type = event.participant_type  # solo/duo/squad
+    is_public = event.is_public  # True/False
 
     # -------------------------
     # REG WINDOW CHECK
@@ -3101,6 +3103,16 @@ def register_for_event(request):
             if not check_discord_membership(u.discord_id):
                 return Response({"message": f"{u.username} has not joined the Discord server."}, status=403)
 
+        
+        # Other verification
+        if is_public == False:
+            invite_token = request.data.get("invite_token")
+            if not invite_token:
+                return Response({"message": "invite_token is required for private events."}, status=400)
+            if not EventInviteToken.objects.filter(event=event, token=invite_token, used=False).exists():
+                return Response({"message": "Invalid or already used invite token."}, status=403)
+            
+
         # Register
         with transaction.atomic():
             competitor = RegisteredCompetitors.objects.create(
@@ -3120,6 +3132,10 @@ def register_for_event(request):
                 batch_size=200
             )
 
+            # update the token as used
+            if is_public == False:
+                EventInviteToken.objects.filter(event=event, token=invite_token).update(used=True, used_by=user, used_at=timezone.now())
+
             # Queue discord roles
             role_id = getattr(settings, "DISCORD_TOURNAMENT_TEAM_ROLE_ID", None)
             if role_id:
@@ -3138,6 +3154,9 @@ def register_for_event(request):
                     ignore_conflicts=True,
                     batch_size=500
                 )
+
+        
+
 
         return Response({
             "message": f"Team successfully registered ({participant_type}). Discord roles queued.",
@@ -11014,3 +11033,71 @@ def generate_single_use_invite_link_for_private_event(request):
         "event_id": event.event_id,
         "invite_link": invite_link,
     }, status=200)
+
+
+@api_view(["POST"])
+def generate_multiple_single_use_invite_links_for_private_event(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
+    event_id = request.data.get("event_id")
+    count = request.data.get("count", 1)
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    if not isinstance(count, int) or count < 1 or count > 100:
+        return Response({"message": "count must be an integer between 1 and 100."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if event.is_draft:
+        return Response({"message": "Cannot generate invite links for draft event."}, status=400)
+    if event.is_public:
+        return Response({"message": "Event is already public. No invite links needed."}, status=400)
+    invite_links = []
+    import uuid
+    event_slug = event.slug
+    for _ in range(count):
+        token = str(uuid.uuid4())
+        EventInviteToken.objects.create(event=event, token=token, created_by=admin)
+        invite_link = f"https://africanfreefirecommunity.com/tournaments/{event_slug}/{token}"
+        invite_links.append(invite_link)
+    return Response({
+        "message": f"{len(invite_links)} invite links generated.",
+        "event_id": event.event_id,
+        "invite_links": invite_links,
+    }, status=200)
+
+
+@api_view(["POST"])
+def get_all_invite_links_for_private_event(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if event.is_draft:
+        return Response({"message": "Draft event does not have invite links."}, status=400)
+    if event.is_public:
+        return Response({"message": "Public event does not have invite links."}, status=400)
+    tokens = EventInviteToken.objects.filter(event=event).order_by("-created_at")
+    invite_links = []
+    for token in tokens:
+        invite_link = f"https://africanfreefirecommunity.com/tournaments/{event.slug}/{token.token}"
+        invite_links.append({
+            "invite_link": invite_link,
+            "created_at": token.created_at,
+            "created_by": token.created_by.username if token.created_by else None,
+            "is_used": token.is_used,
+            "used_by": token.used_by.username if token.used_by else None,
+            "used_at": token.used_at,
+        })
