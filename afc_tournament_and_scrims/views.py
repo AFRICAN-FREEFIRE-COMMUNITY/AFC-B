@@ -5343,6 +5343,7 @@ def get_event_details_for_admin(request):
             "average_registrations_per_day": avg_reg_per_day,
             "prizepool": prizepool_val,
             "prize_distribution": event.prize_distribution,
+            "is_public": event.is_public,
         },
         "registration_timeline": {
             "registration_start_date": event.registration_open_date,
@@ -11114,3 +11115,8 @@ def get_all_invite_links_for_private_event(request):
             "used_by": token.used_by.username if token.used_by else None,
             "used_at": token.used_at,
         })
+    return Response({
+        "message": f"{len(invite_links)} invite links retrieved.",
+        "event_id": event.event_id,
+        "invite_links": invite_links,
+    }, status=200)
