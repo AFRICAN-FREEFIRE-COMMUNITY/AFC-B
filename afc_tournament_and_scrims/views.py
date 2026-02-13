@@ -11003,11 +11003,12 @@ def generate_single_use_invite_link_for_private_event(request):
         return Response({"message": "Event is already public. No invite link needed."}, status=400)
     # Generate a unique token (you can use UUID or any other method)
     import uuid
+    event_slug = event.slug
     token = str(uuid.uuid4())
     # Store the token with an association to the event (you may want to create a model for this)
     EventInviteToken.objects.create(event=event, token=token, created_by=admin)
     # Construct the invite link (replace with your frontend URL)
-    invite_link = f"https://yourfrontend.com/join-event/{token}"
+    invite_link = f"https://africanfreefirecommunity.com/tournaments/{event_slug}/{token}"
     return Response({
         "message": "Invite link generated.",
         "event_id": event.event_id,

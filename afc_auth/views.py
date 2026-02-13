@@ -2904,10 +2904,15 @@ def dislike_news(request):
     except News.DoesNotExist:
         return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    # Check if user already disliked this news
+    # Check if user already liked this news
     existing_like = NewsLike.objects.filter(user=user, news=news_item).first()
     if existing_like:
         existing_like.delete()  # Remove like if exists
+
+    # check if  already disliked
+    existing_dislike = NewsDislike.objects.filter(user=user, news=news_item).first()
+    if existing_dislike:
+        return Response({"message": "You have already disliked this news item."}, status=status.HTTP_400_BAD_REQUEST)
 
     # Here you can implement a NewsDislike model similar to NewsLike if you want to track dislikes separately
     NewsDislike.objects.create(user=user, news=news_item)
