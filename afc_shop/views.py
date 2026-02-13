@@ -6,7 +6,7 @@ from rest_framework import status
 
 from afc_auth.views import require_admin, validate_token
 from afc_leaderboard import models
-from .models import Cart, CartItem, Coupon, Fulfillment, Order, OrderItem, Product, ProductVariant
+from .models import Cart, CartItem, Coupon, Fulfillment, Order, OrderItem, Product, ProductVariant, Redemption
 from afc_auth.models import User
 
 from rest_framework.decorators import api_view
