@@ -1251,7 +1251,7 @@ def buy_now(request):
             discount_total=total_discount,
             total=grand_total,
             status="pending",
-            coupon_code=None,  # item-level coupons
+            coupon_code=applied_coupon.code if applied_coupon else None,  # item-level coupons
             first_name=request.data.get("first_name"),
             last_name=request.data.get("last_name"),
             email=request.data.get("email"),
