@@ -1204,7 +1204,7 @@ def buy_now(request):
         # -------- COUPON --------
         if coupon_code:
             try:
-                coupon = Coupon.objects.get(code=coupon_code, active=True)
+                coupon = Coupon.objects.get(code=coupon_code, is_active=True)
             except Coupon.DoesNotExist:
                 return Response({"message": f"Coupon {coupon_code} invalid."}, status=400)
 
@@ -2237,9 +2237,13 @@ def get_total_customer_savings(request):
     except Coupon.DoesNotExist:
         return Response({"message": "Coupon not found."}, status=404)
 
-    total_savings = Redemption.objects.filter(coupon=coupon).aggregate(
-        total_savings=models.Sum("savings_amount")
-    )["total_savings"] or Decimal("0.00")
+
+    # get total savings without using Sum aggregation to avoid Decimal issues
+    total_savings = Decimal("0.00")
+    redemptions = Redemption.objects.filter(coupon=coupon).values_list("savings", flat=True)
+    for savings in redemptions:
+        if savings:
+            total_savings += savings
 
     return Response({
         "coupon_id": coupon.id,
