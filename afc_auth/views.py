@@ -2116,6 +2116,15 @@ def check_discord_membership(discord_id):
     return r.status_code == 200  # 200 means they are in the server
 
 
+@api_view(["POST"])
+def check_discord_membership_v2(request):
+    discord_id = request.data.get("discord_id")
+    url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    r = requests.get(url, headers=headers)
+    return Response({"is_member": r.status_code == 200}, status=status.HTTP_200_OK)
+
+
 # def assign_discord_role(discord_id, role_id):
 #     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
 #     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}

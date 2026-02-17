@@ -64,4 +64,5 @@ urlpatterns = [
     path('unlike-news/', unlike_news, name='unlike_news'),
     path('undislike-news/', undislike_news, name='undislike_news'),
     path('get-news-likes-dislikes-count/', get_news_likes_dislikes_count, name='get_news_likes_dislikes_count'),
+    path("check-discord-membership-v2/", check_discord_membership_v2, name="check_discord_membership_v2"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
