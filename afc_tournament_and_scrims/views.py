@@ -11146,7 +11146,7 @@ def leave_event(request):
 
 @api_view(["POST"])
 def check_invite_token_status(request):
-    token = request.data.get("token")
+    token = request.data.get("invite_token")
     if not token:
         return Response({"message": "token is required."}, status=400)
     invite = EventInviteToken.objects.filter(token=token).first()
