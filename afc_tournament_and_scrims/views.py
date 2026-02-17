@@ -3133,6 +3133,8 @@ def register_for_event(request):
                 return Response({"message": "invite_token is required for private events."}, status=400)
             if not EventInviteToken.objects.filter(event=event, token=invite_token, is_used=False).exists():
                 return Response({"message": "Invalid or already used invite token."}, status=403)
+            if EventInviteToken.objects.filter(event=event, token=invite_token, is_used=True).exists():
+                return Response({"message": "Invite token has already been used."}, status=403)
             
 
         # Register
@@ -11129,3 +11131,15 @@ def get_all_invite_links_for_private_event(request):
         "event_id": event.event_id,
         "invite_links": invite_links,
     }, status=200)
+
+
+@api_view(["POST"])
+def leave_event(request):
+    # should be able to leave the event as long as its still within the registration period (even if the event is public) for both solo and team events. If the user leaves, their registration status changes to "left" and they won't be able to rejoin unless the admin manually changes their status back to "registered".
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    
