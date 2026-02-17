@@ -397,7 +397,6 @@ class Order(models.Model):
     total = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
 
     coupon = models.ForeignKey(Coupon, null=True, blank=True, on_delete=models.SET_NULL)
-    coupon_code = models.CharField(max_length=40, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -434,6 +433,7 @@ class OrderItem(models.Model):
     quantity = models.PositiveIntegerField(default=1)
     unit_price = models.DecimalField(max_digits=10, decimal_places=2)
     line_total = models.DecimalField(max_digits=10, decimal_places=2)
+    coupon_code = models.CharField(max_length=40, blank=True)
 
     # snapshot fields (so if product name changes, order keeps original)
     product_name_snapshot = models.CharField(max_length=255)
