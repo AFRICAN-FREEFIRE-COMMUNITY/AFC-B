@@ -2126,6 +2126,17 @@ def check_discord_membership_v2(request):
     return Response({"is_member": r.status_code == 200}, status=status.HTTP_200_OK)
 
 
+@api_view(["POST"])
+def check_team_members_discord_membership(request):
+    discord_ids = request.data.get("discord_ids", [])
+    results = {}
+    for discord_id in discord_ids:
+        url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+        headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+        r = requests.get(url, headers=headers)
+        results[discord_id] = (r.status_code == 200)
+    return Response({"membership": results}, status=status.HTTP_200_OK)
+
 # def assign_discord_role(discord_id, role_id):
 #     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
 #     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
