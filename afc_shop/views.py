@@ -1273,8 +1273,7 @@ def buy_now(request):
                     line_total=item["line_total"],
                     product_name_snapshot=item["variant"].product.name,
                     variant_title_snapshot=item["variant"].title or item["variant"].sku,
-                    coupon_code=item["coupon"].code if item["coupon"] else None,
-                    discount_amount=item["discount"]
+                    coupon_code=item["coupon"].code if item["coupon"] else None
                 )
             )
 
