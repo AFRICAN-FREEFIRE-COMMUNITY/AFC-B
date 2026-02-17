@@ -11009,6 +11009,7 @@ def get_drafted_events(request):
     for event in events:
         event_list.append({
             "event_id": event.event_id,
+            "event_slug": event.slug,
             "event_name": event.event_name,
             "participant_type": event.participant_type,
             "created_at": event.created_at,
@@ -11033,6 +11034,7 @@ def get_my_drafted_events(request):
     for event in events:
         event_list.append({
             "event_id": event.event_id,
+            "event_slug": event.slug,
             "event_name": event.event_name,
             "participant_type": event.participant_type,
             "created_at": event.created_at,
