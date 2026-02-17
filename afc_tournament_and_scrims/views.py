@@ -11320,11 +11320,11 @@ def leave_event(request):
             if not tournament_team:
                 return Response({"message": "You are not part of any team in this event."}, status=400)
 
-            # 🔐 Only captain (registered_by) can leave
-            if tournament_team.registered_by != user:
-                return Response({
-                    "message": "Only the team captain can leave the event."
-                }, status=403)
+            # # 🔐 Only captain (registered_by) can leave
+            # if tournament_team.registered_by != user:
+            #     return Response({
+            #         "message": "Only the team captain can leave the event."
+            #     }, status=403)
 
             # 🔥 Delete entire team entry
             tournament_team.delete()
