@@ -11142,6 +11142,9 @@ def leave_event(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
     
 
 @api_view(["POST"])
