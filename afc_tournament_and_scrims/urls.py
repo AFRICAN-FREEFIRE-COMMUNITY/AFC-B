@@ -70,5 +70,5 @@ urlpatterns = [
     path("generate-single-use-invite-link-for-private-event/", generate_single_use_invite_link_for_private_event, name="generate_single_use_invite_link_for_private_event"),
     path("generate-multiple-single-use-invite-links-for-private-event/", generate_multiple_single_use_invite_links_for_private_event, name="generate_multiple_single_use_invite_links_for_private_event"),
     path("get-all-invite-links-for-private-event/", get_all_invite_links_for_private_event, name="get_all_invite_links_for_private_event"),
-    path("check-invite-token-status", check_invite_token_status, name="check_invite_token_status"),
+    path("check-invite-token-status/", check_invite_token_status, name="check_invite_token_status"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
