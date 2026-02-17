@@ -916,6 +916,7 @@ def get_team_details(request):
             "management_role": member.management_role,
             "in_game_role": member.in_game_role,
             "join_date": member.join_date,
+            "discord_id": member.member.discord_id,
         }
         for member in members_qs
     ]
