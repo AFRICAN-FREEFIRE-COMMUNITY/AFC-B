@@ -11143,3 +11143,18 @@ def leave_event(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
     
+
+@api_view(["POST"])
+def check_invite_token_status(request):
+    token = request.data.get("token")
+    if not token:
+        return Response({"message": "token is required."}, status=400)
+    invite = EventInviteToken.objects.filter(token=token).first()
+    if not invite:
+        return Response({"message": "Invalid token."}, status=404)
+    return Response({
+        "token": invite.token,
+        "is_used": invite.is_used,
+        "used_by": invite.used_by.username if invite.used_by else None,
+        "used_at": invite.used_at,
+    }, status=200)
