@@ -252,7 +252,7 @@ class TournamentTeam(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="tournament_teams")
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="tournament_entries")
     status = models.CharField(max_length=20, choices=TEAM_STATUS, default="active")
-    registered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    # registered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     registration_date = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
