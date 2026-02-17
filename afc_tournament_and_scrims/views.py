@@ -8389,7 +8389,7 @@ from collections import defaultdict
 
 from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_viewse
+from rest_framework.decorators import api_views
 from rest_framework.response import Response
 from rest_framework import status
 
