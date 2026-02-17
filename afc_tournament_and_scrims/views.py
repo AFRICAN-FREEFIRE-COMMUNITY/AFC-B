@@ -3031,6 +3031,13 @@ def register_for_event(request):
                 user=user,
                 status="registered"
             )
+            # update the token as used
+            if is_public == False:
+                invite = EventInviteToken.objects.filter(event=event, token=invite_token)
+                invite.is_used = True
+                invite.used_by = user
+                invite.used_at = timezone.now()
+                invite.save(update_fields=["is_used", "used_by", "used_at"])
 
             # Queue discord role
             role_id = getattr(settings, "DISCORD_TOURNAMENT_SOLO_ROLE_ID", None)
@@ -3044,13 +3051,7 @@ def register_for_event(request):
                     defaults={"status": "pending"}
                 )
         
-        # update the token as used
-        if is_public == False:
-            invite = EventInviteToken.objects.filter(event=event, token=invite_token)
-            invite.is_used = True
-            invite.used_by = user
-            invite.used_at = timezone.now()
-            invite.save(update_fields=["is_used", "used_by", "used_at"])
+        
 
         return Response({
             "message": "Successfully registered (solo). Discord role queued.",
@@ -3174,6 +3175,14 @@ def register_for_event(request):
                 batch_size=200
             )
 
+            # update the token as used
+            if is_public == False:
+                invite = EventInviteToken.objects.filter(event=event, token=invite_token)
+                invite.is_used = True
+                invite.used_by = user
+                invite.used_at = timezone.now()
+                invite.save(update_fields=["is_used", "used_by", "used_at"])
+
         
 
 
@@ -3195,13 +3204,7 @@ def register_for_event(request):
                     ignore_conflicts=True,
                     batch_size=500
                 )
-        # update the token as used
-        if is_public == False:
-            invite = EventInviteToken.objects.filter(event=event, token=invite_token)
-            invite.is_used = True
-            invite.used_by = user
-            invite.used_at = timezone.now()
-            invite.save(update_fields=["is_used", "used_by", "used_at"])
+        
 
         
 
