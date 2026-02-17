@@ -3000,6 +3000,16 @@ def register_for_event(request):
         if not _passes_event_country_restriction(event, user.country):
             return Response({"message": "You are not eligible to register for this event (country restriction)."}, status=403)
 
+        
+        if is_public == False:
+            invite_token = request.data.get("invite_token")
+            if not invite_token:
+                return Response({"message": "invite_token is required for private events."}, status=400)
+            if not EventInviteToken.objects.filter(event=event, token=invite_token, is_used=False).exists():
+                return Response({"message": "Invalid or already used invite token."}, status=403)
+            if EventInviteToken.objects.filter(event=event, token=invite_token, is_used=True).exists():
+                return Response({"message": "Invite token has already been used."}, status=403)
+
         # Discord checks
         if not user.discord_connected or not user.discord_id:
             return Response({"message": "Connect your Discord account first."}, status=403)
@@ -3033,6 +3043,14 @@ def register_for_event(request):
                     group=None,
                     defaults={"status": "pending"}
                 )
+        
+        # update the token as used
+        if is_public == False:
+            invite = EventInviteToken.objects.filter(event=event, token=invite_token)
+            invite.is_used = True
+            invite.used_by = user
+            invite.used_at = timezone.now()
+            invite.save(update_fields=["is_used", "used_by", "used_at"])
 
         return Response({
             "message": "Successfully registered (solo). Discord role queued.",
