@@ -3000,6 +3000,10 @@ def register_for_event(request):
         if not _passes_event_country_restriction(event, user.country):
             return Response({"message": "You are not eligible to register for this event (country restriction)."}, status=403)
 
+        existing_registration = RegisteredCompetitors.objects.filter(event=event, user=user).first()
+        if existing_registration and existing_registration.status != "registered":
+            return Response({"message": "You cannot rejoin this event."}, status=400)
+
         
         if is_public == False:
             invite_token = request.data.get("invite_token")
@@ -3071,6 +3075,12 @@ def register_for_event(request):
         # Ensure requester is in team
         if not TeamMembers.objects.filter(team=team, member=user).exists():
             return Response({"message": "You are not a member of this team."}, status=403)
+
+        existing_registration = TournamentTeam.objects.filter(event=event, team=team).first()
+        
+        if existing_registration and existing_registration.status != "registered":
+            return Response({"message": "You cannot rejoin this event."}, status=400)
+
 
         # Prevent duplicate team registration
         if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
@@ -11153,19 +11163,95 @@ def get_all_invite_links_for_private_event(request):
     }, status=200)
 
 
+from django.utils import timezone
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+
+
 @api_view(["POST"])
 def leave_event(request):
-    # should be able to leave the event as long as its still within the registration period (even if the event is public) for both solo and team events. If the user leaves, their registration status changes to "left" and they won't be able to rejoin unless the admin manually changes their status back to "registered".
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
+
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
-    
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    if event.is_draft:
+        return Response({"message": "Cannot leave a draft event."}, status=400)
+
+    today = timezone.now().date()
+
+    # ✅ Registration period check
+    if today > event.registration_end_date:
+        return Response(
+            {"message": "Registration period has ended. You cannot leave this event."},
+            status=400
+        )
+
+    if today < event.registration_open_date:
+        return Response(
+            {"message": "Registration has not opened yet."},
+            status=400
+        )
+
+    with transaction.atomic():
+
+        # ---------------- SOLO ----------------
+        if event.participant_type == "solo":
+            registration = RegisteredCompetitors.objects.filter(
+                event=event,
+                user=user
+            ).first()
+
+            if not registration:
+                return Response({"message": "You are not registered in this event."}, status=400)
+
+            if registration.status != "registered":
+                return Response(
+                    {"message": f"You cannot leave. Current status: {registration.status}"},
+                    status=400
+                )
+
+            registration.status = "withdrawn"   # or "left" if you add it
+            registration.save(update_fields=["status"])
+
+        # ---------------- TEAM / SQUAD ----------------
+        else:
+            # find tournament team where user is a member
+            tournament_team = TournamentTeam.objects.filter(
+                event=event,
+                members__user=user
+            ).first()
+
+            if not tournament_team:
+                return Response({"message": "You are not part of any team in this event."}, status=400)
+
+            if tournament_team.status != "active":
+                return Response(
+                    {"message": f"Team cannot leave. Current status: {tournament_team.status}"},
+                    status=400
+                )
+
+            tournament_team.status = "withdrawn"
+            tournament_team.save(update_fields=["status"])
+
+    return Response({
+        "message": "You have successfully left the event.",
+        "event_id": event.event_id
+    }, status=200)
+
+
 
 @api_view(["POST"])
 def check_invite_token_status(request):

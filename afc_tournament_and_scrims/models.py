@@ -170,11 +170,14 @@ class StageGroups(models.Model):
 
 # ---------------- Registered Competitors ----------------
 class RegisteredCompetitors(models.Model):
+
     STATUS_CHOICES = [
-        ("registered", "Registered"),
-        ("disqualified", "Disqualified"),
-        ("withdrawn", "Withdrawn")
+    ("registered", "Registered"),
+    ("disqualified", "Disqualified"),
+    ("withdrawn", "Withdrawn"),
+    ("left", "Left"),
     ]
+
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="registrations")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
@@ -243,6 +246,7 @@ class TournamentTeam(models.Model):
         ("active", "Active"),
         ("disqualified", "Disqualified"),
         ("withdrawn", "Withdrawn"),
+        ("left", "Left"),
     ]
     tournament_team_id = models.AutoField(primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="tournament_teams")
