@@ -8389,7 +8389,7 @@ from collections import defaultdict
 
 from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_viewse
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -11173,6 +11173,94 @@ from rest_framework import status
 from django.shortcuts import get_object_or_404
 
 
+# @api_view(["POST"])
+# def leave_event(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     user = validate_token(auth.split(" ")[1])
+#     if not user:
+#         return Response({"message": "Invalid or expired session token."}, status=401)
+
+#     event_id = request.data.get("event_id")
+#     if not event_id:
+#         return Response({"message": "event_id is required."}, status=400)
+
+#     event = get_object_or_404(Event, event_id=event_id)
+
+#     if event.is_draft:
+#         return Response({"message": "Cannot leave a draft event."}, status=400)
+
+#     today = timezone.now().date()
+
+#     # ✅ Registration period check
+#     if today > event.registration_end_date:
+#         return Response(
+#             {"message": "Registration period has ended. You cannot leave this event."},
+#             status=400
+#         )
+
+#     if today < event.registration_open_date:
+#         return Response(
+#             {"message": "Registration has not opened yet."},
+#             status=400
+#         )
+
+#     with transaction.atomic():
+
+#         # ---------------- SOLO ----------------
+#         if event.participant_type == "solo":
+#             registration = RegisteredCompetitors.objects.filter(
+#                 event=event,
+#                 user=user
+#             ).first()
+
+#             if not registration:
+#                 return Response({"message": "You are not registered in this event."}, status=400)
+
+#             if registration.status != "registered":
+#                 return Response(
+#                     {"message": f"You cannot leave. Current status: {registration.status}"},
+#                     status=400
+#                 )
+
+#             registration.status = "withdrawn"   # or "left" if you add it
+#             registration.save(update_fields=["status"])
+
+#         # ---------------- TEAM / SQUAD ----------------
+#         else:
+#             # find tournament team where user is a member
+#             tournament_team = TournamentTeam.objects.filter(
+#                 event=event,
+#                 members__user=user
+#             ).first()
+
+#             if not tournament_team:
+#                 return Response({"message": "You are not part of any team in this event."}, status=400)
+
+#             if tournament_team.status != "active":
+#                 return Response(
+#                     {"message": f"Team cannot leave. Current status: {tournament_team.status}"},
+#                     status=400
+#                 )
+
+#             tournament_team.status = "withdrawn"
+#             tournament_team.save(update_fields=["status"])
+
+#     return Response({
+#         "message": "You have successfully left the event.",
+#         "event_id": event.event_id
+#     }, status=200)
+
+
+from django.utils import timezone
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
+
 @api_view(["POST"])
 def leave_event(request):
     auth = request.headers.get("Authorization")
@@ -11194,64 +11282,58 @@ def leave_event(request):
 
     today = timezone.now().date()
 
-    # ✅ Registration period check
-    if today > event.registration_end_date:
+    if today < event.registration_open_date or today > event.registration_end_date:
         return Response(
-            {"message": "Registration period has ended. You cannot leave this event."},
-            status=400
-        )
-
-    if today < event.registration_open_date:
-        return Response(
-            {"message": "Registration has not opened yet."},
+            {"message": "You can only leave during the registration period."},
             status=400
         )
 
     with transaction.atomic():
 
-        # ---------------- SOLO ----------------
+        # ---------------- SOLO EVENT ----------------
         if event.participant_type == "solo":
+
             registration = RegisteredCompetitors.objects.filter(
                 event=event,
-                user=user
+                user=user,
+                status="registered"
             ).first()
 
             if not registration:
                 return Response({"message": "You are not registered in this event."}, status=400)
 
-            if registration.status != "registered":
-                return Response(
-                    {"message": f"You cannot leave. Current status: {registration.status}"},
-                    status=400
-                )
+            # 🔥 Delete registration completely
+            registration.delete()
 
-            registration.status = "withdrawn"   # or "left" if you add it
-            registration.save(update_fields=["status"])
+            return Response({
+                "message": "You have successfully left the event.",
+                "event_id": event.event_id
+            }, status=200)
 
-        # ---------------- TEAM / SQUAD ----------------
+        # ---------------- SQUAD / DUO EVENT ----------------
         else:
-            # find tournament team where user is a member
+
             tournament_team = TournamentTeam.objects.filter(
                 event=event,
                 members__user=user
-            ).first()
+            ).select_related("team").first()
 
             if not tournament_team:
                 return Response({"message": "You are not part of any team in this event."}, status=400)
 
-            if tournament_team.status != "active":
-                return Response(
-                    {"message": f"Team cannot leave. Current status: {tournament_team.status}"},
-                    status=400
-                )
+            # 🔐 Only captain (registered_by) can leave
+            if tournament_team.registered_by != user:
+                return Response({
+                    "message": "Only the team captain can leave the event."
+                }, status=403)
 
-            tournament_team.status = "withdrawn"
-            tournament_team.save(update_fields=["status"])
+            # 🔥 Delete entire team entry
+            tournament_team.delete()
 
-    return Response({
-        "message": "You have successfully left the event.",
-        "event_id": event.event_id
-    }, status=200)
+            return Response({
+                "message": "Team has been successfully removed from the event.",
+                "event_id": event.event_id
+            }, status=200)
 
 
 
