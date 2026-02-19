@@ -11326,6 +11326,9 @@ def leave_event(request):
                 return Response({
                     "message": "Only the team captain can leave the event."
                 }, status=403)
+            
+            # Delete All Tournament Team Members
+            TournamentTeamMember.objects.filter(tournament_team=tournament_team).delete()
 
             # 🔥 Delete entire team entry
             tournament_team.delete()
