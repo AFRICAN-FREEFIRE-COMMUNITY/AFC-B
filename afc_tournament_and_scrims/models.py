@@ -265,7 +265,7 @@ class TournamentTeamMember(models.Model):
     """
     tournament_team = models.ForeignKey(TournamentTeam, on_delete=models.CASCADE, related_name="members")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    event = models.ForeignKey(Event, on_delete=models.CASCADE)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, null=True, blank=True)
 
     class Meta:
         unique_together = ("tournament_team", "user")
