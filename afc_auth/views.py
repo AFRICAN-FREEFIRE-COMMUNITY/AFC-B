@@ -247,7 +247,11 @@ def signup(request):
     password = request.data.get("password")
     confirm_password = request.data.get("confirm_password")
     full_name = request.data.get("full_name")
-    country = lookup_ip(get_client_ip(request)).get("country") if lookup_ip(get_client_ip(request)) else None
+
+    ip = get_client_ip(request)
+    response = requests.get(f"https://ipinfo.io/{ip}/json")
+    response = response.json()
+    country=response.get("country")
 
     try:
         # Validation
