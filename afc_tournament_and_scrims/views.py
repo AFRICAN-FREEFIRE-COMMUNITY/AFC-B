@@ -11369,12 +11369,167 @@ def check_invite_token_status(request):
 
 
 @api_view(["POST"])
-def seed_teams_to_stage(request):
+def seed_event_competitors_to_stage(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid token"}, status=400)
+
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid session"}, status=401)
+
     if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "No permission"}, status=403)
+
+    stage_id = request.data.get("stage_id")
+    clear_existing = request.data.get("clear_existing", False)
+
+    if not stage_id:
+        return Response({"message": "stage_id required"}, status=400)
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+    event = stage.event
+
+    with transaction.atomic():
+
+        if clear_existing:
+            StageCompetitor.objects.filter(stage=stage).delete()
+
+        # Prevent accidental reseeding
+        if StageCompetitor.objects.filter(stage=stage).exists() and not clear_existing:
+            return Response(
+                {"message": "Stage already has competitors. Use clear_existing=True to reseed."},
+                status=400
+            )
+
+        seeded = 0
+
+        # -------- SOLO --------
+        if event.participant_type == "solo":
+
+            competitors = RegisteredCompetitors.objects.filter(
+                event=event,
+                status="registered"
+            )
+
+            existing_ids = StageCompetitor.objects.filter(stage=stage).values_list("player_id", flat=True)
+
+            new_entries = [
+                StageCompetitor(stage=stage, player=comp)
+                for comp in competitors
+                if comp.id not in existing_ids
+            ]
+
+        # -------- SQUAD --------
+        else:
+
+            teams = TournamentTeam.objects.filter(
+                event=event,
+                status="active"
+            )
+
+            existing_ids = StageCompetitor.objects.filter(stage=stage).values_list("tournament_team_id", flat=True)
+
+            new_entries = [
+                StageCompetitor(stage=stage, tournament_team=team)
+                for team in teams
+                if team.id not in existing_ids
+            ]
+
+        StageCompetitor.objects.bulk_create(new_entries)
+        seeded = len(new_entries)
+
+    return Response({
+        "message": "Event competitors seeded to stage successfully.",
+        "stage_id": stage.stage_id,
+        "total_seeded": seeded
+    }, status=200)
+
+import random
+
+@api_view(["POST"])
+def seed_stage_competitors_to_groups_team(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token"}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid session"}, status=401)
+
+    if admin.role != "admin":
+        return Response({"message": "No permission"}, status=403)
+
+    stage_id = request.data.get("stage_id")
+    shuffle = request.data.get("shuffle", True)
+    clear_existing = request.data.get("clear_existing", False)
+
+    if not stage_id:
+        return Response({"message": "stage_id required"}, status=400)
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+    groups = StageGroups.objects.filter(stage=stage).order_by("group_id")
+
+    if not groups.exists():
+        return Response({"message": "No groups found."}, status=400)
+
+    with transaction.atomic():
+
+        if clear_existing:
+            StageGroupCompetitor.objects.filter(
+                stage_group__stage=stage
+            ).delete()
+
+        # Prevent accidental reseed
+        if StageGroupCompetitor.objects.filter(
+            stage_group__stage=stage
+        ).exists() and not clear_existing:
+            return Response(
+                {"message": "Groups already seeded. Use clear_existing=True to reseed."},
+                status=400
+            )
+
+        competitors = list(
+            StageCompetitor.objects.filter(
+                stage=stage,
+                status="active"
+            )
+        )
+
+        if not competitors:
+            return Response({"message": "No stage competitors found."}, status=400)
+
+        if shuffle:
+            random.shuffle(competitors)
+
+        group_list = list(groups)
+        group_count = len(group_list)
+
+        new_entries = []
+
+        for index, competitor in enumerate(competitors):
+            group = group_list[index % group_count]
+
+            if competitor.tournament_team:
+                new_entries.append(
+                    StageGroupCompetitor(
+                        stage_group=group,
+                        tournament_team=competitor.tournament_team
+                    )
+                )
+            else:
+                new_entries.append(
+                    StageGroupCompetitor(
+                        stage_group=group,
+                        player=competitor.player
+                    )
+                )
+
+        StageGroupCompetitor.objects.bulk_create(new_entries)
+
+    return Response({
+        "message": "Stage competitors seeded to groups successfully.",
+        "stage_id": stage.stage_id,
+        "groups": group_count,
+        "total_seeded": len(new_entries)
+    }, status=200)
