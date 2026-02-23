@@ -72,4 +72,6 @@ urlpatterns = [
     path("get-all-invite-links-for-private-event/", get_all_invite_links_for_private_event, name="get_all_invite_links_for_private_event"),
     path("check-invite-token-status/", check_invite_token_status, name="check_invite_token_status"),
     path("leave-event/", leave_event, name="leave_event"),
+    path("seed-event-competitors-to-stage/", seed_event_competitors_to_stage, name="seed_event_competitors_to_stage"),
+    path("seed-stage-competitors-to-groups-team/", seed_stage_competitors_to_groups_team, name="seed_stage_competitors_to_groups_team")
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
