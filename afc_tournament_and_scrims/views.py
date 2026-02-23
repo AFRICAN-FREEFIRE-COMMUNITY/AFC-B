@@ -1118,6 +1118,18 @@ def edit_event(request):
     if "event_type" in request.data:
         if event.start_date and event.start_date <= timezone.now().date():
             return Response({"message": "Cannot change event_type after the event has started."}, status=400)
+
+        else:
+            # delete all current registred teams/players if changing type, as they would be invalid,check if its a solo or team event and delete accordingly
+            if event.participant_type == "team":
+                # Delete Tournament Team members first then tournament team, filter tournament team member using the foriegn key tournament team.
+                TournamentTeamMember.objects.filter(event=event).delete()
+                TournamentTeam.objects.filter(event=event).delete()
+                RegisteredCompetitors.objects.filter(event=event).delete()
+                
+            else:
+                RegisteredCompetitors.objects.filter(event=event).delete()
+            
         event.event_type = request.data.get("event_type")
         
 
@@ -3179,7 +3191,7 @@ def register_for_event(request):
             )
 
             TournamentTeamMember.objects.bulk_create(
-                [TournamentTeamMember(tournament_team=tt, user=roster_users_by_id[uid]) for uid in roster_member_ids],
+                [TournamentTeamMember(tournament_team=tt, user=roster_users_by_id[uid], event=event) for uid in roster_member_ids],
                 batch_size=200
             )
 
@@ -11354,3 +11366,15 @@ def check_invite_token_status(request):
         "used_by": invite.used_by.username if invite.used_by else None,
         "used_at": invite.used_at,
     }, status=200)
+
+
+@api_view(["POST"])
+def seed_teams_to_stage(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission."}, status=403)
