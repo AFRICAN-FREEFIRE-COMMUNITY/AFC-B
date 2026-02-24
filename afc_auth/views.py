@@ -480,7 +480,7 @@ def ban_team(request):
     )
 
     team_owner = team.team_owner
-    team_members = TeamMembers.objects.filter(team=team).select_related('user')
+    team_members = TeamMembers.objects.filter(team=team).select_related('member')
 
     # Notify team owner and members
     notification_message = f"Your team '{team.team_name}' has been banned until {ban_end_date.strftime('%Y-%m-%d %H:%M:%S')} for the following reason: {reason}."
@@ -563,7 +563,7 @@ def unban_team(request):
 
     # Notify team owner and members
     team_owner = team.team_owner
-    team_members = TeamMembers.objects.filter(team=team).select_related('user')
+    team_members = TeamMembers.objects.filter(team=team).select_related('member')
     notification_message = f"Your team '{team.team_name}' has been unbanned."
     Notifications.objects.create(
         user=team_owner,
