@@ -154,6 +154,9 @@ class Stages(models.Model):
     teams_qualifying_from_stage = models.PositiveIntegerField()
     stage_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
     stage_status = models.CharField(max_length=20, choices=STAGE_STATUS_CHOICES, default="upcoming")
+    prizepool = models.CharField(max_length=40, null=True, blank=True)
+    prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    prize_distribution = models.JSONField(default=dict, blank=True) # {"1": "50%", "2": "30%", "3": "20%"}
 
 class StageGroups(models.Model):
     group_id = models.AutoField(primary_key=True)

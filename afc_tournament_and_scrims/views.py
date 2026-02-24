@@ -455,6 +455,9 @@ def create_event(request):
                 stage_format=stage_data["stage_format"],
                 teams_qualifying_from_stage=int(stage_data["teams_qualifying_from_stage"]),
                 stage_discord_role_id=stage_data.get("stage_discord_role_id"),
+                prizepool=stage_data.get("prizepool"),
+                prizepool_cash_value=stage_data.get("prizepool_cash_value"),
+                prize_distribution=stage_data.get("prize_distribution", {})
             )
 
             for group_data in stage_data.get("groups", []):
