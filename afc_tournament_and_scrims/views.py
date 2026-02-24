@@ -13,7 +13,7 @@ from afc_auth.views import assign_discord_role, check_discord_membership, discor
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, EventInviteToken, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
-from afc_auth.models import AdminHistory, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, User
+from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -3015,6 +3015,10 @@ def register_for_event(request):
         existing_registration = RegisteredCompetitors.objects.filter(event=event, user=user).first()
         if existing_registration and existing_registration.status != "registered":
             return Response({"message": "You cannot rejoin this event."}, status=400)
+        
+        # Check If the player is banned
+        if BannedPlayer.objects.filter(banned_player=user, is_active=True).exists():
+            return Response({"message": "You are banned from registering for this event."}, status=403)
 
         
         if is_public == False:
@@ -3083,6 +3087,10 @@ def register_for_event(request):
         # captain/owner check
         if not _user_is_team_captain_or_owner(user, team):
             return Response({"message": "Only captain/vice-captain/team owner can register the team."}, status=403)
+        
+        # Check if the team is banned
+        if BannedTeam.objects.filter(banned_team=team, is_active=True).exists():
+            return Response({"message": "Your team is banned from registering for this event."}, status=403)
 
         # Ensure requester is in team
         if not TeamMembers.objects.filter(team=team, member=user).exists():
