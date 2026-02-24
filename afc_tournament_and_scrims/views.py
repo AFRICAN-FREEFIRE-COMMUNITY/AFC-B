@@ -1208,6 +1208,9 @@ def edit_event(request):
                     "teams_qualifying_from_stage": int(stage_data["teams_qualifying_from_stage"]),
                     "stage_discord_role_id": stage_data.get("stage_discord_role_id"),
                     "stage_status": stage_data.get("stage_status", "upcoming"),
+                    "prizepool": stage_data.get("prizepool"),
+                    "prizepool_cash_value": stage_data.get("prizepool_cash_value"),
+                    "prize_distribution": stage_data.get("prize_distribution", {}),
                 }
 
                 if stage_id:
