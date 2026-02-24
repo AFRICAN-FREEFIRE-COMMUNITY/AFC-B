@@ -168,6 +168,9 @@ class StageGroups(models.Model):
     group_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
     match_count = models.PositiveIntegerField()
     match_maps = models.JSONField(default=list)  # List of maps for the matches
+    prizepool = models.CharField(max_length=40, null=True, blank=True)
+    prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    prize_distribution = models.JSONField(default=dict, blank=True) # {"1": "50%", "2": "30%", "3": "20%"}
 
 
 

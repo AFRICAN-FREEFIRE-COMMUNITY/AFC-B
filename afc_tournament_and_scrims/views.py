@@ -470,6 +470,9 @@ def create_event(request):
                     group_discord_role_id=group_data.get("group_discord_role_id"),
                     match_count=int(group_data.get("match_count", 0)),
                     match_maps=group_data.get("match_maps", []),
+                    prizepool=group_data.get("prizepool"),
+                    prizepool_cash_value=group_data.get("prizepool_cash_value"),
+                    prize_distribution=group_data.get("prize_distribution", {})
                 )
 
                 # ✅ create exactly match_count matches, cycle maps if provided
@@ -1234,6 +1237,9 @@ def edit_event(request):
                         "group_discord_role_id": group_data.get("group_discord_role_id"),
                         "match_count": int(group_data.get("match_count", 0)),
                         "match_maps": group_data.get("match_maps", []),
+                        "prizepool": group_data.get("prizepool"),
+                        "prizepool_cash_value": group_data.get("prizepool_cash_value"),
+                        "prize_distribution": group_data.get("prize_distribution", {}),
                     }
 
                     if group_id:
@@ -2150,6 +2156,9 @@ def get_event_details(request):
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,
+                "prizepool": group.prizepool,
+                "prize_cash_value": group.prize_cash_value,
+                "prize_distribution": group.prize_distribution,
                 "match_count": group.match_count,
                 "match_maps": group.match_maps,
                 "leaderboard": None if not lb else {
@@ -2162,7 +2171,7 @@ def get_event_details(request):
                     "last_updated": lb.last_updated,
                 },
                 "matches": matches_payload,
-                "overall_leaderboard": list(overall),
+                "overall_leaderboard": list(overall)
             })
 
         stages_payload.append({
@@ -2170,6 +2179,9 @@ def get_event_details(request):
             "stage_name": stage.stage_name,
             "start_date": stage.start_date,
             "end_date": stage.end_date,
+            "prizepool": stage.prizepool,
+            "prize_cash_value": stage.prize_cash_value,
+            "prize_distribution": stage.prize_distribution,
             "stage_format": stage.stage_format,
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
