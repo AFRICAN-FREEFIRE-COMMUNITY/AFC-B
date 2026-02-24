@@ -11422,6 +11422,14 @@ def seed_event_competitors_to_stage(request):
     stage = get_object_or_404(Stages, stage_id=stage_id)
     event = stage.event
 
+    # Check the registration end date, and prevent seeding if registration has not closed.
+    today = timezone.now().date()
+    if today < event.registration_end_date:
+        return Response(
+            {"message": "Cannot seed competitors to stage until registration period has ended."},
+            status=400
+        )
+
     with transaction.atomic():
 
         if clear_existing:
