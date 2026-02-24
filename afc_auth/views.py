@@ -34,7 +34,7 @@ from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from afc_team.models import Team
+from afc_team.models import Team, TeamMembers
 from django.utils import timezone
 from .models import TeamBan
 from rest_framework.decorators import api_view
@@ -433,11 +433,8 @@ def ban_team(request):
             status=status.HTTP_401_UNAUTHORIZED
         )
 
-    
-
     if user.role not in ["admin", "moderator"]:
             return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)           
-
 
     if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
         pass  # User has permission
@@ -483,7 +480,7 @@ def ban_team(request):
     )
 
     team_owner = team.team_owner
-    team_members = team.teammembers.all()
+    team_members = TeamMembers.objects.filter(team=team).select_related('user')
 
     # Notify team owner and members
     notification_message = f"Your team '{team.team_name}' has been banned until {ban_end_date.strftime('%Y-%m-%d %H:%M:%S')} for the following reason: {reason}."
@@ -566,7 +563,7 @@ def unban_team(request):
 
     # Notify team owner and members
     team_owner = team.team_owner
-    team_members = team.teammembers.all()
+    team_members = TeamMembers.objects.filter(team=team).select_related('user')
     notification_message = f"Your team '{team.team_name}' has been unbanned."
     Notifications.objects.create(
         user=team_owner,
