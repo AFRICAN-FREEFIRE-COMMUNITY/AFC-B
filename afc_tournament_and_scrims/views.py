@@ -11674,7 +11674,7 @@ def reconcile_group_roles_for_stage(stage):
                 "tournament_team"
             )
             .prefetch_related(
-                "tournament_team__players__user"
+                "tournament_team__members__user"
             )
             .filter(stage_group__stage=stage)
         )
