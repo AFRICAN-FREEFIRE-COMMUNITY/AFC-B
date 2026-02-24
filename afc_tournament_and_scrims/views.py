@@ -3089,7 +3089,7 @@ def register_for_event(request):
             return Response({"message": "Only captain/vice-captain/team owner can register the team."}, status=403)
         
         # Check if the team is banned
-        if BannedTeam.objects.filter(banned_team=team, is_active=True).exists():
+        if team.is_banned:
             return Response({"message": "Your team is banned from registering for this event."}, status=403)
 
         # Ensure requester is in team
