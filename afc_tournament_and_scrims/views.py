@@ -5239,7 +5239,7 @@ def get_event_details_for_admin(request):
     event = get_object_or_404(Event, slug=slug)
     today = timezone.localdate()
 
-    reg_qs = RegisteredCompetitors.objects.filter(event=event, status="registered")
+    reg_qs = RegisteredCompetitors.objects.filter(event=event, status="registered").all()
     total_registered = reg_qs.count()
 
     max_competitors = event.max_teams_or_players or 0
