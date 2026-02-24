@@ -491,7 +491,7 @@ def ban_team(request):
     )
     for member in team_members:
         Notifications.objects.create(
-            user=member.user,
+            user=member.member,
             message=notification_message,
             notification_type="team_ban"
         )
@@ -573,7 +573,7 @@ def unban_team(request):
 
     for member in team_members:
         Notifications.objects.create(
-            user=member.user,
+            user=member.member,
             message=notification_message,
             notification_type="team_unban"
         )
