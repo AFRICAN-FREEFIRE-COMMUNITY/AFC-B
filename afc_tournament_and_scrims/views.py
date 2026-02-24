@@ -11449,7 +11449,7 @@ def seed_event_competitors_to_stage(request):
             new_entries = [
                 StageCompetitor(stage=stage, tournament_team=team)
                 for team in teams
-                if team.id not in existing_ids
+                if team.tournament_team_id not in existing_ids
             ]
 
         StageCompetitor.objects.bulk_create(new_entries)
