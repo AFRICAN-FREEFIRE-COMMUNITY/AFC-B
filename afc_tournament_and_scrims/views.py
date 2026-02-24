@@ -11623,7 +11623,27 @@ def reconcile_stage_roles(stage_id):
 
             created += 1
 
-    assign_stage_roles_from_db_task.delay(stage.stage_id)
+    pending_count = DiscordRoleAssignment.objects.filter(
+        stage=stage,
+        group__isnull=True,
+        status="pending"
+    ).count()
+
+    if pending_count == 0:
+        return {"created_pending": 0, "message": "No pending roles."}
+
+    progress = DiscordStageRoleAssignmentProgress.objects.create(
+        stage=stage,
+        total=pending_count,
+        completed=0,
+        failed=0,
+        status="running"
+    )
+
+    assign_stage_roles_from_db_task.delay(
+        progress.id,
+        stage.stage_id
+    )
 
     return created, skipped
 
