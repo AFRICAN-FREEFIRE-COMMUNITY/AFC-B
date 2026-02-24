@@ -1211,8 +1211,10 @@ def edit_event(request):
                     "teams_qualifying_from_stage": int(stage_data["teams_qualifying_from_stage"]),
                     "stage_discord_role_id": stage_data.get("stage_discord_role_id"),
                     "stage_status": stage_data.get("stage_status", "upcoming"),
-                    "prizepool": stage_data.get("prizepool"),
-                    "prizepool_cash_value": stage_data.get("prizepool_cash_value"),
+                    # if prizepool is provided, convert to string to avoid issues with large numbers, otherwise set to None to avoid overwriting existing value
+                    "prizepool": str(stage_data.get("prizepool")) if stage_data.get("prizepool") else None,
+                    # if prizepool_cash_value is provided, convert to float, otherwise set to None to avoid overwriting existing value
+                    "prizepool_cash_value": float(stage_data.get("prizepool_cash_value")) if stage_data.get("prizepool_cash_value") else None,
                     "prize_distribution": stage_data.get("prize_distribution", {}),
                 }
 
@@ -1237,8 +1239,10 @@ def edit_event(request):
                         "group_discord_role_id": group_data.get("group_discord_role_id"),
                         "match_count": int(group_data.get("match_count", 0)),
                         "match_maps": group_data.get("match_maps", []),
-                        "prizepool": group_data.get("prizepool"),
-                        "prizepool_cash_value": group_data.get("prizepool_cash_value"),
+                        # if prizepool is provided, convert to string to avoid issues with large numbers, otherwise set to None to avoid overwriting existing value
+                        "prizepool": str(group_data.get("prizepool")) if group_data.get("prizepool") else None,
+                        # if prizepool_cash_value is provided, convert to float, otherwise set to None to avoid overwriting existing value
+                        "prizepool_cash_value": float(group_data.get("prizepool_cash_value")) if group_data.get("prizepool_cash_value") else None,
                         "prize_distribution": group_data.get("prize_distribution", {}),
                     }
 
