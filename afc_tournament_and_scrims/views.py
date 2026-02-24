@@ -11467,7 +11467,7 @@ def seed_event_competitors_to_stage(request):
         StageCompetitor.objects.bulk_create(new_entries)
         seeded = len(new_entries)
 
-        created, skipped = reconcile_stage_roles(stage)
+        created, skipped = reconcile_stage_roles(stage.stage_id)
 
     return Response({
         "message": "Event competitors seeded to stage successfully.",
@@ -11572,9 +11572,11 @@ def seed_stage_competitors_to_groups_team(request):
     }, status=200)
 
 
-def reconcile_stage_roles(stage):
+def reconcile_stage_roles(stage_id):
     created = 0
     skipped = 0
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
 
     competitors = StageCompetitor.objects.select_related(
         "player__user",
