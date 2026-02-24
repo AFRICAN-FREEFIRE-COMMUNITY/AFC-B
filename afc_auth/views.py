@@ -2454,6 +2454,11 @@ def discord_callback(request):
     except:
         return redirect(fail_redirect)
 
+    
+    # Ensure the Discord account isn't already linked to another user
+    if User.objects.filter(discord_id=discord_id).exclude(user_id=user.user_id).exists():
+        return redirect(f"{return_url}?discord=already_linked")
+
     # ---- Add to Discord server ----
     try:
         join_res = requests.put(

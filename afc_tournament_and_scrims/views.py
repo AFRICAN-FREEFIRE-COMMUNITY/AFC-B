@@ -11352,6 +11352,7 @@ def leave_event(request):
             
             # Delete All Tournament Team Members
             TournamentTeamMember.objects.filter(tournament_team=tournament_team).delete()
+            RegisteredCompetitors.objects.filter(event=event, team=tournament_team.team).delete()
 
             # 🔥 Delete entire team entry
             tournament_team.delete()
