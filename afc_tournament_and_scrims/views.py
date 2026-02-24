@@ -11589,7 +11589,7 @@ def reconcile_stage_roles(stage):
 
         # TEAM
         else:
-            players = competitor.tournament_team.players.all()
+            players = competitor.tournament_team.members.select_related("user").all()
 
         for player in players:
             user = player.user
@@ -11667,7 +11667,7 @@ def reconcile_group_roles_for_stage(stage):
 
             # -------- TEAM --------
             elif sgc.tournament_team:
-                players = sgc.tournament_team.players.all()
+                players = sgc.tournament_team.members.select_related("user").all()
 
             else:
                 skipped += 1
