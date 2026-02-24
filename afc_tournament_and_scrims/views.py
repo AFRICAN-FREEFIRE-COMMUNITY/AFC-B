@@ -11467,10 +11467,14 @@ def seed_event_competitors_to_stage(request):
         StageCompetitor.objects.bulk_create(new_entries)
         seeded = len(new_entries)
 
+        created, skipped = reconcile_stage_roles(stage)
+
     return Response({
         "message": "Event competitors seeded to stage successfully.",
         "stage_id": stage.stage_id,
-        "total_seeded": seeded
+        "total_seeded": seeded,
+        "stage_roles_created": created,
+        "stage_roles_skipped": skipped,
     }, status=200)
 
 import random
@@ -11555,9 +11559,155 @@ def seed_stage_competitors_to_groups_team(request):
 
         StageGroupCompetitor.objects.bulk_create(new_entries)
 
+        result = reconcile_group_roles_for_stage(stage)
+
+
     return Response({
         "message": "Stage competitors seeded to groups successfully.",
         "stage_id": stage.stage_id,
         "groups": group_count,
-        "total_seeded": len(new_entries)
+        "total_seeded": len(new_entries),
+        "roles_created": result["created_pending"],
+        "roles_skipped": result["skipped"],
     }, status=200)
+
+
+def reconcile_stage_roles(stage):
+    created = 0
+    skipped = 0
+
+    competitors = StageCompetitor.objects.select_related(
+        "player__user",
+        "tournament_team"
+    ).filter(stage=stage)
+
+    for competitor in competitors:
+
+        # SOLO
+        if competitor.player:
+            players = [competitor.player]
+
+        # TEAM
+        else:
+            players = competitor.tournament_team.players.all()
+
+        for player in players:
+            user = player.user
+
+            if not user or not user.discord_id or not stage.stage_discord_role_id:
+                skipped += 1
+                continue
+
+            exists = DiscordRoleAssignment.objects.filter(
+                user=user,
+                stage=stage,
+                group=None,
+                role_id=stage.stage_discord_role_id,
+                status="success"
+            ).exists()
+
+            if exists:
+                skipped += 1
+                continue
+
+            DiscordRoleAssignment.objects.get_or_create(
+                user=user,
+                discord_id=user.discord_id,
+                role_id=stage.stage_discord_role_id,
+                stage=stage,
+                group=None,
+                defaults={"status": "pending"}
+            )
+
+            created += 1
+
+    assign_stage_roles_from_db_task.delay(stage.stage_id)
+
+    return created, skipped
+
+
+from django.db import transaction
+
+def reconcile_group_roles_for_stage(stage):
+    """
+    Creates pending DiscordRoleAssignment records for all players
+    in stage groups (solo or team).
+    Safe to call multiple times.
+    """
+
+    created = 0
+    skipped = 0
+
+    with transaction.atomic():
+
+        group_competitors = (
+            StageGroupCompetitor.objects
+            .select_related(
+                "stage_group",
+                "player__user",
+                "tournament_team"
+            )
+            .prefetch_related(
+                "tournament_team__players__user"
+            )
+            .filter(stage_group__stage=stage)
+        )
+
+        for sgc in group_competitors:
+            group = sgc.stage_group
+
+            # No role configured
+            if not group.group_discord_role_id:
+                skipped += 1
+                continue
+
+            # -------- SOLO --------
+            if sgc.player:
+                players = [sgc.player]
+
+            # -------- TEAM --------
+            elif sgc.tournament_team:
+                players = sgc.tournament_team.players.all()
+
+            else:
+                skipped += 1
+                continue
+
+            for player in players:
+                user = getattr(player, "user", None)
+
+                if not user or not user.discord_id:
+                    skipped += 1
+                    continue
+
+                # Already successfully assigned?
+                already_success = DiscordRoleAssignment.objects.filter(
+                    user=user,
+                    stage=stage,
+                    group=group,
+                    role_id=group.group_discord_role_id,
+                    status="success"
+                ).exists()
+
+                if already_success:
+                    skipped += 1
+                    continue
+
+                DiscordRoleAssignment.objects.get_or_create(
+                    user=user,
+                    discord_id=user.discord_id,
+                    role_id=group.group_discord_role_id,
+                    stage=stage,
+                    group=group,
+                    defaults={"status": "pending"}
+                )
+
+                created += 1
+
+    # Trigger async worker
+    assign_group_roles_from_db_task.delay(stage.stage_id)
+
+    return {
+        "created_pending": created,
+        "skipped": skipped
+    }
