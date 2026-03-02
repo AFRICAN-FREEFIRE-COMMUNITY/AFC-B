@@ -918,6 +918,8 @@ def get_news_detail(request):
     except News.DoesNotExist:
         return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    news_views = NewsViews.objects.filter(news=news).count()
+
     news_data = {
         "news_id": news.news_id,
         "news_title": news.news_title,
@@ -927,7 +929,8 @@ def get_news_detail(request):
         "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
         "author": news.author.username,
         "created_at": news.created_at,
-        "updated_at": news.updated_at
+        "updated_at": news.updated_at,
+        "total_views": news_views
     }
 
     # add to news views
