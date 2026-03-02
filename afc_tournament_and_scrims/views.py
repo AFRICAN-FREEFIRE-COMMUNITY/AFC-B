@@ -8860,17 +8860,27 @@ def get_all_leaderboard_details_for_event(request):
                         .filter(match=match)
                         .select_related("tournament_team__team")
                         .annotate(team_name=F("tournament_team__team__team_name"))
-                        .values(
-                            "tournament_team_id",
-                            "team_name",
-                            "placement",
-                            "kills",
-                            "placement_points",
-                            "kill_points",
-                            "total_points",
+                        .annotate(
+                        effective_total=(
+                            Coalesce(F("placement_points"), 0) +
+                            Coalesce(F("kill_points"), 0) +
+                            Coalesce(F("bonus_points"), 0) -
+                            Coalesce(F("penalty_points"), 0)
                         )
-                        # ✅ sorted by points not placement
-                        .order_by("-total_points", "-kills", "team_name")
+                    )
+                    .values(
+                        "tournament_team_id",
+                        "team_name",
+                        "placement",
+                        "kills",
+                        "placement_points",
+                        "kill_points",
+                        "bonus_points",
+                        "penalty_points",
+                        "total_points",
+                        "effective_total",
+                    )
+                    .order_by("-effective_total", "-kills", "team_name")
                     )
 
                 matches_payload.append({
@@ -8882,6 +8892,7 @@ def get_all_leaderboard_details_for_event(request):
                     "room_name": match.room_name,
                     "room_password": match.room_password,
                     "stats": list(match_stats),
+                    "scoring_settings": match.scoring_settings or {},
                 })
 
             # ---------------- OVERALL LEADERBOARD (PER GROUP) ----------------
@@ -8962,11 +8973,28 @@ def get_all_leaderboard_details_for_event(request):
                             )
                         ), 0),
 
+                        placement_sum=Coalesce(Sum("placement_points"), 0),
+                        kill_sum=Coalesce(Sum("kill_points"), 0),
+                        bonus_sum=Coalesce(Sum("bonus_points"), 0),
+                        penalty_sum=Coalesce(Sum("penalty_points"), 0),
+
                         total_points=Coalesce(Sum("total_points"), 0),
-                        last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
+
+                        effective_total=(
+                            Coalesce(Sum("placement_points"), 0) +
+                            Coalesce(Sum("kill_points"), 0) +
+                            Coalesce(Sum("bonus_points"), 0) -
+                            Coalesce(Sum("penalty_points"), 0)
+                        ),
+
+                        last_match_placement=Coalesce(
+                            last_placement_subq,
+                            Value(999),
+                            output_field=IntegerField()
+                        ),
                     )
                     .order_by(
-                        "-total_points",
+                        "-effective_total",
                         "-total_booyah",
                         "-total_kills",
                         "last_match_placement",
@@ -8985,6 +9013,7 @@ def get_all_leaderboard_details_for_event(request):
                     "leaderboard_name": leaderboard.leaderboard_name,
                     "kill_point": leaderboard.kill_point,
                     "placement_points": leaderboard.placement_points,
+                    "default_scoring": None,  # scoring now stored per match
                     "leaderboard_method": leaderboard.leaderboard_method,
                     "file_type": leaderboard.file_type,
                     "last_updated": leaderboard.last_updated,
@@ -10532,7 +10561,7 @@ def enter_team_match_result_manual(request):
 
     # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
-    teams_payload = _parse_json_or_value(request.data.get("teams"), default=None)
+    teams_payload = _parse_json_or_value(request.data.get("results"), default=None)
 
     if not match_id:
         return Response({"message": "match_id is required."}, status=400)
