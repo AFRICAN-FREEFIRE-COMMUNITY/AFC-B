@@ -214,6 +214,8 @@ class News(models.Model):
     images = models.ImageField(upload_to="news_images/", null=True, blank=True)
     author = models.ForeignKey(User, on_delete=models.CASCADE)  # Admin, Mod, or Support
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
 
 
     def __str__(self):
@@ -251,8 +253,10 @@ class NewsDislike(models.Model):
 
 class NewsViews(models.Model):
     news = models.ForeignKey(News, on_delete=models.CASCADE, related_name="views")
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)  # Allow null for anonymous views
     created_at = models.DateTimeField(auto_now_add=True)
+    viewer_ip = models.CharField(max_length=45, null=True, blank=True)
+    viewer_user_agent = models.TextField(null=True, blank=True)
 
     class Meta:
         unique_together = ("news", "user")  # Ensure a user can view a news item only once
