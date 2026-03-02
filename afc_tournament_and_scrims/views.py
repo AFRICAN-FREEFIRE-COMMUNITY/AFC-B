@@ -12172,6 +12172,178 @@ PLAYER_RE = re.compile(
 )
 
 
+# @api_view(["POST"])
+# @parser_classes([MultiPartParser, FormParser])
+# def upload_team_match_result(request):
+
+#     # -------- AUTH --------
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin or admin.role != "admin":
+#         return Response({"message": "Unauthorized."}, status=403)
+
+#     match_id = request.data.get("match_id")
+#     if not match_id:
+#         return Response({"message": "match_id required."}, status=400)
+
+#     uploaded_file = request.FILES.get("file")
+#     if not uploaded_file:
+#         return Response({"message": "file required."}, status=400)
+
+#     match = get_object_or_404(Match, match_id=match_id)
+
+#     if not match.group:
+#         return Response({"message": "Match not linked to group."}, status=400)
+
+#     event = match.group.stage.event
+#     if event.participant_type == "solo":
+#         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
+
+#     # -------- SCORING --------
+#     scoring = match.scoring_settings or {}
+
+#     try:
+#         placement_points = {
+#             int(k): int(v)
+#             for k, v in (scoring.get("placement_points") or {}).items()
+#         }
+#     except Exception:
+#         return Response({"message": "Invalid scoring placement_points."}, status=400)
+
+#     kill_point = float(scoring.get("kill_point", 1))
+#     points_per_assist = float(scoring.get("points_per_assist", 0))
+#     points_per_1000_damage = float(scoring.get("points_per_1000_damage", 0))
+
+#     # -------- PARSE FILE --------
+#     text = uploaded_file.read().decode("utf-8", errors="ignore")
+
+#     parsed_teams = []
+
+#     for block in TEAM_BLOCK_RE.finditer(text):
+#         players = []
+#         players_block = block.group("players_block")
+
+#         for p in PLAYER_RE.finditer(players_block):
+#             players.append({
+#                 "uid": p.group("uid").strip(),
+#                 "kills": int(p.group("kills")),
+#                 "name": p.group("name").strip()
+#             })
+
+#         parsed_teams.append({
+#             "team_name": block.group("team_name").strip(),
+#             "placement": int(block.group("placement")),
+#             "players": players
+#         })
+
+#     if not parsed_teams:
+#         return Response({"message": "No team data parsed."}, status=400)
+
+#     # -------- MAP USERS --------
+#     all_uids = [p["uid"] for t in parsed_teams for p in t["players"]]
+
+#     members = TournamentTeamMember.objects.select_related(
+#         "tournament_team", "user"
+#     ).filter(
+#         tournament_team__event=event,
+#         user__uid__in=all_uids
+#     )
+
+#     uid_to_member = {m.user.uid: m for m in members}
+
+#     # -------- SAVE --------
+#     team_stats_to_create = []
+#     player_stats_to_create = []
+#     missing_players = []
+
+#     with transaction.atomic():
+
+#         TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
+#         TournamentTeamMatchStats.objects.filter(match=match).delete()
+
+#         for team_data in parsed_teams:
+
+#             placement = team_data["placement"]
+#             players = team_data["players"]
+
+#             # find team via first valid member
+#             team_obj = None
+#             team_members = []
+
+#             for p in players:
+#                 member = uid_to_member.get(p["uid"])
+#                 if member:
+#                     team_obj = member.tournament_team
+#                     break
+
+#             if not team_obj:
+#                 missing_players.append(team_data["team_name"])
+#                 continue
+
+#             total_kills = sum(p["kills"] for p in players)
+
+#             placement_pts = placement_points.get(placement, 0)
+#             kill_pts = total_kills * kill_point
+#             assist_pts = 0  # not in file
+#             damage_pts = 0  # not in file
+
+#             total_pts = placement_pts + kill_pts + assist_pts + damage_pts
+
+#             team_stat = TournamentTeamMatchStats(
+#                 match=match,
+#                 tournament_team=team_obj,
+#                 placement=placement,
+#                 kills=total_kills,
+#                 damage=0,
+#                 assists=0,
+#                 placement_points=placement_pts,
+#                 kill_points=int(kill_pts),
+#                 total_points=int(total_pts),
+#             )
+#             team_stats_to_create.append(team_stat)
+
+#         created_team_stats = TournamentTeamMatchStats.objects.bulk_create(team_stats_to_create)
+
+#         ts_map = {ts.tournament_team_id: ts for ts in created_team_stats}
+
+#         for team_data in parsed_teams:
+#             for p in team_data["players"]:
+#                 member = uid_to_member.get(p["uid"])
+#                 if not member:
+#                     continue
+
+#                 ts = ts_map.get(member.tournament_team_id)
+#                 if not ts:
+#                     continue
+
+#                 player_stats_to_create.append(
+#                     TournamentPlayerMatchStats(
+#                         team_stats=ts,
+#                         player=member.user,
+#                         kills=p["kills"],
+#                         damage=0,
+#                         assists=0,
+#                     )
+#                 )
+
+#         TournamentPlayerMatchStats.objects.bulk_create(player_stats_to_create)
+
+#         match.result_inputted = True
+#         match.save(update_fields=["result_inputted"])
+
+#     return Response({
+#         "message": "Team match results uploaded successfully.",
+#         "match_id": match.match_id,
+#         "parsed_teams": len(parsed_teams),
+#         "saved_teams": len(created_team_stats),
+#         "saved_players": len(player_stats_to_create),
+#         "missing_teams": missing_players[:20]
+#     }, status=200)
+
+
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
 def upload_team_match_result(request):
@@ -12214,8 +12386,6 @@ def upload_team_match_result(request):
         return Response({"message": "Invalid scoring placement_points."}, status=400)
 
     kill_point = float(scoring.get("kill_point", 1))
-    points_per_assist = float(scoring.get("points_per_assist", 0))
-    points_per_1000_damage = float(scoring.get("points_per_1000_damage", 0))
 
     # -------- PARSE FILE --------
     text = uploaded_file.read().decode("utf-8", errors="ignore")
@@ -12254,25 +12424,25 @@ def upload_team_match_result(request):
 
     uid_to_member = {m.user.uid: m for m in members}
 
-    # -------- SAVE --------
     team_stats_to_create = []
     player_stats_to_create = []
-    missing_players = []
+    missing_teams = []
 
     with transaction.atomic():
 
+        # Safe re-upload
         TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
         TournamentTeamMatchStats.objects.filter(match=match).delete()
 
+        # -------- CREATE TEAM STATS --------
         for team_data in parsed_teams:
 
             placement = team_data["placement"]
             players = team_data["players"]
 
-            # find team via first valid member
             team_obj = None
-            team_members = []
 
+            # Find team via first valid member
             for p in players:
                 member = uid_to_member.get(p["uid"])
                 if member:
@@ -12280,56 +12450,65 @@ def upload_team_match_result(request):
                     break
 
             if not team_obj:
-                missing_players.append(team_data["team_name"])
+                missing_teams.append(team_data["team_name"])
                 continue
 
             total_kills = sum(p["kills"] for p in players)
 
             placement_pts = placement_points.get(placement, 0)
             kill_pts = total_kills * kill_point
-            assist_pts = 0  # not in file
-            damage_pts = 0  # not in file
+            total_pts = placement_pts + kill_pts
 
-            total_pts = placement_pts + kill_pts + assist_pts + damage_pts
-
-            team_stat = TournamentTeamMatchStats(
-                match=match,
-                tournament_team=team_obj,
-                placement=placement,
-                kills=total_kills,
-                damage=0,
-                assists=0,
-                placement_points=placement_pts,
-                kill_points=int(kill_pts),
-                total_points=int(total_pts),
+            team_stats_to_create.append(
+                TournamentTeamMatchStats(
+                    match=match,
+                    tournament_team=team_obj,
+                    placement=placement,
+                    kills=total_kills,
+                    damage=0,
+                    assists=0,
+                    placement_points=int(placement_pts),
+                    kill_points=int(kill_pts),
+                    total_points=int(total_pts),
+                )
             )
-            team_stats_to_create.append(team_stat)
 
-        created_team_stats = TournamentTeamMatchStats.objects.bulk_create(team_stats_to_create)
+        created_team_stats = TournamentTeamMatchStats.objects.bulk_create(
+            team_stats_to_create,
+            batch_size=200
+        )
 
-        ts_map = {ts.tournament_team_id: ts for ts in created_team_stats}
+        # Build safe FK map using IDs
+        ts_map = {
+            ts.tournament_team_id: ts.team_stats_id
+            for ts in created_team_stats
+        }
 
+        # -------- CREATE PLAYER STATS --------
         for team_data in parsed_teams:
             for p in team_data["players"]:
                 member = uid_to_member.get(p["uid"])
                 if not member:
                     continue
 
-                ts = ts_map.get(member.tournament_team_id)
-                if not ts:
+                ts_id = ts_map.get(member.tournament_team_id)
+                if not ts_id:
                     continue
 
                 player_stats_to_create.append(
                     TournamentPlayerMatchStats(
-                        team_stats=ts,
-                        player=member.user,
+                        team_stats_id=ts_id,  # 🔥 SAFE FIX
+                        player_id=member.user_id,
                         kills=p["kills"],
                         damage=0,
                         assists=0,
                     )
                 )
 
-        TournamentPlayerMatchStats.objects.bulk_create(player_stats_to_create)
+        TournamentPlayerMatchStats.objects.bulk_create(
+            player_stats_to_create,
+            batch_size=500
+        )
 
         match.result_inputted = True
         match.save(update_fields=["result_inputted"])
@@ -12340,7 +12519,7 @@ def upload_team_match_result(request):
         "parsed_teams": len(parsed_teams),
         "saved_teams": len(created_team_stats),
         "saved_players": len(player_stats_to_create),
-        "missing_teams": missing_players[:20]
+        "missing_teams": missing_teams[:20]
     }, status=200)
 
 
