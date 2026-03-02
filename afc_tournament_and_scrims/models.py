@@ -232,6 +232,8 @@ class Match(models.Model):
     room_password = models.CharField(max_length=50, null=True, blank=True)
     room_name = models.CharField(max_length=100, null=True, blank=True)
     result_inputted = models.BooleanField(default=False)
+    upload_method = models.CharField(max_length=30, null=True, blank=True)
+    scoring_settings = models.JSONField(default=dict, blank=True)
     match_map = models.CharField(
         max_length=50,
         choices=[
@@ -294,6 +296,8 @@ class TournamentTeamMatchStats(models.Model):
     kill_points = models.PositiveIntegerField(default=0)
     total_points = models.PositiveIntegerField(default=0)
     played = models.BooleanField(default=True)
+    penalty_points = models.IntegerField(default=0) # ✅ -
+    bonus_points = models.IntegerField(default=0)   # ✅ +
 
 class TournamentPlayerMatchStats(models.Model):
     """
