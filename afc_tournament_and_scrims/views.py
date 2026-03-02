@@ -10700,11 +10700,13 @@ def enter_team_match_result_manual(request):
                 if not user_id:
                     continue
 
+                user = User.objects.get(user_id=user_id)
+
                 played = bool(p.get("played", True)) and team_played
 
                 player_rows.append(TournamentPlayerMatchStats(
                     team_stats_id=ts_id,  # 🔥 FK SAFE FIX
-                    player_id=int(user_id),
+                    player=user,
                     kills=int(p.get("kills") or 0) if played else 0,
                     damage=int(p.get("damage") or 0) if played else 0,
                     assists=int(p.get("assists") or 0) if played else 0,
@@ -10713,7 +10715,7 @@ def enter_team_match_result_manual(request):
         TournamentPlayerMatchStats.objects.bulk_create(player_rows, batch_size=500)
 
         match.result_inputted = True
-        if not match.leaderboard_id:
+        if not match.leaderboard.leaderboard_id:
             match.leaderboard = lb
 
         match.save(update_fields=["result_inputted", "leaderboard"])
