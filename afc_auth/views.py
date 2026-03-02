@@ -16,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
 
-from .models import AdminHistory, LoginHistory, LoginHistory, NewsDislike, NewsLike, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import AdminHistory, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -927,8 +927,15 @@ def get_news_detail(request):
         "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
         "author": news.author.username,
         "created_at": news.created_at,
-        # "updated_at": news.updated_at
+        "updated_at": news.updated_at
     }
+
+    # add to news views
+    NewsViews.objects.create(
+        news=news,
+        viewer_ip=get_client_ip(request),
+        viewer_user_agent=request.META.get("HTTP_USER_AGENT", "")
+    )
 
     return Response({"news": news_data}, status=status.HTTP_200_OK)
 
