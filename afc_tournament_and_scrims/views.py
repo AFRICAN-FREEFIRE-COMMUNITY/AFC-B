@@ -8880,12 +8880,13 @@ def get_all_leaderboard_details_for_event(request):
                             TournamentPlayerMatchStats.objects
                             .filter(team_stats=team_stat)
                             .select_related("player")
+                            .annotate(username=F("player__username"))
                             .values(
                                 "player_id",
-                                username=F("player__username"),
-                                kills=F("kills"),
-                                damage=F("damage"),
-                                assists=F("assists"),
+                                "username",
+                                "kills",
+                                "damage",
+                                "assists",
                             )
                         )
 
