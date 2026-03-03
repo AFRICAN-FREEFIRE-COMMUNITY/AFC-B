@@ -10767,7 +10767,7 @@ def enter_team_match_result_manual(request):
         "message": "Match result saved (manual team entry).",
         "match_id": match.match_id,
         "leaderboard_id": lb.leaderboard_id,
-        "teams_saved": len(created_team_stats),
+        "teams_saved": len(created_stats_qs),
         "player_rows_saved": len(player_rows),
     }, status=200)
 
