@@ -10696,15 +10696,31 @@ def enter_team_match_result_manual(request):
                 )
             )
 
-        created_team_stats = TournamentTeamMatchStats.objects.bulk_create(
+        # created_team_stats = TournamentTeamMatchStats.objects.bulk_create(
+        #     team_stats_to_create,
+        #     batch_size=200
+        # )
+
+        # # 🔥 IMPORTANT: use *_id fields only
+        # created_map = {
+        #     ts.tournament_team_id: ts.team_stats_id
+        #     for ts in created_team_stats
+        # }
+
+        TournamentTeamMatchStats.objects.bulk_create(
             team_stats_to_create,
             batch_size=200
         )
 
-        # 🔥 IMPORTANT: use *_id fields only
+        # 🔥 Re-fetch from DB to guarantee IDs
+        created_stats_qs = TournamentTeamMatchStats.objects.filter(
+            match=match,
+            tournament_team_id__in=team_ids
+        )
+
         created_map = {
             ts.tournament_team_id: ts.team_stats_id
-            for ts in created_team_stats
+            for ts in created_stats_qs
         }
 
         # ---------------- CREATE PLAYER STATS ----------------
