@@ -10740,7 +10740,7 @@ def enter_team_match_result_manual(request):
         )
 
         created_map = {
-            ts.tournament_team_id: ts.team_stats_id
+            ts.tournament_team.tournament_team_id: ts.team_stats_id
             for ts in created_stats_qs
         }
 
@@ -10762,11 +10762,17 @@ def enter_team_match_result_manual(request):
                     continue
 
                 played = bool(p.get("played", True)) and team_played
+                user = User.objects.filter(user_id=int(user_id)).first()
+                if not user:
+                    return Response(
+                        {"message": f"User with user_id {user_id} not found."},
+                        status=400
+                    )
 
                 player_rows.append(
                     TournamentPlayerMatchStats(
                         team_stats_id=ts_id,  # ✅ FK safe
-                        player_id=int(user_id),  # ✅ your PK
+                        player_id=user,  # ✅ your PK
                         kills=int(p.get("kills") or 0) if played else 0,
                         damage=int(p.get("damage") or 0) if played else 0,
                         assists=int(p.get("assists") or 0) if played else 0,
@@ -12855,10 +12861,7 @@ def add_teams_to_group(request):
 
 @api_view(["GET"])
 def get_all_tournament_player_match_stats(requests):
-    stats = TournamentPlayerMatchStats.objects.select_related(
-        "player",
-        "team_stats__match"
-    ).all()
+    stats = TournamentPlayerMatchStats.objects.all()
     data = []
     for stat in stats:
         data.append({
