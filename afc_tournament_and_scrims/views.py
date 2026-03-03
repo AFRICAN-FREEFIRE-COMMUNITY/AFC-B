@@ -8855,33 +8855,53 @@ def get_all_leaderboard_details_for_event(request):
                         .order_by("-effective_total", "-kills", "username")
                     )
                 else:
-                    match_stats = (
+                    team_stats_qs = (
                         TournamentTeamMatchStats.objects
                         .filter(match=match)
                         .select_related("tournament_team__team")
-                        .annotate(team_name=F("tournament_team__team__team_name"))
                         .annotate(
-                        effective_total=(
-                            Coalesce(F("placement_points"), 0) +
-                            Coalesce(F("kill_points"), 0) +
-                            Coalesce(F("bonus_points"), 0) -
-                            Coalesce(F("penalty_points"), 0)
+                            team_name=F("tournament_team__team__team_name"),
+                            effective_total=(
+                                Coalesce(F("placement_points"), 0) +
+                                Coalesce(F("kill_points"), 0) +
+                                Coalesce(F("bonus_points"), 0) -
+                                Coalesce(F("penalty_points"), 0)
+                            )
                         )
+                        .order_by("-effective_total", "-kills", "team_name")
                     )
-                    .values(
-                        "tournament_team_id",
-                        "team_name",
-                        "placement",
-                        "kills",
-                        "placement_points",
-                        "kill_points",
-                        "bonus_points",
-                        "penalty_points",
-                        "total_points",
-                        "effective_total",
-                    )
-                    .order_by("-effective_total", "-kills", "team_name")
-                    )
+
+                    match_stats = []
+
+                    for team_stat in team_stats_qs:
+
+                        # 🔥 Fetch players for this team in this match
+                        player_stats = (
+                            TournamentPlayerMatchStats.objects
+                            .filter(team_stats=team_stat)
+                            .select_related("player")
+                            .values(
+                                "player_id",
+                                username=F("player__username"),
+                                kills=F("kills"),
+                                damage=F("damage"),
+                                assists=F("assists"),
+                            )
+                        )
+
+                        match_stats.append({
+                            "tournament_team_id": team_stat.tournament_team_id,
+                            "team_name": team_stat.team_name,
+                            "placement": team_stat.placement,
+                            "kills": team_stat.kills,
+                            "placement_points": team_stat.placement_points,
+                            "kill_points": team_stat.kill_points,
+                            "bonus_points": team_stat.bonus_points,
+                            "penalty_points": team_stat.penalty_points,
+                            "total_points": team_stat.total_points,
+                            "effective_total": team_stat.effective_total,
+                            "players": list(player_stats)  # 🔥 nested players here
+                        })
 
                 matches_payload.append({
                     "match_id": match.match_id,
