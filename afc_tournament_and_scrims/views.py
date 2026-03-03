@@ -12851,3 +12851,23 @@ def add_teams_to_group(request):
         "group_id": group.group_id,
         "added_team_ids": [entry.tournament_team.team_id for entry in new_entries],
     }, status=200)
+
+
+@api_view(["GET"])
+def get_all_tournament_player_match_stats(requests):
+    stats = TournamentPlayerMatchStats.objects.select_related(
+        "player",
+        "team_stats__match"
+    ).all()
+    data = []
+    for stat in stats:
+        data.append({
+            "player_id": stat.player_id,
+            "player_username": stat.player.username,
+            "match_id": stat.team_stats.match_id,
+            "kills": stat.kills,
+            "damage": stat.damage,
+            "assists": stat.assists,
+        })
+
+    return Response(data, status=200)

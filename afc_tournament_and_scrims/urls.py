@@ -78,4 +78,5 @@ urlpatterns = [
     path("add-teams-to-event/", add_teams_to_event, name="add_teams_to_event"),
     path("add-teams-to-stage/", add_teams_to_stage, name="add_teams_to_stage"),
     path("add-teams-to-group/", add_teams_to_group, name="add_teams_to_group"),
+    path("get-all-tournament-player-match-stats/", get_all_tournament_player_match_stats, name="get_all_tournament_player_match_stats"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
