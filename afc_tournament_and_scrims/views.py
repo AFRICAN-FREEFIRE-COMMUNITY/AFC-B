@@ -10762,17 +10762,17 @@ def enter_team_match_result_manual(request):
                     continue
 
                 played = bool(p.get("played", True)) and team_played
-                user = User.objects.filter(user_id=int(user_id)).first()
-                if not user:
-                    return Response(
-                        {"message": f"User with user_id {user_id} not found."},
-                        status=400
-                    )
+                # user = User.objects.filter(user_id=int(user_id)).first()
+                # if not user:
+                #     return Response(
+                #         {"message": f"User with user_id {user_id} not found."},
+                #         status=400
+                #     )
 
                 player_rows.append(
                     TournamentPlayerMatchStats(
                         team_stats_id=ts_id,  # ✅ FK safe
-                        player_id=user,  # ✅ your PK
+                        player_id=user_id,  # ✅ your PK
                         kills=int(p.get("kills") or 0) if played else 0,
                         damage=int(p.get("damage") or 0) if played else 0,
                         assists=int(p.get("assists") or 0) if played else 0,
