@@ -93,6 +93,10 @@ class Event(models.Model):
     restricted_countries = models.JSONField(default=list, blank=True) # ["Nigeria", "Ghana", ...]
 
     is_public = models.BooleanField(default=True)
+    is_sponsored = models.BooleanField(default=False)
+    sponsor_name = models.CharField(max_length=100, null=True, blank=True)
+    sponsor_requirment_description = models.CharField(max_length=200, null=True, blank=True)
+    sponsor_field_label = models.CharField(max_length=100, null=True, blank=True)
 
 
     def save(self, *args, **kwargs):
@@ -182,6 +186,7 @@ class RegisteredCompetitors(models.Model):
     ("disqualified", "Disqualified"),
     ("withdrawn", "Withdrawn"),
     ("left", "Left"),
+    ("pending", "Pending"),
     ]
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="registrations")
@@ -189,6 +194,7 @@ class RegisteredCompetitors(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="registered")
     registration_date = models.DateTimeField(auto_now_add=True)
+
 
 # ---------------- Leaderboard ----------------
 class Leaderboard(models.Model):
@@ -262,6 +268,7 @@ class TournamentTeam(models.Model):
     status = models.CharField(max_length=20, choices=TEAM_STATUS, default="active")
     registered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     registration_date = models.DateTimeField(auto_now_add=True)
+    country = models.CharField(max_length=100, null=True, blank=True) # Store country at time of registration for historical accuracy
 
     def __str__(self):
         return f"{self.team.team_name} in {self.event.event_name}"
@@ -269,11 +276,19 @@ class TournamentTeam(models.Model):
 
 class TournamentTeamMember(models.Model):
     """
-    Members of the team for this tournament.
+    Members of the team for this tournament
     """
+    TEAM_MEMBER_STATUS = [
+        ("pending", "Pending"),
+        ("active", "Active"),
+        ("rejected", "Rejected")
+    ]
     tournament_team = models.ForeignKey(TournamentTeam, on_delete=models.CASCADE, related_name="members")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=TEAM_MEMBER_STATUS, default="active")
+    user_id_from_sponsor = models.CharField(max_length=100, null=True, blank=True) # For sponsored events, to link user to sponsor's system
+        
 
     class Meta:
         unique_together = ("tournament_team", "user")

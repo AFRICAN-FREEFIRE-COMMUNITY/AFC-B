@@ -20,5 +20,5 @@ app.conf.beat_schedule = {
     "update-event-stage-statuses-hourly": {
         "task": "afc_tournament_and_scrims.tasks.update_event_and_stage_statuses",
         "schedule": crontab(minute="*/5"),  # every hour
-    }
+    },
 }
