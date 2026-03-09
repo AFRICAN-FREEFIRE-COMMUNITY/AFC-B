@@ -1137,6 +1137,21 @@ def edit_event(request):
             is_public = is_public.lower() in ("1", "true", "yes")
         event.is_public = is_public
 
+    if "is_sponsored" in request.data:
+        is_sponsored = request.data.get("is_sponsored")
+        if isinstance(is_sponsored, str):
+            is_sponsored = is_sponsored.lower() in ("1", "true", "yes")
+        event.is_sponsored = is_sponsored
+
+    if "sponsor_name" in request.data:
+        event.sponsor_name = request.data.get("sponsor_name")
+
+    if "sponsor_field_label" in request.data:
+        event.sponsor_field_label = request.data.get("sponsor_field_label")
+
+    if "sponsor_requirement_description" in request.data:
+        event.sponsor_requirement_description = request.data.get("sponsor_requirement_description")
+
     
     # ensure the evnt hasnt started if they wanna chnage the event type
 
@@ -3223,6 +3238,8 @@ def register_for_event(request):
             }, status=409)
 
         roster_users = list(User.objects.filter(user_id__in=roster_member_ids))
+        if roster_users is None or len(roster_users) == 0:
+            return Response({"message": "Roster users not found."}, status=400)
         roster_users_by_id = {u.user_id: u for u in roster_users}
 
         missing_ids = [uid for uid in roster_member_ids if uid not in roster_users_by_id]
@@ -3365,6 +3382,42 @@ def reject_player(request):
     return Response({
         "message": "Player rejected."
     }, status=200)
+
+
+@api_view(["POST"])
+def get_all_competitors_and_their_sponsor_id(request):
+    event_id = request.data.get("event_id")
+    event = get_object_or_404(Event, event_id=event_id)
+    competitors = RegisteredCompetitors.objects.filter(event=event).select_related("user", "team").prefetch_related("team__teammembers__user")
+
+    data = []
+    for competitor in competitors:
+        if competitor.user:
+            data.append({
+                "competitor_id": competitor.id,
+                "type": "solo",
+                "player_id": competitor.user.user_id,
+                "username": competitor.user.username,
+                "sponsor_id": None
+            })
+        elif competitor.team:
+            team_data = {
+                "competitor_id": competitor.id,
+                "type": "team",
+                "team_id": competitor.team.team_id,
+                "team_name": competitor.team.team_name,
+                "sponsor_id": None,
+                "members": []
+            }
+            for member in competitor.team.teammembers.all():
+                team_data["members"].append({
+                    "player_id": member.member.user_id,
+                    "username": member.member.username,
+                    "sponsor_id": member.user_id_from_sponsor
+                })
+            data.append(team_data)
+
+    return Response({"competitors": data}, status=200)
     
 
 def check_and_activate_team(tournament_team):
