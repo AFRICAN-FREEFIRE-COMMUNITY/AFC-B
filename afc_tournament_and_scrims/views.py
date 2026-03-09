@@ -475,7 +475,7 @@ def create_event(request):
                 teams_qualifying_from_stage=int(stage_data["teams_qualifying_from_stage"]),
                 stage_discord_role_id=stage_data.get("stage_discord_role_id"),
                 prizepool=stage_data.get("prizepool"),
-                prizepool_cash_value=stage_data.get("prizepool_cash_value") if stage_data.get("prizepool_cash_value") else None,
+                prizepool_cash_value=stage_data.get("prizepool_cash_value") if stage_data.get("prizepool_cash_value") else 0,
                 prize_distribution=stage_data.get("prize_distribution", {})
             )
 
@@ -3344,6 +3344,18 @@ def confirm_player(request):
 
     return Response({
         "message": "Player confirmed."
+    }, status=200)
+
+
+@api_view(["POST"])
+def reject_player(request):
+    member_id = request.data.get("member_id")
+    member = get_object_or_404(TournamentTeamMember, id=member_id)
+    member.status = "rejected"
+    member.save(update_fields=["status"])
+
+    return Response({
+        "message": "Player rejected."
     }, status=200)
     
 
