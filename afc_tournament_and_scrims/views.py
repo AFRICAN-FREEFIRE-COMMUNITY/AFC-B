@@ -3198,7 +3198,7 @@ def register_for_event(request):
                     "message": "Sponsor IDs are required for sponsored events."
                 }, status=400)
 
-        team_country = determine_team_country(roster_users, user)
+        
         # Capacity check
         if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
             return Response({"message": "Registration limit reached."}, status=403)
@@ -3246,6 +3246,8 @@ def register_for_event(request):
         if missing_ids:
             return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids}, status=400)
 
+        team_country = determine_team_country(roster_users, user)
+        
         # ✅ restriction enforcement for each roster member
         restricted = []
         for u in roster_users:
