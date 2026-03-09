@@ -80,4 +80,5 @@ urlpatterns = [
     path("add-teams-to-group/", add_teams_to_group, name="add_teams_to_group"),
     path("get-all-tournament-player-match-stats/", get_all_tournament_player_match_stats, name="get_all_tournament_player_match_stats"),
     path("confirm-player/", confirm_player, name="confirm_player"),
+    path("reject-player/", reject_player, name="reject_player"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
