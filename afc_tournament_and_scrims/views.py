@@ -11599,7 +11599,7 @@ def edit_match_result(request):
 
                 ts = TournamentTeamMatchStats(
                     match=match,
-                    tournament_team=tt,
+                    tournament_team_id=ttid,
                     placement=placement,
                     kills=team_kills,
                     damage=team_damage,
@@ -11617,7 +11617,7 @@ def edit_match_result(request):
 
             # Map using ID (NOT object)
             ts_by_team = {
-                ts.tournament_team.tournament_team_id: ts.team_stats_id
+                ts.tournament_team_id: ts.team_stats_id
                 for ts in created_team_stats
             }
 
@@ -11634,6 +11634,7 @@ def edit_match_result(request):
                 team_played = bool(r.get("played", True))
                 players = r.get("players") or []
 
+
                 if isinstance(players, str):
                     players = json.loads(players or "[]")
                 if not isinstance(players, list):
@@ -11642,10 +11643,19 @@ def edit_match_result(request):
                 if not team_played:
                     for p in players:
                         p["played"] = False
+                
+                valid_users = set(
+                    User.objects.filter(
+                        user_id__in=[p["user_id"] for r in results for p in r.get("players", []) if p.get("user_id")]
+                    ).values_list("user_id", flat=True)
+                )
 
                 for p in players:
                     played = bool(p.get("played", True)) and team_played
+                    
                     uid = p.get("user_id")
+                    if uid not in valid_users:
+                        continue
                     if not uid:
                         continue
 
@@ -11675,7 +11685,7 @@ def edit_match_result(request):
                 "saved_player_rows": len(player_stats_to_create),
                 "missing_tournament_team_ids": missing[:30],
                 "missing_count": len(missing),
-                "players": players,
+                "players": len(valid_users)
             }, status=200)
 
 
