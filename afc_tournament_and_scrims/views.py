@@ -327,6 +327,21 @@ def create_event(request):
         if field not in request.data:
             return Response({"message": f"Missing field: {field}"}, status=400)
 
+    is_sponsored = request.data.get("is_sponsored", False)
+    if isinstance(is_sponsored, str):
+        is_sponsored = is_sponsored.lower() in ("1", "true", "yes")
+
+    sponsor_name = request.data.get("sponsor_name")
+    sponsor_field_label = request.data.get("sponsor_field_label")
+    sponsor_requirment_description = request.data.get("sponsor_requirment_description")
+
+    if is_sponsored:
+        if not sponsor_name:
+            return Response({"message": "sponsor_name is required for sponsored events."}, status=400)
+
+        if not sponsor_field_label:
+            return Response({"message": "sponsor_field_label is required for sponsored events."}, status=400)
+
     # ---------------- PARSE DATES ----------------
     start_date = parse_date(request.data.get("start_date"))
     end_date = parse_date(request.data.get("end_date"))
@@ -435,6 +450,10 @@ def create_event(request):
             # restricted_regions=restricted_regions,
             restricted_countries=restricted_countries,
             is_public = is_public,
+            is_sponsored=is_sponsored,
+            sponsor_name=sponsor_name,
+            sponsor_field_label=sponsor_field_label,
+            sponsor_requirment_description=sponsor_requirment_description,
         )
 
         # stream channels
@@ -456,7 +475,7 @@ def create_event(request):
                 teams_qualifying_from_stage=int(stage_data["teams_qualifying_from_stage"]),
                 stage_discord_role_id=stage_data.get("stage_discord_role_id"),
                 prizepool=stage_data.get("prizepool"),
-                prizepool_cash_value=stage_data.get("prizepool_cash_value"),
+                prizepool_cash_value=stage_data.get("prizepool_cash_value") if stage_data.get("prizepool_cash_value") else None,
                 prize_distribution=stage_data.get("prize_distribution", {})
             )
 
@@ -2989,6 +3008,27 @@ def _passes_event_country_restriction(event, country: str) -> bool:
     return False
 
 
+from collections import Counter
+
+def determine_team_country(roster_users, team_owner):
+    countries = [u.country for u in roster_users if u.country]
+
+    if not countries:
+        return team_owner.country
+
+    counts = Counter(countries)
+    most_common = counts.most_common()
+
+    if len(most_common) == 1:
+        return most_common[0][0]
+
+    # tie
+    if most_common[0][1] == most_common[1][1]:
+        return team_owner.country
+
+    return most_common[0][0]
+
+
 @api_view(["POST"])
 def register_for_event(request):
     # -------------------------
@@ -3011,6 +3051,7 @@ def register_for_event(request):
     event_id = request.data.get("event_id")
     team_id = request.data.get("team_id")  # for duo/squad
     roster_member_ids = _maybe_json_list(request.data.get("roster_member_ids"))
+    sponsor_ids = _maybe_json(request.data.get("sponsor_ids"), default={})
 
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
@@ -3128,6 +3169,13 @@ def register_for_event(request):
         if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
             return Response({"message": "Team already registered."}, status=409)
 
+        if event.is_sponsored:
+            if not sponsor_ids:
+                return Response({
+                    "message": "Sponsor IDs are required for sponsored events."
+                }, status=400)
+
+        team_country = determine_team_country(roster_users, user)
         # Capacity check
         if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
             return Response({"message": "Registration limit reached."}, status=403)
@@ -3216,14 +3264,34 @@ def register_for_event(request):
             tt = TournamentTeam.objects.create(
                 event=event,
                 team=team,
-                status="active",
-                registered_by=user
+                status="pending" if event.is_sponsored else "active",
+                registered_by=user,
+                country=team_country
             )
 
-            TournamentTeamMember.objects.bulk_create(
-                [TournamentTeamMember(tournament_team=tt, user=roster_users_by_id[uid], event=event) for uid in roster_member_ids],
-                batch_size=200
-            )
+            # TournamentTeamMember.objects.bulk_create(
+            #     [TournamentTeamMember(tournament_team=tt, user=roster_users_by_id[uid], event=event) for uid in roster_member_ids],
+            #     batch_size=200
+            # )
+            member_rows = []
+
+            for uid in roster_member_ids:
+
+                sponsor_uid = None
+                if event.is_sponsored:
+                    sponsor_uid = sponsor_ids.get(str(uid))
+
+                member_rows.append(
+                    TournamentTeamMember(
+                        tournament_team=tt,
+                        user=roster_users_by_id[uid],
+                        event=event,
+                        user_id_from_sponsor=sponsor_uid,
+                        status="pending" if event.is_sponsored else "active"
+                    )
+                )
+
+            TournamentTeamMember.objects.bulk_create(member_rows, batch_size=200)
 
             # update the token as used
             if is_public == False:
@@ -3250,9 +3318,6 @@ def register_for_event(request):
                     ignore_conflicts=True,
                     batch_size=500
                 )
-        
-
-        
 
 
         return Response({
@@ -3264,6 +3329,37 @@ def register_for_event(request):
 
     return Response({"message": "Invalid participant type."}, status=400)
 
+
+@api_view(["POST"])
+def confirm_player(request):
+
+    member_id = request.data.get("member_id")
+
+    member = get_object_or_404(TournamentTeamMember, id=member_id)
+
+    member.status = "active"
+    member.save(update_fields=["status"])
+
+    check_and_activate_team(member.tournament_team)
+
+    return Response({
+        "message": "Player confirmed."
+    }, status=200)
+    
+
+def check_and_activate_team(tournament_team):
+
+    total = tournament_team.members.count()
+    confirmed = tournament_team.members.filter(status="active").count()
+
+    if total == confirmed:
+        tournament_team.status = "active"
+        tournament_team.save(update_fields=["status"])
+
+        RegisteredCompetitors.objects.filter(
+            event=tournament_team.event,
+            team=tournament_team.team
+        ).update(status="registered")
 
 
 
