@@ -81,4 +81,5 @@ urlpatterns = [
     path("get-all-tournament-player-match-stats/", get_all_tournament_player_match_stats, name="get_all_tournament_player_match_stats"),
     path("confirm-player/", confirm_player, name="confirm_player"),
     path("reject-player/", reject_player, name="reject_player"),
+    path("get-all-competitors-and-their-sponsor-id/", get_all_competitors_and_their_sponsor_id, name="get_all_competitors_and_their_sponsor_id"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
