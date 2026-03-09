@@ -333,7 +333,7 @@ def create_event(request):
 
     sponsor_name = request.data.get("sponsor_name")
     sponsor_field_label = request.data.get("sponsor_field_label")
-    sponsor_requirment_description = request.data.get("sponsor_requirment_description")
+    sponsor_requirement_description = request.data.get("sponsor_requirement_description")
 
     if is_sponsored:
         if not sponsor_name:
@@ -453,7 +453,7 @@ def create_event(request):
             is_sponsored=is_sponsored,
             sponsor_name=sponsor_name,
             sponsor_field_label=sponsor_field_label,
-            sponsor_requirment_description=sponsor_requirment_description,
+            sponsor_requirement_description=sponsor_requirement_description,
         )
 
         # stream channels
@@ -2018,6 +2018,10 @@ def get_event_details(request):
         "is_registered": is_registered,
         "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
         "is_public": event.is_public,
+        "is_sponsored": event.is_sponsored,
+        "sponsor_name": event.sponsor_name,
+        "sponsor_field_label": event.sponsor_field_label,
+        "sponsor_requirement_description": event.sponsor_requirement_description,
     }
 
     # ============================================================
@@ -2777,7 +2781,11 @@ def get_event_details_not_logged_in(request):
         "created_at": event.created_at,
         # "is_registered": is_registered,
         "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
-        "is_public": event.is_public
+        "is_public": event.is_public,
+        "is_sponsored": event.is_sponsored,
+        "sponsor_name": event.sponsor_name,
+        "sponsor_field_label": event.sponsor_field_label,
+        "sponsor_requirement_description": event.sponsor_requirement_description,
     }
 
     # ✅ KEEP registered competitors section (as you requested)
@@ -5537,6 +5545,10 @@ def get_event_details_for_admin(request):
             "prizepool": prizepool_val,
             "prize_distribution": event.prize_distribution,
             "is_public": event.is_public,
+            "is_sponsored": event.is_sponsored,
+            "sponsor_name": event.sponsor_name,
+            "sponsor_field_label": event.sponsor_field_label,
+            "sponsor_requirement_description": event.sponsor_requirement_description,
         },
         "registration_timeline": {
             "registration_start_date": event.registration_open_date,
