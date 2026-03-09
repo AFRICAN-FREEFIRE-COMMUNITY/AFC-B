@@ -11617,7 +11617,7 @@ def edit_match_result(request):
 
             # Map using ID (NOT object)
             ts_by_team = {
-                ts.tournament_team_id: ts.team_stats_id
+                ts.tournament_team.tournament_team_id: ts.team_stats_id
                 for ts in created_team_stats
             }
 
