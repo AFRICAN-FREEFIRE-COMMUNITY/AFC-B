@@ -3247,7 +3247,7 @@ def register_for_event(request):
             return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids}, status=400)
 
         team_country = determine_team_country(roster_users, user)
-        
+
         # ✅ restriction enforcement for each roster member
         restricted = []
         for u in roster_users:
@@ -11675,6 +11675,7 @@ def edit_match_result(request):
                 "saved_player_rows": len(player_stats_to_create),
                 "missing_tournament_team_ids": missing[:30],
                 "missing_count": len(missing),
+                "players": players,
             }, status=200)
 
 
