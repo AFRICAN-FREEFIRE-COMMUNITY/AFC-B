@@ -11671,8 +11671,7 @@ def edit_match_result(request):
                 "saved_team_rows": len(created_team_stats),
                 "saved_player_rows": len(player_stats_to_create),
                 "missing_tournament_team_ids": missing[:30],
-                "missing_count": len(missing),
-                "players": len(valid_users)
+                "missing_count": len(missing)
             }, status=200)
 
 
