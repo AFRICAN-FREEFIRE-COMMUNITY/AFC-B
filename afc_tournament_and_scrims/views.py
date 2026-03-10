@@ -11539,6 +11539,17 @@ def edit_match_result(request):
             teams = TournamentTeam.objects.select_related("team").filter(event=event, tournament_team_id__in=team_ids)
             team_map = {tt.tournament_team_id: tt for tt in teams}
 
+            valid_users = set(
+                User.objects.filter(
+                    user_id__in=[
+                        p["user_id"]
+                        for r in results
+                        for p in (json.loads(r["players"]) if isinstance(r.get("players"), str) else r.get("players", []))
+                        if p.get("user_id")
+                    ]
+                ).values_list("user_id", flat=True)
+            )
+
             team_stats_to_create = []
             player_stats_to_create = []
             missing = []
@@ -11631,24 +11642,21 @@ def edit_match_result(request):
                     for p in players:
                         p["played"] = False
                 
-                valid_users = set(
-                    User.objects.filter(
-                        user_id__in=[p["user_id"] for r in results for p in r.get("players", []) if p.get("user_id")]
-                    ).values_list("user_id", flat=True)
-                )
+                
 
                 for p in players:
                     played = bool(p.get("played", True)) and team_played
-                    
+
                     uid = p.get("user_id")
-                    if uid not in valid_users:
-                        continue
                     if not uid:
+                        continue
+
+                    if int(uid) not in valid_users:
                         continue
 
                     player_stats_to_create.append(
                         TournamentPlayerMatchStats(
-                            team_stats_id=ts_id,  # ✅ SAFE FK FIX
+                            team_stats_id=ts_id,
                             player_id=int(uid),
                             kills=int(p.get("kills") or 0) if played else 0,
                             damage=int(p.get("damage") or 0) if played else 0,
