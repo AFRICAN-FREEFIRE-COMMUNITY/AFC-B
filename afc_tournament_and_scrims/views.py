@@ -11409,6 +11409,7 @@ def _get_leaderboard_for_match(match):
 
 @api_view(["POST"])
 def edit_match_result(request):
+    # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
@@ -11417,28 +11418,31 @@ def edit_match_result(request):
     if not admin or admin.role != "admin":
         return Response({"message": "Unauthorized."}, status=403)
 
+    # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
     if not match_id:
         return Response({"message": "match_id is required."}, status=400)
 
+    results = request.data.get("results")
+
+    if isinstance(results, str):
+        results = json.loads(results)
+
+    if not isinstance(results, list) or not results:
+        return Response({"message": "results must be a list."}, status=400)
+
     match = get_object_or_404(Match, match_id=match_id)
 
     if not match.group or not match.group.stage or not match.group.stage.event:
-        return Response({"message": "Match is not linked to a valid group/stage/event."}, status=400)
+        return Response({"message": "Match not linked to event."}, status=400)
 
     event = match.group.stage.event
+
     leaderboard = _get_leaderboard_for_match(match)
     if not leaderboard:
-        return Response({"message": "No leaderboard found for this match/group."}, status=400)
+        return Response({"message": "Leaderboard not found."}, status=400)
 
-    # placement_points_raw = leaderboard.placement_points or {}
-    # try:
-    #     placement_points = {int(k): int(v) for k, v in placement_points_raw.items()}
-    # except Exception:
-    #     return Response({"message": "Invalid leaderboard placement_points."}, status=400)
-
-    # kill_point = float(getattr(leaderboard, "kill_point", 1.0) or 1.0)
-
+    # ---------------- SCORING ----------------
     scoring = match.scoring_settings or {}
 
     placement_points = {
@@ -11447,229 +11451,421 @@ def edit_match_result(request):
     }
 
     kill_point = float(scoring.get("kill_point", 1))
-    points_per_assist = float(scoring.get("points_per_assist", 0))
-    points_per_1000_damage = float(scoring.get("points_per_1000_damage", 0))
+    assist_point = float(scoring.get("points_per_assist", 0))
+    damage_point = float(scoring.get("points_per_1000_damage", 0))
 
-    results = request.data.get("results")
-    if isinstance(results, str):
-        results = json.loads(results or "[]")
-
-    if not isinstance(results, list) or not results:
-        return Response({"message": "results must be a non-empty list."}, status=400)
-
-    # basic validation: unique placements among PLAYED competitors
+    # ---------------- VALIDATE PLACEMENTS ----------------
     played_rows = [r for r in results if r.get("played", True)]
     placements = [r.get("placement") for r in played_rows]
+
     if any(p is None for p in placements):
-        return Response({"message": "Each played row must have placement."}, status=400)
+        return Response({"message": "Played teams must have placement."}, status=400)
+
     if len(set(placements)) != len(placements):
-        return Response({"message": "Placements must be unique (among played rows)."}, status=400)
+        return Response({"message": "Placements must be unique."}, status=400)
 
+    # ---------------- TRANSACTION ----------------
     with transaction.atomic():
-        if event.participant_type == "solo":
-            # wipe old
-            SoloPlayerMatchStats.objects.filter(match=match).delete()
 
-            # build map of competitors in this event
-            competitor_ids = [int(r["competitor_id"]) for r in results if r.get("competitor_id")]
-            regs = RegisteredCompetitors.objects.select_related("user").filter(
-                event=event, id__in=competitor_ids, status="registered"
-            )
-            reg_map = {rc.id: rc for rc in regs}
+        # delete previous stats
+        TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
+        TournamentTeamMatchStats.objects.filter(match=match).delete()
 
-            create_rows = []
-            missing = []
+        # get teams
+        team_ids = [int(r["tournament_team_id"]) for r in results if r.get("tournament_team_id")]
 
-            for r in results:
-                cid = r.get("competitor_id")
-                if not cid:
-                    continue
-                cid = int(cid)
-                rc = reg_map.get(cid)
-                if not rc:
-                    missing.append(cid)
-                    continue
+        teams = TournamentTeam.objects.filter(
+            event=event,
+            tournament_team_id__in=team_ids
+        )
 
-                played = bool(r.get("played", True))
-                placement = int(r.get("placement") or 0) if played else 0
-                kills = int(r.get("kills") or 0) if played else 0
+        team_map = {t.tournament_team_id: t for t in teams}
 
-                bonus = int(r.get("bonus_points") or 0)
-                penalty = int(r.get("penalty_points") or 0)
-                if bonus < 0 or penalty < 0:
-                    return Response({"message": "bonus_points and penalty_points must be >= 0."}, status=400)
+        team_rows = []
+        player_rows = []
 
-                place_pts = placement_points.get(placement, 0) if played else 0
-                # kill_pts = int(kills * kill_point) if played else 0
-                # total_pts = place_pts + kill_pts  # base total (adjustment added later in leaderboard calc)
-                kill_pts = kills * kill_point
-                total_pts = place_pts + kill_pts
+        # ---------------- CREATE TEAM STATS ----------------
+        for r in results:
 
-                create_rows.append(SoloPlayerMatchStats(
+            ttid = r.get("tournament_team_id")
+            if not ttid:
+                continue
+
+            tt = team_map.get(int(ttid))
+            if not tt:
+                continue
+
+            team_played = bool(r.get("played", True))
+            placement = int(r.get("placement") or 0) if team_played else 0
+
+            players = r.get("players") or []
+
+            if isinstance(players, str):
+                players = json.loads(players)
+
+            if not isinstance(players, list):
+                players = []
+
+            if not team_played:
+                for p in players:
+                    p["played"] = False
+
+            played_players = [p for p in players if p.get("played", True)]
+
+            if len(played_players) > 4:
+                return Response(
+                    {"message": f"Team {ttid}: max 4 played players allowed."},
+                    status=400
+                )
+
+            team_kills = sum(int(p.get("kills") or 0) for p in played_players)
+            team_damage = sum(int(p.get("damage") or 0) for p in played_players)
+            team_assists = sum(int(p.get("assists") or 0) for p in played_players)
+
+            placement_pts = placement_points.get(placement, 0)
+            kill_pts = team_kills * kill_point
+            assist_pts = team_assists * assist_point
+            damage_pts = (team_damage / 1000) * damage_point
+
+            total_pts = placement_pts + kill_pts + assist_pts + damage_pts
+
+            team_rows.append(
+                TournamentTeamMatchStats(
                     match=match,
-                    competitor=rc,
-                    placement=placement,
-                    kills=kills,
-                    placement_points=place_pts,
-                    kill_points=kill_pts,
-                    total_points=total_pts,
-                    bonus_points=bonus,
-                    penalty_points=penalty,
-                ))
-
-            SoloPlayerMatchStats.objects.bulk_create(create_rows, batch_size=500)
-            match.result_inputted = True
-            match.leaderboard = leaderboard
-            match.save(update_fields=["result_inputted", "leaderboard"])
-
-            return Response({
-                "message": "Solo match result updated.",
-                "match_id": match.match_id,
-                "saved_rows": len(create_rows),
-                "missing_registered_competitor_ids": missing[:30],
-                "missing_count": len(missing),
-            }, status=200)
-
-        else:
-            # TEAM (duo/squad)
-            TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
-            TournamentTeamMatchStats.objects.filter(match=match).delete()
-
-            team_ids = [int(r["tournament_team_id"]) for r in results if r.get("tournament_team_id")]
-            teams = TournamentTeam.objects.select_related("team").filter(event=event, tournament_team_id__in=team_ids)
-            team_map = {tt.tournament_team_id: tt for tt in teams}
-
-            team_stats_to_create = []
-            player_stats_to_create = []
-            missing = []
-
-            for r in results:
-                ttid = r.get("tournament_team_id")
-                if not ttid:
-                    continue
-                ttid = int(ttid)
-                tt = team_map.get(ttid)
-                if not tt:
-                    missing.append(ttid)
-                    continue
-
-                team_played = bool(r.get("played", True))
-                placement = int(r.get("placement") or 0) if team_played else 0
-
-                players = r.get("players") or []
-                if isinstance(players, str):
-                    players = json.loads(players or "[]")
-                if not isinstance(players, list):
-                    players = []
-
-                # if team_played is False -> force players played False
-                if not team_played:
-                    for p in players:
-                        p["played"] = False
-
-                # optional: enforce max 4 played (BR squad)
-                played_players = [p for p in players if p.get("played", True)]
-                if len(played_players) > 4:
-                    return Response({"message": f"Team {ttid}: max 4 played players allowed."}, status=400)
-
-                # compute team totals from played players
-                team_kills = sum(int(p.get("kills") or 0) for p in played_players) if team_played else 0
-                team_damage = sum(int(p.get("damage") or 0) for p in played_players) if team_played else 0
-                team_assists = sum(int(p.get("assists") or 0) for p in played_players) if team_played else 0
-
-                place_pts = placement_points.get(placement, 0) if team_played else 0
-                kill_pts = team_kills * kill_point
-                assist_pts = team_assists * points_per_assist
-                damage_pts = (team_damage / 1000) * points_per_1000_damage
-
-                total_pts = place_pts + kill_pts + assist_pts + damage_pts
-
-                ts = TournamentTeamMatchStats(
-                    match=match,
-                    tournament_team_id=ttid,
+                    tournament_team=tt,
                     placement=placement,
                     kills=team_kills,
                     damage=team_damage,
                     assists=team_assists,
-                    placement_points=place_pts,
+                    placement_points=placement_pts,
                     kill_points=kill_pts,
-                    total_points=total_pts,
+                    total_points=int(total_pts),
                 )
-                team_stats_to_create.append(ts)
-
-            created_team_stats = TournamentTeamMatchStats.objects.bulk_create(
-                team_stats_to_create,
-                batch_size=200
             )
 
-            # Map using ID (NOT object)
-            ts_by_team = {
-                ts.tournament_team_id: ts.team_stats_id
-                for ts in created_team_stats
-            }
+        created_team_stats = TournamentTeamMatchStats.objects.bulk_create(team_rows)
 
-            for r in results:
-                ttid = r.get("tournament_team_id")
-                if not ttid:
-                    continue
+        team_stats_map = {
+            ts.tournament_team_id: ts.team_stats_id
+            for ts in created_team_stats
+        }
 
-                ttid = int(ttid)
-                ts_id = ts_by_team.get(ttid)
-                if not ts_id:
-                    continue
+        # ---------------- CREATE PLAYER STATS ----------------
+        for r in results:
 
-                team_played = bool(r.get("played", True))
-                players = r.get("players") or []
+            ttid = r.get("tournament_team_id")
+            ts_id = team_stats_map.get(int(ttid)) if ttid else None
 
+            if not ts_id:
+                continue
 
-                if isinstance(players, str):
-                    players = json.loads(players or "[]")
-                if not isinstance(players, list):
-                    players = []
+            team_played = bool(r.get("played", True))
 
-                if not team_played:
-                    for p in players:
-                        p["played"] = False
-                
-                
+            players = r.get("players") or []
 
+            if isinstance(players, str):
+                players = json.loads(players)
+
+            if not isinstance(players, list):
+                players = []
+
+            if not team_played:
                 for p in players:
-                    played = bool(p.get("played", True)) and team_played
+                    p["played"] = False
 
-                    uid = p.get("user_id")
-                    if not uid:
-                        continue
+            for p in players:
 
-                    if int(uid) not in valid_users:
-                        continue
+                uid = p.get("user_id")
+                if not uid:
+                    continue
 
-                    player_stats_to_create.append(
-                        TournamentPlayerMatchStats(
-                            team_stats_id=ts_id,
-                            player_id=int(uid),
-                            kills=int(p.get("kills") or 0) if played else 0,
-                            damage=int(p.get("damage") or 0) if played else 0,
-                            assists=int(p.get("assists") or 0) if played else 0,
-                        )
+                played = bool(p.get("played", True)) and team_played
+
+                player_rows.append(
+                    TournamentPlayerMatchStats(
+                        team_stats_id=ts_id,
+                        player_id=int(uid),
+                        kills=int(p.get("kills") or 0) if played else 0,
+                        damage=int(p.get("damage") or 0) if played else 0,
+                        assists=int(p.get("assists") or 0) if played else 0,
                     )
+                )
 
-            TournamentPlayerMatchStats.objects.bulk_create(
-                player_stats_to_create,
-                batch_size=500
-            )
+        TournamentPlayerMatchStats.objects.bulk_create(player_rows)
 
-            match.result_inputted = True
-            match.leaderboard = leaderboard
-            match.save(update_fields=["result_inputted", "leaderboard"])
+        match.result_inputted = True
+        match.leaderboard = leaderboard
+        match.save(update_fields=["result_inputted", "leaderboard"])
 
-            return Response({
-                "message": "Team match result updated.",
-                "match_id": match.match_id,
-                "saved_team_rows": len(created_team_stats),
-                "saved_player_rows": len(player_stats_to_create),
-                "missing_tournament_team_ids": missing[:30],
-                "missing_count": len(missing)
-            }, status=200)
+    return Response({
+        "message": "Team match result updated.",
+        "match_id": match.match_id,
+        "saved_team_rows": len(created_team_stats),
+        "saved_player_rows": len(player_rows)
+    }, status=200)
+
+
+# @api_view(["POST"])
+# def edit_match_result(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin or admin.role != "admin":
+#         return Response({"message": "Unauthorized."}, status=403)
+
+#     match_id = request.data.get("match_id")
+#     if not match_id:
+#         return Response({"message": "match_id is required."}, status=400)
+
+#     match = get_object_or_404(Match, match_id=match_id)
+
+#     if not match.group or not match.group.stage or not match.group.stage.event:
+#         return Response({"message": "Match is not linked to a valid group/stage/event."}, status=400)
+
+#     event = match.group.stage.event
+#     leaderboard = _get_leaderboard_for_match(match)
+#     if not leaderboard:
+#         return Response({"message": "No leaderboard found for this match/group."}, status=400)
+
+#     # placement_points_raw = leaderboard.placement_points or {}
+#     # try:
+#     #     placement_points = {int(k): int(v) for k, v in placement_points_raw.items()}
+#     # except Exception:
+#     #     return Response({"message": "Invalid leaderboard placement_points."}, status=400)
+
+#     # kill_point = float(getattr(leaderboard, "kill_point", 1.0) or 1.0)
+
+#     scoring = match.scoring_settings or {}
+
+#     placement_points = {
+#         int(k): int(v)
+#         for k, v in (scoring.get("placement_points") or {}).items()
+#     }
+
+#     kill_point = float(scoring.get("kill_point", 1))
+#     points_per_assist = float(scoring.get("points_per_assist", 0))
+#     points_per_1000_damage = float(scoring.get("points_per_1000_damage", 0))
+
+#     results = request.data.get("results")
+#     if isinstance(results, str):
+#         results = json.loads(results or "[]")
+
+#     if not isinstance(results, list) or not results:
+#         return Response({"message": "results must be a non-empty list."}, status=400)
+
+#     # basic validation: unique placements among PLAYED competitors
+#     played_rows = [r for r in results if r.get("played", True)]
+#     placements = [r.get("placement") for r in played_rows]
+#     if any(p is None for p in placements):
+#         return Response({"message": "Each played row must have placement."}, status=400)
+#     if len(set(placements)) != len(placements):
+#         return Response({"message": "Placements must be unique (among played rows)."}, status=400)
+
+#     with transaction.atomic():
+#         if event.participant_type == "solo":
+#             # wipe old
+#             SoloPlayerMatchStats.objects.filter(match=match).delete()
+
+#             # build map of competitors in this event
+#             competitor_ids = [int(r["competitor_id"]) for r in results if r.get("competitor_id")]
+#             regs = RegisteredCompetitors.objects.select_related("user").filter(
+#                 event=event, id__in=competitor_ids, status="registered"
+#             )
+#             reg_map = {rc.id: rc for rc in regs}
+
+#             create_rows = []
+#             missing = []
+
+#             for r in results:
+#                 cid = r.get("competitor_id")
+#                 if not cid:
+#                     continue
+#                 cid = int(cid)
+#                 rc = reg_map.get(cid)
+#                 if not rc:
+#                     missing.append(cid)
+#                     continue
+
+#                 played = bool(r.get("played", True))
+#                 placement = int(r.get("placement") or 0) if played else 0
+#                 kills = int(r.get("kills") or 0) if played else 0
+
+#                 bonus = int(r.get("bonus_points") or 0)
+#                 penalty = int(r.get("penalty_points") or 0)
+#                 if bonus < 0 or penalty < 0:
+#                     return Response({"message": "bonus_points and penalty_points must be >= 0."}, status=400)
+
+#                 place_pts = placement_points.get(placement, 0) if played else 0
+#                 # kill_pts = int(kills * kill_point) if played else 0
+#                 # total_pts = place_pts + kill_pts  # base total (adjustment added later in leaderboard calc)
+#                 kill_pts = kills * kill_point
+#                 total_pts = place_pts + kill_pts
+
+#                 create_rows.append(SoloPlayerMatchStats(
+#                     match=match,
+#                     competitor=rc,
+#                     placement=placement,
+#                     kills=kills,
+#                     placement_points=place_pts,
+#                     kill_points=kill_pts,
+#                     total_points=total_pts,
+#                     bonus_points=bonus,
+#                     penalty_points=penalty,
+#                 ))
+
+#             SoloPlayerMatchStats.objects.bulk_create(create_rows, batch_size=500)
+#             match.result_inputted = True
+#             match.leaderboard = leaderboard
+#             match.save(update_fields=["result_inputted", "leaderboard"])
+
+#             return Response({
+#                 "message": "Solo match result updated.",
+#                 "match_id": match.match_id,
+#                 "saved_rows": len(create_rows),
+#                 "missing_registered_competitor_ids": missing[:30],
+#                 "missing_count": len(missing),
+#             }, status=200)
+
+#         else:
+#             # TEAM (duo/squad)
+#             TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
+#             TournamentTeamMatchStats.objects.filter(match=match).delete()
+
+#             team_ids = [int(r["tournament_team_id"]) for r in results if r.get("tournament_team_id")]
+#             teams = TournamentTeam.objects.select_related("team").filter(event=event, tournament_team_id__in=team_ids)
+#             team_map = {tt.tournament_team_id: tt for tt in teams}
+
+#             team_stats_to_create = []
+#             player_stats_to_create = []
+#             missing = []
+
+#             for r in results:
+#                 ttid = r.get("tournament_team_id")
+#                 if not ttid:
+#                     continue
+#                 ttid = int(ttid)
+#                 tt = team_map.get(ttid)
+#                 if not tt:
+#                     missing.append(ttid)
+#                     continue
+
+#                 team_played = bool(r.get("played", True))
+#                 placement = int(r.get("placement") or 0) if team_played else 0
+
+#                 players = r.get("players") or []
+#                 if isinstance(players, str):
+#                     players = json.loads(players or "[]")
+#                 if not isinstance(players, list):
+#                     players = []
+
+#                 # if team_played is False -> force players played False
+#                 if not team_played:
+#                     for p in players:
+#                         p["played"] = False
+
+#                 # optional: enforce max 4 played (BR squad)
+#                 played_players = [p for p in players if p.get("played", True)]
+#                 if len(played_players) > 4:
+#                     return Response({"message": f"Team {ttid}: max 4 played players allowed."}, status=400)
+
+#                 # compute team totals from played players
+#                 team_kills = sum(int(p.get("kills") or 0) for p in played_players) if team_played else 0
+#                 team_damage = sum(int(p.get("damage") or 0) for p in played_players) if team_played else 0
+#                 team_assists = sum(int(p.get("assists") or 0) for p in played_players) if team_played else 0
+
+#                 place_pts = placement_points.get(placement, 0) if team_played else 0
+#                 kill_pts = team_kills * kill_point
+#                 assist_pts = team_assists * points_per_assist
+#                 damage_pts = (team_damage / 1000) * points_per_1000_damage
+
+#                 total_pts = place_pts + kill_pts + assist_pts + damage_pts
+
+#                 ts = TournamentTeamMatchStats(
+#                     match=match,
+#                     tournament_team_id=ttid,
+#                     placement=placement,
+#                     kills=team_kills,
+#                     damage=team_damage,
+#                     assists=team_assists,
+#                     placement_points=place_pts,
+#                     kill_points=kill_pts,
+#                     total_points=total_pts,
+#                 )
+#                 team_stats_to_create.append(ts)
+
+#             created_team_stats = TournamentTeamMatchStats.objects.bulk_create(
+#                 team_stats_to_create,
+#                 batch_size=200
+#             )
+
+#             # Map using ID (NOT object)
+#             ts_by_team = {
+#                 ts.tournament_team_id: ts.team_stats_id
+#                 for ts in created_team_stats
+#             }
+
+#             for r in results:
+#                 ttid = r.get("tournament_team_id")
+#                 if not ttid:
+#                     continue
+
+#                 ttid = int(ttid)
+#                 ts_id = ts_by_team.get(ttid)
+#                 if not ts_id:
+#                     continue
+
+#                 team_played = bool(r.get("played", True))
+#                 players = r.get("players") or []
+
+
+#                 if isinstance(players, str):
+#                     players = json.loads(players or "[]")
+#                 if not isinstance(players, list):
+#                     players = []
+
+#                 if not team_played:
+#                     for p in players:
+#                         p["played"] = False
+                
+                
+
+#                 for p in players:
+#                     played = bool(p.get("played", True)) and team_played
+
+#                     uid = p.get("user_id")
+#                     if not uid:
+#                         continue
+
+
+#                     player_stats_to_create.append(
+#                         TournamentPlayerMatchStats(
+#                             team_stats_id=ts_id,
+#                             player_id=int(uid),
+#                             kills=int(p.get("kills") or 0) if played else 0,
+#                             damage=int(p.get("damage") or 0) if played else 0,
+#                             assists=int(p.get("assists") or 0) if played else 0,
+#                         )
+#                     )
+
+#             TournamentPlayerMatchStats.objects.bulk_create(
+#                 player_stats_to_create,
+#                 batch_size=500
+#             )
+
+#             match.result_inputted = True
+#             match.leaderboard = leaderboard
+#             match.save(update_fields=["result_inputted", "leaderboard"])
+
+#             return Response({
+#                 "message": "Team match result updated.",
+#                 "match_id": match.match_id,
+#                 "saved_team_rows": len(created_team_stats),
+#                 "saved_player_rows": len(player_stats_to_create),
+#                 "missing_tournament_team_ids": missing[:30],
+#                 "missing_count": len(missing)
+#             }, status=200)
 
 
 from django.db import transaction
