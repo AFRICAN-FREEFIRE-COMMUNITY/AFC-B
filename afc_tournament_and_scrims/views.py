@@ -3390,36 +3390,23 @@ def reject_player(request):
 def get_all_competitors_and_their_sponsor_id(request):
     event_id = request.data.get("event_id")
     event = get_object_or_404(Event, event_id=event_id)
-    competitors = RegisteredCompetitors.objects.filter(event=event).select_related("user", "team").prefetch_related("team__teammembers__user")
+    competitors = TournamentTeamMember.objects.filter(event=event).select_related("user", "tournament_team__team").all()
 
     data = []
-    for competitor in competitors:
-        if competitor.user:
-            data.append({
-                "competitor_id": competitor.id,
-                "type": "solo",
-                "player_id": competitor.user.user_id,
-                "username": competitor.user.username,
-                "sponsor_id": None
-            })
-        elif competitor.team:
-            team_data = {
-                "competitor_id": competitor.id,
-                "type": "team",
-                "team_id": competitor.team.team_id,
-                "team_name": competitor.team.team_name,
-                "sponsor_id": None,
-                "members": []
-            }
-            for member in competitor.team.teammembers.all():
-                team_data["members"].append({
-                    "player_id": member.member.user_id,
-                    "username": member.member.username,
-                    "sponsor_id": member.user_id_from_sponsor
-                })
-            data.append(team_data)
+    for c in competitors:
+        data.append({
+            "competitor_id": c.id,
+            "user_id": c.user.user_id,
+            "username": c.user.username,
+            "team_id": c.tournament_team.team.team_id,
+            "team_name": c.tournament_team.team.team_name,
+            "sponsor_id": c.user_id_from_sponsor,
+            "status": c.status,
+        })
 
-    return Response({"competitors": data}, status=200)
+    return Response({
+        "competitors": data
+    }, status=200)
     
 
 def check_and_activate_team(tournament_team):
