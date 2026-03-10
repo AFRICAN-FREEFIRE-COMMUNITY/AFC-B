@@ -11539,17 +11539,6 @@ def edit_match_result(request):
             teams = TournamentTeam.objects.select_related("team").filter(event=event, tournament_team_id__in=team_ids)
             team_map = {tt.tournament_team_id: tt for tt in teams}
 
-            valid_users = set(
-                User.objects.filter(
-                    user_id__in=[
-                        p["user_id"]
-                        for r in results
-                        for p in (json.loads(r["players"]) if isinstance(r.get("players"), str) else r.get("players", []))
-                        if p.get("user_id")
-                    ]
-                ).values_list("user_id", flat=True)
-            )
-
             team_stats_to_create = []
             player_stats_to_create = []
             missing = []
