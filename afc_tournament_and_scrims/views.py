@@ -13550,3 +13550,41 @@ def assign_event_to_sponsor(request):
 
 
     return Response({"message": "Events assigned to sponsor successfully."}, status=200)
+
+
+@api_view(["POST"])
+def get_list_of_players_in_sponsor_event(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+    sponsor = validate_token(auth.split(" ")[1])
+    if not sponsor or sponsor.role != "player" or not sponsor.userroles.filter(role="sponsor_admin").exists():
+        return Response({"message": "Unauthorized."}, status=403)
+
+    # use the sponsor to get all events they are connected to, then get all players in those events
+
+    events = Event.objects.filter(sponsor=sponsor)
+    data = []
+    for event in events:
+        if event.participant_type == "solo":
+            competitors = RegisteredCompetitors.objects.filter(event=event, player__isnull=False).select_related("player")
+            for comp in competitors:
+                data.append({
+                    "event_id": event.event_id,
+                    "event_name": event.name,
+                    "player_id": comp.player_id,
+                    "player_username": comp.player.username,
+                })
+        else:
+            teams = RegisteredCompetitors.objects.filter(event=event, team__isnull=False).select_related("team").prefetch_related("team__members__user")
+            for comp in teams:
+                data.append({
+                    "event_id": event.event_id,
+                    "event_name": event.name,
+                    "team_id": comp.team_id,
+                    "team_name": comp.team.name,
+                    "player_id": comp.team__members__user.id,
+                    "player_username": comp.team__members__user.username,
+                    "user_id_from_sponsor": 
+                })
+    return Response(data, status=200)
