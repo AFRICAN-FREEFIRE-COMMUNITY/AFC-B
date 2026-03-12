@@ -13559,6 +13559,14 @@ def assign_sponsor_to_event(request):
     return Response({"message": "Events assigned to sponsor successfully."}, status=200)
 
 
+@api_view(["GET"])
+def get_all_sponsors(request):
+    role = Roles.objects.get(role_name="sponsor_admin")
+    sponsors = User.objects.filter(role="player", userroles__role=role).values("user_id", "username", "email", "full_name")
+    return Response(list(sponsors), status=200)
+
+
+
 # @api_view(["POST"])
 # def get_list_of_players_in_sponsor_event(request):
 #     auth = request.headers.get("Authorization")
