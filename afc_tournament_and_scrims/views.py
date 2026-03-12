@@ -13465,6 +13465,19 @@ def get_all_tournament_player_match_stats(requests):
 
 @api_view(["POST"])
 def create_sponsor_account(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin or admin.role != "admin":
+        return Response({"message": "Unauthorized."}, status=403)
+
+    # Only head admin can create sponsor accounts
+    if user.userroles.filter(role__role_name='head_admin'):
+        pass  # User has permission
+    else:
+        return Response({"message": "You do not have permission to create sponsor account."}, status=status.HTTP_403_FORBIDDEN)
+    
     fullname = request.data.get("fullname")
     email = request.data.get("email")
     username = request.data.get("username")
@@ -13506,6 +13519,11 @@ def assign_event_to_sponsor(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin or admin.role != "admin":
         return Response({"message": "Unauthorized."}, status=403)
+
+    if user.userroles.filter(role__role_name='head_admin'):
+        pass  # User has permission
+    else:
+        return Response({"message": "You do not have permission to create sponsor account."}, status=status.HTTP_403_FORBIDDEN)
 
     sponsor_username = request.data.get("sponsor_username")
     event_ids = request.data.get("event_ids", [])
