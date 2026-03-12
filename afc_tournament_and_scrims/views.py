@@ -12,8 +12,8 @@ from django.utils.dateparse import parse_date
 from afc_auth.views import assign_discord_role, check_discord_membership, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, EventInviteToken, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
-from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, User
+from .models import Event, EventInviteToken, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, Sponsor, User, UserRoles
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -13462,3 +13462,73 @@ def get_all_tournament_player_match_stats(requests):
         })
 
     return Response(data, status=200)
+
+@api_view(["POST"])
+def create_sponsor_account(request):
+    fullname = request.data.get("fullname")
+    email = request.data.get("email")
+    username = request.data.get("username")
+    uid = request.data.get("uid")
+    password = request.data.get("password")
+    confirm_password = request.data.get("confirm_password")
+
+    if not all([fullname, email, username, uid, password, confirm_password]):
+        return Response({"message": "All fields are required."}, status=400)
+    if password != confirm_password:
+        return Response({"message": "Passwords do not match."}, status=400)
+    if User.objects.filter(username=username).exists():
+        return Response({"message": "Username already exists."}, status=400)
+    if User.objects.filter(uid=uid).exists():
+        return Response({"message": "UID already exists."}, status=400)
+    user = User.objects.create_user(
+        username=username,
+        email=email,
+        uid=uid,
+        password=password,
+        role="player",
+        fullname=fullname,
+        country="Unknown",
+        status="active"
+    )
+
+    userrole = UserRoles.objects.create(
+        user=user,
+        role="sponsor_admin"
+    )
+    return Response({"message": "Sponsor account created successfully."}, status=201)
+
+
+@api_view(["POST"])
+def assign_event_to_sponsor(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin or admin.role != "admin":
+        return Response({"message": "Unauthorized."}, status=403)
+
+    sponsor_username = request.data.get("sponsor_username")
+    event_ids = request.data.get("event_ids", [])
+
+    if not sponsor_username:
+        return Response({"message": "sponsor_username required."}, status=400)
+
+    if not isinstance(event_ids, list) or not all(isinstance(eid, int) for eid in event_ids):
+        return Response({"message": "event_ids must be a list of integers"}, status=400)
+    
+    sponsor = get_object_or_404(User, username=sponsor_username, role="player", userroles__role="sponsor_admin")
+    events = Event.objects.filter(event_id__in=event_ids)
+    if not events.exists():
+        return Response({"message": "No valid events found for the provided event_ids."}, status=400)
+    for event in events:
+        event.sponsor = sponsor
+
+        SponsorEvent.objects.update_or_create(
+            sponsor=sponsor,
+            event=event
+        )
+    Event.objects.bulk_update(events, ["sponsor"])
+
+
+
+    return Response({"message": "Events assigned to sponsor successfully."}, status=200)

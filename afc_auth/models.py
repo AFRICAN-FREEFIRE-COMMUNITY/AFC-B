@@ -133,7 +133,7 @@ class Roles(models.Model):
         ("event_admin", "Event Admin"),
         ("teams_admin", "Teams Admin"),
         ("partner_admin", "Partner Admin"),
-
+        ("sponsor_admin", "Sponsor Admin"),
     ]
 
     role_id = models.AutoField(primary_key=True)
@@ -321,5 +321,7 @@ class DiscordStageRoleAssignmentProgress(models.Model):
         default="pending"
     )
     created_at = models.DateTimeField(auto_now_add=True)
+
+
 
 
