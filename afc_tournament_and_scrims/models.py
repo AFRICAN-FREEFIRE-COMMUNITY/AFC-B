@@ -1,5 +1,6 @@
 import uuid
 from django.db import models
+from afc_auth.models import Sponsor
 from afc_team.models import Team, TeamMembers
 from django.conf import settings
 from django.utils.text import slugify
@@ -121,6 +122,12 @@ class EventInviteToken(models.Model):
     is_used = models.BooleanField(default=False)
     used_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="used_invite_tokens")
     used_at = models.DateTimeField(null=True, blank=True)
+
+
+class SponsorEvent(models.Model):
+    sponsor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
 
 # ---------------- Stream Channels ----------------
 class StreamChannel(models.Model):
