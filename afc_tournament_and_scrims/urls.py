@@ -83,4 +83,5 @@ urlpatterns = [
     path("reject-player/", reject_player, name="reject_player"),
     path("get-all-competitors-and-their-sponsor-id/", get_all_competitors_and_their_sponsor_id, name="get_all_competitors_and_their_sponsor_id"),
     path("create-sponsor-account/", create_sponsor_account, name="create_sponsor_account"),
+    path("assign-sponsor-to-event/", assign_sponsor_to_event, name="assign_sponsor_to_event"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -13512,7 +13512,7 @@ def create_sponsor_account(request):
 
 
 @api_view(["POST"])
-def assign_event_to_sponsor(request):
+def assign_sponsor_to_event(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token."}, status=400)
