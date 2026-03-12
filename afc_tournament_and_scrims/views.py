@@ -13585,6 +13585,6 @@ def get_list_of_players_in_sponsor_event(request):
                     "team_name": comp.team.name,
                     "player_id": comp.team__members__user.id,
                     "player_username": comp.team__members__user.username,
-                    "user_id_from_sponsor": 
+                    "user_id_from_sponsor": comp.team__members__user.uid,
                 })
     return Response(data, status=200)
