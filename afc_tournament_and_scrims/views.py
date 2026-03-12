@@ -13493,6 +13493,9 @@ def create_sponsor_account(request):
         return Response({"message": "Username already exists."}, status=400)
     if User.objects.filter(uid=uid).exists():
         return Response({"message": "UID already exists."}, status=400)
+    if User.objects.filter(email=email).exists():
+        return Response({"message": "Email already exists."}, status=400)
+    
     user = User.objects.create_user(
         username=username,
         email=email,
