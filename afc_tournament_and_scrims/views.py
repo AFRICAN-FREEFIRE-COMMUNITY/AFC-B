@@ -13507,9 +13507,11 @@ def create_sponsor_account(request):
         status="active"
     )
 
+    role = Roles.objects.get(role_nme="sponsor_admin")
+
     userrole = UserRoles.objects.create(
         user=user,
-        role="sponsor_admin"
+        role=role
     )
     return Response({"message": "Sponsor account created successfully."}, status=201)
 
@@ -13580,5 +13582,18 @@ def get_list_of_players_in_sponsor_event(request):
                     "user_id_from_sponsor": comp.user_id_from_sponsor
                 })
         else:
-            teams = TournamentTeam
+            teams = TournamentTeam.objects.filter(event=event, status="active").prefetch_related("members__user")
+
+            # Then use tournament teams to get all members in those teams and their user info and user id from sponsor
+            for team in teams:
+                for member in team.members.all():
+                    data.append({
+                        "event_id": event.event_id,
+                        "event_name": event.name,
+                        "team_id": team.id,
+                        "team_name": team.name,
+                        "player_id": member.id,
+                        "player_username": member.username,
+                        "user_id_from_sponsor": member.uid
+                    })
     return Response(data, status=200)
