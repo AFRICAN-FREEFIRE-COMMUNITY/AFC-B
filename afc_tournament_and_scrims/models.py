@@ -1,6 +1,5 @@
 import uuid
 from django.db import models
-from afc_auth.models import Sponsor
 from afc_team.models import Team, TeamMembers
 from django.conf import settings
 from django.utils.text import slugify
