@@ -85,5 +85,5 @@ urlpatterns = [
     path("create-sponsor-account/", create_sponsor_account, name="create_sponsor_account"),
     path("assign-sponsor-to-event/", assign_sponsor_to_event, name="assign_sponsor_to_event"),
     path("get-all-sponsors/", get_all_sponsors, name="get_all_sponsors"),
-    path("get-list-of-players-in-sponsor-events/", get_list_of_players_in_sponsor_events, name="get_list_of_players_in_sponsor_events")
+    path("get-list-of-players-in-sponsor-event/", get_list_of_players_in_sponsor_event, name="get_list_of_players_in_sponsor_event")
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
