@@ -13499,7 +13499,7 @@ def create_sponsor_account(request):
         uid=uid,
         password=password,
         role="player",
-        fullname=fullname,
+        full_name=fullname,
         country="Unknown",
         status="active"
     )
@@ -13574,17 +13574,8 @@ def get_list_of_players_in_sponsor_event(request):
                     "event_name": event.name,
                     "player_id": comp.player_id,
                     "player_username": comp.player.username,
+                    "user_id_from_sponsor": comp.user_id_from_sponsor
                 })
         else:
-            teams = RegisteredCompetitors.objects.filter(event=event, team__isnull=False).select_related("team").prefetch_related("team__members__user")
-            for comp in teams:
-                data.append({
-                    "event_id": event.event_id,
-                    "event_name": event.name,
-                    "team_id": comp.team_id,
-                    "team_name": comp.team.name,
-                    "player_id": comp.team__members__user.id,
-                    "player_username": comp.team__members__user.username,
-                    "user_id_from_sponsor": comp.team__members__user.uid,
-                })
+            teams = TournamentTeam
     return Response(data, status=200)

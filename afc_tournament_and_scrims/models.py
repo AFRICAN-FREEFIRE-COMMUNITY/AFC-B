@@ -201,6 +201,7 @@ class RegisteredCompetitors(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="registered")
     registration_date = models.DateTimeField(auto_now_add=True)
+    user_id_from_sponsor = models.CharField(max_length=100, null=True, blank=True)
 
 
 # ---------------- Leaderboard ----------------
