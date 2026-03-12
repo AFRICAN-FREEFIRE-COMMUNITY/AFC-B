@@ -13473,7 +13473,7 @@ def create_sponsor_account(request):
         return Response({"message": "Unauthorized."}, status=403)
 
     # Only head admin can create sponsor accounts
-    if user.userroles.filter(role__role_name='head_admin'):
+    if admin.userroles.filter(role__role_name='head_admin'):
         pass  # User has permission
     else:
         return Response({"message": "You do not have permission to create sponsor account."}, status=status.HTTP_403_FORBIDDEN)
@@ -13520,7 +13520,7 @@ def assign_event_to_sponsor(request):
     if not admin or admin.role != "admin":
         return Response({"message": "Unauthorized."}, status=403)
 
-    if user.userroles.filter(role__role_name='head_admin'):
+    if admin.userroles.filter(role__role_name='head_admin'):
         pass  # User has permission
     else:
         return Response({"message": "You do not have permission to create sponsor account."}, status=status.HTTP_403_FORBIDDEN)
