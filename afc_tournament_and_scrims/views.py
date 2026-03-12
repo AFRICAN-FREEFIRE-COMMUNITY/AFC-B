@@ -13539,7 +13539,9 @@ def assign_sponsor_to_event(request):
     if not isinstance(event_ids, list) or not all(isinstance(eid, int) for eid in event_ids):
         return Response({"message": "event_ids must be a list of integers"}, status=400)
     
-    sponsor = get_object_or_404(User, username=sponsor_username, role="player", userroles__role="sponsor_admin")
+    role = Roles.objects.get(role_name="sponsor_admin")
+    
+    sponsor = get_object_or_404(User, username=sponsor_username, role="player", userroles__role=role)
     events = Event.objects.filter(event_id__in=event_ids)
     if not events.exists():
         return Response({"message": "No valid events found for the provided event_ids."}, status=400)
@@ -13557,33 +13559,33 @@ def assign_sponsor_to_event(request):
     return Response({"message": "Events assigned to sponsor successfully."}, status=200)
 
 
-# @api_view(["POST"])
-# def get_list_of_players_in_sponsor_event(request):
-#     auth = request.headers.get("Authorization")
-#     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid token."}, status=400)
-#     sponsor = validate_token(auth.split(" ")[1])
-#     if not sponsor or sponsor.role != "player" or not sponsor.userroles.filter(role="sponsor_admin").exists():
-#         return Response({"message": "Unauthorized."}, status=403)
+@api_view(["POST"])
+def get_list_of_players_in_sponsor_event(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+    sponsor = validate_token(auth.split(" ")[1])
+    if not sponsor or sponsor.role != "player" or not sponsor.userroles.filter(role="sponsor_admin").exists():
+        return Response({"message": "Unauthorized."}, status=403)
 
-#     # use the sponsor to get all events they are connected to, then get all players in those events
+    # use the sponsor to get all events they are connected to, then get all players in those events
 
-#     events = Event.objects.filter(sponsor=sponsor)
-#     data = []
-#     for event in events:
-#         if event.participant_type == "solo":
-#             competitors = RegisteredCompetitors.objects.filter(event=event, player__isnull=False).select_related("player")
-#             for comp in competitors:
-#                 data.append({
-#                     "event_id": event.event_id,
-#                     "event_name": event.name,
-#                     "player_id": comp.player_id,
-#                     "player_username": comp.player.username,
-#                     "user_id_from_sponsor": comp.user_id_from_sponsor
-#                 })
-#         else:
-#             teams = TournamentTeam.objects.filter(event=event, status="active").prefetch_related("members__user")
+    events = Event.objects.filter(sponsor=sponsor)
+    data = []
+    for event in events:
+        if event.participant_type == "solo":
+            competitors = RegisteredCompetitors.objects.filter(event=event, player__isnull=False).select_related("player")
+            for comp in competitors:
+                data.append({
+                    "event_id": event.event_id,
+                    "event_name": event.name,
+                    "player_id": comp.player_id,
+                    "player_username": comp.player.username,
+                    "user_id_from_sponsor": comp.user_id_from_sponsor
+                })
+        else:
+            teams = TournamentTeam.objects.filter(event=event, status="active").prefetch_related("members__user")
 
-#             # Then use tournament teams to get all members in those teams and their user info and user id from sponsor
-#             for team in teams:
-
+            # Then use tournament teams to get all tournament team members in those teams and their user info and user id from sponsor
+            for team in teams:
+                
