@@ -298,7 +298,8 @@ class TournamentTeamMember(models.Model):
     TEAM_MEMBER_STATUS = [
         ("pending", "Pending"),
         ("active", "Active"),
-        ("rejected", "Rejected")
+        ("rejected", "Rejected"),
+        ("approved", "Approved"),
     ]
     tournament_team = models.ForeignKey(TournamentTeam, on_delete=models.CASCADE, related_name="members")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
