@@ -13641,7 +13641,7 @@ def get_list_of_players_in_sponsor_event(request):
     sponsor = validate_token(auth.split(" ")[1])
 
     role = Roles.objects.get(role_name="sponsor_admin")
-    if not sponsor or sponsor.role != "player" or not sponsor.userroles.filter(role=role).exists():
+    if not sponsor or sponsor.role != "admin" or not sponsor.userroles.filter(role=role).exists():
         return Response({"message": "Unauthorized."}, status=403)
 
     # use the sponsor to get all events they are connected to, then get all players in those events
