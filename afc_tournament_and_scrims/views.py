@@ -2114,6 +2114,8 @@ def get_event_details(request):
                 user=user
             ).exists()
 
+    sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
+
     # -------- BASIC EVENT DATA --------
     event_data = {
         "event_id": event.event_id,
@@ -2148,7 +2150,14 @@ def get_event_details(request):
         "sponsor_name": event.sponsor_name,
         "sponsor_field_label": event.sponsor_field_label,
         "sponsor_requirement_description": event.sponsor_requirement_description,
-        "sponsor.username": event.sponsor.username if event.sponsor else None, 
+        "sponsors": [
+            {
+                "sponsor_id": se.sponsor.user_id,
+                "sponsor_name": se.sponsor.full_name,
+                "sponsor_username": se.sponsor.username
+            }
+            for se in sponsors
+        ]
     }
 
     # ============================================================
@@ -2884,6 +2893,8 @@ def get_event_details_not_logged_in(request):
     #     # optional: for team events you can check if user is in any registered team for this event
     #     is_registered = RegisteredCompetitors.objects.filter(event=event, team__teammembers__member=user, status="registered").exists()
 
+    sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor").all()
+
     event_data = {
         "event_id": event.event_id,
         "competition_type": event.competition_type,
@@ -2913,7 +2924,14 @@ def get_event_details_not_logged_in(request):
         "sponsor_name": event.sponsor_name,
         "sponsor_field_label": event.sponsor_field_label,
         "sponsor_requirement_description": event.sponsor_requirement_description,
-        "sponsor.username": event.sponsor.username if event.sponsor else None, 
+        "sponsors": [
+            {
+                "sponsor_id": se.sponsor.user_id,
+                "sponsor_name": se.sponsor.full_name,
+                "sponsor_username": se.sponsor.username
+            }
+            for se in sponsors
+        ]
 
     }
 
