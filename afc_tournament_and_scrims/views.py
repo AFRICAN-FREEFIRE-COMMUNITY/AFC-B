@@ -13652,7 +13652,7 @@ def add_teams_to_event(request):
 
         # add the members of the team to TournamentTeamMember if they are not already there
         for member in TeamMembers.objects.filter(team=team).select_related("member"):
-            if not TournamentTeamMember.objects.filter(tournament_team__event=event, tournament_team__team=team, user=member.user).exists():
+            if not TournamentTeamMember.objects.filter(tournament_team__event=event, tournament_team__team=team, user=member.member).exists():
                 TournamentTeamMember.objects.create(
                     tournament_team=new_tournament_teams[-1],  # reference the newly created TournamentTeam
                     user=member.member
