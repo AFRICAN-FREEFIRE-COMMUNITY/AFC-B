@@ -13607,7 +13607,7 @@ def assign_sponsor_to_event(request):
     
     role = Roles.objects.get(role_name="sponsor_admin")
     
-    sponsor = get_object_or_404(User, username=sponsor_username, role="player", userroles__role=role)
+    sponsor = get_object_or_404(User, username=sponsor_username, role="admin", userroles__role=role)
     events = Event.objects.filter(event_id__in=event_ids)
     if not events.exists():
         return Response({"message": "No valid events found for the provided event_ids."}, status=400)
