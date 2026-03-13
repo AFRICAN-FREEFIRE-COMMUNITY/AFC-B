@@ -34,7 +34,7 @@ class User(AbstractUser):
     country = models.CharField(max_length=40)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=False, default="active")
     last_login = models.DateTimeField(null=True)
-    discord_id = models.CharField(max_length=50, null=True, blank=True, unique=True, db_index=True,)
+    discord_id = models.CharField(max_length=50, null=True, blank=True, unique=True, db_index=True)
     discord_username = models.CharField(max_length=100, null=True, blank=True)
     discord_avatar = models.URLField(null=True, blank=True)
     discord_connected = models.BooleanField(default=False)
