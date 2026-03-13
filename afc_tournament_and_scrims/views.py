@@ -13834,7 +13834,7 @@ def get_list_of_players_in_sponsor_event(request):
 
     # use the sponsor to get all events they are connected to, then get all players in those events
 
-    events = Event.objects.filter(sponsor=sponsor)
+    events = SponsorEvent.objects.filter(sponsor=sponsor).select_related("event").values_list("event", flat=True)
     data = []
     for event in events:
         if event.participant_type == "solo":
