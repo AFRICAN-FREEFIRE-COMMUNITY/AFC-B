@@ -13974,3 +13974,6 @@ def edit_match_scoring_config(request):
 
 
 # def get_sponsor_details:
+
+# edit_sponsor_details
+
