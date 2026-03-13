@@ -13667,7 +13667,7 @@ def get_list_of_players_in_sponsor_event(request):
                         "event_name": event.event_name,
                         "team_id": team.team.team_id,
                         "team_name": team.team.team_name,
-                        "member_id": member.user.user_id,
+                        "member_id": member.id,
                         "member_username": member.user.username,
                         "user_id_from_sponsor": member.user_id_from_sponsor,
                         "status": member.status
