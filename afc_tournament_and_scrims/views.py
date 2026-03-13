@@ -13567,7 +13567,7 @@ def create_sponsor_account(request):
         email=email,
         uid=uid,
         password=password,
-        role="player",
+        role="admin",
         full_name=fullname,
         country="Unknown",
         status="active"
