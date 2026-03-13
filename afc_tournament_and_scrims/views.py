@@ -13645,7 +13645,7 @@ def get_list_of_players_in_sponsor_event(request):
     data = []
     for event in events:
         if event.participant_type == "solo":
-            competitors = RegisteredCompetitors.objects.filter(event=event, player__isnull=False).select_related("player")
+            competitors = RegisteredCompetitors.objects.filter(event=event, player__isnull=False).select_related("user")
             for comp in competitors:
                 data.append({
                     "event_id": event.event_id,
