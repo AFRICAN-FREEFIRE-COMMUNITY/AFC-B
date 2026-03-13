@@ -13987,7 +13987,7 @@ def get_sponsor_details(request):
         return Response({"message": "Invalid token."}, status=400)
 
     return Response({
-        "sponsor_id": sponsor.id,
+        "sponsor_id": sponsor.user_id,
         "username": sponsor.username,
         "email": sponsor.email,
         "full_name": sponsor.full_name
