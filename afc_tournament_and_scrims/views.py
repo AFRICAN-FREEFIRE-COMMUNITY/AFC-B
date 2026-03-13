@@ -346,6 +346,26 @@ def create_event(request):
         if not sponsor_field_label:
             return Response({"message": "sponsor_field_label is required for sponsored events."}, status=400)
 
+    
+    if is_waitlist_enabled := request.data.get("is_waitlist_enabled", False):
+        if isinstance(is_waitlist_enabled, str):
+            is_waitlist_enabled = is_waitlist_enabled.lower() in ("1", "true", "yes")
+        waitlist_capacity = request.data.get("waitlist_capacity")
+        waitlist_discord_role_id = request.data.get("waitlist_discord_role_id")
+        if is_waitlist_enabled:
+            if not waitlist_capacity:
+                return Response({"message": "waitlist_capacity is required when waitlist is enabled."}, status=400)
+            try:
+                waitlist_capacity = int(waitlist_capacity)
+            except ValueError:
+                return Response({"message": "waitlist_capacity must be an integer."}, status=400)
+            if waitlist_capacity <= 0:
+                return Response({"message": "waitlist_capacity must be greater than 0."}, status=400)
+            if not waitlist_discord_role_id:
+                return Response({"message": "waitlist_discord_role_id is required when waitlist is enabled."}, status=400)
+            if not waitlist_discord_role_id.strip():
+                return Response({"message": "waitlist_discord_role_id cannot be empty."}, status=400)
+
     # ---------------- PARSE DATES ----------------
     start_date = parse_date(request.data.get("start_date"))
     end_date = parse_date(request.data.get("end_date"))
@@ -3207,6 +3227,49 @@ def register_for_event(request):
             return Response({"message": "Registration limit reached."}, status=403)
 
         with transaction.atomic():
+            active_count = RegisteredCompetitors.objects.filter(
+                event=event,
+                status__in=["registered", "approved"],
+                is_waitlisted=False
+            ).count()
+
+            if active_count >= event.max_teams_or_players:
+
+                if not event.is_waitlist_enabled:
+                    return Response({"message": "Registration limit reached."}, status=403)
+
+                waitlist_count = RegisteredCompetitors.objects.filter(
+                    event=event,
+                    is_waitlisted=True
+                ).count()
+
+                if event.waitlist_capacity and waitlist_count >= event.waitlist_capacity:
+                    return Response({"message": "Waitlist is full."}, status=403)
+
+                # CREATE WAITLIST ENTRY
+                competitor = RegisteredCompetitors.objects.create(
+                    event=event,
+                    user=user,
+                    status="pending",
+                    is_waitlisted=True
+                )
+
+                # assign waitlist discord role
+                role_id = event.waitlist_discord_role_id
+
+                if role_id:
+                    DiscordRoleAssignment.objects.get_or_create(
+                        user=user,
+                        discord_id=user.discord_id,
+                        role_id=role_id,
+                        defaults={"status": "pending"}
+                    )
+
+                return Response({
+                    "message": "Event is full. You have been added to the waitlist.",
+                    "waitlisted": True
+                }, status=201)
+            
             competitor = RegisteredCompetitors.objects.create(
                 event=event,
                 user=user,
@@ -3357,6 +3420,64 @@ def register_for_event(request):
 
         # Register
         with transaction.atomic():
+            active_count = TournamentTeam.objects.filter(
+                event=event,
+                is_waitlisted=False
+            ).count()
+
+            if active_count >= event.max_teams_or_players:
+
+                if not event.is_waitlist_enabled:
+                    return Response({"message": "Registration limit reached."}, status=403)
+
+                waitlist_count = TournamentTeam.objects.filter(
+                    event=event,
+                    is_waitlisted=True
+                ).count()
+
+                if event.waitlist_capacity and waitlist_count >= event.waitlist_capacity:
+                    return Response({"message": "Waitlist is full."}, status=403)
+
+                # CREATE WAITLIST TEAM
+                tt = TournamentTeam.objects.create(
+                    event=event,
+                    team=team,
+                    registered_by=user,
+                    is_waitlisted=True
+                )
+
+                TournamentTeamMember.objects.bulk_create([
+                    TournamentTeamMember(
+                        tournament_team=tt,
+                        user=roster_users_by_id[uid],
+                        event=event
+                    )
+                    for uid in roster_member_ids
+                ])
+
+                # waitlist discord role
+                role_id = event.waitlist_discord_role_id
+
+                if role_id:
+                    DiscordRoleAssignment.objects.bulk_create(
+                        [
+                            DiscordRoleAssignment(
+                                user=u,
+                                discord_id=u.discord_id,
+                                role_id=role_id,
+                                status="pending"
+                            )
+                            for u in roster_users
+                        ],
+                        ignore_conflicts=True
+                    )
+
+                return Response({
+                    "message": "Event is full. Team added to waitlist.",
+                    "waitlisted": True,
+                    "tournament_team_id": tt.tournament_team_id
+                }, status=201)
+            
             competitor = RegisteredCompetitors.objects.create(
                 event=event,
                 team=team,

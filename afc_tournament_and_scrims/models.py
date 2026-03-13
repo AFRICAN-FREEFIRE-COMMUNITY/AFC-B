@@ -99,6 +99,11 @@ class Event(models.Model):
     sponsor_requirement_description = models.CharField(max_length=200, null=True, blank=True)
     sponsor_field_label = models.CharField(max_length=100, null=True, blank=True)
 
+    is_waitlist_enabled = models.BooleanField(default=False)
+    waitlist_capacity = models.PositiveIntegerField(null=True, blank=True)
+    waitlist_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
+
+
 
     def save(self, *args, **kwargs):
         if not self.slug:
@@ -204,6 +209,7 @@ class RegisteredCompetitors(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     registration_date = models.DateTimeField(auto_now_add=True)
     user_id_from_sponsor = models.CharField(max_length=100, null=True, blank=True)
+    is_waitlisted = models.BooleanField(default=False)
 
 
 # ---------------- Leaderboard ----------------
@@ -279,6 +285,7 @@ class TournamentTeam(models.Model):
     registered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     registration_date = models.DateTimeField(auto_now_add=True)
     country = models.CharField(max_length=100, null=True, blank=True) # Store country at time of registration for historical accuracy
+    is_waitlisted = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.team.team_name} in {self.event.event_name}"
@@ -427,15 +434,4 @@ class EventPrizePayout(models.Model):
             models.Index(fields=["event", "user"]),
             models.Index(fields=["event", "tournament_team"]),
         ]
-
-
-class WaitlistEntry(models.Model):
-    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="waitlist_entries")
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
-    registration_date = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ("event", "user", "team")
-
 
