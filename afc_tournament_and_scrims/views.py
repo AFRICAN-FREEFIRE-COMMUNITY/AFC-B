@@ -13986,11 +13986,21 @@ def get_sponsor_details(request):
     if not sponsor:
         return Response({"message": "Invalid token."}, status=400)
 
+    # get events that the sponsr is linked to
+    sponsor_events = SponsorEvent.objects.filter(sponsor=sponsor).select_related("event")
+
+
     return Response({
         "sponsor_id": sponsor.user_id,
         "username": sponsor.username,
         "email": sponsor.email,
-        "full_name": sponsor.full_name
+        "full_name": sponsor.full_name,
+        "events": [
+            {
+                "event_id": se.event.event_id,
+                "event_name": se.event.event_name
+            } for se in sponsor_events
+        ]
     }, status=200)
 
 
