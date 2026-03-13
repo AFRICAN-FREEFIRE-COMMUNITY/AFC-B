@@ -2109,6 +2109,7 @@ def get_event_details(request):
         "sponsor_name": event.sponsor_name,
         "sponsor_field_label": event.sponsor_field_label,
         "sponsor_requirement_description": event.sponsor_requirement_description,
+        "sponsor.username": event.sponsor.username if event.sponsor else None, 
     }
 
     # ============================================================
@@ -2873,6 +2874,8 @@ def get_event_details_not_logged_in(request):
         "sponsor_name": event.sponsor_name,
         "sponsor_field_label": event.sponsor_field_label,
         "sponsor_requirement_description": event.sponsor_requirement_description,
+        "sponsor.username": event.sponsor.username if event.sponsor else None, 
+
     }
 
     # ✅ KEEP registered competitors section (as you requested)
@@ -5663,6 +5666,8 @@ def get_event_details_for_admin(request):
             "sponsor_name": event.sponsor_name,
             "sponsor_field_label": event.sponsor_field_label,
             "sponsor_requirement_description": event.sponsor_requirement_description,
+            "sponsor.username": event.sponsor.username if event.sponsor else None, 
+
         },
         "registration_timeline": {
             "registration_start_date": event.registration_open_date,
