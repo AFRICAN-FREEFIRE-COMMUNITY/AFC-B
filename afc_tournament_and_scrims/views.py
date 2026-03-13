@@ -13609,3 +13609,25 @@ def get_list_of_players_in_sponsor_event(request):
                         "user_id_from_sponsor": member.user_id_from_sponsor
                     })
     return Response(data, status=200)
+
+
+@api_view(["POST"])
+def edit_match_scoring_config(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin or admin.role != "admin":
+        return Response({"message": "Unauthorized."}, status=403)
+
+    match_id = request.data.get("match_id")
+    scoring_settings = request.data.get("scoring_settings")
+    if not match_id:
+        return Response({"message": "match_id required."}, status=400)
+    if not isinstance(scoring_settings, dict):
+        return Response({"message": "scoring_settings must be a dictionary."}, status=400)
+    match = get_object_or_404(Match, match_id=match_id)
+    match.scoring_settings = scoring_settings
+    match.save(update_fields=["scoring_settings"])
+    
+    return Response({"message": "Match scoring settings updated successfully."}, status=200)
