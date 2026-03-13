@@ -13650,7 +13650,7 @@ def get_list_of_players_in_sponsor_event(request):
                 data.append({
                     "event_id": event.event_id,
                     "event_name": event.event_name,
-                    "player_id": comp.user.user_id,
+                    "player_id": comp.id,
                     "player_username": comp.user.username,
                     "user_id_from_sponsor": comp.user_id_from_sponsor,
                     "status": comp.status
