@@ -1300,6 +1300,67 @@ def edit_event(request):
                         group = StageGroups.objects.create(stage=stage, **group_defaults)
 
                     kept_group_ids.append(group.group_id)
+                    # ---- Sync Matches ----
+
+                    leaderboard = Leaderboard.objects.filter(
+                        event=event,
+                        stage=stage,
+                        group=group
+                    ).first()
+
+                    match_count = group.match_count or 0
+                    match_maps = group.match_maps or []
+
+                    default_map = match_maps[0] if match_maps else "bermuda"
+
+                    existing_matches = {
+                        m.match_number: m
+                        for m in Match.objects.filter(group=group)
+                    }
+
+                    matches_to_create = []
+                    matches_to_update = []
+                    kept_match_numbers = []
+
+                    for num in range(1, match_count + 1):
+
+                        chosen_map = (
+                            match_maps[(num - 1) % len(match_maps)]
+                            if match_maps else default_map
+                        )
+
+                        kept_match_numbers.append(num)
+
+                        if num in existing_matches:
+
+                            m = existing_matches[num]
+
+                            if m.match_map != chosen_map or m.leaderboard != leaderboard:
+                                m.match_map = chosen_map
+                                m.leaderboard = leaderboard
+                                matches_to_update.append(m)
+
+                        else:
+
+                            matches_to_create.append(
+                                Match(
+                                    group=group,
+                                    match_number=num,
+                                    match_map=chosen_map,
+                                    leaderboard=leaderboard
+                                )
+                            )
+
+                    if matches_to_create:
+                        Match.objects.bulk_create(matches_to_create, batch_size=200)
+
+                    if matches_to_update:
+                        Match.objects.bulk_update(matches_to_update, ["match_map", "leaderboard"])
+
+                    # delete removed matches
+                    Match.objects.filter(group=group)\
+                        .exclude(match_number__in=kept_match_numbers)\
+                        .delete()
 
             if delete_missing:
                 StageGroups.objects.filter(stage__event=event).exclude(group_id__in=kept_group_ids).delete()
@@ -13574,7 +13635,7 @@ def get_list_of_players_in_sponsor_event(request):
         return Response({"message": "Invalid token."}, status=400)
     sponsor = validate_token(auth.split(" ")[1])
 
-    role = Roles.objects.get("sponsor_admin")
+    role = Roles.objects.get(role_name="sponsor_admin")
     if not sponsor or sponsor.role != "player" or not sponsor.userroles.filter(role=role).exists():
         return Response({"message": "Unauthorized."}, status=403)
 
@@ -13627,6 +13688,7 @@ def edit_match_scoring_config(request):
     if not isinstance(scoring_settings, dict):
         return Response({"message": "scoring_settings must be a dictionary."}, status=400)
     match = get_object_or_404(Match, match_id=match_id)
+
     match.scoring_settings = scoring_settings
     match.save(update_fields=["scoring_settings"])
     
