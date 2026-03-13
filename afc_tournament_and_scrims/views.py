@@ -13973,8 +13973,69 @@ def edit_match_scoring_config(request):
     
     return Response({"message": "Match scoring settings updated successfully."}, status=200)
 
-# @api_view(["POST"])
-# def get_sponsor_details:
+@api_view(["POST"])
+def get_sponsor_details(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
 
-# edit_sponsor_details
+    sponsor_username = request.data.get("sponsor_username")
+    sponsor = get_object_or_404(User, username=sponsor_username, role="admin", userroles__role__role_name="sponsor_admin")
 
+    if not sponsor:
+        return Response({"message": "Invalid token."}, status=400)
+
+    return Response({
+        "sponsor_id": sponsor.id,
+        "username": sponsor.username,
+        "email": sponsor.email,
+        "full_name": sponsor.full_name
+    }, status=200)
+
+
+@api_view(["POST"])
+def edit_sponsor_details(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+    admin = validate_token(auth.split(" ")[1]) 
+    if not admin or admin.role != "admin" and User.objects.filter(username=admin.username, role="admin", userroles__role__role_name="sponsor_admin").exists():
+        return Response({"message": "Unauthorized."}, status=403)
+
+    sponsor_username = request.data.get("sponsor_username")
+    sponsor = get_object_or_404(User, username=sponsor_username, role="admin")
+    role = Roles.objects.get(role_name="sponsor_admin")
+    if not sponsor.userroles.filter(role=role).exists():
+        return Response({"message": "Unauthorized."}, status=403)
+    full_name = request.data.get("full_name")
+    email = request.data.get("email")
+    username = request.data.get("username")
+    if full_name:
+        sponsor.full_name = full_name
+    if email:
+        if User.objects.filter(email=email).exclude(id=sponsor.id).exists():
+            return Response({"message": "Email already in use."}, status=400)
+    if username:
+        if User.objects.filter(username=username).exclude(id=sponsor.id).exists():
+            return Response({"message": "Username already in use."}, status=400)
+        sponsor.username = username
+
+    sponsor.save(update_fields=["full_name"])
+    sponsor.save(update_fields=["email"])
+    sponsor.save(update_fields=["username"])
+
+    # also edit the events they are linked to.
+    if event_ids := request.data.get("event_ids"):
+        if not isinstance(event_ids, list) or not all(isinstance(eid, int)
+            for eid in event_ids):
+            return Response({"message": "event_ids must be a list of integers"}, status=400)
+        events = Event.objects.filter(event_id__in=event_ids)
+        for event in events:
+            SponsorEvent.objects.update_or_create(
+                sponsor=sponsor,
+                event=event
+            )
+            event.save(update_fields=["sponsor"])
+
+    return Response({"message": "Sponsor details updated successfully."}, status=200)
