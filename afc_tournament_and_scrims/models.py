@@ -94,7 +94,6 @@ class Event(models.Model):
 
     is_public = models.BooleanField(default=True)
     is_sponsored = models.BooleanField(default=False)
-    # sponsor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="sponsored_events")
     sponsor_name = models.CharField(max_length=100, null=True, blank=True)
     sponsor_requirement_description = models.CharField(max_length=200, null=True, blank=True)
     sponsor_field_label = models.CharField(max_length=100, null=True, blank=True)

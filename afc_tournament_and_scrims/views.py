@@ -14040,13 +14040,13 @@ def edit_sponsor_details(request):
         update_fields.append("full_name")
 
     if email:
-        if User.objects.filter(email=email).exclude(id=sponsor.id).exists():
+        if User.objects.filter(email=email).exclude(id=sponsor.user_id).exists():
             return Response({"message": "Email already in use."}, status=400)
         sponsor.email = email
         update_fields.append("email")
 
     if username:
-        if User.objects.filter(username=username).exclude(id=sponsor.id).exists():
+        if User.objects.filter(username=username).exclude(id=sponsor.user_id).exists():
             return Response({"message": "Username already in use."}, status=400)
         sponsor.username = username
         update_fields.append("username")
@@ -14077,8 +14077,7 @@ def edit_sponsor_details(request):
                 event=event
             )
 
-            event.sponsor = sponsor
-            event.save(update_fields=["sponsor"])
+            
 
     return Response({
         "message": "Sponsor details updated successfully."
