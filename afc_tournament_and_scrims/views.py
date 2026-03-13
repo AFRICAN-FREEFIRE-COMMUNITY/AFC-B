@@ -331,7 +331,7 @@ def create_event(request):
     if isinstance(is_sponsored, str):
         is_sponsored = is_sponsored.lower() in ("1", "true", "yes")
 
-    sponsor_username = request.data.get("sponsor_username")
+    sponsor_usernames = request.data.get("sponsor_usernames", [])
     sponsor_name = request.data.get("sponsor_name")
     sponsor_field_label = request.data.get("sponsor_field_label")
     sponsor_requirement_description = request.data.get("sponsor_requirement_description")
@@ -340,8 +340,8 @@ def create_event(request):
         if not sponsor_name:
             return Response({"message": "sponsor_name is required for sponsored events."}, status=400)
         
-        if not sponsor_username:
-            return Response({"message": "sponsor_username is required for sponsored events."}, status=400)
+        if not sponsor_usernames:
+            return Response({"message": "sponsor_usernames is required for sponsored events."}, status=400)
 
         if not sponsor_field_label:
             return Response({"message": "sponsor_field_label is required for sponsored events."}, status=400)
@@ -478,8 +478,17 @@ def create_event(request):
             sponsor_name=sponsor_name,
             sponsor_field_label=sponsor_field_label,
             sponsor_requirement_description=sponsor_requirement_description,
-            sponsor=User.objects.filter(username=sponsor_username).first() if sponsor_username else None
         )
+
+        for sponsor_username in sponsor_usernames:
+            try:
+                sponsor_user = User.objects.get(username=sponsor_username)
+                SponsorEvent.objects.create(
+                    event=event,
+                    sponsor=sponsor_user
+                )
+            except User.DoesNotExist:
+                return Response({"message": f"Sponsor user '{sponsor_username}' not found."}, status=400)
 
         # stream channels
         if stream_channels:
@@ -1168,12 +1177,22 @@ def edit_event(request):
             is_sponsored = is_sponsored.lower() in ("1", "true", "yes")
         event.is_sponsored = is_sponsored
 
-    if "sponsor_username" in request.data:
-        sponsor_username = request.data.get("sponsor_username")
-        sponsor_user = User.objects.filter(username=sponsor_username).first()
-        if not sponsor_user:
-            return Response({"message": "Sponsor user not found."}, status=400)
+    if "sponsor_usernames" in request.data:
+        sponsor_usernames = as_list(request.data.get("sponsor_usernames"))
+        existing_sponsors = set(SponsorEvent.objects.filter(event=event).values_list("sponsor__username", flat=True))
+        new_sponsors = set(sponsor_usernames)
+        # Remove old sponsors not in new list
+        for username in existing_sponsors - new_sponsors:
+            user = User.objects.filter(username=username).first()
+            if user:
+                SponsorEvent.objects.filter(event=event, sponsor=user).delete()
+        # Add new sponsors
+        for username in new_sponsors - existing_sponsors:
+            user = User.objects.filter(username=username).first()
+            if user:
+                SponsorEvent.objects.create(event=event, sponsor=user)
 
+        
     if "sponsor_name" in request.data:
         event.sponsor_name = request.data.get("sponsor_name")
 
