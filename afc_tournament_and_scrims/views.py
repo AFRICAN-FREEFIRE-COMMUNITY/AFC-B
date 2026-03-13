@@ -13613,59 +13613,139 @@ def upload_team_match_result(request):
 
 @api_view(["POST"])
 def add_teams_to_event(request):
+
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token."}, status=400)
+
     admin = validate_token(auth.split(" ")[1])
     if not admin or admin.role != "admin":
         return Response({"message": "Unauthorized."}, status=403)
+
     event_id = request.data.get("event_id")
     team_ids = request.data.get("team_ids", [])
+
     if not event_id:
         return Response({"message": "event_id required."}, status=400)
+
     if not isinstance(team_ids, list) or not all(isinstance(tid, int) for tid in team_ids):
-        return Response({"message": "team_ids must be a list of integers"}, status=400
-    )
+        return Response({"message": "team_ids must be a list of integers"}, status=400)
+
     event = get_object_or_404(Event, event_id=event_id)
+
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
-    
-    # Get all teams using the team ids
+
     teams = Team.objects.filter(team_id__in=team_ids)
 
-    # add each team to RegisteredCompetitors with status "registered" and also to TournamentTeam with status "active" but confirm they arent already currently there
     new_registrations = []
     new_tournament_teams = []
-    for team in teams:
-        if not RegisteredCompetitors.objects.filter(event=event, team=team).exists():
-            new_registrations.append(RegisteredCompetitors(
-                event=event,
-                team=team,
-                status="registered"
-            ))
-        if not TournamentTeam.objects.filter(event=event, team=team).exists():
-            new_tournament_teams.append(TournamentTeam(
-                event=event,
-                team=team,
-                status="active"
-            ))
 
-        RegisteredCompetitors.objects.bulk_create(new_registrations)
-        TournamentTeam.objects.bulk_create(new_tournament_teams)
+    with transaction.atomic():
 
-        # add the members of the team to TournamentTeamMember if they are not already there
-        for member in TeamMembers.objects.filter(team=team).select_related("member"):
-            if not TournamentTeamMember.objects.filter(tournament_team__event=event, tournament_team__team=team, user=member.member).exists():
-                TournamentTeamMember.objects.create(
-                    tournament_team=new_tournament_teams[-1],  # reference the newly created TournamentTeam
-                    user=member.member
+        for team in teams:
+
+            # RegisteredCompetitors
+            if not RegisteredCompetitors.objects.filter(event=event, team=team).exists():
+                new_registrations.append(
+                    RegisteredCompetitors(
+                        event=event,
+                        team=team,
+                        status="registered"
+                    )
                 )
-    
+
+            # TournamentTeam
+            tt = TournamentTeam.objects.filter(event=event, team=team).first()
+
+            if not tt:
+                tt = TournamentTeam.objects.create(
+                    event=event,
+                    team=team,
+                    status="active"
+                )
+                new_tournament_teams.append(tt)
+
+            # Add team members
+            members = TeamMembers.objects.filter(team=team).select_related("member")
+
+            for member in members:
+
+                if not TournamentTeamMember.objects.filter(
+                    tournament_team=tt,
+                    user=member.member
+                ).exists():
+
+                    TournamentTeamMember.objects.create(
+                        tournament_team=tt,
+                        user=member.member,
+                        event=event
+                    )
+
+        if new_registrations:
+            RegisteredCompetitors.objects.bulk_create(new_registrations)
+
     return Response({
-        "message": f"{len(new_registrations)} teams registered and {len(new_tournament_teams)} teams added to tournament for event.",
+        "message": f"{len(new_registrations)} teams registered and {len(new_tournament_teams)} teams added.",
         "event_id": event.event_id,
         "added_team_ids": [team.team_id for team in teams],
     }, status=200)
+
+# @api_view(["POST"])
+# def add_teams_to_event(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid token."}, status=400)
+#     admin = validate_token(auth.split(" ")[1])
+#     if not admin or admin.role != "admin":
+#         return Response({"message": "Unauthorized."}, status=403)
+#     event_id = request.data.get("event_id")
+#     team_ids = request.data.get("team_ids", [])
+#     if not event_id:
+#         return Response({"message": "event_id required."}, status=400)
+#     if not isinstance(team_ids, list) or not all(isinstance(tid, int) for tid in team_ids):
+#         return Response({"message": "team_ids must be a list of integers"}, status=400
+#     )
+#     event = get_object_or_404(Event, event_id=event_id)
+#     if event.participant_type == "solo":
+#         return Response({"message": "This endpoint is for team events only."}, status=400)
+    
+#     # Get all teams using the team ids
+#     teams = Team.objects.filter(team_id__in=team_ids)
+
+#     # add each team to RegisteredCompetitors with status "registered" and also to TournamentTeam with status "active" but confirm they arent already currently there
+#     new_registrations = []
+#     new_tournament_teams = []
+#     for team in teams:
+#         if not RegisteredCompetitors.objects.filter(event=event, team=team).exists():
+#             new_registrations.append(RegisteredCompetitors(
+#                 event=event,
+#                 team=team,
+#                 status="registered"
+#             ))
+#         if not TournamentTeam.objects.filter(event=event, team=team).exists():
+#             new_tournament_teams.append(TournamentTeam(
+#                 event=event,
+#                 team=team,
+#                 status="active"
+#             ))
+
+#         RegisteredCompetitors.objects.bulk_create(new_registrations)
+#         TournamentTeam.objects.bulk_create(new_tournament_teams)
+
+#         # add the members of the team to TournamentTeamMember if they are not already there
+#         for member in TeamMembers.objects.filter(team=team).select_related("member"):
+#             if not TournamentTeamMember.objects.filter(tournament_team__event=event, tournament_team__team=team, user=member.member).exists():
+#                 TournamentTeamMember.objects.create(
+#                     tournament_team=new_tournament_teams[-1],  # reference the newly created TournamentTeam
+#                     user=member.member
+#                 )
+    
+#     return Response({
+#         "message": f"{len(new_registrations)} teams registered and {len(new_tournament_teams)} teams added to tournament for event.",
+#         "event_id": event.event_id,
+#         "added_team_ids": [team.team_id for team in teams],
+#     }, status=200)
 
 
 @api_view(["POST"])
