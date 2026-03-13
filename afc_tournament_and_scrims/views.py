@@ -13650,6 +13650,9 @@ def add_teams_to_event(request):
                 status="active"
             ))
 
+        RegisteredCompetitors.objects.bulk_create(new_registrations)
+        TournamentTeam.objects.bulk_create(new_tournament_teams)
+
         # add the members of the team to TournamentTeamMember if they are not already there
         for member in TeamMembers.objects.filter(team=team).select_related("member"):
             if not TournamentTeamMember.objects.filter(tournament_team__event=event, tournament_team__team=team, user=member.member).exists():
@@ -13657,8 +13660,7 @@ def add_teams_to_event(request):
                     tournament_team=new_tournament_teams[-1],  # reference the newly created TournamentTeam
                     user=member.member
                 )
-    RegisteredCompetitors.objects.bulk_create(new_registrations)
-    TournamentTeam.objects.bulk_create(new_tournament_teams)
+    
     return Response({
         "message": f"{len(new_registrations)} teams registered and {len(new_tournament_teams)} teams added to tournament for event.",
         "event_id": event.event_id,
