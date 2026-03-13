@@ -194,12 +194,14 @@ class RegisteredCompetitors(models.Model):
     ("withdrawn", "Withdrawn"),
     ("left", "Left"),
     ("pending", "Pending"),
+    ("approved", "Approved"),
+    ("rejected", "Rejected")
     ]
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="registrations")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="registered")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     registration_date = models.DateTimeField(auto_now_add=True)
     user_id_from_sponsor = models.CharField(max_length=100, null=True, blank=True)
 
