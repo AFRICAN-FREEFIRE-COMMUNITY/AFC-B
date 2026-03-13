@@ -13655,7 +13655,7 @@ def add_teams_to_event(request):
             if not TournamentTeamMember.objects.filter(tournament_team__event=event, tournament_team__team=team, user=member.user).exists():
                 TournamentTeamMember.objects.create(
                     tournament_team=new_tournament_teams[-1],  # reference the newly created TournamentTeam
-                    user=member.user
+                    user=member.member
                 )
     RegisteredCompetitors.objects.bulk_create(new_registrations)
     TournamentTeam.objects.bulk_create(new_tournament_teams)
