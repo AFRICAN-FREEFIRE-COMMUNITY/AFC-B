@@ -5805,6 +5805,8 @@ def get_event_details_for_admin(request):
 
     EventPageView.objects.create(event=event, ip_address=request.META.get('REMOTE_ADDR'), user=admin)
 
+    sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
+
     return Response({
         "overview": {
             "event_id": event.event_id,
@@ -5824,7 +5826,14 @@ def get_event_details_for_admin(request):
             "sponsor_name": event.sponsor_name,
             "sponsor_field_label": event.sponsor_field_label,
             "sponsor_requirement_description": event.sponsor_requirement_description,
-            "sponsor.username": event.sponsor.username if event.sponsor else None, 
+            "sponsors": [
+            {
+                "sponsor_id": se.sponsor.user_id,
+                "sponsor_name": se.sponsor.full_name,
+                "sponsor_username": se.sponsor.username
+            }
+            for se in sponsors
+        ] 
 
         },
         "registration_timeline": {
