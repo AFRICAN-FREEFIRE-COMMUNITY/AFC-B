@@ -13973,7 +13973,7 @@ def edit_match_scoring_config(request):
     
     return Response({"message": "Match scoring settings updated successfully."}, status=200)
 
-@api_view(["POST"])
+# @api_view(["POST"])
 # def get_sponsor_details:
 
 # edit_sponsor_details
