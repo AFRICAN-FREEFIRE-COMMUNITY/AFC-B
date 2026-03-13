@@ -13918,13 +13918,14 @@ def get_list_of_players_in_sponsor_event(request):
 
     sponsor_events = SponsorEvent.objects.filter(sponsor=sponsor).select_related("event").values_list("event", flat=True)
     data = []
-    for event in sponsor_events:
-        if event.event.participant_type == "solo":
-            competitors = RegisteredCompetitors.objects.filter(event=event.event, user__isnull=False).select_related("user")
+    for sponsor_event in sponsor_events:
+        event = Event.objects.get(event_id=sponsor_event)
+        if event.participant_type == "solo":
+            competitors = RegisteredCompetitors.objects.filter(event=event, user__isnull=False).select_related("user")
             for comp in competitors:
                 data.append({
-                    "event_id": event.event.event_id,
-                    "event_name": event.event.event_name,
+                    "event_id": event.event_id,
+                    "event_name": event.event_name,
                     "player_id": comp.id,
                     "player_username": comp.user.username,
                     "user_id_from_sponsor": comp.user_id_from_sponsor,
@@ -13938,8 +13939,8 @@ def get_list_of_players_in_sponsor_event(request):
                 members = TournamentTeamMember.objects.filter(tournament_team=team).select_related("user").prefetch_related("tournament_team__event")
                 for member in members:
                     data.append({
-                        "event_id": event.event.event_id,
-                        "event_name": event.event.event_name,
+                        "event_id": event.event_id,
+                        "event_name": event.event_name,
                         "team_id": team.team.team_id,
                         "team_name": team.team.team_name,
                         "member_id": member.id,
@@ -13972,7 +13973,7 @@ def edit_match_scoring_config(request):
     
     return Response({"message": "Match scoring settings updated successfully."}, status=200)
 
-
+@api_view(["POST"])
 # def get_sponsor_details:
 
 # edit_sponsor_details
