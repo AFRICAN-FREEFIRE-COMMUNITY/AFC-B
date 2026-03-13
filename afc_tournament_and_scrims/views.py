@@ -13581,21 +13581,40 @@ def add_teams_to_event(request):
     event = get_object_or_404(Event, event_id=event_id)
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
-    teams = TournamentTeam.objects.filter(team_id__in=team_ids, event=event,
-        status="active")
-    if not teams.exists():
-        return Response({"message": "No valid teams found for the provided team_ids."}, status=400)
-    existing_team_ids = RegisteredCompetitors.objects.filter(event=event, team__team_id__in=team_ids).values_list("team__team_id", flat=True)
-    new_entries = []
+    
+    # Get all teams using the team ids
+    teams = Team.objects.filter(team_id__in=team_ids)
+
+    # add each team to RegisteredCompetitors with status "registered" and also to TournamentTeam with status "active" but confirm they arent already currently there
+    new_registrations = []
+    new_tournament_teams = []
     for team in teams:
-        if team.team_id in existing_team_ids:
-            continue
-        new_entries.append(RegisteredCompetitors(event=event, team=team, status="registered"))
-    RegisteredCompetitors.objects.bulk_create(new_entries)
+        if not RegisteredCompetitors.objects.filter(event=event, team=team).exists():
+            new_registrations.append(RegisteredCompetitors(
+                event=event,
+                team=team,
+                status="registered"
+            ))
+        if not TournamentTeam.objects.filter(event=event, team=team).exists():
+            new_tournament_teams.append(TournamentTeam(
+                event=event,
+                team=team,
+                status="active"
+            ))
+
+        # add the members of the team to TournamentTeamMember if they are not already there
+        for member in team.members.select_related("user").all():
+            if not TournamentTeamMember.objects.filter(tournament_team__event=event, tournament_team__team=team, user=member.user).exists():
+                TournamentTeamMember.objects.create(
+                    tournament_team=new_tournament_teams[-1],  # reference the newly created TournamentTeam
+                    user=member.user
+                )
+    RegisteredCompetitors.objects.bulk_create(new_registrations)
+    TournamentTeam.objects.bulk_create(new_tournament_teams)
     return Response({
-        "message": f"{len(new_entries)} teams added to event.",
+        "message": f"{len(new_registrations)} teams registered and {len(new_tournament_teams)} teams added to tournament for event.",
         "event_id": event.event_id,
-        "added_team_ids": [entry.team.team_id for entry in new_entries],
+        "added_team_ids": [team.team_id for team in teams],
     }, status=200)
 
 
@@ -13749,7 +13768,7 @@ def assign_sponsor_to_event(request):
 @api_view(["GET"])
 def get_all_sponsors(request):
     role = Roles.objects.get(role_name="sponsor_admin")
-    sponsors = User.objects.filter(role="player", userroles__role=role).values("user_id", "username", "email", "full_name")
+    sponsors = User.objects.filter(role="admin", userroles__role=role).values("user_id", "username", "email", "full_name")
     return Response(list(sponsors), status=200)
 
 
@@ -13822,3 +13841,5 @@ def edit_match_scoring_config(request):
     match.save(update_fields=["scoring_settings"])
     
     return Response({"message": "Match scoring settings updated successfully."}, status=200)
+
+
