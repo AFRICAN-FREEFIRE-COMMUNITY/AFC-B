@@ -429,3 +429,13 @@ class EventPrizePayout(models.Model):
         ]
 
 
+class WaitlistEntry(models.Model):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="waitlist_entries")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, null=True, blank=True)
+    registration_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("event", "user", "team")
+
+
