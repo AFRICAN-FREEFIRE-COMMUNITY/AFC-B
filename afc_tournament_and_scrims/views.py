@@ -480,6 +480,8 @@ def create_event(request):
             sponsor_requirement_description=sponsor_requirement_description,
         )
 
+        # change sponsor_usernames to a list
+        sponsor_usernames = _as_list(sponsor_usernames)
         for sponsor_username in sponsor_usernames:
             try:
                 sponsor_user = User.objects.get(username=sponsor_username)
