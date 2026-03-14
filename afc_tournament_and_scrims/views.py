@@ -14431,7 +14431,7 @@ def edit_roster(request):
     })
 
 
-@api_view(["GET"])
+@api_view(["POST"])
 def get_roster_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
@@ -14441,7 +14441,7 @@ def get_roster_details(request):
         return Response({"message": "Invalid session."}, status=401)
     if user.status != "active":
         return Response({"message": "Your account is not active."}, status=403)
-    event_id = request.query_params.get("event_id")
+    event_id = request.data.get("event_id")
 
     if not event_id:
         return Response({"message": "event_id required."}, status=400)
