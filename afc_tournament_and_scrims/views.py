@@ -14292,7 +14292,6 @@ def edit_sponsor_details(request):
 
 @api_view(["POST"])
 def edit_roster(request):
-
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
@@ -14428,7 +14427,7 @@ def edit_roster(request):
         "added_players": list(added_ids),
         "removed_players": list(removed_ids),
         "kept_players": list(kept_ids)
-    })
+    }, status=200)
 
 
 @api_view(["POST"])
