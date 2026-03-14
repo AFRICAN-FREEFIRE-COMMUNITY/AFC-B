@@ -14429,3 +14429,47 @@ def edit_roster(request):
         "removed_players": list(removed_ids),
         "kept_players": list(kept_ids)
     })
+
+
+@api_view(["GET"])
+def get_roster_details(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+    if user.status != "active":
+        return Response({"message": "Your account is not active."}, status=403)
+    event_id = request.query_params.get("event_id")
+
+    if not event_id:
+        return Response({"message": "event_id required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if event.participant_type == "solo":
+        return Response({"message": "This endpoint is for team events only."}, status=400
+    )
+    team = Team.objects.filter(members__member=user).first()
+    if not team:
+        return Response({"message": "You are not part of any team."}, status=404)
+    tournament_teams = TournamentTeam.objects.filter(event=event, team=team).select_related("team")
+    if not tournament_teams.exists():
+        return Response({"message": "Your team is not registered for this event."}, status=404)
+    tournament_team = tournament_teams.first()
+    members = TournamentTeamMember.objects.filter(tournament_team=tournament_team).select_related("user")
+    roster = []
+    for member in members:
+        roster.append({
+            "user_id": member.user.user_id,
+            "username": member.user.username,
+            "full_name": member.user.full_name,
+            "user_id_from_sponsor": member.user_id_from_sponsor,
+            "status": member.status
+        })
+    return Response({
+        "event_id": event.event_id,
+        "event_name": event.event_name,
+        "team_id": team.team_id,
+        "team_name": team.team_name,
+        "roster": roster
+    }, status=200) 

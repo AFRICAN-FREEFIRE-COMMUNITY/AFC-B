@@ -90,4 +90,5 @@ urlpatterns = [
     path("get-sponsor-details/", get_sponsor_details, name="get_sponsor_details"),
     path("edit-sponsor-details/", edit_sponsor_details, name="edit_sponsor_details"),
     path("edit-roster/", edit_roster, name="edit_roster"),
+    path("get-roster-details/", get_roster_details, name="get_roster_details"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
