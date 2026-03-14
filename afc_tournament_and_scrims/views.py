@@ -1219,7 +1219,7 @@ def edit_event(request):
 
     if "waitlist_discord_role_id" in request.data:
         event.waitlist_discord_role_id = request.data.get("waitlist_discord_role_id")
-        
+
 
     
     # ensure the evnt hasnt started if they wanna chnage the event type
@@ -13859,7 +13859,7 @@ def create_sponsor_account(request):
         username=username,
         email=email,
         uid=uid,
-        password=password,
+        password=set_password(password),
         role="admin",
         full_name=fullname,
         country="Unknown",
@@ -14055,6 +14055,8 @@ def edit_sponsor_details(request):
     full_name = request.data.get("full_name")
     email = request.data.get("email")
     username = request.data.get("username")
+    password = request.data.get("password")
+
 
     update_fields = []
 
@@ -14073,6 +14075,10 @@ def edit_sponsor_details(request):
             return Response({"message": "Username already in use."}, status=400)
         sponsor.username = username
         update_fields.append("username")
+
+    if password:
+        sponsor.set_password(password)
+        update_fields.append("password")
 
     if update_fields:
         sponsor.save(update_fields=update_fields)
