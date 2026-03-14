@@ -5920,7 +5920,8 @@ def get_event_details_for_admin(request):
             "social_shares": social_shares,
             "stream_links": streams,
         }
-    }, status=200)
+    
+    , status=200)
 
 
 
