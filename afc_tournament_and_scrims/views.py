@@ -5884,10 +5884,9 @@ def get_event_details_for_admin(request):
             }
             for se in sponsors
             ],
-            "is_waitlist enabled": event.is_waitlist_enabled,
-            "waitlist_capacity": event.waitlist_capacity,
-            "waitlist discord_ role_id": event.waitlist_discord_role_id,
-            },
+            # "is_waitlist enabled": event.is_waitlist_enabled,
+            # "waitlist_capacity": event.waitlist_capacity,
+            # "waitlist discord_ role_id": event.waitlist_discord_role_id,       
             },
         "registration_timeline": {
             "registration_start_date": event.registration_open_date,
@@ -5918,7 +5917,7 @@ def get_event_details_for_admin(request):
             "social_shares": social_shares,
             "stream_links": streams,
         }
-    
+    }
     , status=200)
 
 
