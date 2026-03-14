@@ -13983,7 +13983,7 @@ def get_list_of_players_in_sponsor_event(request):
                     "status": comp.status
                 })
         else:
-            teams = TournamentTeam.objects.filter(event=event, status="active").prefetch_related("members__user")
+            teams = TournamentTeam.objects.filter(event=event).prefetch_related("members__user")
 
             # Then use tournament teams to get all tournament team members in those teams and their user info and user id from sponsor
             for team in teams:
