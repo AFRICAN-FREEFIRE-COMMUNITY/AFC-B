@@ -5883,7 +5883,12 @@ def get_event_details_for_admin(request):
                 "sponsor_username": se.sponsor.username
             }
             for se in sponsors
-        ] 
+            ],
+            "is_waitlist enabled": event.is_waitlist_enabled,
+            "waitlist_capacity": event.waitlist_capacity,
+            "waitlist discord_ role_id": event.waitlist_discord_role_id,
+            }
+        
 
         },
         "registration_timeline": {
@@ -5943,7 +5948,7 @@ def get_event_details_for_admin(request):
 #         progress.save()
 
 
-# @shared_task(bind=True, rate_limit="1/s", max_retries=10)
+# @shared_task(bind=True, rate_limit="1/s", max_retries=10)          
 # def assign_stage_role_task(self, progress_id, discord_id, role_id):
 #     progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
 
