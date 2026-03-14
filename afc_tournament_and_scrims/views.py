@@ -5887,10 +5887,8 @@ def get_event_details_for_admin(request):
             "is_waitlist enabled": event.is_waitlist_enabled,
             "waitlist_capacity": event.waitlist_capacity,
             "waitlist discord_ role_id": event.waitlist_discord_role_id,
-            }
-        
-
-        },
+            },
+            },
         "registration_timeline": {
             "registration_start_date": event.registration_open_date,
             "registration_end_date": event.registration_end_date,
