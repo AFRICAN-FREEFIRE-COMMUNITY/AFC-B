@@ -2202,6 +2202,8 @@ def get_event_details(request):
 
     event_data["registered_competitors"] = registered
 
+    
+
     # ============================================================
     # TOURNAMENT TEAMS (DUO / SQUAD)
     # ============================================================
@@ -2231,6 +2233,26 @@ def get_event_details(request):
             })
 
     event_data["tournament_teams"] = tournament_teams_list
+
+
+    # get waitlist competitors
+    waitlist = []
+    if event.participant_type == "solo":
+        waitlist_regs = (
+            RegisteredCompetitors.objects
+            .select_related("user")
+
+            .filter(event=event, status="waitlist")
+        )
+        for reg in waitlist_regs:
+            if reg.user:
+                waitlist.append({
+                    "registered_competitor_id": reg.id,
+                    "player_id": reg.user.user_id,
+                    "username": reg.user.username,
+                    "status": reg.status
+                })
+    event_data["waitlist_competitors"] = waitlist
 
     # ============================================================
     # STAGES / GROUPS / MATCHES
