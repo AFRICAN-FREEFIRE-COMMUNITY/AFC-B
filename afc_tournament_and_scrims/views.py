@@ -13849,7 +13849,7 @@ def get_all_tournament_player_match_stats(requests):
         })
 
     return Response(data, status=200)
-from afc_auth import set_password
+
 @api_view(["POST"])
 def create_sponsor_account(request):
     auth = request.headers.get("Authorization")
@@ -13887,7 +13887,7 @@ def create_sponsor_account(request):
         username=username,
         email=email,
         uid=uid,
-        password=set_password(password),
+        password=password,
         role="admin",
         full_name=fullname,
         country="Unknown",
