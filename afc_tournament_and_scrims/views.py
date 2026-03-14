@@ -2176,7 +2176,10 @@ def get_event_details(request):
                 "sponsor_username": se.sponsor.username
             }
             for se in sponsors
-        ]
+        ],
+        "is_waitlist enabled": event.is_waitlist_enabled,
+        "waitlist_capacity": event.waitlist_capacity,
+        "waitlist discord_ role_id": event.waitlist_discord_role_id,
     }
 
     # ============================================================
