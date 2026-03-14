@@ -1204,6 +1204,23 @@ def edit_event(request):
     if "sponsor_requirement_description" in request.data:
         event.sponsor_requirement_description = request.data.get("sponsor_requirement_description")
 
+    if "is_waitlist_enabled" in request.data:
+        is_waitlist_enabled = request.data.get("is_waitlist_enabled")
+        if isinstance(is_waitlist_enabled, str):
+            is_waitlist_enabled = is_waitlist_enabled.lower() in ("1", "true", "yes")
+        event.is_waitlist_enabled = is_waitlist_enabled
+
+    if "waitlist_capacity" in request.data:
+        try:
+            event.waitlist_capacity = int(request.data.get("waitlist_capacity"))
+        except:
+            return Response({"message": "waitlist_capacity must be an integer."}, status=400)
+        
+
+    if "waitlist_discord_role_id" in request.data:
+        event.waitlist_discord_role_id = request.data.get("waitlist_discord_role_id")
+        
+
     
     # ensure the evnt hasnt started if they wanna chnage the event type
 
@@ -3375,10 +3392,16 @@ def register_for_event(request):
                     "message": "Sponsor IDs are required for sponsored events."
                 }, status=400)
 
-        
-        # Capacity check
-        if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
-            return Response({"message": "Registration limit reached."}, status=403)
+        # if event.is_waitlist_enabled:
+        #     # check the waitlist capacity and ensure it isnt  full before allowing team to register (either active or waitlist)
+        #     active_count = TournamentTeam.objects.filter(event=event, status="registered").count()
+        #     if active_count >= event.max_teams_or_players:
+        #         return Response({"message": "Waitlist is full."}, status=403)
+
+        # # Capacity check
+        # else:
+        #     if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
+        #         return Response({"message": "Registration limit reached."}, status=403)
 
         # roster rules
         if participant_type == "duo":
