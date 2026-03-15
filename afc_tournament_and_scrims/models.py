@@ -74,6 +74,7 @@ class Event(models.Model):
     number_of_stages = models.PositiveIntegerField()
     uploaded_rules = models.FileField(upload_to='event_rules/', null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_events', null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_draft = models.BooleanField(default=True)
     registration_restriction = models.CharField(

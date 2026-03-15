@@ -467,6 +467,7 @@ def create_event(request):
             number_of_stages=int(request.data.get("number_of_stages")),
             uploaded_rules=request.FILES.get("uploaded_rules"),
             is_draft=is_draft,
+            creator = user,
 
             # ✅ restriction fields
             registration_restriction=registration_restriction,
