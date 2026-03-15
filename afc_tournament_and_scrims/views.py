@@ -2134,6 +2134,13 @@ def get_event_details(request):
                 user=user
             ).exists()
 
+    # -------- SLOT LEFT --------
+    total_registered = RegisteredCompetitors(event=event).all()
+    total_slots= event.max_teams_or_players
+
+    slots_left = total_slots - total_registered
+
+
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
 
     # -------- BASIC EVENT DATA --------
@@ -2181,6 +2188,7 @@ def get_event_details(request):
         "is_waitlist enabled": event.is_waitlist_enabled,
         "waitlist_capacity": event.waitlist_capacity,
         "waitlist discord_ role_id": event.waitlist_discord_role_id,
+        "slots_left": slots_left,
     }
 
     # ============================================================
