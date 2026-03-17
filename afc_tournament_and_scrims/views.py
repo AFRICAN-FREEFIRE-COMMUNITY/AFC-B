@@ -3316,6 +3316,38 @@ def register_for_event(request):
         if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
             return Response({"message": "Registration limit reached."}, status=403)
 
+        
+        # -------------------------
+        # SPONSOR ID UNIQUENESS CHECK
+        # -------------------------
+        if event.is_sponsored:
+
+            provided_ids = [
+                sponsor_ids.get(str(uid))
+                for uid in roster_member_ids
+                if sponsor_ids.get(str(uid))
+            ]
+
+            # Check duplicates inside the same roster request
+            if len(provided_ids) != len(set(provided_ids)):
+                return Response({
+                    "message": "Duplicate sponsor IDs detected in roster."
+                }, status=400)
+
+            # Check duplicates already registered in this event
+            existing_ids = set(
+                TournamentTeamMember.objects.filter(
+                    tournament_team__event=event,
+                    user_id_from_sponsor__in=provided_ids
+                ).values_list("user_id_from_sponsor", flat=True)
+            )
+
+            if existing_ids:
+                return Response({
+                    "message": "Some sponsor IDs are already used in this event.",
+                    "conflicting_ids": list(existing_ids)
+                }, status=409)
+
         with transaction.atomic():
             active_count = RegisteredCompetitors.objects.filter(
                 event=event,
@@ -3659,6 +3691,8 @@ def confirm_player(request):
     member.status = "active"
     member.save(update_fields=["status"])
 
+    #send notification
+
     check_and_activate_team(member.tournament_team)
 
     return Response({
@@ -3672,6 +3706,8 @@ def reject_player(request):
     member = get_object_or_404(TournamentTeamMember, id=member_id)
     member.status = "rejected"
     member.save(update_fields=["status"])
+
+    # Notifications.objects.create()
 
     return Response({
         "message": "Player rejected."
@@ -14298,9 +14334,9 @@ def edit_sponsor_details(request):
 #         "roster_size": len(rows)
 #     }, status=200)
 
-
 @api_view(["POST"])
 def edit_roster(request):
+
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
@@ -14316,7 +14352,6 @@ def edit_roster(request):
     # ---------------- INPUT ----------------
     event_id = request.data.get("event_id")
     team_id = request.data.get("team_id")
-
     roster_member_ids = _maybe_json_list(request.data.get("roster_member_ids"))
     sponsor_ids = _maybe_json(request.data.get("sponsor_ids"), default={})
 
@@ -14326,9 +14361,17 @@ def edit_roster(request):
     event = get_object_or_404(Event, event_id=event_id)
     team = get_object_or_404(Team, team_id=team_id)
 
+    # ---------------- REGISTRATION WINDOW ----------------
     if date.today() > event.registration_end_date:
         return Response({"message": "Registration closed. Cannot edit roster."}, status=403)
 
+    # ---------------- MATCH START CHECK ----------------
+    if Match.objects.filter(group__stage__event=event, result_inputted=True).exists():
+        return Response({
+            "message": "Roster cannot be edited after matches have started."
+        }, status=403)
+
+    # ---------------- PERMISSION ----------------
     if not _user_is_team_captain_or_owner(user, team):
         return Response({"message": "Only captain/owner can edit roster."}, status=403)
 
@@ -14343,7 +14386,7 @@ def edit_roster(request):
     else:
         min_size, max_size = 4, 6
 
-    roster_member_ids = list(dict.fromkeys(roster_member_ids))
+    roster_member_ids = list(dict.fromkeys(roster_member_ids or []))
 
     if not (min_size <= len(roster_member_ids) <= max_size):
         return Response({
@@ -14369,6 +14412,37 @@ def edit_roster(request):
             "message": "Some users do not exist.",
             "missing_user_ids": missing
         }, status=400)
+
+    # ---------------- SPONSOR VALIDATION ----------------
+    if event.is_sponsored:
+
+        sponsor_values = [
+            sponsor_ids.get(str(uid))
+            for uid in roster_member_ids
+            if sponsor_ids.get(str(uid))
+        ]
+
+        # duplicates inside request
+        if len(sponsor_values) != len(set(sponsor_values)):
+            return Response({
+                "message": "Duplicate sponsor IDs in roster."
+            }, status=400)
+
+        # duplicates already used in event
+        existing_ids = set(
+            TournamentTeamMember.objects.filter(
+                tournament_team__event=event,
+                user_id_from_sponsor__in=sponsor_values
+            ).exclude(tournament_team=tt).values_list(
+                "user_id_from_sponsor", flat=True
+            )
+        )
+
+        if existing_ids:
+            return Response({
+                "message": "Some sponsor IDs already exist in this event.",
+                "conflicting_ids": list(existing_ids)
+            }, status=409)
 
     # ---------------- EXISTING ROSTER ----------------
     existing_members = list(
@@ -14396,7 +14470,7 @@ def edit_roster(request):
 
                 member.delete()
 
-        # ---------------- UPDATE KEPT PLAYERS ----------------
+        # ---------------- UPDATE EXISTING PLAYERS ----------------
         for member in existing_members:
 
             if member.user_id in kept_ids:
@@ -14406,8 +14480,20 @@ def edit_roster(request):
                     sponsor_uid = sponsor_ids.get(str(member.user_id))
 
                 if sponsor_uid != member.user_id_from_sponsor:
+
+                    # ACTIVE players cannot change sponsor ID
+                    if member.status == "active":
+                        return Response({
+                            "message": f"Cannot change sponsor ID for confirmed player {member.user.username}"
+                        }, status=403)
+
                     member.user_id_from_sponsor = sponsor_uid
-                    member.save(update_fields=["user_id_from_sponsor"])
+
+                    # rejected → pending
+                    if member.status == "rejected":
+                        member.status = "pending"
+
+                    member.save(update_fields=["user_id_from_sponsor", "status"])
 
         # ---------------- ADD NEW PLAYERS ----------------
         new_rows = []
@@ -14437,6 +14523,146 @@ def edit_roster(request):
         "removed_players": list(removed_ids),
         "kept_players": list(kept_ids)
     }, status=200)
+
+
+# @api_view(["POST"])
+# def edit_roster(request):
+#     # ---------------- AUTH ----------------
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid token."}, status=400)
+
+#     user = validate_token(auth.split(" ")[1])
+#     if not user:
+#         return Response({"message": "Invalid session."}, status=401)
+
+#     if user.status != "active":
+#         return Response({"message": "Your account is not active."}, status=403)
+
+#     # ---------------- INPUT ----------------
+#     event_id = request.data.get("event_id")
+#     team_id = request.data.get("team_id")
+
+#     roster_member_ids = _maybe_json_list(request.data.get("roster_member_ids"))
+#     sponsor_ids = _maybe_json(request.data.get("sponsor_ids"), default={})
+
+#     if not event_id or not team_id:
+#         return Response({"message": "event_id and team_id required."}, status=400)
+
+#     event = get_object_or_404(Event, event_id=event_id)
+#     team = get_object_or_404(Team, team_id=team_id)
+
+#     if date.today() > event.registration_end_date:
+#         return Response({"message": "Registration closed. Cannot edit roster."}, status=403)
+
+#     if not _user_is_team_captain_or_owner(user, team):
+#         return Response({"message": "Only captain/owner can edit roster."}, status=403)
+
+#     tt = TournamentTeam.objects.filter(event=event, team=team).first()
+
+#     if not tt:
+#         return Response({"message": "Team not registered."}, status=404)
+
+#     # ---------------- ROSTER RULES ----------------
+#     if event.participant_type == "duo":
+#         min_size, max_size = 2, 2
+#     else:
+#         min_size, max_size = 4, 6
+
+#     roster_member_ids = list(dict.fromkeys(roster_member_ids))
+
+#     if not (min_size <= len(roster_member_ids) <= max_size):
+#         return Response({
+#             "message": f"Roster must contain {min_size}-{max_size} players."
+#         }, status=400)
+
+#     # ---------------- VALIDATE TEAM MEMBERS ----------------
+#     team_member_ids = set(
+#         TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
+#     )
+
+#     if not set(roster_member_ids).issubset(team_member_ids):
+#         return Response({"message": "Roster players must belong to team."}, status=400)
+
+#     # ---------------- LOAD USERS ----------------
+#     users = User.objects.filter(user_id__in=roster_member_ids)
+#     users_by_id = {u.user_id: u for u in users}
+
+#     missing = [uid for uid in roster_member_ids if uid not in users_by_id]
+
+#     if missing:
+#         return Response({
+#             "message": "Some users do not exist.",
+#             "missing_user_ids": missing
+#         }, status=400)
+
+#     # ---------------- EXISTING ROSTER ----------------
+#     existing_members = list(
+#         TournamentTeamMember.objects.filter(tournament_team=tt)
+#     )
+
+#     existing_ids = {m.user_id for m in existing_members}
+#     new_ids = set(roster_member_ids)
+
+#     removed_ids = existing_ids - new_ids
+#     added_ids = new_ids - existing_ids
+#     kept_ids = existing_ids & new_ids
+
+#     with transaction.atomic():
+
+#         # ---------------- REMOVE PLAYERS ----------------
+#         for member in existing_members:
+
+#             if member.user_id in removed_ids:
+
+#                 if member.status in ["active", "approved"]:
+#                     return Response({
+#                         "message": f"Cannot remove confirmed player {member.user.username}"
+#                     }, status=403)
+
+#                 member.delete()
+
+#         # ---------------- UPDATE KEPT PLAYERS ----------------
+#         for member in existing_members:
+
+#             if member.user_id in kept_ids:
+
+#                 sponsor_uid = None
+#                 if event.is_sponsored:
+#                     sponsor_uid = sponsor_ids.get(str(member.user_id))
+
+#                 if sponsor_uid != member.user_id_from_sponsor:
+#                     member.user_id_from_sponsor = sponsor_uid
+#                     member.save(update_fields=["user_id_from_sponsor"])
+
+#         # ---------------- ADD NEW PLAYERS ----------------
+#         new_rows = []
+
+#         for uid in added_ids:
+
+#             sponsor_uid = None
+#             if event.is_sponsored:
+#                 sponsor_uid = sponsor_ids.get(str(uid))
+
+#             new_rows.append(
+#                 TournamentTeamMember(
+#                     tournament_team=tt,
+#                     user=users_by_id[uid],
+#                     event=event,
+#                     user_id_from_sponsor=sponsor_uid,
+#                     status="pending" if event.is_sponsored else "active"
+#                 )
+#             )
+
+#         if new_rows:
+#             TournamentTeamMember.objects.bulk_create(new_rows)
+
+#     return Response({
+#         "message": "Roster updated successfully.",
+#         "added_players": list(added_ids),
+#         "removed_players": list(removed_ids),
+#         "kept_players": list(kept_ids)
+#     }, status=200)
 
 
 @api_view(["POST"])

@@ -1252,6 +1252,7 @@ def get_user_profile(request):
         "roles": list(UserRoles.objects.filter(user=user).values_list("role__role_name", flat=True)),
         "is_banned": BannedPlayer.objects.filter(banned_player=user, is_active=True).exists(),
         "discord_id": user.discord_id if hasattr(user, "discord_id") else None,
+        "discord_username": user.discord_username if hasattr(user, "discord_username") else None,
 
         "stats": {
             "total_kills": total_kills,
@@ -1284,14 +1285,23 @@ def get_user_profile(request):
 @api_view(["POST"])
 def send_verification_token(request):
     email = request.data.get("email")
+    uid = request.data.get("uid")
 
-    if not email:
-        return Response({"message": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not email or not uid:
+        return Response({"message": "Email or UID is required."}, status=status.HTTP_400_BAD_REQUEST)
+    
 
     try:
-        user = User.objects.get(email=email)
+        if email:
+            user = User.objects.get(email=email)
     except User.DoesNotExist:
         return Response({"message": "User with this email does not exist."}, status=status.HTTP_404_NOT_FOUND)
+    
+    try:
+        if uid:
+            user = User.objects.get(uid=uid)
+    except User.DoesNotExist:
+        return Response({"message": "User with this UID does not exist."}, status=status.HTTP_404_NOT_FOUND)
 
     # Generate a 6-digit token
     token = str(random.randint(100000, 999999))
@@ -1304,6 +1314,7 @@ def send_verification_token(request):
             'created_at': timezone.now()
         }
     )
+    email = user.email
 
     # Send email
     subject = "Your Password Reset Token"
