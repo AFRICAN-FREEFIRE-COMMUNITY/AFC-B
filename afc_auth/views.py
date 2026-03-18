@@ -2538,11 +2538,19 @@ def get_user_login_history(request):
     username = request.data.get("username")
     email = request.data.get("email")
 
-    if not username or not email:
-        return Response({"message": "Username and email are required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not username:
+        return Response({"message": "Username is required."}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        if username:
+            pass
+        elif not email:
+            return Response({"message": "Email is Required"})
 
     try:
-        user = User.objects.get(username=username, email=email)
+        if username:
+            user = User.objects.get(username=username)
+        if email:
+            user = User.objects.get(email=email)
     except User.DoesNotExist:
         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
