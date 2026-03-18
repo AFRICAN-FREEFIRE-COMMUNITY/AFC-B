@@ -16,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
 
-from .models import AdminHistory, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import AdminHistory, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -58,6 +58,7 @@ from django.db.models import Avg
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+from django.db import transaction
 
 from utils.ipinfo_lookup import lookup_ip
 
@@ -2106,6 +2107,48 @@ def connect_discord_account(request):
     )
 
     return redirect(discord_oauth_url)
+
+
+@api_view(["POST"])
+def disconnect_discord_account(request):
+
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+    # ---------------- CHECK ----------------
+    if not user.discord_connected:
+        return Response({
+            "message": "No Discord account connected."
+        }, status=400)
+
+    with transaction.atomic():
+
+        # ---------------- REMOVE ROLE ASSIGNMENTS ----------------
+        # Clean up any queued or assigned roles
+        DiscordRoleAssignment.objects.filter(user=user, status="pending").delete()
+
+        # ---------------- CLEAR DISCORD DATA ----------------
+        user.discord_id = None
+        user.discord_username = None
+        user.discord_avatar = None
+        user.discord_connected = False
+
+        user.save(update_fields=[
+            "discord_id",
+            "discord_username",
+            "discord_avatar",
+            "discord_connected"
+        ])
+
+    return Response({
+        "message": "Discord account disconnected successfully."
+    }, status=200)
 
 
 
