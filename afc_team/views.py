@@ -49,7 +49,7 @@ def create_team(request):
     team_name = request.data.get("team_name")
     team_logo = request.FILES.get("team_logo")
     team_description = request.data.get("team_description", "We Love Playing Free Fire")
-    country = request.data.get("country")
+    country = user.country
     join_settings = request.data.get("join_settings", "by_request")
     list_of_players_to_invite = request.data.getlist("list_of_players_to_invite", [])
     team_social_media_links = request.data.get("team_social_media_links", [])
@@ -57,8 +57,8 @@ def create_team(request):
         team_social_media_links = json.loads(team_social_media_links)
 
     # Validate required fields
-    if not team_name or not country:
-        return Response({"message": "Team name and country are required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not team_name:
+        return Response({"message": "Team name is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     if join_settings not in ["open", "by_request"]:
         return Response({"message": "Invalid join settings."}, status=status.HTTP_400_BAD_REQUEST)
