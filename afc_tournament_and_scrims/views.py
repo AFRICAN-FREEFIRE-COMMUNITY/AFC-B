@@ -3205,31 +3205,63 @@ def _user_is_team_captain_or_owner(user, team) -> bool:
         management_role__in=ALLOWED_REGISTER_ROLES
     ).exists()
 
+
 def _passes_event_country_restriction(event, country: str) -> bool:
-    """
-    Assumes:
-      event.registration_restriction: none/by_region/by_country
-      event.restriction_mode: allow_only/block_selected
-      event.restricted_countries: JSON list[str]
-    """
-    restriction = getattr(event, "registration_restriction", "none") or "none"
+    restriction = (event.registration_restriction or "none").lower()
+
     if restriction == "none":
         return True
 
-    mode = getattr(event, "restriction_mode", None)
-    allowed = set([c.strip().lower() for c in (getattr(event, "restricted_countries", []) or [])])
+    # normalize
     user_country = (country or "").strip().lower()
 
-    # if restrictions enabled and no country stored -> fail
     if not user_country:
-        return False
+        return False  # cannot verify → reject
 
+    restricted = set(
+        c.strip().lower()
+        for c in (event.restricted_countries or [])
+        if c
+    )
+
+    mode = (event.restriction_mode or "").lower()
+
+    # ---------------- ALLOW ONLY ----------------
     if mode == "allow_only":
-        return user_country in allowed
-    if mode == "block_selected":
-        return user_country not in allowed
+        return user_country in restricted
 
+    # ---------------- BLOCK SELECTED ----------------
+    if mode == "block_selected":
+        return user_country not in restricted
+
+    # fallback safety
     return False
+
+# def _passes_event_country_restriction(event, country: str) -> bool:
+#     """
+#     Assumes:
+#       event.registration_restriction: none/by_region/by_country
+#       event.restriction_mode: allow_only/block_selected
+#       event.restricted_countries: JSON list[str]
+#     """
+#     restriction = getattr(event, "registration_restriction", "none") or "none"
+#     if restriction == "none":
+#         return True
+
+#     mode = getattr(event, "restriction_mode", None)
+#     allowed = set([c.strip().lower() for c in (getattr(event, "restricted_countries", []) or [])])
+#     user_country = (country or "").strip().lower()
+
+#     # if restrictions enabled and no country stored -> fail
+#     if not user_country:
+#         return False
+
+#     if mode == "allow_only":
+#         return user_country in allowed
+#     if mode == "block_selected":
+#         return user_country not in allowed
+
+#     return False
 
 
 from collections import Counter
