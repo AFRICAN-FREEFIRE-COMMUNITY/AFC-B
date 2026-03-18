@@ -3512,18 +3512,26 @@ def register_for_event(request):
         if missing_ids:
             return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids}, status=400)
 
+
+        # check team country and then check the restrictions
         team_country = determine_team_country(roster_users, user)
 
-        # ✅ restriction enforcement for each roster member
-        restricted = []
-        for u in roster_users:
-            if not _passes_event_country_restriction(event, u.country):
-                restricted.append({"user_id": u.user_id, "username": u.username, "country": u.country})
-        if restricted:
+        if not _passes_event_country_restriction(event, team_country):
             return Response({
-                "message": "One or more roster players are not eligible for this event (country restriction).",
-                "restricted_players": restricted
+                "message": f"Your team is not eligible for this event based on country restriction.",
+                "team_country": team_country
             }, status=403)
+
+        # ✅ restriction enforcement for each roster member
+        # restricted = []
+        # for u in roster_users:
+        #     if not _passes_event_country_restriction(event, u.country):
+        #         restricted.append({"user_id": u.user_id, "username": u.username, "country": u.country})
+        # if restricted:
+        #     return Response({
+        #         "message": "One or more roster players are not eligible for this event (country restriction).",
+        #         "restricted_players": restricted
+        #     }, status=403)
 
         # Discord checks
         for u in roster_users:
@@ -14405,6 +14413,17 @@ def edit_roster(request):
     users = User.objects.filter(user_id__in=roster_member_ids)
     users_by_id = {u.user_id: u for u in users}
 
+    # ---------------- TEAM COUNTRY + RESTRICTION ----------------
+    roster_users = list(users_by_id.values())
+
+    team_country = determine_team_country(roster_users, user)
+
+    if not _passes_event_country_restriction(event, team_country):
+        return Response({
+            "message": "Your team is not eligible for this event based on country restriction.",
+            "team_country": team_country
+        }, status=403)
+
     missing = [uid for uid in roster_member_ids if uid not in users_by_id]
 
     if missing:
@@ -14516,6 +14535,8 @@ def edit_roster(request):
 
         if new_rows:
             TournamentTeamMember.objects.bulk_create(new_rows)
+        tt.country = team_country
+        tt.save(update_fields=["country"])
 
     return Response({
         "message": "Roster updated successfully.",
