@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_date
 
-from afc_auth.views import assign_discord_role, check_discord_membership, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
+from afc_auth.views import assign_discord_role, check_discord_membership, check_discord_membership_v3, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, EventInviteToken, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
@@ -1175,9 +1175,25 @@ def edit_event(request):
         event.is_public = is_public
 
     if "is_sponsored" in request.data:
+
         is_sponsored = request.data.get("is_sponsored")
+
+        # normalize to boolean
         if isinstance(is_sponsored, str):
             is_sponsored = is_sponsored.lower() in ("1", "true", "yes")
+        else:
+            is_sponsored = bool(is_sponsored)
+
+        # if turning OFF sponsorship → clean up
+        if not is_sponsored:
+            SponsorEvent.objects.filter(event=event).delete()
+
+            # optional but recommended cleanup
+            event.sponsor = None
+            event.sponsor_name = None
+            event.sponsor_field_label = None
+            event.sponsor_requirement_description = None
+
         event.is_sponsored = is_sponsored
 
     if "sponsor_usernames" in request.data:
@@ -4119,7 +4135,7 @@ def validate_team_roster_discord(request):
         # only check server membership if we have discord_id
         if has_discord:
             try:
-                in_server = bool(check_discord_membership(u.discord_id))
+                in_server = bool(check_discord_membership_v3(u.discord_id))
             except Exception as e:
                 # if your function can throw, don’t crash API — report it
                 membership_error = str(e)

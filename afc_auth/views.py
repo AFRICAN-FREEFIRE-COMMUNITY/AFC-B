@@ -2195,6 +2195,35 @@ def check_discord_membership_v2(request):
     return Response({"is_member": r.status_code == 200}, status=status.HTTP_200_OK)
 
 
+import requests
+
+def check_discord_membership_v3(discord_id):
+    try:
+        url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+        headers = {
+            "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
+        }
+
+        response = requests.get(url, headers=headers, timeout=5)
+
+        # ✅ Success
+        if response.status_code == 200:
+            return True
+
+        # ❌ Not in server
+        if response.status_code == 404:
+            return False
+
+        # ⚠️ Debug other cases
+        print("DISCORD CHECK ERROR:", response.status_code, response.text)
+
+        return False
+
+    except requests.exceptions.RequestException as e:
+        print("DISCORD REQUEST FAILED:", str(e))
+        return False
+
+
 @api_view(["POST"])
 def check_team_members_discord_membership(request):
     discord_ids = request.data.get("discord_ids", [])
