@@ -1290,8 +1290,11 @@ def send_verification_token(request):
     if not email:
         return Response({"message": "Email or UID is required."}, status=status.HTTP_400_BAD_REQUEST)
     
-    elif not uid:
-        return Response({"message": "UID is required."}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        if email:
+            pass
+        elif not uid:
+            return Response({"message": "UID is required."}, status=status.HTTP_400_BAD_REQUEST)
     
 
     try:
