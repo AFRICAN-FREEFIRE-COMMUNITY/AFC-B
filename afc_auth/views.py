@@ -1016,14 +1016,13 @@ def edit_profile(request):
 
     # Extract new profile details
     full_name = request.data.get("full_name")
-    country = request.data.get("country")
     in_game_name = request.data.get("in_game_name")
     email = request.data.get("email")
     uid = request.data.get("uid")
     profile_pic = request.FILES.get("profile_pic")
 
     # Validate required fields
-    if not all([full_name, country, in_game_name, email, uid]):
+    if not all([full_name, in_game_name, email, uid]):
         return Response({"message": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     # Check for uniqueness conflicts
@@ -1038,7 +1037,6 @@ def edit_profile(request):
 
     # Update User fields
     user.full_name = full_name
-    user.country = country
     user.username = in_game_name
     user.email = email
     user.uid = uid
