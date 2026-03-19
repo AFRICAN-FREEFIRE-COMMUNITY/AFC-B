@@ -2197,31 +2197,58 @@ def check_discord_membership_v2(request):
 
 import requests
 
+# def check_discord_membership_v3(discord_id):
+#     try:
+#         url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+#         headers = {
+#             "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
+#         }
+
+#         response = requests.get(url, headers=headers, timeout=5)
+
+#         # ✅ Success
+#         if response.status_code == 200:
+#             return True
+
+#         # ❌ Not in server
+#         if response.status_code == 404:
+#             return False
+
+#         # ⚠️ Debug other cases
+#         print("DISCORD CHECK ERROR:", response.status_code, response.text)
+
+#         return False
+
+#     except requests.exceptions.RequestException as e:
+#         print("DISCORD REQUEST FAILED:", str(e))
+#         return False
+
 def check_discord_membership_v3(discord_id):
-    try:
-        url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
-        headers = {
-            "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
-        }
+    headers = {
+        "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
+    }
 
-        response = requests.get(url, headers=headers, timeout=5)
+    # -------- PRIMARY CHECK --------
+    url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+    r = requests.get(url, headers=headers, timeout=5)
 
-        # ✅ Success
-        if response.status_code == 200:
+    if r.status_code == 200:
+        return True
+
+    # -------- FALLBACK: SEARCH --------
+    # this fixes the "user exists but not cached" issue
+    search_url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/search?query={discord_id}&limit=1"
+    r2 = requests.get(search_url, headers=headers, timeout=5)
+
+    if r2.status_code == 200:
+        data = r2.json()
+        if any(str(member["user"]["id"]) == str(discord_id) for member in data):
             return True
 
-        # ❌ Not in server
-        if response.status_code == 404:
-            return False
+    # -------- DEBUG --------
+    print("DISCORD CHECK FAIL:", discord_id, r.status_code, r.text)
 
-        # ⚠️ Debug other cases
-        print("DISCORD CHECK ERROR:", response.status_code, response.text)
-
-        return False
-
-    except requests.exceptions.RequestException as e:
-        print("DISCORD REQUEST FAILED:", str(e))
-        return False
+    return False
 
 
 @api_view(["POST"])
