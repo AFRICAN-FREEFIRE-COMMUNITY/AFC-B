@@ -3840,18 +3840,24 @@ def check_and_activate_team(tournament_team):
         ).update(status="registered")
 
         # ---------------- ASSIGN DISCORD ROLES ----------------
+        # assignments = DiscordRoleAssignment.objects.filter(
+        #     user__in=tournament_team.members.values_list("user", flat=True),
+        #     stage__event=tournament_team.event,
+        #     status="pending"
+        # )
+
         assignments = DiscordRoleAssignment.objects.filter(
             user__in=tournament_team.members.values_list("user", flat=True),
             stage__event=tournament_team.event,
             status="pending"
-        )
+        ).update(status="queued")
 
         for a in assignments:
             a.status = "processing"  # optional but good practice
             a.save(update_fields=["status"])
 
             # 🔥 CALL YOUR DISCORD ROLE FUNCTION HERE
-            assign_discord_role_v7(a.discord_id, a.role_id)
+            assign_discord_role_v7.delay(a.discord_id, a.role_id)
 
             a.status = "completed"
             a.save(update_fields=["status"])
