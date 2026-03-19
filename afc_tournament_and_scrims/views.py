@@ -2,6 +2,7 @@ from datetime import date
 import json
 
 from celery import shared_task
+import requests
 from afc import settings
 from django.shortcuts import get_object_or_404, render
 from rest_framework.decorators import api_view
@@ -3718,7 +3719,7 @@ def register_for_event(request):
                             user=u,
                             discord_id=u.discord_id,
                             role_id=role_id,
-                            stage=None,
+                            stage=role_id_stage,
                             group=None,
                             status="pending"
                         )
@@ -3795,12 +3796,41 @@ def get_all_competitors_and_their_sponsor_id(request):
     }, status=200)
     
 
+# def check_and_activate_team(tournament_team):
+
+#     total = tournament_team.members.count()
+#     confirmed = tournament_team.members.filter(status="active").count()
+
+#     if total == confirmed:
+#         tournament_team.status = "active"
+#         tournament_team.save(update_fields=["status"])
+
+#         RegisteredCompetitors.objects.filter(
+#             event=tournament_team.event,
+#             team=tournament_team.team
+#         ).update(status="registered")
+
+def assign_discord_role_v7(discord_id, role_id):
+    url = f"https://discord.com/api/guilds/{settings.DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
+    
+    headers = {
+        "Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}"
+    }
+
+    r = requests.put(url, headers=headers)
+
+    if r.status_code not in [204]:
+        print("Failed to assign role:", discord_id, role_id, r.text)
+
+
 def check_and_activate_team(tournament_team):
 
     total = tournament_team.members.count()
     confirmed = tournament_team.members.filter(status="active").count()
 
     if total == confirmed:
+
+        # ---------------- ACTIVATE TEAM ----------------
         tournament_team.status = "active"
         tournament_team.save(update_fields=["status"])
 
@@ -3809,6 +3839,22 @@ def check_and_activate_team(tournament_team):
             team=tournament_team.team
         ).update(status="registered")
 
+        # ---------------- ASSIGN DISCORD ROLES ----------------
+        assignments = DiscordRoleAssignment.objects.filter(
+            user__in=tournament_team.members.values_list("user", flat=True),
+            stage__event=tournament_team.event,
+            status="pending"
+        )
+
+        for a in assignments:
+            a.status = "processing"  # optional but good practice
+            a.save(update_fields=["status"])
+
+            # 🔥 CALL YOUR DISCORD ROLE FUNCTION HERE
+            assign_discord_role_v7(a.discord_id, a.role_id)
+
+            a.status = "completed"
+            a.save(update_fields=["status"])
 
 
 # import json
