@@ -3267,6 +3267,26 @@ def _passes_event_country_restriction(event, country: str) -> bool:
 
 from collections import Counter
 
+import pycountry
+
+def normalize_country(country):
+    if not country:
+        return ""
+
+    country = country.strip()
+
+    try:
+        # Try alpha_2 (NG)
+        return pycountry.countries.get(alpha_2=country.upper()).name.lower()
+    except:
+        pass
+
+    try:
+        # Try name
+        return pycountry.countries.lookup(country).name.lower()
+    except:
+        return country.lower()
+
 def determine_team_country(roster_users, team_owner):
 
     countries = [
