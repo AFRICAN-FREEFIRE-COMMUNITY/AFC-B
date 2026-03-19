@@ -3709,7 +3709,7 @@ def register_for_event(request):
 
             # Queue discord roles
             # role_id = getattr(settings, "DISCORD_TOURNAMENT_TEAM_ROLE_ID", None)
-            role_id_stage= Stages.objects.get(event=event).first()
+            role_id_stage= Stages.objects.filter(event=event).first()
             role_id = role_id_stage.stage_discord_role_id
             if role_id:
                 DiscordRoleAssignment.objects.bulk_create(
