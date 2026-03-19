@@ -3683,6 +3683,37 @@ def register_for_event(request):
                         ],
                         ignore_conflicts=True
                     )
+                
+                # ---------------- AUTO ASSIGN ROLES FOR NON-SPONSORED ----------------
+                if not event.is_sponsored:
+
+                    stage = role_id_stage
+
+                    user_ids = [u.user_id for u in roster_users]
+
+                    assignments_qs = DiscordRoleAssignment.objects.filter(
+                        stage=stage,
+                        group__isnull=True,
+                        status="pending",
+                        user_id__in=user_ids
+                    )
+
+                    total = assignments_qs.count()
+
+                    if total > 0:
+                        progress = DiscordStageRoleAssignmentProgress.objects.create(
+                            stage=stage,
+                            total=total,
+                            completed=0,
+                            failed=0,
+                            status="running"
+                        )
+
+                        assign_stage_roles_for_team_task.delay(
+                            progress.id,
+                            stage.stage_id,
+                            user_ids
+                        )
 
                 return Response({
                     "message": "Event is full. Team added to waitlist.",
