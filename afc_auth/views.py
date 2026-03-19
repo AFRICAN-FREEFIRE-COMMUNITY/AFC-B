@@ -2238,7 +2238,7 @@ def check_discord_membership_v3(discord_id):
     # -------- FALLBACK: SEARCH --------
     # this fixes the "user exists but not cached" issue
     search_url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/search?query={discord_id}&limit=1"
-    r2 = requests.get(search_url, headers=headers, timeout=5)
+    r2 = requests.get(search_url, headers=headers, timeout=10)
 
     if r2.status_code == 200:
         data = r2.json()
