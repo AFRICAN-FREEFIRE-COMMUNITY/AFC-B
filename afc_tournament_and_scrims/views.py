@@ -3268,22 +3268,49 @@ def _passes_event_country_restriction(event, country: str) -> bool:
 from collections import Counter
 
 def determine_team_country(roster_users, team_owner):
-    countries = [u.country for u in roster_users if u.country]
 
+    countries = [
+        u.country.strip().lower()
+        for u in roster_users
+        if u.country and u.country.strip()
+    ]
+
+    owner_country = (team_owner.country or "").strip().lower()
+
+    # no valid player country → fallback
     if not countries:
-        return team_owner.country
+        return owner_country
 
     counts = Counter(countries)
     most_common = counts.most_common()
 
+    # only one country
     if len(most_common) == 1:
         return most_common[0][0]
 
     # tie
     if most_common[0][1] == most_common[1][1]:
-        return team_owner.country
+        return owner_country
 
     return most_common[0][0]
+
+# def determine_team_country(roster_users, team_owner):
+#     countries = [u.country for u in roster_users if u.country]
+
+#     if not countries:
+#         return team_owner.country
+
+#     counts = Counter(countries)
+#     most_common = counts.most_common()
+
+#     if len(most_common) == 1:
+#         return most_common[0][0]
+
+#     # tie
+#     if most_common[0][1] == most_common[1][1]:
+#         return team_owner.country
+
+#     return most_common[0][0]
 
 
 @api_view(["POST"])
