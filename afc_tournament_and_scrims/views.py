@@ -3587,7 +3587,7 @@ def register_for_event(request):
                 return Response({"message": f"{u.username} is not active."}, status=403)
             if not u.discord_connected or not u.discord_id:
                 return Response({"message": f"{u.username} has not connected Discord."}, status=403)
-            if not check_discord_membership(u.discord_id):
+            if not check_discord_membership_v3(u.discord_id):
                 return Response({"message": f"{u.username} has not joined the Discord server."}, status=403)
 
         
