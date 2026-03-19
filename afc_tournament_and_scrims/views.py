@@ -13269,7 +13269,7 @@ def leave_event(request):
                 return Response({"message": "You are not part of any team in this event."}, status=400)
 
             # 🔐 Only captain (registered_by) can leave
-            if tournament_team.registered_by != user:
+            if tournament_team.team.team_owner != user:
                 return Response({
                     "message": "Only the team captain can leave the event."
                 }, status=403)
