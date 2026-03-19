@@ -3594,7 +3594,7 @@ def register_for_event(request):
 
         if not _passes_event_country_restriction(event, team_country):
             return Response({
-                "message": f"Your team is not eligible for this event based on country restriction.",
+                "message": f"Your team is not eligible for this event based on country restriction. Team Country({team_country})",
                 "team_country": team_country
             }, status=403)
 
