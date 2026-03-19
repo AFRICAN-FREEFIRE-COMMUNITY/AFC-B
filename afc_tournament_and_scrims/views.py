@@ -3207,20 +3207,53 @@ def _user_is_team_captain_or_owner(user, team) -> bool:
     ).exists()
 
 
+# def _passes_event_country_restriction(event, country: str) -> bool:
+#     restriction = (event.registration_restriction or "none").lower()
+
+#     if restriction == "none":
+#         return True
+
+#     # normalize
+#     user_country = (country or "").strip().lower()
+
+#     if not user_country:
+#         return False  # cannot verify → reject
+
+#     restricted = set(
+#         c.strip().lower()
+#         for c in (event.restricted_countries or [])
+#         if c
+#     )
+
+#     mode = (event.restriction_mode or "").lower()
+
+#     # ---------------- ALLOW ONLY ----------------
+#     if mode == "allow_only":
+#         return user_country in restricted
+
+#     # ---------------- BLOCK SELECTED ----------------
+#     if mode == "block_selected":
+#         return user_country not in restricted
+
+#     # fallback safety
+#     return False
+
 def _passes_event_country_restriction(event, country: str) -> bool:
+
     restriction = (event.registration_restriction or "none").lower()
 
     if restriction == "none":
         return True
 
-    # normalize
-    user_country = (country or "").strip().lower()
+    # normalize user country
+    user_country = normalize_country(country)
 
     if not user_country:
-        return False  # cannot verify → reject
+        return False
 
+    # normalize restricted countries
     restricted = set(
-        c.strip().lower()
+        normalize_country(c)
         for c in (event.restricted_countries or [])
         if c
     )
@@ -3235,7 +3268,6 @@ def _passes_event_country_restriction(event, country: str) -> bool:
     if mode == "block_selected":
         return user_country not in restricted
 
-    # fallback safety
     return False
 
 # def _passes_event_country_restriction(event, country: str) -> bool:
@@ -3269,22 +3301,23 @@ from collections import Counter
 
 import pycountry
 
+import pycountry
+
 def normalize_country(country):
     if not country:
         return ""
 
     country = country.strip()
 
-    try:
-        # Try alpha_2 (NG)
-        return pycountry.countries.get(alpha_2=country.upper()).name.lower()
-    except:
-        pass
+    # -------- TRY ISO CODE (NG, US, GB) --------
+    c = pycountry.countries.get(alpha_2=country.upper())
+    if c:
+        return c.name.lower()
 
+    # -------- TRY FULL NAME / FUZZY --------
     try:
-        # Try name
         return pycountry.countries.lookup(country).name.lower()
-    except:
+    except LookupError:
         return country.lower()
 
 def determine_team_country(roster_users, team_owner):
@@ -15072,4 +15105,8 @@ def get_roster_details(request):
         "team_id": team.team_id,
         "team_name": team.team_name,
         "roster": roster
-    }, status=200) 
+    }, status=200)
+
+
+# @api_view(["POST"])
+# def kick_team_from_event(request):
