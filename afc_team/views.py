@@ -1275,7 +1275,7 @@ def manage_team_roster(request):
                 continue
 
             # Prevent owner from demoting themselves unless allowed
-            if tm.member == user and new_m_role and new_m_role != "team_owner":
+            if tm.member == user and new_m_role and new_m_role != tm.management_role:
                 results.append({
                     "member_id": member_id,
                     "status": "failed",
