@@ -2223,32 +2223,66 @@ import requests
 #         print("DISCORD REQUEST FAILED:", str(e))
 #         return False
 
+
+import time
+
 def check_discord_membership_v3(discord_id):
     headers = {
         "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
     }
 
-    # -------- PRIMARY CHECK --------
-    url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
-    r = requests.get(url, headers=headers, timeout=5)
+    discord_id = str(discord_id)
 
-    if r.status_code == 200:
-        return True
+    for attempt in range(2):  # 🔥 retry once
 
-    # -------- FALLBACK: SEARCH --------
-    # this fixes the "user exists but not cached" issue
-    search_url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/search?query={discord_id}&limit=1"
-    r2 = requests.get(search_url, headers=headers, timeout=10)
+        # -------- PRIMARY --------
+        url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+        r = requests.get(url, headers=headers, timeout=5)
 
-    if r2.status_code == 200:
-        data = r2.json()
-        if any(str(member["user"]["id"]) == str(discord_id) for member in data):
+        if r.status_code == 200:
             return True
 
-    # -------- DEBUG --------
-    print("DISCORD CHECK FAIL:", discord_id, r.status_code, r.text)
+        # -------- SEARCH --------
+        search_url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/search?query={discord_id}&limit=1"
+        r2 = requests.get(search_url, headers=headers, timeout=5)
 
+        if r2.status_code == 200:
+            data = r2.json()
+            if any(str(m["user"]["id"]) == discord_id for m in data):
+                return True
+
+        # -------- RETRY DELAY --------
+        time.sleep(0.3)  # 🔥 tiny delay
+
+    print("DISCORD CHECK FAIL:", discord_id)
     return False
+
+# def check_discord_membership_v3(discord_id):
+#     headers = {
+#         "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
+#     }
+
+#     # -------- PRIMARY CHECK --------
+#     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+#     r = requests.get(url, headers=headers, timeout=5)
+
+#     if r.status_code == 200:
+#         return True
+
+#     # -------- FALLBACK: SEARCH --------
+#     # this fixes the "user exists but not cached" issue
+#     search_url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/search?query={discord_id}&limit=1"
+#     r2 = requests.get(search_url, headers=headers, timeout=5)
+
+#     if r2.status_code == 200:
+#         data = r2.json()
+#         if any(str(member["user"]["id"]) == str(discord_id) for member in data):
+#             return True
+
+#     # -------- DEBUG --------
+#     print("DISCORD CHECK FAIL:", discord_id, r.status_code, r.text)
+
+#     return False
 
 # 1447745369403297955
 
