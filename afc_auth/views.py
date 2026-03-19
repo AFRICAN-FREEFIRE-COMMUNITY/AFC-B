@@ -2250,6 +2250,7 @@ def check_discord_membership_v3(discord_id):
 
     return False
 
+# 1447745369403297955
 
 @api_view(["POST"])
 def check_team_members_discord_membership(request):

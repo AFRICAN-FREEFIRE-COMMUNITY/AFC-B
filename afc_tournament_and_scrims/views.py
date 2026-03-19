@@ -4157,24 +4157,30 @@ def validate_team_roster_discord(request):
     results = []
     all_ok = True
 
+    checked = {}
+
     for uid in roster_member_ids:
         u = by_id[uid]
 
         is_active = (u.status == "active")
         has_discord = bool(u.discord_connected and u.discord_id)
 
-        in_server = False
         membership_error = None
 
-        # only check server membership if we have discord_id
+        in_server = False
+
         if has_discord:
             try:
-                in_server = bool(check_discord_membership_v3(u.discord_id))
+                discord_id = str(u.discord_id)
+
+                if discord_id not in checked:
+                    checked[discord_id] = check_discord_membership_v3(str(discord_id))
+
+                in_server = checked[discord_id]
+
             except Exception as e:
-                # if your function can throw, don’t crash API — report it
                 membership_error = str(e)
                 in_server = False
-
         ok = is_active and has_discord and in_server and (membership_error is None)
 
         if not ok:
