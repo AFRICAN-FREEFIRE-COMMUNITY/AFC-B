@@ -3045,7 +3045,7 @@ def get_event_details_not_logged_in(request):
             "tournament_team_id": tt.tournament_team_id,
             "team_id": tt.team.team_id,
             "team_name": tt.team.team_name,
-            "members": [{"player_id": m.user.id, "username": m.user.username} for m in tt.members.all()]
+            "members": [{"player_id": m.user.user_id, "username": m.user.username} for m in tt.members.all()]
         })
     event_data["tournament_teams"] = tournament_teams_list
 
