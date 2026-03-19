@@ -2252,16 +2252,78 @@ def check_discord_membership_v3(discord_id):
 
 # 1447745369403297955
 
+# @api_view(["POST"])
+# def check_team_members_discord_membership(request):
+#     discord_ids = request.data.get("discord_ids", [])
+#     results = {}
+#     for discord_id in discord_ids:
+#         url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+#         headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+#         r = requests.get(url, headers=headers)
+#         results[discord_id] = (r.status_code == 200)
+#     return Response({"membership": results}, status=status.HTTP_200_OK)
+
+
 @api_view(["POST"])
 def check_team_members_discord_membership(request):
     discord_ids = request.data.get("discord_ids", [])
+
+    if not isinstance(discord_ids, list) or not discord_ids:
+        return Response({"message": "discord_ids must be a non-empty list"}, status=400)
+
+    headers = {
+        "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
+    }
+
     results = {}
-    for discord_id in discord_ids:
-        url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
-        headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
-        r = requests.get(url, headers=headers)
-        results[discord_id] = (r.status_code == 200)
-    return Response({"membership": results}, status=status.HTTP_200_OK)
+    checked = {}
+
+    for raw_id in discord_ids:
+        discord_id = str(raw_id)
+
+        # -------- CACHE --------
+        if discord_id in checked:
+            results[discord_id] = checked[discord_id]
+            continue
+
+        in_server = False
+
+        try:
+            # -------- PRIMARY CHECK --------
+            url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}"
+            r = requests.get(url, headers=headers, timeout=5)
+
+            if r.status_code == 200:
+                in_server = True
+
+            # -------- FALLBACK SEARCH --------
+            elif r.status_code == 404:
+                search_url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/search?query={discord_id}&limit=1"
+                r2 = requests.get(search_url, headers=headers, timeout=5)
+
+                if r2.status_code == 200:
+                    data = r2.json()
+                    if any(str(m["user"]["id"]) == discord_id for m in data):
+                        in_server = True
+
+            # -------- RATE LIMIT HANDLING --------
+            elif r.status_code == 429:
+                retry_after = r.json().get("retry_after", 1)
+                time.sleep(retry_after)
+
+                # retry once
+                r_retry = requests.get(url, headers=headers, timeout=5)
+                in_server = (r_retry.status_code == 200)
+
+        except Exception as e:
+            print("Discord check error:", discord_id, str(e))
+            in_server = False
+
+        checked[discord_id] = in_server
+        results[discord_id] = in_server
+
+    return Response({"membership": results}, status=200)
+
 
 # def assign_discord_role(discord_id, role_id):
 #     url = f"https://discord.com/api/guilds/{DISCORD_GUILD_ID}/members/{discord_id}/roles/{role_id}"
