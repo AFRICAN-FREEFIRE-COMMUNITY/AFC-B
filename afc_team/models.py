@@ -42,7 +42,6 @@ class TeamSocialMediaLinks(models.Model):
 
 class TeamMembers(models.Model):
     MANAGEMENT_ROLE_CHOICES = [
-        ('team_owner', 'Team Owner'),
         ('team_captain', 'Team Captain'),
         ('vice_captain', 'Vice Captain'),
         ('member', 'Member'),

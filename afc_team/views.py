@@ -79,7 +79,7 @@ def create_team(request):
     )
 
     # Add team creator as owner
-    TeamMembers.objects.create(team=team, member=user, management_role='team_owner', in_game_role='rusher')
+    TeamMembers.objects.create(team=team, member=user, management_role='team_captain')
 
     # Process invites
     invited_players = []
@@ -236,8 +236,8 @@ def review_invitation(request):
                 return Response({'message': 'You are already a member of a team.'}, status=status.HTTP_400_BAD_REQUEST)
 
             
-            # Ensure the team is not up to 6 players yet
-            if TeamMembers.objects.filter(team=invite.team).count() >= 6:
+            # Ensure the team is not up to 8 players yet
+            if TeamMembers.objects.filter(team=invite.team).count() >= 8:
                 return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
 
             # Add the user to the team
@@ -480,7 +480,7 @@ def transfer_ownership(request):
         TeamMembers.objects.filter(team=team, member=current_owner).update(management_role="member")
 
         # 2. New owner -> team_owner
-        new_owner_member.management_role = "team_owner"
+        # new_owner_member.management_role = "tea"
         new_owner_member.save()
 
         # Transfer ownership
@@ -568,8 +568,8 @@ def send_join_request(request):
         if JoinRequest.objects.filter(requester=requester, team=team, status_of_request="unattended_to").exists():
             return Response({"message": "You already have a pending join request for this team."}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Ensure the team is not up to 6 players yet
-        if TeamMembers.objects.filter(team=team).count() >= 6:
+        # Ensure the team is not up to 8 players yet
+        if TeamMembers.objects.filter(team=team).count() >= 8:
             return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create a join request
@@ -639,8 +639,8 @@ def review_join_request(request):
             if TeamMembers.objects.filter(member=join_request.requester).exists():
                 return Response({"message": "User is already a member of a team."}, status=status.HTTP_400_BAD_REQUEST)
             
-            # Ensure the team is not up to 6 players yet
-            if TeamMembers.objects.filter(team=team).count() >= 6:
+            # Ensure the team is not up to 8 players yet
+            if TeamMembers.objects.filter(team=team).count() >= 8:
                 return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
 
             # Add the user to the team
@@ -1166,8 +1166,8 @@ def respond_invite(request, invite_id):
         # Only add if not already in the team
         if not TeamMembers.objects.filter(team=invite.team, member=user).exists():
 
-            # Ensure the team is not up to 6 players yet
-            if TeamMembers.objects.filter(team=invite.team).count() >= 6:
+            # Ensure the team is not up to 8 players yet
+            if TeamMembers.objects.filter(team=invite.team).count() >= 8:
                 return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
             TeamMembers.objects.create(
                 team=invite.team,
@@ -1250,6 +1250,14 @@ def manage_team_roster(request):
         valid_i_roles = [choice[0] for choice in TeamMembers.IN_GAME_ROLE_CHOICES]
 
         results = []
+        # count current in-game roles
+        existing_in_game_count = TeamMembers.objects.filter(
+            team=team,
+            in_game_role__isnull=False
+        ).count()
+
+        MAX_IN_GAME = 6
+        ALLOWED_IG_ROLES = {"team_captain", "vice_captain", "member"}
 
         for data in updates:
             member_id = data.get("member_id")
@@ -1288,6 +1296,29 @@ def manage_team_roster(request):
 
             # Validate in-game role
             if new_i_role:
+
+                # ❌ only certain management roles allowed
+                if tm.management_role not in ALLOWED_IG_ROLES:
+                    results.append({
+                        "member_id": member_id,
+                        "status": "failed",
+                        "reason": "Only players (captain, vice captain, member) can have in-game roles"
+                    })
+                    continue
+
+                # ❌ max 6 players rule
+                if not tm.in_game_role:  # only count NEW assignments
+                    if existing_in_game_count >= MAX_IN_GAME:
+                        results.append({
+                            "member_id": member_id,
+                            "status": "failed",
+                            "reason": "Maximum of 6 players can have in-game roles"
+                        })
+                        continue
+
+                    existing_in_game_count += 1  # increment since we’re adding
+
+                # validate role
                 if new_i_role not in valid_i_roles:
                     results.append({
                         "member_id": member_id,
@@ -1295,6 +1326,7 @@ def manage_team_roster(request):
                         "reason": "Invalid in_game_role"
                     })
                     continue
+
                 tm.in_game_role = new_i_role
 
             tm.save()
