@@ -3182,7 +3182,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.conf import settings
 
-ALLOWED_REGISTER_ROLES = ["team_owner", "team_captain", "vice_captain"]
+ALLOWED_REGISTER_ROLES = ["team_captain", "vice_captain"]
 
 def _maybe_json_list(val):
     if val is None:
@@ -3197,9 +3197,22 @@ def _maybe_json_list(val):
             return []
     return []
 
+# def _user_is_team_captain_or_owner(user, team) -> bool:
+#     if user.user_id == team.team_owner_id:
+#         return True
+#     return TeamMembers.objects.filter(
+#         team=team,
+#         member=user,
+#         management_role__in=ALLOWED_REGISTER_ROLES
+#     ).exists()
+
 def _user_is_team_captain_or_owner(user, team) -> bool:
-    if user.user_id == team.team_owner_id:
+
+    # ✅ Check owner from Team model
+    if user == team.team_owner:
         return True
+
+    # ✅ Check captain / vice captain from TeamMembers
     return TeamMembers.objects.filter(
         team=team,
         member=user,
