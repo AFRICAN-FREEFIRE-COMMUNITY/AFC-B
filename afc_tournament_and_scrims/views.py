@@ -3850,6 +3850,112 @@ def assign_discord_role_v7(discord_id, role_id):
         print("Failed to assign role:", discord_id, role_id, r.text)
 
 
+@shared_task(bind=True, max_retries=50)
+def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batch_size=10):
+
+    progress = DiscordStageRoleAssignmentProgress.objects.get(id=progress_id)
+    stage = Stages.objects.get(stage_id=stage_id)
+
+    if progress.status != "running":
+        return
+
+    # ---------------- CLAIM BATCH ----------------
+    with transaction.atomic():
+        qs = (
+            DiscordRoleAssignment.objects
+            .select_for_update(skip_locked=True)
+            .filter(
+                stage=stage,
+                group__isnull=True,
+                status="pending",
+                user_id__in=user_ids   # 🔥 IMPORTANT
+            )
+            .order_by("created_at")[:batch_size]
+        )
+
+        assignments = list(qs)
+
+        if not assignments:
+            progress.refresh_from_db()
+            if progress.completed + progress.failed >= progress.total:
+                progress.status = "done"
+                progress.save(update_fields=["status"])
+            return
+
+        DiscordRoleAssignment.objects.filter(
+            id__in=[a.id for a in assignments]
+        ).update(status="processing")
+
+    # ---------------- PROCESS ----------------
+    processed_ids = []
+
+    try:
+        for idx, a in enumerate(assignments):
+
+            r = assign_discord_role(a.discord_id, a.role_id)
+
+            # -------- RATE LIMIT --------
+            if r.status_code == 429:
+                retry_after = 2.0
+                try:
+                    retry_after = float(r.json().get("retry_after", 2))
+                except Exception:
+                    pass
+
+                remaining_ids = [x.id for x in assignments[idx:]]
+
+                DiscordRoleAssignment.objects.filter(
+                    id__in=remaining_ids
+                ).update(
+                    status="pending",
+                    error_message="429 rate limited"
+                )
+
+                raise self.retry(countdown=retry_after)
+
+            # -------- SUCCESS --------
+            if r.status_code in (200, 204):
+                DiscordRoleAssignment.objects.filter(id=a.id).update(
+                    status="success",
+                    error_message=None
+                )
+
+                DiscordStageRoleAssignmentProgress.objects.filter(
+                    id=progress_id
+                ).update(completed=F("completed") + 1)
+
+            # -------- FAILURE --------
+            else:
+                DiscordRoleAssignment.objects.filter(id=a.id).update(
+                    status="failed",
+                    error_message=f"{r.status_code} {r.text[:200]}"
+                )
+
+                DiscordStageRoleAssignmentProgress.objects.filter(
+                    id=progress_id
+                ).update(failed=F("failed") + 1)
+
+            processed_ids.append(a.id)
+
+    finally:
+        # 🔥 safety reset
+        stuck = [a.id for a in assignments if a.id not in processed_ids]
+        if stuck:
+            DiscordRoleAssignment.objects.filter(
+                id__in=stuck,
+                status="processing"
+            ).update(
+                status="pending",
+                error_message="reset after crash"
+            )
+
+    # ---------------- NEXT BATCH ----------------
+    assign_stage_roles_for_team_task.apply_async(
+        args=[progress_id, stage_id, user_ids, batch_size],
+        countdown=1
+    )
+
+
 def check_and_activate_team(tournament_team):
 
     total = tournament_team.members.count()
@@ -3866,28 +3972,81 @@ def check_and_activate_team(tournament_team):
             team=tournament_team.team
         ).update(status="registered")
 
-        # ---------------- ASSIGN DISCORD ROLES ----------------
-        # assignments = DiscordRoleAssignment.objects.filter(
-        #     user__in=tournament_team.members.values_list("user", flat=True),
-        #     stage__event=tournament_team.event,
-        #     status="pending"
-        # )
+        # ---------------- PREPARE ROLE ASSIGNMENT ----------------
+        stage = Stages.objects.filter(event=tournament_team.event).first()
 
-        assignments = DiscordRoleAssignment.objects.filter(
-            user__in=tournament_team.members.values_list("user", flat=True),
-            stage__event=tournament_team.event,
-            status="pending"
+        if not stage:
+            return
+
+        user_ids = list(
+            tournament_team.members.values_list("user_id", flat=True)
         )
 
-        for a in assignments:
-            a.status = "processing"  # optional but good practice
-            a.save(update_fields=["status"])
+        assignments_qs = DiscordRoleAssignment.objects.filter(
+            stage=stage,
+            group__isnull=True,
+            status="pending",
+            user_id__in=user_ids
+        )
 
-            # 🔥 CALL YOUR DISCORD ROLE FUNCTION HERE
-            assign_discord_role_v7.delay(a.discord_id, a.role_id)
+        total = assignments_qs.count()
 
-            a.status = "completed"
-            a.save(update_fields=["status"])
+        if total == 0:
+            return
+
+        progress = DiscordStageRoleAssignmentProgress.objects.create(
+            stage=stage,
+            total=total,
+            completed=0,
+            failed=0,
+            status="running"
+        )
+
+        # 🔥 TRIGGER CELERY
+        assign_stage_roles_for_team_task.delay(
+            progress.id,
+            stage.stage_id,
+            user_ids
+        )
+
+# def check_and_activate_team(tournament_team):
+
+#     total = tournament_team.members.count()
+#     confirmed = tournament_team.members.filter(status="active").count()
+
+#     if total == confirmed:
+
+#         # ---------------- ACTIVATE TEAM ----------------
+#         tournament_team.status = "active"
+#         tournament_team.save(update_fields=["status"])
+
+#         RegisteredCompetitors.objects.filter(
+#             event=tournament_team.event,
+#             team=tournament_team.team
+#         ).update(status="registered")
+
+#         # ---------------- ASSIGN DISCORD ROLES ----------------
+#         # assignments = DiscordRoleAssignment.objects.filter(
+#         #     user__in=tournament_team.members.values_list("user", flat=True),
+#         #     stage__event=tournament_team.event,
+#         #     status="pending"
+#         # )
+
+#         assignments = DiscordRoleAssignment.objects.filter(
+#             user__in=tournament_team.members.values_list("user", flat=True),
+#             stage__event=tournament_team.event,
+#             status="pending"
+#         )
+
+#         for a in assignments:
+#             a.status = "processing"  # optional but good practice
+#             a.save(update_fields=["status"])
+
+#             # 🔥 CALL YOUR DISCORD ROLE FUNCTION HERE
+#             assign_discord_role_v7.delay(a.discord_id, a.role_id)
+
+#             a.status = "completed"
+#             a.save(update_fields=["status"])
 
 
 # import json
