@@ -3850,7 +3850,7 @@ def check_and_activate_team(tournament_team):
             user__in=tournament_team.members.values_list("user", flat=True),
             stage__event=tournament_team.event,
             status="pending"
-        ).update(status="queued")
+        )
 
         for a in assignments:
             a.status = "processing"  # optional but good practice
