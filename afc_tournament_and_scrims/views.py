@@ -2936,32 +2936,11 @@ def get_event_details(request):
 
 @api_view(["POST"])
 def get_event_details_not_logged_in(request):
-    # if request.headers.get("Authorization") is not None:
-    #     session_token = request.headers.get("Authorization")
-    #     if session_token and session_token.startswith("Bearer "):
-    #         token = session_token.split(" ")[1]
-    #         user = validate_token(token)
-    #         if not user:
-    #             return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
-
-    # if not session_token or not session_token.startswith("Bearer "):
-    #     return Response({"message": "Invalid or missing Authorization token."}, status=400)
-
-
-    # event_id = request.data.get("event_id")
     slug = request.data.get("slug")
     if not slug:
         return Response({"message": "slug is required."}, status=400)
 
     event = get_object_or_404(Event, slug=slug)
-
-    # ✅ correct "is_registered" (must include event)
-    # is_registered = False
-    # if event.participant_type == "solo":
-    #     is_registered = RegisteredCompetitors.objects.filter(event=event, user=user, status="registered").exists()
-    # else:
-    #     # optional: for team events you can check if user is in any registered team for this event
-    #     is_registered = RegisteredCompetitors.objects.filter(event=event, team__teammembers__member=user, status="registered").exists()
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor").all()
 
@@ -3022,7 +3001,7 @@ def get_event_details_not_logged_in(request):
     else:
         regs = (RegisteredCompetitors.objects
                 .select_related("team")
-                .prefetch_related("team__teammembers__member")
+                .prefetch_related("team__members__member")
                 .filter(event=event))
         for reg in regs:
             if reg.team:
