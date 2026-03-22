@@ -1415,6 +1415,25 @@ def resend_token(request):
 
 
 @api_view(["POST"])
+def change_password(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token"}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+
+    old_password = request.data.get("old_password")
+    new_password = request.data.get("new_password")
+
+    if user.check_password(old_password):
+        user.set_password(new_password)
+
+        return Response({"message": "Password Changed Successfully."}, status=status.HTTP_200_OK)
+    
+    else:
+        return Response({"message": "You have Inputted the wrong password."}, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(["POST"])
 def contact_us(request):
     name = request.data.get("name")
     email = request.data.get("email")
