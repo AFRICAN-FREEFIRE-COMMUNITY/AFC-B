@@ -15074,7 +15074,7 @@ def get_roster_details(request):
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400
     )
-    team = Team.objects.filter(members=user).first()
+    team = Team.objects.filter(members_member=user).first()
     if not team:
         return Response({"message": "You are not part of any team."}, status=404)
     tournament_teams = TournamentTeam.objects.filter(event=event, team=team).select_related("team")
