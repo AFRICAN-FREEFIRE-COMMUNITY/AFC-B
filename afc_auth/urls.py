@@ -18,6 +18,7 @@ urlpatterns = [
     # path('reset-password/<uidb64>/<token>/', reset_password, name='reset_password'),
     path('verify-code/', verify_code, name='verify_code'),
     path('resend-verification-code/', resend_verification_code, name='resend_verification_code'),
+    path('change-password/', change_password, name='change_password'),
     path('edit-profile/', edit_profile, name='edit_profile'),
     path('get-user-profile/', get_user_profile, name='get_user_profile'),
     path('contact-us/', contact_us, name='contact_us'),
