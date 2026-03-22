@@ -57,7 +57,7 @@ class TeamMembers(models.Model):
         ('sniper', 'Sniper')
     ]
 
-    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="members")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="memberships")
     member = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     management_role = models.CharField(max_length=20, choices=MANAGEMENT_ROLE_CHOICES, default='member')
     in_game_role = models.CharField(max_length=20, choices=IN_GAME_ROLE_CHOICES, null=True, blank=True)
