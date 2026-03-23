@@ -1078,6 +1078,131 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+def snapshot_event(event):
+    return {
+        "event": {
+            "event_name": event.event_name,
+            "event_mode": event.event_mode,
+            "participant_type": event.participant_type,
+            "competition_type": event.competition_type,
+            "max_teams_or_players": event.max_teams_or_players,
+            "is_public": event.is_public,
+            "is_sponsored": event.is_sponsored,
+        },
+        "sponsors": list(
+            SponsorEvent.objects.filter(event=event)
+            .values_list("sponsor__username", flat=True)
+        ),
+        "streams": list(
+            StreamChannel.objects.filter(event=event)
+            .values_list("channel_url", flat=True)
+        ),
+        "stages": [
+            {
+                "stage_id": s.stage_id,
+                "stage_name": s.stage_name,
+                "groups": [
+                    {
+                        "group_id": g.group_id,
+                        "group_name": g.group_name,
+                        "match_count": g.match_count,
+                        "match_maps": g.match_maps,
+                    }
+                    for g in s.groups.all()
+                ]
+            }
+            for s in event.stages.all()
+        ]
+    }
+
+
+def diff_dict(old, new):
+    changes = []
+    for k in old:
+        if str(old[k]) != str(new[k]):
+            changes.append(f"{k}: '{old[k]}' → '{new[k]}'")
+    return changes
+
+
+def diff_list(name, old_list, new_list):
+    old_set = set(old_list)
+    new_set = set(new_list)
+
+    added = new_set - old_set
+    removed = old_set - new_set
+
+    changes = []
+    if added:
+        changes.append(f"{name} added: {list(added)}")
+    if removed:
+        changes.append(f"{name} removed: {list(removed)}")
+
+    return changes
+
+
+def diff_stages(old_stages, new_stages):
+    changes = []
+
+    old_map = {s["stage_id"]: s for s in old_stages}
+    new_map = {s["stage_id"]: s for s in new_stages}
+
+    # -------- STAGES --------
+    old_ids = set(old_map.keys())
+    new_ids = set(new_map.keys())
+
+    added_stages = new_ids - old_ids
+    removed_stages = old_ids - new_ids
+
+    if added_stages:
+        changes.append(f"Stages added: {list(added_stages)}")
+
+    if removed_stages:
+        changes.append(f"Stages removed: {list(removed_stages)}")
+
+    # -------- EXISTING STAGES --------
+    for sid in old_ids & new_ids:
+        old_s = old_map[sid]
+        new_s = new_map[sid]
+
+        if old_s["stage_name"] != new_s["stage_name"]:
+            changes.append(
+                f"Stage {sid} name: '{old_s['stage_name']}' → '{new_s['stage_name']}'"
+            )
+
+        # -------- GROUPS --------
+        old_groups = {g["group_id"]: g for g in old_s["groups"]}
+        new_groups = {g["group_id"]: g for g in new_s["groups"]}
+
+        old_g_ids = set(old_groups.keys())
+        new_g_ids = set(new_groups.keys())
+
+        if new_g_ids - old_g_ids:
+            changes.append(f"Stage {sid}: groups added {list(new_g_ids - old_g_ids)}")
+
+        if old_g_ids - new_g_ids:
+            changes.append(f"Stage {sid}: groups removed {list(old_g_ids - new_g_ids)}")
+
+        for gid in old_g_ids & new_g_ids:
+            og = old_groups[gid]
+            ng = new_groups[gid]
+
+            if og["group_name"] != ng["group_name"]:
+                changes.append(
+                    f"Group {gid} name: '{og['group_name']}' → '{ng['group_name']}'"
+                )
+
+            if og["match_count"] != ng["match_count"]:
+                changes.append(
+                    f"Group {gid} match_count: {og['match_count']} → {ng['match_count']}"
+                )
+
+            if og["match_maps"] != ng["match_maps"]:
+                changes.append(
+                    f"Group {gid} maps changed"
+                )
+
+    return changes
+
 
 @api_view(["POST"])
 def edit_event(request):
@@ -1102,6 +1227,23 @@ def edit_event(request):
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
         return Response({"message": "Event not found."}, status=404)
+
+    old_snapshot = snapshot_event(event)
+
+    # old_data = {
+    #     "event_name": event.event_name,
+    #     "event_mode": event.event_mode,
+    #     "participant_type": event.participant_type,
+    #     "competition_type": event.competition_type,
+    #     "max_teams_or_players": event.max_teams_or_players,
+    #     "start_date": str(event.start_date),
+    #     "end_date": str(event.end_date),
+    #     "registration_open_date": str(event.registration_open_date),
+    #     "registration_end_date": str(event.registration_end_date),
+    #     "is_public": event.is_public,
+    #     "is_sponsored": event.is_sponsored,
+    #     "event_status": event.event_status,
+    # }
 
     def maybe_json(val):
         if isinstance(val, str):
@@ -1304,6 +1446,30 @@ def edit_event(request):
     with transaction.atomic():
         event.save()
 
+        # new_data = {
+        #     "event_name": event.event_name,
+        #     "event_mode": event.event_mode,
+        #     "participant_type": event.participant_type,
+        #     "competition_type": event.competition_type,
+        #     "max_teams_or_players": event.max_teams_or_players,
+        #     "start_date": str(event.start_date),
+        #     "end_date": str(event.end_date),
+        #     "registration_open_date": str(event.registration_open_date),
+        #     "registration_end_date": str(event.registration_end_date),
+        #     "is_public": event.is_public,
+        #     "is_sponsored": event.is_sponsored,
+        #     "event_status": event.event_status,
+        # }
+
+        # changes = []
+
+        # for field in old_data.keys():
+        #     old_val = old_data[field]
+        #     new_val = new_data[field]
+
+        #     if str(old_val) != str(new_val):
+        #         changes.append(f"{field}: '{old_val}' → '{new_val}'")
+
         # ---- Stream channels ----
         if "stream_channels" in request.data:
             StreamChannel.objects.filter(event=event).delete()
@@ -1442,11 +1608,55 @@ def edit_event(request):
                 StageGroups.objects.filter(stage__event=event).exclude(group_id__in=kept_group_ids).delete()
                 Stages.objects.filter(event=event).exclude(stage_id__in=kept_stage_ids).delete()
 
+        new_snapshot = snapshot_event(event)
+
+        changes = []
+
+        # event fields
+        changes += diff_dict(old_snapshot["event"], new_snapshot["event"])
+
+        # sponsors
+        changes += diff_list("Sponsors", old_snapshot["sponsors"], new_snapshot["sponsors"])
+
+        # streams
+        changes += diff_list("Stream channels", old_snapshot["streams"], new_snapshot["streams"])
+
+        # stages/groups
+        changes += diff_stages(old_snapshot["stages"], new_snapshot["stages"])
+
+    # AdminHistory.objects.create(
+    #     admin_user=user,
+    #     action="edit_event",
+    #     description=f"Edited event {event.event_name} (ID: {event.event_id})"
+    # )
+    # description = "No changes made."
+
+    # if changes:
+    #     description = " | ".join(changes)
+
+    
     AdminHistory.objects.create(
         admin_user=user,
         action="edit_event",
-        description=f"Edited event {event.event_name} (ID: {event.event_id})"
+        description=json.dumps({
+            "event_id": event.event_id,
+            "changes": changes
+        }, indent=2)
     )
+
+    # AdminHistory.objects.create(
+    #     admin_user=user,
+    #     action="edit_event",
+    #     description=f"Edited event {event.event_name} (ID: {event.event_id}) | {description}"
+    # )
+    # AdminHistory.objects.create(
+    #     admin_user=user,
+    #     action="edit_event",
+    #     description=json.dumps({
+    #         "event_id": event.event_id,
+    #         "changes": changes
+    #     })
+    # )
 
     return Response({
         "message": "Event updated successfully.",
