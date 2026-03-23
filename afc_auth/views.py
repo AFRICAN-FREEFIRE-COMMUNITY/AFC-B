@@ -1552,6 +1552,9 @@ def suspend_user(request):
     except User.DoesNotExist:
         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    if user.status == "suspended":
+        return Response({"message": "User is Currently Suspended"}, status=status.HTTP_400_BAD_REQUEST)
+
     user.status = "suspended"
     user.save()
 
@@ -1604,6 +1607,10 @@ def activate_user(request):
         user = User.objects.get(user_id=user_id)
     except User.DoesNotExist:
         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    
+    if user.status == "active":
+        return Response({"message": "User is currently active."}, status=status.HTTP_400_BAD_REQUEST)
 
     user.status = "active"
     user.save()
