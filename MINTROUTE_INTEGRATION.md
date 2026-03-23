@@ -13,10 +13,12 @@ This is a **buy-on-demand** model — no pre-purchased stock.
 
 ---
 
-## Branch
+## Branch & Commit Rules
 
-All work for this feature lives on `shop/mintroute` in both repos.
-Do **not** merge to `main`/`master` until fully tested and certified by Mintroute.
+- All work for this feature lives on `shop/mintroute` in both repos
+- All commits go to `shop/mintroute` only
+- **Do NOT push to `main` unless explicitly instructed by the project owner**
+- Merging to `main`/`master` only happens on direct instruction — never automatically
 
 ---
 
