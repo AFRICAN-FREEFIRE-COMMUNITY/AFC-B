@@ -1558,7 +1558,7 @@ def suspend_user(request):
     AdminHistory.objects.create(
         admin_user=user,
         action="suspended_user",
-        description=f"User {user.username} (ID: {user.user_id}) suspended"
+        description=f"Active User {user.username} (ID: {user.user_id}) suspended"
     )
 
     # Notify the user
@@ -1611,7 +1611,7 @@ def activate_user(request):
     AdminHistory.objects.create(
         admin_user=user,
         action="activated_user",
-        description=f"User {user.username} (ID: {user.user_id}) activated"
+        description=f"Suspended User {user.username} (ID: {user.user_id}) has been activated"
     )
 
     # Notify the user
