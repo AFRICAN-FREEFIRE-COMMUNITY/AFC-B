@@ -31,6 +31,8 @@ from rest_framework import status
 
 from rest_framework.pagination import PageNumberPagination
 
+from afc_auth.views import send_email
+
 def paginate_queryset(request, queryset, serializer_func):
     paginator = PageNumberPagination()
     paginator.page_size = int(request.GET.get("page_size", 10))  # default 10
@@ -4052,6 +4054,89 @@ def register_for_event(request):
 
     return Response({"message": "Invalid participant type."}, status=400)
 
+def check_and_activate_team(tournament_team):
+
+    total = tournament_team.members.count()
+    confirmed = tournament_team.members.filter(status="active").count()
+
+    if total == confirmed:
+
+        # ---------------- ACTIVATE TEAM ----------------
+        tournament_team.status = "active"
+        tournament_team.save(update_fields=["status"])
+
+        RegisteredCompetitors.objects.filter(
+            event=tournament_team.event,
+            team=tournament_team.team
+        ).update(status="registered")
+
+
+        # ---------------- SEND AN EMAIL TO THE TEAM OWNER NOTIFYING THEM -----------------
+        team_name = tournament_team.team.team_name
+        event_name = tournament_team.event.event_name
+        team_leader_username = tournament_team.team.team_owner.username
+        email = tournament_team.team.team_owner.email
+
+        
+
+        subject = f'AFC Registration Update – Your Team {team_name} is now Fully Registered for {event_name}'
+        message = f'''Dear {team_leader_username} (Team {team_name}),
+
+Congratulations! 🎉
+We are pleased to inform you that all members of your team have been successfully verified and accepted.
+
+Your team {team_name} is now fully registered and confirmed to participate in the AFC {event_name}.
+You and your team will receive all further details (room IDs, passwords, match schedules, etc.) directly in your AFC account Notifications tab. Please keep a close eye on your dashboard.
+
+We strongly encourage you to prepare your roster and stay updated through the AFC platform.
+If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+We look forward to seeing your team compete!
+
+Best regards,
+AFC Management Board
+African Freefire Community (AFC)
+Website: www.africanfreefirecommunity.com
+Discord: [Join AFC Discord]
+        '''
+        send_email(email, subject, message)
+
+        # ---------------- PREPARE ROLE ASSIGNMENT ----------------
+        stage = Stages.objects.filter(event=tournament_team.event).first()
+
+        if not stage:
+            return
+
+        user_ids = list(
+            tournament_team.members.values_list("user_id", flat=True)
+        )
+
+        assignments_qs = DiscordRoleAssignment.objects.filter(
+            stage=stage,
+            group__isnull=True,
+            status="pending",
+            user_id__in=user_ids
+        )
+
+        total = assignments_qs.count()
+
+        if total == 0:
+            return
+
+        progress = DiscordStageRoleAssignmentProgress.objects.create(
+            stage=stage,
+            total=total,
+            completed=0,
+            failed=0,
+            status="running"
+        )
+
+        # 🔥 TRIGGER CELERY
+        assign_stage_roles_for_team_task.delay(
+            progress.id,
+            stage.stage_id,
+            user_ids
+        )
+
 
 @api_view(["POST"])
 def confirm_player(request):
@@ -4062,6 +4147,36 @@ def confirm_player(request):
 
     member.status = "active"
     member.save(update_fields=["status"])
+
+    #---- SEND CONFIRMATION MAIL TO TEAM OWNER ----
+    player_username = member.user.username
+    email = member.user.email
+    event_name = member.tournament_team.event.event_name
+    team_leader_username = member.tournament_team.event.event_name
+    team_name = member.tournament_team.team.team_name
+
+
+    subject = f'AFC Registration Update – Player {player_username} has been Accepted for {event_name}'
+    message = f'''Dear {team_leader_username} (Team {team_name}),
+
+We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
+
+Status: Accepted
+
+
+The player has already been notified directly. You can view the current status of all your team members in your AFC dashboard under Team Management.
+We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
+
+If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+Thank you for your continued participation in the African Freefire Community.
+
+Best regards,
+AFC Management Board
+African Freefire Community (AFC)
+Website: www.africanfreefirecommunity.com
+Discord: [Join AFC Discord]
+        '''
+    send_email(email, subject, message)
 
     #send notification
 
@@ -4079,6 +4194,39 @@ def reject_player(request):
     member.status = "rejected"
     member.reason = request.data.get("reason")
     member.save(update_fields=["status"])
+
+
+    #---- SEND REJECTION MAIL TO TEAM OWNER ----
+    player_username = member.user.username
+    email = member.user.email
+    event_name = member.tournament_team.event.event_name
+    team_leader_username = member.tournament_team.event.event_name
+    team_name = member.tournament_team.team.team_name
+    reason = member.reason
+
+
+    subject = f'AFC Registration Update – Player {player_username} has been Rejected for {event_name}'
+    message = f'''Dear {team_leader_username} (Team {team_name}),
+
+We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
+
+Status: Rejected
+Reason:
+{reason}
+
+The player has already been notified directly. You can view the current status of all your team members in your AFC dashboard under Team Management.
+We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
+
+If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+Thank you for your continued participation in the African Freefire Community.
+
+Best regards,
+AFC Management Board
+African Freefire Community (AFC)
+Website: www.africanfreefirecommunity.com
+Discord: [Join AFC Discord]
+        '''
+    send_email(email, subject, message)
 
     # Notifications.objects.create()
 
@@ -4243,58 +4391,7 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
     )
 
 
-def check_and_activate_team(tournament_team):
 
-    total = tournament_team.members.count()
-    confirmed = tournament_team.members.filter(status="active").count()
-
-    if total == confirmed:
-
-        # ---------------- ACTIVATE TEAM ----------------
-        tournament_team.status = "active"
-        tournament_team.save(update_fields=["status"])
-
-        RegisteredCompetitors.objects.filter(
-            event=tournament_team.event,
-            team=tournament_team.team
-        ).update(status="registered")
-
-        # ---------------- PREPARE ROLE ASSIGNMENT ----------------
-        stage = Stages.objects.filter(event=tournament_team.event).first()
-
-        if not stage:
-            return
-
-        user_ids = list(
-            tournament_team.members.values_list("user_id", flat=True)
-        )
-
-        assignments_qs = DiscordRoleAssignment.objects.filter(
-            stage=stage,
-            group__isnull=True,
-            status="pending",
-            user_id__in=user_ids
-        )
-
-        total = assignments_qs.count()
-
-        if total == 0:
-            return
-
-        progress = DiscordStageRoleAssignmentProgress.objects.create(
-            stage=stage,
-            total=total,
-            completed=0,
-            failed=0,
-            status="running"
-        )
-
-        # 🔥 TRIGGER CELERY
-        assign_stage_roles_for_team_task.delay(
-            progress.id,
-            stage.stage_id,
-            user_ids
-        )
 
 # def check_and_activate_team(tournament_team):
 

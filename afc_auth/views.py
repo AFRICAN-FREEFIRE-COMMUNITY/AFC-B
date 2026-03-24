@@ -1024,7 +1024,7 @@ def edit_profile(request):
     profile_pic = request.FILES.get("profile_pic")
 
     # Validate required fields
-    if not all([full_name, in_game_name, email, uid]):
+    if not all([full_name, in_game_name, email]):
         return Response({"message": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     # Check for uniqueness conflicts
