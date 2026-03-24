@@ -265,9 +265,11 @@ def signup(request):
         # Check if in-game name or UID are already in use by **active users**
         if User.objects.filter(username=in_game_name, is_active=True).exists():
             return Response({"error": "In-game name is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+        
 
-        if User.objects.filter(uid=uid, is_active=True).exists():
-            return Response({"error": "UID is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+        if uid:
+            if User.objects.filter(uid=uid, is_active=True).exists():
+                return Response({"error": "UID is already in use."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check for email
         existing_user = User.objects.filter(email=email).first()
