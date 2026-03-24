@@ -256,7 +256,7 @@ def signup(request):
 
     try:
         # Validation
-        if not all([in_game_name, uid, email, password, confirm_password]):
+        if not all([in_game_name, email, password, confirm_password]):
             return Response({"error": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
 
         if password != confirm_password:
