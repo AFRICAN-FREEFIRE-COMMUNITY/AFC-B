@@ -294,7 +294,7 @@ If you did not create an account, please ignore this email.
 
                 return Response({
                     "message": "You already signed up but didn't verify your email. A new verification code has been sent."
-                }, status=status.HTTP_200  _OK)
+                }, status=status.HTTP_200_OK)
 
         # Create new user
         user = User.objects.create(
