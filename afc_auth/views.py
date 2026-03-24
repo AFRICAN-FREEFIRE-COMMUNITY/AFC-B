@@ -292,12 +292,12 @@ If you did not create an account, please ignore this email.
 
                 return Response({
                     "message": "You already signed up but didn't verify your email. A new verification code has been sent."
-                }, status=status.HTTP_200_OK)
+                }, status=status.HTTP_200  _OK)
 
         # Create new user
         user = User.objects.create(
             username=in_game_name,
-            uid=uid,
+            uid=uid if uid else None,
             email=email,
             is_active=False,
             full_name=full_name,
