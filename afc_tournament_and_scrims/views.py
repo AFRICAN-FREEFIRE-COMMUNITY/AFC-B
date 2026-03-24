@@ -4077,6 +4077,7 @@ def reject_player(request):
     member_id = request.data.get("member_id")
     member = get_object_or_404(TournamentTeamMember, id=member_id)
     member.status = "rejected"
+    member.reason = request.data.get("reason")
     member.save(update_fields=["status"])
 
     # Notifications.objects.create()
