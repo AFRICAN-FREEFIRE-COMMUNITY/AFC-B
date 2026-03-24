@@ -4178,6 +4178,28 @@ Discord: [Join AFC Discord]
         '''
     send_email(email, subject, message)
 
+    #----- SEND CONFIRMATION MAIL TO USER -----
+    subject = f'AFC Registration Update – Your Application for {event_name} Has Been Accepted'
+    message = f'''Dear {player_username} (or {team_name}),
+
+Thank you for submitting your registration for the AFC {event_name}.
+We are pleased to inform you that your registration has been verified and accepted! 🎉
+You are now officially eligible to participate in the tournament. You will receive all further details (room IDs, passwords, match schedules, etc.) directly in your AFC account Notifications tab. Please keep a close eye on your dashboard.
+
+We strongly encourage you to prepare and stay updated. All confirmed players are processed on a first-come, first-served basis for future stages.
+If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+
+We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon!
+
+Best regards,
+AFC Management Board
+African Freefire Community (AFC)
+Website: www.africanfreefirecommunity.com
+Discord: [Join AFC Discord]
+        '''
+    send_email(email, subject, message)
+
+
     #send notification
 
     check_and_activate_team(member.tournament_team)
@@ -4227,6 +4249,34 @@ Website: www.africanfreefirecommunity.com
 Discord: [Join AFC Discord]
         '''
     send_email(email, subject, message)
+
+    #------ SEND REJECTION EMAIL TO USER -----
+
+
+    subject = f'AFC Registration Update – Your Application for {event_name} Has Been Rejected'
+    message = f'''Dear {player_username} (or {team_name}),
+
+Thank you for submitting your registration for the AFC {event_name}.
+Unfortunately, your application has been rejected.
+
+*Reason for rejection:*
+{reason}
+
+We strongly encourage you to correct the issue and re-submit your registration as soon as possible. All pending slots are being processed on a first-come, first-served basis.
+
+If you have any questions or need clarification on the required documents, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+
+We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon.
+
+Best regards,
+AFC Management Board
+African Freefire Community (AFC)
+Website: www.africanfreefirecommunity.com
+Discord: [Join AFC Discord]
+        '''
+    send_email(email, subject, message)
+
+
 
     # Notifications.objects.create()
 
