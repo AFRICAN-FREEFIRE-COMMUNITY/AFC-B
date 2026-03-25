@@ -4152,8 +4152,9 @@ def confirm_player(request):
     player_username = member.user.username
     email = member.user.email
     event_name = member.tournament_team.event.event_name
-    team_leader_username = member.tournament_team.event.event_name
+    team_leader_username = member.tournament_team.team.team_owner.username
     team_name = member.tournament_team.team.team_name
+    team_owner_email = member.tournament_team.team.team_owner.email
 
 
     subject = f'AFC Registration Update – Player {player_username} has been Accepted for {event_name}'
@@ -4176,7 +4177,7 @@ African Freefire Community (AFC)
 Website: www.africanfreefirecommunity.com
 Discord: [Join AFC Discord]
         '''
-    send_email(email, subject, message)
+    send_email(team_owner_email, subject, message)
 
     #----- SEND CONFIRMATION MAIL TO USER -----
     subject = f'AFC Registration Update – Your Application for {event_name} Has Been Accepted'
@@ -4222,9 +4223,10 @@ def reject_player(request):
     player_username = member.user.username
     email = member.user.email
     event_name = member.tournament_team.event.event_name
-    team_leader_username = member.tournament_team.event.event_name
+    team_leader_username = member.tournament_team.team.team_owner.username
     team_name = member.tournament_team.team.team_name
     reason = member.reason
+    team_owner_email = member.tournament_team.team.team_owner.email
 
 
     subject = f'AFC Registration Update – Player {player_username} has been Rejected for {event_name}'
@@ -4248,7 +4250,7 @@ African Freefire Community (AFC)
 Website: www.africanfreefirecommunity.com
 Discord: [Join AFC Discord]
         '''
-    send_email(email, subject, message)
+    send_email(team_owner_email, subject, message)
 
     #------ SEND REJECTION EMAIL TO USER -----
 
