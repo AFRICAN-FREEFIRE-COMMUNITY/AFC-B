@@ -66,6 +66,9 @@ def create_team(request):
     # Check for existing team name
     if Team.objects.filter(team_name=team_name).exists():
         return Response({"message": "Team name already exists."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    if len(team_description) > 200:
+        return Response({"message": "Team Description should not be more than 200 Characters."}, status=status.HTTP_400_BAD_REQUEST)
 
     # Create the team
     team = Team.objects.create(
