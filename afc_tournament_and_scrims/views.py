@@ -3217,7 +3217,7 @@ def get_event_details_not_logged_in(request):
                 .filter(event=event))
         for reg in regs:
             if reg.team:
-                members = reg.team.teammembers.all()
+                members = reg.team.memberships.all()
                 registered.append({
                     "registered_competitor_id": reg.id,
                     "team_id": reg.team.team_id,
