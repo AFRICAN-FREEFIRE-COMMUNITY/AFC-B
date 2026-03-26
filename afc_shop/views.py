@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from afc_auth.views import require_admin, validate_token
 from afc_leaderboard import models
-from .models import Cart, CartItem, Coupon, Fulfillment, Order, OrderItem, Product, ProductVariant, Redemption
+from .models import Cart, CartItem, Coupon, Fulfillment, Order, OrderItem, Product, ProductVariant, Redemption, ShopChangeLog
 from afc_auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -56,6 +56,21 @@ from django.utils import timezone
 
 # Create your views here.
 
+def get_changes(old_obj, new_data, fields):
+    changes = {}
+
+    for field in fields:
+        old_val = getattr(old_obj, field, None)
+        new_val = new_data.get(field, old_val)
+
+        if str(old_val) != str(new_val):
+            changes[field] = {
+                "old": old_val,
+                "new": new_val
+            }
+
+    return changes
+
 
 @api_view(["POST"])
 def add_product(request):
@@ -102,6 +117,17 @@ def add_product(request):
             is_active=bool(v.get("is_active", True)),
         )
         created_variants.append(pv.id)
+        ShopChangeLog.objects.create(
+            admin_user=admin,
+            action="variant_created",
+            product=product,
+            variant=pv,
+            details={
+                "sku": pv.sku,
+                "price": str(pv.price),
+                "stock_qty": pv.stock_qty
+            }
+        )
 
     return Response({
         "message": "Product created.",
@@ -154,11 +180,31 @@ def edit_product(request):
 
     product = get_object_or_404(Product, id=product_id)
 
+    old_data = {
+        "name": product.name,
+        "description": product.description,
+        "product_type": product.product_type,
+        "status": product.status,
+        "is_limited_stock": product.is_limited_stock,
+    }
+
     # product fields
     for field in ["name", "description", "product_type", "status", "is_limited_stock"]:
         if field in request.data:
             setattr(product, field, request.data.get(field))
     product.save()
+
+    new_data = request.data
+
+    changes = get_changes(product, new_data, old_data.keys())
+
+    if changes:
+        ShopChangeLog.objects.create(
+            admin_user=admin,
+            action="product_updated",
+            product=product,
+            details=changes
+        )
 
     # variant updates (optional)
     variants = request.data.get("variants")  # list of {id, ...fields}
@@ -174,10 +220,30 @@ def edit_product(request):
             if not pv:
                 continue
 
+            old_variant = {
+                "sku": pv.sku,
+                "title": pv.title,
+                "price": pv.price,
+                "diamonds_amount": pv.diamonds_amount,
+                "stock_qty": pv.stock_qty,
+                "is_active": pv.is_active,
+            }
+
             for f in ["sku", "title", "price", "diamonds_amount", "stock_qty", "is_active", "meta"]:
                 if f in v:
                     setattr(pv, f, v.get(f))
             pv.save()
+            
+            changes = get_changes(pv, v, old_variant.keys())
+
+            if changes:
+                ShopChangeLog.objects.create(
+                    admin_user=admin,
+                    action="variant_updated",
+                    product=product,
+                    variant=pv,
+                    details=changes
+                )
 
     return Response({"message": "Product updated."}, status=200)
 
@@ -224,7 +290,20 @@ def delete_product_variant(request):
     if not variant_id:
         return Response({"message": "variant_id is required."}, status=400)
     variant = get_object_or_404(ProductVariant, id=variant_id)
+
+    old_data = {
+        "sku": variant.sku,
+        "price": str(variant.price),
+        "stock_qty": variant.stock_qty
+    }
+
     variant.delete()
+
+    ShopChangeLog.objects.create(
+        admin_user=admin,
+        action="variant_deleted",
+        details=old_data
+    )
     return Response({"message": "Product variant deleted."}, status=200)
 
 
@@ -947,6 +1026,11 @@ def buy_now(request):
     }, status=200)
 
 
+# -------- MINTROUTE V1 TEST ---------
+
+
+from .services.mintroute import purchase_voucher
+
 @api_view(["POST"])
 def verify_paystack_payment(request):
     reference = request.data.get("reference")
@@ -1059,12 +1143,41 @@ def verify_paystack_payment(request):
                 variant.save(update_fields=["stock_qty"])
 
         # Create fulfillment
+        # for item in order.items.all():
+        #     Fulfillment.objects.create(
+        #         order=order,
+        #         item=item,
+        #         status="queued"
+        #     )
+
+        
+
         for item in order.items.all():
-            Fulfillment.objects.create(
+            fulfillment = Fulfillment.objects.create(
                 order=order,
                 item=item,
-                status="queued"
+                status="processing"
             )
+
+            try:
+                response = purchase_voucher(item.variant, order)
+
+                if response.get("status"):
+                    voucher = response["data"]["voucher"]
+
+                    fulfillment.status = "delivered"
+                    fulfillment.provider_payload = voucher
+                    fulfillment.save()
+
+                else:
+                    fulfillment.status = "failed"
+                    fulfillment.notes = response.get("error")
+                    fulfillment.save()
+
+            except Exception as e:
+                fulfillment.status = "failed"
+                fulfillment.notes = str(e)
+                fulfillment.save()
 
 
     return Response({
@@ -1244,6 +1357,7 @@ def get_order_details(request):
         "total": str(order.total),
         "created_at": order.created_at,
         "tax": str(order.tax),
+        # "voucher": item.fulfillment_records.first().provider_payload if item.fulfillment_records.exists() else None,
         "items": [{
             "product_name": item.product_name_snapshot,
             "variant_title": item.variant_title_snapshot,
@@ -1441,6 +1555,16 @@ def edit_coupon(request):
         coupon = Coupon.objects.get(id=coupon_id)
     except Coupon.DoesNotExist:
         return Response({"message": "Coupon not found."}, status=404)
+    
+    old_coupon = {
+        "code": coupon.code,
+        "discount_type": coupon.discount_type,
+        "discount_value": coupon.discount_value,
+        "max_uses": coupon.max_uses,
+        "min_order_amount": coupon.min_order_amount,
+        "end_at": coupon.end_at,
+        "description": coupon.description
+    }
 
     code = request.data.get("code")
     discount_type = request.data.get("discount_type")
@@ -1481,6 +1605,16 @@ def edit_coupon(request):
         "code", "discount_type", "discount_value", "max_uses",
         "min_order_amount", "end_at", "description"
     ])
+
+    old_coupon = {
+        "code": coupon.code,
+        "discount_type": coupon.discount_type,
+        "discount_value": coupon.discount_value,
+        "max_uses": coupon.max_uses,
+        "min_order_amount": coupon.min_order_amount,
+        "end_at": coupon.end_at,
+        "description": coupon.description
+    }
 
     return Response({"message": "Coupon updated successfully."}, status=200)
 

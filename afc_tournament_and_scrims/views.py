@@ -4216,7 +4216,7 @@ def reject_player(request):
     member = get_object_or_404(TournamentTeamMember, id=member_id)
     member.status = "rejected"
     member.reason = request.data.get("reason")
-    member.save(update_fields=["status"])
+    member.save(update_fields=["status", "reason"])
 
 
     #---- SEND REJECTION MAIL TO TEAM OWNER ----
