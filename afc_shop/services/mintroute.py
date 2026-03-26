@@ -12,7 +12,7 @@ def generate_signature(secret_key, method, data):
     encoded = urlencode(data, doseq=True)
 
     # Step 2: timestamp
-    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M")
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M")
 
     string_to_sign = f"{method}{encoded}{timestamp}"
 
@@ -36,7 +36,7 @@ BASE_URL = "https://sandbox.mintroute.com/voucher/v2/api/voucher"
 
 def purchase_voucher(variant, order):
     payload = {
-        "username": "YOUR_USERNAME",
+        "username": "africanff.single",
         "data": {
             "ean": variant.ean,
             "terminal_id": "WEB001",
@@ -47,7 +47,7 @@ def purchase_voucher(variant, order):
     }
 
     flat_data = {
-        "username": payload["username"],
+        "username": payload["africanff.single"],
         "data[ean]": variant.ean,
         "data[terminal_id]": "WEB001",
         "data[order_id]": f"ORDER_{order.id}",
@@ -56,7 +56,7 @@ def purchase_voucher(variant, order):
     }
 
     signature, timestamp = generate_signature(
-        "YOUR_SECRET_KEY",
+        "62aeb8c780f3d3d95c4d3449a6aa4467",
         "POST",
         flat_data
     )
@@ -64,7 +64,7 @@ def purchase_voucher(variant, order):
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "Authorization": f'algorithm="hmac-sha256",credential="YOUR_ACCESS_KEY/{timestamp[:8]}",signature="{signature}"',
+        "Authorization": f'algorithm="hmac-sha256",credential=" gYShz6WD/{timestamp[:8]}",signature="{signature}"',
         "X-Mint-Date": f"{timestamp}00Z"
     }
 
