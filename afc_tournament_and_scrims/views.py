@@ -3224,7 +3224,7 @@ def get_event_details_not_logged_in(request):
                     "team_name": reg.team.team_name,
                     "status": reg.status,
                     "members": [
-                        {"player_id": m.member.id, "username": m.member.username, "role": m.in_game_role}
+                        {"player_id": m.member.user_id, "username": m.member.username, "role": m.in_game_role}
                         for m in members
                     ]
                 })
