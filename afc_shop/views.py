@@ -333,8 +333,22 @@ def deactivate_product(request):
         return Response({"message": "product_id is required."}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
+    old_status = product.status
     product.status = "inactive"
     product.save(update_fields=["status"])
+
+
+    ShopChangeLog.objects.create(
+        admin_user=admin,
+        action="product_updated",
+        product=product,
+        details={
+            "status": {
+                "old": old_status,
+                "new": "active"
+            }
+        }
+    )
 
     return Response({"message": "Product deactivated (hidden from customers)."}, status=200)
 
@@ -349,8 +363,22 @@ def activate_product(request):
         return Response({"message": "product_id is required."}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
+    old_status = product.status
     product.status = "active"
     product.save(update_fields=["status"])
+
+
+    ShopChangeLog.objects.create(
+        admin_user=admin,
+        action="product_updated",
+        product=product,
+        details={
+            "status": {
+                "old": old_status,
+                "new": "active"
+            }
+        }
+    )
 
     return Response({"message": "Product activated."}, status=200)
 
@@ -1444,6 +1472,8 @@ def mark_order_as_paid(request):
         )
     except Order.DoesNotExist:
         return Response({"message": "Order not found."}, status=404)
+    
+    old_status = order.status
 
     if order.status == "paid":
         return Response({"message": "Order is already marked as paid."}, status=200)
@@ -1452,13 +1482,38 @@ def mark_order_as_paid(request):
         order.status = "paid"
         order.save(update_fields=["status"])
 
+        ShopChangeLog.objects.create(
+            admin_user=user,
+            action="order_status_updated",
+            order=order,
+            details={
+                "status": {
+                    "old": old_status,
+                    "new": "paid"
+                }
+            }
+        )
+
         # Reduce stock
         for item in order.items.all():
             variant = item.variant
             if variant.product.is_limited_stock:
+                old_stock = variant.stock_qty
                 variant.stock_qty -= item.quantity
                 variant.save(update_fields=["stock_qty"])
 
+                ShopChangeLog.objects.create(
+                    action="variant_updated",
+                    variant=variant,
+                    details={
+                        "stock_qty": {
+                            "old": old_stock,
+                            "new": variant.stock_qty,
+                            "reason": "order_purchase",
+                            "order_id": order.id
+                        }
+                    }
+                )
 
     return Response({"message": "Order marked as paid successfully."}, status=200)
 
