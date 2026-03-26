@@ -66,6 +66,9 @@ class ProductVariant(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Mintroute
+    ean = models.CharField(max_length=50, blank=True, null=True)
+
     def is_in_stock(self):
         if not self.product.is_limited_stock:
             return True
@@ -236,3 +239,30 @@ class Redemption(models.Model):
 
     def __str__(self):
         return f"Redemption {self.coupon.code} - {self.product_variant}"
+    
+
+class ShopChangeLog(models.Model):
+    ACTIONS = (
+        ("product_created", "Product Created"),
+        ("product_updated", "Product Updated"),
+        ("product_deleted", "Product Deleted"),
+        ("variant_created", "Variant Created"),
+        ("variant_updated", "Variant Updated"),
+        ("variant_deleted", "Variant Deleted"),
+        ("coupon_created", "Coupon Created"),
+        ("coupon_updated", "Coupon Updated"),
+        ("coupon_deleted", "Coupon Deleted"),
+        ("order_status_updated", "Order Status Updated"),
+    )
+
+    admin_user = models.ForeignKey("afc_auth.User", on_delete=models.SET_NULL, null=True)
+    action = models.CharField(max_length=50, choices=ACTIONS)
+
+    product = models.ForeignKey(Product, null=True, blank=True, on_delete=models.SET_NULL)
+    variant = models.ForeignKey(ProductVariant, null=True, blank=True, on_delete=models.SET_NULL)
+    coupon = models.ForeignKey(Coupon, null=True, blank=True, on_delete=models.SET_NULL)
+    order = models.ForeignKey(Order, null=True, blank=True, on_delete=models.SET_NULL)
+
+    details = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
