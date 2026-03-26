@@ -3,12 +3,10 @@ from django.shortcuts import get_object_or_404, render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-
 from afc_auth.views import require_admin, validate_token
 from afc_leaderboard import models
 from .models import Cart, CartItem, Coupon, Fulfillment, Order, OrderItem, Product, ProductVariant, Redemption
 from afc_auth.models import User
-
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -16,150 +14,47 @@ from django.utils import timezone
 from django.db.models import Sum, Count, F
 from django.shortcuts import get_object_or_404
 from datetime import timedelta
-
+import hmac
+import hashlib
+import json
+from decimal import Decimal
+from django.conf import settings
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from decimal import Decimal
+import uuid
+import requests
+from decimal import Decimal
+from django.conf import settings
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+import requests
+from decimal import Decimal
+from django.db import transaction
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.conf import settings
+from django.utils import timezone
+from django.db.models import Count
+from decimal import Decimal
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
 
 # Create your views here.
-
-
-# @api_view(['POST'])
-# def add_new_product(request):
-#     session_token = request.headers.get("Authorization")
-
-#     if not session_token:
-#         return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
-
-#     # Identify admin/moderator
-#     try:
-#         user = User.objects.get(session_token=session_token)
-#         if user.role not in ["admin", "moderator"]:
-#             return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
-#     except User.DoesNotExist:
-#         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
-
-#     # Get product data
-#     name = request.data.get('name')
-#     description = request.data.get('description')
-#     diamonds = request.data.get('diamonds')
-#     price = request.data.get('price')
-#     image = request.FILES.get('image')
-#     stock = request.data.get('stock')
-
-#     # Validate required fields
-#     if not all([name, description, diamonds, price, stock]):
-#         return Response({"message": "All fields are required."}, status=400)
-
-#     product = Product.objects.create(
-#         name=name,
-#         description=description,
-#         diamonds=diamonds,
-#         price=price,
-#         image=image,
-#         stock=stock
-#     )
-
-#     return Response({'message': 'Product added successfully', 'product_id': product.id}, status=201)
-
-
-
-# @api_view(['POST'])
-# def edit_product(request):
-#     session_token = request.headers.get("Authorization")
-
-#     if not session_token:
-#         return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
-
-#     # Identify admin/moderator
-#     try:
-#         user = User.objects.get(session_token=session_token)
-#         if user.role not in ["admin", "moderator"]:
-#             return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
-#     except User.DoesNotExist:
-#         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
-
-#     product_id = request.data.get('product_id')
-
-#     if not product_id:
-#         return Response({'message': 'Product ID is required.'}, status=400)
-
-#     try:
-#         product = Product.objects.get(id=product_id)
-#     except Product.DoesNotExist:
-#         return Response({'message': 'Product not found.'}, status=404)
-
-#     # Update fields only if provided
-#     product.name = request.data.get('name', product.name)
-#     product.description = request.data.get('description', product.description)
-#     product.diamonds = request.data.get('diamonds', product.diamonds)
-#     product.price = request.data.get('price', product.price)
-
-#     # Check if a new image was uploaded
-#     if request.FILES.get('image'):
-#         product.image = request.FILES.get('image')
-
-#     product.stock = request.data.get('stock', product.stock)
-
-#     product.save()  # status will be updated automatically here
-
-#     return Response({'message': 'Product updated successfully.'}, status=200)
-
-
-# @api_view(['POST'])
-# def delete_product(request):
-#     session_token = request.headers.get("Authorization")
-
-#     if not session_token:
-#         return Response({"message": "Session token is required."}, status=status.HTTP_401_UNAUTHORIZED)
-
-#     # Identify admin/moderator
-#     try:
-#         user = User.objects.get(session_token=session_token)
-#         if user.role not in ["admin", "moderator"]:
-#             return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
-#     except User.DoesNotExist:
-#         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
-
-#     product_id = request.data.get('product_id')
-
-#     if not product_id:
-#         return Response({'message': 'Product ID is required.'}, status=400)
-
-#     try:
-#         product = Product.objects.get(id=product_id)
-#     except Product.DoesNotExist:
-#         return Response({'message': 'Product not found.'}, status=404)
-
-#     product.delete()
-
-#     return Response({'message': 'Product deleted successfully.'}, status=200)
-
-
-
-# @api_view(['GET'])
-# def list_products(request):
-#     status_filter = request.query_params.get('status')  # optional filter: in_stock or out_of_stock
-
-#     if status_filter:
-#         products = Product.objects.filter(status=status_filter)
-#     else:
-#         products = Product.objects.all()
-
-#     product_list = []
-#     for product in products:
-#         product_list.append({
-#             'id': product.id,
-#             'name': product.name,
-#             'description': product.description,
-#             'diamonds': product.diamonds,
-#             'price': str(product.price),
-#             'image_url': request.build_absolute_uri(product.image.url) if product.image else None,
-#             'stock': product.stock,
-#             'status': product.status,
-#             'created_at': product.created_at,
-#             'updated_at': product.updated_at
-#         })
-
-#     return Response({'products': product_list}, status=200)
 
 
 @api_view(["POST"])
@@ -438,6 +333,7 @@ def view_all_orders(request):
 def _orders_in_range(start_dt, end_dt):
     return Order.objects.filter(created_at__gte=start_dt, created_at__lt=end_dt)
 
+
 @api_view(["GET"])
 def orders_today(request):
     admin, err = require_admin(request)
@@ -459,11 +355,6 @@ def orders_today(request):
         "created_at": o.created_at,
     } for o in orders]
     return Response({"orders": data}, status=200)
-
-
-
-
-
 
 
 @api_view(["GET"])
@@ -509,7 +400,6 @@ def orders_this_month(request):
         "coupon_code": o.coupon_code,
         "created_at": o.created_at,
     } for o in orders]
-
 
 
 @api_view(["GET"])
@@ -566,6 +456,7 @@ def create_coupon(request):
 
     return Response({"message": "Coupon created.", "coupon_id": c.id}, status=201)
 
+
 @api_view(["GET"])
 def view_product_details(request):
     # admin, err = require_admin(request)
@@ -597,13 +488,6 @@ def view_product_details(request):
     }
     return Response({"product": data}, status=200)
 
-
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-from django.db import transaction
-from django.shortcuts import get_object_or_404
-from decimal import Decimal
 
 @api_view(["POST"])
 def add_to_cart(request):
@@ -867,267 +751,6 @@ def clear_cart(request):
     return Response({"message": "Cart cleared successfully."}, status=200)
 
 
-# import requests
-# from decimal import Decimal
-# from django.db import transaction
-# from rest_framework.decorators import api_view
-# from rest_framework.response import Response
-# from django.conf import settings
-
-
-# @api_view(["POST"])
-# def buy_now(request):
-#     # -------- AUTH --------
-#     auth = request.headers.get("Authorization")
-#     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
-
-#     user = validate_token(auth.split(" ")[1])
-#     if not user:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
-
-#     # -------- INPUT --------
-#     variant_id = request.data.get("variant_id")
-#     quantity = request.data.get("quantity", 1)
-#     game_uid = request.data.get("game_uid")
-#     in_game_name = request.data.get("in_game_name", "")
-
-#     if not variant_id:
-#         return Response({"message": "variant_id is required."}, status=400)
-
-#     try:
-#         quantity = int(quantity)
-#         if quantity <= 0:
-#             raise ValueError
-#     except:
-#         return Response({"message": "quantity must be a positive number."}, status=400)
-
-#     variant = ProductVariant.objects.select_related("product").filter(
-#         id=variant_id,
-#         is_active=True
-#     ).first()
-
-#     if not variant:
-#         return Response({"message": "Product not found or inactive."}, status=404)
-
-#     if variant.product.status != "active":
-#         return Response({"message": "Product not available."}, status=400)
-
-#     # -------- STOCK CHECK --------
-#     if variant.product.is_limited_stock and quantity > variant.stock_qty:
-#         return Response({
-#             "message": f"Only {variant.stock_qty} available."
-#         }, status=400)
-
-#     unit_price = variant.price
-#     subtotal = unit_price * quantity
-#     total = subtotal  # coupon logic can be added later
-
-#     # -------- CREATE ORDER --------
-#     with transaction.atomic():
-#         order = Order.objects.create(
-#             user=user,
-#             status="pending",
-#             subtotal=subtotal,
-#             total=total,
-#             game_uid=game_uid,
-#             in_game_name=in_game_name
-#         )
-
-#         OrderItem.objects.create(
-#             order=order,
-#             variant=variant,
-#             quantity=quantity,
-#             unit_price=unit_price,
-#             line_total=subtotal,
-#             product_name_snapshot=variant.product.name,
-#             variant_title_snapshot=variant.title or ""
-#         )
-
-#         # -------- PAYSTACK INIT --------
-#         amount_kobo = int(total * 100)
-
-#         headers = {
-#             "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-#             "Content-Type": "application/json",
-#         }
-
-#         payload = {
-#             "email": user.email,
-#             "amount": amount_kobo,
-#             "reference": f"ORDER-{order.id}",
-#             "callback_url": settings.PAYSTACK_CALLBACK_URL,
-#             "metadata": {
-#                 "order_id": order.id,
-#                 "user_id": user.id
-#             }
-#         }
-
-#         response = requests.post(
-#             "https://api.paystack.co/transaction/initialize",
-#             json=payload,
-#             headers=headers,
-#             timeout=30
-#         )
-
-#         paystack_response = response.json()
-
-#         if not paystack_response.get("status"):
-#             return Response({
-#                 "message": "Failed to initialize payment.",
-#                 "error": paystack_response
-#             }, status=400)
-
-#         authorization_url = paystack_response["data"]["authorization_url"]
-#         reference = paystack_response["data"]["reference"]
-
-#         # Save reference
-#         order.coupon_code = reference  # reuse field or create payment model
-#         order.save(update_fields=["coupon_code"])
-
-#     return Response({
-#         "message": "Payment initialized successfully.",
-#         "authorization_url": authorization_url,
-#         "reference": reference,
-#         "order_id": order.id
-#     }, status=200)
-
-
-# import requests
-# from decimal import Decimal
-# from django.db import transaction
-# from rest_framework.decorators import api_view
-# from rest_framework.response import Response
-# from django.conf import settings
-
-
-# @api_view(["POST"])
-# def buy_now(request):
-#     # -------- AUTH --------
-#     auth = request.headers.get("Authorization")
-#     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
-
-#     user = validate_token(auth.split(" ")[1])
-#     if not user:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
-
-#     # -------- INPUT --------
-#     variant_id = request.data.get("variant_id")
-#     quantity = request.data.get("quantity", 1)
-#     game_uid = request.data.get("game_uid")
-#     in_game_name = request.data.get("in_game_name", "")
-
-#     if not variant_id:
-#         return Response({"message": "variant_id is required."}, status=400)
-
-#     try:
-#         quantity = int(quantity)
-#         if quantity <= 0:
-#             raise ValueError
-#     except:
-#         return Response({"message": "quantity must be a positive number."}, status=400)
-
-#     variant = ProductVariant.objects.select_related("product").filter(
-#         id=variant_id,
-#         is_active=True
-#     ).first()
-
-#     if not variant:
-#         return Response({"message": "Product not found or inactive."}, status=404)
-
-#     if variant.product.status != "active":
-#         return Response({"message": "Product not available."}, status=400)
-
-#     # -------- STOCK CHECK --------
-#     if variant.product.is_limited_stock and quantity > variant.stock_qty:
-#         return Response({
-#             "message": f"Only {variant.stock_qty} available."
-#         }, status=400)
-
-#     unit_price = variant.price
-#     subtotal = unit_price * quantity
-#     total = subtotal  # coupon logic can be added later
-
-#     # -------- CREATE ORDER --------
-#     with transaction.atomic():
-#         order = Order.objects.create(
-#             user=user,
-#             status="pending",
-#             subtotal=subtotal,
-#             total=total,
-#             game_uid=game_uid,
-#             in_game_name=in_game_name
-#         )
-
-#         OrderItem.objects.create(
-#             order=order,
-#             variant=variant,
-#             quantity=quantity,
-#             unit_price=unit_price,
-#             line_total=subtotal,
-#             product_name_snapshot=variant.product.name,
-#             variant_title_snapshot=variant.title or ""
-#         )
-
-#         # -------- PAYSTACK INIT --------
-#         amount_kobo = int(total * 100)
-
-#         headers = {
-#             "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-#             "Content-Type": "application/json",
-#         }
-
-#         payload = {
-#             "email": user.email,
-#             "amount": amount_kobo,
-#             "reference": f"ORDER-{order.id}",
-#             "callback_url": settings.PAYSTACK_CALLBACK_URL,
-#             "metadata": {
-#                 "order_id": order.id,
-#                 "user_id": user.id
-#             }
-#         }
-
-#         response = requests.post(
-#             "https://api.paystack.co/transaction/initialize",
-#             json=payload,
-#             headers=headers,
-#             timeout=30
-#         )
-
-#         paystack_response = response.json()
-
-#         if not paystack_response.get("status"):
-#             return Response({
-#                 "message": "Failed to initialize payment.",
-#                 "error": paystack_response
-#             }, status=400)
-
-#         authorization_url = paystack_response["data"]["authorization_url"]
-#         reference = paystack_response["data"]["reference"]
-
-#         # Save reference
-#         order.coupon_code = reference  # reuse field or create payment model
-#         order.save(update_fields=["coupon_code"])
-
-#     return Response({
-#         "message": "Payment initialized successfully.",
-#         "authorization_url": authorization_url,
-#         "reference": reference,
-#         "order_id": order.id
-#     }, status=200)
-
-
-import uuid
-import requests
-from decimal import Decimal
-from django.conf import settings
-from django.db import transaction
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-
 
 TAX_RATE = Decimal("0.075")  # 7.5%
 
@@ -1324,177 +947,6 @@ def buy_now(request):
     }, status=200)
 
 
-
-# @api_view(["POST"])
-# def buy_now(request):
-#     auth = request.headers.get("Authorization")
-#     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid token"}, status=400)
-
-#     user = validate_token(auth.split(" ")[1])
-#     if not user:
-#         return Response({"message": "Invalid session"}, status=401)
-
-#     items = request.data.get("items", [])
-
-#     if not isinstance(items, list) or not items:
-#         return Response({"message": "Items are required."}, status=400)
-
-#     # -------- Customer Info --------
-#     required_fields = [
-#         "first_name", "last_name", "email",
-#         "phone_number", "address", "city",
-#         "state", "postcode"
-#     ]
-
-#     for field in required_fields:
-#         if not request.data.get(field):
-#             return Response({"message": f"{field} is required."}, status=400)
-
-#     first_name = request.data.get("first_name")
-#     last_name = request.data.get("last_name")
-#     email = request.data.get("email")
-#     phone_number = request.data.get("phone_number")
-#     address = request.data.get("address")
-#     city = request.data.get("city")
-#     state = request.data.get("state")
-#     postcode = request.data.get("postcode")
-
-#     subtotal = Decimal("0.00")
-#     order_items_to_create = []
-
-#     # -------- Validate Items --------
-#     for item in items:
-#         variant_id = item.get("variant_id")
-#         quantity = int(item.get("quantity", 1))
-
-#         if quantity <= 0:
-#             return Response({"message": "Invalid quantity provided."}, status=400)
-
-#         try:
-#             variant = ProductVariant.objects.select_related("product").get(
-#                 id=variant_id,
-#                 is_active=True
-#             )
-#         except ProductVariant.DoesNotExist:
-#             return Response({"message": f"Product {variant_id} not found."}, status=404)
-
-#         if not variant.is_in_stock():
-#             return Response({"message": f"{variant.title} is out of stock."}, status=400)
-
-#         if variant.product.is_limited_stock and variant.stock_qty < quantity:
-#             return Response({"message": f"Insufficient stock for {variant.title}."}, status=400)
-
-#         unit_price = variant.price
-#         line_total = unit_price * quantity
-
-#         subtotal += line_total
-
-#         order_items_to_create.append({
-#             "variant": variant,
-#             "quantity": quantity,
-#             "unit_price": unit_price,
-#             "line_total": line_total
-#         })
-
-#     # -------- Calculate Tax --------
-#     tax_amount = (subtotal * TAX_RATE).quantize(Decimal("0.01"))
-#     total = subtotal + tax_amount
-
-#     # -------- Create Order --------
-#     with transaction.atomic():
-
-#         order = Order.objects.create(
-#             user=user,
-#             subtotal=subtotal,
-#             total=total,
-#             status="pending",
-#             first_name=first_name,
-#             last_name=last_name,
-#             email=email,
-#             phone_number=phone_number,
-#             address=address,
-#             city=city,
-#             state=state,
-#             postcode=postcode,
-#             tax=tax_amount
-#         )
-
-#         order_items = []
-#         for item in order_items_to_create:
-#             order_items.append(
-#                 OrderItem(
-#                     order=order,
-#                     variant=item["variant"],
-#                     quantity=item["quantity"],
-#                     unit_price=item["unit_price"],
-#                     line_total=item["line_total"],
-#                     product_name_snapshot=item["variant"].product.name,
-#                     variant_title_snapshot=item["variant"].title or item["variant"].sku,
-#                 )
-#             )
-
-#         OrderItem.objects.bulk_create(order_items)
-
-#     # -------- Initialize Paystack --------
-#     reference = f"PS_{uuid.uuid4().hex}"
-
-#     order.paystack_reference = reference
-#     order.save(update_fields=["paystack_reference"])
-
-#     headers = {
-#         "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-#         "Content-Type": "application/json",
-#     }
-
-#     payload = {
-#         "email": email,
-#         "amount": int(total * 100),  # convert to kobo
-#         "reference": reference,
-#         "callback_url": settings.PAYSTACK_CALLBACK_URL,
-#         "metadata": {
-#             "order_id": str(order.id),
-#             "user_id": user.user_id,
-#         }
-#     }
-
-#     response = requests.post(
-#         "https://api.paystack.co/transaction/initialize",
-#         headers=headers,
-#         json=payload
-#     )
-
-#     data = response.json()
-
-#     if not data.get("status"):
-#         order.status = "failed"
-#         order.save(update_fields=["status"])
-
-#         return Response({"message": "Payment initialization failed."}, status=400)
-
-#     return Response({
-#         "authorization_url": data["data"]["authorization_url"],
-#         "reference": reference,
-#         "order_id": order.id,
-#         "subtotal": str(subtotal),
-#         "tax": str(tax_amount),
-#         "total": str(total)
-#     }, status=200)
-
-
-
-
-import requests
-from decimal import Decimal
-from django.db import transaction
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from django.conf import settings
-
-
-from django.utils import timezone
-
-
 @api_view(["POST"])
 def verify_paystack_payment(request):
     reference = request.data.get("reference")
@@ -1625,104 +1077,6 @@ def verify_paystack_payment(request):
 
 
 
-# @api_view(["POST"])
-# def verify_paystack_payment(request):
-#     reference = request.data.get("reference")
-
-#     if not reference:
-#         return Response({"message": "reference is required."}, status=400)
-
-#     # -------- VERIFY WITH PAYSTACK --------
-#     headers = {
-#         "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-#     }
-
-#     verify_url = f"https://api.paystack.co/transaction/verify/{reference}"
-
-#     response = requests.get(verify_url, headers=headers, timeout=30)
-#     paystack_response = response.json()
-
-#     if not paystack_response.get("status"):
-#         return Response({
-#             "message": "Failed to verify transaction.",
-#             "error": paystack_response
-#         }, status=400)
-
-#     data = paystack_response.get("data", {})
-
-#     if data.get("status") != "success":
-#         return Response({"message": "Payment not successful."}, status=400)
-
-#     amount_paid_kobo = data.get("amount")
-#     metadata = data.get("metadata", {})
-#     order_id = metadata.get("order_id")
-
-#     if not order_id:
-#         return Response({"message": "Invalid metadata from Paystack."}, status=400)
-
-#     # -------- FIND ORDER --------
-#     order = Order.objects.select_related("user").prefetch_related("items__variant__product").filter(id=order_id).first()
-
-#     if not order:
-#         return Response({"message": "Order not found."}, status=404)
-
-#     if order.status == "paid":
-#         return Response({"message": "Order already verified."}, status=200)
-
-#     expected_amount_kobo = int(order.total * 100)
-
-#     if amount_paid_kobo != expected_amount_kobo:
-#         return Response({
-#             "message": "Amount mismatch.",
-#             "expected": expected_amount_kobo,
-#             "paid": amount_paid_kobo
-#         }, status=400)
-
-#     # -------- SUCCESS → PROCESS ORDER --------
-#     with transaction.atomic():
-
-#         # Mark order paid
-#         order.status = "paid"
-#         order.save(update_fields=["status"])
-
-#         # Reduce stock if limited
-#         for item in order.items.all():
-#             variant = item.variant
-
-#             if variant.product.is_limited_stock:
-#                 if variant.stock_qty < item.quantity:
-#                     return Response({
-#                         "message": f"Stock error for {variant.product.name}"
-#                     }, status=400)
-
-#                 variant.stock_qty -= item.quantity
-#                 variant.save(update_fields=["stock_qty"])
-
-#         # Create fulfillment records
-#         for item in order.items.all():
-#             Fulfillment.objects.create(
-#                 order=order,
-#                 item=item,
-#                 status="queued"
-#             )
-
-#     return Response({
-#         "message": "Payment verified successfully.",
-#         "order_id": order.id,
-#         "status": "paid"
-#     }, status=200)
-
-
-import hmac
-import hashlib
-import json
-from decimal import Decimal
-from django.conf import settings
-from django.db import transaction
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-from django.views.decorators.csrf import csrf_exempt
 
 
 @api_view(["POST"])
@@ -1826,94 +1180,6 @@ def paystack_webhook(request):
             )
 
     return Response({"message": "Payment processed successfully"}, status=200)
-
-# import hmac
-# import hashlib
-# import json
-# from decimal import Decimal
-# from django.http import HttpResponse
-# from django.conf import settings
-# from django.db import transaction
-# from django.views.decorators.csrf import csrf_exempt
-
-
-# @csrf_exempt
-# def paystack_webhook(request):
-#     if request.method != "POST":
-#         return HttpResponse(status=400)
-
-#     payload = request.body
-#     signature = request.headers.get("x-paystack-signature")
-
-#     if not signature:
-#         return HttpResponse(status=400)
-
-#     # 🔐 Verify signature
-#     computed_signature = hmac.new(
-#         settings.PAYSTACK_SECRET_KEY.encode("utf-8"),
-#         payload,
-#         hashlib.sha512
-#     ).hexdigest()
-
-#     if computed_signature != signature:
-#         return HttpResponse(status=400)
-
-#     event = json.loads(payload)
-#     event_type = event.get("event")
-
-#     # Only handle successful charge
-#     if event_type != "charge.success":
-#         return HttpResponse(status=200)
-
-#     data = event.get("data", {})
-#     reference = data.get("reference")
-#     amount_paid_kobo = data.get("amount")
-#     metadata = data.get("metadata", {})
-#     order_id = metadata.get("order_id")
-
-#     if not order_id:
-#         return HttpResponse(status=400)
-
-#     try:
-#         order = Order.objects.select_related("user").prefetch_related(
-#             "items__variant__product"
-#         ).get(id=order_id)
-#     except Order.DoesNotExist:
-#         return HttpResponse(status=404)
-
-#     # Already processed?
-#     if order.status == "paid":
-#         return HttpResponse(status=200)
-
-#     expected_amount_kobo = int(order.total * 100)
-
-#     if amount_paid_kobo != expected_amount_kobo:
-#         return HttpResponse(status=400)
-
-#     # ✅ Process payment
-#     with transaction.atomic():
-
-#         order.status = "paid"
-#         order.save(update_fields=["status"])
-
-#         for item in order.items.all():
-#             variant = item.variant
-
-#             if variant.product.is_limited_stock:
-#                 if variant.stock_qty < item.quantity:
-#                     return HttpResponse(status=400)
-
-#                 variant.stock_qty -= item.quantity
-#                 variant.save(update_fields=["stock_qty"])
-
-#         for item in order.items.all():
-#             Fulfillment.objects.create(
-#                 order=order,
-#                 item=item,
-#                 status="queued"
-#             )
-
-#     return HttpResponse(status=200)
 
 
 @api_view(["GET"])
@@ -2281,36 +1547,6 @@ def get_total_coupon_uses(request):
     }, status=200)
 
 
-# @api_view(["POST"])
-# def get_total_spent_using_coupon(request):
-#     auth = request.headers.get("Authorization")
-#     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
-
-#     user = validate_token(auth.split(" ")[1])
-#     if not user or not user.role == "admin":
-#         return Response({"message": "Unauthorized access."}, status=403)
-
-#     coupon_id = request.data.get("coupon_id")
-#     if not coupon_id:
-#         return Response({"message": "coupon_id is required."}, status=400)
-
-#     try:
-#         coupon = Coupon.objects.get(id=coupon_id)
-#     except Coupon.DoesNotExist:
-#         return Response({"message": "Coupon not found."}, status=404)
-
-#     total_spent = Redemption.objects.filter(coupon=coupon).aggregate(
-#         total_spent=models.Sum("order_total_at_redemption")
-#     )["total_spent"] or Decimal("0.00")
-
-#     return Response({
-#         "coupon_id": coupon.id,
-#         "code": coupon.code,
-#         "total_spent_using_coupon": str(total_spent)
-#     }, status=200)
-
-
 @api_view(["POST"])
 def get_total_revenue_generated(request):
     auth = request.headers.get("Authorization")
@@ -2385,15 +1621,6 @@ def get_weekly_usage_and_saving_generated(request):
         "code": coupon.code,
         "weekly_usage_and_saving": result
     }, status=200)
-
-
-from django.db.models import Count
-from decimal import Decimal
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-from django.shortcuts import get_object_or_404
-from django.utils import timezone
 
 
 @api_view(["GET"])

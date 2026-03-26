@@ -15449,7 +15449,8 @@ def get_roster_details(request):
             "username": member.user.username,
             "full_name": member.user.full_name,
             "user_id_from_sponsor": member.user_id_from_sponsor,
-            "status": member.status
+            "status": member.status,
+            "reason": member.reason
         })
     return Response({
         "event_id": event.event_id,
