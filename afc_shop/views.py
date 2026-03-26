@@ -1314,11 +1314,31 @@ def paystack_webhook(request):
 
         # Create fulfillment
         for item in order.items.all():
-            Fulfillment.objects.create(
+            fulfillment = Fulfillment.objects.create(
                 order=order,
                 item=item,
-                status="queued"
+                status="processing"
             )
+
+            try:
+                response = purchase_voucher(item.variant, order)
+
+                if response.get("status"):
+                    voucher = response["data"]["voucher"]
+
+                    fulfillment.status = "delivered"
+                    fulfillment.provider_payload = voucher
+                    fulfillment.save()
+
+                else:
+                    fulfillment.status = "failed"
+                    fulfillment.notes = response.get("error")
+                    fulfillment.save()
+
+            except Exception as e:
+                fulfillment.status = "failed"
+                fulfillment.notes = str(e)
+                fulfillment.save()
 
     return Response({"message": "Payment processed successfully"}, status=200)
 
