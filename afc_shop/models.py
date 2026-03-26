@@ -181,7 +181,7 @@ class OrderItem(models.Model):
     quantity = models.PositiveIntegerField(default=1)
     unit_price = models.DecimalField(max_digits=10, decimal_places=2)
     line_total = models.DecimalField(max_digits=10, decimal_places=2)
-    coupon_code = models.CharField(max_length=40, blank=True)
+    coupon_code = models.CharField(max_length=40, null=True, blank=True)
 
     # snapshot fields (so if product name changes, order keeps original)
     product_name_snapshot = models.CharField(max_length=255)
