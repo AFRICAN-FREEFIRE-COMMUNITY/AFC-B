@@ -3213,7 +3213,7 @@ def get_event_details_not_logged_in(request):
     else:
         regs = (RegisteredCompetitors.objects
                 .select_related("team")
-                .prefetch_related("team__members__member")
+                .prefetch_related("memberships__member")
                 .filter(event=event))
         for reg in regs:
             if reg.team:
