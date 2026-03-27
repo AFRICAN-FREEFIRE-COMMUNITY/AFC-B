@@ -1577,6 +1577,30 @@ def paystack_webhook(request):
     return Response({"message": "Webhook processed"})
 
 
+@api_view("POST")
+def get_all_fulfillments(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    
+    fulfillments = Fulfillment.objects.all()
+
+    data = []
+
+    for f in fulfillments:
+        data.append({
+            "order_id": f.order.id,
+            "item_id": f.item.id,
+            "status": f.status,
+            "notes": f.notes,
+            "provider_payload": f.provider_payload,
+            "created_at": f.created_at
+        })
+
 @api_view(["GET"])
 def get_my_orders(request):
     auth = request.headers.get("Authorization")

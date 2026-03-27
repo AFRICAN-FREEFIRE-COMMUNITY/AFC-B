@@ -69,7 +69,7 @@ def purchase_voucher(variant, order):
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
+        "Authorization": f'algorithm="hmac-sha256", credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}", signature="{signature}"',
         "X-Mint-Date": header_time
     }
 
