@@ -21,7 +21,7 @@ def get_player_details(request):
     player_id = request.data.get("player_id")
 
     if not player_id:
-        return Response({"error": "player_id is required"}, status=400)
+        return Response({"message": "player_id is required"}, status=400)
 
     player = get_object_or_404(User, user_id=player_id)
 
