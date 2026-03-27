@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
 from afc_auth.models import User
+from afc_team.models import TeamMembers
 from afc_tournament_and_scrims.models import Match, TournamentPlayerMatchStats, TournamentTeamMatchStats, TournamentTeamMember
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -146,11 +147,12 @@ def get_player_details(request):
     # Team
     team_member = TournamentTeamMember.objects.filter(user=player).last()
     team_name = team_member.tournament_team.team.team_name if team_member else None
+    member = TeamMembers.objects.filter(member=player).first
 
 
     
-    in_game_role = team_member.in_game_role if team_member else None
-    management_role = team_member.management_role if team_member else None
+    in_game_role = member.in_game_role if member else None
+    management_role = member.management_role if member else None
 
 
     return Response({
