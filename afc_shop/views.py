@@ -162,6 +162,7 @@ def view_all_products(request):
                 "stock_qty": v.stock_qty,
                 "is_active": v.is_active,
                 "in_stock": v.is_in_stock(),
+                "ean": v.ean,
                 "created_at": v.created_at,
                 "updated_at": v.updated_at,
             } for v in p.variants.all()]
@@ -227,9 +228,10 @@ def edit_product(request):
                 "diamonds_amount": pv.diamonds_amount,
                 "stock_qty": pv.stock_qty,
                 "is_active": pv.is_active,
+                "ean": pv.ean,
             }
 
-            for f in ["sku", "title", "price", "diamonds_amount", "stock_qty", "is_active", "meta"]:
+            for f in ["sku", "title", "price", "diamonds_amount", "stock_qty", "is_active", "meta", "ean"]:
                 if f in v:
                     setattr(pv, f, v.get(f))
             pv.save()
@@ -273,6 +275,7 @@ def add_product_variant(request):
         meta=request.data.get("meta") or {},
         stock_qty=int(request.data.get("stock_qty") or 0),
         is_active=bool(request.data.get("is_active", True)),
+        ean=request.data.get("ean"),
     )
 
     return Response({
