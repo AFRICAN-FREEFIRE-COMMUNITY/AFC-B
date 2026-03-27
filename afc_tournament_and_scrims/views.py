@@ -4080,24 +4080,104 @@ def check_and_activate_team(tournament_team):
         
 
         subject = f'AFC Registration Update – Your Team {team_name} is now Fully Registered for {event_name}'
-        message = f'''Dear {team_leader_username} (Team {team_name}),
+        message = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
 
-Congratulations! 🎉
-We are pleased to inform you that all members of your team have been successfully verified and accepted.
+<body style="margin:0;padding:0;background-color:#050505;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#050505;padding:40px 0;">
+    <tr>
+      <td align="center">
 
-Your team {team_name} is now fully registered and confirmed to participate in the AFC {event_name}.
-You and your team will receive all further details (room IDs, passwords, match schedules, etc.) directly in your AFC account Notifications tab. Please keep a close eye on your dashboard.
+        <table width="600" cellpadding="0" cellspacing="0" style="background:#0a0a0a;border:1px solid #1f1f1f;max-width:600px;width:100%;">
+          
+          <tr>
+            <td style="background:#f5a623;height:4px;"></td>
+          </tr>
 
-We strongly encourage you to prepare your roster and stay updated through the AFC platform.
-If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
-We look forward to seeing your team compete!
+          <tr>
+            <td align="center" style="padding:30px;border-bottom:1px solid #1a1a1a;">
+              <img src="https://yourdomain.com/static/logo.png" alt="AFC Logo" style="max-height:50px;">
+            </td>
+          </tr>
 
-Best regards,
-AFC Management Board
-African Freefire Community (AFC)
-Website: www.africanfreefirecommunity.com
-Discord: [Join AFC Discord]
-        '''
+          <tr>
+            <td style="padding:40px 35px;color:#b0b0b0;font-size:15px;line-height:1.6;">
+
+              <h1 style="color:#ffffff;margin-bottom:20px;">Congratulations 🎉</h1>
+
+              <p>Dear <strong style="color:#ffffff;">{team_leader_username}</strong> (Team {team_name}),</p>
+
+              <p>We are pleased to inform you that all members of your team have been successfully verified and accepted.</p>
+
+              <table width="100%" style="border:1px solid #f5a623;background:#14110a;margin:25px 0;">
+                <tr>
+                  <td style="padding:20px;text-align:center;color:#ffffff;">
+                    Your team <strong style="color:#f5a623;">{team_name}</strong> is now fully registered for 
+                    <strong>{event_name}</strong>.
+                  </td>
+                </tr>
+              </table>
+
+              <p>
+                All match details (room IDs, passwords, schedules) will be available in your AFC dashboard notifications.
+              </p>
+
+              <p>
+                Stay prepared and keep checking the platform regularly.
+              </p>
+
+              <p>
+                Need help? Contact us at 
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#f5a623;">
+                  info@africanfreefirecommunity.com
+                </a>
+              </p>
+
+              <p style="color:#ffffff;font-weight:bold;">
+                We look forward to seeing your team compete!
+              </p>
+
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background:#080808;padding:25px;border-top:1px solid #1a1a1a;">
+              <table width="100%">
+                <tr>
+                  <td style="color:#888;font-size:12px;">
+                    <strong>African Freefire Community</strong><br>
+                    <a href="https://www.africanfreefirecommunity.com" style="color:#f5a623;">
+                      Visit Website
+                    </a>
+                  </td>
+                  <td align="right">
+                    <a href="https://discord.gg/YOUR_LINK"
+                       style="border:1px solid #333;color:#fff;padding:10px 15px;text-decoration:none;font-size:11px;">
+                      Join Discord
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
         send_email(email, subject, message)
 
         # ---------------- PREPARE ROLE ASSIGNMENT ----------------
@@ -4137,18 +4217,24 @@ Discord: [Join AFC Discord]
             user_ids
         )
 
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
 
 @api_view(["POST"])
 def confirm_player(request):
 
     member_id = request.data.get("member_id")
-
     member = get_object_or_404(TournamentTeamMember, id=member_id)
+
+    # جلوگیری از تکرار
+    if member.status == "active":
+        return Response({"message": "Player already confirmed."}, status=200)
 
     member.status = "active"
     member.save(update_fields=["status"])
 
-    #---- SEND CONFIRMATION MAIL TO TEAM OWNER ----
+    # ---------------- DATA ----------------
     player_username = member.user.username
     email = member.user.email
     event_name = member.tournament_team.event.event_name
@@ -4156,53 +4242,150 @@ def confirm_player(request):
     team_name = member.tournament_team.team.team_name
     team_owner_email = member.tournament_team.team.team_owner.email
 
-
-    subject = f'AFC Registration Update – Player {player_username} has been Accepted for {event_name}'
-    message = f'''Dear {team_leader_username} (Team {team_name}),
-
-We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
-
-Status: Accepted
-
-
-The player has already been notified directly. You can view the current status of all your team members in your AFC dashboard under Team Management.
-We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
-
-If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
-Thank you for your continued participation in the African Freefire Community.
-
-Best regards,
-AFC Management Board
-African Freefire Community (AFC)
-Website: www.africanfreefirecommunity.com
-Discord: [Join AFC Discord]
-        '''
-    send_email(team_owner_email, subject, message)
-
-    #----- SEND CONFIRMATION MAIL TO USER -----
+    # =========================
+    # 📧 EMAIL TO PLAYER
+    # =========================
     subject = f'AFC Registration Update – Your Application for {event_name} Has Been Accepted'
-    message = f'''Dear {player_username} (or {team_name}),
 
-Thank you for submitting your registration for the AFC {event_name}.
-We are pleased to inform you that your registration has been verified and accepted! 🎉
-You are now officially eligible to participate in the tournament. You will receive all further details (room IDs, passwords, match schedules, etc.) directly in your AFC account Notifications tab. Please keep a close eye on your dashboard.
+    player_message = f"""
+<!DOCTYPE html>
+<html>
+<body style="margin: 0; padding: 0; background-color: #050505; font-family: Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #050505; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" style="background-color: #0a0a0a; border: 1px solid #1f1f1f;">
+          
+          <tr><td height="4" style="background-color: #15a84e;"></td></tr>
 
-We strongly encourage you to prepare and stay updated. All confirmed players are processed on a first-come, first-served basis for future stages.
-If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+          <tr>
+            <td align="center" style="padding: 30px;">
+              <img src="https://africanfreefirecommunity.com/static/logo.png"
+                   alt="AFC Logo"
+                   style="max-height: 50px; display:block;">
+            </td>
+          </tr>
+          
+          <tr>
+            <td style="padding: 40px; color: #d0d0d0; font-size: 15px;">
+              
+              <h1 style="color: #ffffff;">Registration Accepted</h1>
+              
+              <p>Dear <strong style="color:#ffffff;">{player_username}</strong>,</p>
+              
+              <p>Your registration for <strong>{event_name}</strong> has been 
+              <span style="color:#15a84e;"><strong>verified and accepted!</strong></span></p>
 
-We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon!
+              <p>You are now eligible to participate. Match details will be available in your dashboard.</p>
 
-Best regards,
-AFC Management Board
-African Freefire Community (AFC)
-Website: www.africanfreefirecommunity.com
-Discord: [Join AFC Discord]
-        '''
-    send_email(email, subject, message)
+              <p>If you have questions, contact:
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#15a84e;">
+                  info@africanfreefirecommunity.com
+                </a>
+              </p>
 
+              <p style="color:#ffffff;"><strong>Good luck in the tournament!</strong></p>
 
-    #send notification
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
 
+    try:
+        send_email(email, subject, player_message)
+    except Exception as e:
+        print(f"Player email failed: {e}")
+
+    # =========================
+    # 📧 EMAIL TO TEAM OWNER
+    # =========================
+    subject = f'AFC Registration Update – Player {player_username} Accepted for {event_name}'
+
+    owner_message = f"""
+<!DOCTYPE html>
+<html>
+<body style="margin: 0; padding: 0; background-color: #050505; font-family: Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #050505; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" style="background-color: #0a0a0a; border: 1px solid #1f1f1f;">
+          
+          <tr><td height="4" style="background-color: #ffffff;"></td></tr>
+
+          <tr>
+            <td align="center" style="padding: 30px;">
+              <img src="https://africanfreefirecommunity.com/static/logo.png"
+                   alt="AFC Logo"
+                   style="max-height: 50px; display:block;">
+            </td>
+          </tr>
+          
+          <tr>
+            <td style="padding: 40px; color: #d0d0d0; font-size: 15px;">
+              
+              <h1 style="color:#ffffff;">Player Status Update</h1>
+              
+              <p>
+                Dear <strong style="color:#ffffff;">{team_leader_username}</strong>
+                (Team {team_name}),
+              </p>
+              
+              <p>
+                Player <strong style="color:#ffffff;">{player_username}</strong> 
+                has been reviewed for <strong>{event_name}</strong>.
+              </p>
+
+              <table width="100%" style="border:1px solid #333; background:#0f0f0f; margin:20px 0;">
+                <tr>
+                  <td style="padding:20px;">
+                    <strong style="color:#ffffff;">
+                      Status: <span style="color:#15a84e;">Accepted</span>
+                    </strong>
+                  </td>
+                </tr>
+              </table>
+
+              <p>You can track all players in your dashboard.</p>
+
+              <p>
+                Need help? 
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#ffffff;">
+                  Contact support
+                </a>
+              </p>
+
+              <p style="color:#ffffff;"><strong>Thanks for your participation.</strong></p>
+
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+    try:
+        send_email(team_owner_email, subject, owner_message)
+    except Exception as e:
+        print(f"Owner email failed: {e}")
+
+    # ---------------- TEAM ACTIVATION CHECK ----------------
     check_and_activate_team(member.tournament_team)
 
     return Response({
@@ -4210,81 +4393,346 @@ Discord: [Join AFC Discord]
     }, status=200)
 
 
+# @api_view(["POST"])
+# def confirm_player(request):
+
+#     member_id = request.data.get("member_id")
+
+#     member = get_object_or_404(TournamentTeamMember, id=member_id)
+
+#     member.status = "active"
+#     member.save(update_fields=["status"])
+
+#     #---- SEND CONFIRMATION MAIL TO TEAM OWNER ----
+#     player_username = member.user.username
+#     email = member.user.email
+#     event_name = member.tournament_team.event.event_name
+#     team_leader_username = member.tournament_team.team.team_owner.username
+#     team_name = member.tournament_team.team.team_name
+#     team_owner_email = member.tournament_team.team.team_owner.email
+
+
+#     subject = f'AFC Registration Update – Player {player_username} has been Accepted for {event_name}'
+#     message = f'''Dear {team_leader_username} (Team {team_name}),
+
+# We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
+
+# Status: Accepted
+
+
+# The player has already been notified directly. You can view the current status of all your team members in your AFC dashboard under Team Management.
+# We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
+
+# If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+# Thank you for your continued participation in the African Freefire Community.
+
+# Best regards,
+# AFC Management Board
+# African Freefire Community (AFC)
+# Website: www.africanfreefirecommunity.com
+# Discord: [Join AFC Discord]
+#         '''
+#     send_email(team_owner_email, subject, message)
+
+#     #----- SEND CONFIRMATION MAIL TO USER -----
+#     subject = f'AFC Registration Update – Your Application for {event_name} Has Been Accepted'
+#     message = f'''Dear {player_username} (or {team_name}),
+
+# Thank you for submitting your registration for the AFC {event_name}.
+# We are pleased to inform you that your registration has been verified and accepted! 🎉
+# You are now officially eligible to participate in the tournament. You will receive all further details (room IDs, passwords, match schedules, etc.) directly in your AFC account Notifications tab. Please keep a close eye on your dashboard.
+
+# We strongly encourage you to prepare and stay updated. All confirmed players are processed on a first-come, first-served basis for future stages.
+# If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+
+# We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon!
+
+# Best regards,
+# AFC Management Board
+# African Freefire Community (AFC)
+# Website: www.africanfreefirecommunity.com
+# Discord: [Join AFC Discord]
+#         '''
+#     send_email(email, subject, message)
+
+
+#     #send notification
+
+#     check_and_activate_team(member.tournament_team)
+
+#     return Response({
+#         "message": "Player confirmed."
+#     }, status=200)
+
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
 @api_view(["POST"])
 def reject_player(request):
     member_id = request.data.get("member_id")
+    reason = request.data.get("reason", "No reason provided")
+
     member = get_object_or_404(TournamentTeamMember, id=member_id)
+
+    # Prevent duplicate rejection
+    if member.status == "rejected":
+        return Response({"message": "Player already rejected."}, status=200)
+
     member.status = "rejected"
-    member.reason = request.data.get("reason")
+    member.reason = reason
     member.save(update_fields=["status", "reason"])
 
-
-    #---- SEND REJECTION MAIL TO TEAM OWNER ----
+    # ---------------- DATA ----------------
     player_username = member.user.username
     email = member.user.email
     event_name = member.tournament_team.event.event_name
     team_leader_username = member.tournament_team.team.team_owner.username
     team_name = member.tournament_team.team.team_name
-    reason = member.reason
     team_owner_email = member.tournament_team.team.team_owner.email
 
-
-    subject = f'AFC Registration Update – Player {player_username} has been Rejected for {event_name}'
-    message = f'''Dear {team_leader_username} (Team {team_name}),
-
-We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
-
-Status: Rejected
-Reason:
-{reason}
-
-The player has already been notified directly. You can view the current status of all your team members in your AFC dashboard under Team Management.
-We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
-
-If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
-Thank you for your continued participation in the African Freefire Community.
-
-Best regards,
-AFC Management Board
-African Freefire Community (AFC)
-Website: www.africanfreefirecommunity.com
-Discord: [Join AFC Discord]
-        '''
-    send_email(team_owner_email, subject, message)
-
-    #------ SEND REJECTION EMAIL TO USER -----
-
-
+    # =========================
+    # 📧 EMAIL TO PLAYER
+    # =========================
     subject = f'AFC Registration Update – Your Application for {event_name} Has Been Rejected'
-    message = f'''Dear {player_username} (or {team_name}),
 
-Thank you for submitting your registration for the AFC {event_name}.
-Unfortunately, your application has been rejected.
+    player_message = f"""
+<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background-color:#050505;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#050505;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" style="background-color:#0a0a0a;border:1px solid #1f1f1f;">
+          
+          <tr><td height="4" style="background-color:#dc2626;"></td></tr>
 
-*Reason for rejection:*
-{reason}
+          <tr>
+            <td align="center" style="padding:30px;">
+              <img src="https://africanfreefirecommunity.com/static/logo.png"
+                   alt="AFC Logo"
+                   style="max-height:50px;display:block;">
+            </td>
+          </tr>
+          
+          <tr>
+            <td style="padding:40px;color:#d0d0d0;font-size:15px;">
+              
+              <h1 style="color:#ffffff;">Registration Update</h1>
+              
+              <p>Dear <strong style="color:#ffffff;">{player_username}</strong>,</p>
+              
+              <p>Your application for <strong>{event_name}</strong> has been 
+              <span style="color:#dc2626;"><strong>rejected</strong></span>.</p>
 
-We strongly encourage you to correct the issue and re-submit your registration as soon as possible. All pending slots are being processed on a first-come, first-served basis.
+              <table width="100%" style="border-left:3px solid #dc2626;background:#1a0b0b;margin:20px 0;">
+                <tr>
+                  <td style="padding:20px;">
+                    <p style="color:#dc2626;font-weight:bold;">Reason:</p>
+                    <p style="color:#ffffff;">{reason}</p>
+                  </td>
+                </tr>
+              </table>
 
-If you have any questions or need clarification on the required documents, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+              <p>Please correct the issue and re-submit your registration.</p>
 
-We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon.
+              <p>
+                <a href="https://www.africanfreefirecommunity.com"
+                   style="background:#dc2626;color:#fff;padding:12px 20px;text-decoration:none;">
+                   Update Registration
+                </a>
+              </p>
 
-Best regards,
-AFC Management Board
-African Freefire Community (AFC)
-Website: www.africanfreefirecommunity.com
-Discord: [Join AFC Discord]
-        '''
-    send_email(email, subject, message)
+              <p>
+                Need help? 
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#dc2626;">
+                  Contact support
+                </a>
+              </p>
 
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+            </td>
+          </tr>
 
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
 
-    # Notifications.objects.create()
+    try:
+        send_email(email, subject, player_message)
+    except Exception as e:
+        print(f"Player rejection email failed: {e}")
+
+    # =========================
+    # 📧 EMAIL TO TEAM OWNER
+    # =========================
+    subject = f'AFC Registration Update – Player {player_username} Rejected for {event_name}'
+
+    owner_message = f"""
+<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background-color:#050505;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#050505;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" style="background-color:#0a0a0a;border:1px solid #1f1f1f;">
+          
+          <tr><td height="4" style="background-color:#ffffff;"></td></tr>
+
+          <tr>
+            <td align="center" style="padding:30px;">
+              <img src="https://africanfreefirecommunity.com/static/logo.png"
+                   alt="AFC Logo"
+                   style="max-height:50px;display:block;">
+            </td>
+          </tr>
+          
+          <tr>
+            <td style="padding:40px;color:#d0d0d0;font-size:15px;">
+              
+              <h1 style="color:#ffffff;">Player Status Update</h1>
+              
+              <p>
+                Dear <strong style="color:#ffffff;">{team_leader_username}</strong>
+                (Team {team_name}),
+              </p>
+              
+              <p>
+                Player <strong style="color:#ffffff;">{player_username}</strong> 
+                has been reviewed for <strong>{event_name}</strong>.
+              </p>
+
+              <table width="100%" style="border:1px solid #333;background:#0f0f0f;margin:20px 0;">
+                <tr>
+                  <td style="padding:20px;">
+                    <p style="color:#ffffff;font-weight:bold;">
+                      Status: <span style="color:#dc2626;">Rejected</span>
+                    </p>
+
+                    <div style="margin-top:15px;border-top:1px solid #333;padding-top:15px;">
+                      <p style="color:#dc2626;font-weight:bold;">Reason:</p>
+                      <p style="color:#ffffff;">{reason}</p>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+
+              <p>You can monitor your team in the dashboard.</p>
+
+              <p>
+                Need help? 
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#ffffff;">
+                  Contact support
+                </a>
+              </p>
+
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+    try:
+        send_email(team_owner_email, subject, owner_message)
+    except Exception as e:
+        print(f"Owner rejection email failed: {e}")
 
     return Response({
         "message": "Player rejected."
     }, status=200)
+
+
+# @api_view(["POST"])
+# def reject_player(request):
+#     member_id = request.data.get("member_id")
+#     member = get_object_or_404(TournamentTeamMember, id=member_id)
+#     member.status = "rejected"
+#     member.reason = request.data.get("reason")
+#     member.save(update_fields=["status", "reason"])
+
+
+#     #---- SEND REJECTION MAIL TO TEAM OWNER ----
+#     player_username = member.user.username
+#     email = member.user.email
+#     event_name = member.tournament_team.event.event_name
+#     team_leader_username = member.tournament_team.team.team_owner.username
+#     team_name = member.tournament_team.team.team_name
+#     reason = member.reason
+#     team_owner_email = member.tournament_team.team.team_owner.email
+
+
+#     subject = f'AFC Registration Update – Player {player_username} has been Rejected for {event_name}'
+#     message = f'''Dear {team_leader_username} (Team {team_name}),
+
+# We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
+
+# Status: Rejected
+# Reason:
+# {reason}
+
+# The player has already been notified directly. You can view the current status of all your team members in your AFC dashboard under Team Management.
+# We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
+
+# If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+# Thank you for your continued participation in the African Freefire Community.
+
+# Best regards,
+# AFC Management Board
+# African Freefire Community (AFC)
+# Website: www.africanfreefirecommunity.com
+# Discord: [Join AFC Discord]
+#         '''
+#     send_email(team_owner_email, subject, message)
+
+#     #------ SEND REJECTION EMAIL TO USER -----
+
+
+#     subject = f'AFC Registration Update – Your Application for {event_name} Has Been Rejected'
+#     message = f'''Dear {player_username} (or {team_name}),
+
+# Thank you for submitting your registration for the AFC {event_name}.
+# Unfortunately, your application has been rejected.
+
+# *Reason for rejection:*
+# {reason}
+
+# We strongly encourage you to correct the issue and re-submit your registration as soon as possible. All pending slots are being processed on a first-come, first-served basis.
+
+# If you have any questions or need clarification on the required documents, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+
+# We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon.
+
+# Best regards,
+# AFC Management Board
+# African Freefire Community (AFC)
+# Website: www.africanfreefirecommunity.com
+# Discord: [Join AFC Discord]
+#         '''
+#     send_email(email, subject, message)
+
+
+
+#     # Notifications.objects.create()
+
+#     return Response({
+#         "message": "Player rejected."
+#     }, status=200)
 
 
 @api_view(["POST"])
