@@ -14,7 +14,7 @@ from afc_auth.views import assign_discord_role, check_discord_membership, check_
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, EventInviteToken, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
-from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, Roles, User, UserRoles
+from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -15463,3 +15463,62 @@ def get_roster_details(request):
 
 # @api_view(["POST"])
 # def kick_team_from_event(request):
+
+
+from django.utils import timezone
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+@api_view(["GET"])
+def total_members_this_month(request):
+    now = timezone.now()
+
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    count = User.objects.filter(
+        created_at__gte=start_of_month
+    ).count()
+
+    return Response({
+        "total_members_this_month": count
+    })
+
+@api_view(["GET"])
+def total_teams_this_month(request):
+    now = timezone.now()
+
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    count = Team.objects.filter(
+        created_at__gte=start_of_month
+    ).count()
+
+    return Response({
+        "total_teams_this_month": count
+    })
+
+from django.utils import timezone
+
+@api_view(["GET"])
+def total_active_tournaments(request):
+
+    now = timezone.now()
+
+    count = Event.objects.filter(
+        competition_type="tournament",
+        start_date__lte=now,
+        end_date__gte=now
+    ).count()
+
+    return Response({
+        "total_active_tournaments": count
+    })
+
+
+@api_view(["GET"])
+def total_published_news(request):
+    count = News.objects.all().count()
+
+    return Response({
+        "total_published_news": count
+    })
