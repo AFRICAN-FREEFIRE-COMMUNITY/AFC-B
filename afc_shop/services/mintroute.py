@@ -39,7 +39,7 @@ BASE_URL = "https://sandbox.mintroute.com/voucher/v2/api/voucher"
 
 def purchase_voucher(variant, order):
 
-    now = datetime.utcnow()
+    now = datetime.now()
 
     signature_time = now.strftime("%Y%m%dT%H%M")
     header_time = now.strftime("%Y%m%dT%H%M%SZ")
