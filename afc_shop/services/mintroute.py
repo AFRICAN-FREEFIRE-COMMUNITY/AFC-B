@@ -16,24 +16,7 @@ date_only = now.strftime("%Y%m%d")
 ACCESS_KEY = "gYShz6WD"              # for credential
 
 
-# def generate_signature(secret_key, method, data):
-#     # Step 1: URL encode
-#     encoded = urlencode(data, doseq=True)
 
-#     # Step 2: timestamp
-#     timestamp = datetime.now().strftime("%Y%m%dT%H%M")
-
-#     string_to_sign = f"{method}{encoded}{timestamp}"
-
-#     signature = base64.b64encode(
-#         hmac.new(
-#             secret_key.encode(),
-#             string_to_sign.encode(),
-#             hashlib.sha256
-#         ).digest()
-#     ).decode()
-
-#     return signature, timestamp
 
 import hmac
 import hashlib
@@ -136,3 +119,33 @@ def purchase_voucher(variant, order):
     }
 
     # return response.json()
+
+
+def buy_voucher():
+
+    payload = {
+        "username": "your_username",
+        "data": {
+            "ean": "2345678918765",
+            "location": "UK",
+            "terminal_id": "WEB001",
+            "order_id": generate_order_id(),
+            "request_type": "purchase",
+            "response_type": "short"
+        }
+    }
+
+    flat = flatten_data(payload)
+
+    signature, sig_time = generate_signature("POST", flat, SECRET_KEY)
+
+    headers = build_headers(signature)
+
+    response = requests.post(
+        "https://sandbox.mintroute.com/voucher/v2/api/voucher",
+        json=payload,
+        headers=headers,
+        timeout=60
+    )
+
+    return response.json()
