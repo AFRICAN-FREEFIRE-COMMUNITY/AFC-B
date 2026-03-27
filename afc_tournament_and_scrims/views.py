@@ -15689,9 +15689,9 @@ def edit_roster(request):
                     # rejected → pending
                     if member.status == "rejected":
                         member.status = "pending"
-                        member.reason = None
+                        # member.reason = None
 
-                    member.save(update_fields=["user_id_from_sponsor", "status", "reason"])
+                    member.save(update_fields=["user_id_from_sponsor", "status"])
 
         # ---------------- ADD NEW PLAYERS ----------------
         new_rows = []
