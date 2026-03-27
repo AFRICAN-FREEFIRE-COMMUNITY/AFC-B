@@ -6,13 +6,72 @@ from rest_framework.decorators import api_view
 
 from afc_auth.models import User
 from afc_tournament_and_scrims.models import Match, TournamentPlayerMatchStats, TournamentTeamMatchStats, TournamentTeamMember
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.db.models import Sum
+from afc_auth.models import User
+from afc_tournament_and_scrims.models import (
+    TournamentPlayerMatchStats,
+    TournamentTeamMatchStats,
+    TournamentTeamMember,
+    Match
+)
+
 
 
 # Create your views here.
 
-# def get_all_players(request):
-# name, team name, total kills, total wins, total mvp, status
 
+
+@api_view(["GET"])
+def get_all_users(request):
+
+    users = User.objects.all()
+
+    data = []
+
+    for user in users:
+
+        # --- PLAYER STATS ---
+        player_stats = TournamentPlayerMatchStats.objects.filter(player=user)
+
+        total_kills = player_stats.aggregate(total=Sum("kills"))["total"] or 0
+
+        # --- MVPs ---
+        total_mvps = Match.objects.filter(mvp=user).count()
+
+        # --- TEAM RELATION ---
+        team_member = TournamentTeamMember.objects.filter(user=user).last()
+
+        team_name = None
+        team_ids = []
+
+        if team_member:
+            team_name = team_member.tournament_team.team.team_name
+            team_ids = TournamentTeamMember.objects.filter(user=user).values_list(
+                "tournament_team", flat=True
+            )
+
+        # --- WINS (placement = 1) ---
+        total_wins = 0
+        if team_ids:
+            total_wins = TournamentTeamMatchStats.objects.filter(
+                tournament_team_id__in=team_ids,
+                placement=1
+            ).count()
+
+        data.append({
+            "user_id": user.user_id,
+            "name": user.username,
+            "team_name": team_name,
+            "total_kills": total_kills,
+            "total_wins": total_wins,
+            "total_mvps": total_mvps,
+            "status": user.status,
+            "role": user.role  # optional but useful
+        })
+
+    return Response({"users": data})
 
 
 @api_view(["POST"])
