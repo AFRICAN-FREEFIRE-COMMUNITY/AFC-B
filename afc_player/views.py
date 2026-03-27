@@ -147,7 +147,7 @@ def get_player_details(request):
     # Team
     team_member = TournamentTeamMember.objects.filter(user=player).last()
     team_name = team_member.tournament_team.team.team_name if team_member else None
-    member = TeamMembers.objects.filter(member=player).first
+    member = TeamMembers.objects.filter(member=player).first()
 
 
     
