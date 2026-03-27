@@ -151,6 +151,10 @@ def get_player_details(request):
         "player_id": player.user_id,
         "name": player.username,
         "team": team_name,
+        "email": player.email,
+        "uid": player.uid,
+        "discord_username": player.discord_username,
+        "country": player.country,
 
         "kdr": round(kdr, 2),
         "avg_damage": round(avg_damage, 2),

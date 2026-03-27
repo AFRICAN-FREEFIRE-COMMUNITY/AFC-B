@@ -266,3 +266,9 @@ class ShopChangeLog(models.Model):
     details = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class MintrouteLog(models.Model):
+    request_payload = models.JSONField()
+    response_payload = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)

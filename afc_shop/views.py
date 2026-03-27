@@ -1161,6 +1161,8 @@ def verify_paystack_payment(request):
         # Reduce stock
         for item in order.items.all():
             variant = item.variant
+            if not variant.ean:
+                raise Exception("EAN not configured for this product variant")
             if variant.product.is_limited_stock:
                 if variant.stock_qty < item.quantity:
                     order.status = "failed"
