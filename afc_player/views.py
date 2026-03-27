@@ -15,7 +15,7 @@ from afc_tournament_and_scrims.models import Match, TournamentPlayerMatchStats, 
 
 
 
-@api_view(["GET"])
+@api_view(["POST"])
 def get_player_details(request):
 
     player_id = request.GET.get("player_id")
