@@ -75,7 +75,19 @@ def purchase_voucher(variant, order):
 
     try:
         response = requests.post(BASE_URL, json=payload, headers=headers, timeout=60)
-        data = response.json()
+
+        print("STATUS CODE:", response.status_code)
+        print("RAW RESPONSE:", response.text)
+
+        try:
+            data = response.json()
+        except Exception as e:
+            return {
+                "status": False,
+                "error": "Invalid JSON from provider",
+                "raw_response": response.text
+            }
+        # data = response.json()
     except Exception as e:
         return {"status": False, "error": str(e)}
 
