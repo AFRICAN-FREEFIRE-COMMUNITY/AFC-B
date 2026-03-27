@@ -62,7 +62,7 @@ def purchase_voucher(variant, order):
     signature = generate_signature(
         "POST",
         flat_data,
-        settings.MINRTOUTE_SECRET_KEY,
+        settings.MINTROUTE_SECRET_KEY,
         signature_time
     )
 
