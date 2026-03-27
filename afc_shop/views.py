@@ -1571,6 +1571,7 @@ def paystack_webhook(request):
                 else:
                     fulfillment.status = "failed"
                     fulfillment.notes = response.get("error")
+                    fulfillment.provider_payload = response["data"]
 
                 fulfillment.save()
 
