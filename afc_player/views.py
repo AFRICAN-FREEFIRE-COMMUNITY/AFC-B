@@ -147,6 +147,12 @@ def get_player_details(request):
     team_member = TournamentTeamMember.objects.filter(user=player).last()
     team_name = team_member.tournament_team.team.team_name if team_member else None
 
+
+    
+    in_game_role = team_member.in_game_role if team_member else None
+    management_role = team_member.management_role if team_member else None
+
+
     return Response({
         "player_id": player.user_id,
         "name": player.username,
@@ -155,8 +161,8 @@ def get_player_details(request):
         "uid": player.uid,
         "discord_username": player.discord_username,
         "country": player.country,
-        "in_game_role": team_member.in_game_role if team_member.in_game_role else None,
-        "management_role": team_member.management_role if team_member.management_role else None,
+        "in_game_role": in_game_role,
+        "management_role": management_role,
 
         "kdr": round(kdr, 2),
         "avg_damage": round(avg_damage, 2),
