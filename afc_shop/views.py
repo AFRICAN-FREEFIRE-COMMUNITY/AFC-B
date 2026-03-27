@@ -1601,6 +1601,9 @@ def get_all_fulfillments(request):
             "created_at": f.created_at
         })
 
+    return Response({"fulfillments": data}, status=200)
+
+
 @api_view(["GET"])
 def get_my_orders(request):
     auth = request.headers.get("Authorization")
