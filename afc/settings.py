@@ -39,7 +39,9 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 OPENAI_API_KEY = "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"
-
+MINTROUTE_SECRET_KEY = "62aeb8c780f3d3d95c4d3449a6aa4467"
+MINTROUTE_ACCESS_KEY = "gYShz6WD"
+MINTROUTE_USERNAME = "africanff.single"
 # Application definition
 
 INSTALLED_APPS = [
