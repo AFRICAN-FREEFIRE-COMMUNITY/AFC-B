@@ -15490,7 +15490,7 @@ def total_teams_this_month(request):
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     count = Team.objects.filter(
-        created_at__gte=start_of_month
+        creation_date__gte=start_of_month
     ).count()
 
     return Response({
