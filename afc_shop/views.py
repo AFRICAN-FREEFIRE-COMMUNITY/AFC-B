@@ -867,9 +867,197 @@ from decimal import Decimal, ROUND_HALF_UP
 # TAX_RATE = Decimal("0.10")  # 10%
 
 
+# @api_view(["POST"])
+# def buy_now(request):
+#     auth = request.headers.get("Authorization")
+#     if not auth or not auth.startswith("Bearer "):
+#         return Response({"message": "Invalid token"}, status=400)
+
+#     user = validate_token(auth.split(" ")[1])
+#     if not user:
+#         return Response({"message": "Invalid session"}, status=401)
+
+#     items = request.data.get("items", [])
+
+#     if not isinstance(items, list) or not items:
+#         return Response({"message": "Items are required."}, status=400)
+
+#     # -------- Customer Info --------
+#     required_fields = [
+#         "first_name", "last_name", "email",
+#         "phone_number", "address", "city",
+#         "state", "postcode"
+#     ]
+
+#     for field in required_fields:
+#         if not request.data.get(field):
+#             return Response({"message": f"{field} is required."}, status=400)
+
+#     subtotal = Decimal("0.00")
+#     total_tax = Decimal("0.00")
+#     total_discount = Decimal("0.00")
+
+#     order_items_to_create = []
+
+#     # -------- Validate & Calculate --------
+#     for item in items:
+#         variant_id = item.get("variant_id")
+#         quantity = int(item.get("quantity", 1))
+#         coupon_code = item.get("coupon_code")
+
+#         if quantity <= 0:
+#             return Response({"message": "Invalid quantity."}, status=400)
+
+#         try:
+#             variant = ProductVariant.objects.select_related("product").get(
+#                 id=variant_id,
+#                 is_active=True
+#             )
+#         except ProductVariant.DoesNotExist:
+#             return Response({"message": f"Product {variant_id} not found."}, status=404)
+
+#         if not variant.is_in_stock():
+#             return Response({"message": f"{variant.title} is out of stock."}, status=400)
+
+#         if variant.product.is_limited_stock and variant.stock_qty < quantity:
+#             return Response({"message": f"Insufficient stock for {variant.title}."}, status=400)
+
+#         unit_price = variant.price
+#         base_price = (unit_price * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+#         # -------- TAX (Before Discount) --------
+#         tax_amount = (base_price * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+#         discount_amount = Decimal("0.00")
+#         applied_coupon = None
+
+#         # -------- COUPON --------
+#         if coupon_code:
+#             try:
+#                 coupon = Coupon.objects.get(code=coupon_code, is_active=True)
+#             except Coupon.DoesNotExist:
+#                 return Response({"message": f"Coupon {coupon_code} invalid."}, status=400)
+
+#             if not coupon.is_valid_now():
+#                 return Response({"message": f"Coupon {coupon_code} expired or invalid."}, status=400)
+
+#             if base_price < coupon.min_order_amount:
+#                 return Response({"message": f"Coupon {coupon_code} minimum not reached."}, status=400)
+
+#             if coupon.discount_type == "percent":
+#                 discount_amount = (base_price * (coupon.discount_value / Decimal("100"))).quantize(Decimal("0.01"))
+#             else:
+#                 discount_amount = coupon.discount_value
+
+#             # Prevent over-discount
+#             if discount_amount > base_price:
+#                 discount_amount = base_price
+
+#             applied_coupon = coupon
+
+#         line_total = base_price + tax_amount - discount_amount
+
+#         subtotal += base_price
+#         total_tax += tax_amount
+#         total_discount += discount_amount
+
+#         order_items_to_create.append({
+#             "variant": variant,
+#             "quantity": quantity,
+#             "unit_price": unit_price,
+#             "line_total": line_total,
+#             "coupon": applied_coupon,
+#             "discount": discount_amount
+#         })
+
+#     grand_total = subtotal + total_tax - total_discount
+
+#     # -------- Create Order --------
+#     with transaction.atomic():
+
+#         order = Order.objects.create(
+#             user=user,
+#             subtotal=subtotal,
+#             discount_total=total_discount,
+#             total=grand_total,
+#             status="pending",
+#             # coupon_code=applied_coupon.code if applied_coupon else None,  # item-level coupons
+#             first_name=request.data.get("first_name"),
+#             last_name=request.data.get("last_name"),
+#             email=request.data.get("email"),
+#             phone_number=request.data.get("phone_number"),
+#             address=request.data.get("address"),
+#             city=request.data.get("city"),
+#             state=request.data.get("state"),
+#             postcode=request.data.get("postcode"),
+#         )
+
+#         order_items = []
+#         for item in order_items_to_create:
+#             order_items.append(
+#                 OrderItem(
+#                     order=order,
+#                     variant=item["variant"],
+#                     quantity=item["quantity"],
+#                     unit_price=item["unit_price"],
+#                     line_total=item["line_total"],
+#                     product_name_snapshot=item["variant"].product.name,
+#                     variant_title_snapshot=item["variant"].title or item["variant"].sku,
+#                     coupon_code=item["coupon"].code if item["coupon"] else None
+#                 )
+#             )
+
+#         OrderItem.objects.bulk_create(order_items)
+
+#     # -------- Paystack Init --------
+#     reference = f"PS_{uuid.uuid4().hex}"
+#     order.paystack_reference = reference
+#     order.save(update_fields=["paystack_reference"])
+
+#     headers = {
+#         "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+#         "Content-Type": "application/json",
+#     }
+
+#     payload = {
+#         "email": request.data.get("email"),
+#         "amount": int(grand_total * 100),
+#         "reference": reference,
+#         "callback_url": settings.PAYSTACK_CALLBACK_URL,
+#         "metadata": {
+#             "order_id": str(order.id),
+#             "user_id": user.user_id,
+#         }
+#     }
+
+#     response = requests.post(
+#         "https://api.paystack.co/transaction/initialize",
+#         headers=headers,
+#         json=payload
+#     )
+
+#     data = response.json()
+
+#     if not data.get("status"):
+#         order.status = "failed"
+#         order.save(update_fields=["status"])
+#         return Response({"message": "Payment initialization failed."}, status=400)
+
+#     return Response({
+#         "authorization_url": data["data"]["authorization_url"],
+#         "reference": reference,
+#         "order_id": order.id,
+#         "subtotal": str(subtotal),
+#         "tax": str(total_tax),
+#         "discount": str(total_discount),
+#         "total": str(grand_total)
+#     }, status=200)
+
+
 @api_view(["POST"])
 def buy_now(request):
     auth = request.headers.get("Authorization")
+
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token"}, status=400)
 
@@ -878,20 +1066,14 @@ def buy_now(request):
         return Response({"message": "Invalid session"}, status=401)
 
     items = request.data.get("items", [])
+    if not items:
+        return Response({"message": "Items required"}, status=400)
 
-    if not isinstance(items, list) or not items:
-        return Response({"message": "Items are required."}, status=400)
-
-    # -------- Customer Info --------
-    required_fields = [
-        "first_name", "last_name", "email",
-        "phone_number", "address", "city",
-        "state", "postcode"
-    ]
+    required_fields = ["first_name","last_name","email","phone_number","address","city","state","postcode"]
 
     for field in required_fields:
         if not request.data.get(field):
-            return Response({"message": f"{field} is required."}, status=400)
+            return Response({"message": f"{field} is required"}, status=400)
 
     subtotal = Decimal("0.00")
     total_tax = Decimal("0.00")
@@ -899,89 +1081,40 @@ def buy_now(request):
 
     order_items_to_create = []
 
-    # -------- Validate & Calculate --------
     for item in items:
-        variant_id = item.get("variant_id")
+        variant = ProductVariant.objects.filter(id=item["variant_id"], is_active=True).first()
+        if not variant:
+            return Response({"message": "Invalid product"}, status=404)
+
         quantity = int(item.get("quantity", 1))
-        coupon_code = item.get("coupon_code")
 
         if quantity <= 0:
-            return Response({"message": "Invalid quantity."}, status=400)
-
-        try:
-            variant = ProductVariant.objects.select_related("product").get(
-                id=variant_id,
-                is_active=True
-            )
-        except ProductVariant.DoesNotExist:
-            return Response({"message": f"Product {variant_id} not found."}, status=404)
-
-        if not variant.is_in_stock():
-            return Response({"message": f"{variant.title} is out of stock."}, status=400)
+            return Response({"message": "Invalid quantity"}, status=400)
 
         if variant.product.is_limited_stock and variant.stock_qty < quantity:
-            return Response({"message": f"Insufficient stock for {variant.title}."}, status=400)
+            return Response({"message": "Insufficient stock"}, status=400)
 
-        unit_price = variant.price
-        base_price = (unit_price * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-        # -------- TAX (Before Discount) --------
-        tax_amount = (base_price * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-        discount_amount = Decimal("0.00")
-        applied_coupon = None
-
-        # -------- COUPON --------
-        if coupon_code:
-            try:
-                coupon = Coupon.objects.get(code=coupon_code, is_active=True)
-            except Coupon.DoesNotExist:
-                return Response({"message": f"Coupon {coupon_code} invalid."}, status=400)
-
-            if not coupon.is_valid_now():
-                return Response({"message": f"Coupon {coupon_code} expired or invalid."}, status=400)
-
-            if base_price < coupon.min_order_amount:
-                return Response({"message": f"Coupon {coupon_code} minimum not reached."}, status=400)
-
-            if coupon.discount_type == "percent":
-                discount_amount = (base_price * (coupon.discount_value / Decimal("100"))).quantize(Decimal("0.01"))
-            else:
-                discount_amount = coupon.discount_value
-
-            # Prevent over-discount
-            if discount_amount > base_price:
-                discount_amount = base_price
-
-            applied_coupon = coupon
-
-        line_total = base_price + tax_amount - discount_amount
+        base_price = (variant.price * quantity).quantize(Decimal("0.01"))
+        tax = (base_price * TAX_RATE).quantize(Decimal("0.01"))
 
         subtotal += base_price
-        total_tax += tax_amount
-        total_discount += discount_amount
+        total_tax += tax
 
         order_items_to_create.append({
             "variant": variant,
             "quantity": quantity,
-            "unit_price": unit_price,
-            "line_total": line_total,
-            "coupon": applied_coupon,
-            "discount": discount_amount
+            "unit_price": variant.price,
+            "line_total": base_price + tax
         })
 
-    grand_total = subtotal + total_tax - total_discount
+    grand_total = subtotal + total_tax
 
-    # -------- Create Order --------
     with transaction.atomic():
-
         order = Order.objects.create(
             user=user,
             subtotal=subtotal,
-            discount_total=total_discount,
             total=grand_total,
             status="pending",
-            # coupon_code=applied_coupon.code if applied_coupon else None,  # item-level coupons
             first_name=request.data.get("first_name"),
             last_name=request.data.get("last_name"),
             email=request.data.get("email"),
@@ -992,66 +1125,43 @@ def buy_now(request):
             postcode=request.data.get("postcode"),
         )
 
-        order_items = []
-        for item in order_items_to_create:
-            order_items.append(
-                OrderItem(
-                    order=order,
-                    variant=item["variant"],
-                    quantity=item["quantity"],
-                    unit_price=item["unit_price"],
-                    line_total=item["line_total"],
-                    product_name_snapshot=item["variant"].product.name,
-                    variant_title_snapshot=item["variant"].title or item["variant"].sku,
-                    coupon_code=item["coupon"].code if item["coupon"] else None
-                )
+        OrderItem.objects.bulk_create([
+            OrderItem(
+                order=order,
+                variant=i["variant"],
+                quantity=i["quantity"],
+                unit_price=i["unit_price"],
+                line_total=i["line_total"]
             )
+            for i in order_items_to_create
+        ])
 
-        OrderItem.objects.bulk_create(order_items)
-
-    # -------- Paystack Init --------
+    # PAYSTACK INIT
     reference = f"PS_{uuid.uuid4().hex}"
+
     order.paystack_reference = reference
-    order.save(update_fields=["paystack_reference"])
-
-    headers = {
-        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "email": request.data.get("email"),
-        "amount": int(grand_total * 100),
-        "reference": reference,
-        "callback_url": settings.PAYSTACK_CALLBACK_URL,
-        "metadata": {
-            "order_id": str(order.id),
-            "user_id": user.user_id,
-        }
-    }
+    order.save()
 
     response = requests.post(
         "https://api.paystack.co/transaction/initialize",
-        headers=headers,
-        json=payload
-    )
+        headers={"Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}"},
+        json={
+            "email": order.email,
+            "amount": int(order.total * 100),
+            "reference": reference,
+            "callback_url": settings.PAYSTACK_CALLBACK_URL,
+            "metadata": {"order_id": str(order.id)}
+        }
+    ).json()
 
-    data = response.json()
-
-    if not data.get("status"):
-        order.status = "failed"
-        order.save(update_fields=["status"])
-        return Response({"message": "Payment initialization failed."}, status=400)
+    if not response.get("status"):
+        return Response({"message": "Payment init failed"}, status=400)
 
     return Response({
-        "authorization_url": data["data"]["authorization_url"],
+        "authorization_url": response["data"]["authorization_url"],
         "reference": reference,
-        "order_id": order.id,
-        "subtotal": str(subtotal),
-        "tax": str(total_tax),
-        "discount": str(total_discount),
-        "total": str(grand_total)
-    }, status=200)
+        "order_id": order.id
+    })
 
 
 # -------- MINTROUTE V1 TEST ---------
@@ -1059,290 +1169,409 @@ def buy_now(request):
 
 from .services.mintroute import purchase_voucher
 
+# @api_view(["POST"])
+# def verify_paystack_payment(request):
+#     reference = request.data.get("reference")
+
+#     if not reference:
+#         return Response({"message": "reference is required."}, status=400)
+
+#     headers = {
+#         "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+#     }
+
+#     verify_url = f"https://api.paystack.co/transaction/verify/{reference}"
+#     response = requests.get(verify_url, headers=headers, timeout=30)
+#     paystack_response = response.json()
+
+#     if not paystack_response.get("status"):
+#         return Response({"message": "Verification failed."}, status=400)
+
+#     data = paystack_response.get("data", {})
+
+#     if data.get("status") != "success":
+#         return Response({"message": "Payment not successful."}, status=400)
+
+#     metadata = data.get("metadata", {})
+#     order_id = metadata.get("order_id")
+
+#     order = Order.objects.select_related("user").prefetch_related(
+#         "items__variant__product"
+#     ).filter(id=order_id).first()
+
+#     if not order:
+#         return Response({"message": "Order not found."}, status=404)
+
+#     if order.status == "paid":
+#         return Response({"message": "Already verified."}, status=200)
+
+#     expected_amount_kobo = int(order.total * 100)
+
+#     if data.get("amount") != expected_amount_kobo:
+#         return Response({"message": "Amount mismatch."}, status=400)
+
+#     # -------- Extract Paystack Info --------
+#     transaction_id = str(data.get("id"))
+#     payment_channel = data.get("channel")  # card / bank / ussd / transfer
+#     paid_at = data.get("paid_at")
+
+#     # Optional: card info
+#     authorization = data.get("authorization", {})
+#     card_type = authorization.get("card_type")
+#     bank = authorization.get("bank")
+
+#     payment_method = payment_channel
+
+#     if payment_channel == "card" and card_type:
+#         payment_method = f"{card_type} ({bank})"
+
+#     # -------- Process Order --------
+#     with transaction.atomic():
+
+#         # Prevent double processing
+#         if order.status == "paid":
+#             return Response({"message": "Already processed"}, status=200)
+
+#         transaction_id = str(data.get("id"))
+#         payment_channel = data.get("channel")
+
+#         order.status = "paid"
+#         order.paystack_transaction_id = transaction_id
+#         order.payment_method = payment_channel
+#         order.paid_at = timezone.now()
+#         order.save(update_fields=[
+#             "status",
+#             "paystack_transaction_id",
+#             "payment_method",
+#             "paid_at"
+#         ])
+
+#         # ✅ Increment Coupon Usage
+#         if order.coupon:
+#             order.coupon.used_count += 1
+#             order.coupon.save(update_fields=["used_count"])
+
+#             # Create redemption record (avoid duplicates)
+#             if not Redemption.objects.filter(
+#                 coupon=order.coupon,
+#                 redeemed_by=order.user,
+#                 redeemed_at__isnull=False,
+#                 order_amount=order.total
+#             ).exists():
+
+#                 Redemption.objects.create(
+#                     coupon=order.coupon,
+#                     product_variant=order.items.first().variant,
+#                     redeemed_by=order.user,
+#                     redeemed_at=timezone.now(),
+#                     order_amount=order.total,
+#                     savings=order.discount_total
+#                 )
+
+#         # Reduce stock
+#         for item in order.items.all():
+#             variant = item.variant
+#             if not variant.ean:
+#                 raise Exception("EAN not configured for this product variant")
+#             if variant.product.is_limited_stock:
+#                 if variant.stock_qty < item.quantity:
+#                     order.status = "failed"
+#                     order.save(update_fields=["status"])
+#                     return Response({"message": "Stock inconsistency"}, status=400)
+
+#                 variant.stock_qty -= item.quantity
+#                 variant.save(update_fields=["stock_qty"])
+
+#         # Create fulfillment
+#         # for item in order.items.all():
+#         #     Fulfillment.objects.create(
+#         #         order=order,
+#         #         item=item,
+#         #         status="queued"
+#         #     )
+
+        
+
+#         for item in order.items.all():
+#             fulfillment = Fulfillment.objects.create(
+#                 order=order,
+#                 item=item,
+#                 status="processing"
+#             )
+
+#             try:
+#                 response = purchase_voucher(item.variant, order)
+
+#                 if response.get("status"):
+#                     voucher = response["data"]["voucher"]
+
+#                     fulfillment.status = "delivered"
+#                     fulfillment.provider_payload = voucher
+#                     fulfillment.save()
+
+#                 else:
+#                     fulfillment.status = "failed"
+#                     fulfillment.notes = response.get("error")
+#                     fulfillment.save()
+
+#             except Exception as e:
+#                 fulfillment.status = "failed"
+#                 fulfillment.notes = str(e)
+#                 fulfillment.save()
+
+
+#     return Response({
+#         "message": "Payment verified successfully.",
+#         "order_id": order.id,
+#         "transaction_id": transaction_id,
+#         "payment_method": payment_method,
+#         "status": "paid"
+#     }, status=200)
+
+
 @api_view(["POST"])
 def verify_paystack_payment(request):
     reference = request.data.get("reference")
 
     if not reference:
-        return Response({"message": "reference is required."}, status=400)
+        return Response({"message": "Reference required"}, status=400)
 
-    headers = {
-        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-    }
+    verify = requests.get(
+        f"https://api.paystack.co/transaction/verify/{reference}",
+        headers={"Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}"}
+    ).json()
 
-    verify_url = f"https://api.paystack.co/transaction/verify/{reference}"
-    response = requests.get(verify_url, headers=headers, timeout=30)
-    paystack_response = response.json()
+    if not verify.get("status"):
+        return Response({"message": "Verification failed"}, status=400)
 
-    if not paystack_response.get("status"):
-        return Response({"message": "Verification failed."}, status=400)
+    data = verify["data"]
 
-    data = paystack_response.get("data", {})
+    if data["status"] != "success":
+        return Response({"message": "Payment not successful"}, status=400)
 
-    if data.get("status") != "success":
-        return Response({"message": "Payment not successful."}, status=400)
+    order_id = data["metadata"]["order_id"]
 
-    metadata = data.get("metadata", {})
-    order_id = metadata.get("order_id")
-
-    order = Order.objects.select_related("user").prefetch_related(
-        "items__variant__product"
-    ).filter(id=order_id).first()
+    order = Order.objects.prefetch_related("items__variant").filter(id=order_id).first()
 
     if not order:
-        return Response({"message": "Order not found."}, status=404)
+        return Response({"message": "Order not found"}, status=404)
 
     if order.status == "paid":
-        return Response({"message": "Already verified."}, status=200)
+        return Response({"message": "Already processed"}, status=200)
 
-    expected_amount_kobo = int(order.total * 100)
-
-    if data.get("amount") != expected_amount_kobo:
-        return Response({"message": "Amount mismatch."}, status=400)
-
-    # -------- Extract Paystack Info --------
-    transaction_id = str(data.get("id"))
-    payment_channel = data.get("channel")  # card / bank / ussd / transfer
-    paid_at = data.get("paid_at")
-
-    # Optional: card info
-    authorization = data.get("authorization", {})
-    card_type = authorization.get("card_type")
-    bank = authorization.get("bank")
-
-    payment_method = payment_channel
-
-    if payment_channel == "card" and card_type:
-        payment_method = f"{card_type} ({bank})"
-
-    # -------- Process Order --------
     with transaction.atomic():
 
-        # Prevent double processing
-        if order.status == "paid":
-            return Response({"message": "Already processed"}, status=200)
-
-        transaction_id = str(data.get("id"))
-        payment_channel = data.get("channel")
-
         order.status = "paid"
-        order.paystack_transaction_id = transaction_id
-        order.payment_method = payment_channel
+        order.paystack_transaction_id = str(data["id"])
+        order.payment_method = data["channel"]
         order.paid_at = timezone.now()
-        order.save(update_fields=[
-            "status",
-            "paystack_transaction_id",
-            "payment_method",
-            "paid_at"
-        ])
+        order.save()
 
-        # ✅ Increment Coupon Usage
-        if order.coupon:
-            order.coupon.used_count += 1
-            order.coupon.save(update_fields=["used_count"])
+        for item in order.items.all():
+            for _ in range(item.quantity):  # IMPORTANT FIX
 
-            # Create redemption record (avoid duplicates)
-            if not Redemption.objects.filter(
-                coupon=order.coupon,
-                redeemed_by=order.user,
-                redeemed_at__isnull=False,
-                order_amount=order.total
-            ).exists():
-
-                Redemption.objects.create(
-                    coupon=order.coupon,
-                    product_variant=order.items.first().variant,
-                    redeemed_by=order.user,
-                    redeemed_at=timezone.now(),
-                    order_amount=order.total,
-                    savings=order.discount_total
+                fulfillment = Fulfillment.objects.create(
+                    order=order,
+                    item=item,
+                    status="processing"
                 )
 
-        # Reduce stock
-        for item in order.items.all():
-            variant = item.variant
-            if not variant.ean:
-                raise Exception("EAN not configured for this product variant")
-            if variant.product.is_limited_stock:
-                if variant.stock_qty < item.quantity:
-                    order.status = "failed"
-                    order.save(update_fields=["status"])
-                    return Response({"message": "Stock inconsistency"}, status=400)
-
-                variant.stock_qty -= item.quantity
-                variant.save(update_fields=["stock_qty"])
-
-        # Create fulfillment
-        # for item in order.items.all():
-        #     Fulfillment.objects.create(
-        #         order=order,
-        #         item=item,
-        #         status="queued"
-        #     )
-
-        
-
-        for item in order.items.all():
-            fulfillment = Fulfillment.objects.create(
-                order=order,
-                item=item,
-                status="processing"
-            )
-
-            try:
                 response = purchase_voucher(item.variant, order)
 
                 if response.get("status"):
-                    voucher = response["data"]["voucher"]
-
                     fulfillment.status = "delivered"
-                    fulfillment.provider_payload = voucher
-                    fulfillment.save()
-
+                    fulfillment.provider_payload = response["data"]
                 else:
                     fulfillment.status = "failed"
                     fulfillment.notes = response.get("error")
-                    fulfillment.save()
 
-            except Exception as e:
-                fulfillment.status = "failed"
-                fulfillment.notes = str(e)
                 fulfillment.save()
 
-
-    return Response({
-        "message": "Payment verified successfully.",
-        "order_id": order.id,
-        "transaction_id": transaction_id,
-        "payment_method": payment_method,
-        "status": "paid"
-    }, status=200)
+    return Response({"message": "Payment verified"})
 
 
 
+
+# @api_view(["POST"])
+# @csrf_exempt
+# def paystack_webhook(request):
+
+#     # -------- Verify Signature --------
+#     signature = request.headers.get("x-paystack-signature")
+#     body = request.body
+
+#     computed_signature = hmac.new(
+#         settings.PAYSTACK_SECRET_KEY.encode(),
+#         body,
+#         hashlib.sha512
+#     ).hexdigest()
+
+#     if signature != computed_signature:
+#         return Response({"message": "Invalid signature"}, status=400)
+
+#     payload = json.loads(body)
+#     event = payload.get("event")
+
+#     if event != "charge.success":
+#         return Response({"message": "Event ignored"}, status=200)
+
+#     data = payload.get("data", {})
+#     reference = data.get("reference")
+#     metadata = data.get("metadata", {})
+
+#     order_id = metadata.get("order_id")
+
+#     try:
+#         order = Order.objects.select_related().prefetch_related("items__variant__product").get(id=order_id)
+#     except Order.DoesNotExist:
+#         return Response({"message": "Order not found"}, status=404)
+
+#     # Prevent double processing
+#     if order.status == "paid":
+#         return Response({"message": "Already processed"}, status=200)
+
+#     with transaction.atomic():
+
+#         # Prevent double processing
+#         if order.status == "paid":
+#             return Response({"message": "Already processed"}, status=200)
+
+#         transaction_id = str(data.get("id"))
+#         payment_channel = data.get("channel")
+
+#         order.status = "paid"
+#         order.paystack_transaction_id = transaction_id
+#         order.payment_method = payment_channel
+#         order.paid_at = timezone.now()
+#         order.save(update_fields=[
+#             "status",
+#             "paystack_transaction_id",
+#             "payment_method",
+#             "paid_at"
+#         ])
+
+#         # ✅ Increment Coupon Usage
+#         if order.coupon:
+#             order.coupon.used_count += 1
+#             order.coupon.save(update_fields=["used_count"])
+
+#             # Create redemption record (avoid duplicates)
+#             if not Redemption.objects.filter(
+#                 coupon=order.coupon,
+#                 redeemed_by=order.user,
+#                 redeemed_at__isnull=False,
+#                 order_amount=order.total
+#             ).exists():
+
+#                 Redemption.objects.create(
+#                     coupon=order.coupon,
+#                     product_variant=order.items.first().variant,
+#                     redeemed_by=order.user,
+#                     redeemed_at=timezone.now(),
+#                     order_amount=order.total,
+#                     savings=order.discount_total
+#                 )
+
+#         # Reduce stock
+#         for item in order.items.all():
+#             variant = item.variant
+#             if variant.product.is_limited_stock:
+#                 if variant.stock_qty < item.quantity:
+#                     order.status = "failed"
+#                     order.save(update_fields=["status"])
+#                     return Response({"message": "Stock inconsistency"}, status=400)
+
+#                 variant.stock_qty -= item.quantity
+#                 variant.save(update_fields=["stock_qty"])
+
+#         # Create fulfillment
+#         for item in order.items.all():
+#             fulfillment = Fulfillment.objects.create(
+#                 order=order,
+#                 item=item,
+#                 status="processing"
+#             )
+
+#             try:
+#                 response = purchase_voucher(item.variant, order)
+
+#                 if response.get("status"):
+#                     voucher = response["data"]["voucher"]
+
+#                     fulfillment.status = "delivered"
+#                     fulfillment.provider_payload = voucher
+#                     fulfillment.save()
+
+#                 else:
+#                     fulfillment.status = "failed"
+#                     fulfillment.notes = response.get("error")
+#                     fulfillment.save()
+
+#             except Exception as e:
+#                 fulfillment.status = "failed"
+#                 fulfillment.notes = str(e)
+#                 fulfillment.save()
+
+#     return Response({"message": "Payment processed successfully"}, status=200)
 
 
 @api_view(["POST"])
 @csrf_exempt
 def paystack_webhook(request):
 
-    # -------- Verify Signature --------
     signature = request.headers.get("x-paystack-signature")
-    body = request.body
 
-    computed_signature = hmac.new(
+    computed = hmac.new(
         settings.PAYSTACK_SECRET_KEY.encode(),
-        body,
+        request.body,
         hashlib.sha512
     ).hexdigest()
 
-    if signature != computed_signature:
+    if signature != computed:
         return Response({"message": "Invalid signature"}, status=400)
 
-    payload = json.loads(body)
-    event = payload.get("event")
+    payload = json.loads(request.body)
 
-    if event != "charge.success":
-        return Response({"message": "Event ignored"}, status=200)
+    if payload.get("event") != "charge.success":
+        return Response({"message": "Ignored"}, status=200)
 
-    data = payload.get("data", {})
-    reference = data.get("reference")
-    metadata = data.get("metadata", {})
+    data = payload["data"]
+    order_id = data["metadata"]["order_id"]
 
-    order_id = metadata.get("order_id")
+    order = Order.objects.prefetch_related("items__variant").filter(id=order_id).first()
 
-    try:
-        order = Order.objects.select_related().prefetch_related("items__variant__product").get(id=order_id)
-    except Order.DoesNotExist:
-        return Response({"message": "Order not found"}, status=404)
-
-    # Prevent double processing
-    if order.status == "paid":
+    if not order or order.status == "paid":
         return Response({"message": "Already processed"}, status=200)
 
     with transaction.atomic():
 
-        # Prevent double processing
-        if order.status == "paid":
-            return Response({"message": "Already processed"}, status=200)
-
-        transaction_id = str(data.get("id"))
-        payment_channel = data.get("channel")
-
         order.status = "paid"
-        order.paystack_transaction_id = transaction_id
-        order.payment_method = payment_channel
+        order.paystack_transaction_id = str(data["id"])
+        order.payment_method = data["channel"]
         order.paid_at = timezone.now()
-        order.save(update_fields=[
-            "status",
-            "paystack_transaction_id",
-            "payment_method",
-            "paid_at"
-        ])
+        order.save()
 
-        # ✅ Increment Coupon Usage
-        if order.coupon:
-            order.coupon.used_count += 1
-            order.coupon.save(update_fields=["used_count"])
+        for item in order.items.all():
+            for _ in range(item.quantity):
 
-            # Create redemption record (avoid duplicates)
-            if not Redemption.objects.filter(
-                coupon=order.coupon,
-                redeemed_by=order.user,
-                redeemed_at__isnull=False,
-                order_amount=order.total
-            ).exists():
-
-                Redemption.objects.create(
-                    coupon=order.coupon,
-                    product_variant=order.items.first().variant,
-                    redeemed_by=order.user,
-                    redeemed_at=timezone.now(),
-                    order_amount=order.total,
-                    savings=order.discount_total
+                fulfillment = Fulfillment.objects.create(
+                    order=order,
+                    item=item,
+                    status="processing"
                 )
 
-        # Reduce stock
-        for item in order.items.all():
-            variant = item.variant
-            if variant.product.is_limited_stock:
-                if variant.stock_qty < item.quantity:
-                    order.status = "failed"
-                    order.save(update_fields=["status"])
-                    return Response({"message": "Stock inconsistency"}, status=400)
-
-                variant.stock_qty -= item.quantity
-                variant.save(update_fields=["stock_qty"])
-
-        # Create fulfillment
-        for item in order.items.all():
-            fulfillment = Fulfillment.objects.create(
-                order=order,
-                item=item,
-                status="processing"
-            )
-
-            try:
                 response = purchase_voucher(item.variant, order)
 
                 if response.get("status"):
-                    voucher = response["data"]["voucher"]
-
                     fulfillment.status = "delivered"
-                    fulfillment.provider_payload = voucher
-                    fulfillment.save()
-
+                    fulfillment.provider_payload = response["data"]
                 else:
                     fulfillment.status = "failed"
                     fulfillment.notes = response.get("error")
-                    fulfillment.save()
 
-            except Exception as e:
-                fulfillment.status = "failed"
-                fulfillment.notes = str(e)
                 fulfillment.save()
 
-    return Response({"message": "Payment processed successfully"}, status=200)
+    return Response({"message": "Webhook processed"})
 
 
 @api_view(["GET"])
