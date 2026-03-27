@@ -46,7 +46,7 @@ def purchase_voucher(variant, order):
     date_only = now.strftime("%Y%m%d")
 
     payload = {
-        "username": settings.MINTOUTE_USERNAME,
+        "username": settings.MINTROUTE_USERNAME,
         "data": {
             "ean": variant.ean,
             "location": "UK",
@@ -62,14 +62,14 @@ def purchase_voucher(variant, order):
     signature = generate_signature(
         "POST",
         flat_data,
-        settings.MINTOUTE_SECRET_KEY,
+        settings.MINRTOUTE_SECRET_KEY,
         signature_time
     )
 
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTOUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
+        "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
         "X-Mint-Date": header_time
     }
 
