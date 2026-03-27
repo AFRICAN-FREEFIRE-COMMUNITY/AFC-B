@@ -85,6 +85,7 @@ def purchase_voucher(variant, order):
             return {
                 "status": False,
                 "error": "Invalid JSON from provider",
+                "status_code": response.status_code,
                 "raw_response": response.text
             }
         # data = response.json()
