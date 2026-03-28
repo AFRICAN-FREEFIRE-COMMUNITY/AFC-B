@@ -25,4 +25,6 @@ urlpatterns = [
     path("team/", include('afc_team.urls')),
     path("awards/", include('afc_awards.urls')),
     path("shop/", include('afc_shop.urls')),
+    path("player/", include('afc_player.urls')),
+
 ]

@@ -256,7 +256,7 @@ def signup(request):
 
     try:
         # Validation
-        if not all([in_game_name, uid, email, password, confirm_password]):
+        if not all([in_game_name, email, password, confirm_password]):
             return Response({"error": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
 
         if password != confirm_password:
@@ -265,9 +265,11 @@ def signup(request):
         # Check if in-game name or UID are already in use by **active users**
         if User.objects.filter(username=in_game_name, is_active=True).exists():
             return Response({"error": "In-game name is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+        
 
-        if User.objects.filter(uid=uid, is_active=True).exists():
-            return Response({"error": "UID is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+        if uid:
+            if User.objects.filter(uid=uid, is_active=True).exists():
+                return Response({"error": "UID is already in use."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check for email
         existing_user = User.objects.filter(email=email).first()
@@ -297,7 +299,7 @@ If you did not create an account, please ignore this email.
         # Create new user
         user = User.objects.create(
             username=in_game_name,
-            uid=uid,
+            uid=uid if uid else None,
             email=email,
             is_active=False,
             full_name=full_name,
@@ -1022,7 +1024,7 @@ def edit_profile(request):
     profile_pic = request.FILES.get("profile_pic")
 
     # Validate required fields
-    if not all([full_name, in_game_name, email, uid]):
+    if not all([full_name, in_game_name, email]):
         return Response({"message": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     # Check for uniqueness conflicts
@@ -1552,13 +1554,16 @@ def suspend_user(request):
     except User.DoesNotExist:
         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    if user.status == "suspended":
+        return Response({"message": "User is Currently Suspended"}, status=status.HTTP_400_BAD_REQUEST)
+
     user.status = "suspended"
     user.save()
 
     AdminHistory.objects.create(
         admin_user=user,
         action="suspended_user",
-        description=f"User {user.username} (ID: {user.user_id}) suspended"
+        description=f"Active User {user.username} (ID: {user.user_id}) suspended"
     )
 
     # Notify the user
@@ -1605,13 +1610,17 @@ def activate_user(request):
     except User.DoesNotExist:
         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    
+    if user.status == "active":
+        return Response({"message": "User is currently active."}, status=status.HTTP_400_BAD_REQUEST)
+
     user.status = "active"
     user.save()
 
     AdminHistory.objects.create(
         admin_user=user,
         action="activated_user",
-        description=f"User {user.username} (ID: {user.user_id}) activated"
+        description=f"Suspended User {user.username} (ID: {user.user_id}) has been activated"
     )
 
     # Notify the user

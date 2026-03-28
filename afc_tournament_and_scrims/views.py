@@ -14,7 +14,7 @@ from afc_auth.views import assign_discord_role, check_discord_membership, check_
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 from .models import Event, EventInviteToken, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
-from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, Notifications, Roles, User, UserRoles
+from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -30,6 +30,8 @@ from rest_framework import status
 # Create your views here.
 
 from rest_framework.pagination import PageNumberPagination
+
+from afc_auth.views import send_email
 
 def paginate_queryset(request, queryset, serializer_func):
     paginator = PageNumberPagination()
@@ -1078,6 +1080,131 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+def snapshot_event(event):
+    return {
+        "event": {
+            "event_name": event.event_name,
+            "event_mode": event.event_mode,
+            "participant_type": event.participant_type,
+            "competition_type": event.competition_type,
+            "max_teams_or_players": event.max_teams_or_players,
+            "is_public": event.is_public,
+            "is_sponsored": event.is_sponsored,
+        },
+        "sponsors": list(
+            SponsorEvent.objects.filter(event=event)
+            .values_list("sponsor__username", flat=True)
+        ),
+        "streams": list(
+            StreamChannel.objects.filter(event=event)
+            .values_list("channel_url", flat=True)
+        ),
+        "stages": [
+            {
+                "stage_id": s.stage_id,
+                "stage_name": s.stage_name,
+                "groups": [
+                    {
+                        "group_id": g.group_id,
+                        "group_name": g.group_name,
+                        "match_count": g.match_count,
+                        "match_maps": g.match_maps,
+                    }
+                    for g in s.groups.all()
+                ]
+            }
+            for s in event.stages.all()
+        ]
+    }
+
+
+def diff_dict(old, new):
+    changes = []
+    for k in old:
+        if str(old[k]) != str(new[k]):
+            changes.append(f"{k}: '{old[k]}' → '{new[k]}'")
+    return changes
+
+
+def diff_list(name, old_list, new_list):
+    old_set = set(old_list)
+    new_set = set(new_list)
+
+    added = new_set - old_set
+    removed = old_set - new_set
+
+    changes = []
+    if added:
+        changes.append(f"{name} added: {list(added)}")
+    if removed:
+        changes.append(f"{name} removed: {list(removed)}")
+
+    return changes
+
+
+def diff_stages(old_stages, new_stages):
+    changes = []
+
+    old_map = {s["stage_id"]: s for s in old_stages}
+    new_map = {s["stage_id"]: s for s in new_stages}
+
+    # -------- STAGES --------
+    old_ids = set(old_map.keys())
+    new_ids = set(new_map.keys())
+
+    added_stages = new_ids - old_ids
+    removed_stages = old_ids - new_ids
+
+    if added_stages:
+        changes.append(f"Stages added: {list(added_stages)}")
+
+    if removed_stages:
+        changes.append(f"Stages removed: {list(removed_stages)}")
+
+    # -------- EXISTING STAGES --------
+    for sid in old_ids & new_ids:
+        old_s = old_map[sid]
+        new_s = new_map[sid]
+
+        if old_s["stage_name"] != new_s["stage_name"]:
+            changes.append(
+                f"Stage {sid} name: '{old_s['stage_name']}' → '{new_s['stage_name']}'"
+            )
+
+        # -------- GROUPS --------
+        old_groups = {g["group_id"]: g for g in old_s["groups"]}
+        new_groups = {g["group_id"]: g for g in new_s["groups"]}
+
+        old_g_ids = set(old_groups.keys())
+        new_g_ids = set(new_groups.keys())
+
+        if new_g_ids - old_g_ids:
+            changes.append(f"Stage {sid}: groups added {list(new_g_ids - old_g_ids)}")
+
+        if old_g_ids - new_g_ids:
+            changes.append(f"Stage {sid}: groups removed {list(old_g_ids - new_g_ids)}")
+
+        for gid in old_g_ids & new_g_ids:
+            og = old_groups[gid]
+            ng = new_groups[gid]
+
+            if og["group_name"] != ng["group_name"]:
+                changes.append(
+                    f"Group {gid} name: '{og['group_name']}' → '{ng['group_name']}'"
+                )
+
+            if og["match_count"] != ng["match_count"]:
+                changes.append(
+                    f"Group {gid} match_count: {og['match_count']} → {ng['match_count']}"
+                )
+
+            if og["match_maps"] != ng["match_maps"]:
+                changes.append(
+                    f"Group {gid} maps changed"
+                )
+
+    return changes
+
 
 @api_view(["POST"])
 def edit_event(request):
@@ -1102,6 +1229,23 @@ def edit_event(request):
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
         return Response({"message": "Event not found."}, status=404)
+
+    old_snapshot = snapshot_event(event)
+
+    # old_data = {
+    #     "event_name": event.event_name,
+    #     "event_mode": event.event_mode,
+    #     "participant_type": event.participant_type,
+    #     "competition_type": event.competition_type,
+    #     "max_teams_or_players": event.max_teams_or_players,
+    #     "start_date": str(event.start_date),
+    #     "end_date": str(event.end_date),
+    #     "registration_open_date": str(event.registration_open_date),
+    #     "registration_end_date": str(event.registration_end_date),
+    #     "is_public": event.is_public,
+    #     "is_sponsored": event.is_sponsored,
+    #     "event_status": event.event_status,
+    # }
 
     def maybe_json(val):
         if isinstance(val, str):
@@ -1304,6 +1448,30 @@ def edit_event(request):
     with transaction.atomic():
         event.save()
 
+        # new_data = {
+        #     "event_name": event.event_name,
+        #     "event_mode": event.event_mode,
+        #     "participant_type": event.participant_type,
+        #     "competition_type": event.competition_type,
+        #     "max_teams_or_players": event.max_teams_or_players,
+        #     "start_date": str(event.start_date),
+        #     "end_date": str(event.end_date),
+        #     "registration_open_date": str(event.registration_open_date),
+        #     "registration_end_date": str(event.registration_end_date),
+        #     "is_public": event.is_public,
+        #     "is_sponsored": event.is_sponsored,
+        #     "event_status": event.event_status,
+        # }
+
+        # changes = []
+
+        # for field in old_data.keys():
+        #     old_val = old_data[field]
+        #     new_val = new_data[field]
+
+        #     if str(old_val) != str(new_val):
+        #         changes.append(f"{field}: '{old_val}' → '{new_val}'")
+
         # ---- Stream channels ----
         if "stream_channels" in request.data:
             StreamChannel.objects.filter(event=event).delete()
@@ -1442,11 +1610,55 @@ def edit_event(request):
                 StageGroups.objects.filter(stage__event=event).exclude(group_id__in=kept_group_ids).delete()
                 Stages.objects.filter(event=event).exclude(stage_id__in=kept_stage_ids).delete()
 
+        new_snapshot = snapshot_event(event)
+
+        changes = []
+
+        # event fields
+        changes += diff_dict(old_snapshot["event"], new_snapshot["event"])
+
+        # sponsors
+        changes += diff_list("Sponsors", old_snapshot["sponsors"], new_snapshot["sponsors"])
+
+        # streams
+        changes += diff_list("Stream channels", old_snapshot["streams"], new_snapshot["streams"])
+
+        # stages/groups
+        changes += diff_stages(old_snapshot["stages"], new_snapshot["stages"])
+
+    # AdminHistory.objects.create(
+    #     admin_user=user,
+    #     action="edit_event",
+    #     description=f"Edited event {event.event_name} (ID: {event.event_id})"
+    # )
+    # description = "No changes made."
+
+    # if changes:
+    #     description = " | ".join(changes)
+
+    
     AdminHistory.objects.create(
         admin_user=user,
         action="edit_event",
-        description=f"Edited event {event.event_name} (ID: {event.event_id})"
+        description=json.dumps({
+            "event_id": event.event_id,
+            "changes": changes
+        }, indent=2)
     )
+
+    # AdminHistory.objects.create(
+    #     admin_user=user,
+    #     action="edit_event",
+    #     description=f"Edited event {event.event_name} (ID: {event.event_id}) | {description}"
+    # )
+    # AdminHistory.objects.create(
+    #     admin_user=user,
+    #     action="edit_event",
+    #     description=json.dumps({
+    #         "event_id": event.event_id,
+    #         "changes": changes
+    #     })
+    # )
 
     return Response({
         "message": "Event updated successfully.",
@@ -3001,18 +3213,18 @@ def get_event_details_not_logged_in(request):
     else:
         regs = (RegisteredCompetitors.objects
                 .select_related("team")
-                .prefetch_related("team__members__member")
+                .prefetch_related("team__memberships__member")
                 .filter(event=event))
         for reg in regs:
             if reg.team:
-                members = reg.team.teammembers.all()
+                members = reg.team.memberships.all()
                 registered.append({
                     "registered_competitor_id": reg.id,
                     "team_id": reg.team.team_id,
                     "team_name": reg.team.team_name,
                     "status": reg.status,
                     "members": [
-                        {"player_id": m.member.id, "username": m.member.username, "role": m.in_game_role}
+                        {"player_id": m.member.user_id, "username": m.member.username, "role": m.in_game_role}
                         for m in members
                     ]
                 })
@@ -3842,19 +4054,338 @@ def register_for_event(request):
 
     return Response({"message": "Invalid participant type."}, status=400)
 
+def check_and_activate_team(tournament_team):
+
+    total = tournament_team.members.count()
+    confirmed = tournament_team.members.filter(status="active").count()
+
+    if total == confirmed:
+
+        # ---------------- ACTIVATE TEAM ----------------
+        tournament_team.status = "active"
+        tournament_team.save(update_fields=["status"])
+
+        RegisteredCompetitors.objects.filter(
+            event=tournament_team.event,
+            team=tournament_team.team
+        ).update(status="registered")
+
+
+        # ---------------- SEND AN EMAIL TO THE TEAM OWNER NOTIFYING THEM -----------------
+        team_name = tournament_team.team.team_name
+        event_name = tournament_team.event.event_name
+        team_leader_username = tournament_team.team.team_owner.username
+        email = tournament_team.team.team_owner.email
+
+        
+
+        subject = f'AFC Registration Update – Your Team {team_name} is now Fully Registered for {event_name}'
+        message = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+
+<body style="margin:0;padding:0;background-color:#050505;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#050505;padding:40px 0;">
+    <tr>
+      <td align="center">
+
+        <table width="600" cellpadding="0" cellspacing="0" style="background:#0a0a0a;border:1px solid #1f1f1f;max-width:600px;width:100%;">
+          
+          <tr>
+            <td style="background:#f5a623;height:4px;"></td>
+          </tr>
+
+          <tr>
+            <td align="center" style="padding:30px;border-bottom:1px solid #1a1a1a;">
+              <img src="https://yourdomain.com/static/logo.png" alt="AFC Logo" style="max-height:50px;">
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:40px 35px;color:#b0b0b0;font-size:15px;line-height:1.6;">
+
+              <h1 style="color:#ffffff;margin-bottom:20px;">Congratulations 🎉</h1>
+
+              <p>Dear <strong style="color:#ffffff;">{team_leader_username}</strong> (Team {team_name}),</p>
+
+              <p>We are pleased to inform you that all members of your team have been successfully verified and accepted.</p>
+
+              <table width="100%" style="border:1px solid #f5a623;background:#14110a;margin:25px 0;">
+                <tr>
+                  <td style="padding:20px;text-align:center;color:#ffffff;">
+                    Your team <strong style="color:#f5a623;">{team_name}</strong> is now fully registered for 
+                    <strong>{event_name}</strong>.
+                  </td>
+                </tr>
+              </table>
+
+              <p>
+                All match details (room IDs, passwords, schedules) will be available in your AFC dashboard notifications.
+              </p>
+
+              <p>
+                Stay prepared and keep checking the platform regularly.
+              </p>
+
+              <p>
+                Need help? Contact us at 
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#f5a623;">
+                  info@africanfreefirecommunity.com
+                </a>
+              </p>
+
+              <p style="color:#ffffff;font-weight:bold;">
+                We look forward to seeing your team compete!
+              </p>
+
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background:#080808;padding:25px;border-top:1px solid #1a1a1a;">
+              <table width="100%">
+                <tr>
+                  <td style="color:#888;font-size:12px;">
+                    <strong>African Freefire Community</strong><br>
+                    <a href="https://www.africanfreefirecommunity.com" style="color:#f5a623;">
+                      Visit Website
+                    </a>
+                  </td>
+                  <td align="right">
+                    <a href="https://discord.gg/YOUR_LINK"
+                       style="border:1px solid #333;color:#fff;padding:10px 15px;text-decoration:none;font-size:11px;">
+                      Join Discord
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+        send_email(email, subject, message)
+
+        # ---------------- PREPARE ROLE ASSIGNMENT ----------------
+        stage = Stages.objects.filter(event=tournament_team.event).first()
+
+        if not stage:
+            return
+
+        user_ids = list(
+            tournament_team.members.values_list("user_id", flat=True)
+        )
+
+        assignments_qs = DiscordRoleAssignment.objects.filter(
+            stage=stage,
+            group__isnull=True,
+            status="pending",
+            user_id__in=user_ids
+        )
+
+        total = assignments_qs.count()
+
+        if total == 0:
+            return
+
+        progress = DiscordStageRoleAssignmentProgress.objects.create(
+            stage=stage,
+            total=total,
+            completed=0,
+            failed=0,
+            status="running"
+        )
+
+        # 🔥 TRIGGER CELERY
+        assign_stage_roles_for_team_task.delay(
+            progress.id,
+            stage.stage_id,
+            user_ids
+        )
+
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
 
 @api_view(["POST"])
 def confirm_player(request):
 
     member_id = request.data.get("member_id")
-
     member = get_object_or_404(TournamentTeamMember, id=member_id)
+
+    # جلوگیری از تکرار
+    if member.status == "active":
+        return Response({"message": "Player already confirmed."}, status=200)
 
     member.status = "active"
     member.save(update_fields=["status"])
 
-    #send notification
+    # ---------------- DATA ----------------
+    player_username = member.user.username
+    email = member.user.email
+    event_name = member.tournament_team.event.event_name
+    team_leader_username = member.tournament_team.team.team_owner.username
+    team_name = member.tournament_team.team.team_name
+    team_owner_email = member.tournament_team.team.team_owner.email
 
+    # =========================
+    # 📧 EMAIL TO PLAYER
+    # =========================
+    subject = f'AFC Registration Update – Your Application for {event_name} Has Been Accepted'
+
+    player_message = f"""
+<!DOCTYPE html>
+<html>
+<body style="margin: 0; padding: 0; background-color: #050505; font-family: Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #050505; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" style="background-color: #0a0a0a; border: 1px solid #1f1f1f;">
+          
+          <tr><td height="4" style="background-color: #15a84e;"></td></tr>
+
+          <tr>
+            <td align="center" style="padding: 30px;">
+              <img src="https://africanfreefirecommunity.com/static/logo.png"
+                   alt="AFC Logo"
+                   style="max-height: 50px; display:block;">
+            </td>
+          </tr>
+          
+          <tr>
+            <td style="padding: 40px; color: #d0d0d0; font-size: 15px;">
+              
+              <h1 style="color: #ffffff;">Registration Accepted</h1>
+              
+              <p>Dear <strong style="color:#ffffff;">{player_username}</strong>,</p>
+              
+              <p>Your registration for <strong>{event_name}</strong> has been 
+              <span style="color:#15a84e;"><strong>verified and accepted!</strong></span></p>
+
+              <p>You are now eligible to participate. Match details will be available in your dashboard.</p>
+
+              <p>If you have questions, contact:
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#15a84e;">
+                  info@africanfreefirecommunity.com
+                </a>
+              </p>
+
+              <p style="color:#ffffff;"><strong>Good luck in the tournament!</strong></p>
+
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+    try:
+        send_email(email, subject, player_message)
+    except Exception as e:
+        print(f"Player email failed: {e}")
+
+    # =========================
+    # 📧 EMAIL TO TEAM OWNER
+    # =========================
+    subject = f'AFC Registration Update – Player {player_username} Accepted for {event_name}'
+
+    owner_message = f"""
+<!DOCTYPE html>
+<html>
+<body style="margin: 0; padding: 0; background-color: #050505; font-family: Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #050505; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" style="background-color: #0a0a0a; border: 1px solid #1f1f1f;">
+          
+          <tr><td height="4" style="background-color: #ffffff;"></td></tr>
+
+          <tr>
+            <td align="center" style="padding: 30px;">
+              <img src="https://africanfreefirecommunity.com/static/logo.png"
+                   alt="AFC Logo"
+                   style="max-height: 50px; display:block;">
+            </td>
+          </tr>
+          
+          <tr>
+            <td style="padding: 40px; color: #d0d0d0; font-size: 15px;">
+              
+              <h1 style="color:#ffffff;">Player Status Update</h1>
+              
+              <p>
+                Dear <strong style="color:#ffffff;">{team_leader_username}</strong>
+                (Team {team_name}),
+              </p>
+              
+              <p>
+                Player <strong style="color:#ffffff;">{player_username}</strong> 
+                has been reviewed for <strong>{event_name}</strong>.
+              </p>
+
+              <table width="100%" style="border:1px solid #333; background:#0f0f0f; margin:20px 0;">
+                <tr>
+                  <td style="padding:20px;">
+                    <strong style="color:#ffffff;">
+                      Status: <span style="color:#15a84e;">Accepted</span>
+                    </strong>
+                  </td>
+                </tr>
+              </table>
+
+              <p>You can track all players in your dashboard.</p>
+
+              <p>
+                Need help? 
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#ffffff;">
+                  Contact support
+                </a>
+              </p>
+
+              <p style="color:#ffffff;"><strong>Thanks for your participation.</strong></p>
+
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+    try:
+        send_email(team_owner_email, subject, owner_message)
+    except Exception as e:
+        print(f"Owner email failed: {e}")
+
+    # ---------------- TEAM ACTIVATION CHECK ----------------
     check_and_activate_team(member.tournament_team)
 
     return Response({
@@ -3862,18 +4393,346 @@ def confirm_player(request):
     }, status=200)
 
 
+# @api_view(["POST"])
+# def confirm_player(request):
+
+#     member_id = request.data.get("member_id")
+
+#     member = get_object_or_404(TournamentTeamMember, id=member_id)
+
+#     member.status = "active"
+#     member.save(update_fields=["status"])
+
+#     #---- SEND CONFIRMATION MAIL TO TEAM OWNER ----
+#     player_username = member.user.username
+#     email = member.user.email
+#     event_name = member.tournament_team.event.event_name
+#     team_leader_username = member.tournament_team.team.team_owner.username
+#     team_name = member.tournament_team.team.team_name
+#     team_owner_email = member.tournament_team.team.team_owner.email
+
+
+#     subject = f'AFC Registration Update – Player {player_username} has been Accepted for {event_name}'
+#     message = f'''Dear {team_leader_username} (Team {team_name}),
+
+# We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
+
+# Status: Accepted
+
+
+# The player has already been notified directly. You can view the current status of all your team members in your AFC dashboard under Team Management.
+# We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
+
+# If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+# Thank you for your continued participation in the African Freefire Community.
+
+# Best regards,
+# AFC Management Board
+# African Freefire Community (AFC)
+# Website: www.africanfreefirecommunity.com
+# Discord: [Join AFC Discord]
+#         '''
+#     send_email(team_owner_email, subject, message)
+
+#     #----- SEND CONFIRMATION MAIL TO USER -----
+#     subject = f'AFC Registration Update – Your Application for {event_name} Has Been Accepted'
+#     message = f'''Dear {player_username} (or {team_name}),
+
+# Thank you for submitting your registration for the AFC {event_name}.
+# We are pleased to inform you that your registration has been verified and accepted! 🎉
+# You are now officially eligible to participate in the tournament. You will receive all further details (room IDs, passwords, match schedules, etc.) directly in your AFC account Notifications tab. Please keep a close eye on your dashboard.
+
+# We strongly encourage you to prepare and stay updated. All confirmed players are processed on a first-come, first-served basis for future stages.
+# If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+
+# We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon!
+
+# Best regards,
+# AFC Management Board
+# African Freefire Community (AFC)
+# Website: www.africanfreefirecommunity.com
+# Discord: [Join AFC Discord]
+#         '''
+#     send_email(email, subject, message)
+
+
+#     #send notification
+
+#     check_and_activate_team(member.tournament_team)
+
+#     return Response({
+#         "message": "Player confirmed."
+#     }, status=200)
+
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
 @api_view(["POST"])
 def reject_player(request):
     member_id = request.data.get("member_id")
-    member = get_object_or_404(TournamentTeamMember, id=member_id)
-    member.status = "rejected"
-    member.save(update_fields=["status"])
+    reason = request.data.get("reason", "No reason provided")
 
-    # Notifications.objects.create()
+    member = get_object_or_404(TournamentTeamMember, id=member_id)
+
+    # Prevent duplicate rejection
+    if member.status == "rejected":
+        return Response({"message": "Player already rejected."}, status=200)
+
+    member.status = "rejected"
+    member.reason = reason
+    member.save(update_fields=["status", "reason"])
+
+    # ---------------- DATA ----------------
+    player_username = member.user.username
+    email = member.user.email
+    event_name = member.tournament_team.event.event_name
+    team_leader_username = member.tournament_team.team.team_owner.username
+    team_name = member.tournament_team.team.team_name
+    team_owner_email = member.tournament_team.team.team_owner.email
+
+    # =========================
+    # 📧 EMAIL TO PLAYER
+    # =========================
+    subject = f'AFC Registration Update – Your Application for {event_name} Has Been Rejected'
+
+    player_message = f"""
+<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background-color:#050505;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#050505;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" style="background-color:#0a0a0a;border:1px solid #1f1f1f;">
+          
+          <tr><td height="4" style="background-color:#dc2626;"></td></tr>
+
+          <tr>
+            <td align="center" style="padding:30px;">
+              <img src="https://africanfreefirecommunity.com/static/logo.png"
+                   alt="AFC Logo"
+                   style="max-height:50px;display:block;">
+            </td>
+          </tr>
+          
+          <tr>
+            <td style="padding:40px;color:#d0d0d0;font-size:15px;">
+              
+              <h1 style="color:#ffffff;">Registration Update</h1>
+              
+              <p>Dear <strong style="color:#ffffff;">{player_username}</strong>,</p>
+              
+              <p>Your application for <strong>{event_name}</strong> has been 
+              <span style="color:#dc2626;"><strong>rejected</strong></span>.</p>
+
+              <table width="100%" style="border-left:3px solid #dc2626;background:#1a0b0b;margin:20px 0;">
+                <tr>
+                  <td style="padding:20px;">
+                    <p style="color:#dc2626;font-weight:bold;">Reason:</p>
+                    <p style="color:#ffffff;">{reason}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <p>Please correct the issue and re-submit your registration.</p>
+
+              <p>
+                <a href="https://www.africanfreefirecommunity.com"
+                   style="background:#dc2626;color:#fff;padding:12px 20px;text-decoration:none;">
+                   Update Registration
+                </a>
+              </p>
+
+              <p>
+                Need help? 
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#dc2626;">
+                  Contact support
+                </a>
+              </p>
+
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+    try:
+        send_email(email, subject, player_message)
+    except Exception as e:
+        print(f"Player rejection email failed: {e}")
+
+    # =========================
+    # 📧 EMAIL TO TEAM OWNER
+    # =========================
+    subject = f'AFC Registration Update – Player {player_username} Rejected for {event_name}'
+
+    owner_message = f"""
+<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background-color:#050505;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#050505;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" style="background-color:#0a0a0a;border:1px solid #1f1f1f;">
+          
+          <tr><td height="4" style="background-color:#ffffff;"></td></tr>
+
+          <tr>
+            <td align="center" style="padding:30px;">
+              <img src="https://africanfreefirecommunity.com/static/logo.png"
+                   alt="AFC Logo"
+                   style="max-height:50px;display:block;">
+            </td>
+          </tr>
+          
+          <tr>
+            <td style="padding:40px;color:#d0d0d0;font-size:15px;">
+              
+              <h1 style="color:#ffffff;">Player Status Update</h1>
+              
+              <p>
+                Dear <strong style="color:#ffffff;">{team_leader_username}</strong>
+                (Team {team_name}),
+              </p>
+              
+              <p>
+                Player <strong style="color:#ffffff;">{player_username}</strong> 
+                has been reviewed for <strong>{event_name}</strong>.
+              </p>
+
+              <table width="100%" style="border:1px solid #333;background:#0f0f0f;margin:20px 0;">
+                <tr>
+                  <td style="padding:20px;">
+                    <p style="color:#ffffff;font-weight:bold;">
+                      Status: <span style="color:#dc2626;">Rejected</span>
+                    </p>
+
+                    <div style="margin-top:15px;border-top:1px solid #333;padding-top:15px;">
+                      <p style="color:#dc2626;font-weight:bold;">Reason:</p>
+                      <p style="color:#ffffff;">{reason}</p>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+
+              <p>You can monitor your team in the dashboard.</p>
+
+              <p>
+                Need help? 
+                <a href="mailto:info@africanfreefirecommunity.com" style="color:#ffffff;">
+                  Contact support
+                </a>
+              </p>
+
+              <p>
+                Best regards,<br>
+                <strong style="color:#ffffff;">AFC Management Board</strong>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+
+    try:
+        send_email(team_owner_email, subject, owner_message)
+    except Exception as e:
+        print(f"Owner rejection email failed: {e}")
 
     return Response({
         "message": "Player rejected."
     }, status=200)
+
+
+# @api_view(["POST"])
+# def reject_player(request):
+#     member_id = request.data.get("member_id")
+#     member = get_object_or_404(TournamentTeamMember, id=member_id)
+#     member.status = "rejected"
+#     member.reason = request.data.get("reason")
+#     member.save(update_fields=["status", "reason"])
+
+
+#     #---- SEND REJECTION MAIL TO TEAM OWNER ----
+#     player_username = member.user.username
+#     email = member.user.email
+#     event_name = member.tournament_team.event.event_name
+#     team_leader_username = member.tournament_team.team.team_owner.username
+#     team_name = member.tournament_team.team.team_name
+#     reason = member.reason
+#     team_owner_email = member.tournament_team.team.team_owner.email
+
+
+#     subject = f'AFC Registration Update – Player {player_username} has been Rejected for {event_name}'
+#     message = f'''Dear {team_leader_username} (Team {team_name}),
+
+# We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
+
+# Status: Rejected
+# Reason:
+# {reason}
+
+# The player has already been notified directly. You can view the current status of all your team members in your AFC dashboard under Team Management.
+# We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
+
+# If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+# Thank you for your continued participation in the African Freefire Community.
+
+# Best regards,
+# AFC Management Board
+# African Freefire Community (AFC)
+# Website: www.africanfreefirecommunity.com
+# Discord: [Join AFC Discord]
+#         '''
+#     send_email(team_owner_email, subject, message)
+
+#     #------ SEND REJECTION EMAIL TO USER -----
+
+
+#     subject = f'AFC Registration Update – Your Application for {event_name} Has Been Rejected'
+#     message = f'''Dear {player_username} (or {team_name}),
+
+# Thank you for submitting your registration for the AFC {event_name}.
+# Unfortunately, your application has been rejected.
+
+# *Reason for rejection:*
+# {reason}
+
+# We strongly encourage you to correct the issue and re-submit your registration as soon as possible. All pending slots are being processed on a first-come, first-served basis.
+
+# If you have any questions or need clarification on the required documents, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
+
+# We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon.
+
+# Best regards,
+# AFC Management Board
+# African Freefire Community (AFC)
+# Website: www.africanfreefirecommunity.com
+# Discord: [Join AFC Discord]
+#         '''
+#     send_email(email, subject, message)
+
+
+
+#     # Notifications.objects.create()
+
+#     return Response({
+#         "message": "Player rejected."
+#     }, status=200)
 
 
 @api_view(["POST"])
@@ -4032,58 +4891,7 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
     )
 
 
-def check_and_activate_team(tournament_team):
 
-    total = tournament_team.members.count()
-    confirmed = tournament_team.members.filter(status="active").count()
-
-    if total == confirmed:
-
-        # ---------------- ACTIVATE TEAM ----------------
-        tournament_team.status = "active"
-        tournament_team.save(update_fields=["status"])
-
-        RegisteredCompetitors.objects.filter(
-            event=tournament_team.event,
-            team=tournament_team.team
-        ).update(status="registered")
-
-        # ---------------- PREPARE ROLE ASSIGNMENT ----------------
-        stage = Stages.objects.filter(event=tournament_team.event).first()
-
-        if not stage:
-            return
-
-        user_ids = list(
-            tournament_team.members.values_list("user_id", flat=True)
-        )
-
-        assignments_qs = DiscordRoleAssignment.objects.filter(
-            stage=stage,
-            group__isnull=True,
-            status="pending",
-            user_id__in=user_ids
-        )
-
-        total = assignments_qs.count()
-
-        if total == 0:
-            return
-
-        progress = DiscordStageRoleAssignmentProgress.objects.create(
-            stage=stage,
-            total=total,
-            completed=0,
-            failed=0,
-            status="running"
-        )
-
-        # 🔥 TRIGGER CELERY
-        assign_stage_roles_for_team_task.delay(
-            progress.id,
-            stage.stage_id,
-            user_ids
-        )
 
 # def check_and_activate_team(tournament_team):
 
@@ -14881,6 +15689,7 @@ def edit_roster(request):
                     # rejected → pending
                     if member.status == "rejected":
                         member.status = "pending"
+                        # member.reason = None
 
                     member.save(update_fields=["user_id_from_sponsor", "status"])
 
@@ -15089,7 +15898,8 @@ def get_roster_details(request):
             "username": member.user.username,
             "full_name": member.user.full_name,
             "user_id_from_sponsor": member.user_id_from_sponsor,
-            "status": member.status
+            "status": member.status,
+            "reason": member.reason
         })
     return Response({
         "event_id": event.event_id,
@@ -15102,3 +15912,62 @@ def get_roster_details(request):
 
 # @api_view(["POST"])
 # def kick_team_from_event(request):
+
+
+from django.utils import timezone
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+@api_view(["GET"])
+def total_members_this_month(request):
+    now = timezone.now()
+
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    count = User.objects.filter(
+        created_at__gte=start_of_month
+    ).count()
+
+    return Response({
+        "total_members_this_month": count
+    })
+
+@api_view(["GET"])
+def total_teams_this_month(request):
+    now = timezone.now()
+
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    count = Team.objects.filter(
+        creation_date__gte=start_of_month
+    ).count()
+
+    return Response({
+        "total_teams_this_month": count
+    })
+
+from django.utils import timezone
+
+@api_view(["GET"])
+def total_active_tournaments(request):
+
+    now = timezone.now()
+
+    count = Event.objects.filter(
+        competition_type="tournament",
+        start_date__lte=now,
+        end_date__gte=now
+    ).count()
+
+    return Response({
+        "total_active_tournaments": count
+    })
+
+
+@api_view(["GET"])
+def total_published_news(request):
+    count = News.objects.all().count()
+
+    return Response({
+        "total_published_news": count
+    })

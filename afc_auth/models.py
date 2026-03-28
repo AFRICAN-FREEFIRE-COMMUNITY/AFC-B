@@ -25,7 +25,7 @@ class User(AbstractUser):
     user_id = models.AutoField(primary_key=True)
     username = models.CharField(max_length=40, unique=True)
     # in_game_name = models.CharField(max_length=12, unique=True)
-    uid = models.CharField(max_length=15, unique=True)
+    uid = models.CharField(max_length=15, unique=True, null=True, blank=True)
     email = models.EmailField(unique=True)
     password = models.CharField(max_length=120, blank=False, null=False)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False, default="player")
