@@ -97,7 +97,7 @@ def get_recruitment_posts(request):
         data.append({
             "id": post.id,
             "post_type": post.post_type,
-            "country": post.country,
+            "country": post.country.name,
             "expiry": post.post_expiry_date,
             "created_at": post.created_at,
 
