@@ -46,7 +46,6 @@ class RecruitmentPost(models.Model):
 
     # Applies to both team and player posts
     post_type = models.CharField(max_length=20, choices=POST_TYPE_CHOICES)
-    region = models.CharField(max_length=2, choices=REGION_CHOICES, blank=True)
     post_expiry_date = models.DateField()
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE, related_name='recruitment_posts')
