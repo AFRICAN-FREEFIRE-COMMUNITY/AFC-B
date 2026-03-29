@@ -73,7 +73,7 @@ class RecruitmentPost(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['post_type']),
-            models.Index(fields=['region']),
+            models.Index(fields=['country']),
             models.Index(fields=['created_at']),
         ]
 
