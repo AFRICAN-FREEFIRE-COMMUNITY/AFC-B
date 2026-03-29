@@ -130,7 +130,7 @@ def view_all_team_recruitment_post(request):
         data.append({
             "id": post.id,
             "team": post.team.name if post.team else None,
-            "country": post.country,
+            "country": post.country.name,
             "roles_needed": post.roles_needed,
             "minimum_tier_required": post.minimum_tier_required,
             "commitment_type": post.commitment_type,
