@@ -61,6 +61,8 @@ INSTALLED_APPS = [
     'afc_shop',
     'afc_awards',
     'afc_leaderboard',
+    'afc_player',
+    'afc_player_market',
 ]
 
 MIDDLEWARE = [
