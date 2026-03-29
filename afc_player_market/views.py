@@ -60,7 +60,10 @@ def create_recruitment_post(request):
 
         # ---------------- TEAM POST ----------------
         elif post_type == "TEAM_RECRUITMENT":
-            team = Team.objects.get(team_owner=user)
+            try:
+                team = Team.objects.get(team_owner=user)
+            except Team.DoesNotExist:
+                team = None   
             if not team:
                 return Response({"message": "You must own a team to create a recruitment post"}, status=400)
             post.team = team
