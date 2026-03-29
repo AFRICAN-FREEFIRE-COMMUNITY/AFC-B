@@ -97,7 +97,7 @@ def get_recruitment_posts(request):
         data.append({
             "id": post.id,
             "post_type": post.post_type,
-            "country": post.country.name,
+            "country": post.country.name if post.country else None,
             "expiry": post.post_expiry_date,
             "created_at": post.created_at,
 
@@ -130,7 +130,7 @@ def view_all_team_recruitment_post(request):
         data.append({
             "id": post.id,
             "team": post.team.name if post.team else None,
-            "country": post.country.name,
+            "country": post.country.name if post.country else None,
             "roles_needed": post.roles_needed,
             "minimum_tier_required": post.minimum_tier_required,
             "commitment_type": post.commitment_type,
