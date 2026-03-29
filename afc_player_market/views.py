@@ -108,7 +108,7 @@ def get_recruitment_posts(request):
             "availability_type": post.availability_type,
 
             # Team fields
-            "team": post.team.name if post.team else None,
+            "team": post.team.team_name if post.team else None,
             "roles_needed": post.roles_needed,
             "minimum_tier_required": post.minimum_tier_required,
             "commitment_type": post.commitment_type,
