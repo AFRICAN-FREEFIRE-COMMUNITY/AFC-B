@@ -61,6 +61,8 @@ def create_recruitment_post(request):
         # ---------------- TEAM POST ----------------
         elif post_type == "TEAM_RECRUITMENT":
             team = Team.objects.get(team_owner=user)
+            if not team:
+                return Response({"message": "You must own a team to create a recruitment post"}, status=400)
             post.team = team
             post.roles_needed = data.get("roles_needed")  # JSON
             post.minimum_tier_required = data.get("minimum_tier_required")
