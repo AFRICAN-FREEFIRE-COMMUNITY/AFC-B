@@ -9,7 +9,7 @@ from datetime import datetime
 
 from afc_auth.models import Notifications
 from afc_team.models import Team
-from .models import RecruitmentApplication, RecruitmentPost
+from .models import Country, RecruitmentApplication, RecruitmentPost
 from afc_auth.views import send_email, validate_token
 
 
@@ -29,18 +29,26 @@ def create_recruitment_post(request):
 
     try:
         post_type = data.get("post_type")
-        region = data.get("region")
+        country_code = data.get("country_code")
         expiry = data.get("post_expiry_date")
 
         if not post_type or not expiry:
             return Response({"message": "post_type and post_expiry_date are required"}, status=400)
+        
+        # 🌍 Get country
+        country = None
+        if country_code:
+            country = Country.objects.filter(code=country_code).first()
+            if not country:
+                return Response({"message": "Invalid country code"}, status=400)
 
         post = RecruitmentPost.objects.create(
             post_type=post_type,
-            region=region,
+            country=country,
             post_expiry_date=datetime.strptime(expiry, "%Y-%m-%d").date(),
             created_by=user
         )
+
 
         # ---------------- PLAYER POST ----------------
         if post_type == "PLAYER_AVAILABLE":
@@ -84,7 +92,7 @@ def get_recruitment_posts(request):
         data.append({
             "id": post.id,
             "post_type": post.post_type,
-            "region": post.region,
+            "country": post.country,
             "expiry": post.post_expiry_date,
             "created_at": post.created_at,
 
@@ -117,7 +125,7 @@ def view_all_team_recruitment_post(request):
         data.append({
             "id": post.id,
             "team": post.team.name if post.team else None,
-            "region": post.region,
+            "country": post.country,
             "roles_needed": post.roles_needed,
             "minimum_tier_required": post.minimum_tier_required,
             "commitment_type": post.commitment_type,
@@ -140,7 +148,7 @@ def view_all_player_availability_post(request):
         data.append({
             "id": post.id,
             "player": post.player.username if post.player else None,
-            "region": post.region,
+            "country": post.country,
             "primary_role": post.primary_role,
             "secondary_role": post.secondary_role,
             "availability_type": post.availability_type,
@@ -229,8 +237,8 @@ def update_application_status(request):
     return Response({"message": "Application updated"}, status=200)
 
 
-@api_view(["GET"])
-def get_player_contact(request, application_id):
+@api_view(["POST"])
+def get_player_contact(request):
 
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
@@ -241,9 +249,11 @@ def get_player_contact(request, application_id):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
+    application_id = request.data.get("application_id")
+
     application = RecruitmentApplication.objects.get(id=application_id)
 
-    if application.team.owner != user:
+    if application.team.team_owner != user:
         return Response({"message": "Unauthorized"}, status=403)
 
     if not application.contact_unlocked:
@@ -256,7 +266,7 @@ def get_player_contact(request, application_id):
 
     return Response({
         "discord": player.discord_username,
-        "uid": player.game_uid
+        "uid": player.uid
     })
 
 
@@ -266,7 +276,7 @@ def send_trial_invite_notification(application):
     team = application.team
 
     message = f"""
-    {team.name} has invited you to a trial.
+    {team.team_name} has invited you to a trial.
 
     Join their Discord within 72 hours to proceed.
     """
@@ -283,7 +293,7 @@ def send_trial_invite_notification(application):
 
 
 @api_view(["POST"])
-def finalize_trial(request, application_id):
+def finalize_trial(request):
 
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
@@ -293,10 +303,11 @@ def finalize_trial(request, application_id):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session."}, status=401)
+    application_id = request.data.get("application_id")
 
     application = RecruitmentApplication.objects.get(id=application_id)
 
-    if application.team.owner != user:
+    if application.team.team_owner != user:
         return Response({"message": "Unauthorized"}, status=403)
 
     action = request.data.get("action")

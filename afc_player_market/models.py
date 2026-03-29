@@ -2,6 +2,13 @@ from django.db import models
 
 # Create your models here.
 
+class Country(models.Model):
+    name = models.CharField(max_length=100)
+    code = models.CharField(max_length=2, unique=True)
+
+    def __str__(self):
+        return self.name
+
 
 class RecruitmentPost(models.Model):
     POST_TYPE_CHOICES = [
@@ -43,6 +50,7 @@ class RecruitmentPost(models.Model):
     post_expiry_date = models.DateField()
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE, related_name='recruitment_posts')
+    country = models.ForeignKey(Country, on_delete=models.SET_NULL, null=True, blank=True)
 
     # Applies to player posts
     player = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE, null=True, blank=True)
@@ -112,3 +120,5 @@ class PlayerReport(models.Model):
 
     reason = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
+
+
