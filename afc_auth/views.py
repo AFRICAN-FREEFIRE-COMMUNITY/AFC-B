@@ -1,3 +1,5 @@
+import os
+
 from django.shortcuts import redirect, render
 from django.contrib.auth import authenticate
 from rest_framework.decorators import api_view
@@ -109,7 +111,7 @@ def send_email(to_address, subject, html_body):
     smtp_server = 'smtp.office365.com'
     smtp_port = 587
     from_address = 'info@africanfreefirecommunity.com' #vermillioninformation@gmail.com, Info@v-ent.co, africanfreefirecommunity3@gmail.com
-    password = "[secret removed from history 2026-09-23]"
+    password = os.getenv("EMAIL_PASSWORD")  
 
     try:
         msg = MIMEMultipart()
@@ -132,7 +134,7 @@ def send_email(to_address, subject, html_body):
         print(e)
         return False
 
-        
+
     # password = '[secret removed from history 2026-09-23]'
     #'[secret removed from history 2026-09-23]2'
     # '[secret removed from history 2026-09-23]1'  # Or your actual Gmail password (if less secure apps are enabled)
