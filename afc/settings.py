@@ -242,6 +242,6 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # GEOIP_PATH = "/home/ubuntu/geoip"
 GEOIP_PATH = "/home/ubuntu/ipinfo"
 
-PAYSTACK_SECRET_KEY = "sk_test_b521d175e44be73afe2a1e58a665569263b51765"
-PAYSTACK_PUBLIC_KEY = "pk_test_0dbb59e08fc94b3a63a8fdce6ecbd14db35a6730"
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY")
 PAYSTACK_CALLBACK_URL = "https://africanfreefirecommunity.com/shop/orders/success"
