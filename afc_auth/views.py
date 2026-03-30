@@ -350,7 +350,11 @@ Please enter this code in the app to verify your account.
 
 If you did not create an account, please ignore this email.
 '''
-        send_email(email, subject, message)
+        try:
+            send_email(email, subject, message)
+        except Exception as e:
+            print(f"Error sending email: {e}")
+            return Response({"error": "Failed to send verification email. Please try again later."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"message": "Signup successful. Please check your email for the verification code."}, status=status.HTTP_201_CREATED)
 
