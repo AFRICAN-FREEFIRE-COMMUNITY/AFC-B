@@ -103,15 +103,22 @@ def generate_session_token(length=16):
     characters = string.ascii_letters + string.digits
     return ''.join(random.choice(characters) for _ in range(length))
 
+import smtplib
+import os
+import traceback
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
 
 def send_email(to_address, subject, html_body):
-    # Gmail SMTP server credentials
-    # smtp_server = 'smtp.gmail.com'
-    # smtp_port = 465  # or 587 for TLS
+
     smtp_server = 'smtp.office365.com'
     smtp_port = 587
-    from_address = 'info@africanfreefirecommunity.com' #vermillioninformation@gmail.com, Info@v-ent.co, africanfreefirecommunity3@gmail.com
-    password = os.getenv("EMAIL_PASSWORD")  
+
+    from_address = 'info@africanfreefirecommunity.com'
+    password = os.getenv("EMAIL_PASSWORD")
+
+    print("EMAIL PASSWORD:", password)  # DEBUG
 
     try:
         msg = MIMEMultipart()
@@ -122,17 +129,52 @@ def send_email(to_address, subject, html_body):
         msg.attach(MIMEText(html_body, 'html'))
 
         server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()  # IMPORTANT for Microsoft
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+
         server.login(from_address, password)
 
         server.sendmail(from_address, to_address, msg.as_string())
         server.quit()
 
+        print("EMAIL SENT SUCCESSFULLY")
         return True
 
     except Exception as e:
-        print(e)
+        traceback.print_exc()
         return False
+    
+    
+# def send_email(to_address, subject, html_body):
+#     # Gmail SMTP server credentials
+#     # smtp_server = 'smtp.gmail.com'
+#     # smtp_port = 465  # or 587 for TLS
+#     smtp_server = 'smtp.office365.com'
+#     smtp_port = 587
+#     from_address = 'info@africanfreefirecommunity.com' #vermillioninformation@gmail.com, Info@v-ent.co, africanfreefirecommunity3@gmail.com
+#     password = os.getenv("EMAIL_PASSWORD")  
+
+#     try:
+#         msg = MIMEMultipart()
+#         msg['From'] = from_address
+#         msg['To'] = to_address
+#         msg['Subject'] = subject
+
+#         msg.attach(MIMEText(html_body, 'html'))
+
+#         server = smtplib.SMTP(smtp_server, smtp_port)
+#         server.starttls()  # IMPORTANT for Microsoft
+#         server.login(from_address, password)
+
+#         server.sendmail(from_address, to_address, msg.as_string())
+#         server.quit()
+
+#         return True
+
+#     except Exception as e:
+#         print(e)
+#         return False
 
 
     # password = 'wobd dlxw riuh tsnm'
