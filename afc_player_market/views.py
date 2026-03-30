@@ -9,8 +9,11 @@ from datetime import datetime
 
 from afc_auth.models import Notifications
 from afc_team.models import Team
-from .models import Country, RecruitmentApplication, RecruitmentPost
+from .models import Country, PlayerReport, RecruitmentApplication, RecruitmentPost
 from afc_auth.views import send_email, validate_token
+
+
+TRANSFER_WINDOW_STATUS = "OPEN"  # This can be dynamically set based on date or admin input
 
 
 @api_view(["POST"])
@@ -364,3 +367,27 @@ def view_applications(request):
         })
 
     return Response(data, status=200)
+
+
+@api_view(["POST"])
+def report_team(request, application_id):
+
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+    
+    application = RecruitmentApplication.objects.get(id=application_id)
+
+    PlayerReport.objects.create(
+        player=user,
+        team=application.team,
+        application=application,
+        reason=request.data.get("reason")
+    )
+
+    return Response({"message": "Report submitted"}, status=201)

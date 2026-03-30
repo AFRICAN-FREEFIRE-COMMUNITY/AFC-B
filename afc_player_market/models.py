@@ -50,6 +50,8 @@ class RecruitmentPost(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE, related_name='recruitment_posts')
     country = models.ForeignKey(Country, on_delete=models.SET_NULL, null=True, blank=True)
+    is_visible = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)
 
     # Applies to player posts
     player = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE, null=True, blank=True)
@@ -64,6 +66,7 @@ class RecruitmentPost(models.Model):
     minimum_tier_required = models.CharField(max_length=50, choices=TIER_CHOICES, blank=True)
     commitment_type = models.CharField(max_length=20, choices=COMMITMENT_CHOICES, blank=True)
     recruitment_criteria = models.TextField(blank=True)
+
 
     @property
     def is_active(self):

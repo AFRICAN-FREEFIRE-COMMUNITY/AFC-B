@@ -104,36 +104,62 @@ def generate_session_token(length=16):
 
 def send_email(to_address, subject, html_body):
     # Gmail SMTP server credentials
-    smtp_server = 'smtp.gmail.com'
-    smtp_port = 465  # or 587 for TLS
-    from_address = 'africanfreefirecommunity3@gmail.com' #vermillioninformation@gmail.com, Info@v-ent.co
-    password = 'wobd dlxw riuh tsnm'
-    #'yyzm prff sjfo bcmg2'
-    # 'rvgn rzha ihli dfdp1'  # Or your actual Gmail password (if less secure apps are enabled)
-
-# wobd dlxw riuh tsnm africanfreefirecommunity3@gmail.com
+    # smtp_server = 'smtp.gmail.com'
+    # smtp_port = 465  # or 587 for TLS
+    smtp_server = 'smtp.office365.com'
+    smtp_port = 587
+    from_address = 'info@africanfreefirecommunity.com' #vermillioninformation@gmail.com, Info@v-ent.co, africanfreefirecommunity3@gmail.com
+    password = "brpckrxbpkzwlmjx"
 
     try:
-        # Create a MIMEMultipart email object
         msg = MIMEMultipart()
         msg['From'] = from_address
         msg['To'] = to_address
         msg['Subject'] = subject
 
-        # Attach the HTML body to the MIME message
         msg.attach(MIMEText(html_body, 'html'))
 
-        # Set up the SMTP connection using SSL
-        server = smtplib.SMTP_SSL(smtp_server, smtp_port)
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()  # IMPORTANT for Microsoft
         server.login(from_address, password)
-        
-        # Send the email
+
         server.sendmail(from_address, to_address, msg.as_string())
         server.quit()
 
         return True
+
     except Exception as e:
+        print(e)
         return False
+
+        
+    # password = 'wobd dlxw riuh tsnm'
+    #'yyzm prff sjfo bcmg2'
+    # 'rvgn rzha ihli dfdp1'  # Or your actual Gmail password (if less secure apps are enabled)
+
+# wobd dlxw riuh tsnm africanfreefirecommunity3@gmail.com
+
+    # try:
+    #     # Create a MIMEMultipart email object
+    #     msg = MIMEMultipart()
+    #     msg['From'] = from_address
+    #     msg['To'] = to_address
+    #     msg['Subject'] = subject
+
+    #     # Attach the HTML body to the MIME message
+    #     msg.attach(MIMEText(html_body, 'html'))
+
+    #     # Set up the SMTP connection using SSL
+    #     server = smtplib.SMTP_SSL(smtp_server, smtp_port)
+    #     server.login(from_address, password)
+        
+    #     # Send the email
+    #     server.sendmail(from_address, to_address, msg.as_string())
+    #     server.quit()
+
+    #     return True
+    # except Exception as e:
+    #     return False
 
 
 # @api_view(['POST'])
