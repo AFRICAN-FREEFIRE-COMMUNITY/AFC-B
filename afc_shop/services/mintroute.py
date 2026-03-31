@@ -134,6 +134,7 @@ def get_denominations(brand_id):
             "brand_id": str(brand_id)
         }
     }
+    logger.error("PAYLOAD: %s", payload)
 
     flat_data = flatten_data(payload)
 
