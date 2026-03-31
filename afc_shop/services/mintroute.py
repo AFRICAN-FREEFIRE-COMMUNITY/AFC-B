@@ -243,78 +243,43 @@ def get_denominations(brand_id):
     payload = {
         "username": settings.MINTROUTE_USERNAME,
         "data": {
-            "brand_id": str(brand_id),
-            "location": "UK",          # 🔥 ADD THIS
-            "terminal_id": "WEB001"    # 🔥 ADD THIS
+            "brand_id": str(brand_id)
         }
     }
-
-    # flat_data = flatten_data(payload)
-
-    # signature = generate_signature(
-    #     "POST",
-    #     flat_data,
-    #     settings.MINTROUTE_SECRET_KEY,
-    #     signature_time
-    # )
-
-    # headers = {
-    #     "Accept": "application/json",
-    #     "Content-Type": "application/json",
-    #     "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
-    #     "X-Mint-Date": header_time
-    # }
 
     flat_data = flatten_data(payload)
 
-    signature = generate_signature(
-        "POST",
-        flat_data,
-        settings.MINTROUTE_SECRET_KEY,
-        signature_time
-    )
+    # signature MUST use encoded version
+    encoded_data = urllib.parse.urlencode(flat_data)
+
+    string_to_sign = f"POST{encoded_data}{signature_time}"
+
+    signature = base64.b64encode(
+        hmac.new(
+            settings.MINTROUTE_SECRET_KEY.encode(),
+            string_to_sign.encode(),
+            hashlib.sha256
+        ).digest()
+    ).decode()
 
     headers = {
         "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Authorization": f'algorithm="hmac-sha256", credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}", signature="{signature}"',
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
         "X-Mint-Date": header_time
     }
 
-    # DEBUG
-    logger.error("STRING TO SIGN DATA: %s", flat_data)
-    logger.error("SIGNATURE: %s", signature)
+    # 🔥 IMPORTANT: SEND flat_data, NOT encoded_data
+    response = requests.post(
+        DENOM_URL,
+        data=flat_data,
+        headers=headers
+    )
 
-    # response = requests.post(DENOM_URL, json=payload, headers=headers)
-    # encoded_data = urllib.parse.urlencode(flat_data)
+    print("STRING TO SIGN:", string_to_sign)
+    print("RESPONSE:", response.text)
 
-    # response = requests.post(
-    #     DENOM_URL,
-    #     data=encoded_data,   # 🔥 NOT json=
-    #     headers=headers
-    # )
-
-    response = requests.post(DENOM_URL, json=payload, headers=headers, timeout=60)
-
-
-    logger.error("RAW RESPONSE: %s", response.text)
-
-    try:
-        data = response.json()
-    except:
-        return {"status": False, "error": "Invalid JSON response"}
-
-    if not data.get("status"):
-        return {
-            "status": False,
-            "error": data.get("error"),
-            "code": data.get("error_code")
-        }
-
-    return {
-        "status": True,
-        "data": data.get("data")
-    }
+    return response.json()
 
 
 import uuid
