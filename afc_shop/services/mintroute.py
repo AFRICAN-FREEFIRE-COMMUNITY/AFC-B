@@ -313,15 +313,14 @@ def purchase_voucher(variant, order):
     payload = {
         "username": settings.MINTROUTE_USERNAME,
         "data": {
-            "ean": variant.ean,
+            "ean": "2345678918765",  # ✅ FROM YOUR TABLE
             "location": "UK",
             "terminal_id": "WEB001",
-            "order_id": f"ORD-{order.id}-{uuid.uuid4().hex[:6]}",
+            "order_id": "ORD-TEST-12345",
             "request_type": "purchase",
             "response_type": "short"
         }
     }
-
     flat_data = flatten_data(payload)
 
     signature = generate_signature(
