@@ -60,8 +60,48 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
-
 from utils.ipinfo_lookup import lookup_ip
+
+import re
+
+# Popular email domains whitelist
+ALLOWED_EMAIL_DOMAINS = {
+    "gmail.com",
+    "yahoo.com",
+    "outlook.com",
+    "hotmail.com",
+    "icloud.com",
+    "aol.com",
+    "protonmail.com",
+    "zoho.com",
+    "mail.com",
+    "gmx.com",
+    "yandex.com",
+    "live.com",
+    "msn.com",
+    "me.com",
+    "inbox.com"
+}
+
+
+def is_valid_email(email: str) -> tuple[bool, str]:
+    if not email:
+        return False, "Email is required."
+
+    # Basic format check
+    email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+    if not re.match(email_regex, email):
+        return False, "Invalid email format."
+
+    # Extract domain
+    domain = email.split("@")[-1].lower()
+
+    # Check if domain is allowed
+    if domain not in ALLOWED_EMAIL_DOMAINS:
+        return False, "Please use a valid email provider (e.g., Gmail, Yahoo)."
+
+    return True, "Valid email."
+
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
@@ -111,6 +151,10 @@ from email.mime.text import MIMEText
 
 
 def send_email(to_address, subject, html_body):
+    is_valid, message = is_valid_email(to_address)
+
+    if not is_valid:
+        return Response({"error": message}, status=400)
 
     smtp_server = 'smtp.office365.com'
     smtp_port = 587
@@ -327,6 +371,11 @@ def signup(request):
         # Validation
         if not all([in_game_name, email, password, confirm_password]):
             return Response({"error": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        is_valid, message = is_valid_email(email)
+
+        if not is_valid:
+            return Response({"error": message}, status=400)
 
         if password != confirm_password:
             return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
@@ -409,6 +458,11 @@ def verify_code(request):
     email = request.data.get("email")
     code = request.data.get("code")
 
+    is_valid, message = is_valid_email(email)
+
+    if not is_valid:
+        return Response({"error": message}, status=400)
+
     try:
         user = User.objects.get(email=email)
     except User.DoesNotExist:
@@ -444,6 +498,11 @@ def resend_verification_code(request):
 
     if not email:
         return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    is_valid, message = is_valid_email(email)
+
+    if not is_valid:
+        return Response({"error": message}, status=400)
 
     user = User.objects.filter(email=email).first()
 
@@ -1167,6 +1226,11 @@ def edit_profile(request):
 
     if User.objects.exclude(pk=user.pk).filter(email=email).exists():
         return Response({"message": "Email is already registered to another user."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    is_valid, message = is_valid_email(email)
+
+    if not is_valid:
+        return Response({"error": message}, status=400)
 
     if User.objects.exclude(pk=user.pk).filter(username=in_game_name).exists():
         return Response({"message": "In-game name is already taken."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1425,8 +1489,14 @@ def send_verification_token(request):
     if not email or not uid:
         return Response({"message": "Email or UID is required."}, status=status.HTTP_400_BAD_REQUEST)
     
+    
+    
     else:
         if email:
+            is_valid, message = is_valid_email(email)
+
+            if not is_valid:
+                return Response({"error": message}, status=400)
             pass
         elif not uid:
             return Response({"message": "UID is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1529,6 +1599,11 @@ def resend_token(request):
 
     if not email:
         return Response({"message": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    is_valid, message = is_valid_email(email)
+
+    if not is_valid:
+        return Response({"error": message}, status=400)
 
     try:
         user = User.objects.get(email=email)
@@ -1589,6 +1664,11 @@ def contact_us(request):
 
     if not all([email, name, message]):
         return Response({"message": "Email, name, and message are required."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    is_valid, message = is_valid_email(email)
+
+    if not is_valid:
+        return Response({"error": message}, status=400)
 
     # Send email to support
     support_email = 'africanfreefirecommunity1@gmail.com'
