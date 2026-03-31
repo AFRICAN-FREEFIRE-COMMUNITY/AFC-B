@@ -432,6 +432,12 @@ def verify_code(request):
     return Response({"message": "Account verified successfully."}, status=status.HTTP_200_OK)
 
 
+from django.core.cache import cache
+import random
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.decorators import api_view
+
 @api_view(["POST"])
 def resend_verification_code(request):
     email = request.data.get("email")
@@ -447,13 +453,27 @@ def resend_verification_code(request):
     if user.is_active:
         return Response({"error": "This account is already verified."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Generate new verification code
+    # 🔒 Check resend cooldown (4 mins)
+    cooldown_key = f"resend_cooldown_{user.user_id}"
+    if cache.get(cooldown_key):
+        ttl = cache.ttl(cooldown_key)
+        return Response(
+            {"error": f"Please wait {ttl} seconds before requesting another code."},
+            status=status.HTTP_429_TOO_MANY_REQUESTS
+        )
+    
+    
+
+    # 🔢 Generate new verification code
     verification_code = random.randint(100000, 999999)
 
-    # Store in cache with a 10-minute expiry
+    # 🕒 Store code (10 mins)
     cache.set(f"verification_code_{user.user_id}", verification_code, timeout=600)
 
-    # Send the new verification email
+    # ⏳ Set cooldown (4 mins = 240 seconds)
+    cache.set(cooldown_key, True, timeout=240)
+
+    # 📧 Send email
     subject = "Your New Verification Code"
     message = f'''Hi {user.username},
 
@@ -467,7 +487,48 @@ If you did not request this, please ignore this email.
 '''
     send_email(user.email, subject, message)
 
-    return Response({"message": "A new verification code has been sent to your email."}, status=status.HTTP_200_OK)
+    return Response(
+        {"message": "A new verification code has been sent to your email."},
+        status=status.HTTP_200_OK
+    )
+
+
+# @api_view(["POST"])
+# def resend_verification_code(request):
+#     email = request.data.get("email")
+
+#     if not email:
+#         return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+#     user = User.objects.filter(email=email).first()
+
+#     if not user:
+#         return Response({"error": "No account found with this email."}, status=status.HTTP_404_NOT_FOUND)
+
+#     if user.is_active:
+#         return Response({"error": "This account is already verified."}, status=status.HTTP_400_BAD_REQUEST)
+
+#     # Generate new verification code
+#     verification_code = random.randint(100000, 999999)
+
+#     # Store in cache with a 10-minute expiry
+#     cache.set(f"verification_code_{user.user_id}", verification_code, timeout=600)
+
+#     # Send the new verification email
+#     subject = "Your New Verification Code"
+#     message = f'''Hi {user.username},
+
+# You requested a new verification code.
+
+# Your new verification code is: {verification_code}
+
+# Please enter this code in the app to verify your account.
+
+# If you did not request this, please ignore this email.
+# '''
+#     send_email(user.email, subject, message)
+
+#     return Response({"message": "A new verification code has been sent to your email."}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])
@@ -1361,7 +1422,7 @@ def send_verification_token(request):
     email = request.data.get("email")
     uid = request.data.get("uid")
 
-    if not email:
+    if not email or not uid:
         return Response({"message": "Email or UID is required."}, status=status.HTTP_400_BAD_REQUEST)
     
     else:
@@ -1407,13 +1468,17 @@ def send_verification_token(request):
 @api_view(["POST"])
 def verify_token(request):
     email = request.data.get("email")
+    uid = request.data.get("uid")
     token = request.data.get("token")
 
-    if not email or not token:
-        return Response({"message": "Email and token are required."}, status=status.HTTP_400_BAD_REQUEST)
+    if (not email and not uid) and not token:
+        return Response({"message": "Email or UID and token are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        user = User.objects.get(email=email)
+        if email:
+            user = User.objects.get(email=email)
+        elif uid:
+            user = User.objects.get(uid=uid)
         reset_token = PasswordResetToken.objects.get(user=user, token=token)
     except (User.DoesNotExist, PasswordResetToken.DoesNotExist):
         return Response({"message": "Invalid email or token."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1427,14 +1492,22 @@ def verify_token(request):
 @api_view(["POST"])
 def reset_password(request):
     email = request.data.get("email")
+    uid = request.data.get("uid")
     token = request.data.get("token")
     new_password = request.data.get("new_password")
 
-    if not all([email, token, new_password]):
-        return Response({"message": "Email, token, and new password are required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not email and not uid:
+        return Response({"message": "Email or UID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+    if not all([token, new_password]):
+        return Response({"message": "Token, and new password are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        user = User.objects.get(email=email)
+        if email:
+            user = User.objects.get(email=email)
+        elif uid:
+            user = User.objects.get(uid=uid)
         reset_token = PasswordResetToken.objects.get(user=user, token=token)
     except (User.DoesNotExist, PasswordResetToken.DoesNotExist):
         return Response({"message": "Invalid email or token."}, status=status.HTTP_400_BAD_REQUEST)
