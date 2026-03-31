@@ -30,7 +30,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 SECRET_KEY = '[secret removed from history 2026-09-23]'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
 ALLOWED_HOSTS = ["https://afc.pythonanywhere.com/", "afc.pythonanywhere.com", "98.94.15.73", "*"]
 
