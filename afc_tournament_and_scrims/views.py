@@ -4480,7 +4480,7 @@ def reject_player(request):
     #     return Response({"message": "Player already rejected."}, status=200)
 
     member.status = "rejected"
-    member.reason = reason
+    member.reason = reason if reason else "No reason provided"
     member.save(update_fields=["status", "reason"])
 
     # ---------------- DATA ----------------
