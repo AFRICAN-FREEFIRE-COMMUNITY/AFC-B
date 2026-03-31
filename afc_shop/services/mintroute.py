@@ -335,7 +335,7 @@ def get_brands(category_id):
 
     headers = {
         "Accept": "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Type": "application/json",
         "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
         "X-Mint-Date": header_time
     }
