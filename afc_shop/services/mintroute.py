@@ -309,7 +309,6 @@ def get_brands(category_id):
         }
     }
 
-    # flatten
     flat_data = {}
     for key, value in payload.items():
         if isinstance(value, dict):
@@ -318,8 +317,11 @@ def get_brands(category_id):
         else:
             flat_data[key] = value
 
-    # 🔥 encode ONLY for signature
-    encoded_data = urllib.parse.urlencode(flat_data)
+    # 🔥 MUST be encoded (important)
+    encoded_data = urllib.parse.urlencode(
+        flat_data,
+        quote_via=urllib.parse.quote_plus
+    )
 
     string_to_sign = f"POST{encoded_data}{signature_time}"
 
@@ -338,13 +340,13 @@ def get_brands(category_id):
         "X-Mint-Date": header_time
     }
 
-    # 🔥 SEND AS DICT (NOT encoded string)
     response = requests.post(
         BRAND_URL,
-        data=encoded_data,   # 🔥 MUST be encoded string
+        data=encoded_data,   # 🔥 KEY FIX
         headers=headers
     )
 
+    print("ENCODED DATA:", encoded_data)
     print("STRING TO SIGN:", string_to_sign)
     print("RESPONSE:", response.text)
 
