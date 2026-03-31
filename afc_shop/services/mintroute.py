@@ -235,7 +235,9 @@ def get_denominations(brand_id):
     payload = {
         "username": settings.MINTROUTE_USERNAME,
         "data": {
-            "brand_id": str(brand_id)
+            "brand_id": str(brand_id),
+            "location": "UK",          # 🔥 ADD THIS
+            "terminal_id": "WEB001"    # 🔥 ADD THIS
         }
     }
 
