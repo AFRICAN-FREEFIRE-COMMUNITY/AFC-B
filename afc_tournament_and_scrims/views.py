@@ -4476,8 +4476,8 @@ def reject_player(request):
     member = get_object_or_404(TournamentTeamMember, id=member_id)
 
     # Prevent duplicate rejection
-    if member.status == "rejected":
-        return Response({"message": "Player already rejected."}, status=200)
+    # if member.status == "rejected":
+    #     return Response({"message": "Player already rejected."}, status=200)
 
     member.status = "rejected"
     member.reason = reason
