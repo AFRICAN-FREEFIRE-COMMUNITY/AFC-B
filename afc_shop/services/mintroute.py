@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 def generate_signature(http_method, data_dict, secret_key, timestamp):
     encoded_data = urllib.parse.urlencode(data_dict, doseq=True)
 
-    string_to_sign = f"{http_method}\n{encoded_data}\n{timestamp}"
+    string_to_sign = f"{http_method}{encoded_data}{timestamp}"
 
     digest = hmac.new(
         secret_key.encode(),
@@ -147,18 +147,18 @@ def get_denominations(brand_id):
     )
 
     headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": f'algorithm="hmac-sha256", credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}", signature="{signature}"',
-        "X-Mint-Date": header_time
-    }
+    "Accept": "application/json",
+    "Content-Type": "application/json",  # ← IMPORTANT
+    "Authorization": f'algorithm="hmac-sha256", credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}", signature="{signature}"',
+    "X-Mint-Date": header_time
+}
 
     logger.error("PAYLOAD: %s", payload)
     logger.error("FLAT DATA: %s", flat_data)
     logger.error("SIGNATURE: %s", signature)
     logger.error("X-MINT-DATE: %s", header_time)
 
-    response = requests.post(DENOM_URL, data=flat_data, headers=headers)
+    response = requests.post(DENOM_URL, json=payload, headers=headers)
 
     logger.error("RAW DENOM RESPONSE: %s", response.text)
 
