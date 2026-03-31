@@ -148,7 +148,7 @@ def get_denominations(brand_id):
 
     headers = {
         "Accept": "application/json",
-        "Content-Type": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
         "Authorization": f'algorithm="hmac-sha256", credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}", signature="{signature}"',
         "X-Mint-Date": header_time
     }
