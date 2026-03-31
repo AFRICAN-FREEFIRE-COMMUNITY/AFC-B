@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 
 def generate_signature(http_method, data_dict, secret_key, timestamp):
     encoded_data = urllib.parse.urlencode(data_dict, doseq=True)
-    string_to_sign = f"{http_method}{encoded_data}{timestamp}"
+
+    string_to_sign = f"{http_method}\n{encoded_data}\n{timestamp}"
 
     digest = hmac.new(
         secret_key.encode(),
@@ -39,7 +40,7 @@ BASE_URL = "https://sandbox.mintroute.com/voucher/v2/api/voucher"
 
 def purchase_voucher(variant, order):
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     signature_time = now.strftime("%Y%m%dT%H%M")
     header_time = now.strftime("%Y%m%dT%H%M%SZ")
