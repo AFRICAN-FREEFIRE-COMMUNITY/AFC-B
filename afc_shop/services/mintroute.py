@@ -282,6 +282,75 @@ def get_denominations(brand_id):
     return response.json()
 
 
+
+import hmac
+import hashlib
+import base64
+import urllib.parse
+import requests
+from datetime import datetime, timezone
+from django.conf import settings
+
+
+BRAND_URL = "https://sandbox.mintroute.com/vendor/api/brand"
+
+
+def get_brands(category_id):
+    now = datetime.now(timezone.utc)
+
+    signature_time = now.strftime("%Y%m%dT%H%M")
+    header_time = now.strftime("%Y%m%dT%H%M%SZ")
+    date_only = now.strftime("%Y%m%d")
+
+    payload = {
+        "username": settings.MINTROUTE_USERNAME,
+        "data": {
+            "category_id": str(category_id)
+        }
+    }
+
+    # flatten
+    flat_data = {}
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            for k, v in value.items():
+                flat_data[f"{key}[{k}]"] = v
+        else:
+            flat_data[key] = value
+
+    # 🔥 encode ONLY for signature
+    encoded_data = urllib.parse.urlencode(flat_data)
+
+    string_to_sign = f"POST{encoded_data}{signature_time}"
+
+    signature = base64.b64encode(
+        hmac.new(
+            settings.MINTROUTE_SECRET_KEY.encode(),
+            string_to_sign.encode(),
+            hashlib.sha256
+        ).digest()
+    ).decode()
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
+        "X-Mint-Date": header_time
+    }
+
+    # 🔥 SEND AS DICT (NOT encoded string)
+    response = requests.post(
+        BRAND_URL,
+        data=flat_data,
+        headers=headers
+    )
+
+    print("STRING TO SIGN:", string_to_sign)
+    print("RESPONSE:", response.text)
+
+    return response.json()
+
+
 import uuid
 
 BASE_URL = "https://sandbox.mintroute.com/voucher/v2/api/voucher"

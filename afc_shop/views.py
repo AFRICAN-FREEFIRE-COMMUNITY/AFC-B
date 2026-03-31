@@ -1170,7 +1170,7 @@ def buy_now(request):
 # -------- MINTROUTE V1 TEST ---------
 
 
-from .services.mintroute import get_denominations, purchase_voucher
+from .services.mintroute import get_brands, get_denominations, purchase_voucher
 
 # @api_view(["POST"])
 # def verify_paystack_payment(request):
@@ -1581,6 +1581,13 @@ def paystack_webhook(request):
 @api_view(["GET"])
 def test_denom(request):
     result = get_denominations(113)
+    print("RESULT:", result)
+    return Response(result)
+
+
+@api_view(["GET"])
+def test_brands(request):
+    result = get_brands(2)
     print("RESULT:", result)
     return Response(result)
 
