@@ -341,7 +341,7 @@ def get_brands(category_id):
     # 🔥 SEND AS DICT (NOT encoded string)
     response = requests.post(
         BRAND_URL,
-        data=flat_data,
+        data=encoded_data,   # 🔥 MUST be encoded string
         headers=headers
     )
 
