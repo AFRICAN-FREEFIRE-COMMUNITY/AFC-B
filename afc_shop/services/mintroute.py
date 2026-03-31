@@ -190,17 +190,25 @@ def build_encoded_string(data_dict):
     return "&".join(parts)
 
 def generate_signature(http_method, data_dict, secret_key, timestamp):
-    encoded_data = build_encoded_string(data_dict)
+    # encoded_data = urllib.parse.urlencode(data_dict, doseq=True)
+    encoded_data = urllib.parse.urlencode(
+        data_dict,
+        doseq=True,
+        quote_via=urllib.parse.quote_plus   # 🔥 IMPORTANT
+    )
 
+    # 🚨 NO NEWLINES
     string_to_sign = f"{http_method}{encoded_data}{timestamp}"
 
-    digest = hmac.new(
-        secret_key.encode("utf-8"),
-        string_to_sign.encode("utf-8"),
-        hashlib.sha256
-    ).digest()
+    signature = base64.b64encode(
+        hmac.new(
+            secret_key.encode(),              # ✅ FIX
+            string_to_sign.encode(),          # ✅ FIX
+            hashlib.sha256
+        ).digest()
+    ).decode()                                # ✅ FIX
 
-    return base64.b64encode(digest).decode("utf-8")
+    return signature
 
 
 def flatten_data(payload):
@@ -253,7 +261,7 @@ def get_denominations(brand_id):
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "Authorization": f'algorithm="hmac-sha256", credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}", signature="{signature}"',
+        "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
         "X-Mint-Date": header_time
     }
 
