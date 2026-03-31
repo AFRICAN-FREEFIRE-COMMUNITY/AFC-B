@@ -178,12 +178,20 @@ import hashlib
 import base64
 import urllib.parse
 
+def build_encoded_string(data_dict):
+    parts = []
+
+    for key, value in data_dict.items():
+        encoded_key = urllib.parse.quote(str(key), safe='')
+        encoded_value = urllib.parse.quote(str(value), safe='')
+
+        parts.append(f"{encoded_key}={encoded_value}")
+
+    return "&".join(parts)
 
 def generate_signature(http_method, data_dict, secret_key, timestamp):
-    # IMPORTANT: preserve order, do NOT sort
-    encoded_data = urllib.parse.urlencode(data_dict, doseq=True)
+    encoded_data = build_encoded_string(data_dict)
 
-    # NO newline, NO spaces
     string_to_sign = f"{http_method}{encoded_data}{timestamp}"
 
     digest = hmac.new(
