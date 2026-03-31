@@ -2,7 +2,7 @@ import hmac
 import hashlib
 import base64
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def generate_signature(http_method, data_dict, secret_key, timestamp):
@@ -115,7 +115,7 @@ DENOM_URL = "https://sandbox.mintroute.com/voucher/v2/api/denomination"
 
 def get_denominations(brand_id):
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     signature_time = now.strftime("%Y%m%dT%H%M")
     header_time = now.strftime("%Y%m%dT%H%M%SZ")
@@ -143,6 +143,11 @@ def get_denominations(brand_id):
         "Authorization": f'algorithm="hmac-sha256", credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}", signature="{signature}"',
         "X-Mint-Date": header_time
     }
+
+    print("PAYLOAD:", payload)
+    print("FLAT DATA:", flat_data)
+    print("SIGNATURE:", signature)
+    print("X-MINT-DATE:", header_time)
 
     response = requests.post(DENOM_URL, json=payload, headers=headers)
 
