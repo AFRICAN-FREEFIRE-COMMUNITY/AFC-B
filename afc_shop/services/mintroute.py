@@ -108,12 +108,19 @@ def purchase_voucher(variant, order):
 import requests
 from datetime import datetime
 from django.conf import settings
+import logging
+
+logger = logging.getLogger(__name__)
+
+# logger.error("FUNCTION CALLED")
+# logger.error(f"PAYLOAD: {payload}")
 
 
 DENOM_URL = "https://sandbox.mintroute.com/voucher/v2/api/denomination"
 
 
 def get_denominations(brand_id):
+    logger.error("FUNCTION CALLED")
 
     now = datetime.now(timezone.utc)
 
@@ -144,10 +151,10 @@ def get_denominations(brand_id):
         "X-Mint-Date": header_time
     }
 
-    print("PAYLOAD:", payload)
-    print("FLAT DATA:", flat_data)
-    print("SIGNATURE:", signature)
-    print("X-MINT-DATE:", header_time)
+    logger.error("PAYLOAD:", payload)
+    logger.error("FLAT DATA:", flat_data)
+    logger.error("SIGNATURE:", signature)
+    logger.error("X-MINT-DATE:", header_time)
 
     response = requests.post(DENOM_URL, json=payload, headers=headers)
 
