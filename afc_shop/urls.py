@@ -47,4 +47,5 @@ urlpatterns = [
     path('get-coupon-details-with-code/', get_coupon_details_with_code, name='get_coupon_details_with_code'),
     path("get-all-fulfillments/", get_all_fulfillments, name="get_all_fulfillments"),
     path("test-denom/", test_denom, name="test_denom"),
+    path("test-brands/", test_brands, name="test_brands"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
