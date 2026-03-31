@@ -153,7 +153,7 @@ def get_denominations(brand_id):
 
     logger.error("PAYLOAD:", payload)
     logger.error("FLAT DATA:", flat_data)
-    logger.error("SIGNATURE:", signature)
+    logger.error("SIGNATURE: %s", signature)
     logger.error("X-MINT-DATE:", header_time)
 
     response = requests.post(DENOM_URL, json=payload, headers=headers)
