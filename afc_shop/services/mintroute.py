@@ -103,3 +103,57 @@ def purchase_voucher(variant, order):
         "status": True,
         "data": data.get("data")
     }
+
+
+import requests
+from datetime import datetime
+from django.conf import settings
+
+
+DENOM_URL = "https://sandbox.mintroute.com/voucher/v2/api/denomination"
+
+
+def get_denominations(brand_id):
+
+    now = datetime.now()
+
+    signature_time = now.strftime("%Y%m%dT%H%M")
+    header_time = now.strftime("%Y%m%dT%H%M%SZ")
+    date_only = now.strftime("%Y%m%d")
+
+    payload = {
+        "username": settings.MINTROUTE_USERNAME,
+        "data": {
+            "brand_id": str(brand_id)
+        }
+    }
+
+    flat_data = flatten_data(payload)
+
+    signature = generate_signature(
+        "POST",
+        flat_data,
+        settings.MINTROUTE_SECRET_KEY,
+        signature_time
+    )
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f'algorithm="hmac-sha256", credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}", signature="{signature}"',
+        "X-Mint-Date": header_time
+    }
+
+    response = requests.post(DENOM_URL, json=payload, headers=headers)
+
+    print("RAW DENOM RESPONSE:", response.text)
+
+    data = response.json()
+
+    if str(data.get("status")).lower() != "true":
+        return {"status": False, "error": data.get("error")}
+
+    return {
+        "status": True,
+        "data": data.get("data")
+    }
