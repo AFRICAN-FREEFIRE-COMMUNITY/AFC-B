@@ -1386,7 +1386,7 @@ def verify_paystack_payment(request):
                     fulfillment.provider_payload = response["data"]
                 else:
                     fulfillment.status = "failed"
-                    fulfillment.notes = f"{response}"
+                    fulfillment.notes = f"{response["status"]} {response["error"]} {response["code"]}"
 
                 fulfillment.save()
 
