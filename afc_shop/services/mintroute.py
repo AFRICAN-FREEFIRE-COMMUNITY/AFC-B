@@ -269,7 +269,14 @@ def get_denominations(brand_id):
     logger.error("STRING TO SIGN DATA: %s", flat_data)
     logger.error("SIGNATURE: %s", signature)
 
-    response = requests.post(DENOM_URL, json=payload, headers=headers)
+    # response = requests.post(DENOM_URL, json=payload, headers=headers)
+    encoded_data = urllib.parse.urlencode(flat_data)
+
+    response = requests.post(
+        DENOM_URL,
+        data=encoded_data,   # 🔥 NOT json=
+        headers=headers
+    )
 
     logger.error("RAW RESPONSE: %s", response.text)
 
