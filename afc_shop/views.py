@@ -1580,7 +1580,9 @@ def paystack_webhook(request):
 
 @api_view(["GET"])
 def test_denom(request):
-    return Response(get_denominations(2))
+    result = get_denominations(2)
+    print("RESULT:", result)
+    return Response(result)
 
 
 @api_view(["GET"])
