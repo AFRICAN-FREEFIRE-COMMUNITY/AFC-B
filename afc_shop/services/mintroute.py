@@ -249,6 +249,22 @@ def get_denominations(brand_id):
         }
     }
 
+    # flat_data = flatten_data(payload)
+
+    # signature = generate_signature(
+    #     "POST",
+    #     flat_data,
+    #     settings.MINTROUTE_SECRET_KEY,
+    #     signature_time
+    # )
+
+    # headers = {
+    #     "Accept": "application/json",
+    #     "Content-Type": "application/json",
+    #     "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
+    #     "X-Mint-Date": header_time
+    # }
+
     flat_data = flatten_data(payload)
 
     signature = generate_signature(
@@ -261,7 +277,7 @@ def get_denominations(brand_id):
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "Authorization": f'algorithm="hmac-sha256",credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}",signature="{signature}"',
+        "Authorization": f'algorithm="hmac-sha256", credential="{settings.MINTROUTE_ACCESS_KEY}/{date_only}", signature="{signature}"',
         "X-Mint-Date": header_time
     }
 
@@ -270,13 +286,16 @@ def get_denominations(brand_id):
     logger.error("SIGNATURE: %s", signature)
 
     # response = requests.post(DENOM_URL, json=payload, headers=headers)
-    encoded_data = urllib.parse.urlencode(flat_data)
+    # encoded_data = urllib.parse.urlencode(flat_data)
 
-    response = requests.post(
-        DENOM_URL,
-        data=encoded_data,   # 🔥 NOT json=
-        headers=headers
-    )
+    # response = requests.post(
+    #     DENOM_URL,
+    #     data=encoded_data,   # 🔥 NOT json=
+    #     headers=headers
+    # )
+
+    response = requests.post(DENOM_URL, json=payload, headers=headers, timeout=60)
+
 
     logger.error("RAW RESPONSE: %s", response.text)
 
