@@ -151,10 +151,15 @@ from email.mime.text import MIMEText
 
 
 def send_email(to_address, subject, html_body):
-    is_valid, message = is_valid_email(to_address)
+    try: 
+        is_valid, message = is_valid_email(to_address)
+        if not is_valid:
+            print(f"Invalid email address: {to_address}. Error: {message}")
+            return False
+    except Exception as e:
+        print(f"Error validating email address: {to_address}. Exception: {e}")
+        return False
 
-    if not is_valid:
-        return Response({"error": message}, status=400)
 
     smtp_server = 'smtp.office365.com'
     smtp_port = 587
