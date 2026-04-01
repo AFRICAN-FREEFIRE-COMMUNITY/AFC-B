@@ -306,7 +306,7 @@ class TournamentTeamMember(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, null=True, blank=True)
     status = models.CharField(max_length=20, choices=TEAM_MEMBER_STATUS, default="active")
     user_id_from_sponsor = models.CharField(max_length=100, null=True, blank=True) # For sponsored events, to link user to sponsor's system
-    reason = models.CharField(max_length=300, null=True, blank=True)
+    reason = models.CharField(max_length=2000, null=True, blank=True)
         
 
     class Meta:
