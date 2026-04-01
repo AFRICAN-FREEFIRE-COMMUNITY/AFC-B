@@ -2208,4 +2208,3 @@ def get_coupon_details_with_code(request):
     }
 
     return Response({"coupon_details": data}, status=200)
-
