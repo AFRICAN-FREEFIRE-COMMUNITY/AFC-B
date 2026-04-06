@@ -363,8 +363,8 @@ def view_applications(request):
     for app in applications:
         data.append({
             "id": app.id,
-            "player": app.player.username,
-            "team": app.team.name,
+            "player": app.player.username if app.player else None,
+            "team": app.team.name if app.team else None,
             "post_id": app.recruitment_post.id,
             "status": app.status,
             "contact_unlocked": app.contact_unlocked,
