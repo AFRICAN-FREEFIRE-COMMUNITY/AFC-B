@@ -87,6 +87,7 @@ class RecruitmentApplication(models.Model):
         ('REJECTED', 'Rejected'),
         ('SHORTLISTED', 'Shortlisted'),
         ('INVITED', 'Invited to Trial'),
+        ('TRIAL_ONGOING', 'Trial Ongoing'),
         ('ACCEPTED', 'Accepted'),
         ('TRIAL_EXTENDED', 'Trial Extended'),
     ]
@@ -104,6 +105,22 @@ class RecruitmentApplication(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class TrialInvite(models.Model):
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('ACCEPTED', 'Accepted'),
+        ('REJECTED', 'Rejected'),
+    ]
+    team = models.ForeignKey('afc_team.Team', on_delete=models.CASCADE)
+    player = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE)
+    application = models.ForeignKey('RecruitmentApplication', on_delete=models.CASCADE)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    status = models.CharField(max_length=20, default='ACTIVE')  # ACTIVE / EXPIRED
 
 
 class TrialInviteLog(models.Model):
@@ -124,5 +141,26 @@ class PlayerReport(models.Model):
 
     reason = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class TrialChat(models.Model):
+    application = models.OneToOneField('RecruitmentApplication', on_delete=models.CASCADE, related_name='trial_chat')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Trial Chat - {self.application.team.team_name} & {self.application.player.username}"
+
+
+class TrialChatMessage(models.Model):
+    chat = models.ForeignKey('TrialChat', on_delete=models.CASCADE, related_name='messages')
+    sender = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE)
+    message = models.TextField()
+    sent_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sent_at']
+
+    def __str__(self):
+        return f"{self.sender.username}: {self.message[:50]}"
 
 

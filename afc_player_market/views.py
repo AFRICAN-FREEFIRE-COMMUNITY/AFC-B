@@ -11,7 +11,7 @@ from django.db.models import Sum
 
 from afc_auth.models import BannedPlayer, Notifications
 from afc_team.models import Team, TeamMembers
-from .models import Country, PlayerReport, RecruitmentApplication, RecruitmentPost
+from .models import Country, PlayerReport, RecruitmentApplication, RecruitmentPost, TrialChat, TrialChatMessage
 from afc_auth.views import send_email, validate_token
 from afc_tournament_and_scrims.models import TournamentPlayerMatchStats, TournamentTeamMatchStats
 
@@ -456,6 +456,154 @@ def report_team(request, application_id):
     )
 
     return Response({"message": "Report submitted"}, status=201)
+
+
+def _is_trial_chat_participant(user, chat):
+    """Returns True if user is allowed to access the trial chat."""
+    application = chat.application
+    if user == application.player:
+        return True
+    if user == application.team.team_owner:
+        return True
+    return TeamMembers.objects.filter(
+        team=application.team,
+        member=user,
+        management_role__in=['coach', 'manager']
+    ).exists()
+
+
+@api_view(["POST"])
+def respond_to_trial_invite(request):
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+    application_id = request.data.get("application_id")
+    action = request.data.get("action")  # ACCEPT or DECLINE
+
+    try:
+        application = RecruitmentApplication.objects.get(id=application_id)
+    except RecruitmentApplication.DoesNotExist:
+        return Response({"message": "Application not found."}, status=404)
+
+    if application.player != user:
+        return Response({"message": "Unauthorized."}, status=403)
+
+    if application.status != "INVITED":
+        return Response({"message": "No pending trial invite for this application."}, status=400)
+
+    if application.invite_expires_at and application.invite_expires_at < timezone.now():
+        return Response({"message": "Trial invite has expired."}, status=400)
+
+    if action == "ACCEPT":
+        application.status = "TRIAL_ONGOING"
+        application.save()
+
+        chat = TrialChat.objects.create(application=application)
+
+        Notifications.objects.create(
+            user=application.team.team_owner,
+            message=f"{user.username} has accepted your trial invite. A trial chat has been created."
+        )
+
+        return Response({"message": "Trial invite accepted.", "chat_id": chat.id}, status=200)
+
+    elif action == "DECLINE":
+        application.status = "REJECTED"
+        application.save()
+
+        Notifications.objects.create(
+            user=application.team.team_owner,
+            message=f"{user.username} has declined your trial invite."
+        )
+
+        return Response({"message": "Trial invite declined."}, status=200)
+
+    else:
+        return Response({"message": "Invalid action. Use ACCEPT or DECLINE."}, status=400)
+
+
+@api_view(["GET"])
+def get_trial_chat_messages(request):
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+    chat_id = request.query_params.get("chat_id")
+
+    try:
+        chat = TrialChat.objects.get(id=chat_id)
+    except TrialChat.DoesNotExist:
+        return Response({"message": "Chat not found."}, status=404)
+
+    if not _is_trial_chat_participant(user, chat):
+        return Response({"message": "Unauthorized."}, status=403)
+
+    messages = chat.messages.select_related("sender").all()
+
+    data = [
+        {
+            "id": msg.id,
+            "sender": msg.sender.username,
+            "sender_id": msg.sender.id,
+            "message": msg.message,
+            "sent_at": msg.sent_at,
+        }
+        for msg in messages
+    ]
+
+    return Response({
+        "chat_id": chat.id,
+        "application_id": chat.application.id,
+        "team": chat.application.team.team_name,
+        "player": chat.application.player.username,
+        "messages": data,
+    }, status=200)
+
+
+@api_view(["POST"])
+def send_trial_chat_message(request):
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+    chat_id = request.data.get("chat_id")
+    message_text = request.data.get("message", "").strip()
+
+    if not message_text:
+        return Response({"message": "Message cannot be empty."}, status=400)
+
+    try:
+        chat = TrialChat.objects.get(id=chat_id)
+    except TrialChat.DoesNotExist:
+        return Response({"message": "Chat not found."}, status=404)
+
+    if not _is_trial_chat_participant(user, chat):
+        return Response({"message": "Unauthorized."}, status=403)
+
+    msg = TrialChatMessage.objects.create(chat=chat, sender=user, message=message_text)
+
+    return Response({
+        "id": msg.id,
+        "sender": user.username,
+        "message": msg.message,
+        "sent_at": msg.sent_at,
+    }, status=201)
 
 
 @api_view(["GET"])

@@ -15,6 +15,8 @@ urlpatterns = [
     path("get-player-contact/", get_player_contact, name="get_player_contact"),
     path("finalize-trial/", finalize_trial, name="finalize_trial"),
     path("view-applications/", view_applications, name="view_applications"),
-    path("view-my-applications/", view_my_applications, name="view_my_applications"),
-   
+     path("view-my-applications/", view_my_applications, name="view_my_applications"),
+    path("respond-to-trial-invite/", respond_to_trial_invite, name="respond_to_trial_invite"),
+    path("trial-chat/messages/", get_trial_chat_messages, name="get_trial_chat_messages"),
+    path("trial-chat/send/", send_trial_chat_message, name="send_trial_chat_message"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
