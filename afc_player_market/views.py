@@ -372,10 +372,95 @@ def update_application_status(request):
         # SEND EMAIL TO PLAYER
         email_subject = f"Trial Invite from {application.team.team_name}"
         email_body = f"""
-Hi {application.player.username},
-{application.team.team_name} has invited you to a trial! Please respond within 72 hours to proceed.
-Best of luck!
-African Free Fire Community
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Trial Invite</title>
+</head>
+<body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f0f0f;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;max-width:600px;width:100%;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#ff6b00,#ff9500);padding:32px 40px;text-align:center;">
+              <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:rgba(255,255,255,0.75);text-transform:uppercase;">African Free Fire Community</p>
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">You've Been Invited to Trial!</h1>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 40px;">
+
+              <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
+                Hey <strong style="color:#ffffff;">{application.player.username}</strong>, great news &mdash;
+                <strong style="color:#ff7a00;">{application.team.team_name}</strong> has reviewed your application
+                and wants to see what you&rsquo;ve got in a trial!
+              </p>
+
+              <!-- Team Card -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#242424;border-radius:10px;border:1px solid #333;margin-bottom:24px;">
+                <tr>
+                  <td style="padding:20px 24px;">
+                    <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Team</p>
+                    <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;">{application.team.team_name}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Countdown Warning -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+                <tr>
+                  <td style="background-color:#2a1a00;border:1px solid #ff6b0044;border-radius:8px;padding:16px 20px;">
+                    <table cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td style="padding-right:12px;font-size:22px;">&#9201;</td>
+                        <td>
+                          <p style="margin:0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">72-Hour Window</p>
+                          <p style="margin:4px 0 0 0;font-size:13px;color:#cc8800;line-height:1.5;">
+                            You must accept or decline this invite within <strong>72 hours</strong>. After that, the invite will expire.
+                          </p>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- CTA Buttons -->
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td align="center">
+                    <a href="https://africanfreefirecommunity.com/applications"
+                       style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
+                      Respond to Invite
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
+              <p style="margin:0;font-size:12px;color:#555555;">This invite was sent because you applied to <strong style="color:#777;">{application.team.team_name}</strong> on the AFC Player Market.</p>
+              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2025 African Free Fire Community. All rights reserved.</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
 """
         send_email(application.player.email, email_subject, email_body)
         
