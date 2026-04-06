@@ -120,7 +120,7 @@ class TrialInvite(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 
-    status = models.CharField(max_length=20, default='ACTIVE')  # ACTIVE / EXPIRED
+    status = models.CharField(max_length=20, default='PENDING') # PENDING / ACCEPTED / REJECTED
 
 
 class TrialInviteLog(models.Model):
