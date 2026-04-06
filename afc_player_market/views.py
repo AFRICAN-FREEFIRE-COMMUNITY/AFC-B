@@ -77,6 +77,18 @@ def create_recruitment_post(request):
             post.minimum_tier_required = data.get("minimum_tier_required")
             post.commitment_type = data.get("commitment_type")
             post.recruitment_criteria = data.get("recruitment_criteria")
+            post.save()
+
+            # Set multiple countries (list of country codes, e.g. ["NG", "GH", "KE"])
+            country_codes = data.get("country_codes", [])
+            if country_codes:
+                selected_countries = Country.objects.filter(code__in=country_codes)
+                post.countries.set(selected_countries)
+
+            return Response({
+                "message": "Recruitment post created successfully",
+                "post_id": post.id
+            }, status=201)
 
         else:
             return Response({"message": "Invalid post_type"}, status=400)
@@ -136,7 +148,7 @@ def view_all_team_recruitment_post(request):
         data.append({
             "id": post.id,
             "team": post.team.team_name if post.team else None,
-            "country": post.country.name if post.country else None,
+            "countries": list(post.countries.values("name", "code")),
             "roles_needed": post.roles_needed,
             "minimum_tier_required": post.minimum_tier_required,
             "commitment_type": post.commitment_type,
