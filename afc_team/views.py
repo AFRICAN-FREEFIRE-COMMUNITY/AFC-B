@@ -1121,7 +1121,7 @@ def generate_invite_link(request):
     
     role_to_be_given_upon_acceptance = request.data.get("role", "member")  # Default role is "member"
     # ensure role is valid
-    if role_to_be_given_upon_acceptance not in ["member", "coach", "analyst", "manager", "team_captain", "vice_captain"]:
+    if role_to_be_given_upon_acceptance not in ["member", "coach", "analyst", "manager"]:
         return Response({"message": "Invalid role specified. Must be 'member' or 'captain'."}, status=400)
 
     try:
