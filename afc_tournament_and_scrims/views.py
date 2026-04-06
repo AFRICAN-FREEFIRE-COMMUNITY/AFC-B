@@ -385,10 +385,9 @@ def create_event(request):
         return Response({"message": "Event start date cannot be after event end date."}, status=400)
 
     # ---------------- PRIZEPOOL ----------------
-    try:
-        prizepool = float(request.data.get("prizepool"))
-    except Exception:
-        return Response({"message": "prizepool must be a number."}, status=400)
+    
+    prizepool = request.data.get("prizepool")
+    
 
     try:
         prizepool_cash_value = float(request.data.get("prizepool_cash_value", 0) or 0)
