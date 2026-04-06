@@ -456,3 +456,84 @@ def report_team(request, application_id):
     )
 
     return Response({"message": "Report submitted"}, status=201)
+
+
+@api_view(["GET"])
+def view_my_applications(request):
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+
+    applications = RecruitmentApplication.objects.filter(player=user).order_by("-created_at")
+
+    data = []
+
+    for app in applications:
+        player = app.player
+
+        if player:
+            tournament_wins = TournamentTeamMatchStats.objects.filter(
+                tournament_team__members__user=player,
+                tournament_team__event__competition_type="tournament",
+                placement=1,
+            ).count()
+
+            total_tournament_kills = TournamentPlayerMatchStats.objects.filter(
+                player=player,
+                team_stats__tournament_team__event__competition_type="tournament",
+            ).aggregate(total=Sum("kills"))["total"] or 0
+
+            # Finals appearances = distinct tournament events where player played in a stage named "final"
+            tournament_finals_appearances = TournamentPlayerMatchStats.objects.filter(
+                player=player,
+                team_stats__tournament_team__event__competition_type="tournament",
+                team_stats__match__leaderboard__stage__stage_name__icontains="final",
+            ).values("team_stats__tournament_team__event").distinct().count()
+
+            scrims_kills = TournamentPlayerMatchStats.objects.filter(
+                player=player,
+                team_stats__tournament_team__event__competition_type="scrims",
+            ).aggregate(total=Sum("kills"))["total"] or 0
+
+            scrims_wins = TournamentTeamMatchStats.objects.filter(
+                tournament_team__members__user=player,
+                tournament_team__event__competition_type="scrims",
+                placement=1,
+            ).count()
+        else:
+            tournament_wins = 0
+            total_tournament_kills = 0
+            tournament_finals_appearances = 0
+            scrims_kills = 0
+            scrims_wins = 0
+
+        data.append({
+            "id": app.id,
+            "player": player.username if player else None,
+            "team": app.team.team_name if app.team else None,
+            "post_id": app.recruitment_post.id,
+            "status": app.status,
+            "contact_unlocked": app.contact_unlocked,
+            "invite_expires_at": app.invite_expires_at,
+            "applied_at": app.created_at,
+            "uid": player.uid if player else None,
+            "discord_username": player.discord_username if player else None,
+            "primary_role": app.recruitment_post.primary_role,
+            "secondary_role": app.recruitment_post.secondary_role,
+            "country": app.recruitment_post.country.name if app.recruitment_post.country else None,
+            "is_banned": True if player and BannedPlayer.objects.filter(banned_player=player, is_active=True).exists() else False,
+            "application_message": app.application_message,
+            "tournament_wins": tournament_wins,
+            "total_tournament_kills": total_tournament_kills,
+            "tournament_finals_appearances": tournament_finals_appearances,
+            "scrims_kills": scrims_kills,
+            "scrims_wins": scrims_wins,
+        })
+
+    return Response(data, status=200)
