@@ -104,6 +104,7 @@ class Invite(models.Model):
     invitee = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='received_invites', null=True, blank=True)
     team = models.ForeignKey('Team', on_delete=models.CASCADE)
     status_of_invite = models.CharField(max_length=20, choices=STATUS_CHOICES, default='unattended_to')
+    role_to_be_given_upon_acceptance = models.CharField(max_length=20, choices=TeamMembers.MANAGEMENT_ROLE_CHOICES, default='member')
     decision = models.CharField(max_length=20, choices=DECISION_CHOICES, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()  # When the invite expires

@@ -1113,12 +1113,19 @@ def generate_invite_link(request):
             {"message": "Invalid or expired session token."},
             status=status.HTTP_401_UNAUTHORIZED
         )
+    
+    
+    role_to_be_given_upon_acceptance = request.data.get("role", "member")  # Default role is "member"
+    # ensure role is valid
+    if role_to_be_given_upon_acceptance not in ["member", "coach", "analyst", "manager", "team_captain", "vice_captain"]:
+        return Response({"message": "Invalid role specified. Must be 'member' or 'captain'."}, status=400)
 
     try:
         team = Team.objects.get(team_owner=user)
         invite = Invite.objects.create(
             inviter=user,
-            team=team
+            team=team,
+            role_to_be_given_upon_acceptance=role_to_be_given_upon_acceptance
         )
         invite_link = f"https://africanfreefirecommunity.com/invite/{invite.invite_id}"
         return Response({"invite_link": invite_link, "invite_id": str(invite.invite_id)}, status=200)
@@ -1172,11 +1179,21 @@ def respond_invite(request, invite_id):
             # Ensure the team is not up to 8 players yet
             if TeamMembers.objects.filter(team=invite.team).count() >= 8:
                 return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Ensure there are not more than 6 players with member management role
+            player_count = TeamMembers.objects.filter(team=invite.team, management_role='member').count()
+            if player_count > 6:
+                # If there are more than 6 players, demote the last added member to "non_player"
+                last_member = TeamMembers.objects.filter(team=invite.team, management_role='member').last()
+                if last_member:
+                    last_member.management_role = ''
+                    last_member.save()
             TeamMembers.objects.create(
                 team=invite.team,
                 member=user,
-                management_role='member'
+                management_role=invite.role_to_be_given_upon_acceptance
             )
+
         else:
             return Response({"message": "You are already a member of this team."}, status=400)
         return Response({"message": f"You have joined {invite.team.team_name} successfully."})
