@@ -326,7 +326,7 @@ def update_application_status(request):
     application = RecruitmentApplication.objects.get(id=application_id)
 
     # Ensure user owns the team
-    if application.team.owner != user:
+    if application.team.team_owner != user:
         return Response({"message": "Unauthorized"}, status=403)
 
     action = request.data.get("action")
