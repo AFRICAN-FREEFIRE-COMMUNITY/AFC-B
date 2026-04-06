@@ -80,9 +80,9 @@ def create_recruitment_post(request):
             post.save()
 
             # Set multiple countries (list of country codes, e.g. ["NG", "GH", "KE"])
-            country_codes = data.get("country_codes", [])
-            if country_codes:
-                selected_countries = Country.objects.filter(code__in=country_codes)
+            country_names = data.get("country_names", [])
+            if country_names:
+                selected_countries = Country.objects.filter(name__in=country_names)
                 post.countries.set(selected_countries)
 
             return Response({
