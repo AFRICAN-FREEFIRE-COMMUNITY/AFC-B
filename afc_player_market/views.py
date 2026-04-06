@@ -491,7 +491,7 @@ def update_application_status(request):
               <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
                 Hey <strong style="color:#ffffff;">{application.player.username}</strong>, great news &mdash;
                 <strong style="color:#ff7a00;">{application.team.team_name}</strong> has reviewed your application
-                and wants to see what you&rsquo;ve got in a trial!
+                and wants to see what you&rsquo;ve got in a trial! Note, this trial does not guarantee a spot on the team, but it&rsquo;s your chance to impress and show why you deserve to be part of their roster.
               </p>
 
               <!-- Team Card -->
