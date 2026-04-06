@@ -49,7 +49,8 @@ class RecruitmentPost(models.Model):
     post_expiry_date = models.DateField()
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE, related_name='recruitment_posts')
-    country = models.ForeignKey(Country, on_delete=models.SET_NULL, null=True, blank=True)
+    country = models.ForeignKey(Country, on_delete=models.SET_NULL, null=True, blank=True)  # Used for player posts (single)
+    countries = models.ManyToManyField(Country, blank=True, related_name='team_recruitment_posts')  # Used for team posts (multiple)
     is_visible = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
 
