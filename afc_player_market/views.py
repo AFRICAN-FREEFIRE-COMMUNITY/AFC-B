@@ -203,30 +203,30 @@ def apply_to_team(request):
         recruitment_post=post,
         team=post.team,
         application_message=application_message
-    )
+    )    
 
-    
+    # Retention email at every 5th application milestone (5, 10, 15, ...)
     Notifications.objects.create(
         user=post.team.team_owner,
-        message=f"{user.username} has applied to join your team {post.team.team_name}."
+        message=f"Your Player Market post is getting attention!"
     )
+    total_number_of_applications = RecruitmentApplication.objects.filter(team=post.team).count()
 
-    # Send Mail To Team Owner, Manager, Coach, Team Captain
-    team_owner_email = post.team.team_owner.email
-    team_captain_email = post.team.team_captain.email if post.team.team_captain else None
-    manager_emails = post.team.memberships.filter(management_role="manager").values_list("member__email", flat=True)
-    coach_emails = post.team.memberships.filter(management_role="coach").values_list("member__email", flat=True)
-    recipient_emails = set([team_owner_email, team_captain_email] + list(manager_emails) + list(coach_emails))
+    if total_number_of_applications % 5 == 0:
+        team_owner_email = post.team.team_owner.email
+        team_captain_email = post.team.team_captain.email if post.team.team_captain else None
+        manager_emails = list(post.team.memberships.filter(management_role="manager").values_list("member__email", flat=True))
+        coach_emails = list(post.team.memberships.filter(management_role="coach").values_list("member__email", flat=True))
+        recipient_emails = set([team_owner_email, team_captain_email] + manager_emails + coach_emails)
 
-
-    email_subject = f"New Application for {post.team.team_name}"
-    email_body = f"""
+        email_subject = "Your Player Market post is getting attention!"
+        email_body = f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>New Team Application</title>
+  <title>Your post is getting attention</title>
 </head>
 <body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f0f0f;padding:40px 0;">
@@ -238,7 +238,7 @@ def apply_to_team(request):
           <tr>
             <td style="background:linear-gradient(135deg,#ff6b00,#ff9500);padding:32px 40px;text-align:center;">
               <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:rgba(255,255,255,0.75);text-transform:uppercase;">African Free Fire Community</p>
-              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">New Player Application</h1>
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">Your Post Is Getting Attention!</h1>
             </td>
           </tr>
 
@@ -246,41 +246,27 @@ def apply_to_team(request):
           <tr>
             <td style="padding:36px 40px;">
 
-              <!-- Intro -->
               <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
-                A player has applied to join <strong style="color:#ff7a00;">{post.team.team_name}</strong>. Review the details below.
+                Hi <strong style="color:#ffffff;">{post.team.team_name} Management</strong>, your recruitment post for
+                <strong style="color:#ff7a00;">{post.team.team_name}</strong> is attracting players!
               </p>
 
-              <!-- Player Info Card -->
-              <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#242424;border-radius:8px;border:1px solid #333;margin-bottom:24px;">
+              <!-- Milestone Counter -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
                 <tr>
-                  <td style="padding:20px 24px;">
-                    <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Player</p>
-                    <p style="margin:0;font-size:20px;font-weight:700;color:#ffffff;">{user.username}</p>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:0 24px 20px 24px;">
-                    <table width="100%" cellpadding="0" cellspacing="0">
-                      <tr>
-                        <td width="50%" style="padding-right:8px;">
-                          <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Primary Role</p>
-                          <p style="margin:0;font-size:14px;color:#ff7a00;font-weight:600;">{post.primary_role or "N/A"}</p>
-                        </td>
-                        <td width="50%" style="padding-left:8px;">
-                          <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Secondary Role</p>
-                          <p style="margin:0;font-size:14px;color:#ff7a00;font-weight:600;">{post.secondary_role or "N/A"}</p>
-                        </td>
-                      </tr>
-                    </table>
+                  <td align="center" style="background-color:#242424;border-radius:10px;border:1px solid #333;padding:28px;">
+                    <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;text-transform:uppercase;color:#666;">Total Applications</p>
+                    <p style="margin:0;font-size:56px;font-weight:800;color:#ff7a00;line-height:1;">{total_number_of_applications}</p>
+                    <p style="margin:8px 0 0 0;font-size:13px;color:#888;">players have applied to join your team</p>
                   </td>
                 </tr>
               </table>
 
-              <!-- Application Message -->
-              <p style="margin:0 0 8px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Application Message</p>
-              <div style="background-color:#242424;border-left:3px solid #ff7a00;border-radius:0 8px 8px 0;padding:16px 20px;margin-bottom:28px;">
-                <p style="margin:0;font-size:14px;color:#cccccc;line-height:1.7;white-space:pre-wrap;">{application_message or "No message provided."}</p>
+              <!-- Message -->
+              <div style="background-color:#1e1e1e;border-left:3px solid #ff7a00;border-radius:0 8px 8px 0;padding:16px 20px;margin-bottom:28px;">
+                <p style="margin:0;font-size:14px;color:#bbbbbb;line-height:1.7;">
+                  Don&rsquo;t let talent slip away &mdash; log in to review your applications, shortlist the best candidates, and invite players to trial.
+                </p>
               </div>
 
               <!-- CTA -->
@@ -289,7 +275,7 @@ def apply_to_team(request):
                   <td align="center">
                     <a href="https://africanfreefirecommunity.com/team/applications"
                        style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
-                      Review Application
+                      Review Applications
                     </a>
                   </td>
                 </tr>
@@ -301,7 +287,7 @@ def apply_to_team(request):
           <!-- Footer -->
           <tr>
             <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
-              <p style="margin:0;font-size:12px;color:#555555;">You received this email because you are a staff member of <strong style="color:#777;">{post.team.team_name}</strong>.</p>
+              <p style="margin:0;font-size:12px;color:#555555;">You received this because you are a staff member of <strong style="color:#777;">{post.team.team_name}</strong>.</p>
               <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2025 African Free Fire Community. All rights reserved.</p>
             </td>
           </tr>
@@ -313,10 +299,9 @@ def apply_to_team(request):
 </body>
 </html>
 """
-    for email in recipient_emails:
-        if email:
-            send_email(email, email_subject, email_body)
-
+        for email in recipient_emails:
+            if email:
+                send_email(email, email_subject, email_body)
 
     return Response({"message": "Application submitted"}, status=201)
 
