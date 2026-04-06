@@ -11,7 +11,7 @@ from django.db.models import Sum
 
 from afc_auth.models import BannedPlayer, Notifications
 from afc_team.models import Team, TeamMembers
-from .models import Country, PlayerReport, RecruitmentApplication, RecruitmentPost, TrialChat, TrialChatMessage
+from .models import Country, PlayerReport, RecruitmentApplication, RecruitmentPost, TrialChat, TrialChatMessage, TrialInvite
 from afc_auth.views import send_email, validate_token
 from afc_tournament_and_scrims.models import TournamentPlayerMatchStats, TournamentTeamMatchStats
 
@@ -235,16 +235,41 @@ def update_application_status(request):
     if action == "REJECT":
         application.status = "REJECTED"
 
+        Notifications.objects.create(
+            user=application.player,
+            message=f"Your application to {application.team.team_name} has been rejected."
+        )
+
     elif action == "SHORTLIST":
         application.status = "SHORTLISTED"
+
+        Notifications.objects.create(
+            user=application.player,
+            message=f"Your application to {application.team.team_name} has been shortlisted."
+        )
 
     elif action == "INVITE":
         application.status = "INVITED"
         application.contact_unlocked = True
         application.invite_expires_at = timezone.now() + timedelta(hours=72)
 
-        # 🔥 Trigger notification here (important)
-        send_trial_invite_notification(application)
+        # # 🔥 Trigger notification here (important)
+        # send_trial_invite_notification(application)
+
+        # Send Trial Invite
+        TrialInvite.objects.create(
+            team=application.team,
+            player=application.player,
+            application=application,
+            expires_at=application.invite_expires_at
+        )
+
+        # Send Notification
+        Notifications.objects.create(
+            user=application.player,
+            message=f"{application.team.team_name} has invited you to a trial."
+        )
+
 
     else:
         return Response({"message": "Invalid action"}, status=400)
@@ -483,15 +508,17 @@ def respond_to_trial_invite(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
-    application_id = request.data.get("application_id")
+    trial_invite_id = request.data.get("trial_invite_id")
     action = request.data.get("action")  # ACCEPT or DECLINE
 
     try:
-        application = RecruitmentApplication.objects.get(id=application_id)
-    except RecruitmentApplication.DoesNotExist:
-        return Response({"message": "Application not found."}, status=404)
+        trial_invite = TrialInvite.objects.get(id=trial_invite_id)
+    except TrialInvite.DoesNotExist:
+        return Response({"message": "Trial invite not found."}, status=404)
 
-    if application.player != user:
+    application = trial_invite.application
+
+    if trial_invite.player != user:
         return Response({"message": "Unauthorized."}, status=403)
 
     if application.status != "INVITED":
@@ -503,6 +530,9 @@ def respond_to_trial_invite(request):
     if action == "ACCEPT":
         application.status = "TRIAL_ONGOING"
         application.save()
+
+        trial_invite.status = "ACCEPTED"
+        trial_invite.save()
 
         chat = TrialChat.objects.create(application=application)
 
@@ -516,6 +546,9 @@ def respond_to_trial_invite(request):
     elif action == "DECLINE":
         application.status = "REJECTED"
         application.save()
+
+        trial_invite.status = "REJECTED"
+        trial_invite.save()
 
         Notifications.objects.create(
             user=application.team.team_owner,
