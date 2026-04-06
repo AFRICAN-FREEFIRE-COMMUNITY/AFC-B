@@ -1183,11 +1183,7 @@ def respond_invite(request, invite_id):
             # Ensure there are not more than 6 players with member management role
             player_count = TeamMembers.objects.filter(team=invite.team, management_role='member').count()
             if player_count > 6:
-                # If there are more than 6 players, demote the last added member to "non_player"
-                last_member = TeamMembers.objects.filter(team=invite.team, management_role='member').last()
-                if last_member:
-                    last_member.management_role = ''
-                    last_member.save()
+                return Response({'message': 'The team already has 6 players with member role.'}, status=status.HTTP_400_BAD_REQUEST)
             TeamMembers.objects.create(
                 team=invite.team,
                 member=user,
