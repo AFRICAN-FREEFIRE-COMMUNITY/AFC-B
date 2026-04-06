@@ -350,7 +350,7 @@ def view_applications(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
-    applications = RecruitmentApplication.objects.filter(team__owner=user).order_by("-created_at")
+    applications = RecruitmentApplication.objects.filter(team__team_owner=user).order_by("-created_at")
 
     data = []
 
