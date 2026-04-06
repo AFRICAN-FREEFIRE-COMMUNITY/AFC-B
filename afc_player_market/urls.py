@@ -18,4 +18,5 @@ urlpatterns = [
     path("view-my-applications/", view_my_applications, name="view_my_applications"),
     path("trial-chat/messages/", get_trial_chat_messages, name="get_trial_chat_messages"),
     path("trial-chat/send/", send_trial_chat_message, name="send_trial_chat_message"),
+    path("trial-chats/", get_my_trial_chats, name="get_my_trial_chats"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

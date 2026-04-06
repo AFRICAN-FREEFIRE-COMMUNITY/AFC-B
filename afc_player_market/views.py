@@ -7,7 +7,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from datetime import datetime
 
-from django.db.models import Sum
+from django.db.models import Q, Sum
 
 from afc_auth.models import BannedPlayer, Notifications
 from afc_team.models import Team, TeamMembers
@@ -891,6 +891,36 @@ def _is_trial_chat_participant(user, chat):
         member=user,
         management_role__in=['coach', 'manager']
     ).exists()
+
+
+@api_view(["GET"])
+def get_my_trial_chats(request):
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+    trial_chats = TrialChat.objects.filter(
+        Q(application__player=user) |
+        Q(application__team__team_owner=user) |
+        Q(application__team__memberships__member=user, application__team__memberships__management_role__in=['coach', 'manager'])
+    ).distinct().select_related("application", "application__team", "application__player")
+
+    data = [
+        {
+            "chat_id": chat.id,
+            "application_id": chat.application.id,
+            "team": chat.application.team.team_name,
+            "player": chat.application.player.username,
+        }
+        for chat in trial_chats
+    ]
+
+    return Response(data, status=200)
 
 
 @api_view(["GET"])
