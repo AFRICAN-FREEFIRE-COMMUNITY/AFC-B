@@ -194,6 +194,10 @@ def apply_to_team(request):
 
     application_message = request.data.get("application_message", "")
 
+    # ensure the user has not already applied to this post
+    if RecruitmentApplication.objects.filter(player=user, recruitment_post=post).exists():
+        return Response({"message": "Already applied"}, status=400)
+
     application, created = RecruitmentApplication.objects.get_or_create(
         player=user,
         recruitment_post=post,
@@ -201,8 +205,6 @@ def apply_to_team(request):
         application_message=application_message
     )
 
-    if not created:
-        return Response({"message": "Already applied"}, status=400)
     
     Notifications.objects.create(
         user=post.team.team_owner,
