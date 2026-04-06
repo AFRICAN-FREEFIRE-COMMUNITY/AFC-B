@@ -439,36 +439,48 @@ def update_application_status(request):
         )
 
     elif action == "INVITE":
-        application.status = "INVITED"
+        player = application.player
+
+        # Check if player is already in 2 active trials
+        active_trials = RecruitmentApplication.objects.filter(
+            player=player,
+            status="TRIAL_ONGOING"
+        ).count()
+
+        if active_trials >= 2:
+            return Response({
+                "message": f"{player.username} is currently in {active_trials} active trial(s) and cannot be in more than 2 at a time."
+            }, status=400)
+
+        application.status = "TRIAL_ONGOING"
         application.contact_unlocked = True
         application.invite_expires_at = timezone.now() + timedelta(hours=72)
 
-        # # 🔥 Trigger notification here (important)
-        # send_trial_invite_notification(application)
-
-        # Send Trial Invite
         TrialInvite.objects.create(
             team=application.team,
-            player=application.player,
+            player=player,
             application=application,
-            expires_at=application.invite_expires_at
+            expires_at=application.invite_expires_at,
+            status="ACCEPTED"
         )
 
-        # Send Notification
+        chat = TrialChat.objects.create(application=application)
+
+        # Notify player
         Notifications.objects.create(
-            user=application.player,
-            message=f"{application.team.team_name} has invited you to a trial."
+            user=player,
+            message=f"You have been added to a trial with {application.team.team_name}. A trial chat has been created."
         )
 
-        # SEND EMAIL TO PLAYER
-        email_subject = f"Trial Invite from {application.team.team_name}"
-        email_body = f"""
+        # Email to player
+        email_subject = f"You've Been Added to a Trial with {application.team.team_name}!"
+        player_email_body = f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Trial Invite</title>
+  <title>Trial Started</title>
 </head>
 <body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f0f0f;padding:40px 0;">
@@ -480,7 +492,7 @@ def update_application_status(request):
           <tr>
             <td style="background:linear-gradient(135deg,#ff6b00,#ff9500);padding:32px 40px;text-align:center;">
               <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:rgba(255,255,255,0.75);text-transform:uppercase;">African Free Fire Community</p>
-              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">You've Been Invited to Trial!</h1>
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">Your Trial Has Begun!</h1>
             </td>
           </tr>
 
@@ -489,9 +501,9 @@ def update_application_status(request):
             <td style="padding:36px 40px;">
 
               <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
-                Hey <strong style="color:#ffffff;">{application.player.username}</strong>, great news &mdash;
-                <strong style="color:#ff7a00;">{application.team.team_name}</strong> has reviewed your application
-                and wants to see what you&rsquo;ve got in a trial! Note, this trial does not guarantee a spot on the team, but it&rsquo;s your chance to impress and show why you deserve to be part of their roster.
+                Hey <strong style="color:#ffffff;">{player.username}</strong> &mdash;
+                <strong style="color:#ff7a00;">{application.team.team_name}</strong> has selected you for a trial!
+                A dedicated trial chat has been created where you can communicate directly with the team&rsquo;s management.
               </p>
 
               <!-- Team Card -->
@@ -504,32 +516,25 @@ def update_application_status(request):
                 </tr>
               </table>
 
-              <!-- Countdown Warning -->
+              <!-- Info Box -->
               <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
                 <tr>
-                  <td style="background-color:#2a1a00;border:1px solid #ff6b0044;border-radius:8px;padding:16px 20px;">
-                    <table cellpadding="0" cellspacing="0">
-                      <tr>
-                        <td style="padding-right:12px;font-size:22px;">&#9201;</td>
-                        <td>
-                          <p style="margin:0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">72-Hour Window</p>
-                          <p style="margin:4px 0 0 0;font-size:13px;color:#cc8800;line-height:1.5;">
-                            You must accept or decline this invite within <strong>72 hours</strong>. After that, the invite will expire.
-                          </p>
-                        </td>
-                      </tr>
-                    </table>
+                  <td style="background-color:#1e1a0e;border:1px solid #ff6b0044;border-radius:8px;padding:16px 20px;">
+                    <p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">What happens next?</p>
+                    <p style="margin:0;font-size:13px;color:#cc9933;line-height:1.6;">
+                      Use the trial chat in the AFC app to coordinate with the team. This is your chance to impress &mdash; give it your all!
+                    </p>
                   </td>
                 </tr>
               </table>
 
-              <!-- CTA Buttons -->
+              <!-- CTA -->
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td align="center">
                     <a href="https://africanfreefirecommunity.com/applications"
                        style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
-                      Respond to Invite
+                      Open Trial Chat
                     </a>
                   </td>
                 </tr>
@@ -541,7 +546,7 @@ def update_application_status(request):
           <!-- Footer -->
           <tr>
             <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
-              <p style="margin:0;font-size:12px;color:#555555;">This invite was sent because you applied to <strong style="color:#777;">{application.team.team_name}</strong> on the AFC Player Market.</p>
+              <p style="margin:0;font-size:12px;color:#555555;">This trial was started because you applied to <strong style="color:#777;">{application.team.team_name}</strong> on the AFC Player Market.</p>
               <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
             </td>
           </tr>
@@ -553,9 +558,102 @@ def update_application_status(request):
 </body>
 </html>
 """
-        send_email(application.player.email, email_subject, email_body)
+        send_email(player.email, email_subject, player_email_body)
 
+        # Notify team staff
+        Notifications.objects.create(
+            user=application.team.team_owner,
+            message=f"{player.username} has been added to a trial. A trial chat has been created."
+        )
 
+        # Email to team owner, manager, coach, captain
+        team_owner_email = application.team.team_owner.email
+        team_captain_email = application.team.team_captain.email if application.team.team_captain else None
+        manager_emails = list(application.team.memberships.filter(management_role="manager").values_list("member__email", flat=True))
+        coach_emails = list(application.team.memberships.filter(management_role="coach").values_list("member__email", flat=True))
+        recipient_emails = set(filter(None, [team_owner_email, team_captain_email] + manager_emails + coach_emails))
+
+        team_email_subject = f"Trial Started — {player.username} has been added!"
+        team_email_body = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Trial Started</title>
+</head>
+<body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f0f0f;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;max-width:600px;width:100%;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#ff6b00,#ff9500);padding:32px 40px;text-align:center;">
+              <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:rgba(255,255,255,0.75);text-transform:uppercase;">African Free Fire Community</p>
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">Trial Started</h1>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 40px;">
+
+              <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
+                Hi <strong style="color:#ffffff;">{application.team.team_name}</strong> Management,
+              </p>
+
+              <p style="margin:0 0 24px 0;font-size:15px;color:#aaaaaa;line-height:1.7;">
+                <strong style="color:#ff7a00;">{player.username}</strong> has been added to a trial with your team.
+                A dedicated trial chat is now available to coordinate and evaluate their performance.
+              </p>
+
+              <!-- Player Card -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#242424;border-radius:10px;border:1px solid #333;margin-bottom:28px;">
+                <tr>
+                  <td style="padding:20px 24px;">
+                    <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Player on Trial</p>
+                    <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;">{player.username}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- CTA -->
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td align="center">
+                    <a href="https://africanfreefirecommunity.com/team/trials"
+                       style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
+                      Open Trial Chat
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
+              <p style="margin:0;font-size:12px;color:#555555;">You received this because you are a staff member of <strong style="color:#777;">{application.team.team_name}</strong>.</p>
+              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+        for email in recipient_emails:
+            send_email(email, team_email_subject, team_email_body)
+
+        application.save()
+        return Response({"message": "Trial started.", "chat_id": chat.id}, status=200)
 
     else:
         return Response({"message": "Invalid action"}, status=400)
@@ -781,70 +879,6 @@ def _is_trial_chat_participant(user, chat):
         member=user,
         management_role__in=['coach', 'manager']
     ).exists()
-
-
-@api_view(["POST"])
-def respond_to_trial_invite(request):
-    # ---------------- AUTH ----------------
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
-
-    user = validate_token(auth.split(" ")[1])
-    if not user:
-        return Response({"message": "Invalid session."}, status=401)
-
-    trial_invite_id = request.data.get("trial_invite_id")
-    action = request.data.get("action")  # ACCEPT or DECLINE
-
-    try:
-        trial_invite = TrialInvite.objects.get(id=trial_invite_id)
-    except TrialInvite.DoesNotExist:
-        return Response({"message": "Trial invite not found."}, status=404)
-
-    application = trial_invite.application
-
-    if trial_invite.player != user:
-        return Response({"message": "Unauthorized."}, status=403)
-
-    if application.status != "INVITED":
-        return Response({"message": "No pending trial invite for this application."}, status=400)
-
-    if application.invite_expires_at and application.invite_expires_at < timezone.now():
-        return Response({"message": "Trial invite has expired."}, status=400)
-
-    if action == "ACCEPT":
-        application.status = "TRIAL_ONGOING"
-        application.save()
-
-        trial_invite.status = "ACCEPTED"
-        trial_invite.save()
-
-        chat = TrialChat.objects.create(application=application)
-
-        Notifications.objects.create(
-            user=application.team.team_owner,
-            message=f"{user.username} has accepted your trial invite. A trial chat has been created."
-        )
-
-        return Response({"message": "Trial invite accepted.", "chat_id": chat.id}, status=200)
-
-    elif action == "DECLINE":
-        application.status = "REJECTED"
-        application.save()
-
-        trial_invite.status = "REJECTED"
-        trial_invite.save()
-
-        Notifications.objects.create(
-            user=application.team.team_owner,
-            message=f"{user.username} has declined your trial invite."
-        )
-
-        return Response({"message": "Trial invite declined."}, status=200)
-
-    else:
-        return Response({"message": "Invalid action. Use ACCEPT or DECLINE."}, status=400)
 
 
 @api_view(["GET"])

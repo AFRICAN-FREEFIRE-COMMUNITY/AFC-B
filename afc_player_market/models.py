@@ -118,6 +118,7 @@ class TrialInvite(models.Model):
     team = models.ForeignKey('afc_team.Team', on_delete=models.CASCADE)
     player = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE)
     application = models.ForeignKey('RecruitmentApplication', on_delete=models.CASCADE)
+    reason = models.TextField(null=True, blank=True)  # Reason for trial invite
 
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
