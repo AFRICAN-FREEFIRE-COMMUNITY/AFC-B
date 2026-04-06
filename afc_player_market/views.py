@@ -9,7 +9,7 @@ from datetime import datetime
 
 from django.db.models import Sum
 
-from afc_auth.models import Notifications
+from afc_auth.models import BannedPlayer, Notifications
 from afc_team.models import Team, TeamMembers
 from .models import Country, PlayerReport, RecruitmentApplication, RecruitmentPost
 from afc_auth.views import send_email, validate_token
@@ -422,7 +422,7 @@ def view_applications(request):
             "primary_role": app.recruitment_post.primary_role,
             "secondary_role": app.recruitment_post.secondary_role,
             "country": app.recruitment_post.country.name if app.recruitment_post.country else None,
-            "is_banned": player.is_banned if player else None,
+            "is_banned": True if player and BannedPlayer.objects.filter(user=player, is_active=True).exists() else False,
             "application_message": app.application_message,
             "tournament_wins": tournament_wins,
             "total_tournament_kills": total_tournament_kills,
