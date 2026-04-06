@@ -369,6 +369,17 @@ def update_application_status(request):
             message=f"{application.team.team_name} has invited you to a trial."
         )
 
+        # SEND EMAIL TO PLAYER
+        email_subject = f"Trial Invite from {application.team.team_name}"
+        email_body = f"""
+Hi {application.player.username},
+{application.team.team_name} has invited you to a trial! Please respond within 72 hours to proceed.
+Best of luck!
+African Free Fire Community
+"""
+        send_email(application.player.email, email_subject, email_body)
+        
+
 
     else:
         return Response({"message": "Invalid action"}, status=400)
