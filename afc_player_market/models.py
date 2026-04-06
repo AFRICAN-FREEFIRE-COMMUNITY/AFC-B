@@ -103,6 +103,8 @@ class RecruitmentApplication(models.Model):
     contact_unlocked = models.BooleanField(default=False)
     invite_expires_at = models.DateTimeField(null=True, blank=True)
 
+    reason = models.TextField(null=True, blank=True)  # Reason for rejection or other status updates
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

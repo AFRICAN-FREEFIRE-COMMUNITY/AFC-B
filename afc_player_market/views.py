@@ -288,7 +288,7 @@ def apply_to_team(request):
           <tr>
             <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
               <p style="margin:0;font-size:12px;color:#555555;">You received this because you are a staff member of <strong style="color:#777;">{post.team.team_name}</strong>.</p>
-              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2025 African Free Fire Community. All rights reserved.</p>
+              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
             </td>
           </tr>
 
@@ -332,12 +332,103 @@ def update_application_status(request):
     action = request.data.get("action")
 
     if action == "REJECT":
+        application.reason = request.data.get("reason")
         application.status = "REJECTED"
 
         Notifications.objects.create(
             user=application.player,
             message=f"Your application to {application.team.team_name} has been rejected."
         )
+
+        # SEND EMAIL TO PLAYER
+        email_subject = f"Application Update from {application.team.team_name}"
+        email_body = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Application Update</title>
+</head>
+<body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f0f0f;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;max-width:600px;width:100%;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#1a1a1a,#2a2a2a);padding:32px 40px;text-align:center;border-bottom:3px solid #333;">
+              <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:#666;text-transform:uppercase;">African Free Fire Community</p>
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">Application Update</h1>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 40px;">
+
+              <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
+                Hi <strong style="color:#ffffff;">{application.player.username}</strong>,
+              </p>
+
+              <p style="margin:0 0 24px 0;font-size:15px;color:#aaaaaa;line-height:1.7;">
+                Thank you for your interest in joining <strong style="color:#ffffff;">{application.team.team_name}</strong>.
+                After careful consideration, we regret to inform you that your application was not successful at this time.
+                We encourage you to keep honing your skills and consider applying again in the future.
+              </p>
+
+              <!-- Reason Box (only shown if reason provided) -->
+              {"" if not application.reason else f"""
+              <p style="margin:0 0 8px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#555;">Reason</p>
+              <div style="background-color:#1e1e1e;border-left:3px solid #555;border-radius:0 8px 8px 0;padding:16px 20px;margin-bottom:28px;">
+                <p style="margin:0;font-size:14px;color:#999999;line-height:1.7;font-style:italic;">{application.reason}</p>
+              </div>
+              """}
+
+              <!-- Encouragement Card -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+                <tr>
+                  <td style="background-color:#1e1a0e;border:1px solid #ff9500;border-radius:8px;padding:20px 24px;">
+                    <p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">Keep Going</p>
+                    <p style="margin:0;font-size:13px;color:#cc9933;line-height:1.6;">
+                      Every great player started somewhere. Keep practicing, stay active in the community, and your next opportunity could be just around the corner.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- CTA -->
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td align="center">
+                    <a href="https://africanfreefirecommunity.com/player-market"
+                       style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
+                      Browse Other Teams
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
+              <p style="margin:0;font-size:12px;color:#555555;">We wish you the best of luck in your esports journey.</p>
+              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+        send_email(application.player.email, email_subject, email_body)
 
     elif action == "SHORTLIST":
         application.status = "SHORTLISTED"
@@ -451,7 +542,7 @@ def update_application_status(request):
           <tr>
             <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
               <p style="margin:0;font-size:12px;color:#555555;">This invite was sent because you applied to <strong style="color:#777;">{application.team.team_name}</strong> on the AFC Player Market.</p>
-              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2025 African Free Fire Community. All rights reserved.</p>
+              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
             </td>
           </tr>
 
@@ -463,7 +554,7 @@ def update_application_status(request):
 </html>
 """
         send_email(application.player.email, email_subject, email_body)
-        
+
 
 
     else:
