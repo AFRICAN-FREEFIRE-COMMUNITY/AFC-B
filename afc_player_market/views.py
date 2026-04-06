@@ -350,7 +350,13 @@ def view_applications(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
-    applications = RecruitmentApplication.objects.filter(team__team_owner=user).order_by("-created_at")
+    try:
+        team = Team.objects.get(team_owner=user)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found"}, status=404)
+
+
+    applications = RecruitmentApplication.objects.filter(team=team).order_by("-created_at")
 
     data = []
 
