@@ -64,6 +64,12 @@ def create_recruitment_post(request):
             post.availability_type = data.get("availability_type")
             post.additional_info = data.get("additional_info")
 
+            # Set multiple countries (list of country codes, e.g. ["NG", "GH", "KE"])
+            country_names = data.get("country_names", [])
+            if country_names:
+                selected_countries = Country.objects.filter(name__in=country_names)
+                post.countries.set(selected_countries)
+
         # ---------------- TEAM POST ----------------
         elif post_type == "TEAM_RECRUITMENT":
             try:
