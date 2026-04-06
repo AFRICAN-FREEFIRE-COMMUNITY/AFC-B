@@ -93,7 +93,9 @@ class RecruitmentApplication(models.Model):
 
     player = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE)
     recruitment_post = models.ForeignKey('RecruitmentPost', on_delete=models.CASCADE)
+
     team = models.ForeignKey('afc_team.Team', on_delete=models.CASCADE)
+    application_message = models.TextField(null=True, blank=True)
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
 

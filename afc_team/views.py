@@ -243,6 +243,10 @@ def review_invitation(request):
             if TeamMembers.objects.filter(team=invite.team).count() >= 8:
                 return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
 
+
+            # Ensure there are not more than 6 players with member management role
+            
+
             # Add the user to the team
             TeamMembers.objects.create(team=invite.team, member=user, management_role='member', in_game_role='rusher')
             invite.decision = 'accepted'
