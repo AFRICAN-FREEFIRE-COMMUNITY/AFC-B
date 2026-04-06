@@ -929,7 +929,7 @@ def get_my_trial_chats(request):
     return Response(data, status=200)
 
 
-@api_view(["GET"])
+@api_view(["POST"])
 def get_trial_chat_messages(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
