@@ -23,4 +23,5 @@ urlpatterns = [
     path("invite-player-to-trial/", invite_player_to_trial, name="invite_player_to_trial"),
     path("my-trial-invites/", view_my_trial_invites, name="view_my_trial_invites"),
     path("respond-to-trial-invite/", respond_to_direct_trial_invite, name="respond_to_direct_trial_invite"),
+    path("admin/all-trials-and-applications/", view_all_trials_and_applications, name="view_all_trials_and_applications"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
