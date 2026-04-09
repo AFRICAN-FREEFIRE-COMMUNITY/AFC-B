@@ -931,7 +931,7 @@ def get_my_trial_chats(request):
     return Response(data, status=200)
 
 
-@api_view(["POST"])
+@api_view(["GET"])
 def get_trial_chat_messages(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
