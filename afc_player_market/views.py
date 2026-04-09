@@ -944,9 +944,15 @@ def get_trial_chat_messages(request):
 
     chat_id = request.query_params.get("chat_id")
 
+    if not chat_id:
+        return Response({"message": "chat_id is required."}, status=400)
+
     try:
-        chat = TrialChat.objects.get(id=chat_id)
-    except TrialChat.DoesNotExist:
+        chat = TrialChat.objects.select_related(
+            "application__player",
+            "application__team",
+        ).get(id=chat_id)
+    except (TrialChat.DoesNotExist, ValueError):
         return Response({"message": "Chat not found."}, status=404)
 
     if not _is_trial_chat_participant(user, chat):
@@ -965,11 +971,14 @@ def get_trial_chat_messages(request):
         for msg in messages
     ]
 
+    app = chat.application
     return Response({
         "chat_id": chat.id,
-        "application_id": chat.application.id,
-        "team": chat.application.team.team_name,
-        "player": chat.application.player.username,
+        "application_id": app.id,
+        "status": app.status,
+        "team": app.team.team_name,
+        "team_logo": app.team.team_logo.url if app.team.team_logo else None,
+        "player": app.player.username,
         "messages": data,
     }, status=200)
 
@@ -988,12 +997,17 @@ def send_trial_chat_message(request):
     chat_id = request.data.get("chat_id")
     message_text = request.data.get("message", "").strip()
 
+    if not chat_id:
+        return Response({"message": "chat_id is required."}, status=400)
+
     if not message_text:
         return Response({"message": "Message cannot be empty."}, status=400)
 
     try:
-        chat = TrialChat.objects.get(id=chat_id)
-    except TrialChat.DoesNotExist:
+        chat = TrialChat.objects.select_related(
+            "application__player", "application__team"
+        ).get(id=chat_id)
+    except (TrialChat.DoesNotExist, ValueError):
         return Response({"message": "Chat not found."}, status=404)
 
     if not _is_trial_chat_participant(user, chat):
