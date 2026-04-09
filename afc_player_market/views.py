@@ -964,7 +964,7 @@ def get_trial_chat_messages(request):
         {
             "id": msg.id,
             "sender": msg.sender.username,
-            "sender_id": msg.sender.id,
+            "sender_id": msg.sender.user_id,
             "message": msg.message,
             "sent_at": msg.sent_at,
         }
