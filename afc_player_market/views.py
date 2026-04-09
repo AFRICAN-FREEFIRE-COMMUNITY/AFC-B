@@ -1486,3 +1486,89 @@ def view_application_details(request):
 
         "chat_id": chat_id,
     }, status=200)
+
+
+@api_view(["GET"])
+def view_all_trials_and_applications(request):
+    """Admin view to see all trials and applications in the system."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+    if user.role not in ["admin", "moderator"]:
+        return Response({"message": "Unauthorized."}, status=403)
+
+    # Optional filters via query params
+    status_filter = request.query_params.get("status")    # e.g. ?status=TRIAL_ONGOING
+    team_filter   = request.query_params.get("team_id")   # e.g. ?team_id=5
+    player_filter = request.query_params.get("player_id") # e.g. ?player_id=12
+
+    applications = RecruitmentApplication.objects.select_related(
+        "player", "team", "recruitment_post"
+    ).order_by("-created_at")
+
+    if status_filter:
+        applications = applications.filter(status=status_filter)
+    if team_filter:
+        applications = applications.filter(team__team_id=team_filter)
+    if player_filter:
+        applications = applications.filter(player__id=player_filter)
+
+    from django.db.models import Count
+    status_summary = list(
+        RecruitmentApplication.objects
+        .values("status")
+        .annotate(count=Count("id"))
+        .order_by("status")
+    )
+
+    data = []
+    for app in applications:
+        chat_id = None
+        try:
+            chat_id = app.trial_chat.id
+        except Exception:
+            pass
+
+        data.append({
+            "id": app.id,
+            "status": app.status,
+            "applied_at": app.created_at,
+            "updated_at": app.updated_at,
+            "reason": app.reason,
+            "invite_expires_at": app.invite_expires_at,
+            "contact_unlocked": app.contact_unlocked,
+            "chat_id": chat_id,
+
+            "player": {
+                "id": app.player.id,
+                "username": app.player.username,
+                "uid": app.player.uid,
+                "discord": app.player.discord_username,
+                "is_banned": BannedPlayer.objects.filter(banned_player=app.player, is_active=True).exists(),
+            },
+
+            "team": {
+                "id": app.team.team_id,
+                "name": app.team.team_name,
+                "tag": app.team.team_tag,
+                "tier": app.team.team_tier,
+            },
+
+            "post": {
+                "id": app.recruitment_post.id,
+                "post_type": app.recruitment_post.post_type,
+                "roles_needed": app.recruitment_post.roles_needed,
+                "commitment_type": app.recruitment_post.commitment_type,
+            },
+        })
+
+    return Response({
+        "summary": status_summary,
+        "total": len(data),
+        "applications": data,
+    }, status=200)
