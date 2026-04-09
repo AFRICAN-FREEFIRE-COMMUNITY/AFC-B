@@ -1559,7 +1559,7 @@ def view_all_trials_and_applications(request):
             "chat_id": chat_id,
 
             "player": {
-                "id": app.player.id,
+                "id": app.player.user_id,
                 "username": app.player.username,
                 "uid": app.player.uid,
                 "discord": app.player.discord_username,
