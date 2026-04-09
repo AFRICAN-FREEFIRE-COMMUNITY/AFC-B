@@ -1227,6 +1227,7 @@ def get_team_details_based_on_invite(request, invite_id):
         "team_description": team.team_description,
         "country": team.country,
         "inviter": invite.inviter.username,
+        "role": invite.role_to_be_given_upon_acceptance
     }
 
     return Response({"team": team_data}, status=status.HTTP_200_OK)

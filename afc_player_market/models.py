@@ -147,6 +147,33 @@ class PlayerReport(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
+class DirectTrialInvite(models.Model):
+    """
+    Sent by a team to a player who has posted a PLAYER_AVAILABLE post.
+    This is the reverse of RecruitmentApplication (team reaches out to player).
+    """
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('ACCEPTED', 'Accepted'),
+        ('REJECTED', 'Rejected'),
+        ('EXPIRED', 'Expired'),
+    ]
+
+    team = models.ForeignKey('afc_team.Team', on_delete=models.CASCADE, related_name='sent_direct_invites')
+    player = models.ForeignKey('afc_auth.User', on_delete=models.CASCADE, related_name='received_direct_invites')
+    player_post = models.ForeignKey('RecruitmentPost', on_delete=models.CASCADE, related_name='direct_invites')
+    message = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('team', 'player_post')  # one invite per team per post
+
+    def __str__(self):
+        return f"{self.team.team_name} → {self.player.username} ({self.status})"
+
+
 class TrialChat(models.Model):
     application = models.OneToOneField('RecruitmentApplication', on_delete=models.CASCADE, related_name='trial_chat')
     created_at = models.DateTimeField(auto_now_add=True)
