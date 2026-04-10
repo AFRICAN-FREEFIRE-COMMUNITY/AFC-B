@@ -1422,7 +1422,9 @@ def view_application_details(request):
     except RecruitmentApplication.DoesNotExist:
         return Response({"message": "Application not found."}, status=404)
 
-    if app.player != user:
+    if app.player != user and app.team.team_owner != user and not TeamMembers.objects.filter(
+        team=app.team, member=user, management_role__in=['coach', 'manager']
+    ).exists():
         return Response({"message": "Unauthorized."}, status=403)
 
     player = app.player
