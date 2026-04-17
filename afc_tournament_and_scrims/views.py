@@ -15210,7 +15210,8 @@ def get_list_of_players_in_sponsor_event(request):
                     "player_id": comp.id,
                     "player_username": comp.user.username,
                     "user_id_from_sponsor": comp.user_id_from_sponsor,
-                    "status": comp.status
+                    "status": comp.status,
+                    "email": comp.user.email,
                 })
         else:
             teams = TournamentTeam.objects.filter(event=event).prefetch_related("members__user")
@@ -15227,7 +15228,8 @@ def get_list_of_players_in_sponsor_event(request):
                         "member_id": member.id,
                         "member_username": member.user.username,
                         "user_id_from_sponsor": member.user_id_from_sponsor,
-                        "status": member.status
+                        "status": member.status,
+                        "email": member.user.email,
                     })
     return Response(data, status=200)
 
