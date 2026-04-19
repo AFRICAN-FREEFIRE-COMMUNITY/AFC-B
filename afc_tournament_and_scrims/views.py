@@ -533,7 +533,19 @@ def create_event(request):
                     prize_distribution=group_data.get("prize_distribution", {})
                 )
 
-                # ✅ create exactly match_count matches, cycle maps if provided
+                # Auto-create a leaderboard for this group
+                leaderboard = Leaderboard.objects.create(
+                    leaderboard_name=f"{stage.stage_name} - {group.group_name}",
+                    event=event,
+                    stage=stage,
+                    group=group,
+                    creator=user,
+                    leaderboard_method="manual",
+                    placement_points={},
+                    kill_point=1.0,
+                )
+
+                # Create exactly match_count matches, cycle maps if provided
                 match_count = group.match_count or 0
                 match_maps = group.match_maps or []
                 default_map = match_maps[0] if match_maps else "bermuda"
@@ -542,7 +554,7 @@ def create_event(request):
                 for num in range(1, match_count + 1):
                     chosen_map = match_maps[(num - 1) % len(match_maps)] if match_maps else default_map
                     matches_to_create.append(Match(
-                        leaderboard=None,
+                        leaderboard=leaderboard,
                         group=group,
                         match_map=chosen_map,
                         match_number=num
@@ -1543,18 +1555,31 @@ def edit_event(request):
                         group = StageGroups.objects.create(stage=stage, **group_defaults)
 
                     kept_group_ids.append(group.group_id)
-                    # ---- Sync Matches ----
-
-                    leaderboard = Leaderboard.objects.filter(
-                        event=event,
-                        stage=stage,
-                        group=group
-                    ).first()
+                    # ---- Sync Matches + Leaderboard ----
 
                     match_count = group.match_count or 0
                     match_maps = group.match_maps or []
-
                     default_map = match_maps[0] if match_maps else "bermuda"
+
+                    # If match_count drops to 0, remove the leaderboard and all matches
+                    if match_count == 0:
+                        Leaderboard.objects.filter(event=event, stage=stage, group=group).delete()
+                        Match.objects.filter(group=group).delete()
+                        continue
+
+                    # Ensure a leaderboard exists for this group; create one if not
+                    leaderboard, _ = Leaderboard.objects.get_or_create(
+                        event=event,
+                        stage=stage,
+                        group=group,
+                        defaults={
+                            "leaderboard_name": f"{stage.stage_name} - {group.group_name}",
+                            "creator": user,
+                            "leaderboard_method": "manual",
+                            "placement_points": {},
+                            "kill_point": 1.0,
+                        }
+                    )
 
                     existing_matches = {
                         m.match_number: m
@@ -1566,33 +1591,25 @@ def edit_event(request):
                     kept_match_numbers = []
 
                     for num in range(1, match_count + 1):
-
                         chosen_map = (
                             match_maps[(num - 1) % len(match_maps)]
                             if match_maps else default_map
                         )
-
                         kept_match_numbers.append(num)
 
                         if num in existing_matches:
-
                             m = existing_matches[num]
-
-                            if m.match_map != chosen_map or m.leaderboard != leaderboard:
+                            if m.match_map != chosen_map or m.leaderboard_id != leaderboard.leaderboard_id:
                                 m.match_map = chosen_map
                                 m.leaderboard = leaderboard
                                 matches_to_update.append(m)
-
                         else:
-
-                            matches_to_create.append(
-                                Match(
-                                    group=group,
-                                    match_number=num,
-                                    match_map=chosen_map,
-                                    leaderboard=leaderboard
-                                )
-                            )
+                            matches_to_create.append(Match(
+                                group=group,
+                                match_number=num,
+                                match_map=chosen_map,
+                                leaderboard=leaderboard
+                            ))
 
                     if matches_to_create:
                         Match.objects.bulk_create(matches_to_create, batch_size=200)
@@ -1600,7 +1617,7 @@ def edit_event(request):
                     if matches_to_update:
                         Match.objects.bulk_update(matches_to_update, ["match_map", "leaderboard"])
 
-                    # delete removed matches
+                    # Remove matches beyond the new match_count
                     Match.objects.filter(group=group)\
                         .exclude(match_number__in=kept_match_numbers)\
                         .delete()
