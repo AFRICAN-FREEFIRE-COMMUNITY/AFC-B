@@ -424,6 +424,18 @@ class SoloPlayerMatchStats(models.Model):
 # played = models.BooleanField(default=True)
 
 
+class MatchResultImage(models.Model):
+    image_id = models.AutoField(primary_key=True)
+    match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="result_images")
+    image = models.ImageField(upload_to='match_result_images/')
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    note = models.CharField(max_length=200, null=True, blank=True)
+
+    def __str__(self):
+        return f"Result image for match {self.match_id}"
+
+
 class EventPrizePayout(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="payouts")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
