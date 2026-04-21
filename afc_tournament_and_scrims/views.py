@@ -13,7 +13,7 @@ from django.utils.dateparse import parse_date
 from afc_auth.views import assign_discord_role, check_discord_membership, check_discord_membership_v3, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, EventInviteToken, EventPageView, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -15989,3 +15989,104 @@ def total_published_news(request):
     return Response({
         "total_published_news": count
     })
+
+
+@api_view(["POST"])
+@parser_classes([MultiPartParser, FormParser])
+def upload_match_result_image(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    match_id = request.data.get("match_id")
+    if not match_id:
+        return Response({"message": "match_id is required."}, status=400)
+
+    images = request.FILES.getlist("images")
+    if not images:
+        return Response({"message": "At least one image file is required."}, status=400)
+
+    match = get_object_or_404(Match, match_id=match_id)
+    note = request.data.get("note", "")
+
+    created = []
+    for img in images:
+        obj = MatchResultImage.objects.create(
+            match=match,
+            image=img,
+            uploaded_by=admin,
+            note=note or None,
+        )
+        created.append({
+            "image_id": obj.image_id,
+            "url": obj.image.url,
+            "uploaded_at": obj.uploaded_at,
+        })
+
+    return Response({
+        "message": f"{len(created)} image(s) uploaded for match {match_id}.",
+        "match_id": match.match_id,
+        "images": created,
+    }, status=201)
+
+
+@api_view(["GET"])
+def get_match_result_images(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    match_id = request.query_params.get("match_id")
+    if not match_id:
+        return Response({"message": "match_id is required."}, status=400)
+
+    match = get_object_or_404(Match, match_id=match_id)
+    images = MatchResultImage.objects.filter(match=match).order_by("uploaded_at")
+
+    data = [
+        {
+            "image_id": img.image_id,
+            "url": img.image.url,
+            "note": img.note,
+            "uploaded_by": img.uploaded_by.username if img.uploaded_by else None,
+            "uploaded_at": img.uploaded_at,
+        }
+        for img in images
+    ]
+
+    return Response({"match_id": match.match_id, "images": data})
+
+
+@api_view(["DELETE"])
+def delete_match_result_image(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin.role != "admin":
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    image_id = request.data.get("image_id")
+    if not image_id:
+        return Response({"message": "image_id is required."}, status=400)
+
+    img = get_object_or_404(MatchResultImage, image_id=image_id)
+    img.image.delete(save=False)
+    img.delete()
+
+    return Response({"message": "Image deleted successfully."})
