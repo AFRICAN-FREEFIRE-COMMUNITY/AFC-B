@@ -114,6 +114,7 @@ def get_all_events(request):
             "event_date": event.start_date,
             "event_status": event.event_status,
             "competition_type": event.competition_type,
+            "event_type": event.event_type,
             "number_of_participants": event.max_teams_or_players,
             "prizepool": event.prizepool,
             "prizepool_cash_value": event.prizepool_cash_value,
@@ -143,11 +144,12 @@ def get_all_events_paginated(request):
         "event_date": event.start_date,
         "event_status": event.event_status,
         "competition_type": event.competition_type,
+        "event_type": event.event_type,
         "number_of_participants": event.max_teams_or_players,
         "prizepool": event.prizepool,
         "prizepool_cash_value": event.prizepool_cash_value,
         "prize_distribution": event.prize_distribution,
-        "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(), 
+        "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
     } for event in paginated]
 
     return Response({
