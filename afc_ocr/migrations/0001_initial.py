@@ -1,0 +1,129 @@
+import django.db.models.deletion
+import uuid
+from django.conf import settings
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    initial = True
+
+    dependencies = [
+        ("afc_tournament_and_scrims", "0001_initial"),
+        ("afc_team", "0001_initial"),
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name="OCRNameAlias",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("raw_name", models.CharField(db_index=True, max_length=100, unique=True)),
+                ("match_count", models.PositiveIntegerField(default=1)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "user",
+                    models.ForeignKey(
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="ocr_aliases",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+            ],
+            options={
+                "verbose_name": "OCR Name Alias",
+                "verbose_name_plural": "OCR Name Aliases",
+            },
+        ),
+        migrations.CreateModel(
+            name="OCRSession",
+            fields=[
+                ("session_id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                ("map_index", models.PositiveSmallIntegerField(help_text="Which map in the match this screenshot covers (1-indexed).")),
+                ("status", models.CharField(
+                    choices=[("pending_review", "Pending Review"), ("committed", "Committed"), ("discarded", "Discarded")],
+                    default="pending_review",
+                    max_length=20,
+                )),
+                ("event_type", models.CharField(
+                    choices=[("solo", "Solo"), ("team", "Team")],
+                    max_length=10,
+                )),
+                ("raw_output", models.JSONField()),
+                ("draft_rows", models.JSONField()),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "created_by",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="ocr_sessions",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "match",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="ocr_sessions",
+                        to="afc_tournament_and_scrims.match",
+                    ),
+                ),
+            ],
+            options={
+                "ordering": ["-created_at"],
+            },
+        ),
+        migrations.CreateModel(
+            name="OCRTeamNote",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "confirmed_by",
+                    models.ForeignKey(
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="confirmed_team_notes",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "match",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        to="afc_tournament_and_scrims.match",
+                    ),
+                ),
+                (
+                    "played_for_team",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="sub_in_notes",
+                        to="afc_team.team",
+                    ),
+                ),
+                (
+                    "registered_team",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="sub_out_notes",
+                        to="afc_team.team",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="team_notes",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+            ],
+        ),
+    ]

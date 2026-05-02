@@ -24,5 +24,9 @@ urlpatterns = [
     path("my-trial-invites/", view_my_trial_invites, name="view_my_trial_invites"),
     path("respond-to-trial-invite/", respond_to_direct_trial_invite, name="respond_to_direct_trial_invite"),
     path("admin/all-trials-and-applications/", view_all_trials_and_applications, name="view_all_trials_and_applications"),
+    path("post-details/", get_post_details, name="get_post_details"),
+    path("my-posts/", get_posts_related_to_me, name="get_posts_related_to_me"),
+    path("edit-post/", edit_recruitment_post, name="edit_recruitment_post"),
+    path("delete-post/", delete_recruitment_post, name="delete_recruitment_post"),
 
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
