@@ -364,10 +364,7 @@ def create_event(request):
                 return Response({"message": "waitlist_capacity must be an integer."}, status=400)
             if waitlist_capacity <= 0:
                 return Response({"message": "waitlist_capacity must be greater than 0."}, status=400)
-            if not waitlist_discord_role_id:
-                return Response({"message": "waitlist_discord_role_id is required when waitlist is enabled."}, status=400)
-            if not waitlist_discord_role_id.strip():
-                return Response({"message": "waitlist_discord_role_id cannot be empty."}, status=400)
+            # waitlist_discord_role_id is optional
 
     # ---------------- PARSE DATES ----------------
     start_date = parse_date(request.data.get("start_date"))
@@ -481,6 +478,10 @@ def create_event(request):
             sponsor_name=sponsor_name,
             sponsor_field_label=sponsor_field_label,
             sponsor_requirement_description=sponsor_requirement_description,
+            event_start_time=request.data.get("event_start_time") or None,
+            event_end_time=request.data.get("event_end_time") or None,
+            registration_start_time=request.data.get("registration_start_time") or None,
+            registration_end_time=request.data.get("registration_end_time") or None,
         )
 
         # change sponsor_usernames to a list
@@ -15991,6 +15992,93 @@ def total_published_news(request):
     })
 
 
+def _extract_results_from_image(image_file, participant_type):
+    """
+    Send a match result screenshot to GPT-4o and return structured JSON.
+    Returns a list of dicts. Raises ValueError if extraction fails.
+    """
+    import base64
+    import openai as _openai
+
+    image_bytes = image_file.read()
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    # Detect mime type from first bytes
+    mime = "image/jpeg"
+    if image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+        mime = "image/png"
+    elif image_bytes[:4] == b'RIFF':
+        mime = "image/webp"
+
+    if participant_type == "solo":
+        schema_hint = (
+            'a JSON array where each element is: '
+            '{"placement": <int>, "name": "<ign>", "kills": <int>}'
+        )
+        extra = "Each row is one player."
+    else:
+        schema_hint = (
+            'a JSON array where each element is: '
+            '{"placement": <int>, "players": [{"name": "<ign>", "kills": <int>}, ...]}'
+        )
+        extra = "Group players by their team (same placement number = same team)."
+
+    prompt = (
+        f"This is a Free Fire match result screen. "
+        f"Extract all visible results and return ONLY {schema_hint}. "
+        f"{extra} "
+        "Use the exact in-game names shown. "
+        "The 'kills' field is the Eliminations count shown next to each player. "
+        "Return only valid JSON with no markdown, no explanation."
+    )
+
+    client = _openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+        max_tokens=2000,
+    )
+
+    raw = resp.choices[0].message.content.strip()
+    # Strip possible markdown fences
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw.strip())
+
+
+def _merge_team_results(all_results):
+    """Merge results from multiple images, deduplicating by placement."""
+    seen = {}
+    for team in all_results:
+        p = team.get("placement")
+        if p and p not in seen:
+            seen[p] = team
+    return list(seen.values())
+
+
+def _merge_solo_results(all_results):
+    """Merge solo results from multiple images, deduplicating by placement."""
+    seen = {}
+    for row in all_results:
+        p = row.get("placement")
+        if p and p not in seen:
+            seen[p] = row
+    return list(seen.values())
+
+
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
 def upload_match_result_image(request):
@@ -16013,26 +16101,210 @@ def upload_match_result_image(request):
         return Response({"message": "At least one image file is required."}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
-    note = request.data.get("note", "")
 
-    created = []
-    for img in images:
+    if not match.group:
+        return Response({"message": "Match is not linked to a group."}, status=400)
+
+    event = match.group.stage.event
+    participant_type = event.participant_type  # "solo", "duo", or "squad"
+
+    # -------- LEADERBOARD / SCORING --------
+    leaderboard = match.leaderboard or Leaderboard.objects.filter(
+        event=event, stage=match.group.stage, group=match.group
+    ).first()
+
+    if not leaderboard:
+        return Response({"message": "No leaderboard found for this group. Create one first."}, status=400)
+
+    try:
+        placement_points = {int(k): int(v) for k, v in (leaderboard.placement_points or {}).items()}
+    except Exception:
+        return Response({"message": "Leaderboard placement_points must be a JSON object like {'1':12,'2':9,...}"}, status=400)
+
+    if not placement_points:
+        placement_points = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
+
+    kill_point = float(getattr(leaderboard, "kill_point", 1.0) or 1.0)
+
+    # -------- EXTRACT RESULTS FROM EACH IMAGE --------
+    all_raw = []
+    extraction_errors = []
+
+    for img_file in images:
+        img_file.seek(0)
+        try:
+            extracted = _extract_results_from_image(img_file, participant_type)
+            if isinstance(extracted, list):
+                all_raw.extend(extracted)
+        except Exception as e:
+            extraction_errors.append(str(e))
+
+    if not all_raw and extraction_errors:
+        return Response({
+            "message": "Failed to extract results from image(s).",
+            "errors": extraction_errors,
+        }, status=400)
+
+    if not all_raw:
+        return Response({"message": "No results could be extracted from the provided image(s)."}, status=400)
+
+    # -------- INSERT STATS --------
+    if participant_type == "solo":
+        merged = _merge_solo_results(all_raw)
+        merged.sort(key=lambda r: r.get("placement", 999))
+
+        reg_qs = RegisteredCompetitors.objects.select_related("user").filter(
+            event=event, status="registered"
+        )
+        # Build case-insensitive name → competitor map
+        name_to_rc = {rc.user.username.lower(): rc for rc in reg_qs if rc.user}
+
+        stats_to_create = []
+        unmatched = []
+
+        for row in merged:
+            name = (row.get("name") or "").strip()
+            placement = row.get("placement")
+            kills = int(row.get("kills") or 0)
+
+            rc = name_to_rc.get(name.lower())
+            if not rc:
+                unmatched.append({"name": name, "placement": placement})
+                continue
+
+            placement_pts = placement_points.get(placement, 0)
+            kill_pts = int(round(kills * kill_point))
+            total_pts = placement_pts + kill_pts
+
+            stats_to_create.append(
+                SoloPlayerMatchStats(
+                    match=match,
+                    competitor=rc,
+                    placement=placement,
+                    kills=kills,
+                    placement_points=placement_pts,
+                    kill_points=kill_pts,
+                    total_points=total_pts,
+                )
+            )
+
+        with transaction.atomic():
+            SoloPlayerMatchStats.objects.filter(match=match).delete()
+            SoloPlayerMatchStats.objects.bulk_create(stats_to_create, batch_size=500)
+            match.result_inputted = True
+            match.save(update_fields=["result_inputted"])
+
+        saved_count = len(stats_to_create)
+
+    else:
+        # Team (duo/squad)
+        merged = _merge_team_results(all_raw)
+        merged.sort(key=lambda t: t.get("placement", 999))
+
+        # Fetch all members for this event and build a case-insensitive name map
+        all_members = TournamentTeamMember.objects.select_related(
+            "tournament_team", "user"
+        ).filter(tournament_team__event=event)
+
+        name_to_member = {m.user.username.lower(): m for m in all_members if m.user}
+
+        team_stats_to_create = []
+        player_stats_to_create = []
+        unmatched = []
+
+        with transaction.atomic():
+            TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
+            TournamentTeamMatchStats.objects.filter(match=match).delete()
+
+            for team_data in merged:
+                placement = team_data.get("placement")
+                players = team_data.get("players", [])
+
+                # Identify the TournamentTeam via first matched player
+                team_obj = None
+                for p in players:
+                    member = name_to_member.get((p.get("name") or "").lower())
+                    if member:
+                        team_obj = member.tournament_team
+                        break
+
+                if not team_obj:
+                    unmatched.append({
+                        "placement": placement,
+                        "players": [p.get("name") for p in players],
+                    })
+                    continue
+
+                total_kills = sum(int(p.get("kills") or 0) for p in players)
+                placement_pts = placement_points.get(placement, 0)
+                kill_pts = int(round(total_kills * kill_point))
+                total_pts = placement_pts + kill_pts
+
+                team_stats_to_create.append(
+                    TournamentTeamMatchStats(
+                        match=match,
+                        tournament_team=team_obj,
+                        placement=placement,
+                        kills=total_kills,
+                        damage=0,
+                        assists=0,
+                        placement_points=placement_pts,
+                        kill_points=kill_pts,
+                        total_points=total_pts,
+                    )
+                )
+
+            created_team_stats = TournamentTeamMatchStats.objects.bulk_create(
+                team_stats_to_create, batch_size=200
+            )
+            ts_map = {ts.tournament_team_id: ts.team_stats_id for ts in created_team_stats}
+
+            for team_data in merged:
+                for p in team_data.get("players", []):
+                    member = name_to_member.get((p.get("name") or "").lower())
+                    if not member:
+                        unmatched.append({"name": p.get("name")})
+                        continue
+                    ts_id = ts_map.get(member.tournament_team_id)
+                    if not ts_id:
+                        continue
+                    player_stats_to_create.append(
+                        TournamentPlayerMatchStats(
+                            team_stats_id=ts_id,
+                            player_id=member.user_id,
+                            kills=int(p.get("kills") or 0),
+                            damage=0,
+                            assists=0,
+                        )
+                    )
+
+            TournamentPlayerMatchStats.objects.bulk_create(player_stats_to_create, batch_size=500)
+            match.result_inputted = True
+            match.save(update_fields=["result_inputted"])
+
+        saved_count = len(team_stats_to_create)
+
+    # -------- SAVE IMAGES FOR REFERENCE --------
+    saved_images = []
+    note = request.data.get("note", "")
+    for img_file in images:
+        img_file.seek(0)
         obj = MatchResultImage.objects.create(
             match=match,
-            image=img,
+            image=img_file,
             uploaded_by=admin,
             note=note or None,
         )
-        created.append({
-            "image_id": obj.image_id,
-            "url": obj.image.url,
-            "uploaded_at": obj.uploaded_at,
-        })
+        saved_images.append({"image_id": obj.image_id, "url": obj.image.url})
 
     return Response({
-        "message": f"{len(created)} image(s) uploaded for match {match_id}.",
+        "message": "Match results extracted from image(s) and saved.",
         "match_id": match.match_id,
-        "images": created,
+        "participant_type": participant_type,
+        "teams_or_players_saved": saved_count,
+        "unmatched": unmatched,
+        "extraction_errors": extraction_errors,
+        "images": saved_images,
     }, status=201)
 
 

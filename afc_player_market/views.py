@@ -291,7 +291,7 @@ def apply_to_team(request):
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td align="center">
-                    <a href="https://africanfreefirecommunity.com/team/applications"
+                    <a href="https://africanfreefirecommunity.com/player-markets?applications=true"
                        style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
                       Review Applications
                     </a>
@@ -1502,6 +1502,178 @@ def view_application_details(request):
 
         "chat_id": chat_id,
     }, status=200)
+
+
+@api_view(["GET"])
+def get_post_details(request):
+    """Public endpoint — no auth required."""
+    post_id = request.query_params.get("post_id")
+    if not post_id:
+        return Response({"message": "post_id is required."}, status=400)
+
+    try:
+        post = RecruitmentPost.objects.select_related("player", "team", "country", "created_by").get(id=post_id)
+    except RecruitmentPost.DoesNotExist:
+        return Response({"message": "Post not found."}, status=404)
+
+    data = {
+        "id": post.id,
+        "post_type": post.post_type,
+        "post_expiry_date": post.post_expiry_date,
+        "created_at": post.created_at,
+        "created_by": post.created_by.username,
+        "is_active": post.is_active,
+
+        # Player fields
+        "player": post.player.username if post.player else None,
+        "primary_role": post.primary_role,
+        "secondary_role": post.secondary_role,
+        "availability_type": post.availability_type,
+        "additional_info": post.additional_info,
+        "country": post.country.name if post.country else None,
+        "countries": list(post.countries.values("name", "code")),
+
+        # Team fields
+        "team": post.team.team_name if post.team else None,
+        "team_logo": post.team.team_logo.url if post.team and post.team.team_logo else None,
+        "roles_needed": post.roles_needed,
+        "minimum_tier_required": post.minimum_tier_required,
+        "commitment_type": post.commitment_type,
+        "recruitment_criteria": post.recruitment_criteria,
+    }
+
+    return Response(data, status=200)
+
+
+@api_view(["GET"])
+def get_posts_related_to_me(request):
+    """Returns all recruitment posts created by the authenticated user."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+    posts = RecruitmentPost.objects.filter(created_by=user).order_by("-created_at")
+
+    data = []
+    for post in posts:
+        data.append({
+            "id": post.id,
+            "post_type": post.post_type,
+            "post_expiry_date": post.post_expiry_date,
+            "created_at": post.created_at,
+            "is_active": post.is_active,
+
+            # Player fields
+            "player": post.player.username if post.player else None,
+            "primary_role": post.primary_role,
+            "secondary_role": post.secondary_role,
+            "availability_type": post.availability_type,
+            "additional_info": post.additional_info,
+            "country": post.country.name if post.country else None,
+            "countries": list(post.countries.values("name", "code")),
+
+            # Team fields
+            "team": post.team.team_name if post.team else None,
+            "roles_needed": post.roles_needed,
+            "minimum_tier_required": post.minimum_tier_required,
+            "commitment_type": post.commitment_type,
+            "recruitment_criteria": post.recruitment_criteria,
+        })
+
+    return Response(data, status=200)
+
+
+@api_view(["PATCH"])
+def edit_recruitment_post(request):
+    """Edit a recruitment post. Only the creator can edit it."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+    post_id = request.data.get("post_id")
+    if not post_id:
+        return Response({"message": "post_id is required."}, status=400)
+
+    try:
+        post = RecruitmentPost.objects.get(id=post_id)
+    except RecruitmentPost.DoesNotExist:
+        return Response({"message": "Post not found."}, status=404)
+
+    if post.created_by != user:
+        return Response({"message": "Unauthorized."}, status=403)
+
+    data = request.data
+
+    # Common fields
+    if "post_expiry_date" in data:
+        try:
+            post.post_expiry_date = datetime.strptime(data["post_expiry_date"], "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"message": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+
+    if "country_code" in data:
+        country = Country.objects.filter(code=data["country_code"]).first()
+        if not country:
+            return Response({"message": "Invalid country code."}, status=400)
+        post.country = country
+
+    # Player post fields
+    if post.post_type == "PLAYER_AVAILABLE":
+        for field in ("primary_role", "secondary_role", "availability_type", "additional_info"):
+            if field in data:
+                setattr(post, field, data[field])
+
+        if "country_names" in data:
+            selected_countries = Country.objects.filter(name__in=data["country_names"])
+            post.countries.set(selected_countries)
+
+    # Team post fields
+    elif post.post_type == "TEAM_RECRUITMENT":
+        for field in ("roles_needed", "minimum_tier_required", "commitment_type", "recruitment_criteria"):
+            if field in data:
+                setattr(post, field, data[field])
+
+        if "country_names" in data:
+            selected_countries = Country.objects.filter(name__in=data["country_names"])
+            post.countries.set(selected_countries)
+
+    post.save()
+    return Response({"message": "Post updated successfully."}, status=200)
+
+
+@api_view(["DELETE"])
+def delete_recruitment_post(request):
+    """Delete a recruitment post. Only the creator can delete it."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid session."}, status=401)
+
+    post_id = request.query_params.get("post_id")
+    if not post_id:
+        return Response({"message": "post_id is required."}, status=400)
+
+    try:
+        post = RecruitmentPost.objects.get(id=post_id)
+    except RecruitmentPost.DoesNotExist:
+        return Response({"message": "Post not found."}, status=404)
+
+    if post.created_by != user:
+        return Response({"message": "Unauthorized."}, status=403)
+
+    post.delete()
+    return Response({"message": "Post deleted successfully."}, status=200)
 
 
 @api_view(["GET"])
