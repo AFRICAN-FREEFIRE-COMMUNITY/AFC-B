@@ -1526,6 +1526,11 @@ def get_post_details(request):
 
         # Player fields
         "player": post.player.username if post.player else None,
+        "player_avatar": (
+            post.player.profile_pic.url if post.player and post.player.profile_pic else
+            post.player.discord_avatar if post.player and post.player.discord_avatar else
+            None
+        ),
         "primary_role": post.primary_role,
         "secondary_role": post.secondary_role,
         "availability_type": post.availability_type,
