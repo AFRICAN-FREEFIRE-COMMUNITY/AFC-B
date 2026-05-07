@@ -1,0 +1,101 @@
+[
+  {
+    "model": "afc_wager.markettemplate",
+    "pk": 1,
+    "fields": {
+      "code": "match_winner",
+      "display_name": "Match Winner",
+      "option_source": "TEAMS",
+      "auto_gradable": true,
+      "grader_key": "match_winner"
+    }
+  },
+  {
+    "model": "afc_wager.markettemplate",
+    "pk": 2,
+    "fields": {
+      "code": "first_blood",
+      "display_name": "First Blood",
+      "option_source": "TEAMS",
+      "auto_gradable": true,
+      "grader_key": "first_blood"
+    }
+  },
+  {
+    "model": "afc_wager.markettemplate",
+    "pk": 3,
+    "fields": {
+      "code": "mvp",
+      "display_name": "MVP",
+      "option_source": "PLAYERS",
+      "auto_gradable": true,
+      "grader_key": "mvp"
+    }
+  },
+  {
+    "model": "afc_wager.markettemplate",
+    "pk": 4,
+    "fields": {
+      "code": "most_kills",
+      "display_name": "Most Kills",
+      "option_source": "TEAMS",
+      "auto_gradable": true,
+      "grader_key": "most_kills"
+    }
+  },
+  {
+    "model": "afc_wager.markettemplate",
+    "pk": 5,
+    "fields": {
+      "code": "most_damage",
+      "display_name": "Most Damage",
+      "option_source": "TEAMS",
+      "auto_gradable": true,
+      "grader_key": "most_damage"
+    }
+  },
+  {
+    "model": "afc_wager.markettemplate",
+    "pk": 6,
+    "fields": {
+      "code": "top_3",
+      "display_name": "Top 3 Finish",
+      "option_source": "TEAMS",
+      "auto_gradable": true,
+      "grader_key": "top_3"
+    }
+  },
+  {
+    "model": "afc_wager.markettemplate",
+    "pk": 7,
+    "fields": {
+      "code": "booyah_count",
+      "display_name": "Booyah Count",
+      "option_source": "NUMERIC",
+      "auto_gradable": true,
+      "grader_key": "booyah_count"
+    }
+  },
+  {
+    "model": "afc_wager.markettemplate",
+    "pk": 8,
+    "fields": {
+      "code": "survival_time",
+      "display_name": "Longest Survival",
+      "option_source": "TEAMS",
+      "auto_gradable": true,
+      "grader_key": "survival_time"
+    }
+  },
+  {
+    "model": "afc_wager.markettemplate",
+    "pk": 9,
+    "fields": {
+      "code": "custom",
+      "display_name": "Custom Market",
+      "option_source": "FREEFORM",
+      "auto_gradable": false,
+      "grader_key": null
+    }
+  }
+]
