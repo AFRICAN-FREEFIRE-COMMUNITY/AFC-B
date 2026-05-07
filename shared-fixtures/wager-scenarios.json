@@ -1,0 +1,97 @@
+[
+  {
+    "name": "section-3-worked-example",
+    "description": "Pool N2M, Team D wins with 5 winners (50/20/10/10/10 split), no dust",
+    "pool_kobo": 200000000,
+    "rake_bps": 500,
+    "winning_lines": [
+      { "user": "u1", "stake_kobo": 50000000 },
+      { "user": "u2", "stake_kobo": 20000000 },
+      { "user": "u3", "stake_kobo": 10000000 },
+      { "user": "u4", "stake_kobo": 10000000 },
+      { "user": "u5", "stake_kobo": 10000000 }
+    ],
+    "loser_total_kobo": 100000000,
+    "expected": {
+      "resolution": "WINNER",
+      "rake_kobo": 10000000,
+      "net_pool": 190000000,
+      "payouts": {
+        "u1": 95000000,
+        "u2": 38000000,
+        "u3": 19000000,
+        "u4": 19000000,
+        "u5": 19000000
+      },
+      "dust_kobo": 0,
+      "house_total": 10000000
+    }
+  },
+  {
+    "name": "dust-1kobo",
+    "description": "Tiny pool, awkward stakes, 1 kobo dust to house",
+    "pool_kobo": 1005350,
+    "rake_bps": 500,
+    "winning_lines": [
+      { "user": "w1", "stake_kobo": 100 },
+      { "user": "w2", "stake_kobo": 200 },
+      { "user": "w3", "stake_kobo": 300 }
+    ],
+    "loser_total_kobo": 1004750,
+    "expected": {
+      "resolution": "WINNER",
+      "rake_kobo": 50267,
+      "net_pool": 955083,
+      "payouts": { "w1": 159180, "w2": 318361, "w3": 477541 },
+      "dust_kobo": 1,
+      "house_total": 50268
+    }
+  },
+  {
+    "name": "no-winner-refund-all",
+    "description": "Winning option has zero stakes - full refund (Decision 4)",
+    "pool_kobo": 50000000,
+    "rake_bps": 500,
+    "winning_lines": [],
+    "loser_total_kobo": 50000000,
+    "expected": {
+      "resolution": "VOID_NO_WINNER",
+      "rake_kobo": 0,
+      "net_pool": 0,
+      "refund_all_kobo": 50000000
+    }
+  },
+  {
+    "name": "void-solo-wager",
+    "description": "All stakes on winning option (no losers) - refund 100%",
+    "pool_kobo": 30000000,
+    "rake_bps": 500,
+    "winning_lines": [
+      { "user": "solo", "stake_kobo": 30000000 }
+    ],
+    "loser_total_kobo": 0,
+    "expected": {
+      "resolution": "VOID_SOLO_WAGER",
+      "rake_kobo": 0,
+      "refund_all_kobo": 30000000
+    }
+  },
+  {
+    "name": "single-winner-takes-pool-with-losers",
+    "description": "1 winning user + many losers - solo winner takes net pool",
+    "pool_kobo": 100000000,
+    "rake_bps": 500,
+    "winning_lines": [
+      { "user": "champ", "stake_kobo": 5000000 }
+    ],
+    "loser_total_kobo": 95000000,
+    "expected": {
+      "resolution": "WINNER",
+      "rake_kobo": 5000000,
+      "net_pool": 95000000,
+      "payouts": { "champ": 95000000 },
+      "dust_kobo": 0,
+      "house_total": 5000000
+    }
+  }
+]
