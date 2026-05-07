@@ -1,0 +1,304 @@
+[
+  {
+    "model": "afc_auth.user",
+    "pk": 9001,
+    "fields": {
+      "username": "house",
+      "email": "house@africanfreefirecommunity.com",
+      "password": "!unusable",
+      "full_name": "House",
+      "country": "NG",
+      "role": "admin",
+      "status": "active",
+      "is_staff": true,
+      "is_superuser": false,
+      "is_active": true
+    }
+  },
+  {
+    "model": "afc_auth.user",
+    "pk": 9101,
+    "fields": {
+      "username": "player_1",
+      "email": "player_1@example.com",
+      "password": "!unusable",
+      "full_name": "Player 1",
+      "country": "NG",
+      "role": "player",
+      "status": "active",
+      "is_active": true
+    }
+  },
+  {
+    "model": "afc_auth.user",
+    "pk": 9102,
+    "fields": {
+      "username": "player_2",
+      "email": "player_2@example.com",
+      "password": "!unusable",
+      "full_name": "Player 2",
+      "country": "NG",
+      "role": "player",
+      "status": "active",
+      "is_active": true
+    }
+  },
+  {
+    "model": "afc_auth.user",
+    "pk": 9103,
+    "fields": {
+      "username": "player_3",
+      "email": "player_3@example.com",
+      "password": "!unusable",
+      "full_name": "Player 3",
+      "country": "NG",
+      "role": "player",
+      "status": "active",
+      "is_active": true
+    }
+  },
+  {
+    "model": "afc_auth.user",
+    "pk": 9104,
+    "fields": {
+      "username": "player_4",
+      "email": "player_4@example.com",
+      "password": "!unusable",
+      "full_name": "Player 4",
+      "country": "NG",
+      "role": "player",
+      "status": "active",
+      "is_active": true
+    }
+  },
+  {
+    "model": "afc_auth.user",
+    "pk": 9105,
+    "fields": {
+      "username": "player_5",
+      "email": "player_5@example.com",
+      "password": "!unusable",
+      "full_name": "Player 5",
+      "country": "NG",
+      "role": "player",
+      "status": "active",
+      "is_active": true
+    }
+  },
+  {
+    "model": "afc_auth.user",
+    "pk": 9201,
+    "fields": {
+      "username": "wager_admin_jane",
+      "email": "jane@africanfreefirecommunity.com",
+      "password": "!unusable",
+      "full_name": "Jane",
+      "country": "NG",
+      "role": "admin",
+      "status": "active",
+      "is_staff": true,
+      "is_active": true
+    }
+  },
+  {
+    "model": "afc_auth.user",
+    "pk": 9202,
+    "fields": {
+      "username": "wallet_admin_kofi",
+      "email": "kofi@africanfreefirecommunity.com",
+      "password": "!unusable",
+      "full_name": "Kofi",
+      "country": "GH",
+      "role": "admin",
+      "status": "active",
+      "is_staff": true,
+      "is_active": true
+    }
+  },
+  {
+    "model": "afc_auth.user",
+    "pk": 9203,
+    "fields": {
+      "username": "head_admin_jay",
+      "email": "jay@africanfreefirecommunity.com",
+      "password": "!unusable",
+      "full_name": "Jay",
+      "country": "NG",
+      "role": "admin",
+      "status": "active",
+      "is_staff": true,
+      "is_active": true
+    }
+  },
+  {
+    "model": "afc_wallet.fxsnapshot",
+    "pk": 1,
+    "fields": {
+      "ngn_per_usd": "1500.0000",
+      "source": "seed",
+      "captured_at": "2026-05-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "afc_wallet.wallet",
+    "pk": 1,
+    "fields": {
+      "user": 9001,
+      "balance_kobo": 0,
+      "locked_kobo": 0,
+      "balance_purchased_kobo": 0,
+      "balance_won_kobo": 0,
+      "balance_gift_kobo": 0,
+      "status": "ACTIVE"
+    }
+  },
+  {
+    "model": "afc_wallet.wallet",
+    "pk": 2,
+    "fields": {
+      "user": 9101,
+      "balance_kobo": 0,
+      "locked_kobo": 0,
+      "balance_purchased_kobo": 0,
+      "balance_won_kobo": 0,
+      "balance_gift_kobo": 0,
+      "status": "ACTIVE"
+    }
+  },
+  {
+    "model": "afc_wallet.wallet",
+    "pk": 3,
+    "fields": {
+      "user": 9102,
+      "balance_kobo": 0,
+      "locked_kobo": 0,
+      "balance_purchased_kobo": 0,
+      "balance_won_kobo": 0,
+      "balance_gift_kobo": 0,
+      "status": "ACTIVE"
+    }
+  },
+  {
+    "model": "afc_wallet.wallet",
+    "pk": 4,
+    "fields": {
+      "user": 9103,
+      "balance_kobo": 0,
+      "locked_kobo": 0,
+      "balance_purchased_kobo": 0,
+      "balance_won_kobo": 0,
+      "balance_gift_kobo": 0,
+      "status": "ACTIVE"
+    }
+  },
+  {
+    "model": "afc_wallet.wallet",
+    "pk": 5,
+    "fields": {
+      "user": 9104,
+      "balance_kobo": 0,
+      "locked_kobo": 0,
+      "balance_purchased_kobo": 0,
+      "balance_won_kobo": 0,
+      "balance_gift_kobo": 0,
+      "status": "ACTIVE"
+    }
+  },
+  {
+    "model": "afc_wallet.wallet",
+    "pk": 6,
+    "fields": {
+      "user": 9105,
+      "balance_kobo": 0,
+      "locked_kobo": 0,
+      "balance_purchased_kobo": 0,
+      "balance_won_kobo": 0,
+      "balance_gift_kobo": 0,
+      "status": "ACTIVE"
+    }
+  },
+  {
+    "model": "afc_wallet.wallet",
+    "pk": 7,
+    "fields": {
+      "user": 9201,
+      "balance_kobo": 0,
+      "locked_kobo": 0,
+      "balance_purchased_kobo": 0,
+      "balance_won_kobo": 0,
+      "balance_gift_kobo": 0,
+      "status": "ACTIVE"
+    }
+  },
+  {
+    "model": "afc_wallet.wallet",
+    "pk": 8,
+    "fields": {
+      "user": 9202,
+      "balance_kobo": 0,
+      "locked_kobo": 0,
+      "balance_purchased_kobo": 0,
+      "balance_won_kobo": 0,
+      "balance_gift_kobo": 0,
+      "status": "ACTIVE"
+    }
+  },
+  {
+    "model": "afc_wallet.wallet",
+    "pk": 9,
+    "fields": {
+      "user": 9203,
+      "balance_kobo": 0,
+      "locked_kobo": 0,
+      "balance_purchased_kobo": 0,
+      "balance_won_kobo": 0,
+      "balance_gift_kobo": 0,
+      "status": "ACTIVE"
+    }
+  },
+  {
+    "model": "afc_wallet.kyctier",
+    "pk": 1,
+    "fields": {"user": 9001, "tier": "TIER_LITE"}
+  },
+  {
+    "model": "afc_wallet.kyctier",
+    "pk": 2,
+    "fields": {"user": 9101, "tier": "TIER_0"}
+  },
+  {
+    "model": "afc_wallet.kyctier",
+    "pk": 3,
+    "fields": {"user": 9102, "tier": "TIER_0"}
+  },
+  {
+    "model": "afc_wallet.kyctier",
+    "pk": 4,
+    "fields": {"user": 9103, "tier": "TIER_0"}
+  },
+  {
+    "model": "afc_wallet.kyctier",
+    "pk": 5,
+    "fields": {"user": 9104, "tier": "TIER_0"}
+  },
+  {
+    "model": "afc_wallet.kyctier",
+    "pk": 6,
+    "fields": {"user": 9105, "tier": "TIER_0"}
+  },
+  {
+    "model": "afc_wallet.kyctier",
+    "pk": 7,
+    "fields": {"user": 9201, "tier": "TIER_LITE"}
+  },
+  {
+    "model": "afc_wallet.kyctier",
+    "pk": 8,
+    "fields": {"user": 9202, "tier": "TIER_LITE"}
+  },
+  {
+    "model": "afc_wallet.kyctier",
+    "pk": 9,
+    "fields": {"user": 9203, "tier": "TIER_LITE"}
+  }
+]

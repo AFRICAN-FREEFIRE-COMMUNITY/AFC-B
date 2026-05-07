@@ -112,6 +112,21 @@ class UserProfile(models.Model):
     profile_pic = models.ImageField(upload_to='profile_pictures/', null=True)
     esports_pic = models.ImageField(upload_to='esports_pictures/', null=True)
 
+    # ── afc_wager / afc_wallet additions (Phase 1, additive) ──────────────
+    # Soft-KYC and feature-gate fields. Mirrored on `afc_wallet.KYCTier` for
+    # the wallet/wager service path; `afc_auth.UserProfile` keeps copies for
+    # the existing user dashboard / leaderboard code that already reads from
+    # this model. All nullable, no breaking change to existing rows.
+    whatsapp_number = models.CharField(
+        max_length=24, null=True, blank=True, unique=True
+    )
+    whatsapp_verified_at = models.DateTimeField(null=True, blank=True)
+    discord_user_id = models.CharField(
+        max_length=64, null=True, blank=True, unique=True
+    )
+    discord_linked_at = models.DateTimeField(null=True, blank=True)
+    show_on_leaderboard = models.BooleanField(default=True)
+
 
 class LoginHistory(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
