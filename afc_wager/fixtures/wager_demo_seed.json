@@ -1,0 +1,46 @@
+[
+  {
+    "model": "afc_tournament_and_scrims.event",
+    "pk": 9001,
+    "fields": {
+      "event_name": "AFC Cup S5",
+      "slug": "afc-cup-s5",
+      "competition_type": "tournament",
+      "participant_type": "squad",
+      "event_type": "internal",
+      "max_teams_or_players": 12,
+      "event_mode": "virtual",
+      "start_date": "2026-05-01",
+      "end_date": "2026-05-08",
+      "registration_open_date": "2026-04-15",
+      "registration_end_date": "2026-04-30",
+      "prizepool": "₦5M",
+      "event_rules": "See Discord",
+      "event_status": "ongoing",
+      "registration_link": "https://example.com/r",
+      "number_of_stages": 1,
+      "is_draft": false
+    }
+  },
+  {
+    "model": "afc_wager.market",
+    "pk": 9001,
+    "fields": {
+      "event": 9001,
+      "match": null,
+      "template": 1,
+      "title": "Match 5 — Match Winner",
+      "description": "Pick the winning team for the Grand Final",
+      "status": "OPEN",
+      "opens_at": "2026-05-07T10:00:00Z",
+      "lock_at": "2026-05-07T22:00:00Z",
+      "min_stake_kobo": 10000,
+      "max_per_user_kobo": 50000000,
+      "cancel_fee_bps": 100,
+      "rake_bps": 500,
+      "total_pool_kobo": 0,
+      "total_lines": 0,
+      "created_by_admin": 9201
+    }
+  }
+]
