@@ -29,4 +29,9 @@ urlpatterns = [
     path("player-market/", include('afc_player_market.urls')),
     path("events/", include('afc_ocr.urls')),
 
+    # Wager + wallet URLs (NOT live in v1 — model/test scaffolding only).
+    # Uncomment when v2 wires the live endpoints. The url modules already
+    # exist and the views are stubbed to return {"status": "stubbed"}.
+    # path("wallet/", include('afc_wallet.urls')),
+    # path("wager/", include('afc_wager.urls')),
 ]

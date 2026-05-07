@@ -11,4 +11,11 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Local virtualenvs
+.venv/
+venv/
+
+# Test database (created by manage_test.py for the wallet/wager apps)
+test_db.sqlite3
+
 

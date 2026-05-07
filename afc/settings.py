@@ -64,6 +64,8 @@ INSTALLED_APPS = [
     'afc_player',
     'afc_player_market',
     'afc_ocr',
+    'afc_wallet',
+    'afc_wager',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyB_PnDUpEexp2B_WEFAc9mqwD2cjfe-OVU")
