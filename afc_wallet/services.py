@@ -246,65 +246,86 @@ def credit(
     if kind not in WalletTxnKind.values:
         raise WalletError(f"invalid kind {kind}")
 
-    with transaction.atomic():
-        # Idempotency check first — return existing without locking wallet.
+    from django.db import IntegrityError
+
+    try:
+        with transaction.atomic():
+            # Idempotency check first — return existing without locking
+            # wallet. We re-check after grabbing the wallet lock too, so
+            # racing callers don't double-apply.
+            existing = WalletTxn.objects.filter(
+                idempotency_key=idempotency_key
+            ).first()
+            if existing is not None:
+                return existing
+
+            wallet = (
+                Wallet.objects.select_for_update()
+                .select_related("user")
+                .get(user=user)
+            )
+            if wallet.status == WalletStatus.FROZEN:
+                raise WalletFrozen(f"wallet {wallet.pk} frozen")
+
+            # Re-check after acquiring lock — race-resolution.
+            existing = WalletTxn.objects.filter(
+                idempotency_key=idempotency_key
+            ).first()
+            if existing is not None:
+                return existing
+
+            # Enforce GIFT cap on inflows.
+            if (
+                enforce_gift_cap
+                and source_tag == SourceTag.GIFT
+                and amount_kobo > 0
+            ):
+                ok, _remaining = can_receive_gift(user, amount_kobo)
+                if not ok:
+                    raise GiftDailyCapExceeded(
+                        f"GIFT credits would exceed "
+                        f"N{GIFT_DAILY_CAP_KOBO/100:.2f} per 24h cap"
+                    )
+
+            if fx is None:
+                fx = get_current_fx()
+
+            txn = WalletTxn.objects.create(
+                wallet=wallet,
+                amount_kobo=amount_kobo,
+                kind=kind,
+                source_tag=source_tag,
+                ref_type=ref_type,
+                ref_id=str(ref_id),
+                fx_snapshot=fx,
+                idempotency_key=idempotency_key,
+            )
+            wallet.balance_kobo += amount_kobo
+            if source_tag == SourceTag.PURCHASED:
+                wallet.balance_purchased_kobo += amount_kobo
+            elif source_tag == SourceTag.WON:
+                wallet.balance_won_kobo += amount_kobo
+            elif source_tag == SourceTag.GIFT:
+                wallet.balance_gift_kobo += amount_kobo
+            wallet.save(
+                update_fields=[
+                    "balance_kobo",
+                    "balance_purchased_kobo",
+                    "balance_won_kobo",
+                    "balance_gift_kobo",
+                    "updated_at",
+                ]
+            )
+            return txn
+    except IntegrityError:
+        # Lost the race — another thread inserted with this idempotency key
+        # between our check and our create. Re-fetch and return their row.
         existing = WalletTxn.objects.filter(
             idempotency_key=idempotency_key
         ).first()
         if existing is not None:
             return existing
-
-        wallet = (
-            Wallet.objects.select_for_update()
-            .select_related("user")
-            .get(user=user)
-        )
-        if wallet.status == WalletStatus.FROZEN:
-            raise WalletFrozen(f"wallet {wallet.pk} frozen")
-
-        # Enforce GIFT cap on inflows.
-        if (
-            enforce_gift_cap
-            and source_tag == SourceTag.GIFT
-            and amount_kobo > 0
-        ):
-            ok, _remaining = can_receive_gift(user, amount_kobo)
-            if not ok:
-                raise GiftDailyCapExceeded(
-                    f"GIFT credits would exceed N{GIFT_DAILY_CAP_KOBO/100:.2f} "
-                    "per 24h cap"
-                )
-
-        if fx is None:
-            fx = get_current_fx()
-
-        txn = WalletTxn.objects.create(
-            wallet=wallet,
-            amount_kobo=amount_kobo,
-            kind=kind,
-            source_tag=source_tag,
-            ref_type=ref_type,
-            ref_id=str(ref_id),
-            fx_snapshot=fx,
-            idempotency_key=idempotency_key,
-        )
-        wallet.balance_kobo += amount_kobo
-        if source_tag == SourceTag.PURCHASED:
-            wallet.balance_purchased_kobo += amount_kobo
-        elif source_tag == SourceTag.WON:
-            wallet.balance_won_kobo += amount_kobo
-        elif source_tag == SourceTag.GIFT:
-            wallet.balance_gift_kobo += amount_kobo
-        wallet.save(
-            update_fields=[
-                "balance_kobo",
-                "balance_purchased_kobo",
-                "balance_won_kobo",
-                "balance_gift_kobo",
-                "updated_at",
-            ]
-        )
-        return txn
+        raise
 
 
 @dataclass
