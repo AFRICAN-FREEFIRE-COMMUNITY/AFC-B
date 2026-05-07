@@ -85,6 +85,10 @@ DATABASES = {
         # process) can be run separately for sanity-checking. Test runner
         # uses an in-memory clone via TEST setting below.
         "NAME": str(BASE_DIR / "test_db.sqlite3"),
+        # 60-second busy timeout — concurrency tests use threading + sqlite,
+        # which short-circuits to a busy lock under contention. Without
+        # this, tests flake on slower CI runners.
+        "OPTIONS": {"timeout": 60},
         "TEST": {
             "NAME": ":memory:",
         },
