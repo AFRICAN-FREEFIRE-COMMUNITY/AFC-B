@@ -12248,6 +12248,102 @@ def create_leaderboard_manually(request):
                 match.leaderboard = lb
                 match.save(update_fields=["scoring_settings", "leaderboard"])
 
+        # -------- SEED PLACEHOLDER STATS (all zeros) --------
+        # Gives the edit page something to render immediately after creation.
+        # Prefer group-specific competitors; fall back to all event-level ones.
+        if event.participant_type == "solo":
+            group_comps = list(
+                StageGroupCompetitor.objects.filter(
+                    stage_group=group, player__isnull=False, status="active"
+                ).select_related("player")
+            )
+            competitors = (
+                [gc.player for gc in group_comps]
+                if group_comps
+                else list(RegisteredCompetitors.objects.filter(
+                    event=event, status__in=["registered", "approved"]
+                ))
+            )
+            if competitors:
+                rows = []
+                for match in matches:
+                    existing = set(
+                        SoloPlayerMatchStats.objects.filter(match=match)
+                        .values_list("competitor_id", flat=True)
+                    )
+                    for comp in competitors:
+                        if comp.id not in existing:
+                            rows.append(SoloPlayerMatchStats(
+                                match=match,
+                                competitor=comp,
+                                placement=0,
+                                kills=0,
+                                placement_points=0,
+                                kill_points=0,
+                                bonus_points=0,
+                                penalty_points=0,
+                                total_points=0,
+                                played=False,
+                            ))
+                if rows:
+                    SoloPlayerMatchStats.objects.bulk_create(
+                        rows, batch_size=500, ignore_conflicts=True
+                    )
+        else:
+            # Team event (duo / squad)
+            group_team_comps = list(
+                StageGroupCompetitor.objects.filter(
+                    stage_group=group, tournament_team__isnull=False, status="active"
+                ).select_related("tournament_team")
+            )
+            teams = (
+                [gc.tournament_team for gc in group_team_comps]
+                if group_team_comps
+                else list(TournamentTeam.objects.filter(event=event, status="active"))
+            )
+            if teams:
+                members_by_team = {}
+                for m in TournamentTeamMember.objects.filter(
+                    tournament_team__in=teams, status="active"
+                ).select_related("user"):
+                    members_by_team.setdefault(m.tournament_team_id, []).append(m)
+
+                for match in matches:
+                    existing_team_ids = set(
+                        TournamentTeamMatchStats.objects.filter(match=match)
+                        .values_list("tournament_team_id", flat=True)
+                    )
+                    for team in teams:
+                        if team.tournament_team_id in existing_team_ids:
+                            continue
+                        ts = TournamentTeamMatchStats.objects.create(
+                            match=match,
+                            tournament_team=team,
+                            placement=0,
+                            kills=0,
+                            damage=0,
+                            assists=0,
+                            placement_points=0,
+                            kill_points=0,
+                            bonus_points=0,
+                            penalty_points=0,
+                            total_points=0,
+                            played=False,
+                        )
+                        team_members = members_by_team.get(team.tournament_team_id, [])
+                        if team_members:
+                            TournamentPlayerMatchStats.objects.bulk_create([
+                                TournamentPlayerMatchStats(
+                                    team_stats=ts,
+                                    player=member.user,
+                                    kills=0,
+                                    damage=0,
+                                    assists=0,
+                                    played=False,
+                                )
+                                for member in team_members
+                            ], batch_size=200, ignore_conflicts=True)
+
     return Response({
         "message": "Leaderboard created successfully.",
         "leaderboard_id": lb.leaderboard_id,
@@ -16308,7 +16404,7 @@ def upload_match_result_image(request):
     }, status=201)
 
 
-@api_view(["GET"])
+@api_view(["POST"])
 def get_match_result_images(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
@@ -16320,7 +16416,7 @@ def get_match_result_images(request):
     if admin.role != "admin":
         return Response({"message": "You do not have permission to perform this action."}, status=403)
 
-    match_id = request.query_params.get("match_id")
+    match_id = request.data.get("match_id")
     if not match_id:
         return Response({"message": "match_id is required."}, status=400)
 
@@ -16330,7 +16426,7 @@ def get_match_result_images(request):
     data = [
         {
             "image_id": img.image_id,
-            "url": img.image.url,
+            "image_url": request.build_absolute_uri(img.image.url),
             "note": img.note,
             "uploaded_by": img.uploaded_by.username if img.uploaded_by else None,
             "uploaded_at": img.uploaded_at,
