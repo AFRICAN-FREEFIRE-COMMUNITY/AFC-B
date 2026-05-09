@@ -10,7 +10,7 @@ from afc_leaderboard_calc import models
 from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
 from afc_tournament_and_scrims.models import TournamentTeamMatchStats
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
-from afc_auth.models import Notifications, User, UserProfile
+from afc_auth.models import Notifications, User, UserProfile, UserRoles
 from django.utils.timezone import now
 from django.db.models import Q
 from .models import Team, TeamMembers, Invite, TeamSocialMediaLinks
@@ -1177,25 +1177,28 @@ def respond_invite(request, invite_id):
     invite.save()
 
     if action == "accept":
-        # Only add if not already in the team
-        if not TeamMembers.objects.filter(team=invite.team, member=user).exists():
-
-            # Ensure the team is not up to 8 players yet
-            if TeamMembers.objects.filter(team=invite.team).count() >= 8:
-                return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
-
-            # Ensure there are not more than 6 players with member management role
-            player_count = TeamMembers.objects.filter(team=invite.team, management_role='member').count()
-            if player_count > 6:
-                return Response({'message': 'The team already has 6 players with member role.'}, status=status.HTTP_400_BAD_REQUEST)
-            TeamMembers.objects.create(
-                team=invite.team,
-                member=user,
-                management_role=invite.role_to_be_given_upon_acceptance
+        # Check if user is already in any team
+        existing_membership = TeamMembers.objects.filter(member=user).select_related("team").first()
+        if existing_membership:
+            return Response(
+                {"message": f"You are already a member of '{existing_membership.team.team_name}'. Leave that team before joining another."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        else:
-            return Response({"message": "You are already a member of this team."}, status=400)
+        # Ensure the team is not up to 8 players yet
+        if TeamMembers.objects.filter(team=invite.team).count() >= 8:
+            return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Ensure there are not more than 6 players with member management role
+        player_count = TeamMembers.objects.filter(team=invite.team, management_role='member').count()
+        if player_count > 6:
+            return Response({'message': 'The team already has 6 players with member role.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        TeamMembers.objects.create(
+            team=invite.team,
+            member=user,
+            management_role=invite.role_to_be_given_upon_acceptance
+        )
         return Response({"message": f"You have joined {invite.team.team_name} successfully."})
 
     else:
@@ -1584,3 +1587,192 @@ def get_top_earning_teams(request):
     qs = Team.objects.order_by("-total_earnings")[:5]
     data = [{"team_id": t.team_id, "team_name": t.team_name, "total_earnings": t.total_earnings} for t in qs]
     return Response({"top_earning_teams": data}, status=status.HTTP_200_OK)
+
+
+def _is_admin(user):
+    """Return True if the user is a full admin or has head_admin/teams_admin role."""
+    if user.role == "admin":
+        return True
+    return UserRoles.objects.filter(
+        user=user,
+        role__role_name__in=["head_admin", "teams_admin"]
+    ).exists()
+
+
+def _get_authed_user(request):
+    """Validate Bearer token and return (user, error_response)."""
+    session_token = request.headers.get("Authorization", "")
+    if not session_token or not session_token.startswith("Bearer "):
+        return None, Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    return user, None
+
+
+@api_view(["GET"])
+def admin_search_players(request):
+    admin, err = _get_authed_user(request)
+    if err:
+        return err
+    if not _is_admin(admin):
+        return Response({"message": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+    query = request.query_params.get("q", "").strip()
+    if len(query) < 2:
+        return Response({"players": []}, status=status.HTTP_200_OK)
+
+    matched = User.objects.filter(
+        Q(username__icontains=query) | Q(email__icontains=query)
+    )[:10]
+
+    results = []
+    for u in matched:
+        membership = TeamMembers.objects.filter(member=u).select_related("team").first()
+        results.append({
+            "user_id": u.user_id,
+            "username": u.username,
+            "email": u.email,
+            "current_team": {
+                "team_id": membership.team.team_id,
+                "team_name": membership.team.team_name,
+            } if membership else None,
+        })
+
+    return Response({"players": results}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def admin_remove_member(request):
+    admin, err = _get_authed_user(request)
+    if err:
+        return err
+    if not _is_admin(admin):
+        return Response({"message": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+    team_id = request.data.get("team_id")
+    member_id = request.data.get("member_id")
+
+    if not team_id or not member_id:
+        return Response({"message": "team_id and member_id are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        team = Team.objects.get(team_id=team_id)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        tm = TeamMembers.objects.get(team=team, member_id=member_id)
+    except TeamMembers.DoesNotExist:
+        return Response({"message": "Member not found in this team."}, status=status.HTTP_404_NOT_FOUND)
+
+    if team.team_owner_id == tm.member_id:
+        return Response({"message": "Cannot remove the team owner."}, status=status.HTTP_400_BAD_REQUEST)
+
+    removed_member = tm.member
+    removed_username = removed_member.username
+    tm.delete()
+
+    Report.objects.create(
+        team=team,
+        user=admin,
+        action="player_removed",
+        description=f"{removed_username} was removed from {team.team_name} by admin {admin.username}."
+    )
+    Notifications.objects.create(
+        user=removed_member,
+        message=f"You have been removed from the team '{team.team_name}' by an admin.",
+        notification_type="team_kick"
+    )
+    Notifications.objects.create(
+        user=team.team_owner,
+        message=f"{removed_username} was removed from your team '{team.team_name}' by an admin.",
+        notification_type="team_kick"
+    )
+
+    return Response({"message": f"{removed_username} has been removed from {team.team_name}."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def admin_add_member(request):
+    admin, err = _get_authed_user(request)
+    if err:
+        return err
+    if not _is_admin(admin):
+        return Response({"message": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+    team_id = request.data.get("team_id")
+    player_id = request.data.get("player_id")
+    management_role = request.data.get("management_role", "member")
+    force_move = request.data.get("force_move", False)
+    override_limit = request.data.get("override_limit", False)
+
+    if not team_id or not player_id:
+        return Response({"message": "team_id and player_id are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    valid_roles = [choice[0] for choice in TeamMembers.MANAGEMENT_ROLE_CHOICES]
+    if management_role not in valid_roles:
+        return Response({"message": f"Invalid role. Must be one of: {', '.join(valid_roles)}."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        team = Team.objects.get(team_id=team_id)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        player = User.objects.get(user_id=player_id)
+    except User.DoesNotExist:
+        return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if TeamMembers.objects.filter(team=team, member=player).exists():
+        return Response({"message": "Player is already a member of this team."}, status=status.HTTP_400_BAD_REQUEST)
+
+    existing = TeamMembers.objects.filter(member=player).select_related("team").first()
+    if existing:
+        if not force_move:
+            return Response({
+                "message": f"Player is currently on team '{existing.team.team_name}'.",
+                "error_code": "player_on_team",
+                "current_team": existing.team.team_name,
+            }, status=status.HTTP_400_BAD_REQUEST)
+        Report.objects.create(
+            team=existing.team,
+            user=admin,
+            action="player_removed",
+            description=f"{player.username} was force-moved from '{existing.team.team_name}' to '{team.team_name}' by admin {admin.username}."
+        )
+        Notifications.objects.create(
+            user=existing.team.team_owner,
+            message=f"{player.username} was removed from your team '{existing.team.team_name}' by an admin.",
+            notification_type="team_kick"
+        )
+        existing.delete()
+
+    current_count = TeamMembers.objects.filter(team=team).count()
+    if current_count >= 8 and not override_limit:
+        return Response({
+            "message": f"Team already has {current_count} members (above the 8-member limit).",
+            "error_code": "team_full",
+            "current_count": current_count,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    TeamMembers.objects.create(team=team, member=player, management_role=management_role)
+
+    Report.objects.create(
+        team=team,
+        user=admin,
+        action="player_joined",
+        description=f"{player.username} was added to '{team.team_name}' as {management_role} by admin {admin.username}."
+    )
+    Notifications.objects.create(
+        user=player,
+        message=f"You have been added to the team '{team.team_name}' by an admin.",
+        notification_type="team_join"
+    )
+    Notifications.objects.create(
+        user=team.team_owner,
+        message=f"{player.username} has been added to your team '{team.team_name}' by an admin.",
+        notification_type="team_join"
+    )
+
+    return Response({"message": f"{player.username} has been added to {team.team_name} as {management_role}."}, status=status.HTTP_201_CREATED)

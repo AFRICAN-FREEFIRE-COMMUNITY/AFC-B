@@ -66,7 +66,10 @@ class TeamMembers(models.Model):
 
 
     class Meta:
-        unique_together = ('team', 'member')  # <-- prevents duplicates
+        unique_together = ('team', 'member')
+        constraints = [
+            models.UniqueConstraint(fields=['member'], name='unique_member_one_team'),
+        ]
 
     def __str__(self):
         return f"{self.member.username} - {self.team.team_name} ({self.management_role})"

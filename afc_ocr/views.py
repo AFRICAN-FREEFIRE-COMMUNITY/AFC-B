@@ -280,6 +280,103 @@ def commit_ocr_session(request, session_id):
         return Response({"message": f"Commit failed: {exc}"}, status=500)
 
 
+@api_view(["POST"])
+def ocr_from_stored_image(request):
+    """
+    POST /events/ocr-from-image/
+    Run OCR on an already-uploaded MatchResultImage (by image_id).
+
+    Body: { image_id (int), match_id (int), map_index (int, default 1) }
+    """
+    from afc_tournament_and_scrims.models import MatchResultImage
+
+    user, err = _auth(request)
+    if err:
+        return err
+    if (deny := _require_admin(user)):
+        return deny
+
+    image_id  = request.data.get("image_id")
+    match_id  = request.data.get("match_id")
+    map_index = request.data.get("map_index", 1)
+
+    if not image_id or not match_id:
+        return Response({"message": "image_id and match_id are required."}, status=400)
+
+    try:
+        stored = MatchResultImage.objects.get(image_id=image_id)
+    except MatchResultImage.DoesNotExist:
+        return Response({"message": "Image not found."}, status=404)
+
+    try:
+        match = Match.objects.select_related(
+            "leaderboard__event",
+            "group__stage__event",
+        ).get(match_id=match_id)
+    except Match.DoesNotExist:
+        return Response({"message": "Match not found."}, status=404)
+
+    event = _get_event(match)
+    if not event:
+        return Response({"message": "Cannot determine event for this match."}, status=400)
+
+    event_type = "solo" if event.participant_type == "solo" else "team"
+
+    aliases, team_notes = get_prompt_context(match)
+    registered = get_registered_players(match, event, event_type)
+
+    try:
+        with stored.image.open("rb") as f:
+            image_bytes = f.read()
+        name = stored.image.name.lower()
+        if name.endswith(".png"):
+            mime_type = "image/png"
+        elif name.endswith(".webp"):
+            mime_type = "image/webp"
+        else:
+            mime_type = "image/jpeg"
+    except Exception as exc:
+        return Response({"message": f"Failed to read stored image: {exc}"}, status=500)
+
+    try:
+        raw_output = call_gemini(image_bytes, mime_type, aliases, team_notes)
+    except Exception as exc:
+        return Response({"message": f"Gemini extraction failed: {exc}"}, status=503)
+
+    draft_rows = []
+    for placement_entry in raw_output.get("placements", []):
+        placement = int(placement_entry.get("placement", 0))
+        for player_data in placement_entry.get("players", []):
+            raw_name = player_data.get("name", "").strip()
+            kills    = int(player_data.get("kills", 0))
+            row = match_name(raw_name, registered)
+            row["placement"] = placement
+            row["kills"]     = kills
+            draft_rows.append(row)
+
+    if event_type == "team":
+        draft_rows = detect_team_mismatches(draft_rows)
+    else:
+        for row in draft_rows:
+            row.update({"team_mismatch": False, "admin_confirmed_sub": False, "expected_team_id": None})
+
+    session = OCRSession.objects.create(
+        match=match,
+        map_index=int(map_index),
+        created_by=user,
+        event_type=event_type,
+        raw_output=raw_output,
+        draft_rows=draft_rows,
+    )
+
+    return Response({
+        "session_id": str(session.session_id),
+        "status":     session.status,
+        "event_type": session.event_type,
+        "draft_rows": session.draft_rows,
+    }, status=201)
+
+
 @api_view(["GET"])
 def list_ocr_sessions(request):
     """
