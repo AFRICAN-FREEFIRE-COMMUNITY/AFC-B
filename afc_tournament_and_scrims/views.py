@@ -1398,7 +1398,7 @@ def edit_event(request):
     
     # ensure the evnt hasnt started if they wanna chnage the event type
 
-    if "event_type" in request.data:
+    if "event_type" in request.data and request.data.get("event_type") != event.event_type:
         if event.start_date and event.start_date <= timezone.now().date():
             return Response({"message": "Cannot change event_type after the event has started."}, status=400)
 
@@ -16456,5 +16456,235 @@ def delete_match_result_image(request):
     img = get_object_or_404(MatchResultImage, image_id=image_id)
     img.image.delete(save=False)
     img.delete()
+
+
+# ── Event Actions ──────────────────────────────────────────────────────────────
+
+def _get_event_action_user(request):
+    """Validate auth and return (user, error_response)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+    allowed = user.role in ["admin", "moderator", "support"]
+    if not allowed:
+        allowed = user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists()
+    if not allowed:
+        return None, Response({"message": "You do not have permission to perform this action."}, status=403)
+    return user, None
+
+
+def _notify_all_registered(event, title, message):
+    """Create in-app Notifications for every active registered competitor."""
+    notified = set()
+    if event.participant_type == "solo":
+        for rc in RegisteredCompetitors.objects.select_related("user").filter(
+            event=event, status__in=["registered", "approved"]
+        ):
+            if rc.user and rc.user_id not in notified:
+                notified.add(rc.user_id)
+                Notifications.objects.create(
+                    user=rc.user, title=title, message=message, related_event=event
+                )
+    else:
+        for tt in TournamentTeam.objects.filter(event=event, status="active"):
+            for member in TournamentTeamMember.objects.select_related("user").filter(
+                tournament_team=tt, status__in=["active", "approved"]
+            ):
+                if member.user and member.user_id not in notified:
+                    notified.add(member.user_id)
+                    Notifications.objects.create(
+                        user=member.user, title=title, message=message, related_event=event
+                    )
+    return len(notified)
+
+
+@api_view(["POST"])
+def cancel_event(request):
+    user, err = _get_event_action_user(request)
+    if err:
+        return err
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    if event.event_status in ["cancelled", "completed"]:
+        return Response({"message": f"Event is already {event.event_status}."}, status=400)
+
+    event.event_status = "cancelled"
+    event.save(update_fields=["event_status"])
+
+    count = _notify_all_registered(
+        event,
+        title=f"Event Cancelled: {event.event_name}",
+        message=(
+            f"The event '{event.event_name}' has been cancelled. "
+            "We apologize for the inconvenience. Registrations have been frozen."
+        ),
+    )
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="cancel_event",
+        description=f"Cancelled event {event.event_name} (ID: {event.event_id})",
+    )
+
+    return Response(
+        {"message": f"Event '{event.event_name}' has been cancelled.", "notifications_sent": count},
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def complete_event(request):
+    user, err = _get_event_action_user(request)
+    if err:
+        return err
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    if event.event_status in ["completed", "cancelled"]:
+        return Response({"message": f"Event is already {event.event_status}."}, status=400)
+
+    event.event_status = "completed"
+    event.save(update_fields=["event_status"])
+
+    count = _notify_all_registered(
+        event,
+        title=f"Tournament Complete: {event.event_name}",
+        message=(
+            f"The tournament '{event.event_name}' has officially concluded. "
+            "Results are now locked. Thank you for participating!"
+        ),
+    )
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="complete_event",
+        description=f"Marked event {event.event_name} (ID: {event.event_id}) as completed",
+    )
+
+    return Response(
+        {"message": f"Event '{event.event_name}' has been marked as complete.", "notifications_sent": count},
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def broadcast_announcement(request):
+    user, err = _get_event_action_user(request)
+    if err:
+        return err
+
+    event_id = request.data.get("event_id")
+    title = request.data.get("title", "").strip()
+    message = request.data.get("message", "").strip()
+
+    if not event_id or not title or not message:
+        return Response({"message": "event_id, title, and message are required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    count = _notify_all_registered(event, title=title, message=message)
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="broadcast_announcement",
+        description=f"Broadcast announcement to event {event.event_name} (ID: {event.event_id}): {title}",
+    )
+
+    return Response({"message": f"Announcement sent to {count} users.", "recipients": count}, status=200)
+
+
+@api_view(["GET"])
+def export_participants(request):
+    import csv
+    import openpyxl
+    from io import BytesIO
+    from django.http import HttpResponse
+
+    user, err = _get_event_action_user(request)
+    if err:
+        return err
+
+    event_id = request.query_params.get("event_id")
+    fmt = request.query_params.get("format", "csv").lower()
+
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    if fmt not in ("csv", "xlsx"):
+        return Response({"message": "format must be csv or xlsx."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    rows = []
+    if event.participant_type == "solo":
+        for rc in RegisteredCompetitors.objects.select_related("user").filter(event=event).order_by("registration_date"):
+            u = rc.user
+            rows.append({
+                "Username": u.username if u else "",
+                "Full Name": u.full_name if u else "",
+                "Email": u.email if u else "",
+                "Discord ID": u.discord_id if u else "",
+                "Discord Username": u.discord_username if u else "",
+                "Status": rc.status,
+                "Waitlisted": rc.is_waitlisted,
+                "Registration Date": rc.registration_date.strftime("%Y-%m-%d %H:%M") if rc.registration_date else "",
+            })
+    else:
+        for tt in TournamentTeam.objects.select_related("team").filter(event=event).order_by("registration_date"):
+            team_name = tt.team.team_name if tt.team else ""
+            for member in TournamentTeamMember.objects.select_related("user").filter(tournament_team=tt):
+                u = member.user
+                rows.append({
+                    "Team Name": team_name,
+                    "Team Status": tt.status,
+                    "Waitlisted": tt.is_waitlisted,
+                    "Player Username": u.username if u else "",
+                    "Player Full Name": u.full_name if u else "",
+                    "Player Email": u.email if u else "",
+                    "Discord ID": u.discord_id if u else "",
+                    "Discord Username": u.discord_username if u else "",
+                    "Member Status": member.status,
+                    "Registration Date": tt.registration_date.strftime("%Y-%m-%d %H:%M") if tt.registration_date else "",
+                })
+
+    headers = list(rows[0].keys()) if rows else []
+    safe_name = event.event_name.replace(" ", "_")
+
+    if fmt == "xlsx":
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Participants"
+        if headers:
+            ws.append(headers)
+            for row in rows:
+                ws.append([row[h] for h in headers])
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        response = HttpResponse(
+            output.read(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{safe_name}_participants.xlsx"'
+        return response
+    else:
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="{safe_name}_participants.csv"'
+        if headers:
+            writer = csv.DictWriter(response, fieldnames=headers)
+            writer.writeheader()
+            writer.writerows(rows)
+        return response
 
     return Response({"message": "Image deleted successfully."})

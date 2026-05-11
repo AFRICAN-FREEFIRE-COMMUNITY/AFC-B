@@ -40,4 +40,7 @@ urlpatterns = [
     path('admin-search-players/', admin_search_players, name='admin_search_players'),
     path('admin-remove-member/', admin_remove_member, name='admin_remove_member'),
     path('admin-add-member/', admin_add_member, name='admin_add_member'),
+    path('admin-get-team-event-history/', admin_get_team_event_history, name='admin_get_team_event_history'),
+    path('admin-change-team-tier/', admin_change_team_tier, name='admin_change_team_tier'),
+    path('admin-transfer-team-ownership/', admin_transfer_team_ownership, name='admin_transfer_team_ownership'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

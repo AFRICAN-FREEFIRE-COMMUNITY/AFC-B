@@ -8,14 +8,13 @@ from rest_framework import status
 from afc_auth.views import validate_token
 from afc_leaderboard_calc import models
 from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
-from afc_tournament_and_scrims.models import TournamentTeamMatchStats
+from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
-from afc_auth.models import Notifications, User, UserProfile, UserRoles
+from afc_auth.models import AdminHistory, Notifications, TeamBan, User, UserProfile, UserRoles
 from django.utils.timezone import now
-from django.db.models import Q
+from django.db.models import Avg, Count, F, Min, Q, Sum
 from .models import Team, TeamMembers, Invite, TeamSocialMediaLinks
 import json
-from django.db.models import Count, F
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -913,30 +912,93 @@ def get_team_details(request):
     except Team.DoesNotExist:
         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    # Team members
+    # Members
     members_qs = TeamMembers.objects.filter(team=team).select_related("member")
     members_data = [
         {
-            "id": member.member.user_id,
-            "uid": member.member.uid,
-            "username": member.member.username,
-            "management_role": member.management_role,
-            "in_game_role": member.in_game_role,
-            "join_date": member.join_date,
-            "discord_id": member.member.discord_id,
+            "id": m.member.user_id,
+            "uid": m.member.uid,
+            "username": m.member.username,
+            "management_role": m.management_role,
+            "in_game_role": m.in_game_role,
+            "join_date": m.join_date,
+            "discord_id": m.member.discord_id,
         }
-        for member in members_qs
+        for m in members_qs
     ]
 
-    # Social media links
-    social_links_qs = TeamSocialMediaLinks.objects.filter(team=team)
+    # Social links
     social_links = [
-        {
-            "platform": link.platform,
-            "link": link.link,
-        }
-        for link in social_links_qs
+        {"platform": lnk.platform, "link": lnk.link}
+        for lnk in TeamSocialMediaLinks.objects.filter(team=team)
     ]
+
+    # Aggregate match stats across all tournament entries
+    agg = TournamentTeamMatchStats.objects.filter(
+        tournament_team__team=team
+    ).aggregate(
+        total_matches=Count("team_stats_id"),
+        total_wins=Count("team_stats_id", filter=Q(placement=1)),
+        avg_kills=Avg("kills"),
+        avg_placement=Avg("placement"),
+    )
+    total_matches = agg["total_matches"] or 0
+    total_wins = agg["total_wins"] or 0
+    win_rate = round((total_wins / total_matches) * 100, 1) if total_matches else 0
+
+    # Per-event tournament performance
+    tournament_teams = TournamentTeam.objects.filter(team=team).select_related("event")
+    tournament_performance = []
+    for tt in tournament_teams:
+        tt_agg = TournamentTeamMatchStats.objects.filter(tournament_team=tt).aggregate(
+            total_points=Sum("total_points"),
+            total_kills=Sum("kills"),
+            matches_played=Count("team_stats_id"),
+            best_placement=Min("placement"),
+        )
+        tournament_performance.append({
+            "event_id": tt.event.event_id,
+            "name": tt.event.event_name,
+            "competition_type": tt.event.competition_type,
+            "event_status": tt.event.event_status,
+            "team_status": tt.status,
+            "best_placement": tt_agg["best_placement"],
+            "total_points": tt_agg["total_points"] or 0,
+            "total_kills": tt_agg["total_kills"] or 0,
+            "matches_played": tt_agg["matches_played"] or 0,
+        })
+
+    # Last 10 match stats
+    recent_stat_qs = (
+        TournamentTeamMatchStats.objects.filter(tournament_team__team=team)
+        .select_related("match", "tournament_team__event")
+        .order_by("-match__match_date")[:10]
+    )
+    recent_matches = [
+        {
+            "event_name": s.tournament_team.event.event_name,
+            "match_number": s.match.match_number,
+            "match_map": s.match.match_map,
+            "placement": s.placement,
+            "kills": s.kills,
+            "total_points": s.total_points,
+            "match_date": s.match.match_date,
+        }
+        for s in recent_stat_qs
+    ]
+
+    # Ban info
+    ban_info = None
+    try:
+        tb = TeamBan.objects.get(team=team)
+        ban_info = {
+            "reason": tb.reason,
+            "ban_start_date": tb.ban_start_date,
+            "ban_end_date": tb.ban_end_date,
+            "banned_by": tb.banned_by.username,
+        }
+    except TeamBan.DoesNotExist:
+        pass
 
     team_data = {
         "team_id": team.team_id,
@@ -947,13 +1009,25 @@ def get_team_details(request):
         "creation_date": team.creation_date,
         "team_creator": team.team_creator.username,
         "team_owner": team.team_owner.username,
+        "team_captain": team.team_captain.username if team.team_captain else None,
         "is_banned": team.is_banned,
+        "ban_info": ban_info,
         "team_tier": team.team_tier,
         "team_description": team.team_description,
         "country": team.country,
+        "total_earnings": str(team.total_earnings or 0),
         "total_members": members_qs.count(),
         "members": members_data,
         "social_media_links": social_links,
+        # Stats
+        "total_wins": total_wins,
+        "total_losses": total_matches - total_wins,
+        "win_rate": win_rate,
+        "average_kills": round(float(agg["avg_kills"] or 0), 1),
+        "average_placement": round(float(agg["avg_placement"] or 0), 1),
+        # Performance
+        "tournament_performance": tournament_performance,
+        "recent_matches": recent_matches,
     }
 
     return Response({"team": team_data}, status=status.HTTP_200_OK)
@@ -1773,6 +1847,162 @@ def admin_add_member(request):
         user=team.team_owner,
         message=f"{player.username} has been added to your team '{team.team_name}' by an admin.",
         notification_type="team_join"
+    )
+
+
+# ── Admin Team Management ──────────────────────────────────────────────────────
+
+def _require_team_admin(request):
+    """Validate Bearer token and require admin/moderator/support role. Returns (user, err)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+    if user.role not in ["admin", "moderator", "support"]:
+        return None, Response({"message": "You do not have permission to perform this action."}, status=403)
+    return user, None
+
+
+@api_view(["GET"])
+def admin_get_team_event_history(request):
+    user, err = _require_team_admin(request)
+    if err:
+        return err
+
+    team_id = request.query_params.get("team_id")
+    if not team_id:
+        return Response({"message": "team_id is required."}, status=400)
+
+    try:
+        page = max(1, int(request.query_params.get("page", 1)))
+        page_size = min(50, max(1, int(request.query_params.get("page_size", 10))))
+    except ValueError:
+        return Response({"message": "page and page_size must be integers."}, status=400)
+
+    team = get_object_or_404(Team, team_id=team_id)
+
+    qs = TournamentTeam.objects.filter(team=team).select_related("event").order_by("-registration_date")
+    total = qs.count()
+    offset = (page - 1) * page_size
+    entries = qs[offset : offset + page_size]
+
+    results = [
+        {
+            "event_id": tt.event.event_id,
+            "event_name": tt.event.event_name,
+            "competition_type": tt.event.competition_type,
+            "event_status": tt.event.event_status,
+            "team_status": tt.status,
+            "registration_date": tt.registration_date,
+            "is_waitlisted": tt.is_waitlisted,
+        }
+        for tt in entries
+    ]
+
+    return Response(
+        {
+            "results": results,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, (total + page_size - 1) // page_size),
+        },
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def admin_change_team_tier(request):
+    user, err = _require_team_admin(request)
+    if err:
+        return err
+
+    team_id = request.data.get("team_id")
+    tier = str(request.data.get("tier", "")).strip()
+
+    if not team_id:
+        return Response({"message": "team_id is required."}, status=400)
+    if tier not in ["1", "2", "3"]:
+        return Response({"message": "tier must be 1, 2, or 3."}, status=400)
+
+    team = get_object_or_404(Team, team_id=team_id)
+    old_tier = team.team_tier
+    team.team_tier = tier
+    team.save(update_fields=["team_tier"])
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="change_team_tier",
+        description=f"Changed tier of '{team.team_name}' (ID: {team.team_id}) from {old_tier} to {tier}.",
+    )
+    Notifications.objects.create(
+        user=team.team_owner,
+        message=f"Your team '{team.team_name}' has been moved to Tier {tier} by an admin.",
+        notification_type="team_update",
+    )
+
+    return Response(
+        {"message": f"Team tier updated from {old_tier} to {tier}.", "new_tier": tier},
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def admin_transfer_team_ownership(request):
+    user, err = _require_team_admin(request)
+    if err:
+        return err
+
+    team_id = request.data.get("team_id")
+    new_owner_id = request.data.get("new_owner_id")
+
+    if not team_id or not new_owner_id:
+        return Response({"message": "team_id and new_owner_id are required."}, status=400)
+
+    team = get_object_or_404(Team, team_id=team_id)
+    new_owner = get_object_or_404(User, user_id=new_owner_id)
+    old_owner = team.team_owner
+
+    if new_owner == old_owner:
+        return Response({"message": "New owner is already the team owner."}, status=400)
+
+    if not TeamMembers.objects.filter(team=team, member=new_owner).exists():
+        return Response({"message": "New owner must be a current team member."}, status=400)
+
+    # Update management roles
+    TeamMembers.objects.filter(team=team, member=old_owner).update(management_role="member")
+    TeamMembers.objects.filter(team=team, member=new_owner).update(management_role="team_captain")
+
+    team.team_owner = new_owner
+    team.save(update_fields=["team_owner"])
+
+    Report.objects.create(
+        team=team,
+        user=new_owner,
+        action="role_assigned",
+        description=f"Admin {user.username} transferred ownership from {old_owner.username} to {new_owner.username}.",
+    )
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="transfer_team_ownership",
+        description=f"Transferred ownership of '{team.team_name}' from {old_owner.username} to {new_owner.username}.",
+    )
+    Notifications.objects.create(
+        user=new_owner,
+        message=f"You are now the owner of '{team.team_name}'. Ownership was transferred by an admin.",
+        notification_type="team_update",
+    )
+    Notifications.objects.create(
+        user=old_owner,
+        message=f"Ownership of '{team.team_name}' has been transferred to {new_owner.username} by an admin.",
+        notification_type="team_update",
+    )
+
+    return Response(
+        {"message": f"Ownership transferred to {new_owner.username} successfully."},
+        status=200,
     )
 
     return Response({"message": f"{player.username} has been added to {team.team_name} as {management_role}."}, status=status.HTTP_201_CREATED)
