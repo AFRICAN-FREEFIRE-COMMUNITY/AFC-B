@@ -1348,11 +1348,9 @@ def manage_team_roster(request):
         valid_i_roles = [choice[0] for choice in TeamMembers.IN_GAME_ROLE_CHOICES]
 
         results = []
-        # count current in-game roles
         existing_in_game_count = TeamMembers.objects.filter(
-            team=team,
-            in_game_role__isnull=False
-        ).count()
+            team=team, in_game_role__isnull=False
+        ).exclude(in_game_role="").count()
 
         MAX_IN_GAME = 6
         ALLOWED_IG_ROLES = {"team_captain", "vice_captain", "member"}
@@ -1360,94 +1358,72 @@ def manage_team_roster(request):
         for data in updates:
             member_id = data.get("member_id")
             new_m_role = data.get("management_role")
-            new_i_role = data.get("in_game_role")
+            # None means "don’t touch", "" means "clear the role"
+            new_i_role = data.get("in_game_role", None)
 
             try:
                 tm = TeamMembers.objects.get(team=team, member_id=member_id)
             except TeamMembers.DoesNotExist:
-                results.append({
-                    "member_id": member_id,
-                    "status": "failed",
-                    "reason": "Member not in team"
-                })
+                results.append({"member_id": member_id, "status": "failed", "reasons": ["Member not in team"]})
                 continue
 
-            # Prevent owner from demoting themselves unless allowed
-            if tm.member == user and new_m_role and new_m_role != tm.management_role:
-                results.append({
-                    "member_id": member_id,
-                    "status": "failed",
-                    "reason": "Owner cannot change their own management role"
-                })
-                continue
+            failures = []
 
-            # Validate management role
-            if new_m_role:
-                if new_m_role not in valid_m_roles:
-                    results.append({
-                        "member_id": member_id,
-                        "status": "failed",
-                        "reason": "Invalid management_role"
-                    })
-                    continue
-                tm.management_role = new_m_role
+            # Management role — owner cannot change their own
+            if new_m_role and new_m_role != tm.management_role:
+                if tm.member == user:
+                    failures.append("Owner cannot change their own management role")
+                elif new_m_role not in valid_m_roles:
+                    failures.append("Invalid management_role")
+                else:
+                    tm.management_role = new_m_role
 
-            # Validate in-game role
-            if new_i_role:
-
-                # ❌ only certain management roles allowed
-                if tm.management_role not in ALLOWED_IG_ROLES:
-                    results.append({
-                        "member_id": member_id,
-                        "status": "failed",
-                        "reason": "Only players (captain, vice captain, member) can have in-game roles"
-                    })
-                    continue
-
-                # ❌ max 6 players rule
-                if not tm.in_game_role:  # only count NEW assignments
-                    if existing_in_game_count >= MAX_IN_GAME:
-                        results.append({
-                            "member_id": member_id,
-                            "status": "failed",
-                            "reason": "Maximum of 6 players can have in-game roles"
-                        })
-                        continue
-
-                    existing_in_game_count += 1  # increment since we’re adding
-
-                # validate role
-                if new_i_role not in valid_i_roles:
-                    results.append({
-                        "member_id": member_id,
-                        "status": "failed",
-                        "reason": "Invalid in_game_role"
-                    })
-                    continue
-
-                tm.in_game_role = new_i_role
+            # In-game role — None means skip, "" means clear
+            if new_i_role is not None:
+                if new_i_role == "":
+                    tm.in_game_role = None
+                elif new_i_role not in valid_i_roles:
+                    failures.append("Invalid in_game_role")
+                elif tm.management_role not in ALLOWED_IG_ROLES:
+                    failures.append("Only players (captain, vice captain, member) can have in-game roles")
+                elif not tm.in_game_role and existing_in_game_count >= MAX_IN_GAME:
+                    failures.append("Maximum of 6 players can have in-game roles")
+                else:
+                    if not tm.in_game_role:
+                        existing_in_game_count += 1
+                    tm.in_game_role = new_i_role
 
             tm.save()
 
-            results.append({
-                "member_id": member_id,
-                "status": "success",
-                "management_role": tm.management_role,
-                "in_game_role": tm.in_game_role
-            })
+            if failures:
+                results.append({
+                    "member_id": member_id,
+                    "username": tm.member.username,
+                    "status": "partial" if not all(f.startswith("Owner") for f in failures) else "failed",
+                    "reasons": failures,
+                    "management_role": tm.management_role,
+                    "in_game_role": tm.in_game_role,
+                })
+            else:
+                results.append({
+                    "member_id": member_id,
+                    "username": tm.member.username,
+                    "status": "success",
+                    "management_role": tm.management_role,
+                    "in_game_role": tm.in_game_role,
+                })
+                Report.objects.create(
+                    team=team,
+                    user=user,
+                    action="role_changed",
+                    description=f"{tm.member.username}’s roles updated: management_role={tm.management_role}, in_game_role={tm.in_game_role} by {user.username}."
+                )
 
-
-            # Log the action in the Report table
-            Report.objects.create(
-                team=team,
-                user=user,
-                action="roster_updated",
-                description=f"{tm.member.username}'s roles updated to management_role: {tm.management_role}, in_game_role: {tm.in_game_role} by {user.username}."
-            )
-
+        any_failed = any(r["status"] in ("failed", "partial") for r in results)
         return Response({
-            "message": "Bulk roster update completed",
-            "results": results
+            "message": "Roster update completed" if not any_failed else "Some updates could not be applied — see results for details.",
+            "results": results,
+            "has_errors": any_failed,
         }, status=200)
 
     except Exception as e:
