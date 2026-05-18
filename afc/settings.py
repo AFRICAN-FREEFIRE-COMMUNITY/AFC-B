@@ -141,12 +141,14 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': 'afc_db',
-        'USER': 'admin',
-        'PASSWORD': 'sALT5@waTer6.',
+        'USER': 'root',
+        'PASSWORD': 'Purewater@12345',
         'HOST': 'localhost',  # Or your remote host
         'PORT': '3306',       # Or your custom port if different
     }
 }
+# python manage.py makemigrations
+# python manage.py migrate
 
 # DATABASES = {
 #     'default': {
