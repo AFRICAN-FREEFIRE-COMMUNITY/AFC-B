@@ -31,7 +31,7 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False, default="player")
     # session_token = models.CharField(max_length=16)
     full_name = models.CharField(max_length=40)
-    country = models.CharField(max_length=40)
+    country = models.CharField(max_length=40, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=False, default="active")
     last_login = models.DateTimeField(null=True)
     discord_id = models.CharField(max_length=50, null=True, blank=True, unique=True, db_index=True)
