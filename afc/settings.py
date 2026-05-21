@@ -27,7 +27,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-al*a1qpu75zbfu!p7aki6)(p34yc=6(r18uhc)#zxv9oo!pi2)'
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -38,10 +38,10 @@ ALLOWED_HOSTS = ["https://afc.pythonanywhere.com/", "afc.pythonanywhere.com", "9
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-OPENAI_API_KEY = "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"
-MINTROUTE_SECRET_KEY = "62aeb8c780f3d3d95c4d3449a6aa4467"
-MINTROUTE_ACCESS_KEY = "gYShz6WD"
-MINTROUTE_USERNAME = "africanff.single"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+MINTROUTE_SECRET_KEY = os.getenv("MINTROUTE_SECRET_KEY")
+MINTROUTE_ACCESS_KEY = os.getenv("MINTROUTE_ACCESS_KEY")
+MINTROUTE_USERNAME = os.getenv("MINTROUTE_USERNAME")
 # Application definition
 
 INSTALLED_APPS = [
@@ -66,7 +66,7 @@ INSTALLED_APPS = [
     'afc_ocr',
 ]
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyB_PnDUpEexp2B_WEFAc9mqwD2cjfe-OVU")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -140,11 +140,11 @@ WSGI_APPLICATION = 'afc.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'afc_db',
-        'USER': 'admin',
-        'PASSWORD': 'sALT5@waTer6.',
-        'HOST': 'localhost',  # Or your remote host
-        'PORT': '3306',       # Or your custom port if different
+        'NAME': os.getenv("DB_NAME"),
+        'USER': os.getenv("DB_USER"),
+        'PASSWORD': os.getenv("DB_PASSWORD"),
+        'HOST': os.getenv("DB_HOST", "localhost"),
+        'PORT': os.getenv("DB_PORT", "3306"),
     }
 }
 
