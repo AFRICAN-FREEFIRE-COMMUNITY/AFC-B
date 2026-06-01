@@ -128,6 +128,7 @@ class LoginHistory(models.Model):
 class Roles(models.Model):
     ROLES = [
         ("head_admin", "Head Admin"),
+        ("metrics_admin", "Metrics Admin"),
         ("shop_admin", "Shop Admin"),
         ("news_admin", "News Admin"),
         ("event_admin", "Event Admin"),

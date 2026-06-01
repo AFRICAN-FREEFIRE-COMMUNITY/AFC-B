@@ -426,7 +426,7 @@ def view_all_orders(request):
             "subtotal": str(o.subtotal),
             "discount_total": str(o.discount_total),
             "total": str(o.total),
-            "coupon_code": o.coupon_code,
+            "coupon_code": o.coupon.code if o.coupon else None,
             "created_at": o.created_at,
             "items": [{
                 "variant_id": it.variant_id,
@@ -461,7 +461,7 @@ def orders_today(request):
         "subtotal": str(o.subtotal),
         "discount_total": str(o.discount_total),
         "total": str(o.total),
-        "coupon_code": o.coupon_code,
+        "coupon_code": o.coupon.code if o.coupon else None,
         "created_at": o.created_at,
     } for o in orders]
     return Response({"orders": data}, status=200)
@@ -484,7 +484,7 @@ def orders_this_week(request):
         "subtotal": str(o.subtotal),
         "discount_total": str(o.discount_total),
         "total": str(o.total),
-        "coupon_code": o.coupon_code,
+        "coupon_code": o.coupon.code if o.coupon else None,
         "created_at": o.created_at,
     } for o in orders]
     return Response({"orders": data}, status=200)
@@ -507,9 +507,10 @@ def orders_this_month(request):
         "subtotal": str(o.subtotal),
         "discount_total": str(o.discount_total),
         "total": str(o.total),
-        "coupon_code": o.coupon_code,
+        "coupon_code": o.coupon.code if o.coupon else None,
         "created_at": o.created_at,
     } for o in orders]
+    return Response({"orders": data}, status=200)
 
 
 @api_view(["GET"])

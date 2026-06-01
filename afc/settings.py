@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'afc_player',
     'afc_player_market',
     'afc_ocr',
+    'afc_rankings',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyB_PnDUpEexp2B_WEFAc9mqwD2cjfe-OVU")
@@ -217,6 +218,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CELERY_BROKER_URL = 'redis://localhost:6379/0'  # Redis URL
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
+
+# Rankings recalc: run inline on commit in dev (no worker needed); set False + run
+# `celery -A afc worker -Q rankings_recalc` in production for async recalculation.
+RANKINGS_RECALC_SYNC = DEBUG
 
 
 CACHES = {

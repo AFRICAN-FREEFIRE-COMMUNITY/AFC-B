@@ -404,6 +404,17 @@ def disband_team(request):
         # Validate team ownership
         team = Team.objects.get(team_id=team_id, team_owner=user)
 
+        # Roster moves are locked outside the transfer window — a team cannot be disbanded
+        # while the window is CLOSED (matches the player-leave lock in exit_team). The window
+        # is the active ranking season's range (afc_rankings.Season), toggled by admins.
+        from afc_rankings.models import Season
+        active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+        if active_season and not active_season.is_transfer_window_open():
+            return Response(
+                {"message": "The transfer window is currently closed. Teams cannot be disbanded until it reopens."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # Create a report before deleting the team
         Report.objects.create(
             team=team,
@@ -1151,6 +1162,17 @@ def exit_team(request):
         if team.team_owner == user:
             return Response({"message": "Team owners cannot exit their own team. Please transfer ownership or disband the team."}, status=status.HTTP_403_FORBIDDEN)
 
+        # Roster moves are locked outside the transfer window — a player can only leave a
+        # team while the window is OPEN. The window is defined on the active ranking season
+        # (afc_rankings.Season) and toggled by admins. Admin kicks/removals are unaffected.
+        from afc_rankings.models import Season
+        active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+        if active_season and not active_season.is_transfer_window_open():
+            return Response(
+                {"message": "The transfer window is currently closed. You cannot leave your team until it reopens."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # Remove the user from the team
         team_member.delete()
 
@@ -1462,6 +1484,17 @@ def kick_team_member(request):
         # Only team owner allowed
         if team.team_owner != user:
             return Response({"error": "Only the team owner can kick members"}, status=403)
+
+        # Roster moves are locked outside the transfer window — members cannot be kicked
+        # while the window is CLOSED (matches the player-leave + disband locks). The window
+        # is the active ranking season's range (afc_rankings.Season), toggled by admins.
+        from afc_rankings.models import Season
+        active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+        if active_season and not active_season.is_transfer_window_open():
+            return Response(
+                {"error": "The transfer window is currently closed. Members cannot be kicked until it reopens."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Get team member to kick
         try:

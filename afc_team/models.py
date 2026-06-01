@@ -35,9 +35,16 @@ class Team(models.Model):
     
 
 class TeamSocialMediaLinks(models.Model):
-    team = models.ForeignKey(Team, on_delete=models.CASCADE)
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="social_links")
     platform = models.CharField(max_length=20)
     link = models.URLField(max_length=200)
+    # rankings §7.3 — verified follower count snapshot inputs
+    follower_count = models.PositiveIntegerField(null=True, blank=True)
+    followers_verified_at = models.DateTimeField(null=True, blank=True)
+    verified_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="verified_social_counts",
+    )
     
 
 

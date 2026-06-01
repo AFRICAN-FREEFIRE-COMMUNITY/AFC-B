@@ -70,6 +70,10 @@ class Event(models.Model):
     event_status = models.CharField(max_length=20, choices=EVENT_STATUS_CHOICES)
     registration_link = models.URLField()
     tournament_tier = models.CharField(max_length=20, choices=TOURNAMENT_TIER_CHOICES, default="tier_3")
+    # rankings §4/§7.2 — prize money conversion locked at award date
+    prize_currency = models.CharField(max_length=3, default="NGN")  # USD | NGN
+    usd_to_ngn_rate = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    prizepool_ngn_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     event_banner = models.ImageField(upload_to='event_banner/', null=True)
     number_of_stages = models.PositiveIntegerField()
     uploaded_rules = models.FileField(upload_to='event_rules/', null=True, blank=True)
@@ -178,6 +182,7 @@ class Stages(models.Model):
     prizepool = models.CharField(max_length=40, null=True, blank=True)
     prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     prize_distribution = models.JSONField(default=dict,null=True, blank=True) # {"1": "50%", "2": "30%", "3": "20%"}
+    is_finals_stage = models.BooleanField(default=False)  # rankings §4.5/§6.1 — admin marks the finals stage
 
 class StageGroups(models.Model):
     group_id = models.AutoField(primary_key=True)
@@ -254,6 +259,7 @@ class Match(models.Model):
     group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, related_name="matches", null=True, blank=True)
     mvp = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="mvp_matches")
     match_date = models.DateTimeField(auto_now_add=True)
+    played_on = models.DateField(null=True, blank=True)  # rankings: actual play date for month/quarter bucketing (match_date is entry date)
     match_number = models.PositiveIntegerField()
     room_id = models.CharField(max_length=50, null=True, blank=True)
     room_password = models.CharField(max_length=50, null=True, blank=True)
@@ -291,6 +297,11 @@ class TournamentTeam(models.Model):
     registration_date = models.DateTimeField(auto_now_add=True)
     country = models.CharField(max_length=100, null=True, blank=True) # Store country at time of registration for historical accuracy
     is_waitlisted = models.BooleanField(default=False)
+    # rankings result markers — set by admin at result entry (spec §4.4/§4.5/§5.1)
+    is_tournament_winner = models.BooleanField(default=False)
+    reached_finals = models.BooleanField(default=False)
+    finals_appearances = models.PositiveIntegerField(default=0)
+    result_finalized = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.team.team_name} in {self.event.event_name}"

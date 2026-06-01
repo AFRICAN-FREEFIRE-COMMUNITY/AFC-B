@@ -16,6 +16,8 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -28,5 +30,11 @@ urlpatterns = [
     path("player/", include('afc_player.urls')),
     path("player-market/", include('afc_player_market.urls')),
     path("events/", include('afc_ocr.urls')),
+    path("rankings/", include('afc_rankings.urls')),
 
 ]
+
+# In development, the Django dev server must serve uploaded media itself
+# (in production this is handled by S3/static hosting).
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
