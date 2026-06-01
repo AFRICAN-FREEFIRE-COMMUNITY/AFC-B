@@ -4,7 +4,7 @@ from django.db.models import Sum
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
-from afc_auth.models import User
+from afc_auth.models import User, BannedPlayer
 from afc_team.models import TeamMembers
 from afc_tournament_and_scrims.models import Match, TournamentPlayerMatchStats, TournamentTeamMatchStats, TournamentTeamMember
 from rest_framework.decorators import api_view
@@ -61,6 +61,9 @@ def get_all_users(request):
                 placement=1
             ).count()
 
+        # --- BAN STATE ---
+        is_banned = BannedPlayer.objects.filter(banned_player=user, is_active=True).exists()
+
         data.append({
             "user_id": user.user_id,
             "name": user.username,
@@ -68,7 +71,7 @@ def get_all_users(request):
             "total_kills": total_kills,
             "total_wins": total_wins,
             "total_mvps": total_mvps,
-            "status": user.status,
+            "status": "banned" if is_banned else user.status,
             "role": user.role  # optional but useful
         })
 

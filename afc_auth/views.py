@@ -320,7 +320,7 @@ def login(request):
         session_token = generate_session_token()
 
         SessionToken.objects.create(user=user, token=session_token)
-        
+
         # Save session token to the user model
         user.last_login = timezone.now()
         user.save()
@@ -821,7 +821,7 @@ def ban_player(request):
         return Response({"message": "Player IGN and duration are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        player = User.objects.get(in_game_name=player_ign)
+        player = User.objects.get(username=player_ign)
     except User.DoesNotExist:
         return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
 
