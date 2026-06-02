@@ -290,13 +290,24 @@ def admin_get_organization(request, slug):
             "is_draft": event.is_draft,
         })
 
-    # Base org dict + the nested collections.
-    detail = _serialize_org(org)
-    detail["members"] = members
-    detail["events"] = events
-    detail["reports"] = []  # Phase 4 — kept present so the response shape is stable.
+    # Full org profile (the detail Profile tab edits description/socials, so extend the
+    # summary _serialize_org dict with the full branding fields). The members/events/
+    # reports collections sit at the TOP LEVEL of the response (the frontend reads
+    # detail.members/events/reports), NOT nested inside organization.
+    org_dict = _serialize_org(org)
+    org_dict.update({
+        "logo": org.logo.url if org.logo else None,
+        "default_banner": org.default_banner.url if org.default_banner else None,
+        "description": org.description,
+        "socials": org.socials or {},
+    })
 
-    return Response({"organization": detail}, status=status.HTTP_200_OK)
+    return Response({
+        "organization": org_dict,
+        "members": members,
+        "events": events,
+        "reports": [],  # Phase 4 — kept present so the response shape is stable.
+    }, status=status.HTTP_200_OK)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

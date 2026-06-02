@@ -207,6 +207,9 @@ def get_organization(request, slug):
         "description": org.description,
         "socials": org.socials,
         "status": org.status,
+        # headline counts for the dashboard Overview (active members + events homed here).
+        "member_count": org.members.filter(status="active").count(),
+        "event_count": org.events.count(),
     }
 
     return Response(
