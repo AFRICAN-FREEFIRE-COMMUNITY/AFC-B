@@ -421,6 +421,11 @@ def tier_config_update(request):
 
 
 # ───────────────────────── CLASSIFY (read-only dry-run) ─────────────────────────
+# ── dry-run twin of the production classifier ──
+# This previews the SAME first-match-wins classifier the real scoring path runs when an event is
+# scored. The rule semantics — priority order, first-match-wins, all/any, empty-rule means
+# non-matching — MUST stay identical to the production classifier, or the admin preview lies
+# about the tier an event would land in.
 @api_view(["POST"])
 def tier_rules_classify(request):
     """Dry-run the SAME first-match-wins logic against a hypothetical event.

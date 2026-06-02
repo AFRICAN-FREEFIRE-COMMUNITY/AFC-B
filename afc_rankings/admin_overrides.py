@@ -145,6 +145,11 @@ def _get_player_score(player_id, season):
 
 
 # ───────────────────────── TIER OVERRIDE (team) ─────────────────────────
+# ── sticky-field contract with recalc.py ──
+# The flags written by the endpoints below (tier_overridden / is_zeroed / points_deducted)
+# are EXACTLY the fields recalc.py respects and never overwrites. This surface only flips
+# the flag; recalc re-ranks around it. effective_score = max(0, total_score - points_deducted),
+# mirrored in serializers.team_quarterly (and serialize_team_quarterly_admin above).
 @api_view(["PATCH"])
 def team_tier_override(request, season_id, team_id):
     """Pin (or clear) a team's tier by hand for a season (§5 / §11).

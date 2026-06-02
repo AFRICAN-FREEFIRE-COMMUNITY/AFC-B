@@ -176,6 +176,10 @@ def _parse_followers(value, field_name):
     return count, None
 
 
+# ── points curve lives in scoring/engine.py, never re-implemented here ──
+# social_media_points (the spec curve) is owned by scoring/engine.py; this helper only calls it.
+# aggregation ADDS these points to the quarterly score ONLY when the snapshot is_verified — which
+# is why verify/unverify enqueue a recalc.
 def _recompute_social(snap):
     """Re-derive ``combined_followers`` + ``social_media_pts`` from the two raw counts.
 

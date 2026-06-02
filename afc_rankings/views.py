@@ -46,6 +46,9 @@ def _envelope(request, qs, serialize_fn, extra=None):
 
 
 # ───────────────────────── TEAM ─────────────────────────
+# Read-only: serializes the score tables that aggregation/recalc already wrote
+# (TeamMonthlyScore / TeamQuarterlyScore). This layer never computes — if a field is
+# missing here, add it in aggregation first.
 @api_view(["GET"])
 def teams_monthly(request):
     month = _resolve_month(request)
@@ -54,6 +57,10 @@ def teams_monthly(request):
     return _envelope(request, qs, S.team_monthly, {"month": month.isoformat()})
 
 
+# Publish gates live on Season (rankings_published / tiers_published), toggled by
+# admin_publish.publish_state. Admins bypass these via the draft-preview endpoints
+# admin_publish.admin_teams_quarterly / admin_players_quarterly — keep in sync if the
+# gate logic below changes.
 def _gated_quarterly(request, season, qs, serialize_fn):
     """Public quarterly response with the two independent publish gates applied:
     nothing until ``rankings_published``; tier fields nulled until ``tiers_published``.

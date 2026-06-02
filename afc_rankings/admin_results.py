@@ -140,6 +140,11 @@ def _enqueue_entity_recalc(*, team_id=None, player_id=None):
 
 
 # ───────────────────────── local serializers (manual-dict, per house style) ─────────────────────────
+# ── read-side twin in aggregation.py ──
+# The count_winner/count_placement/count_kills toggles and the ResultExclusion rows surfaced
+# here are CONSUMED at aggregation time by aggregation._counting_controls / _excluded_event_ids.
+# Writing here only flips the row; the score actually changes when the enqueued recalc re-runs
+# aggregation. "No control row ⇒ everything counts" mirrors aggregation's read-side default.
 def serialize_event_markers(event, control, exclusion_count):
     """One tournament's row for the Result-Markers list.
 
@@ -213,6 +218,9 @@ def _get_event(event_id):
     return event, None
 
 
+# ── season membership is a date-window match (no Season FK on Event) ──
+# Event has no Season FK, so season membership is a date-window match on start_date — the same
+# convention admin_prize.tournament_prizes_list uses for payouts. Keep the two in sync.
 def _season_event_qs(season):
     """Tournaments belonging to a season: competition_type != "scrims", start_date in window.
 

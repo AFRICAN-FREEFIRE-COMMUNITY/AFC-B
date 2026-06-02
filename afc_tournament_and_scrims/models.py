@@ -259,6 +259,9 @@ class Match(models.Model):
     group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, related_name="matches", null=True, blank=True)
     mvp = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="mvp_matches")
     match_date = models.DateTimeField(auto_now_add=True)
+    # afc_rankings buckets stats by played_on (actual play date), NOT match_date
+    # (auto_now_add). Backfill played_on for historical matches or they bucket into the
+    # wrong month/quarter.
     played_on = models.DateField(null=True, blank=True)  # rankings: actual play date for month/quarter bucketing (match_date is entry date)
     match_number = models.PositiveIntegerField()
     room_id = models.CharField(max_length=50, null=True, blank=True)
@@ -297,7 +300,9 @@ class TournamentTeam(models.Model):
     registration_date = models.DateTimeField(auto_now_add=True)
     country = models.CharField(max_length=100, null=True, blank=True) # Store country at time of registration for historical accuracy
     is_waitlisted = models.BooleanField(default=False)
-    # rankings result markers — set by admin at result entry (spec §4.4/§4.5/§5.1)
+    # rankings result markers — set by admin at result entry via afc_rankings.admin_results
+    # (spec §4.4/§4.5/§5.1); consumed by afc_rankings.aggregation to award win/finals points.
+    # result_finalized gates whether aggregation counts this event at all.
     is_tournament_winner = models.BooleanField(default=False)
     reached_finals = models.BooleanField(default=False)
     finals_appearances = models.PositiveIntegerField(default=0)

@@ -2,7 +2,13 @@
 
 Every function maps to a spec section (cited in its docstring). The module is
 pure: no Django, no ORM, no I/O, no global mutable state. Same input -> same
-output, always.
+output, always. This Django-free purity is a hard requirement — do not import
+Django here.
+
+Built and called exclusively by afc_rankings/aggregation.py (_collect_team /
+_collect_player), which feeds these functions the frozen input dataclasses;
+afc_rankings/recalc.py then persists the returned Result objects into the score
+models.
 
 Compression granularity (LOCKED CONVENTION, resolves spec FLAG A):
     Compression (kills AND placement) is applied PER-TOURNAMENT, then the

@@ -42,9 +42,9 @@ from rest_framework.response import Response
 from afc_team.models import Team
 from afc_auth.models import User
 
-from . import aggregation as A
+from . import aggregation
 from . import serializers as S
-from . import views as V                       # reuse views._resolve_season (?season_id= or active)
+from . import views                             # reuse views._resolve_season (?season_id= or active)
 from .admin_views import _auth                  # the shared auth gate — do NOT reimplement
 from .models import RankingAuditLog
 
@@ -212,11 +212,11 @@ def team_raw(request, team_id):
     if not team:
         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    season = V._resolve_season(request)
+    season = views._resolve_season(request)
     if not season:
         return Response({"message": "No active season."}, status=status.HTTP_404_NOT_FOUND)
 
-    agg = A.compute_team_quarterly(team, season)
+    agg = aggregation.compute_team_quarterly(team, season)
     return Response({
         "team_id": team.pk,
         "team_name": team.team_name,
@@ -241,11 +241,11 @@ def player_raw(request, player_id):
     if not player:
         return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    season = V._resolve_season(request)
+    season = views._resolve_season(request)
     if not season:
         return Response({"message": "No active season."}, status=status.HTTP_404_NOT_FOUND)
 
-    agg = A.compute_player_quarterly(player, season)
+    agg = aggregation.compute_player_quarterly(player, season)
     return Response({
         "player_id": player.pk,
         "username": player.username,

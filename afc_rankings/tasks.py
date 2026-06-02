@@ -14,7 +14,7 @@ from celery import shared_task
 from django.conf import settings
 from django.core.cache import cache
 
-from . import recalc as R
+from . import recalc
 
 _LOCK_TTL = 120  # seconds
 
@@ -34,26 +34,30 @@ def _with_lock(key, fn):
 
 
 # ───────────────────────── Celery tasks ─────────────────────────
+# All four run on the dedicated rankings_recalc queue; in prod run a worker for
+# it (celery -A afc worker -Q rankings_recalc). These are wrappers over recalc.py;
+# enqueue_team / enqueue_player below are the only public entry points and are
+# what signals.py calls.
 @shared_task(queue="rankings_recalc")
 def recalculate_team_monthly(team_id, month_str):
     month = datetime.date.fromisoformat(month_str)
-    _with_lock(f"tm:{team_id}:{month_str}", lambda: R.recalc_team_monthly(team_id, month))
+    _with_lock(f"tm:{team_id}:{month_str}", lambda: recalc.recalc_team_monthly(team_id, month))
 
 
 @shared_task(queue="rankings_recalc")
 def recalculate_team_quarterly(team_id, season_id):
-    _with_lock(f"tq:{team_id}:{season_id}", lambda: R.recalc_team_quarterly(team_id, season_id))
+    _with_lock(f"tq:{team_id}:{season_id}", lambda: recalc.recalc_team_quarterly(team_id, season_id))
 
 
 @shared_task(queue="rankings_recalc")
 def recalculate_player_monthly(player_id, month_str):
     month = datetime.date.fromisoformat(month_str)
-    _with_lock(f"pm:{player_id}:{month_str}", lambda: R.recalc_player_monthly(player_id, month))
+    _with_lock(f"pm:{player_id}:{month_str}", lambda: recalc.recalc_player_monthly(player_id, month))
 
 
 @shared_task(queue="rankings_recalc")
 def recalculate_player_quarterly(player_id, season_id):
-    _with_lock(f"pq:{player_id}:{season_id}", lambda: R.recalc_player_quarterly(player_id, season_id))
+    _with_lock(f"pq:{player_id}:{season_id}", lambda: recalc.recalc_player_quarterly(player_id, season_id))
 
 
 # ───────────────────────── dispatch (sync-in-dev / async-in-prod) ─────────────────────────

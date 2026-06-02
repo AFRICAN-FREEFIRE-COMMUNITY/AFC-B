@@ -46,6 +46,11 @@ def _enqueue_player(player_id, match):
     tasks.enqueue_player(player_id, day.replace(day=1), season.season_id if season else None)
 
 
+# ───────────────────────── receivers ─────────────────────────
+# Registered in apps.py AfcRankingsConfig.ready(). Senders live in
+# afc_tournament_and_scrims.models; each handler enqueues via
+# tasks.enqueue_team / tasks.enqueue_player, which run inline in dev
+# (RANKINGS_RECALC_SYNC / DEBUG) or on the rankings_recalc Celery queue in prod.
 @receiver(post_save, sender=TournamentTeamMatchStats)
 def on_team_stats_save(sender, instance, **kwargs):
     team_id = instance.tournament_team.team_id
