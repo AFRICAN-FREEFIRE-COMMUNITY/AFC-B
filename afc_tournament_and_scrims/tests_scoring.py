@@ -10,9 +10,25 @@ They are SimpleTestCase (no DB) on purpose: the formula is pure arithmetic, so
 the suite runs without MySQL / migrations.
 """
 
-from django.test import SimpleTestCase
+import datetime
+import json
 
+from django.test import SimpleTestCase, TestCase
+from django.urls import reverse
+from rest_framework.test import APIClient
+
+from afc_auth.models import SessionToken, User
+from afc_team.models import Team
 from afc_tournament_and_scrims import scoring
+from afc_tournament_and_scrims.models import (
+    Event,
+    Leaderboard,
+    Match,
+    StageGroups,
+    Stages,
+    TournamentTeam,
+    TournamentTeamMatchStats,
+)
 
 
 class ComputeTeamPointsTests(SimpleTestCase):
@@ -95,3 +111,138 @@ class NormalizePlacementPointsTests(SimpleTestCase):
         # fail loud on a structurally wrong payload (e.g. a list) instead of silently defaulting
         with self.assertRaises(ValueError):
             scoring.normalize_placement_points([1, 2, 3])
+
+
+class EnterTeamMatchResultManualDBTests(TestCase):
+    """End-to-end DB regression for the manual team-result entry endpoint.
+
+    Task 2 routes enter_team_match_result_manual's point calc through
+    scoring.compute_team_points. The pure ComputeTeamPointsTests above pin the
+    formula in isolation; this one proves the *endpoint* still stores the exact
+    pre-refactor numbers through the full request → transaction → DB write path
+    (the SimpleTestCase suite never touches the DB or the view, so a wiring bug
+    in the view — wrong column, swapped argument — would slip past it).
+
+    Canonical case from the plan: placement 1 (=12 placement points) + 8 kills
+    at kill_point 1 => total_points 20.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+        # ── Admin user + a live session token (validate_token reads SessionToken). ──
+        self.admin = User.objects.create(
+            username="score_admin",
+            email="score_admin@example.com",
+            full_name="Score Admin",
+            role="admin",  # _is_event_admin short-circuits to True, so the org path is skipped
+            password="x",  # not used: we forge the session token directly, no login round-trip
+        )
+        self.token = SessionToken.objects.create(
+            user=self.admin,
+            token="score-admin-token-1234567890",
+            expires_at=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=1),
+        )
+
+        # ── A minimal squad event → stage → group → leaderboard → match. ──
+        today = datetime.date.today()
+        self.event = Event.objects.create(
+            competition_type="tournament",
+            participant_type="squad",  # team endpoint rejects participant_type == "solo"
+            event_type="internal",
+            max_teams_or_players=16,
+            event_name="Scoring Regression Cup",
+            event_mode="virtual",
+            start_date=today,
+            end_date=today,
+            registration_open_date=today,
+            registration_end_date=today,
+            prizepool="0",
+            event_rules="rules",
+            event_status="ongoing",
+            registration_link="https://example.com/reg",
+            number_of_stages=1,
+            creator=self.admin,
+        )
+        self.stage = Stages.objects.create(
+            event=self.event,
+            stage_name="Group Stage",
+            start_date=today,
+            end_date=today,
+            number_of_groups=1,
+            stage_format="br - normal",
+            teams_qualifying_from_stage=1,
+        )
+        self.group = StageGroups.objects.create(
+            stage=self.stage,
+            group_name="Group A",
+            playing_date=today,
+            playing_time=datetime.time(18, 0),
+            teams_qualifying=1,
+            match_count=1,
+        )
+        self.leaderboard = Leaderboard.objects.create(
+            leaderboard_name="Group A LB",
+            event=self.event,
+            stage=self.stage,
+            group=self.group,
+            creator=self.admin,
+            placement_points={"1": 12, "2": 9, "3": 8},
+            kill_point=1.0,
+            leaderboard_method="manual",
+        )
+        # The endpoint reads the per-match scoring config from match.scoring_settings,
+        # so seed it with the canonical placement table + kill_point.
+        self.match = Match.objects.create(
+            leaderboard=self.leaderboard,
+            group=self.group,
+            match_number=1,
+            match_map="bermuda",
+            scoring_settings={"placement_points": {"1": 12, "2": 9, "3": 8}, "kill_point": 1},
+        )
+
+        # ── One tournament team to receive the result. ──
+        self.team = Team.objects.create(
+            team_name="Alpha",
+            team_tag="ALP",
+            join_settings="open",
+            team_creator=self.admin,
+            team_owner=self.admin,
+            country="NG",
+        )
+        self.tt = TournamentTeam.objects.create(
+            event=self.event,
+            team=self.team,
+            registered_by=self.admin,
+        )
+
+    def test_manual_team_entry_stores_canonical_total(self):
+        # Arrange: placement 1 + 8 kills (kill_point 1) => 12 + 8 = 20.
+        payload = {
+            "match_id": self.match.match_id,
+            "results": json.dumps([
+                {
+                    "tournament_team_id": self.tt.tournament_team_id,
+                    "placement": 1,
+                    "played": True,
+                    "players": [{"kills": 8, "damage": 0, "assists": 0, "played": True}],
+                }
+            ]),
+        }
+
+        # Act
+        resp = self.client.post(
+            "/events/enter-team-match-result-manual/",
+            data=payload,
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+
+        # Assert: request succeeded and the stored row carries the pre-refactor numbers.
+        self.assertEqual(resp.status_code, 200, resp.content)
+        stat = TournamentTeamMatchStats.objects.get(
+            match=self.match, tournament_team=self.tt
+        )
+        self.assertEqual(stat.placement_points, 12)
+        self.assertEqual(stat.kill_points, 8)
+        self.assertEqual(stat.total_points, 20)

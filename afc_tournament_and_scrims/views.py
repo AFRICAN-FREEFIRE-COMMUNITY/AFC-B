@@ -11955,10 +11955,21 @@ def edit_solo_match_result(request):
             if "penalty_points" in r:
                 stats.penalty_points = int(r["penalty_points"] or 0)
 
-            # recalc points
-            stats.placement_points = placement_points.get(stats.placement, 0)
-            stats.kill_points = int(stats.kills * kill_point)
-            stats.total_points = stats.placement_points + stats.kill_points + stats.bonus_points - stats.penalty_points
+            # Recalc points through the shared solo formula so this edit path can never
+            # drift from manual/OCR solo entry (Task 2 — route EVERY live point-calc site
+            # through scoring.compute_*). This row is always being re-scored, so played=True.
+            #
+            # NOTE: this endpoint (unlike the manual-entry solo path) folds bonus/penalty
+            # into total_points. compute_solo_points intentionally returns placement+kills
+            # only, so we add bonus - penalty back on top here to preserve the exact stored
+            # total this endpoint produced before the refactor.
+            pts = scoring_lib.compute_solo_points(
+                placement_points=placement_points, kill_point=kill_point,
+                placement=stats.placement, kills=stats.kills, played=True,
+            )
+            stats.placement_points = pts["placement_points"]
+            stats.kill_points = pts["kill_points"]
+            stats.total_points = pts["total_points"] + stats.bonus_points - stats.penalty_points
 
             stats.save()
 
