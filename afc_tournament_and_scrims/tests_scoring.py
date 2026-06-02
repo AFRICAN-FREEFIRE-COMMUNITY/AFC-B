@@ -63,15 +63,23 @@ class ComputeTeamPointsTests(SimpleTestCase):
         # 9 + 3 + (4*0.5=2) + (3000/1000*2=6) = 20 -> int
         self.assertEqual(r["total_points"], 20)
 
-    def test_team_not_played_zeroes_real_input(self):
-        # Stronger than "0 in -> 0 out": feed a winning placement + kills with played=False
-        # and prove the guard zeroes everything (no placement_points, no kill_points leak through).
+    def test_team_not_played_is_zero_minus_penalty(self):
+        # Pre-refactor parity: a not-played team scores no placement points (played=False
+        # zeroes placement_pts), and the live manual/edit callers pre-zero kills/damage/assists
+        # (played_players is filtered to played==True), so those terms are 0 too. But bonus/penalty
+        # still fold into the total — the live paths read bonus_points/penalty_points off the
+        # payload even for a not-played team and stored total_points = bonus - penalty. Mirror that
+        # call shape (zeroed kills/damage/assists, a real penalty) and prove (a) a winning placement
+        # does not leak through, (b) the total is exactly bonus - penalty so it reconciles with the
+        # stored bonus_points/penalty_points columns. This is the original Task-1 parity test
+        # (named test_team_not_played_is_zero_minus_penalty), restored after a guard regression.
         r = scoring.compute_team_points(
             placement_points=self.pp, kill_point=1.0, points_per_assist=0.0,
-            points_per_1000_damage=0.0, placement=1, kills=5, damage=0, assists=0,
-            bonus=0, penalty=0, played=False,
+            points_per_1000_damage=0.0, placement=1, kills=0, damage=0, assists=0,
+            bonus=0, penalty=3, played=False,
         )
-        self.assertEqual(r, {"placement_points": 0, "kill_points": 0, "total_points": 0})
+        # placement_pts=0 (not played) + kill_pts=0 + bonus 0 - penalty 3 => total = -3
+        self.assertEqual(r, {"placement_points": 0, "kill_points": 0, "total_points": -3})
 
 
 class ComputeSoloPointsTests(SimpleTestCase):

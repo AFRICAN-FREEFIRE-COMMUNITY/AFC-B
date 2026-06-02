@@ -37,15 +37,17 @@ def compute_team_points(*, placement_points, kill_point, points_per_assist,
                         bonus, penalty, played):
     """Per-match TEAM points. `placement_points` is an int->int dict (already normalized);
     kills/damage/assists are already summed across played players. Returns the three
-    integer columns stored on TournamentTeamMatchStats. Port of views.py:12596-12611.
+    integer columns stored on TournamentTeamMatchStats. Verbatim port of views.py:12596-12611.
 
-    A not-played team scores nothing. The live callers pre-zero kills/damage/assists for
-    not-played teams (played_players is filtered to played==True), so in practice played=False
-    always arrives with zeroed inputs; we still short-circuit here so the function's contract
-    is correct on its own (and matches compute_solo_points, which already guards kills)."""
-    if not played:
-        return {"placement_points": 0, "kill_points": 0, "total_points": 0}
-    placement_pts = placement_points.get(placement, 0)
+    Not-played teams: `played=False` zeroes only the placement_points (matching the live
+    callers, which set `placement_pts = ... if team_played else 0`). The live callers also
+    pre-zero kills/damage/assists for not-played teams (played_players is filtered to
+    played==True), so those terms fall away too. Bonus/penalty are NOT zeroed: the original
+    manual/edit paths stored `total_points = bonus - penalty` for a not-played team that still
+    carried a penalty/bonus, so the total reconciles with the bonus_points/penalty_points
+    columns. We must preserve that here (no early-return short-circuit) — this is a
+    behavior-preserving refactor."""
+    placement_pts = placement_points.get(placement, 0) if played else 0
     kill_pts = kills * kill_point
     assist_pts = assists * points_per_assist
     damage_pts = (damage / 1000) * points_per_1000_damage
