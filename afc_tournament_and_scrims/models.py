@@ -83,6 +83,10 @@ class Event(models.Model):
     # org re-homes its events to AFC instead of destroying tournaments/registrations/results.
     organization = models.ForeignKey("afc_organizers.Organization", null=True, blank=True,
                                      on_delete=models.SET_NULL, related_name="events")
+    # organizers integrity gate: an org-owned event's results only count toward the official
+    # afc_rankings scores once an AFC admin verifies it. Native AFC events (organization=None)
+    # are unaffected — aggregation only excludes org events where this is still False.
+    rankings_verified = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)
     is_draft = models.BooleanField(default=True)
     registration_restriction = models.CharField(

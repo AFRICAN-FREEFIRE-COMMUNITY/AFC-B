@@ -15,6 +15,12 @@ from afc_auth.views import assign_discord_role, check_discord_membership, check_
 from afc_team.models import Team, TeamMembers
 from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
+# organizers: org-scope permission helpers + the Organization tenant model. These let org
+# members (owner / sub_organizer) manage their OWN org's events while AFC admins keep full
+# oversight. All gating goes through org_can / org_can_event so the owner/admin-bypass rules
+# stay in afc_organizers/permissions.py (single source of truth).
+from afc_organizers.permissions import org_can, org_can_event, is_platform_org_admin
+from afc_organizers.models import Organization
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -39,6 +45,20 @@ def paginate_queryset(request, queryset, serializer_func):
     result_page = paginator.paginate_queryset(queryset, request)
     serialized = [serializer_func(obj) for obj in result_page]
     return paginator.get_paginated_response(serialized)
+
+
+# ── event-admin check (AFC platform side) ──
+# Single helper replacing the duplicated inline admin checks scattered across the event
+# endpoints. True for the core staff roles OR users carrying the event_admin / head_admin
+# granular role. Org-scope permissions (organizer owners / sub_organizers) are handled
+# separately via org_can / org_can_event — this only answers "is this an AFC event admin?".
+def _is_event_admin(user):
+    # NOTE: UserRoles has no `role_name` field — the granular role name lives on the related
+    # Roles row, so the correct lookup is `role__role_name__in` (the older inline gates in this
+    # file use the buggy `role_name__in`, which FieldErrors for a non-staff event_admin; this
+    # helper uses the correct path so org/event-admin checks actually work).
+    return user.role in ["admin", "moderator", "support"] or \
+        user.userroles.filter(role__role_name__in=["event_admin", "head_admin"]).exists()
 
 
 from celery import shared_task
@@ -104,7 +124,12 @@ def update_event_and_stage_statuses():
 
 @api_view(["GET"])
 def get_all_events(request):
-    events = Event.objects.filter(is_draft=False)
+    # select_related("organization") avoids an N+1 when we read each event's org name/slug.
+    events = Event.objects.filter(is_draft=False).select_related("organization")
+    # optional org filter: when present, scope the list to one organization's events.
+    organization_id = request.GET.get("organization_id")
+    if organization_id:
+        events = events.filter(organization_id=organization_id)
     event_list = []
     for event in events:
         event_list.append({
@@ -121,6 +146,11 @@ def get_all_events(request):
             "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
             "slug": event.slug,
             "is_public": event.is_public,
+            # organizer context: null for native AFC events, populated for org-owned events.
+            "organization_id": event.organization_id,
+            "organization_name": event.organization.name if event.organization_id else None,
+            "organization_slug": event.organization.slug if event.organization_id else None,
+            "rankings_verified": event.rankings_verified,
         })
     return Response({"events": event_list}, status=status.HTTP_200_OK)
 
@@ -130,7 +160,12 @@ def get_all_events_paginated(request):
     limit = int(request.GET.get("limit", 10))
     offset = int(request.GET.get("offset", 0))
 
-    events = Event.objects.filter(is_draft=False).order_by("-start_date")
+    # select_related("organization") avoids an N+1 when we read each event's org name/slug.
+    events = Event.objects.filter(is_draft=False).select_related("organization").order_by("-start_date")
+    # optional org filter: when present, scope the list to one organization's events.
+    organization_id = request.GET.get("organization_id")
+    if organization_id:
+        events = events.filter(organization_id=organization_id)
     total = events.count()
 
     # slice manually (faster than Paginator for large tables)
@@ -147,7 +182,12 @@ def get_all_events_paginated(request):
         "prizepool": event.prizepool,
         "prizepool_cash_value": event.prizepool_cash_value,
         "prize_distribution": event.prize_distribution,
-        "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(), 
+        "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
+        # organizer context: null for native AFC events, populated for org-owned events.
+        "organization_id": event.organization_id,
+        "organization_name": event.organization.name if event.organization_id else None,
+        "organization_slug": event.organization.slug if event.organization_id else None,
+        "rankings_verified": event.rankings_verified,
     } for event in paginated]
 
     return Response({
@@ -313,9 +353,21 @@ def create_event(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
-    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(
-        role_name__in=["event_admin", "head_admin"]
-    ).exists():
+    # ── org-aware permission gate ──
+    # AFC event admins can always create native (org=None) events. If an organization_id is
+    # supplied, the request is an organizer creating an event under THEIR org — allow it only
+    # when the user is an AFC admin OR has can_create_events on that org (org_can also lets
+    # owners + platform admins through). No org_id + not an AFC admin → blocked.
+    is_admin_creator = _is_event_admin(user)
+    org = None
+    organization_id = request.data.get("organization_id")
+    if organization_id:
+        org = Organization.objects.filter(organization_id=organization_id).first()
+        if not org:
+            return Response({"message": "Organization not found."}, status=404)
+        if not (is_admin_creator or org_can(user, "can_create_events", org)):
+            return Response({"message": "You do not have permission to create events for this organization."}, status=403)
+    elif not is_admin_creator:
         return Response({"message": "You do not have permission to create an event."}, status=403)
 
     # ---------------- REQUIRED FIELDS ----------------
@@ -467,6 +519,7 @@ def create_event(request):
             uploaded_rules=request.FILES.get("uploaded_rules"),
             is_draft=is_draft,
             creator = user,
+            organization=org,  # owning org for organizer-created events; None for native AFC events
 
             # ✅ restriction fields
             registration_restriction=registration_restriction,
@@ -749,9 +802,8 @@ def delete_event(request):
             status=status.HTTP_401_UNAUTHORIZED
         )
 
-    # Permission check
-    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
-        return Response({"message": "You do not have permission to delete an event."}, status=403)
+    # Permission check (org-aware, resolved AFTER we have the event below)
+    is_admin = _is_event_admin(user)
 
     event_id = request.data.get("event_id")
     if not event_id:
@@ -761,7 +813,13 @@ def delete_event(request):
         event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
         return Response({"message": "Event not found."}, status=404)
-    
+
+    # AFC admins may delete any event; an org member needs can_edit_events on the event's
+    # owning org. org_can_event treats native (org=None) events as admin-only, so org
+    # members can never delete AFC events.
+    if not is_admin and not org_can_event(user, "can_edit_events", event):
+        return Response({"message": "You do not have permission to modify this event."}, status=403)
+
     AdminHistory.objects.create(
         admin_user=user,
         action="delete_event",
@@ -1229,10 +1287,8 @@ def edit_event(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
-    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(
-        role_name__in=["event_admin", "head_admin"]
-    ).exists():
-        return Response({"message": "You do not have permission to edit an event."}, status=403)
+    # Permission check (org-aware, resolved AFTER we have the event below)
+    is_admin = _is_event_admin(user)
 
     event_id = request.data.get("event_id")
     if not event_id:
@@ -1241,6 +1297,12 @@ def edit_event(request):
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
         return Response({"message": "Event not found."}, status=404)
+
+    # AFC admins may edit any event; an org member needs can_edit_events on the event's
+    # owning org. org_can_event treats native (org=None) events as admin-only, so org
+    # members can never edit AFC events.
+    if not is_admin and not org_can_event(user, "can_edit_events", event):
+        return Response({"message": "You do not have permission to modify this event."}, status=403)
 
     old_snapshot = snapshot_event(event)
 
@@ -4240,9 +4302,24 @@ from django.shortcuts import get_object_or_404
 
 @api_view(["POST"])
 def confirm_player(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
     member_id = request.data.get("member_id")
     member = get_object_or_404(TournamentTeamMember, id=member_id)
+    event = member.tournament_team.event
+
+    # ── registration gate ──
+    # AFC admins manage registrations for any event; org members need
+    # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
 
     # جلوگیری از تکرار
     if member.status == "active":
@@ -4487,10 +4564,26 @@ from django.shortcuts import get_object_or_404
 
 @api_view(["POST"])
 def reject_player(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
     member_id = request.data.get("member_id")
     reason = request.data.get("reason", "No reason provided")
 
     member = get_object_or_404(TournamentTeamMember, id=member_id)
+    event = member.tournament_team.event
+
+    # ── registration gate ──
+    # AFC admins manage registrations for any event; org members need
+    # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
 
     # Prevent duplicate rejection
     if member.status == "rejected":
@@ -13736,8 +13829,6 @@ def disqualify_player(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
 
     # -------- INPUT --------
     event_id = request.data.get("event_id")
@@ -13751,6 +13842,13 @@ def disqualify_player(request):
         return Response({"message": "registered_competitor_id or user_id is required."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+
+    # ── registration gate (org-aware, resolved after we have the event) ──
+    # AFC admins manage registrations for any event; org members need
+    # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+
     if event.participant_type != "solo":
         return Response({"message": "This endpoint is for SOLO events only."}, status=400)
 
@@ -13818,8 +13916,6 @@ def disqualify_team(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
 
     # -------- INPUT --------
     event_id = request.data.get("event_id")
@@ -13833,6 +13929,13 @@ def disqualify_team(request):
         return Response({"message": "tournament_team_id or team_id is required."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+
+    # ── registration gate (org-aware, resolved after we have the event) ──
+    # AFC admins manage registrations for any event; org members need
+    # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for TEAM events only (duo/squad)."}, status=400)
 
@@ -16686,5 +16789,39 @@ def export_participants(request):
             writer.writeheader()
             writer.writerows(rows)
         return response
+
+
+# ── verify an event for rankings integrity ──
+# Toggles Event.rankings_verified. This is the AFC oversight gate that decides whether an
+# (organizer-run) event counts toward afc_rankings, so it is restricted to PLATFORM org
+# admins only (head_admin / organizer_admin) via is_platform_org_admin — not the broader
+# _is_event_admin set. AFC keeps the final say on what feeds the ranking system.
+@api_view(["POST"])
+def verify_event(request):
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # rankings-integrity decision → platform org admins only.
+    if not is_platform_org_admin(user):
+        return Response({"message": "You do not have permission to verify events."}, status=403)
+
+    event = Event.objects.filter(event_id=request.data.get("event_id")).first()
+    if not event:
+        return Response({"message": "Event not found."}, status=404)
+
+    # default to verifying when the flag is omitted; accept an explicit false to un-verify.
+    event.rankings_verified = bool(request.data.get("verified", True))
+    event.save(update_fields=["rankings_verified"])
+
+    return Response({
+        "message": "Event verification updated.",
+        "event_id": event.event_id,
+        "rankings_verified": event.rankings_verified,
+    }, status=200)
 
     return Response({"message": "Image deleted successfully."})
