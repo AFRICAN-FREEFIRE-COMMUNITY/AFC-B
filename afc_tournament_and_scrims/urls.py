@@ -102,4 +102,6 @@ urlpatterns = [
     path("complete-event/", complete_event, name="complete_event"),
     path("broadcast-announcement/", broadcast_announcement, name="broadcast_announcement"),
     path("export-participants/", export_participants, name="export_participants"),
+    # organizers: toggle Event.rankings_verified (platform org admins only).
+    path("verify-event/", verify_event, name="verify_event"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

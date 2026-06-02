@@ -94,6 +94,18 @@ def _excluded_event_ids(event_ids, *, team=None, player=None):
     return set(qs.values_list("event_id", flat=True))
 
 
+def _unverified_org_event_ids(event_ids):
+    """Organizer integrity gate: org-owned events whose results have NOT been verified by an
+    AFC admin (Event.rankings_verified is False) do not count toward the official rankings.
+    Native AFC events (organization is null) are never returned here, so they always count."""
+    from afc_tournament_and_scrims.models import Event
+    return set(
+        Event.objects.filter(
+            event_id__in=event_ids, organization__isnull=False, rankings_verified=False
+        ).values_list("event_id", flat=True)
+    )
+
+
 # ───────────────────────── result containers ─────────────────────────
 @dataclass
 class TeamAgg:
@@ -166,6 +178,7 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
     event_ids = list(tour_events.keys())
     controls = _counting_controls(event_ids)
     excluded = _excluded_event_ids(event_ids, team=team)
+    excluded |= _unverified_org_event_ids(event_ids)  # unverified org events don't count
 
     tournaments = []
     win_count = 0
@@ -271,6 +284,7 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
     event_ids = list(tour.keys())
     controls = _counting_controls(event_ids)
     excluded = _excluded_event_ids(event_ids, player=player)
+    excluded |= _unverified_org_event_ids(event_ids)  # unverified org events don't count
 
     tournaments = []
     mvp_total = finals_total = kill_total = 0

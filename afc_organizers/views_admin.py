@@ -288,6 +288,9 @@ def admin_get_organization(request, slug):
             "event_name": event.event_name,
             "status": event.event_status,
             "is_draft": event.is_draft,
+            # rankings integrity: whether AFC has verified this org event's results to
+            # count toward the official rankings (drives the Verify toggle on the Events tab).
+            "rankings_verified": event.rankings_verified,
         })
 
     # Full org profile (the detail Profile tab edits description/socials, so extend the
