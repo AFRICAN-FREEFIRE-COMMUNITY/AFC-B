@@ -346,6 +346,50 @@ def _as_list(val):
     v = _maybe_json(val, default=[])
     return v if isinstance(v, list) else []
 
+
+def _validate_scoring_modes(stages_data):
+    """Validate the per-stage scoring-mode config (Champion-Point / Point-Rush) for a
+    create/edit payload. `stages_data` is the submit-ordered list of stage dicts; the
+    Point-Rush target is referenced by `point_rush_target_index` (0-based position in this
+    same list). Returns an error message string on the first problem, or None if all good.
+
+    Rules (scoring-modes sub-project A):
+      • Champion-Point on  → champion_point_threshold must be a positive int.
+      • Point-Rush on      → point_rush_reward must be a non-empty mapping AND a
+                             point_rush_target_index must be supplied.
+      • A Point-Rush stage may not target itself (carry-over only flows to a LATER stage).
+    Callers turn the returned message into a 400 Response so no partial event is written."""
+    n = len(stages_data)
+    for idx, stage_data in enumerate(stages_data):
+        # ── Champion-Point: needs a threshold > 0 ──
+        if stage_data.get("champion_point_enabled"):
+            threshold = stage_data.get("champion_point_threshold")
+            try:
+                threshold = int(threshold) if threshold not in (None, "") else 0
+            except (TypeError, ValueError):
+                threshold = 0
+            if threshold <= 0:
+                return "Champion-Point stages need a threshold > 0."
+
+        # ── Point-Rush: needs a reward table AND a target stage index ──
+        if stage_data.get("point_rush_enabled"):
+            reward = stage_data.get("point_rush_reward")
+            if not isinstance(reward, dict) or not reward:
+                return "Point-Rush stages need a non-empty reward table."
+            tgt_idx = stage_data.get("point_rush_target_index")
+            if tgt_idx is None or tgt_idx == "":
+                return "Point-Rush stages need a target stage to carry over into."
+            try:
+                tgt_idx = int(tgt_idx)
+            except (TypeError, ValueError):
+                return "Point-Rush target stage index must be a number."
+            if tgt_idx == idx:
+                return "A Point-Rush stage cannot carry over into itself."
+            if not (0 <= tgt_idx < n):
+                return "Point-Rush target stage index is out of range."
+    return None
+
+
 @api_view(["POST"])
 def create_event(request):
     # ---------------- AUTH ----------------
@@ -491,6 +535,12 @@ def create_event(request):
     # ---------------- STAGES DATA ----------------
     stages_data = _as_list(request.data.get("stages"))
 
+    # Validate the per-stage scoring-mode config BEFORE the transaction so a bad payload
+    # fails fast with a 400 and never writes a half-built event.
+    scoring_mode_error = _validate_scoring_modes(stages_data)
+    if scoring_mode_error:
+        return Response({"message": scoring_mode_error}, status=400)
+
     is_draft = request.data.get("is_draft", True)
     if isinstance(is_draft, str):
         is_draft = is_draft.lower() in ("1", "true", "yes")
@@ -562,6 +612,10 @@ def create_event(request):
             )
 
         # stages + groups + matches
+        # Track every created Stages row in submit order so we can wire Point-Rush
+        # carry-over targets in a SECOND PASS below (a stage may point at a LATER stage
+        # that does not exist yet while we are still building this one).
+        created_stages = []
         for stage_data in stages_data:
             stage = Stages.objects.create(
                 event=event,
@@ -574,8 +628,15 @@ def create_event(request):
                 stage_discord_role_id=stage_data.get("stage_discord_role_id"),
                 prizepool=stage_data.get("prizepool"),
                 prizepool_cash_value=stage_data.get("prizepool_cash_value") if stage_data.get("prizepool_cash_value") else 0,
-                prize_distribution=stage_data.get("prize_distribution", {})
+                prize_distribution=stage_data.get("prize_distribution", {}),
+                # ── Scoring-mode config (scoring-modes sub-project A). The 4 scalars store
+                # directly; point_rush_target_stage is resolved in the second pass below. ──
+                champion_point_enabled=bool(stage_data.get("champion_point_enabled", False)),
+                champion_point_threshold=stage_data.get("champion_point_threshold") or None,
+                point_rush_enabled=bool(stage_data.get("point_rush_enabled", False)),
+                point_rush_reward=stage_data.get("point_rush_reward") or {},
             )
+            created_stages.append(stage)
 
             for group_data in stage_data.get("groups", []):
                 group = StageGroups.objects.create(
@@ -620,6 +681,19 @@ def create_event(request):
                     ))
                 if matches_to_create:
                     Match.objects.bulk_create(matches_to_create, batch_size=500)
+
+        # ── Second pass: wire Point-Rush carry-over targets now that every Stages row
+        # exists. The FE sends point_rush_target_index = the 0-based position of the target
+        # stage in the submitted `stages` array, so we zip created_stages (built in submit
+        # order above) against stages_data. (Self-target / out-of-range were already rejected
+        # by _validate_scoring_modes before the transaction.) ──
+        for src_stage, stage_data in zip(created_stages, stages_data):
+            tgt_idx = stage_data.get("point_rush_target_index")
+            if src_stage.point_rush_enabled and tgt_idx is not None and tgt_idx != "":
+                tgt_idx = int(tgt_idx)
+                if 0 <= tgt_idx < len(created_stages):
+                    src_stage.point_rush_target_stage = created_stages[tgt_idx]
+                    src_stage.save(update_fields=["point_rush_target_stage"])
 
         AdminHistory.objects.create(
             admin_user=user,
@@ -1524,6 +1598,14 @@ def edit_event(request):
 
     delete_missing = str(request.data.get("delete_missing", "false")).lower() in ("1", "true", "yes")
 
+    # Validate the per-stage scoring-mode config BEFORE the transaction opens so a bad
+    # payload fails fast with a 400 and never partially mutates the event (returning a
+    # non-2xx INSIDE transaction.atomic would still COMMIT, so the guard must live here).
+    if "stages" in request.data:
+        scoring_mode_error = _validate_scoring_modes(as_list(request.data.get("stages")))
+        if scoring_mode_error:
+            return Response({"message": scoring_mode_error}, status=400)
+
     with transaction.atomic():
         event.save()
 
@@ -1566,6 +1648,9 @@ def edit_event(request):
 
             kept_stage_ids = []
             kept_group_ids = []
+            # Track upserted Stages in submit order for the Point-Rush target second pass
+            # below (a stage may target a LATER stage not yet upserted while we process this one).
+            upserted_stages = []
 
             for stage_data in stages_data:
                 stage_id = stage_data.get("stage_id")
@@ -1584,6 +1669,12 @@ def edit_event(request):
                     # if prizepool_cash_value is provided, convert to float, otherwise set to None to avoid overwriting existing value
                     "prizepool_cash_value": float(stage_data.get("prizepool_cash_value")) if stage_data.get("prizepool_cash_value") else None,
                     "prize_distribution": stage_data.get("prize_distribution", {}),
+                    # ── Scoring-mode config (scoring-modes sub-project A). 4 scalars upsert
+                    # directly; point_rush_target_stage is resolved in the second pass below. ──
+                    "champion_point_enabled": bool(stage_data.get("champion_point_enabled", False)),
+                    "champion_point_threshold": stage_data.get("champion_point_threshold") or None,
+                    "point_rush_enabled": bool(stage_data.get("point_rush_enabled", False)),
+                    "point_rush_reward": stage_data.get("point_rush_reward") or {},
                 }
 
                 if stage_id:
@@ -1595,6 +1686,7 @@ def edit_event(request):
                     stage = Stages.objects.create(event=event, **stage_defaults)
 
                 kept_stage_ids.append(stage.stage_id)
+                upserted_stages.append(stage)
 
                 for group_data in stage_data.get("groups", []):
                     group_id = group_data.get("group_id")
@@ -1689,6 +1781,23 @@ def edit_event(request):
                     Match.objects.filter(group=group)\
                         .exclude(match_number__in=kept_match_numbers)\
                         .delete()
+
+            # ── Second pass: wire Point-Rush carry-over targets now that every stage is
+            # upserted. point_rush_target_index is the 0-based position of the target stage
+            # in the submitted `stages` array, which maps 1:1 to upserted_stages (built in
+            # submit order above). We always set/clear the link so an edit that turns the
+            # toggle off, or repoints it, is reflected (None clears a stale target). ──
+            for src_stage, stage_data in zip(upserted_stages, stages_data):
+                target_stage = None
+                if src_stage.point_rush_enabled:
+                    tgt_idx = stage_data.get("point_rush_target_index")
+                    if tgt_idx is not None and tgt_idx != "":
+                        tgt_idx = int(tgt_idx)
+                        if 0 <= tgt_idx < len(upserted_stages):
+                            target_stage = upserted_stages[tgt_idx]
+                if src_stage.point_rush_target_stage_id != (target_stage.stage_id if target_stage else None):
+                    src_stage.point_rush_target_stage = target_stage
+                    src_stage.save(update_fields=["point_rush_target_stage"])
 
             if delete_missing:
                 StageGroups.objects.filter(stage__event=event).exclude(group_id__in=kept_group_ids).delete()
@@ -2712,6 +2821,14 @@ def get_event_details(request):
             "prizepool_cash_value": stage.prizepool_cash_value,
             "prize_distribution": stage.prize_distribution,
             "stage_format": stage.stage_format,
+            # ── Scoring-mode config echo so the edit form can re-hydrate the toggles.
+            # point_rush_target_stage_id is the stage_id of the target; the FE maps it
+            # back to a 0-based index when populating point_rush_target_index. ──
+            "champion_point_enabled": stage.champion_point_enabled,
+            "champion_point_threshold": stage.champion_point_threshold,
+            "point_rush_enabled": stage.point_rush_enabled,
+            "point_rush_reward": stage.point_rush_reward or {},
+            "point_rush_target_stage_id": stage.point_rush_target_stage_id,
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
             "groups": groups_payload,

@@ -161,8 +161,9 @@ class Stages(models.Model):
     STAGE_FORMAT_CHOICES = [
         ("br - normal", "Battle Royale - Normal"),
         ("br - roundrobin", "Battle Royale - Knockout"),
-        ("br - point rush", "Battle Royale - Point Rush"),
-        ("br - champion rush", "Battle Royale - Champion Rush"),
+        # NOTE: "br - point rush" / "br - champion rush" used to be scoring *formats* here.
+        # They are now per-stage TOGGLES (champion_point_enabled / point_rush_enabled below),
+        # combinable with any bracket format, so they are no longer format choices.
         ("cs - normal", "Clash Squad - Normal"),
         ("cs - league", "Clash Squad - League"),
         ("cs - knockout", "Clash Squad - Knockout"),
@@ -191,6 +192,24 @@ class Stages(models.Model):
     prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     prize_distribution = models.JSONField(default=dict,null=True, blank=True) # {"1": "50%", "2": "30%", "3": "20%"}
     is_finals_stage = models.BooleanField(default=False)  # rankings §4.5/§6.1 — admin marks the finals stage
+
+    # ── Scoring-mode config (scoring-modes sub-project A). Both features are independent
+    # and combinable per stage. They are computed ON READ in the standings builder
+    # (nothing here persists derived points), matching how standings already work, so an
+    # admin edit auto-corrects the leaderboard. See WEBSITE/tasks/scoring-modes-design.md. ──
+    # Champion-Point: a stage is decided by a match-point WIN rule (first competitor to
+    # Booyah while already at/over the threshold) rather than by summed points.
+    champion_point_enabled = models.BooleanField(default=False)
+    champion_point_threshold = models.PositiveIntegerField(null=True, blank=True)  # required when enabled
+    # Point-Rush: this stage's per-lobby standings hand out a placement→bonus reward that
+    # carries over into a LATER stage (point_rush_target_stage). on_delete=SET_NULL so
+    # deleting the target stage just nulls the link, it does not cascade to the source.
+    point_rush_enabled = models.BooleanField(default=False)
+    point_rush_reward = models.JSONField(default=dict, blank=True)  # {"1":10,"2":7,...} placement→bonus
+    point_rush_target_stage = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="point_rush_sources",  # target.point_rush_sources -> stages that feed it
+    )
 
 class StageGroups(models.Model):
     group_id = models.AutoField(primary_key=True)
