@@ -439,3 +439,55 @@ class CreateEventScoringModesDBTests(TestCase):
         )
         self.assertEqual(resp.status_code, 400, resp.content)
         self.assertFalse(Event.objects.filter(event_name="Self Target Cup").exists())
+
+
+# ── Phase 2 (Task 4): the two PURE on-read helpers — no DB, no Django ORM. ──
+# These pin the Champion-Point win rule and the Point-Rush per-lobby reward mapping in
+# isolation, so the standings builder (Task 5) can lean on them without re-deriving the
+# logic. SimpleTestCase: they touch no model, so the suite half that exercises them needs
+# no MySQL.
+
+
+class ChampionForGroupTests(SimpleTestCase):
+    def _m(self, rows):
+        # rows: list of (id, placement, points) for one match, in any order
+        return {"rows": [{"id": i, "placement": p, "points": pts} for (i, p, pts) in rows]}
+
+    def test_users_worked_example(self):
+        # Pre-state: A=91, B=102, C=81 (all >= 80). Next match C booyahs -> C champion,
+        # even though B has more points.
+        m_pre = self._m([("A", 2, 91), ("B", 1, 102), ("C", 3, 81)])  # seeds running totals
+        m_decide = self._m([("C", 1, 13), ("A", 2, 9), ("B", 3, 8)])  # C booyahs while >= 80
+        self.assertEqual(scoring.champion_for_group([m_pre, m_decide], threshold=80), "C")
+
+    def test_booyah_that_crosses_does_not_win(self):
+        # A starts at 75 (below), booyahs to 88 in match1 -> NOT champion (crossed during it).
+        # A booyahs again in match2 (now already >= 80 entering) -> champion.
+        m1 = self._m([("A", 1, 13), ("B", 2, 9)])              # A: 0->13 ... below threshold pre-match
+        # to make pre-match A=75 we seed via carry_over instead:
+        champ = scoring.champion_for_group([m1], threshold=80, carry_over={"A": 75})
+        self.assertIsNone(champ)  # pre-match A=75 < 80, so the crossing booyah doesn't win
+        m2 = self._m([("A", 1, 5), ("B", 2, 9)])               # entering m2 A=88 >= 80, booyah -> win
+        self.assertEqual(scoring.champion_for_group([m1, m2], threshold=80, carry_over={"A": 75}), "A")
+
+    def test_carry_over_head_start_can_win_match_one(self):
+        # carry_over alone >= threshold -> on match point before match 1; match-1 booyah wins.
+        m1 = self._m([("A", 1, 5), ("B", 2, 9)])
+        self.assertEqual(scoring.champion_for_group([m1], threshold=80, carry_over={"A": 80}), "A")
+
+    def test_no_champion_returns_none(self):
+        m1 = self._m([("A", 1, 12), ("B", 2, 9)])
+        self.assertIsNone(scoring.champion_for_group([m1], threshold=80))
+
+
+class RewardsFromStandingsTests(SimpleTestCase):
+    def test_maps_reward_table_onto_ranked_ids(self):
+        ranked = ["T1", "T2", "T3", "T4", "T5", "T6"]
+        reward = {"1": 10, "2": 7, "3": 5}
+        self.assertEqual(
+            scoring.rewards_from_standings(ranked, reward),
+            {"T1": 10, "T2": 7, "T3": 5},
+        )
+
+    def test_skips_placements_beyond_field_size(self):
+        self.assertEqual(scoring.rewards_from_standings(["T1"], {"1": 10, "2": 7}), {"T1": 10})
