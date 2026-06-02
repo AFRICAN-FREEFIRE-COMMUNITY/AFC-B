@@ -1,10 +1,13 @@
 """
 Recalculation + persistence layer.
 
-Calls the aggregation adapter, writes engine results into the score models, and
-re-ranks the affected period (§17.3) with the spec tiebreakers (§5.4 / §6.4).
-The Celery tasks (tasks.py) are thin wrappers around these; they can also be
-called synchronously (seeding / tests / the admin recalc trigger).
+Entered three ways: (1) the tasks.py Celery wrappers (real-time, fired from
+signals.py), (2) the bulk recalc helpers below (seeding / admin), (3) the admin
+recalc endpoints. Reads the engine output from aggregation.compute_*, writes it
+into the score models, then re-ranks the affected period (§17.3) with the spec
+tiebreakers (§5.4 / §6.4). The Celery tasks (tasks.py) are thin wrappers around
+these; they can also be called synchronously (seeding / tests / the admin
+recalc trigger).
 
 Participation floors:
   §5.2 team monthly: ≥1 tournament to appear (else row removed).
@@ -19,8 +22,8 @@ from django.utils import timezone
 
 from afc_team.models import Team
 from afc_auth.models import User
-from . import aggregation as A
-from .scoring import engine as E
+from . import aggregation
+from .scoring import engine
 from .models import (
     Season, TeamMonthlyScore, TeamQuarterlyScore, PlayerMonthlyScore, PlayerQuarterlyScore,
 )
@@ -38,12 +41,15 @@ def current_season():
 
 
 # ───────────────────────── TEAM ─────────────────────────
+# Each recalc_* reads engine output from aggregation.compute_*, writes the score
+# model, then re-ranks. Reached via the tasks.py Celery wrappers (from signals),
+# the bulk helpers below (seeding/admin), or the admin recalc endpoints.
 def recalc_team_monthly(team_id, month: datetime.date = None):
     team = Team.objects.filter(pk=team_id).first()
     if not team:
         return
     month = (month or current_month()).replace(day=1)
-    agg = A.compute_team_monthly(team, month)
+    agg = aggregation.compute_team_monthly(team, month)
     if agg.tournaments_played == 0:
         # §5.2 participation floor — no tournament activity → don't appear
         TeamMonthlyScore.objects.filter(team=team, month=month).delete()
@@ -74,7 +80,7 @@ def recalc_team_quarterly(team_id, season_id):
     if existing and existing.is_zeroed:
         rerank_team_quarter(season)
         return
-    agg = A.compute_team_quarterly(team, season)
+    agg = aggregation.compute_team_quarterly(team, season)
     if agg.tournaments_played == 0:
         TeamQuarterlyScore.objects.filter(team=team, season=season).delete()
         rerank_team_quarter(season)
@@ -87,7 +93,7 @@ def recalc_team_quarterly(team_id, season_id):
     if existing and existing.tier_overridden:
         tier = existing.tier_assigned
     else:
-        tier = E.assign_tier(r.total, meets)
+        tier = engine.assign_tier(r.total, meets)
     note = "" if meets else f"Insufficient activity ({agg.tournaments_played}/2 tournaments)"
     TeamQuarterlyScore.objects.update_or_create(
         team=team, season=season,
@@ -134,7 +140,7 @@ def recalc_player_monthly(player_id, month: datetime.date = None):
     if not player:
         return
     month = (month or current_month()).replace(day=1)
-    agg = A.compute_player_monthly(player, month)
+    agg = aggregation.compute_player_monthly(player, month)
     if agg.tournaments_played == 0:
         PlayerMonthlyScore.objects.filter(player=player, month=month).delete()
         rerank_player_month(month)
@@ -165,7 +171,7 @@ def recalc_player_quarterly(player_id, season_id):
     if existing and existing.is_zeroed:
         rerank_player_quarter(season)
         return
-    agg = A.compute_player_quarterly(player, season)
+    agg = aggregation.compute_player_quarterly(player, season)
     if agg.tournaments_played == 0:
         PlayerQuarterlyScore.objects.filter(player=player, season=season).delete()
         rerank_player_quarter(season)
@@ -174,7 +180,7 @@ def recalc_player_quarterly(player_id, season_id):
     meets = agg.tournaments_played >= 1  # §9.2
     # Phase 1: individual projected tier from personal score. Phase 2 eval applies the
     # team-tier inheritance (§8.1) and locks tier_source = "team" vs "individual".
-    tier = E.assign_tier(r.total, meets)
+    tier = engine.assign_tier(r.total, meets)
     PlayerQuarterlyScore.objects.update_or_create(
         player=player, season=season,
         defaults=dict(
@@ -213,7 +219,7 @@ def _active_team_ids(start, end):
     from afc_tournament_and_scrims.models import TournamentTeamMatchStats
     return list(
         TournamentTeamMatchStats.objects
-        .filter(A._day_range_q("match", start, end))
+        .filter(aggregation._day_range_q("match", start, end))
         .values_list("tournament_team__team_id", flat=True).distinct()
     )
 
@@ -222,7 +228,7 @@ def _active_player_ids(start, end):
     from afc_tournament_and_scrims.models import TournamentPlayerMatchStats
     return list(
         TournamentPlayerMatchStats.objects
-        .filter(A._day_range_q("team_stats__match", start, end))
+        .filter(aggregation._day_range_q("team_stats__match", start, end))
         .values_list("player_id", flat=True).distinct()
     )
 
@@ -230,7 +236,7 @@ def _active_player_ids(start, end):
 def recalc_month(month: datetime.date = None):
     """Recompute every active team + player for a month. Used by seeding/tests/admin."""
     month = (month or current_month()).replace(day=1)
-    start, end = A.month_bounds(month)
+    start, end = aggregation.month_bounds(month)
     for tid in _active_team_ids(start, end):
         if tid:
             recalc_team_monthly(tid, month)
@@ -305,7 +311,7 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False):
             if t.is_zeroed or t.tier_overridden:
                 team_tier_by_id[t.team_id] = t.tier_assigned  # preserve the locked decision
                 continue
-            new_tier = E.assign_tier(t.total_score - t.points_deducted, t.meets_participation_floor)
+            new_tier = engine.assign_tier(t.total_score - t.points_deducted, t.meets_participation_floor)
             team_tier_by_id[t.team_id] = new_tier
             team_changes.append({"team_id": t.team_id, "name": t.team.team_name,
                                  "old_tier": t.tier_assigned, "new_tier": new_tier})
@@ -325,7 +331,7 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False):
             team = _player_team_at_eval(p.player, season)
             is_attached = team is not None
             team_tier = team_tier_by_id.get(team.team_id, TIER_ENTRY) if is_attached else None
-            new_tier, source = E.player_tier(is_attached, team_tier, p.total_score, p.meets_participation_floor)
+            new_tier, source = engine.player_tier(is_attached, team_tier, p.total_score, p.meets_participation_floor)
             player_changes.append({"player_id": p.player_id, "name": p.player.username,
                                    "old_tier": p.tier_assigned, "new_tier": new_tier, "source": source})
             p.tier_assigned = new_tier

@@ -48,12 +48,18 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from . import recalc, tasks
-from . import views as V                     # reuse views._resolve_season (?season_id= or active)
+from . import serializers as S
+from .views import _resolve_season           # reuse the public season resolver (?season_id= or active)
 from .admin_views import _auth, _require_reason, _audit
 from .models import Season
 
 
 # ───────────────────────── POST seasons/<id>/run-evaluation/  (lock tiers) ─────────────────────────
+# Links to recalc.run_evaluation: the real work — tier the teams, inherit tiers to
+# players, freeze the season, PLUS the re-run guard, the dry-run branch, and the
+# select_for_update season lock — all lives in ``recalc.run_evaluation``. This view
+# stays thin: gate (auth + reason), call recalc, audit the real run, serialise the
+# summary. Do NOT move tiering logic here — it belongs in recalc, called once.
 @api_view(["POST"])
 def run_evaluation(request, season_id):
     """Run the quarterly tier EVALUATION for a season (§16 tier lock).
@@ -213,7 +219,7 @@ def recalc_status(request):
     if err:
         return err
 
-    season = V._resolve_season(request)
+    season = _resolve_season(request)
     if not season:
         return Response({"message": "No active season."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -227,7 +233,7 @@ def recalc_status(request):
             "by": season.tier_eval_run_by.username if season.tier_eval_run_by_id else None,
         },
         "frozen_at": season.scores_frozen_at.isoformat() if season.scores_frozen_at else None,
-        "season": V.S.season(season),
+        "season": S.season(season),
     }
     if not determinable:
         # We had no entities to probe (e.g. an unevaluated/empty season), so "recalculating"

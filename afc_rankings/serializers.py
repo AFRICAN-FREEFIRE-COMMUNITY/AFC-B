@@ -69,6 +69,9 @@ def team_quarterly(s):
         # Admin-override state (used by the /a/rankings/overrides surface; the public
         # /rankings page simply ignores these extra keys). effective_score is the score
         # after any manual point deduction, floored at 0.
+        # tier_overridden / is_zeroed / points_deducted are written by admin_overrides.py;
+        # effective_score = max(0, score - deducted) must stay in lockstep with that module
+        # so the public number matches the admin number.
         "tier_overridden": s.tier_overridden,
         "is_zeroed": s.is_zeroed,
         "points_deducted": round(s.points_deducted, 2),
@@ -131,6 +134,9 @@ def season(s):
         "transfer_window_open": s.transfer_window_open.isoformat(),
         "transfer_window_close": s.transfer_window_close.isoformat(),
         # computed live so the public page can show a prominent OPEN/CLOSED indicator.
+        # is_transfer_window_open() is the same Season method the afc_team roster guards
+        # call (exit_team / kick_team_member / disband_team) — single source of truth for
+        # the OPEN/CLOSED state shown publicly and enforced on roster moves.
         "transfer_window_is_open": s.is_transfer_window_open(),
         "is_active": s.is_active, "tier_eval_run": s.tier_eval_run,
         # independent publish gates (rankings vs tiers).

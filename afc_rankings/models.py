@@ -58,8 +58,7 @@ class Season(models.Model):
 
     def is_transfer_window_open(self, on=None):
         """True if the transfer window is open on the given date (default: today)."""
-        from django.utils import timezone as _tz
-        day = on or _tz.now().date()
+        day = on or timezone.now().date()
         return self.transfer_window_open <= day <= self.transfer_window_close
 
     class Meta:
@@ -164,6 +163,9 @@ class TeamSeasonEnrollment(models.Model):
         ]
         indexes = [models.Index(fields=["season", "is_ghost"])]
 
+    def __str__(self):
+        return f"Enrollment({self.team_id or self.ghost_team_id} → {self.season_id})"
+
 
 # ──────────────────────── §19.3 TeamSeasonRoster ────────────────────────
 class TeamSeasonRoster(models.Model):
@@ -185,6 +187,9 @@ class TeamSeasonRoster(models.Model):
             models.Index(fields=["season", "team"]),
             models.Index(fields=["season", "player"]),
         ]
+
+    def __str__(self):
+        return f"Roster(player={self.player_id}, team={self.team_id}, season={self.season_id})"
 
 
 # ──────────────────────── §19.5 TeamMonthlyScore ────────────────────────
@@ -224,6 +229,9 @@ class TeamMonthlyScore(models.Model):
             models.Index(fields=["month", "-total_score"]),
             models.Index(fields=["team", "month"]),
         ]
+
+    def __str__(self):
+        return f"TeamMonthly({self.team_id or self.ghost_team_id} @ {self.month}: {self.total_score})"
 
 
 # ──────────────────────── §19.6 TeamQuarterlyScore ────────────────────────
@@ -280,6 +288,9 @@ class TeamQuarterlyScore(models.Model):
             models.Index(fields=["season", "tier_assigned"]),
         ]
 
+    def __str__(self):
+        return f"TeamQuarterly({self.team_id or self.ghost_team_id} @ season {self.season_id}: {self.total_score})"
+
 
 # ──────────────────────── §19.7 PlayerMonthlyScore ────────────────────────
 class PlayerMonthlyScore(models.Model):
@@ -313,6 +324,9 @@ class PlayerMonthlyScore(models.Model):
             models.UniqueConstraint(fields=["player", "month"], name="uniq_player_month_score"),
         ]
         indexes = [models.Index(fields=["month", "-total_score"])]
+
+    def __str__(self):
+        return f"PlayerMonthly(player={self.player_id} @ {self.month}: {self.total_score})"
 
 
 # ──────────────────────── §19.8 PlayerQuarterlyScore ────────────────────────
@@ -352,6 +366,9 @@ class PlayerQuarterlyScore(models.Model):
             models.Index(fields=["season", "tier_assigned"]),
         ]
 
+    def __str__(self):
+        return f"PlayerQuarterly(player={self.player_id} @ season {self.season_id}: {self.total_score})"
+
 
 # ──────────────────────── §19.9 AnnualLeaderboardEntry ────────────────────────
 class AnnualLeaderboardEntry(models.Model):
@@ -383,6 +400,9 @@ class AnnualLeaderboardEntry(models.Model):
         ]
         indexes = [models.Index(fields=["year", "entity_type", "-total_score"])]
 
+    def __str__(self):
+        return f"Annual({self.year} {self.entity_type} {self.team_id or self.player_id}: {self.total_score})"
+
 
 # ──────────────────────── §19.10 TransferWindowLog ────────────────────────
 class TransferWindowLog(models.Model):
@@ -402,6 +422,9 @@ class TransferWindowLog(models.Model):
     class Meta:
         ordering = ["-changed_at"]
         indexes = [models.Index(fields=["season", "-changed_at"])]
+
+    def __str__(self):
+        return f"TransferWindowLog(season={self.season_id} {self.action} by {self.changed_by_id})"
 
 
 # ──────────────────────── §16 + §20 RankingAuditLog ────────────────────────
@@ -442,6 +465,9 @@ class RankingAuditLog(models.Model):
             models.Index(fields=["changed_by", "-changed_at"]),
         ]
 
+    def __str__(self):
+        return f"Audit({self.object_type} {self.action} by {self.changed_by_id})"
+
 
 # ──────────────────────── §7.3 TeamSocialSnapshot ────────────────────────
 class TeamSocialSnapshot(models.Model):
@@ -467,6 +493,9 @@ class TeamSocialSnapshot(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["team", "season"], name="uniq_team_season_social")]
 
+    def __str__(self):
+        return f"Social(team={self.team_id} @ season {self.season_id}: {self.combined_followers})"
+
 
 # ──────────────────────── §19.4b GhostPlayer ────────────────────────
 class GhostPlayer(models.Model):
@@ -489,6 +518,7 @@ class GhostPlayer(models.Model):
         return f"{self.ign} [{self.ghost_team.team_name}]"
 
 
+# ═════════════════════ Admin-editable config and result-marker models (not the spec score tables) ═════════════════════
 # ──────────────────────── ScoringConfig (admin-editable scoring rules) ────────────────────────
 class ScoringConfig(models.Model):
     """Versioned, admin-editable snapshot of the scoring rule set.
@@ -560,6 +590,9 @@ class EventTierConfig(models.Model):
 
 
 # ──────────────────────── Result Markers — counting controls ────────────────────────
+# Cross-file: both models below are read in aggregation._counting_controls /
+# aggregation._excluded_event_ids BEFORE the engine inputs are built — a disabled
+# component is zeroed and an excluded event row is skipped, so the scoring engine stays pure.
 class EventCountingControl(models.Model):
     """Per-tournament admin toggles for whether each scoring component COUNTS toward
     rankings (the Result Markers surface). Checked in ``aggregation.py`` BEFORE the engine
@@ -618,3 +651,6 @@ class ResultExclusion(models.Model):
             ),
         ]
         indexes = [models.Index(fields=["event"])]
+
+    def __str__(self):
+        return f"Exclusion(event={self.event_id} {self.entity_type} {self.team_id or self.player_id})"

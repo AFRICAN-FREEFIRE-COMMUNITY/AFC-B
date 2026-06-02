@@ -9,6 +9,12 @@ and returns the engine Result plus tiebreaker counts. The recalc layer persists.
 
 Bucketing uses Match.played_on (falls back to match_date entry date).
 Registered teams/players only — ghost-team scoring lands in Phase 3.
+
+Driven by recalc.recalc_* (the compute_* entry points below). Reads the rankings
+columns on afc_tournament_and_scrims — Match.played_on, Match.mvp,
+Stages.is_finals_stage, TournamentTeam.is_tournament_winner /
+TournamentTeam.finals_appearances, EventPrizePayout.amount — so changing any of
+those models changes the scoring inputs here.
 """
 import calendar
 import datetime
@@ -17,13 +23,13 @@ from dataclasses import dataclass
 from typing import Optional
 
 from django.db.models import Q, Sum
-from django.utils import timezone as _tz
+from django.utils import timezone
 
 from afc_tournament_and_scrims.models import (
     TournamentTeamMatchStats, TournamentPlayerMatchStats, TournamentTeam, EventPrizePayout,
 )
 from afc_team.models import Team
-from .scoring import engine as E
+from .scoring import engine
 from .scoring.engine import TournamentInput, ScrimInput, PlayerTournamentInput, PlayerScrimInput
 from .models import TeamSocialSnapshot
 
@@ -41,9 +47,9 @@ def _day_range_q(prefix: str, start: datetime.date, end: datetime.date) -> Q:
     """Filter on play day, preferring Match.played_on, else the match_date entry datetime."""
     start_dt = datetime.datetime.combine(start, datetime.time.min)
     end_dt = datetime.datetime.combine(end, datetime.time.min)
-    if _tz.is_naive(start_dt):  # USE_TZ=True → compare against aware bounds
-        start_dt = _tz.make_aware(start_dt)
-        end_dt = _tz.make_aware(end_dt)
+    if timezone.is_naive(start_dt):  # USE_TZ=True → compare against aware bounds
+        start_dt = timezone.make_aware(start_dt)
+        end_dt = timezone.make_aware(end_dt)
     return (
         Q(**{f"{prefix}__played_on__gte": start, f"{prefix}__played_on__lt": end}) |
         Q(**{f"{prefix}__played_on__isnull": True,
@@ -124,7 +130,7 @@ def _apply_scrim_caps(scrim_match_rows):
             continue
         per_day[day] += 1
         total += 1
-        placement_pts += E.placement_points(placement)
+        placement_pts += engine.placement_points(placement)
         kills += k
         if placement == 1:
             wins += 1
@@ -132,6 +138,10 @@ def _apply_scrim_caps(scrim_match_rows):
 
 
 # ───────────────────────── TEAM ─────────────────────────
+# Reads the rankings columns on afc_tournament_and_scrims: Match.played_on,
+# Stages.is_finals_stage, TournamentTeam.is_tournament_winner /
+# TournamentTeam.finals_appearances, EventPrizePayout.amount. Changing those
+# models changes the scoring inputs the engine sees.
 def _collect_team(team: Team, start: datetime.date, end: datetime.date):
     """Returns (tournaments: list[TournamentInput], scrim_rows, win_count, kill_total)."""
     stats = (
@@ -164,7 +174,7 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
         if event_id in excluded:
             continue  # this team's results in this event are opted out of counting
         ev = rows[0][0]
-        raw_placement = sum(E.placement_points(s.placement) for _, s in rows)
+        raw_placement = sum(engine.placement_points(s.placement) for _, s in rows)
         raw_kills = sum(s.kills for _, s in rows)
         tt = TournamentTeam.objects.filter(event_id=event_id, team=team).first()
         won = bool(tt and tt.is_tournament_winner)
@@ -191,7 +201,7 @@ def compute_team_monthly(team: Team, month: datetime.date) -> TeamAgg:
     start, end = month_bounds(month)
     tournaments, scrim_rows, wins, kills = _collect_team(team, start, end)
     sp, sk, sw = _apply_scrim_caps(scrim_rows)
-    result = E.monthly_team_score(tournaments, ScrimInput(sp, sk, sw))
+    result = engine.monthly_team_score(tournaments, ScrimInput(sp, sk, sw))
     return TeamAgg(result=result, tournament_wins=wins, total_kills=kills,
                    tournaments_played=len(tournaments))
 
@@ -212,7 +222,7 @@ def compute_team_quarterly(team: Team, season) -> TeamAgg:
     snap = TeamSocialSnapshot.objects.filter(team=team, season=season).first()
     followers = snap.combined_followers if (snap and snap.is_verified) else 0
 
-    result = E.quarterly_team_score(
+    result = engine.quarterly_team_score(
         tournaments, ScrimInput(sp, sk, sw),
         prize_money_naira=float(prize), combined_followers=followers,
     )
@@ -294,7 +304,7 @@ def compute_player_monthly(player, month: datetime.date) -> PlayerAgg:
     tournaments, scrim_rows, mvp, finals, kills = _collect_player(player, start, end)
     s_kills = sum(k for _, k, _ in scrim_rows)
     s_wins = sum(1 for _, _, win in scrim_rows if win)
-    result = E.monthly_player_score(tournaments, PlayerScrimInput(scrim_kills=s_kills, scrim_wins=s_wins))
+    result = engine.monthly_player_score(tournaments, PlayerScrimInput(scrim_kills=s_kills, scrim_wins=s_wins))
     return PlayerAgg(result=result, total_kills=kills, mvp_count=mvp,
                      finals_appearances=finals, tournaments_played=len(tournaments))
 
@@ -309,7 +319,7 @@ def compute_player_quarterly(player, season) -> PlayerAgg:
              .filter(tournament_team__members__user=player,
                      created_at__date__gte=start, created_at__date__lt=end)
              .aggregate(total=Sum("amount"))["total"] or 0)
-    result = E.quarterly_player_score(
+    result = engine.quarterly_player_score(
         tournaments, PlayerScrimInput(scrim_kills=s_kills, scrim_wins=s_wins),
         inherited_prize_money_naira=float(prize),
     )

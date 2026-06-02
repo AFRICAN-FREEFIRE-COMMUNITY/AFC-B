@@ -27,7 +27,6 @@ activating a new config implies a GLOBAL recalc of all teams/players — not the
 per-entity ``enqueue_team`` / ``enqueue_player`` used by data-entry surfaces. That
 global sweep is the coordinator's concern; this module deliberately does NOT
 enqueue anything.
-# TODO(recalc): global recalc on activate
 """
 from rest_framework import status
 from rest_framework.decorators import api_view
@@ -42,6 +41,10 @@ from .scoring import constants as C
 
 
 # ───────────────────────── defaults snapshot ─────────────────────────
+# Links to scoring/constants.py: these canonical defaults come straight from
+# scoring/constants.py — the SAME tables scoring/engine.py reads at compute time. Keep
+# every key here 1:1 with the constants.py section names so a saved ``ScoringConfig.config``
+# blob can be fed straight back to the engine (and a reviewer can diff the two one-to-one).
 def _defaults_snapshot():
     """Serialise the immutable ``constants.py`` scoring tables into the SAME JSON
     shape the frontend edits / a saved ``ScoringConfig.config`` blob carries.

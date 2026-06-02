@@ -90,6 +90,9 @@ def _payout_month(payout):
     return recalc.current_month()
 
 
+# ── mirrors the prize-payout signal in signals.py ──
+# Both this helper and the §18 prize-payout signal key recalc off tournament_team.team_id and
+# dispatch via tasks.enqueue_team. If one changes how prize feeds the quarterly score, change both.
 def _enqueue_prize_recalc(tournament_team):
     """Enqueue the affected team's recalc AFTER commit (never inline).
 
