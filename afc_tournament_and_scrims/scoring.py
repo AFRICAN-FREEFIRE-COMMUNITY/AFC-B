@@ -10,9 +10,6 @@ It also hosts the two pure helpers the on-read standings builder uses for the ne
 per-stage scoring features (see WEBSITE/tasks/scoring-modes-design.md, sub-project A):
   - champion_for_group : Champion-Point win rule (match-point threshold + ordered replay)
   - rewards_from_standings : Point-Rush carry-over reward per lobby
-
-(Only the per-match formula + normalizer live here in Phase 0; the two helpers above
-are added in a later task — listed here so the module's full purpose is documented.)
 """
 
 # Canonical Free Fire battle-royale placement table. Was duplicated at
@@ -70,3 +67,51 @@ def compute_solo_points(*, placement_points, kill_point, placement, kills, playe
         "kill_points": kill_pts,
         "total_points": total,
     }
+
+
+# ── Phase 2 (sub-project A): the two PURE on-read helpers ──
+# Both are deliberately DB-free and Django-free so the standings builder
+# (get_all_leaderboard_details_for_event) can call them against any pre-aggregated
+# rows, and so they can be unit-tested with SimpleTestCase (no MySQL).
+
+
+def champion_for_group(matches, threshold, carry_over=None):
+    """
+    Champion-Point win rule. `matches` is an ordered list (play order); each item is
+    {"rows": [{"id": competitor_id, "placement": int, "points": int}, ...]} where `points`
+    is that competitor's effective points for that match (placement + kills + bonus - penalty).
+    `carry_over` is an optional {id: points} head start (Point-Rush bonus) that counts toward
+    the threshold. Returns the champion's id, or None if no team triggers the rule.
+
+    Champion = the first competitor to place 1st (Booyah) in a match where its running total
+    BEFORE that match was already >= threshold. The booyah that first crosses the threshold
+    does not win — we snapshot `pre` (totals entering the match) before adding the match's
+    points, so a team only wins on a booyah it earns while ALREADY at/over the threshold.
+    """
+    running = dict(carry_over or {})
+    for m in matches:
+        pre = dict(running)                       # totals BEFORE this match (the threshold check)
+        booyah = None
+        for r in m["rows"]:
+            cid = r["id"]
+            running[cid] = running.get(cid, 0) + int(r["points"])
+            if int(r["placement"]) == 1:
+                booyah = cid
+        if booyah is not None and pre.get(booyah, 0) >= threshold:
+            return booyah                          # stage decided; later matches ignored
+    return None
+
+
+def rewards_from_standings(ranked_ids, reward_table):
+    """
+    Point-Rush per-lobby reward. `ranked_ids` is one lobby's competitor ids in finishing
+    order (index 0 = 1st). `reward_table` is {"1": pts, ...} placement->bonus. Returns
+    {id: bonus}. Placements with no team (fewer teams than reward rows) are skipped — the
+    (placement-1) index simply falls outside `ranked_ids`, so that reward row is dropped.
+    """
+    out = {}
+    for placement_str, bonus in reward_table.items():
+        idx = int(placement_str) - 1
+        if 0 <= idx < len(ranked_ids):
+            out[ranked_ids[idx]] = out.get(ranked_ids[idx], 0) + int(bonus)
+    return out
