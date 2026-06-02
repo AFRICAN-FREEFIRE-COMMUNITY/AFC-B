@@ -2,6 +2,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from afc_auth.views import validate_token
+from afc_organizers.permissions import org_can_event, is_platform_org_admin
 from afc_tournament_and_scrims.models import Match
 
 from .models import OCRSession
@@ -39,6 +40,23 @@ def _get_event(match):
     return None
 
 
+def _require_results_access(user, match):
+    """Event-scoped gate for OCR endpoints that act on a specific match.
+
+    Returns None when the user is allowed (so callers do `if (deny := ...): return deny`),
+    otherwise a 403 Response. Allows AFC event admins (existing behaviour, unchanged) OR
+    org members holding can_upload_results on the match's owning org. org_can_event treats
+    native (org=None) events as admin-only, so organizers never touch events outside their org.
+    """
+    # Preserve the existing admin path exactly — if _require_admin passes, so does this.
+    if _require_admin(user) is None:
+        return None
+    event = _get_event(match)
+    if event and org_can_event(user, "can_upload_results", event):
+        return None
+    return Response({"message": "Unauthorized. Admins only."}, status=403)
+
+
 @api_view(["POST"])
 def upload_ocr_session(request):
     """
@@ -53,8 +71,8 @@ def upload_ocr_session(request):
     user, err = _auth(request)
     if err:
         return err
-    if (deny := _require_admin(user)):
-        return deny
+    # Permission is gated below, after the match is resolved — org members with
+    # can_upload_results may upload for THEIR org's events (AFC admins always pass).
 
     match_id  = request.data.get("match_id")
     map_index = request.data.get("map_index")
@@ -73,6 +91,10 @@ def upload_ocr_session(request):
         ).get(match_id=match_id)
     except Match.DoesNotExist:
         return Response({"message": "Match not found."}, status=404)
+
+    # Event-scoped access check (admins, or org members with can_upload_results on this match).
+    if (deny := _require_results_access(user, match)):
+        return deny
 
     event = _get_event(match)
     if not event:
@@ -149,13 +171,20 @@ def ocr_session_detail(request, session_id):
     user, err = _auth(request)
     if err:
         return err
-    if (deny := _require_admin(user)):
-        return deny
+    # Permission is gated below, after the session (and its match) is resolved — org members
+    # with can_upload_results may act on THEIR org's events (AFC admins always pass).
 
     try:
-        session = OCRSession.objects.get(session_id=session_id)
+        session = OCRSession.objects.select_related(
+            "match__leaderboard__event",
+            "match__group__stage__event",
+        ).get(session_id=session_id)
     except OCRSession.DoesNotExist:
         return Response({"message": "Session not found."}, status=404)
+
+    # Event-scoped access check, resolving the event via the session's match.
+    if (deny := _require_results_access(user, session.match)):
+        return deny
 
     # ── GET ──────────────────────────────────────────────────────────────────
     if request.method == "GET":
@@ -217,13 +246,20 @@ def commit_ocr_session(request, session_id):
     user, err = _auth(request)
     if err:
         return err
-    if (deny := _require_admin(user)):
-        return deny
+    # Permission is gated below, after the session (and its match) is resolved — org members
+    # with can_upload_results may commit for THEIR org's events (AFC admins always pass).
 
     try:
-        session = OCRSession.objects.select_related("match").get(session_id=session_id)
+        session = OCRSession.objects.select_related(
+            "match__leaderboard__event",
+            "match__group__stage__event",
+        ).get(session_id=session_id)
     except OCRSession.DoesNotExist:
         return Response({"message": "Session not found."}, status=404)
+
+    # Event-scoped access check, resolving the event via the session's match.
+    if (deny := _require_results_access(user, session.match)):
+        return deny
 
     if session.status != "pending_review":
         return Response({"message": f"Session is already {session.status}."}, status=400)
@@ -293,8 +329,8 @@ def ocr_from_stored_image(request):
     user, err = _auth(request)
     if err:
         return err
-    if (deny := _require_admin(user)):
-        return deny
+    # Permission is gated below, after the match is resolved — org members with
+    # can_upload_results may run OCR for THEIR org's events (AFC admins always pass).
 
     image_id  = request.data.get("image_id")
     match_id  = request.data.get("match_id")
@@ -315,6 +351,10 @@ def ocr_from_stored_image(request):
         ).get(match_id=match_id)
     except Match.DoesNotExist:
         return Response({"message": "Match not found."}, status=404)
+
+    # Event-scoped access check (admins, or org members with can_upload_results on this match).
+    if (deny := _require_results_access(user, match)):
+        return deny
 
     event = _get_event(match)
     if not event:
