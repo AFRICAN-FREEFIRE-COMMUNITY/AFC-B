@@ -93,3 +93,110 @@ class OrganizationMember(models.Model):
 
     def __str__(self):
         return f"{self.user_id} @ {self.organization_id} ({self.role})"
+
+
+# ════════ Phase 3 — leaderboard-design request (organizer submits → AFC builds) ════════
+
+
+class LeaderboardDesignRequest(models.Model):
+    """An organizer's request for a custom look for their leaderboards/results. The organizer
+    submits a reference image + notes; an AFC designer builds it and marks it applied (the
+    "design request → AFC builds it" decision). Human-in-the-loop — no self-serve renderer."""
+
+    STATUS_CHOICES = [
+        ("open", "Open"),               # submitted, awaiting AFC
+        ("in_progress", "In progress"),  # an AFC designer is building it
+        ("applied", "Applied"),          # built + live for the org's results
+        ("rejected", "Rejected"),        # AFC declined (see resolution_notes)
+    ]
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE,
+                                     related_name="design_requests")
+    submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL,
+                                     related_name="leaderboard_design_requests")
+    title = models.CharField(max_length=140)
+    notes = models.TextField(blank=True, default="")          # what the organizer wants
+    reference_image = models.ImageField(upload_to="leaderboard_design_refs/", null=True, blank=True)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="open")
+    resolution_notes = models.TextField(blank=True, default="")  # AFC's reply / build notes
+    handled_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name="handled_design_requests")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"DesignRequest({self.organization_id}: {self.title} [{self.status}])"
+
+
+# ════════ Phase 4 — reports, ratings & comments ════════
+
+
+class OrganizationReport(models.Model):
+    """A user-submitted report against an organization (e.g. suspected results manipulation
+    to game the rankings). Carries a category, written details, and optional evidence. AFC
+    reviews + resolves; resolution can suspend the org and/or exclude the event from rankings
+    via the existing afc_rankings tools."""
+
+    CATEGORY_CHOICES = [
+        ("rankings_manipulation", "Rankings manipulation"),
+        ("fake_results", "Fake / falsified results"),
+        ("unfair_conduct", "Unfair conduct"),
+        ("other", "Other"),
+    ]
+    STATUS_CHOICES = [
+        ("open", "Open"), ("reviewing", "Reviewing"),
+        ("resolved", "Resolved"), ("dismissed", "Dismissed"),
+    ]
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="reports")
+    # optional specific event the report is about (helps AFC target a ResultExclusion).
+    event = models.ForeignKey("afc_tournament_and_scrims.Event", null=True, blank=True,
+                              on_delete=models.SET_NULL, related_name="organization_reports")
+    reporter = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL,
+                                 related_name="organization_reports")
+    category = models.CharField(max_length=24, choices=CATEGORY_CHOICES, default="other")
+    details = models.TextField()                                  # what happened
+    evidence = models.ImageField(upload_to="organization_report_evidence/", null=True, blank=True)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="open")
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                    on_delete=models.SET_NULL, related_name="reviewed_org_reports")
+    resolution_notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Report({self.organization_id} {self.category} [{self.status}])"
+
+
+class EventRating(models.Model):
+    """A user's 1–5 rating of an event. Editable by the user (unique per event+user), and
+    ANONYMOUS to the organizer — only the aggregate is shown publicly + to the organizer."""
+
+    event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.CASCADE,
+                              related_name="ratings")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name="event_ratings")
+    score = models.PositiveSmallIntegerField()                    # 1..5 (validated in the view)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("event", "user")
+
+    def __str__(self):
+        return f"Rating(event={self.event_id} {self.score}/5)"
+
+
+class EventComment(models.Model):
+    """A user's free-text comment on an event. ONLY the event's organizer (+ AFC) can read it
+    — never shown publicly or to other users."""
+
+    event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.CASCADE,
+                              related_name="comments")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL,
+                             related_name="event_comments")
+    text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Comment(event={self.event_id} by {self.user_id})"

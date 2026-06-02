@@ -9915,8 +9915,8 @@ def upload_solo_match_result(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+    # NOTE: auth is finalised below, after the owning event is resolved — org members with
+    # can_upload_results may upload for THEIR org's events, so we need the event in hand first.
 
     # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
@@ -9935,6 +9935,13 @@ def upload_solo_match_result(request):
         return Response({"message": "This match is not linked to a group."}, status=400)
 
     event = match.group.stage.event
+
+    # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org. org_can_event treats native
+    # (org=None) events as admin-only, so organizers can never touch events outside their org.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
     if event.participant_type != "solo":
         return Response({"message": "This API is for SOLO events only."}, status=400)
 
@@ -12481,8 +12488,8 @@ def enter_team_match_result_manual(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+    # NOTE: permission is finalised below, after the owning event is resolved — org members
+    # with can_upload_results may enter results for THEIR org's events.
 
     # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
@@ -12500,6 +12507,12 @@ def enter_team_match_result_manual(request):
         return Response({"message": "No leaderboard linked/found for this match."}, status=400)
 
     event = lb.event
+
+    # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org (native events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission."}, status=403)
+
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
 
@@ -13053,8 +13066,9 @@ def enter_solo_match_result_manual(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+
+    # NOTE: permission is finalised below, after the owning event is resolved — org members
+    # with can_upload_results may enter results for THEIR org's events.
 
     match_id = request.data.get("match_id")
     players_payload = _parse_json_or_value(request.data.get("players"), default=None)
@@ -13070,6 +13084,12 @@ def enter_solo_match_result_manual(request):
         return Response({"message": "No leaderboard linked/found for this match."}, status=400)
 
     event = lb.event
+
+    # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org (native events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission."}, status=403)
+
     if event.participant_type != "solo":
         return Response({"message": "This endpoint is for SOLO events only."}, status=400)
 
@@ -14940,8 +14960,11 @@ def upload_team_match_result(request):
         return Response({"message": "Invalid token."}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
+
+    # NOTE: permission is finalised below, after the owning event is resolved — org members
+    # with can_upload_results may upload for THEIR org's events.
 
     match_id = request.data.get("match_id")
     if not match_id:
@@ -14957,6 +14980,12 @@ def upload_team_match_result(request):
         return Response({"message": "Match not linked to group."}, status=400)
 
     event = match.group.stage.event
+
+    # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org (native events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "Unauthorized."}, status=403)
+
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
 
