@@ -254,3 +254,188 @@ class EnterTeamMatchResultManualDBTests(TestCase):
         self.assertEqual(stat.placement_points, 12)
         self.assertEqual(stat.kill_points, 8)
         self.assertEqual(stat.total_points, 20)
+
+
+class CreateEventScoringModesDBTests(TestCase):
+    """End-to-end DB test for Task 3: the create-event endpoint must store the new
+    per-stage scoring-mode config and wire the Point-Rush carry-over target by index.
+
+    The endpoint receives a JSON-stringified `stages` array. The target stage is
+    referenced by `point_rush_target_index` (0-based position in that array) because the
+    target stage row does not exist yet while the source stage is being created — so the
+    view resolves it in a second pass. This proves that second pass links source→target.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+        # Admin user + forged session token (same pattern as the manual-entry DB test:
+        # _is_event_admin short-circuits True for role="admin", skipping the org gate).
+        self.admin = User.objects.create(
+            username="event_admin",
+            email="event_admin@example.com",
+            full_name="Event Admin",
+            role="admin",
+            password="x",
+        )
+        self.token = SessionToken.objects.create(
+            user=self.admin,
+            token="event-admin-token-1234567890",
+            expires_at=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=1),
+        )
+
+    def test_create_event_stores_scoring_modes_and_links_carry_over_target(self):
+        # Arrange: a 2-stage squad event.
+        #   stage 0 "Semis"  -> Point-Rush ON, reward {1:10,2:7,3:5}, target = index 1 (Finals)
+        #   stage 1 "Finals" -> Champion-Point ON, threshold 80
+        today = datetime.date.today().isoformat()
+        stages = [
+            {
+                "stage_name": "Semis",
+                "start_date": today,
+                "end_date": today,
+                "number_of_groups": 1,
+                "stage_format": "br - normal",
+                "teams_qualifying_from_stage": 4,
+                "groups": [],
+                "point_rush_enabled": True,
+                "point_rush_reward": {"1": 10, "2": 7, "3": 5},
+                "point_rush_target_index": 1,  # carry over into the Finals stage (index 1)
+            },
+            {
+                "stage_name": "Finals",
+                "start_date": today,
+                "end_date": today,
+                "number_of_groups": 1,
+                "stage_format": "br - normal",
+                "teams_qualifying_from_stage": 1,
+                "groups": [],
+                "champion_point_enabled": True,
+                "champion_point_threshold": 80,
+            },
+        ]
+        payload = {
+            "competition_type": "tournament",
+            "participant_type": "squad",
+            "event_type": "internal",
+            "max_teams_or_players": 16,
+            "event_name": "Scoring Modes Cup",
+            "event_mode": "virtual",
+            "start_date": today,
+            "end_date": today,
+            "registration_open_date": today,
+            "registration_end_date": today,
+            "prizepool": "0",
+            "number_of_stages": 2,
+            "is_draft": "false",
+            "stages": json.dumps(stages),
+        }
+
+        # Act
+        resp = self.client.post(
+            "/events/create-event/",
+            data=payload,
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+
+        # Assert: request succeeded and both stages persisted with the right scoring config.
+        self.assertEqual(resp.status_code, 201, resp.content)
+        event_id = resp.json()["event_id"]
+
+        semis = Stages.objects.get(event_id=event_id, stage_name="Semis")
+        finals = Stages.objects.get(event_id=event_id, stage_name="Finals")
+
+        # stage 0 (Semis): Point-Rush stored, champion-point left off/default
+        self.assertTrue(semis.point_rush_enabled)
+        self.assertEqual(semis.point_rush_reward, {"1": 10, "2": 7, "3": 5})
+        self.assertFalse(semis.champion_point_enabled)
+        self.assertIsNone(semis.champion_point_threshold)
+
+        # stage 1 (Finals): Champion-Point stored, point-rush left off/default
+        self.assertTrue(finals.champion_point_enabled)
+        self.assertEqual(finals.champion_point_threshold, 80)
+        self.assertFalse(finals.point_rush_enabled)
+
+        # The second pass must link the Semis carry-over target to the Finals stage.
+        self.assertEqual(semis.point_rush_target_stage_id, finals.stage_id)
+        # ...and the reverse related_name resolves the source back from the target.
+        self.assertIn(semis, list(finals.point_rush_sources.all()))
+
+    def test_create_event_rejects_champion_point_without_threshold(self):
+        # Champion-Point on but no (positive) threshold -> 400, nothing written.
+        today = datetime.date.today().isoformat()
+        stages = [{
+            "stage_name": "Finals",
+            "start_date": today,
+            "end_date": today,
+            "number_of_groups": 1,
+            "stage_format": "br - normal",
+            "teams_qualifying_from_stage": 1,
+            "groups": [],
+            "champion_point_enabled": True,
+            # champion_point_threshold deliberately omitted
+        }]
+        payload = {
+            "competition_type": "tournament",
+            "participant_type": "squad",
+            "event_type": "internal",
+            "max_teams_or_players": 16,
+            "event_name": "Bad Champion Cup",
+            "event_mode": "virtual",
+            "start_date": today,
+            "end_date": today,
+            "registration_open_date": today,
+            "registration_end_date": today,
+            "prizepool": "0",
+            "number_of_stages": 1,
+            "is_draft": "false",
+            "stages": json.dumps(stages),
+        }
+        resp = self.client.post(
+            "/events/create-event/",
+            data=payload,
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+        self.assertEqual(resp.status_code, 400, resp.content)
+        # fail-fast: no event row was created
+        self.assertFalse(Event.objects.filter(event_name="Bad Champion Cup").exists())
+
+    def test_create_event_rejects_point_rush_self_target(self):
+        # Point-Rush targeting its own index -> 400 (carry-over only flows to a later stage).
+        today = datetime.date.today().isoformat()
+        stages = [{
+            "stage_name": "Semis",
+            "start_date": today,
+            "end_date": today,
+            "number_of_groups": 1,
+            "stage_format": "br - normal",
+            "teams_qualifying_from_stage": 4,
+            "groups": [],
+            "point_rush_enabled": True,
+            "point_rush_reward": {"1": 10},
+            "point_rush_target_index": 0,  # self-target -> rejected
+        }]
+        payload = {
+            "competition_type": "tournament",
+            "participant_type": "squad",
+            "event_type": "internal",
+            "max_teams_or_players": 16,
+            "event_name": "Self Target Cup",
+            "event_mode": "virtual",
+            "start_date": today,
+            "end_date": today,
+            "registration_open_date": today,
+            "registration_end_date": today,
+            "prizepool": "0",
+            "number_of_stages": 1,
+            "is_draft": "false",
+            "stages": json.dumps(stages),
+        }
+        resp = self.client.post(
+            "/events/create-event/",
+            data=payload,
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertFalse(Event.objects.filter(event_name="Self Target Cup").exists())
