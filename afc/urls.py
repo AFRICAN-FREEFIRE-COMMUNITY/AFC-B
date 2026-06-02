@@ -31,6 +31,7 @@ urlpatterns = [
     path("player-market/", include('afc_player_market.urls')),
     path("events/", include('afc_ocr.urls')),
     path("rankings/", include('afc_rankings.urls')),
+    path("organizers/", include('afc_organizers.urls')),
 
 ]
 

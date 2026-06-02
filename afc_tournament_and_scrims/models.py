@@ -79,6 +79,10 @@ class Event(models.Model):
     uploaded_rules = models.FileField(upload_to='event_rules/', null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_events', null=True, blank=True)
+    # organizers: owning organization (null = native AFC event). SET_NULL so soft-deleting an
+    # org re-homes its events to AFC instead of destroying tournaments/registrations/results.
+    organization = models.ForeignKey("afc_organizers.Organization", null=True, blank=True,
+                                     on_delete=models.SET_NULL, related_name="events")
     updated_at = models.DateTimeField(auto_now=True)
     is_draft = models.BooleanField(default=True)
     registration_restriction = models.CharField(

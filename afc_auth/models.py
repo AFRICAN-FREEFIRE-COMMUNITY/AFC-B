@@ -135,6 +135,8 @@ class Roles(models.Model):
         ("teams_admin", "Teams Admin"),
         ("partner_admin", "Partner Admin"),
         ("sponsor_admin", "Sponsor Admin"),
+        ("organizer", "Organizer"),              # granted to any active OrganizationMember
+        ("organizer_admin", "Organizer Admin"),  # AFC staff who oversee organizations
     ]
 
     role_id = models.AutoField(primary_key=True)
