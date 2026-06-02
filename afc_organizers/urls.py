@@ -12,7 +12,7 @@
 # WEBSITE/tasks/organizers-design.md).
 from django.urls import path
 
-from . import views_admin, views_organizer, views_public, views_design
+from . import views_admin, views_organizer, views_public, views_design, views_reviews, views_reports
 
 urlpatterns = [
     # ───────────────────────── AFC staff: provisioning + oversight ─────────────────────────
@@ -58,6 +58,24 @@ urlpatterns = [
          name="organizers_admin_list_design_requests"),
     path("admin/design-requests/<int:request_id>/", views_design.admin_update_design_request,
          name="organizers_admin_update_design_request"),
+
+    # ───────────────────────── Event ratings + comments (Phase 4) ─────────────────────────
+    # Ratings are anonymous to organizers (only the aggregate is exposed); comments are
+    # readable only by the event's organizer. event-rating GET allows anonymous viewers.
+    path("events/<int:event_id>/rate/", views_reviews.rate_event, name="organizers_rate_event"),
+    path("events/<int:event_id>/rating/", views_reviews.event_rating, name="organizers_event_rating"),
+    path("events/<int:event_id>/comment/", views_reviews.comment_event, name="organizers_comment_event"),
+    path("event-comments/<int:event_id>/", views_reviews.event_comments, name="organizers_event_comments"),
+
+    # ───────────────────────── Organizer metrics (Phase 4) ─────────────────────────
+    path("metrics/<slug:slug>/", views_reviews.org_metrics, name="organizers_metrics"),
+
+    # ───────────────────────── Organization reports (Phase 4) ─────────────────────────
+    # Any user reports an org; AFC triages + resolves (resolution can exclude the reported
+    # event from rankings — the integrity action).
+    path("report-organization/<slug:slug>/", views_reports.report_organization, name="organizers_report"),
+    path("admin/reports/", views_reports.admin_list_reports, name="organizers_admin_reports"),
+    path("admin/reports/<int:report_id>/", views_reports.admin_update_report, name="organizers_admin_report_detail"),
 
     # ───────────────────────── Public org page (unauthenticated) ─────────────────────────
     path("get-organization-public/<slug:slug>/", views_public.get_organization_public,
