@@ -22,7 +22,9 @@ DEFAULT_PLACEMENT = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 
 
 def normalize_placement_points(pp):
     """Accept a stored placement_points dict (string or int keys) and return int->int.
-    Falls back to DEFAULT_PLACEMENT when empty/missing (matches the old _normalize_*)."""
+    Falls back to DEFAULT_PLACEMENT when empty/missing; replaces the old _normalize_*
+    with fail-loud validation (a non-dict payload raises ValueError instead of silently
+    defaulting, so a malformed scoring config surfaces instead of scoring everyone as 0)."""
     if not pp:
         return DEFAULT_PLACEMENT
     if not isinstance(pp, dict):
@@ -35,8 +37,15 @@ def compute_team_points(*, placement_points, kill_point, points_per_assist,
                         bonus, penalty, played):
     """Per-match TEAM points. `placement_points` is an int->int dict (already normalized);
     kills/damage/assists are already summed across played players. Returns the three
-    integer columns stored on TournamentTeamMatchStats. Verbatim port of views.py:12596-12611."""
-    placement_pts = placement_points.get(placement, 0) if played else 0
+    integer columns stored on TournamentTeamMatchStats. Port of views.py:12596-12611.
+
+    A not-played team scores nothing. The live callers pre-zero kills/damage/assists for
+    not-played teams (played_players is filtered to played==True), so in practice played=False
+    always arrives with zeroed inputs; we still short-circuit here so the function's contract
+    is correct on its own (and matches compute_solo_points, which already guards kills)."""
+    if not played:
+        return {"placement_points": 0, "kill_points": 0, "total_points": 0}
+    placement_pts = placement_points.get(placement, 0)
     kill_pts = kills * kill_point
     assist_pts = assists * points_per_assist
     damage_pts = (damage / 1000) * points_per_1000_damage

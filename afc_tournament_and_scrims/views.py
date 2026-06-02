@@ -13,6 +13,11 @@ from django.utils.dateparse import parse_date
 from afc_auth.views import assign_discord_role, check_discord_membership, check_discord_membership_v3, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
+# Single source of truth for the per-match point formula (see scoring.py). Imported
+# as `scoring_lib` (not bare `scoring`) on purpose: several result-entry views already
+# use a LOCAL variable named `scoring` for `match.scoring_settings`, which would shadow
+# a bare module import and break `scoring.compute_*` inside those functions.
+from afc_tournament_and_scrims import scoring as scoring_lib
 from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
 # organizers: org-scope permission helpers + the Organization tenant model. These let org
@@ -10012,9 +10017,17 @@ def upload_solo_match_result(request):
         if not rc:
             continue
 
-        placement_pts = int(placement_points.get(p["placement"], 0))
-        kill_pts = int(round(p["kills"] * kill_point_value))
-        total_pts = placement_pts + kill_pts
+        # Route through the shared solo formula (kills always counted on an upload row).
+        # NOTE: this drops the old int(round(...)) on kill points in favour of scoring's
+        # int() truncation, so all call sites agree. Identical for the default kill_point=1.0;
+        # only differs if a leaderboard uses a fractional kill_point (see report).
+        pts = scoring_lib.compute_solo_points(
+            placement_points=placement_points, kill_point=kill_point_value,
+            placement=p["placement"], kills=p["kills"], played=True,
+        )
+        placement_pts = pts["placement_points"]
+        kill_pts = pts["kill_points"]
+        total_pts = pts["total_points"]
 
         stats_to_create.append(
             SoloPlayerMatchStats(
@@ -12593,21 +12606,15 @@ def enter_team_match_result_manual(request):
             total_damage = sum(int(p.get("damage") or 0) for p in played_players)
             total_assists = sum(int(p.get("assists") or 0) for p in played_players)
 
-            placement_pts = placement_points.get(placement, 0) if team_played else 0
-            kill_pts = total_kills * kill_point
-            assist_pts = total_assists * points_per_assist
-            damage_pts = (total_damage / 1000) * points_per_1000_damage
-
             bonus = int(team_item.get("bonus_points") or 0)
             penalty = int(team_item.get("penalty_points") or 0)
 
-            total_pts = (
-                placement_pts +
-                kill_pts +
-                assist_pts +
-                damage_pts +
-                bonus -
-                penalty
+            # Shared team formula — the three point columns now come from scoring (no inline copy).
+            pts = scoring_lib.compute_team_points(
+                placement_points=placement_points, kill_point=kill_point,
+                points_per_assist=points_per_assist, points_per_1000_damage=points_per_1000_damage,
+                placement=placement, kills=total_kills, damage=total_damage, assists=total_assists,
+                bonus=bonus, penalty=penalty, played=team_played,
             )
 
             team_stats_to_create.append(
@@ -12618,11 +12625,11 @@ def enter_team_match_result_manual(request):
                     kills=total_kills,
                     damage=total_damage,
                     assists=total_assists,
-                    placement_points=int(placement_pts),
-                    kill_points=int(kill_pts),
+                    placement_points=pts["placement_points"],
+                    kill_points=pts["kill_points"],
                     bonus_points=bonus,
                     penalty_points=penalty,
-                    total_points=int(total_pts),
+                    total_points=pts["total_points"],
                 )
             )
 
@@ -13115,9 +13122,14 @@ def enter_solo_match_result_manual(request):
             placement = int(p.get("placement") or 0) if played else 0
             kills = int(p.get("kills") or 0) if played else 0
 
-            placement_pts = placement_points.get(placement, 0) if played else 0
-            kill_pts = int(kills * kill_point) if played else 0
-            total_pts = placement_pts + kill_pts
+            # Shared solo formula (was the inline placement+kills copy at this line).
+            pts = scoring_lib.compute_solo_points(
+                placement_points=placement_points, kill_point=kill_point,
+                placement=placement, kills=kills, played=played,
+            )
+            placement_pts = pts["placement_points"]
+            kill_pts = pts["kill_points"]
+            total_pts = pts["total_points"]
 
             rows.append(SoloPlayerMatchStats(
                 match=match,
@@ -13276,21 +13288,15 @@ def edit_match_result(request):
             total_damage = sum(int(p.get("damage") or 0) for p in played_players)
             total_assists = sum(int(p.get("assists") or 0) for p in played_players)
 
-            placement_pts = placement_points.get(placement, 0) if team_played else 0
-            kill_pts = total_kills * kill_point
-            assist_pts = total_assists * points_per_assist
-            damage_pts = (total_damage / 1000) * points_per_1000_damage
-
             bonus = int(team_item.get("bonus_points") or 0)
             penalty = int(team_item.get("penalty_points") or 0)
 
-            total_pts = (
-                placement_pts +
-                kill_pts +
-                assist_pts +
-                damage_pts +
-                bonus -
-                penalty
+            # Shared team formula — the three point columns now come from scoring (no inline copy).
+            pts = scoring_lib.compute_team_points(
+                placement_points=placement_points, kill_point=kill_point,
+                points_per_assist=points_per_assist, points_per_1000_damage=points_per_1000_damage,
+                placement=placement, kills=total_kills, damage=total_damage, assists=total_assists,
+                bonus=bonus, penalty=penalty, played=team_played,
             )
 
             team_stats_to_create.append(
@@ -13301,11 +13307,11 @@ def edit_match_result(request):
                     kills=total_kills,
                     damage=total_damage,
                     assists=total_assists,
-                    placement_points=int(placement_pts),
-                    kill_points=int(kill_pts),
+                    placement_points=pts["placement_points"],
+                    kill_points=pts["kill_points"],
                     bonus_points=bonus,
                     penalty_points=penalty,
-                    total_points=int(total_pts),
+                    total_points=pts["total_points"],
                 )
             )
 
@@ -15070,9 +15076,14 @@ def upload_team_match_result(request):
 
             total_kills = sum(p["kills"] for p in players)
 
-            placement_pts = placement_points.get(placement, 0)
-            kill_pts = total_kills * kill_point
-            total_pts = placement_pts + kill_pts
+            # Shared team formula. This log-upload path carries no assists/damage/bonus/penalty,
+            # so they pass through as 0 (placement + kills only) — same result as the old inline calc.
+            pts = scoring_lib.compute_team_points(
+                placement_points=placement_points, kill_point=kill_point,
+                points_per_assist=0, points_per_1000_damage=0,
+                placement=placement, kills=total_kills, damage=0, assists=0,
+                bonus=0, penalty=0, played=True,
+            )
 
             team_stats_to_create.append(
                 TournamentTeamMatchStats(
@@ -15082,9 +15093,9 @@ def upload_team_match_result(request):
                     kills=total_kills,
                     damage=0,
                     assists=0,
-                    placement_points=int(placement_pts),
-                    kill_points=int(kill_pts),
-                    total_points=int(total_pts),
+                    placement_points=pts["placement_points"],
+                    kill_points=pts["kill_points"],
+                    total_points=pts["total_points"],
                 )
             )
 
@@ -16400,9 +16411,15 @@ def upload_match_result_image(request):
                 unmatched.append({"name": name, "placement": placement})
                 continue
 
-            placement_pts = placement_points.get(placement, 0)
-            kill_pts = int(round(kills * kill_point))
-            total_pts = placement_pts + kill_pts
+            # Shared solo formula. NOTE: drops the old int(round(...)) on kill points in favour
+            # of scoring's int() truncation so every call site agrees (identical at kill_point=1.0).
+            pts = scoring_lib.compute_solo_points(
+                placement_points=placement_points, kill_point=kill_point,
+                placement=placement, kills=kills, played=True,
+            )
+            placement_pts = pts["placement_points"]
+            kill_pts = pts["kill_points"]
+            total_pts = pts["total_points"]
 
             stats_to_create.append(
                 SoloPlayerMatchStats(
@@ -16464,9 +16481,18 @@ def upload_match_result_image(request):
                     continue
 
                 total_kills = sum(int(p.get("kills") or 0) for p in players)
-                placement_pts = placement_points.get(placement, 0)
-                kill_pts = int(round(total_kills * kill_point))
-                total_pts = placement_pts + kill_pts
+                # Shared team formula (image-upload path: no assists/damage/bonus/penalty -> 0).
+                # NOTE: drops the old int(round(...)) on kill points in favour of scoring's int()
+                # truncation so every call site agrees (identical at the default kill_point=1.0).
+                pts = scoring_lib.compute_team_points(
+                    placement_points=placement_points, kill_point=kill_point,
+                    points_per_assist=0, points_per_1000_damage=0,
+                    placement=placement, kills=total_kills, damage=0, assists=0,
+                    bonus=0, penalty=0, played=True,
+                )
+                placement_pts = pts["placement_points"]
+                kill_pts = pts["kill_points"]
+                total_pts = pts["total_points"]
 
                 team_stats_to_create.append(
                     TournamentTeamMatchStats(
