@@ -30,7 +30,9 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 SECRET_KEY = 'django-insecure-al*a1qpu75zbfu!p7aki6)(p34yc=6(r18uhc)#zxv9oo!pi2)'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Env-driven so production can disable it (a DEBUG=True page leaks tracebacks/settings/SQL).
+# Defaults to True for local dev; PRODUCTION MUST set the env var DEBUG=False.
+DEBUG = os.getenv("DEBUG", "True").strip().lower() == "true"
 
 ALLOWED_HOSTS = ["https://afc.pythonanywhere.com/", "afc.pythonanywhere.com", "98.94.15.73", "*"]
 
@@ -139,14 +141,19 @@ WSGI_APPLICATION = 'afc.wsgi.application'
 #     }
 # }
 
+# Env-driven DB config. The defaults are the LOCAL dev values, so local keeps working with
+# no env set. PRODUCTION MUST set DB_USER/DB_PASSWORD/DB_HOST (and DB_NAME) to a DEDICATED
+# app user on the real DB host — NOT root@localhost. Deploying these root@localhost defaults
+# to production is what causes the intermittent 1698 "Access denied for user 'root'@'localhost'"
+# 500s (root@localhost uses socket auth, so a password/TCP login is rejected).
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'afc_db',
-        'USER': 'root',
-        'PASSWORD': 'Purewater@12345',
-        'HOST': 'localhost',  # Or your remote host
-        'PORT': '3306',       # Or your custom port if different
+        'NAME': os.getenv('DB_NAME', 'afc_db'),
+        'USER': os.getenv('DB_USER', 'root'),
+        'PASSWORD': os.getenv('DB_PASSWORD', 'Purewater@12345'),
+        'HOST': os.getenv('DB_HOST', 'localhost'),
+        'PORT': os.getenv('DB_PORT', '3306'),
     }
 }
 # python manage.py makemigrations
