@@ -10730,6 +10730,74 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
+
+# ── Scoring-modes (sub-project A): on-read helpers for the standings builder below. ──
+# Champion-Point + Point-Rush are computed ON READ (nothing derived is persisted), so an
+# admin edit auto-corrects the leaderboard — these two helpers feed the pure logic in
+# scoring.py (champion_for_group / rewards_from_standings) the per-lobby data it needs.
+# Both live at module scope (not nested) so the builder can call them per group cheaply.
+
+
+def _group_ranked_ids(group, participant_type):
+    """Return this lobby's competitor ids in current finishing order (1st..last).
+
+    The id is the tournament_team_id (team events) or competitor_id (solo events). The sort
+    mirrors the standings sort the builder uses — total effective points first, then kills —
+    so Point-Rush rewards land on whoever is actually 1st/2nd/3rd in the lobby right now.
+    `effective_total` = placement + kill + bonus - penalty, computed the same way as in the
+    per-group OVERALL aggregate below (kept in sync deliberately)."""
+    if participant_type == "solo":
+        rows = (
+            SoloPlayerMatchStats.objects.filter(match__group=group)
+            .values("competitor_id")
+            .annotate(
+                total=Coalesce(Sum("placement_points"), 0)
+                + Coalesce(Sum("kill_points"), 0)
+                + Coalesce(Sum("bonus_points"), 0)
+                - Coalesce(Sum("penalty_points"), 0),
+                kills=Coalesce(Sum("kills"), 0),
+            )
+            .order_by("-total", "-kills")
+        )
+        return [r["competitor_id"] for r in rows]
+
+    rows = (
+        TournamentTeamMatchStats.objects.filter(match__group=group)
+        .values("tournament_team_id")
+        .annotate(
+            total=Coalesce(Sum("placement_points"), 0)
+            + Coalesce(Sum("kill_points"), 0)
+            + Coalesce(Sum("bonus_points"), 0)
+            - Coalesce(Sum("penalty_points"), 0),
+            kills=Coalesce(Sum("kills"), 0),
+        )
+        .order_by("-total", "-kills")
+    )
+    return [r["tournament_team_id"] for r in rows]
+
+
+def _carry_over_for_stage(stage, participant_type):
+    """Sum Point-Rush bonuses banked for `stage` by every source stage that targets it.
+
+    A source stage hands out its `point_rush_reward` table (placement->bonus) PER LOBBY of
+    that source stage — so a 2-lobby source seeds two sets of 1st/2nd/3rd bonuses. We walk
+    `stage.point_rush_sources` (the reverse FK of point_rush_target_stage) and accumulate,
+    keyed by competitor id, into a {id: bonus} dict the builder folds into each row's total."""
+    from collections import defaultdict
+
+    out = defaultdict(int)
+    for src in stage.point_rush_sources.all():  # stages whose point_rush_target_stage == stage
+        if not src.point_rush_enabled:
+            continue
+        # Per lobby of the SOURCE stage: rank its standings, map the reward table onto them.
+        for grp in src.groups.all():
+            ranked = _group_ranked_ids(grp, participant_type)
+            rewards = scoring_lib.rewards_from_standings(ranked, src.point_rush_reward or {})
+            for cid, bonus in rewards.items():
+                out[cid] += bonus
+    return dict(out)
+
+
 @api_view(["POST"])
 def get_all_leaderboard_details_for_event(request):
     auth = request.headers.get("Authorization")
@@ -10960,6 +11028,50 @@ def get_all_leaderboard_details_for_event(request):
                     )
                 )
 
+            # ── Scoring-modes overlay (sub-project A): applied ON READ, per lobby. ──
+            # `overall` is a QuerySet of dict rows; materialize it so we can mutate each row
+            # (add carry-over, re-sort, flag the champion). The id key is competitor_id for
+            # solo and tournament_team_id for team — both already present in the rows above.
+            overall = list(overall)
+            id_key = "competitor_id" if event.participant_type == "solo" else "tournament_team_id"
+
+            # (1) Point-Rush carry-over: seed each competitor's running total with the bonus
+            # banked from any earlier stage whose point_rush_target_stage is THIS stage. We add
+            # it into effective_total so the standings (and the champion replay below) see it.
+            carry_over = _carry_over_for_stage(stage, event.participant_type)
+            for row in overall:
+                bonus = carry_over.get(row[id_key], 0)
+                row["carry_over_points"] = bonus
+                row["effective_total"] = int(row.get("effective_total", 0)) + bonus
+
+            # (2) Champion-Point: replay this lobby's matches in play order (matches_payload is
+            # already match_number-ordered) through the pure win-rule helper. A team is champion
+            # the first time it Booyahs while its running total ENTERING that match was already
+            # at/over the threshold. carry_over counts toward the threshold (head start).
+            champion_id = None
+            stage_is_decided = False
+            if stage.champion_point_enabled and stage.champion_point_threshold:
+                replay = [
+                    {"rows": [
+                        {"id": s[id_key], "placement": s["placement"], "points": s["effective_total"]}
+                        for s in m["stats"]
+                    ]}
+                    for m in matches_payload
+                ]
+                champion_id = scoring_lib.champion_for_group(
+                    replay, int(stage.champion_point_threshold), carry_over=dict(carry_over),
+                )
+                stage_is_decided = champion_id is not None
+
+            # (3) Re-sort by the carry-over-adjusted total (then kills), and pin the champion to
+            # #0 if one exists — the FE renders server order verbatim (qualified/eliminated badges
+            # are positional), so the champion must physically lead the list, not just be flagged.
+            overall.sort(key=lambda r: (-int(r["effective_total"]), -int(r.get("total_kills", 0))))
+            if champion_id is not None:
+                overall.sort(key=lambda r: 0 if r[id_key] == champion_id else 1)
+            for r in overall:
+                r["is_champion"] = (champion_id is not None and r[id_key] == champion_id)
+
             groups_payload.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
@@ -10977,7 +11089,12 @@ def get_all_leaderboard_details_for_event(request):
                     "last_updated": leaderboard.last_updated,
                 },
                 "matches": matches_payload,
-                "overall_leaderboard": list(overall),
+                "overall_leaderboard": overall,
+                # ── Scoring-modes flags consumed by the results UI (crown + decided banner) ──
+                "champion_point_enabled": stage.champion_point_enabled,
+                "champion_point_threshold": stage.champion_point_threshold,
+                "is_decided": stage_is_decided,
+                "champion_id": champion_id,
             })
 
         stages_payload.append({
