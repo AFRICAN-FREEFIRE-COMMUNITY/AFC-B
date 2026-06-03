@@ -18,7 +18,7 @@ from afc_team.models import Team, TeamMembers
 # use a LOCAL variable named `scoring` for `match.scoring_settings`, which would shadow
 # a bare module import and break `scoring.compute_*` inside those functions.
 from afc_tournament_and_scrims import scoring as scoring_lib
-from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
 # organizers: org-scope permission helpers + the Organization tenant model. These let org
 # members (owner / sub_organizer) manage their OWN org's events while AFC admins keep full
@@ -390,6 +390,333 @@ def _validate_scoring_modes(stages_data):
     return None
 
 
+# ── BR Round-Robin (sub-project B, Task 4) ────────────────────────────────────────────
+# The literal a stage's `stage_format` must equal for the round-robin builders below to
+# fire. Distinct from the dead "br - roundrobin" (mislabelled "Knockout") choice; see the
+# RoundRobinGroup / Stages.STAGE_FORMAT_CHOICES comments in models.py.
+ROUND_ROBIN_FORMAT = "br - round robin"
+
+
+def _resolve_round_robin_team_ids(team_ids, event, user):
+    """Turn the FE-supplied `team_ids` into THIS event's TournamentTeam rows.
+
+    A base group carries `team_ids` (Team primary keys). The round-robin stage lives on a
+    just-created/edited event, so a Team may not yet have a TournamentTeam for it — we
+    create one on demand (status "active", registered_by=user), exactly the shape
+    `register_*` uses elsewhere in this file. Already-linked teams are reused, so calling
+    this for overlapping groups (or re-editing) never duplicates a TournamentTeam.
+
+    Returns the TournamentTeam rows in the SAME order as `team_ids` (skipping ids whose
+    Team doesn't exist — a bad id can't poison the whole stage build).
+    """
+    resolved = []
+    for team_id in team_ids or []:
+        try:
+            team_id = int(team_id)
+        except (TypeError, ValueError):
+            continue
+        team = Team.objects.filter(team_id=team_id).first()
+        if not team:
+            continue  # unknown team id → skip rather than 500 the whole create
+        # get_or_create keys on (event, team) so a team already entered (e.g. via the
+        # registration flow) is reused; only genuinely-new entries get a fresh TT.
+        tt, _ = TournamentTeam.objects.get_or_create(
+            event=event,
+            team=team,
+            defaults={"status": "active", "registered_by": user,
+                      "country": team.country},
+        )
+        resolved.append(tt)
+    return resolved
+
+
+def _materialise_round_robin_lobby(stage, event, user, lobby_spec, source_groups, default_date, default_time):
+    """Create ONE game-day lobby (a StageGroups row) for a round-robin stage.
+
+    Mirrors the lobby/leaderboard/match creation already in create_event, plus the two
+    round-robin extras: it stamps `game_day` + `source_groups` on the StageGroups and seeds
+    StageGroupCompetitor from the UNION of the merged base groups' teams (so the lobby's
+    roster is exactly the teams of the groups that were merged into it).
+
+    `lobby_spec` is a dict shaped like a `round_robin_schedule` spec OR a manual game-day:
+      {game_day, match_count, match_maps, group_name?(optional label)}.
+    `source_groups` is the list of RoundRobinGroup rows this lobby merges.
+    `default_date`/`default_time` fill StageGroups' required playing_date/time (a generated
+    schedule has no per-lobby date, so we reuse the stage start as a sensible placeholder).
+    """
+    game_day = lobby_spec["game_day"]
+    match_maps = list(lobby_spec.get("match_maps") or ["bermuda"])
+    match_count = int(lobby_spec.get("match_count") or 0)
+
+    # Default lobby name encodes the day + the merged group labels (e.g. "Day 1: A+B"),
+    # unless the caller passed an explicit name (manual game-day mode may).
+    group_name = lobby_spec.get("group_name") or (
+        f"Day {game_day}: " + "+".join(g.label for g in source_groups)
+    )
+
+    lobby = StageGroups.objects.create(
+        stage=stage,
+        group_name=group_name,
+        playing_date=default_date,
+        playing_time=default_time,
+        teams_qualifying=int(lobby_spec.get("teams_qualifying", stage.teams_qualifying_from_stage)),
+        match_count=match_count,
+        match_maps=match_maps,
+        game_day=game_day,
+    )
+    # Stamp which base groups were merged into this lobby (the round-robin link).
+    lobby.source_groups.set(source_groups)
+
+    # Auto-create a leaderboard for the lobby (same shape as the normal-group path).
+    leaderboard = Leaderboard.objects.create(
+        leaderboard_name=f"{stage.stage_name} - {lobby.group_name}",
+        event=event,
+        stage=stage,
+        group=lobby,
+        creator=user,
+        leaderboard_method="manual",
+        placement_points={},
+        kill_point=1.0,
+    )
+
+    # Create exactly match_count matches, cycling the lobby's maps (mirrors create_event).
+    default_map = match_maps[0] if match_maps else "bermuda"
+    matches_to_create = [
+        Match(
+            leaderboard=leaderboard,
+            group=lobby,
+            match_map=match_maps[(num - 1) % len(match_maps)] if match_maps else default_map,
+            match_number=num,
+        )
+        for num in range(1, match_count + 1)
+    ]
+    if matches_to_create:
+        Match.objects.bulk_create(matches_to_create, batch_size=500)
+
+    # Seed the lobby's competitors from the UNION of its merged base groups' teams. A team
+    # that sits in two merged groups (shouldn't happen — a team belongs to one base group —
+    # but be defensive) collapses to a single competitor via the dedupe + ignore_conflicts.
+    seen = set()
+    sgc_rows = []
+    for grp in source_groups:
+        for tt in grp.teams.all():
+            if tt.tournament_team_id in seen:
+                continue
+            seen.add(tt.tournament_team_id)
+            sgc_rows.append(StageGroupCompetitor(
+                stage_group=lobby, tournament_team=tt, status="active"))
+    if sgc_rows:
+        StageGroupCompetitor.objects.bulk_create(
+            sgc_rows, batch_size=500, ignore_conflicts=True)
+
+    return lobby
+
+
+def _build_round_robin_groups(stage, event, user, stage_data):
+    """Create the base groups (A/B/C…) for a round-robin stage and wire their teams.
+
+    `stage_data["round_robin_groups"]` is `[{label, order, team_ids}]`. Returns the created
+    RoundRobinGroup rows in submit order so the caller can hand their ids to the schedule
+    generator (order matters: it fixes which pairing falls on which game day).
+    """
+    created_groups = []
+    for idx, grp_data in enumerate(stage_data.get("round_robin_groups", [])):
+        grp = RoundRobinGroup.objects.create(
+            stage=stage,
+            label=grp_data.get("label") or chr(ord("A") + idx),  # A, B, C… fallback
+            order=int(grp_data.get("order", idx)),
+        )
+        # Resolve the sent Team ids → this event's TournamentTeam rows and attach them.
+        tts = _resolve_round_robin_team_ids(grp_data.get("team_ids"), event, user)
+        if tts:
+            grp.teams.set(tts)
+        created_groups.append(grp)
+    return created_groups
+
+
+def _round_robin_lobby_is_played(lobby):
+    """True if any match in this lobby has an entered result.
+
+    Edit-time guard (Task 4 / landmine): regenerating the schedule must NOT wipe a lobby
+    that already has results entered. result_inputted=True marks a match whose stats the
+    admin has saved, so a lobby with ANY such match is "played" and stays untouched.
+    """
+    return lobby.matches.filter(result_inputted=True).exists()
+
+
+def _edit_round_robin_stage(stage, event, user, stage_data):
+    """Rebuild a round-robin stage's base groups + lobbies on EDIT, preserving played play.
+
+    Mirrors `_build_round_robin_stage` but is non-destructive about real results:
+      • lobbies with entered results (result_inputted=True on any match) are KEPT verbatim —
+        their base groups, matches, stats and competitors are never touched;
+      • every UNPLAYED lobby is deleted and regenerated from the (possibly edited) payload.
+
+    Returns the StageGroups ids of every round-robin lobby that should survive the edit
+    (kept-played + freshly-regenerated), so the caller can add them to `kept_group_ids` and
+    stop `delete_missing` from sweeping the just-built lobbies away.
+    """
+    from . import round_robin  # local import: this file imports per-function throughout
+
+    # Played lobbies are sacred — keep them and the base groups they reference.
+    existing_lobbies = list(stage.groups.filter(game_day__isnull=False))
+    played_lobbies = [lb for lb in existing_lobbies if _round_robin_lobby_is_played(lb)]
+    kept_lobby_ids = [lb.group_id for lb in played_lobbies]
+
+    # Base groups still referenced by a kept (played) lobby must survive too, so we don't
+    # orphan a played lobby's source_groups. Everything else is rebuildable.
+    protected_group_ids = set()
+    for lb in played_lobbies:
+        protected_group_ids.update(lb.source_groups.values_list("group_id", flat=True))
+
+    # Delete the UNPLAYED lobbies (cascade drops their matches/leaderboard/competitors and
+    # clears the source_groups M2M) so we can regenerate them cleanly below.
+    unplayed_ids = [
+        lb.group_id for lb in existing_lobbies if lb.group_id not in kept_lobby_ids]
+    if unplayed_ids:
+        StageGroups.objects.filter(group_id__in=unplayed_ids).delete()
+
+    # Drop the base groups that are NOT protected by a played lobby; the payload below
+    # recreates the current base-group set. (Protected ones stay so played lobbies keep
+    # their identity.)
+    stage.round_robin_groups.exclude(group_id__in=protected_group_ids).delete()
+
+    # Rebuild the base groups from the payload (same helper as create). When played lobbies
+    # exist we still recreate the FULL base-group set for the new schedule; the protected
+    # groups remain attached to their played lobbies, the new groups feed regeneration.
+    created_groups = _build_round_robin_groups(stage, event, user, stage_data)
+
+    default_date = stage.start_date
+    default_time = parse_time("19:00")
+
+    # Regenerate lobbies for the (edited) base groups, but SKIP any game day already covered
+    # by a kept played lobby so we never duplicate a day that has results.
+    played_days = {lb.game_day for lb in played_lobbies}
+
+    if stage_data.get("generate_schedule"):
+        games_per_day = int(stage_data.get("games_per_day", 1) or 1)
+        maps = stage_data.get("round_robin_maps") or stage_data.get("match_maps")
+        specs = round_robin.round_robin_schedule(
+            [g.group_id for g in created_groups], games_per_day=games_per_day, maps=maps)
+        by_id = {g.group_id: g for g in created_groups}
+        for spec in specs:
+            if spec["game_day"] in played_days:
+                continue  # that day already has a played lobby → don't overwrite it
+            sources = [by_id[gid] for gid in spec["source_group_ids"] if gid in by_id]
+            lobby = _materialise_round_robin_lobby(
+                stage, event, user, spec, sources, default_date, default_time)
+            kept_lobby_ids.append(lobby.group_id)
+    else:
+        for gd in stage_data.get("game_days", []):
+            if gd.get("game_day") in played_days:
+                continue
+            sources = [
+                created_groups[i]
+                for i in gd.get("source_group_indexes", [])
+                if isinstance(i, int) and 0 <= i < len(created_groups)
+            ]
+            if not sources:
+                continue
+            lobby = _materialise_round_robin_lobby(
+                stage, event, user, gd, sources, default_date, default_time)
+            kept_lobby_ids.append(lobby.group_id)
+
+    return kept_lobby_ids
+
+
+def _build_round_robin_stage(stage, event, user, stage_data):
+    """Build a whole round-robin stage's groups + game-day lobbies on CREATE.
+
+    Two ways to get lobbies (the FE picks one):
+      • generate_schedule:true → run the pure `round_robin_schedule` over the base-group ids
+        (in order) and materialise every C(n,2) pairing into a game-day lobby; or
+      • game_days:[{game_day, source_group_indexes, match_count, match_maps}] → a MANUAL
+        list of lobbies, each referencing base groups by their 0-based index in
+        round_robin_groups (lets an admin hand-build the schedule instead of generating it).
+    """
+    from . import round_robin  # local import: this file imports per-function throughout
+
+    created_groups = _build_round_robin_groups(stage, event, user, stage_data)
+
+    # Reuse the stage's start date + a default lobby time for the generated lobbies (a
+    # generated schedule carries no per-lobby date/time; the admin sets real ones on edit).
+    # parse_time is imported at module level (used by edit_event); "19:00" is the standard
+    # AFC evening lobby slot, just a placeholder the admin can override later.
+    default_date = stage.start_date
+    default_time = parse_time("19:00")
+
+    if stage_data.get("generate_schedule"):
+        games_per_day = int(stage_data.get("games_per_day", 1) or 1)
+        maps = stage_data.get("round_robin_maps") or stage_data.get("match_maps")
+        specs = round_robin.round_robin_schedule(
+            [g.group_id for g in created_groups], games_per_day=games_per_day, maps=maps)
+        # Map group_id → RoundRobinGroup so each spec's source_group_ids become rows.
+        by_id = {g.group_id: g for g in created_groups}
+        for spec in specs:
+            sources = [by_id[gid] for gid in spec["source_group_ids"] if gid in by_id]
+            _materialise_round_robin_lobby(
+                stage, event, user, spec, sources, default_date, default_time)
+    else:
+        # Manual game-day list: each lobby names its source base groups by index.
+        for gd in stage_data.get("game_days", []):
+            sources = [
+                created_groups[i]
+                for i in gd.get("source_group_indexes", [])
+                if isinstance(i, int) and 0 <= i < len(created_groups)
+            ]
+            if not sources:
+                continue  # a lobby with no source groups has nothing to merge → skip
+            _materialise_round_robin_lobby(
+                stage, event, user, gd, sources, default_date, default_time)
+
+
+def _round_robin_stage_echo(stage):
+    """Echo a round-robin stage's structure so the FE event editor can rehydrate it.
+
+    Returns None for any non-round-robin stage (so callers can drop the key for them), or a
+    dict the stage builder reads back:
+      {
+        "round_robin_groups": [{group_id, label, order, team_ids, team_names}],  # base groups
+        "game_days": [                                                            # lobbies by day
+          {"game_day": N, "lobbies": [{group_id, source_group_ids}]}
+        ],
+      }
+    `team_ids` are TournamentTeam ids (what the builder seeds from); `source_group_ids` are
+    RoundRobinGroup ids — together they let the FE redraw the groups + the schedule exactly.
+    """
+    if stage.stage_format != ROUND_ROBIN_FORMAT:
+        return None
+
+    # Base groups A/B/C… (Meta.ordering = ["order"] keeps them in order). Echo each group's
+    # member teams as both id (for seeding) and name (for display).
+    groups_echo = []
+    for grp in stage.round_robin_groups.all():
+        teams = list(grp.teams.values("tournament_team_id", "team__team_name"))
+        groups_echo.append({
+            "group_id": grp.group_id,
+            "label": grp.label,
+            "order": grp.order,
+            "team_ids": [t["tournament_team_id"] for t in teams],
+            "team_names": [t["team__team_name"] for t in teams],
+        })
+
+    # Lobbies bucketed by game day, each with the base-group ids it merged.
+    days = {}
+    lobbies = stage.groups.filter(game_day__isnull=False).order_by("game_day", "group_id")
+    for lobby in lobbies:
+        days.setdefault(lobby.game_day, []).append({
+            "group_id": lobby.group_id,
+            "source_group_ids": list(
+                lobby.source_groups.values_list("group_id", flat=True)),
+        })
+    game_days_echo = [
+        {"game_day": day, "lobbies": lobby_list}
+        for day, lobby_list in sorted(days.items())
+    ]
+
+    return {"round_robin_groups": groups_echo, "game_days": game_days_echo}
+
+
 @api_view(["POST"])
 def create_event(request):
     # ---------------- AUTH ----------------
@@ -637,6 +964,13 @@ def create_event(request):
                 point_rush_reward=stage_data.get("point_rush_reward") or {},
             )
             created_stages.append(stage)
+
+            # ── BR Round-Robin (sub-project B, Task 4): a round-robin stage sends BASE
+            # groups (round_robin_groups) instead of plain `groups`, and we build the base
+            # groups + game-day lobbies from them. The normal `groups` loop below then runs
+            # over an empty list, so the two paths don't collide. ──
+            if stage_data.get("stage_format") == ROUND_ROBIN_FORMAT:
+                _build_round_robin_stage(stage, event, user, stage_data)
 
             for group_data in stage_data.get("groups", []):
                 group = StageGroups.objects.create(
@@ -1687,6 +2021,14 @@ def edit_event(request):
 
                 kept_stage_ids.append(stage.stage_id)
                 upserted_stages.append(stage)
+
+                # ── BR Round-Robin (sub-project B, Task 4): rebuild base groups + lobbies
+                # from round_robin_groups, KEEPING lobbies that already have entered results.
+                # The returned lobby ids go into kept_group_ids so delete_missing below does
+                # not sweep the freshly-built lobbies (they carry no group_id in the payload).
+                if stage_data.get("stage_format") == ROUND_ROBIN_FORMAT:
+                    kept_group_ids.extend(
+                        _edit_round_robin_stage(stage, event, user, stage_data))
 
                 for group_data in stage_data.get("groups", []):
                     group_id = group_data.get("group_id")
@@ -2832,6 +3174,9 @@ def get_event_details(request):
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
             "groups": groups_payload,
+            # ── BR Round-Robin echo (None for every other format): base groups + the
+            # game-day lobbies' source group ids, so the FE stage builder can rehydrate. ──
+            "round_robin": _round_robin_stage_echo(stage),
         })
 
     event_data["stages"] = stages_payload
@@ -7315,6 +7660,9 @@ def get_event_details_for_admin(request):
             "point_rush_enabled": stage.point_rush_enabled,
             "point_rush_reward": stage.point_rush_reward or {},
             "point_rush_target_stage_id": stage.point_rush_target_stage_id,
+            # ── BR Round-Robin echo (None for every other format): base groups + the
+            # game-day lobbies' source group ids, so the admin editor can rehydrate. ──
+            "round_robin": _round_robin_stage_echo(stage),
         })
 
     pageviews = event.pageviews.count()
