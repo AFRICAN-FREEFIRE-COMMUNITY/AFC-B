@@ -12407,6 +12407,181 @@ def advance_group_competitors_to_next_stage(request):
     }, status=200)
 
 
+@api_view(["POST"])
+def advance_round_robin(request):
+    """Advance teams out of a finished BR Round-Robin stage into the next stage (Task 5).
+
+    A round-robin stage is decided by its CUMULATIVE table (every team summed across every
+    lobby it played) — NOT by any one lobby — so it can't reuse
+    `advance_group_competitors_to_next_stage`, which advances from a single StageGroups/lobby.
+    This is the parallel path for the whole stage:
+
+      • default (overall): take the top `stage.teams_qualifying_from_stage` teams of
+        `round_robin.cumulative_standings(stage)` (the same authoritative, server-sorted table
+        the standings endpoint returns), then
+      • mode="per_group": instead take the top `qualify_per_group` teams of EACH base group
+        (RoundRobinGroup), by ranking that group's members within the cumulative table — for
+        formats that guarantee per-group qualifiers rather than a single overall cut.
+
+    Either way the winners are seeded into the NEXT stage using the SAME plumbing the existing
+    advance uses: `StageCompetitor.get_or_create(stage=next_stage, tournament_team=..., player=None)`
+    plus the per-member Discord-role queue, so advancement behaves identically downstream.
+    """
+    # round_robin holds the cumulative aggregator; imported locally to match this file's
+    # per-function import idiom (the standings endpoint imports it the same way).
+    from . import round_robin
+
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    # Admin-gated via _is_event_admin (correct role__role_name__in path; never role_name__in).
+    if not _is_event_admin(user):
+        return Response({"message": "You do not have permission."}, status=403)
+
+    event_id = request.data.get("event_id")
+    stage_id = request.data.get("stage_id")
+    if not event_id or not stage_id:
+        return Response({"message": "event_id and stage_id are required."}, status=400)
+
+    # mode + qualify_per_group drive per-group vs overall selection.
+    mode = request.data.get("mode", "overall")
+    if mode not in ("overall", "per_group"):
+        return Response({"message": "mode must be 'overall' or 'per_group'."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    # Scope the stage to the event so a mismatched pair can't advance another event's stage.
+    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+    if stage.stage_format != "br - round robin":
+        return Response({"message": "Stage is not a Round-Robin stage."}, status=400)
+
+    # Find the next stage exactly the way the existing advance does (start_date first,
+    # falling back to stage_id ordering), so both paths agree on "the next stage".
+    if stage.start_date:
+        next_stage = (Stages.objects
+                      .filter(event=event, start_date__gt=stage.start_date)
+                      .order_by("start_date", "stage_id")
+                      .first())
+    else:
+        next_stage = (Stages.objects
+                      .filter(event=event, stage_id__gt=stage.stage_id)
+                      .order_by("stage_id")
+                      .first())
+
+    if not next_stage:
+        return Response({"message": "No next stage found after this stage."}, status=400)
+
+    # The cumulative table is the single source of truth for ranking (already server-sorted by
+    # effective_total → booyahs → kills → name). Each row carries tournament_team_id.
+    cumulative = round_robin.cumulative_standings(stage)
+    if not cumulative:
+        return Response({"message": "No standings found (no results entered?)."}, status=400)
+
+    # Pick the advancing tournament_team_ids per mode.
+    if mode == "per_group":
+        # Top-K of EACH base group. K from the payload; default 1 (a single qualifier/group).
+        try:
+            qualify_per_group = int(request.data.get("qualify_per_group", 1))
+        except (TypeError, ValueError):
+            return Response({"message": "qualify_per_group must be an integer."}, status=400)
+        if qualify_per_group <= 0:
+            return Response({"message": "qualify_per_group must be > 0."}, status=400)
+
+        # Cumulative order is authoritative, so a team's rank WITHIN its group is just its
+        # position in the cumulative list filtered to that group's members. Walk the
+        # cumulative rows once (already sorted) and keep the first K seen per base group.
+        winner_ids = []
+        for grp in stage.round_robin_groups.all():
+            member_ids = set(grp.teams.values_list("tournament_team_id", flat=True))
+            taken = 0
+            for row in cumulative:
+                if taken >= qualify_per_group:
+                    break
+                if row["tournament_team_id"] in member_ids:
+                    winner_ids.append(row["tournament_team_id"])
+                    taken += 1
+    else:
+        # Overall: the top N of the whole-stage cumulative table.
+        qualify_n = int(stage.teams_qualifying_from_stage or 0)
+        if qualify_n <= 0:
+            return Response(
+                {"message": "stage.teams_qualifying_from_stage must be > 0."}, status=400)
+        winner_ids = [row["tournament_team_id"] for row in cumulative[:qualify_n]]
+
+    if not winner_ids:
+        return Response({"message": "No winners selected."}, status=400)
+
+    created_count = 0
+    queued_roles = 0
+    already_advanced_count = 0
+
+    # Seed the winners into the next stage with the SAME plumbing as the group-level advance.
+    with transaction.atomic():
+        already_ids = set(
+            StageCompetitor.objects.filter(stage=next_stage, tournament_team_id__in=winner_ids)
+            .values_list("tournament_team_id", flat=True)
+        )
+
+        winners = TournamentTeam.objects.prefetch_related("members__user").filter(
+            tournament_team_id__in=winner_ids
+        )
+        to_advance = [tt for tt in winners if tt.tournament_team_id not in already_ids]
+        already_advanced_count = len(set(winner_ids)) - len(to_advance)
+
+        for tt in to_advance:
+            _, created = StageCompetitor.objects.get_or_create(
+                stage=next_stage,
+                tournament_team=tt,
+                player=None,
+                defaults={"status": "active"},
+            )
+            if created:
+                created_count += 1
+
+            # Queue the next stage's Discord role for every team member (same as the
+            # group-level advance), so role assignment carries over unchanged.
+            if next_stage.stage_discord_role_id:
+                for m in tt.members.all():
+                    u = m.user
+                    if u and u.discord_id:
+                        DiscordRoleAssignment.objects.get_or_create(
+                            user=u,
+                            discord_id=u.discord_id,
+                            role_id=next_stage.stage_discord_role_id,
+                            stage=next_stage,
+                            group=None,
+                            defaults={"status": "pending"},
+                        )
+                        queued_roles += 1
+
+    # Kick off the role-assignment worker only if anything was queued (mirrors the existing advance).
+    progress_id = None
+    if queued_roles > 0 and next_stage.stage_discord_role_id:
+        progress = DiscordStageRoleAssignmentProgress.objects.create(
+            stage=next_stage,
+            total=queued_roles,
+            status="running",
+        )
+        assign_stage_roles_from_db_task.delay(str(progress.id), next_stage.stage_id)
+        progress_id = str(progress.id)
+
+    return Response({
+        "message": "Advance complete.",
+        "from_stage": stage.stage_name,
+        "to_stage": next_stage.stage_name,
+        "mode": mode,
+        "qualified_count": len(set(winner_ids)),
+        "newly_advanced": created_count,
+        "already_advanced": already_advanced_count,
+        "discord_roles_queued": queued_roles,
+        "progress_id": progress_id,
+    }, status=200)
+
+
 # @api_view(["POST"])
 # def advance_group_competitors_to_next_stage(request):
 #     auth = request.headers.get("Authorization")
