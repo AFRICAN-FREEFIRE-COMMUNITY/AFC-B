@@ -13,7 +13,7 @@ from django.test import TestCase
 from django.test.client import RequestFactory
 
 from afc_partner_api import auth
-from afc_partner_api.models import Partner, PartnerApiKey, PARTNER_TOGGLE_FIELDS
+from afc_partner_api.models import FIELD_TOGGLES, Partner, PartnerApiKey, PARTNER_TOGGLE_FIELDS
 
 
 class PartnerModelTests(TestCase):
@@ -193,3 +193,241 @@ class ScopeTests(TestCase):
         self.orgev.save()
         self.partner.allowed_events.add(self.orgev)
         self.assertEqual(set(partner_visible_events(self.partner)), set())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Task 4 — serialization firewall tests (the PII/PK/room-cred guard).
+#
+# serialize.py is the ONE boundary that turns internal ORM rows into partner-facing
+# JSON, so it is the single most security-critical module in this app. These tests
+# lock in two contracts the spec (§8) makes non-negotiable:
+#
+#   1. DENYLIST (the firewall): json.dumps() of EVERY serializer's output must contain
+#      none of FORBIDDEN_KEYS — raw PKs (event_id/match_id/.../organization_id), room
+#      credentials (room_id/password/name), PII (contact_email/email/discord_role_id),
+#      scoring internals (scoring_settings), and internal flags (creator/is_draft/
+#      rankings_verified). If a field is not explicitly public + toggle-gated, it must
+#      not appear. This guard runs over all seven resources so the firewall is proven
+#      end-to-end, not just on the event row.
+#   2. FIELD TOGGLES: a stat/detail field appears ONLY when its include_* toggle is on.
+#      include_kills off -> no "kills" key; include_placements on -> "placement" present.
+#      Toggles default OFF (least privilege), so the partner sees nothing extra unless
+#      an AFC admin opted in.
+#
+# We seed one complete, completed squad event (event -> stage -> group -> leaderboard
+# -> match -> two TournamentTeams, each with a finalized TournamentTeamMatchStats row
+# and per-player TournamentPlayerMatchStats) using the existing model field set, so the
+# aggregating serializers (team/standings/match/player) have real finalized rows to fold.
+# Full spec: WEBSITE/tasks/partner-api-design.md (§8 serialization rules).
+# ──────────────────────────────────────────────────────────────────────────────
+class SerializeTests(TestCase):
+    # The hard denylist. NONE of these keys may appear anywhere in any serializer's
+    # JSON output. Mirrors spec §8 "NEVER emit" plus the plan's FORBIDDEN_KEYS set.
+    FORBIDDEN_KEYS = {
+        "event_id", "match_id", "stage_id", "group_id", "tournament_team_id", "player_id",
+        "competitor_id", "leaderboard_id", "room_id", "room_password", "room_name",
+        "contact_email", "email", "discord_role_id", "scoring_settings", "creator",
+        "is_draft", "rankings_verified", "organization_id",
+    }
+
+    def setUp(self):
+        from afc_auth.models import User
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import (
+            Event, Stages, StageGroups, Leaderboard, Match,
+            TournamentTeam, TournamentTeamMatchStats, TournamentPlayerMatchStats,
+        )
+
+        # ── partner under test: all toggles default OFF (least privilege) ──
+        self.partner = Partner.objects.create(name="ESL", slug="esl")
+
+        # ── a completed, partner-published native AFC event ──
+        self.event = Event.objects.create(
+            event_name="AFC Open", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-01-01", end_date="2026-01-02",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="$1000", event_rules="-", event_status="completed",
+            registration_link="https://x", tournament_tier="tier_1", number_of_stages=1,
+            partner_published=True, organization=None)
+
+        # ── stage -> group ──
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="Grand Final", start_date="2026-01-02",
+            end_date="2026-01-02", number_of_groups=1, stage_format="br - normal",
+            teams_qualifying_from_stage=2, stage_status="completed",
+            stage_discord_role_id="999999999")  # PII-ish id that must NEVER leak
+        self.group = StageGroups.objects.create(
+            stage=self.stage, group_name="Group A", playing_date="2026-01-02",
+            playing_time="18:00", teams_qualifying=2, match_count=1, match_maps=["bermuda"],
+            group_discord_role_id="888888888")
+
+        # ── creator user for the leaderboard (internal — never serialized) ──
+        self.admin = User.objects.create_user(
+            username="afcstaff", email="afc@x.com", password="x", full_name="AFC Staff",
+            role="admin")
+        self.leaderboard = Leaderboard.objects.create(
+            leaderboard_name="GF LB", event=self.event, stage=self.stage, group=self.group,
+            creator=self.admin, placement_points={"1": 12, "2": 9}, kill_point=1.0,
+            leaderboard_method="manual")
+
+        # ── match carries room credentials that must be firewalled out ──
+        self.match = Match.objects.create(
+            leaderboard=self.leaderboard, group=self.group, match_number=1, match_map="bermuda",
+            room_id="SECRET123", room_password="hunter2", room_name="AFC-GF-ROOM",
+            result_inputted=True, scoring_settings={"per_kill": 1})
+
+        # ── two teams, each with a finalized team-match-stats row + player stats ──
+        self.player1 = User.objects.create_user(
+            username="ProGamer", email="p1@x.com", password="x", full_name="Real Name One",
+            uid="UID0001", role="player", discord_id="discord-1")
+        self.player2 = User.objects.create_user(
+            username="Sniper", email="p2@x.com", password="x", full_name="Real Name Two",
+            uid="UID0002", role="player", discord_id="discord-2")
+
+        self.team1 = Team.objects.create(
+            team_name="Team Alpha", team_tag="ALP", join_settings="open",
+            team_creator=self.player1, team_owner=self.player1, country="Nigeria")
+        self.team2 = Team.objects.create(
+            team_name="Team Bravo", team_tag="BRV", join_settings="open",
+            team_creator=self.player2, team_owner=self.player2, country="Ghana")
+
+        self.tteam = TournamentTeam.objects.create(
+            event=self.event, team=self.team1, status="active", result_finalized=True,
+            is_tournament_winner=True, reached_finals=True)
+        self.tteam2 = TournamentTeam.objects.create(
+            event=self.event, team=self.team2, status="active", result_finalized=True)
+
+        # team1 won (placement 1), team2 second.
+        self.tts1 = TournamentTeamMatchStats.objects.create(
+            match=self.match, tournament_team=self.tteam, placement=1, kills=10, damage=2500,
+            assists=4, placement_points=12, kill_points=10, total_points=22)
+        self.tts2 = TournamentTeamMatchStats.objects.create(
+            match=self.match, tournament_team=self.tteam2, placement=2, kills=6, damage=1800,
+            assists=2, placement_points=9, kill_points=6, total_points=15)
+
+        # per-player rows so serialize_player / rosters have real data to fold.
+        TournamentPlayerMatchStats.objects.create(
+            team_stats=self.tts1, player=self.player1, kills=6, damage=1500, assists=2)
+        TournamentPlayerMatchStats.objects.create(
+            team_stats=self.tts2, player=self.player2, kills=6, damage=1800, assists=2)
+
+    def _assert_no_forbidden(self, obj):
+        # json.dumps then substring-search for each forbidden key as a JSON object key
+        # (quoted). This catches a leaked key anywhere in the (possibly nested) payload.
+        import json
+
+        text = json.dumps(obj, default=str)
+        for k in self.FORBIDDEN_KEYS:
+            self.assertNotIn(f'"{k}"', text, f"forbidden key {k} leaked: {text}")
+
+    # ── event ──
+    def test_event_serialization_has_slug_no_pk(self):
+        from afc_partner_api.serialize import serialize_event
+
+        out = serialize_event(self.event, self.partner)
+        self.assertEqual(out["slug"], self.event.slug)
+        self.assertEqual(out["name"], "AFC Open")
+        self.assertTrue(out["is_native_afc"])          # organization is None
+        self._assert_no_forbidden(out)
+
+    def test_event_prize_gated_on_toggle(self):
+        from afc_partner_api.serialize import serialize_event
+
+        # toggle OFF (default) -> no prize_pool field.
+        self.assertNotIn("prize_pool", serialize_event(self.event, self.partner))
+        # toggle ON -> prize_pool present.
+        self.partner.include_prize = True
+        self.partner.save()
+        self.assertIn("prize_pool", serialize_event(self.event, self.partner))
+
+    # ── stage / group ──
+    def test_stage_group_serialization(self):
+        from afc_partner_api.serialize import serialize_group, serialize_stage
+
+        st = serialize_stage(self.stage, self.partner)
+        self.assertEqual(st["stage_name"], "Grand Final")
+        self.assertIn("order", st)                     # stage_name + order (spec §8)
+        self._assert_no_forbidden(st)
+
+        gr = serialize_group(self.group, self.partner)
+        self.assertEqual(gr["group_name"], "Group A")
+        self._assert_no_forbidden(gr)
+
+    # ── match ──
+    def test_match_serialization_strips_room_creds(self):
+        from afc_partner_api.serialize import serialize_match
+
+        out = serialize_match(self.match, self.partner)
+        self.assertEqual(out["match_number"], 1)
+        self._assert_no_forbidden(out)                 # room_id/password/name must be gone
+
+    # ── team: the toggle-gating contract ──
+    def test_field_toggles_gate_stats(self):
+        from afc_partner_api.serialize import serialize_team
+
+        self.partner.include_kills = False
+        self.partner.include_placements = True
+        self.partner.save()
+        out = serialize_team(self.tteam, self.partner)
+        self.assertNotIn("kills", out)                 # toggle off -> absent
+        self.assertIn("placement", out)                # toggle on -> present
+        self._assert_no_forbidden(out)
+
+    def test_team_all_stat_toggles(self):
+        from afc_partner_api.serialize import serialize_team
+
+        # turn on every stat/detail toggle -> all fields present, still no leak.
+        for f in FIELD_TOGGLES:
+            setattr(self.partner, f, True)
+        self.partner.save()
+        out = serialize_team(self.tteam, self.partner)
+        self.assertEqual(out["team"], "Team Alpha")
+        self.assertEqual(out["placement"], 1)          # best (lowest) placement in event
+        self.assertEqual(out["kills"], 10)
+        self.assertEqual(out["damage"], 2500)
+        self.assertEqual(out["assists"], 4)
+        self.assertIn("roster", out)                   # include_rosters -> player list
+        self._assert_no_forbidden(out)
+
+    def test_team_rosters_gated(self):
+        from afc_partner_api.serialize import serialize_team
+
+        # rosters off -> no roster key; on -> present with public handles only.
+        self.assertNotIn("roster", serialize_team(self.tteam, self.partner))
+        self.partner.include_rosters = True
+        self.partner.save()
+        out = serialize_team(self.tteam, self.partner)
+        self.assertIn("roster", out)
+        self._assert_no_forbidden(out)
+
+    # ── standings ──
+    def test_standings_serialization(self):
+        from afc_partner_api.serialize import serialize_standings
+
+        self.partner.include_placements = True
+        self.partner.include_kills = True
+        self.partner.save()
+        rows = serialize_standings(self.event, self.partner)
+        self.assertEqual(len(rows), 2)                 # two teams
+        # winner first (most points): Team Alpha at rank 1.
+        self.assertEqual(rows[0]["team"], "Team Alpha")
+        self.assertEqual(rows[0]["rank"], 1)
+        for r in rows:
+            self._assert_no_forbidden(r)
+
+    # ── player ──
+    def test_player_serialization_public_handle_only(self):
+        import json
+
+        from afc_partner_api.serialize import serialize_player
+
+        self.partner.include_kills = True
+        self.partner.save()
+        out = serialize_player(self.player1, self.partner)
+        # public in-game handle + id only — NEVER full_name/email/discord.
+        self.assertEqual(out["username"], "ProGamer")
+        self.assertEqual(out["in_game_id"], "UID0001")
+        self.assertNotIn("Real Name One", json.dumps(out, default=str))  # PII name never leaks
+        self.assertNotIn("discord-1", json.dumps(out, default=str))      # discord id never leaks
+        self._assert_no_forbidden(out)
