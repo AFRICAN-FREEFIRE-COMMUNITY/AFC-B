@@ -61,7 +61,19 @@ def _is_partner_admin(user) -> bool:
 
     The role lives on the related Roles row, reached through the UserRoles join, so
     we filter ``role__role_name__in`` — NEVER ``role_name__in`` (UserRoles itself has
-    no role_name column; that field is on Roles). Mirrors is_platform_org_admin.
+    no role_name column; that field is on Roles).
+
+    DELIBERATE DIVERGENCE from afc_organizers/permissions.py:is_platform_org_admin:
+    that reference gates on TWO factors — ``user.role == "admin"`` AND a granular
+    UserRoles row. We intentionally gate on the granular row ALONE here, per the
+    Task 7 plan (partner-api-plan.md §"Admin management endpoints", Step 2-3), which
+    specifies the helper as ``user.userroles.filter(...).exists()`` with no coarse
+    ``User.role`` predicate. Rationale: the granular ``UserRoles`` table is the
+    authoritative, fine-grained grant for the partner program (head_admin /
+    partner_admin are issued there), so holding one of those rows IS the entitlement
+    to manage partners — the coarse ``User.role`` tier is not a prerequisite for it.
+    Granting head_admin / partner_admin without the coarse ``admin`` tier is the
+    grantor's deliberate choice, and it is honored here.
     """
     return bool(user) and \
         user.userroles.filter(role__role_name__in=PARTNER_ADMIN_ROLES).exists()
