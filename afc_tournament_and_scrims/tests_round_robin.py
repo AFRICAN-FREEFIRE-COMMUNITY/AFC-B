@@ -466,6 +466,28 @@ class RoundRobinCreateEventTests(TestCase):
         expected = {t.team_name for t in self.teams[0:4]}  # A (0,1) + B (2,3)
         self.assertEqual(seeded_names, expected)
 
+    def test_create_rejects_team_in_two_base_groups(self):
+        # Task 4 landmine #3: a team must belong to exactly one base group. Send a payload that
+        # lists teams[0] in BOTH group A and group B → create-event must 400 and write nothing.
+        payload = self._payload()
+        a, b, c = self.teams[0:2], self.teams[2:4], self.teams[4:6]
+        payload["stages"][0]["round_robin_groups"] = [
+            {"label": "A", "order": 0, "team_ids": [t.team_id for t in a]},
+            {"label": "B", "order": 1,
+             "team_ids": [self.teams[0].team_id] + [t.team_id for t in b]},
+            {"label": "C", "order": 2, "team_ids": [t.team_id for t in c]},
+        ]
+        events_before = Event.objects.count()
+
+        resp = self.client.post(
+            "/events/create-event/", data=payload, content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("one base group", resp.json()["message"])
+        # Pre-transaction guard → no half-built event written.
+        self.assertEqual(Event.objects.count(), events_before)
+
     def test_event_details_echoes_round_robin_structure(self):
         # get-event-details must echo the round-robin block (base groups + game-day lobbies)
         # so the FE editor can rehydrate the builder. Other formats get round_robin=None.
@@ -600,3 +622,48 @@ class RoundRobinEditEventTests(TestCase):
             set(lobbies_after.values_list("game_day", flat=True)), {1, 2, 3})
         # Still exactly C(3,2)=3 lobbies — no duplicate day 1 created alongside the kept one.
         self.assertEqual(lobbies_after.count(), 3)
+
+        # ── Base-group integrity (Task 4 bug regression) ──
+        # The edit must NOT leak duplicate base groups. Before the fix, keeping the played
+        # lobby's source groups (A,B) AND recreating the full payload set (A,B,C) ballooned
+        # round_robin_groups 3 → 5 (duplicate A/B). Assert exactly the 3 payload labels remain,
+        # each label appearing once (so a team can't end up in two same-labelled base groups,
+        # which would corrupt per-group advancement + cumulative standings).
+        base_groups = list(self.stage.round_robin_groups.all())
+        self.assertEqual(len(base_groups), 3, "edit must not leak duplicate base groups")
+        labels = [g.label for g in base_groups]
+        self.assertEqual(sorted(labels), ["A", "B", "C"])
+        self.assertEqual(len(set(labels)), 3, "no duplicate base-group labels after edit")
+
+        # The played day-1 lobby must still point at REAL surviving base groups (not orphaned
+        # rows): its two source groups are among the current base-group set.
+        survived_sources = set(survived.source_groups.values_list("group_id", flat=True))
+        current_group_ids = {g.group_id for g in base_groups}
+        self.assertTrue(
+            survived_sources and survived_sources.issubset(current_group_ids),
+            "played lobby's source groups must be part of the live base-group set")
+
+    def test_edit_rejects_team_in_two_base_groups(self):
+        # Task 4 landmine #3: a team must belong to exactly one base group. Re-submit the stage
+        # with the SAME team listed in groups A and B → edit-event must 400 and not mutate.
+        a, b, c = self.teams[0:2], self.teams[2:4], self.teams[4:6]
+        bad_stage = self._stage(with_stage_id=True)
+        # Duplicate teams[0] into group B as well as group A.
+        bad_stage["round_robin_groups"] = [
+            {"label": "A", "order": 0, "team_ids": [t.team_id for t in a]},
+            {"label": "B", "order": 1,
+             "team_ids": [self.teams[0].team_id] + [t.team_id for t in b]},
+            {"label": "C", "order": 2, "team_ids": [t.team_id for t in c]},
+        ]
+        groups_before = self.stage.round_robin_groups.count()
+
+        edit = self.client.post(
+            "/events/edit-event/",
+            data={"event_id": self.event.event_id, "stages": [bad_stage]},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+
+        self.assertEqual(edit.status_code, 400, edit.content)
+        self.assertIn("one base group", edit.json()["message"])
+        # Pre-transaction guard → nothing changed (base-group count untouched).
+        self.assertEqual(self.stage.round_robin_groups.count(), groups_before)

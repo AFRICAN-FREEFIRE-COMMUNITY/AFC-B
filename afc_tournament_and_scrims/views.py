@@ -397,6 +397,40 @@ def _validate_scoring_modes(stages_data):
 ROUND_ROBIN_FORMAT = "br - round robin"
 
 
+def _validate_round_robin_groups(stages_data):
+    """Validate the base-group team assignments in a create/edit payload (Task 4 landmine #3).
+
+    The plan requires: "A team must belong to exactly one base group." `_build_round_robin_groups`
+    and `_resolve_round_robin_team_ids` would otherwise silently accept the same team listed in
+    two base groups, which corrupts per-group advancement (a team would sit in two groups) and
+    the cumulative standings. So we guard it here, BEFORE the transaction opens, mirroring
+    `_validate_scoring_modes`: only round-robin stages are checked; the first duplicate team
+    found in two groups of the SAME stage returns an error message (callers turn it into a 400
+    so no partial event is written). `stages_data` is the submit-ordered list of stage dicts.
+
+    Returns an error message string on the first problem, or None if every round-robin stage is
+    clean. (Unknown/blank team ids are ignored here — `_resolve_round_robin_team_ids` already
+    skips them; we only police the uniqueness invariant the plan calls out.)
+    """
+    for stage_data in stages_data:
+        if stage_data.get("stage_format") != ROUND_ROBIN_FORMAT:
+            continue
+        seen_team_ids = set()  # team ids already claimed by an earlier base group in this stage
+        for grp_data in stage_data.get("round_robin_groups", []):
+            for raw_id in grp_data.get("team_ids") or []:
+                try:
+                    team_id = int(raw_id)
+                except (TypeError, ValueError):
+                    continue  # mirror _resolve_round_robin_team_ids: skip un-parseable ids
+                if team_id in seen_team_ids:
+                    return (
+                        "A team can only belong to one base group in a round-robin stage "
+                        f"(team id {team_id} appears in more than one group)."
+                    )
+                seen_team_ids.add(team_id)
+    return None
+
+
 def _resolve_round_robin_team_ids(team_ids, event, user):
     """Turn the FE-supplied `team_ids` into THIS event's TournamentTeam rows.
 
@@ -512,24 +546,41 @@ def _materialise_round_robin_lobby(stage, event, user, lobby_spec, source_groups
     return lobby
 
 
-def _build_round_robin_groups(stage, event, user, stage_data):
-    """Create the base groups (A/B/C…) for a round-robin stage and wire their teams.
+def _build_round_robin_groups(stage, event, user, stage_data, reuse_groups_by_label=None):
+    """Create (or reuse) the base groups (A/B/C…) for a round-robin stage and wire their teams.
 
-    `stage_data["round_robin_groups"]` is `[{label, order, team_ids}]`. Returns the created
+    `stage_data["round_robin_groups"]` is `[{label, order, team_ids}]`. Returns the resulting
     RoundRobinGroup rows in submit order so the caller can hand their ids to the schedule
     generator (order matters: it fixes which pairing falls on which game day).
+
+    `reuse_groups_by_label` (edit path only): a `{label: RoundRobinGroup}` map of base groups
+    that MUST survive because a played lobby still points at them (see `_edit_round_robin_stage`).
+    A payload group whose label matches one of these REUSES that exact row (re-attaching teams +
+    updating order) instead of creating a new one. Without this, the edit path would keep the
+    protected rows AND create fresh duplicates of the same labels — corrupting the base-group set
+    (Task 4 bug: 3 base groups → 5 with duplicate A/B). When None (create path), every group is
+    created fresh as before.
     """
+    reuse_groups_by_label = reuse_groups_by_label or {}
     created_groups = []
     for idx, grp_data in enumerate(stage_data.get("round_robin_groups", [])):
-        grp = RoundRobinGroup.objects.create(
-            stage=stage,
-            label=grp_data.get("label") or chr(ord("A") + idx),  # A, B, C… fallback
-            order=int(grp_data.get("order", idx)),
-        )
-        # Resolve the sent Team ids → this event's TournamentTeam rows and attach them.
+        label = grp_data.get("label") or chr(ord("A") + idx)  # A, B, C… fallback
+        order = int(grp_data.get("order", idx))
+
+        # Reuse a protected (played-lobby-sourced) group of this label so the played lobby keeps
+        # pointing at the SAME row; otherwise create a fresh base group.
+        grp = reuse_groups_by_label.get(label)
+        if grp is not None:
+            if grp.order != order:
+                grp.order = order
+                grp.save(update_fields=["order"])
+        else:
+            grp = RoundRobinGroup.objects.create(stage=stage, label=label, order=order)
+
+        # Resolve the sent Team ids → this event's TournamentTeam rows and attach them. .set()
+        # replaces the membership, so a reused group's roster is refreshed from the payload too.
         tts = _resolve_round_robin_team_ids(grp_data.get("team_ids"), event, user)
-        if tts:
-            grp.teams.set(tts)
+        grp.teams.set(tts)
         created_groups.append(grp)
     return created_groups
 
@@ -564,10 +615,17 @@ def _edit_round_robin_stage(stage, event, user, stage_data):
     kept_lobby_ids = [lb.group_id for lb in played_lobbies]
 
     # Base groups still referenced by a kept (played) lobby must survive too, so we don't
-    # orphan a played lobby's source_groups. Everything else is rebuildable.
+    # orphan a played lobby's source_groups. Everything else is rebuildable. We key these
+    # protected groups by LABEL: the payload below re-sends the same labels (A/B/C…), and a
+    # played lobby points at the protected A/B rows — so the regenerated lobbies must reuse
+    # those exact rows, not freshly-created duplicates of the same labels (Task 4 bug:
+    # recreating the full set alongside the survivors leaked 3 base groups → 5).
     protected_group_ids = set()
+    protected_groups_by_label = {}
     for lb in played_lobbies:
-        protected_group_ids.update(lb.source_groups.values_list("group_id", flat=True))
+        for src in lb.source_groups.all():
+            protected_group_ids.add(src.group_id)
+            protected_groups_by_label[src.label] = src
 
     # Delete the UNPLAYED lobbies (cascade drops their matches/leaderboard/competitors and
     # clears the source_groups M2M) so we can regenerate them cleanly below.
@@ -576,15 +634,16 @@ def _edit_round_robin_stage(stage, event, user, stage_data):
     if unplayed_ids:
         StageGroups.objects.filter(group_id__in=unplayed_ids).delete()
 
-    # Drop the base groups that are NOT protected by a played lobby; the payload below
-    # recreates the current base-group set. (Protected ones stay so played lobbies keep
-    # their identity.)
+    # Drop the base groups that are NOT protected by a played lobby. Protected ones stay so the
+    # played lobbies keep their identity; the payload rebuild below REUSES them by label (rather
+    # than recreating duplicates) and creates only the genuinely-new labels.
     stage.round_robin_groups.exclude(group_id__in=protected_group_ids).delete()
 
-    # Rebuild the base groups from the payload (same helper as create). When played lobbies
-    # exist we still recreate the FULL base-group set for the new schedule; the protected
-    # groups remain attached to their played lobbies, the new groups feed regeneration.
-    created_groups = _build_round_robin_groups(stage, event, user, stage_data)
+    # Rebuild the base groups from the payload (same helper as create), reusing the protected
+    # rows for labels a played lobby still depends on. Result: exactly the payload's base-group
+    # set (no duplicate labels), with the played lobby's groups preserved verbatim.
+    created_groups = _build_round_robin_groups(
+        stage, event, user, stage_data, reuse_groups_by_label=protected_groups_by_label)
 
     default_date = stage.start_date
     default_time = parse_time("19:00")
@@ -867,6 +926,12 @@ def create_event(request):
     scoring_mode_error = _validate_scoring_modes(stages_data)
     if scoring_mode_error:
         return Response({"message": scoring_mode_error}, status=400)
+
+    # Same pre-transaction guard for round-robin base groups: a team must belong to exactly
+    # one base group (Task 4 landmine #3). Fails fast with a 400 before any write.
+    round_robin_groups_error = _validate_round_robin_groups(stages_data)
+    if round_robin_groups_error:
+        return Response({"message": round_robin_groups_error}, status=400)
 
     is_draft = request.data.get("is_draft", True)
     if isinstance(is_draft, str):
@@ -1939,6 +2004,12 @@ def edit_event(request):
         scoring_mode_error = _validate_scoring_modes(as_list(request.data.get("stages")))
         if scoring_mode_error:
             return Response({"message": scoring_mode_error}, status=400)
+
+        # Same pre-transaction guard for round-robin base groups: a team must belong to
+        # exactly one base group (Task 4 landmine #3). Fails fast before the edit commits.
+        round_robin_groups_error = _validate_round_robin_groups(as_list(request.data.get("stages")))
+        if round_robin_groups_error:
+            return Response({"message": round_robin_groups_error}, status=400)
 
     with transaction.atomic():
         event.save()
