@@ -7306,6 +7306,15 @@ def get_event_details_for_admin(request):
             "stage_format": stage.stage_format,
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
+            # ── Scoring-mode config echo so the edit form re-hydrates the toggles. The edit
+            # page merges this admin payload's stages over get-event-details, so these must
+            # be present here too (mirrors get_event_details). point_rush_target_stage_id is
+            # the stage_id of the target; the FE maps it back to a 0-based index.
+            "champion_point_enabled": stage.champion_point_enabled,
+            "champion_point_threshold": stage.champion_point_threshold,
+            "point_rush_enabled": stage.point_rush_enabled,
+            "point_rush_reward": stage.point_rush_reward or {},
+            "point_rush_target_stage_id": stage.point_rush_target_stage_id,
         })
 
     pageviews = event.pageviews.count()
