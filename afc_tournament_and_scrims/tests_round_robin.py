@@ -21,6 +21,7 @@ from afc_tournament_and_scrims.models import (
     Event,
     Stages,
     StageGroups,
+    StageGroupCompetitor,
     Leaderboard,
     Match,
     TournamentTeam,
@@ -326,3 +327,276 @@ class RoundRobinStandingsTests(TestCase):
             content_type="application/json",
             HTTP_AUTHORIZATION=f"Bearer {player_token.token}")
         self.assertEqual(resp.status_code, 403, resp.content)
+
+
+class RoundRobinCreateEventTests(TestCase):
+    """End-to-end test for building a round-robin stage through `create-event` (Task 4).
+
+    The admin builds a round-robin stage by sending, instead of plain `groups`, a
+    `round_robin_groups` list (the BASE groups A/B/C + the team ids in each) plus a
+    `generate_schedule:true` flag. `create_event` must then:
+      • create the `RoundRobinGroup` rows (A/B/C) and wire their `teams` M2M (resolving the
+        sent team ids → this event's `TournamentTeam` rows, creating any that don't exist),
+      • run the pure `round_robin_schedule` over those base-group ids and materialise EACH
+        spec into a game-day `StageGroups` LOBBY — carrying `game_day` + `source_groups`,
+        its own auto-created `Leaderboard`, the `match_count` `Match` rows, and
+      • seed `StageGroupCompetitor` from the MERGED base groups' teams (so the lobby's
+        roster is exactly the union of the two base groups it merges).
+
+    Fixture: 3 base groups A/B/C of 2 teams each. C(3,2)=3 game-day lobbies (A+B, A+C, B+C),
+    each merging 4 teams. We assert the groups, the lobbies (game_day + source_groups), and
+    the seeded competitors all land.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.D = datetime.date(2026, 6, 1)
+
+        # Admin + a live session token so create_event's _is_event_admin gate passes.
+        self.admin = User.objects.create(
+            username="rr_create_admin", email="rr_create_admin@afc.test",
+            full_name="RR Create Admin", role="admin")
+        self.token = SessionToken.objects.create(
+            user=self.admin, token="rr-create-token",
+            expires_at=datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc))
+
+        # Six real teams, two per base group. We send their Team ids as `team_ids`; the
+        # endpoint must turn each into a TournamentTeam for the freshly-created event.
+        self.teams = [self._make_team(f"RR Team {i}") for i in range(1, 7)]
+
+    def _make_team(self, name):
+        return Team.objects.create(
+            team_name=name, join_settings="open", team_creator=self.admin,
+            team_owner=self.admin, team_captain=self.admin, country="Nigeria")
+
+    def _payload(self):
+        """A minimal create-event payload whose single stage is round-robin with A/B/C."""
+        d = str(self.D)
+        a, b, c = self.teams[0:2], self.teams[2:4], self.teams[4:6]
+        return {
+            "competition_type": "tournament",
+            "participant_type": "squad",
+            "event_type": "internal",
+            "max_teams_or_players": 16,
+            "event_name": "RR Create Cup",
+            "event_mode": "virtual",
+            "start_date": d, "end_date": d,
+            "registration_open_date": d, "registration_end_date": d,
+            "prizepool": "$1000",
+            "number_of_stages": 1,
+            "is_draft": False,
+            "stages": [
+                {
+                    "stage_name": "Group Stage",
+                    "start_date": d, "end_date": d,
+                    "number_of_groups": 3,
+                    "stage_format": "br - round robin",
+                    "teams_qualifying_from_stage": 4,
+                    # Base groups (A/B/C) — each carries the Team ids that belong to it.
+                    "round_robin_groups": [
+                        {"label": "A", "order": 0, "team_ids": [t.team_id for t in a]},
+                        {"label": "B", "order": 1, "team_ids": [t.team_id for t in b]},
+                        {"label": "C", "order": 2, "team_ids": [t.team_id for t in c]},
+                    ],
+                    # Auto-generate the round-robin schedule of game-day lobbies.
+                    "generate_schedule": True,
+                    "games_per_day": 2,
+                    "round_robin_maps": ["bermuda", "purgatory"],
+                }
+            ],
+        }
+
+    def _create(self):
+        return self.client.post(
+            "/events/create-event/",
+            data=self._payload(),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+
+    def test_create_builds_base_groups(self):
+        resp = self._create()
+        self.assertEqual(resp.status_code, 201, resp.content)
+        event = Event.objects.get(event_id=resp.json()["event_id"])
+        stage = event.stages.get()
+
+        # The three base groups landed, in order, each with its two teams attached.
+        groups = list(stage.round_robin_groups.all())
+        self.assertEqual([g.label for g in groups], ["A", "B", "C"])
+        for g in groups:
+            self.assertEqual(g.teams.count(), 2)
+
+        # team_ids resolved into THIS event's TournamentTeam rows (6 teams → 6 TTs).
+        self.assertEqual(TournamentTeam.objects.filter(event=event).count(), 6)
+
+    def test_create_generates_game_day_lobbies(self):
+        resp = self._create()
+        event = Event.objects.get(event_id=resp.json()["event_id"])
+        stage = event.stages.get()
+
+        # C(3,2)=3 lobbies, one per game day 1..3, each merging exactly two base groups.
+        lobbies = list(stage.groups.filter(game_day__isnull=False).order_by("game_day"))
+        self.assertEqual(len(lobbies), 3)
+        self.assertEqual([lb.game_day for lb in lobbies], [1, 2, 3])
+        for lb in lobbies:
+            self.assertEqual(lb.source_groups.count(), 2)
+            # games_per_day=2 → match_count=2 and two Match rows materialised.
+            self.assertEqual(lb.match_count, 2)
+            self.assertEqual(lb.matches.count(), 2)
+            self.assertEqual(lb.match_maps, ["bermuda", "purgatory"])
+            # Each lobby gets its own auto-created leaderboard.
+            self.assertTrue(Leaderboard.objects.filter(group=lb).exists())
+
+        # The first lobby (day 1) merges base groups A+B.
+        day1 = lobbies[0]
+        self.assertEqual(
+            {g.label for g in day1.source_groups.all()}, {"A", "B"})
+
+    def test_create_seeds_competitors_from_merged_groups(self):
+        resp = self._create()
+        event = Event.objects.get(event_id=resp.json()["event_id"])
+        stage = event.stages.get()
+
+        # Day-1 lobby merges A+B (2+2 teams) → 4 seeded StageGroupCompetitor rows, and the
+        # seeded teams are exactly the union of base groups A and B.
+        day1 = stage.groups.filter(game_day=1).get()
+        seeded = StageGroupCompetitor.objects.filter(stage_group=day1)
+        self.assertEqual(seeded.count(), 4)
+        seeded_names = set(
+            seeded.values_list("tournament_team__team__team_name", flat=True))
+        expected = {t.team_name for t in self.teams[0:4]}  # A (0,1) + B (2,3)
+        self.assertEqual(seeded_names, expected)
+
+    def test_event_details_echoes_round_robin_structure(self):
+        # get-event-details must echo the round-robin block (base groups + game-day lobbies)
+        # so the FE editor can rehydrate the builder. Other formats get round_robin=None.
+        resp = self._create()
+        event = Event.objects.get(event_id=resp.json()["event_id"])
+
+        details = self.client.post(
+            "/events/get-event-details/",
+            data={"slug": event.slug},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+        self.assertEqual(details.status_code, 200, details.content)
+
+        stage_echo = details.json()["event_details"]["stages"][0]["round_robin"]
+        self.assertIsNotNone(stage_echo)
+        self.assertEqual({g["label"] for g in stage_echo["round_robin_groups"]},
+                         {"A", "B", "C"})
+        # Three game days, each echoing its lobby's source group ids.
+        self.assertEqual([d["game_day"] for d in stage_echo["game_days"]], [1, 2, 3])
+        day1 = stage_echo["game_days"][0]["lobbies"][0]
+        self.assertEqual(len(day1["source_group_ids"]), 2)
+
+
+class RoundRobinEditEventTests(TestCase):
+    """`edit-event` rebuilds round-robin lobbies but PRESERVES played ones (Task 4 landmine).
+
+    The critical rule: regenerating the schedule on edit must NOT wipe a game-day lobby that
+    already has entered results. We build a stage, mark ONE lobby's match as played (with a
+    stat), then re-submit the same stage through edit-event with generate_schedule. The
+    played lobby must survive verbatim (same group_id, still result_inputted + stats), while
+    the unplayed lobbies are regenerated.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.D = datetime.date(2026, 6, 1)
+        self.admin = User.objects.create(
+            username="rr_edit_admin", email="rr_edit_admin@afc.test",
+            full_name="RR Edit Admin", role="admin")
+        self.token = SessionToken.objects.create(
+            user=self.admin, token="rr-edit-token",
+            expires_at=datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc))
+        self.teams = [self._make_team(f"RR Edit Team {i}") for i in range(1, 7)]
+
+        # Build a 3-group round-robin event via create-event (reuse the same payload shape).
+        create = self.client.post(
+            "/events/create-event/",
+            data=self._stage_payload(extra_event={
+                "competition_type": "tournament", "participant_type": "squad",
+                "event_type": "internal", "max_teams_or_players": 16,
+                "event_name": "RR Edit Cup", "event_mode": "virtual",
+                "number_of_stages": 1, "is_draft": False, "prizepool": "$1000"}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+        self.assertEqual(create.status_code, 201, create.content)
+        self.event = Event.objects.get(event_id=create.json()["event_id"])
+        self.stage = self.event.stages.get()
+
+    def _make_team(self, name):
+        return Team.objects.create(
+            team_name=name, join_settings="open", team_creator=self.admin,
+            team_owner=self.admin, team_captain=self.admin, country="Nigeria")
+
+    def _stage(self, with_stage_id=False):
+        d = str(self.D)
+        a, b, c = self.teams[0:2], self.teams[2:4], self.teams[4:6]
+        stage = {
+            "stage_name": "Group Stage",
+            "start_date": d, "end_date": d,
+            "number_of_groups": 3,
+            "stage_format": "br - round robin",
+            "teams_qualifying_from_stage": 4,
+            "round_robin_groups": [
+                {"label": "A", "order": 0, "team_ids": [t.team_id for t in a]},
+                {"label": "B", "order": 1, "team_ids": [t.team_id for t in b]},
+                {"label": "C", "order": 2, "team_ids": [t.team_id for t in c]},
+            ],
+            "generate_schedule": True,
+            "games_per_day": 1,
+            "round_robin_maps": ["bermuda"],
+        }
+        if with_stage_id:
+            stage["stage_id"] = self.stage.stage_id
+        return stage
+
+    def _stage_payload(self, extra_event):
+        d = str(self.D)
+        return {
+            **extra_event,
+            "start_date": d, "end_date": d,
+            "registration_open_date": d, "registration_end_date": d,
+            "stages": [self._stage()],
+        }
+
+    def test_edit_preserves_played_lobby_and_regenerates_rest(self):
+        # Mark the day-1 lobby as PLAYED: flip its match to result_inputted + add a stat.
+        day1 = self.stage.groups.filter(game_day=1).get()
+        played_match = day1.matches.first()
+        played_match.result_inputted = True
+        played_match.save(update_fields=["result_inputted"])
+        played_tt = day1.competitors.first().tournament_team
+        TournamentTeamMatchStats.objects.create(
+            match=played_match, tournament_team=played_tt, placement=1, kills=3,
+            placement_points=12, kill_points=3, total_points=15)
+
+        day1_id = day1.group_id
+        unplayed_ids_before = set(
+            self.stage.groups.filter(game_day__isnull=False)
+            .exclude(group_id=day1_id).values_list("group_id", flat=True))
+
+        # Re-submit the SAME stage (with its stage_id) through edit-event, regenerating.
+        edit = self.client.post(
+            "/events/edit-event/",
+            data={"event_id": self.event.event_id, "stages": [self._stage(with_stage_id=True)]},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+        self.assertEqual(edit.status_code, 200, edit.content)
+
+        # The played day-1 lobby survives verbatim: same id, still played, stat intact.
+        survived = StageGroups.objects.filter(group_id=day1_id).first()
+        self.assertIsNotNone(survived, "played lobby must not be deleted on edit")
+        self.assertTrue(survived.matches.filter(result_inputted=True).exists())
+        self.assertEqual(
+            TournamentTeamMatchStats.objects.filter(match__group=survived).count(), 1)
+
+        # The unplayed lobbies were regenerated → their old ids are gone, day 2 & 3 still exist.
+        lobbies_after = self.stage.groups.filter(game_day__isnull=False)
+        self.assertFalse(
+            lobbies_after.filter(group_id__in=unplayed_ids_before).exists(),
+            "unplayed lobbies should be replaced (old ids gone)")
+        self.assertEqual(
+            set(lobbies_after.values_list("game_day", flat=True)), {1, 2, 3})
+        # Still exactly C(3,2)=3 lobbies — no duplicate day 1 created alongside the kept one.
+        self.assertEqual(lobbies_after.count(), 3)
