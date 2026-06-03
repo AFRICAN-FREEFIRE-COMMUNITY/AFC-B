@@ -40,6 +40,10 @@ def check_rate_limit(key):
     ``key`` only needs two attributes: ``.key_prefix`` (identifies the bucket) and
     ``.rate_limit_per_min`` (the ceiling). It is normally a PartnerApiKey row, but any
     object exposing those two attributes works.
+
+    Returns the running count for the window (how many calls have now been spent,
+    including this one) so the caller can compute X-RateLimit-Remaining as
+    ``max(0, key.rate_limit_per_min - count)`` WITHOUT a second cache round-trip.
     """
     # The minute stamp makes the window self-rotating: a new minute => a new bucket.
     window = timezone.now().strftime("%Y%m%d%H%M")
@@ -64,3 +68,6 @@ def check_rate_limit(key):
     # Ceiling is inclusive: a limit of N admits N calls, the (N+1)th trips the guard.
     if count > key.rate_limit_per_min:
         raise RateLimitExceeded()
+    # Hand the running count back so the view can derive X-RateLimit-Remaining without
+    # re-reading the bucket (one source of truth for "calls spent this window").
+    return count

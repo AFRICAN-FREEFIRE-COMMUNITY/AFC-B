@@ -562,6 +562,19 @@ class RateLimitTests(TestCase):
         with self.assertRaises(ratelimit.RateLimitExceeded):
             ratelimit.check_rate_limit(key)  # one over -> blocked
 
+    def test_returns_running_count(self):
+        # check_rate_limit RETURNS the running count for the window so the caller can
+        # compute X-RateLimit-Remaining (limit - count) without a second cache round-trip.
+        from django.core.cache import cache
+
+        from afc_partner_api import ratelimit
+
+        cache.clear()
+        key = type("K", (), {"key_prefix": "afcp_count", "rate_limit_per_min": 10})()
+        self.assertEqual(ratelimit.check_rate_limit(key), 1)   # 1st call in window
+        self.assertEqual(ratelimit.check_rate_limit(key), 2)   # 2nd call -> count grows
+        self.assertEqual(ratelimit.check_rate_limit(key), 3)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Task 6 — read-endpoint tests (the whole request→response stack, end-to-end).
@@ -755,6 +768,35 @@ class PartnerEndpointTests(TestCase):
         second = self._get("/api/v1/partner/events/")
         self.assertEqual(second.status_code, 429)          # 2nd call: over the limit
         self.assertEqual(second["Retry-After"], "60")
+
+    # ── rate-limit headers on a successful (2xx) response ──
+    def test_rate_limit_headers_on_success_and_decrease(self):
+        # A successful read must advertise the partner's budget so a well-behaved client
+        # can self-throttle WITHOUT having to be 429'd first: X-RateLimit-Limit is the
+        # per-minute ceiling, X-RateLimit-Remaining is how many calls are left in THIS
+        # window. Remaining must strictly decrease as calls are spent in the same window.
+        self.partner.can_read_events = True
+        self.partner.save()
+        # Pin a known ceiling so the assertions are exact (default is 60).
+        PartnerApiKey.objects.update(rate_limit_per_min=5)
+
+        first = self._get("/api/v1/partner/events/")
+        self.assertEqual(first.status_code, 200)
+        # Both headers are present on the 200.
+        self.assertIn("X-RateLimit-Limit", first)
+        self.assertIn("X-RateLimit-Remaining", first)
+        # Limit echoes the key's ceiling; one call spent -> 4 remain (5 - 1).
+        self.assertEqual(first["X-RateLimit-Limit"], "5")
+        self.assertEqual(first["X-RateLimit-Remaining"], "4")
+
+        # A second call in the same window spends one more -> Remaining drops to 3.
+        second = self._get("/api/v1/partner/events/")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second["X-RateLimit-Limit"], "5")
+        self.assertEqual(second["X-RateLimit-Remaining"], "3")
+        # Strictly decreasing across calls (defends the "spend a slot per call" contract).
+        self.assertLess(int(second["X-RateLimit-Remaining"]),
+                        int(first["X-RateLimit-Remaining"]))
 
     # ── field toggle reflected in the body ──
     def test_field_toggle_reflected_in_body(self):

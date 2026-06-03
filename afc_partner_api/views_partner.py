@@ -59,9 +59,11 @@ def partner_endpoint(resource_toggle=None):
                 return Response({"error": str(exc)}, status=401)
             # 2) Count this request against the key's per-minute budget, else 429.
             #    Retry-After tells a well-behaved client exactly how long to back off
-            #    (the window is one wall-clock minute — see ratelimit.py).
+            #    (the window is one wall-clock minute — see ratelimit.py). On success the
+            #    call returns the running count, which we turn into rate-limit headers
+            #    below so a well-behaved client can self-throttle BEFORE it gets 429'd.
             try:
-                check_rate_limit(key)
+                count = check_rate_limit(key)
             except RateLimitExceeded:
                 return Response({"error": "rate_limit_exceeded"}, status=429,
                                 headers={"Retry-After": "60"})
@@ -71,7 +73,16 @@ def partner_endpoint(resource_toggle=None):
             if resource_toggle and not getattr(partner, resource_toggle):
                 return Response({"error": "resource_not_enabled"}, status=403)
             # 4) Hand the authenticated partner to the view (scope + serialize happen there).
-            return fn(request, partner, *args, **kwargs)
+            response = fn(request, partner, *args, **kwargs)
+            # 5) Advertise the rate-limit budget on every SUCCESSFUL (2xx) read, mirroring
+            #    the GitHub-style X-RateLimit-* convention: -Limit is the per-minute
+            #    ceiling, -Remaining is calls left in THIS window (never negative). We
+            #    only stamp 2xx responses — a 403/404 isn't a metered read against quota,
+            #    and the 429 path already carries its own Retry-After above.
+            if 200 <= response.status_code < 300:
+                response["X-RateLimit-Limit"] = str(key.rate_limit_per_min)
+                response["X-RateLimit-Remaining"] = str(max(0, key.rate_limit_per_min - count))
+            return response
         return inner
     return deco
 
