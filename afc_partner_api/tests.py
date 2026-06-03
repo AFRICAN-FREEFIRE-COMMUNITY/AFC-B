@@ -123,3 +123,73 @@ class PartnerAuthTests(TestCase):
                                      expires_at=timezone.now() - timedelta(days=1))
         with self.assertRaises(auth.PartnerAuthError):
             auth.authenticate_partner(self._req(full))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Task 3 — scope predicate tests.
+#
+# partner_visible_events(partner) is the ONE place that decides which Events a
+# partner may read, so these lock in its three independent grant paths AND the
+# publish gate that overrides all of them:
+#   • explicit event grant     (Partner.allowed_events / Event.partner_grants)
+#   • whole-organization grant  (Partner.allowed_organizations / Org.partner_grants)
+#   • all native AFC events      (allow_all_native_afc -> organization IS NULL)
+# The last test is the security guard: even a directly-granted event stays invisible
+# while partner_published=False — the publish flag wins over any grant.
+# We seed one native event (organization=None) and one org-owned event, then assert
+# each grant path surfaces EXACTLY the expected event and nothing else.
+# Full spec: WEBSITE/tasks/partner-api-design.md (§6 scope).
+# ──────────────────────────────────────────────────────────────────────────────
+class ScopeTests(TestCase):
+    def setUp(self):
+        from afc_organizers.models import Organization
+        from afc_tournament_and_scrims.models import Event
+
+        self.org = Organization.objects.create(name="Nova", slug="nova")
+        # Native AFC event: organization=None. Reachable only via allow_all_native_afc.
+        self.native = Event.objects.create(event_name="AFC Open", competition_type="tournament",
+            participant_type="squad", event_type="internal", max_teams_or_players=12,
+            event_mode="virtual", start_date="2026-01-01", end_date="2026-01-02",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="100", event_rules="-", event_status="completed", registration_link="https://x",
+            number_of_stages=1, partner_published=True, organization=None)
+        # Org-owned event: reachable via either an explicit event grant or an org grant.
+        self.orgev = Event.objects.create(event_name="Nova Cup", competition_type="tournament",
+            participant_type="squad", event_type="external", max_teams_or_players=12,
+            event_mode="virtual", start_date="2026-01-01", end_date="2026-01-02",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="100", event_rules="-", event_status="completed", registration_link="https://x",
+            number_of_stages=1, partner_published=True, organization=self.org)
+        self.partner = Partner.objects.create(name="ESL", slug="esl")
+
+    def test_event_grant(self):
+        # Explicit event grant surfaces only that event (not the unrelated native one).
+        from afc_partner_api.scope import partner_visible_events
+
+        self.partner.allowed_events.add(self.orgev)
+        self.assertEqual(set(partner_visible_events(self.partner)), {self.orgev})
+
+    def test_org_grant(self):
+        # Granting the whole org surfaces every published event the org owns.
+        from afc_partner_api.scope import partner_visible_events
+
+        self.partner.allowed_organizations.add(self.org)
+        self.assertEqual(set(partner_visible_events(self.partner)), {self.orgev})
+
+    def test_native_toggle(self):
+        # allow_all_native_afc surfaces organization-less events only (not org events).
+        from afc_partner_api.scope import partner_visible_events
+
+        self.partner.allow_all_native_afc = True
+        self.partner.save()
+        self.assertEqual(set(partner_visible_events(self.partner)), {self.native})
+
+    def test_unpublished_excluded_even_when_granted(self):
+        # Publish gate wins: an explicitly granted event still stays invisible while
+        # partner_published=False. This is the security-critical branch.
+        from afc_partner_api.scope import partner_visible_events
+
+        self.orgev.partner_published = False
+        self.orgev.save()
+        self.partner.allowed_events.add(self.orgev)
+        self.assertEqual(set(partner_visible_events(self.partner)), set())
