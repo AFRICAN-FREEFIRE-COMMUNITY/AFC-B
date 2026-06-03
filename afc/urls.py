@@ -36,6 +36,11 @@ urlpatterns = [
     # prefix so a future breaking version can ship as /api/v2/partner/ without
     # disrupting existing partner integrations.
     path("api/v1/partner/", include('afc_partner_api.partner_urls')),
+    # AFC-staff partner-admin surface (provision partners, set scope/toggles, issue/
+    # revoke keys, publish events). Mounted at partners/ so its routes are
+    # partners/admin/… — the human Bearer-authenticated provisioning surface, kept
+    # OFF the versioned partner-facing read tree above.
+    path("partners/", include('afc_partner_api.admin_urls')),
 
 ]
 
