@@ -834,3 +834,253 @@ class PartnerEndpointTests(TestCase):
         self.partner.save()
         resp = self._get(f"/api/v1/partner/events/{self.other_event.slug}/stages/")
         self.assertEqual(resp.status_code, 404)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Task 7 — AFC admin (provisioning) endpoint tests.
+#
+# views_admin.py is the AFC-staff surface that stands a Partner up and configures
+# everything the read API later enforces: scope, the 14 toggles, the API keys, and
+# the per-event publish flag. Unlike the partner read API (X-API-Key), these views
+# are USER-SESSION authenticated (Bearer token -> validate_token) and gated to
+# head_admin / partner_admin via _is_partner_admin. These tests lock in the
+# security-critical contracts (spec §9 admin surface):
+#   • GATE: a logged-in user WITHOUT head_admin/partner_admin gets 403 on every
+#     endpoint (and a missing/garbage token is 400/401) — least privilege.
+#   • CREATE: a head_admin provisions a Partner (defaults: active, all toggles off).
+#   • KEY ISSUE: issue_key returns the FULL plaintext exactly ONCE, and the stored
+#     row holds only prefix+hash — the plaintext secret is never persisted and never
+#     returned again (the get_partner detail exposes key metadata, never plaintext).
+#   • REVOKE: a revoked key fails authenticate_partner (-> the read API 401s).
+#   • EDIT: PATCH accepts ONLY whitelisted keys (PARTNER_TOGGLE_FIELDS + the scope
+#     id-lists + allow_all_native_afc) and REJECTS an unknown field (400) so a typo
+#     or a malicious key can never silently set an attribute it shouldn't.
+#   • PUBLISH: publish_event flips Event.partner_published (the read API's gate).
+#
+# We forge the Bearer session token directly (SessionToken.objects.create) exactly
+# like afc_tournament_and_scrims/tests_scoring.py — no login round-trip needed.
+# Full spec: WEBSITE/tasks/partner-api-design.md (§9 admin surface).
+# ──────────────────────────────────────────────────────────────────────────────
+class PartnerAdminEndpointTests(TestCase):
+    def setUp(self):
+        import datetime
+
+        from afc_auth.models import Roles, SessionToken, User, UserRoles
+
+        # ── an AFC head_admin (role="admin" + the head_admin granular role) ──
+        # _is_partner_admin gates on the granular UserRoles row, so we attach one.
+        self.head_admin_role, _ = Roles.objects.get_or_create(role_name="head_admin")
+        self.admin = User.objects.create_user(
+            username="afcstaff", email="afc@x.com", password="x", full_name="AFC Staff",
+            role="admin")
+        UserRoles.objects.create(user=self.admin, role=self.head_admin_role)
+        self.admin_token = SessionToken.objects.create(
+            user=self.admin, token="partner-admin-token-1234567890",
+            expires_at=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=1)).token
+
+        # ── a plain (non-admin) logged-in user: holds NO partner-admin role ──
+        # Proves the 403 gate: a valid session is not enough; the role is required.
+        self.outsider = User.objects.create_user(
+            username="nobody", email="nobody@x.com", password="x", full_name="No Body",
+            role="player")
+        self.outsider_token = SessionToken.objects.create(
+            user=self.outsider, token="partner-outsider-token-123456",
+            expires_at=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=1)).token
+
+    def _auth(self, token):
+        # Bearer header the way validate_token expects it (afc_team/views.py idiom).
+        return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+    # ── 403 gate: a valid session that lacks the role is refused everywhere ──
+    def test_non_admin_create_403(self):
+        resp = self.client.post(
+            "/partners/admin/create/", {"name": "ESL"},
+            content_type="application/json", **self._auth(self.outsider_token))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_missing_token_400(self):
+        # No Authorization header at all -> 400 (malformed request, not an auth failure yet).
+        resp = self.client.get("/partners/admin/list/")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_bad_token_401(self):
+        # Well-formed Bearer header but the token resolves to no session -> 401.
+        resp = self.client.get("/partners/admin/list/", **self._auth("not-a-real-token"))
+        self.assertEqual(resp.status_code, 401)
+
+    # ── create + list + detail ──
+    def test_head_admin_creates_partner(self):
+        resp = self.client.post(
+            "/partners/admin/create/", {"name": "ESL Gaming"},
+            content_type="application/json", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertEqual(body["partner"]["name"], "ESL Gaming")
+        self.assertEqual(body["partner"]["status"], "active")
+        # Provisioned in the DB with the slug the view derived.
+        p = Partner.objects.get(slug=body["partner"]["slug"])
+        # Least privilege: every toggle defaults OFF on a brand-new partner.
+        for f in PARTNER_TOGGLE_FIELDS:
+            self.assertFalse(getattr(p, f))
+
+    def test_create_requires_name(self):
+        resp = self.client.post(
+            "/partners/admin/create/", {},
+            content_type="application/json", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 400)
+
+    def test_list_partners_includes_key_counts(self):
+        p = Partner.objects.create(name="ESL", slug="esl")
+        full, prefix, h = auth.generate_key()
+        PartnerApiKey.objects.create(partner=p, key_prefix=prefix, key_hash=h)
+        resp = self.client.get("/partners/admin/list/", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        row = next(r for r in body["results"] if r["slug"] == "esl")
+        self.assertEqual(row["active_key_count"], 1)
+
+    def test_get_partner_returns_scope_toggles_keys_no_plaintext(self):
+        p = Partner.objects.create(name="ESL", slug="esl", can_read_events=True)
+        full, prefix, h = auth.generate_key()
+        PartnerApiKey.objects.create(partner=p, key_prefix=prefix, key_hash=h, label="prod")
+        resp = self.client.get("/partners/admin/esl/", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        # toggles surfaced (the FE renders switches off these), scope id-lists present.
+        self.assertTrue(body["partner"]["can_read_events"])
+        self.assertIn("allowed_events", body["partner"])
+        self.assertIn("allowed_organizations", body["partner"])
+        # key metadata present, but the plaintext secret is NEVER returned in detail.
+        self.assertEqual(len(body["keys"]), 1)
+        self.assertEqual(body["keys"][0]["key_prefix"], prefix)
+        import json
+        text = json.dumps(body)
+        self.assertNotIn(full, text)                 # full key never echoed
+        self.assertNotIn(h, text)                    # hash is internal too
+        self.assertNotIn("key_hash", text)           # never expose the hash field
+
+    def test_get_partner_404(self):
+        resp = self.client.get("/partners/admin/ghost/", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 404)
+
+    # ── edit: whitelist-validated PATCH ──
+    def test_edit_sets_toggles_and_scope(self):
+        from afc_organizers.models import Organization
+        from afc_tournament_and_scrims.models import Event
+
+        p = Partner.objects.create(name="ESL", slug="esl")
+        org = Organization.objects.create(name="Nova", slug="nova")
+        ev = Event.objects.create(
+            event_name="AFC Open", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-01-01", end_date="2026-01-02",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="100", event_rules="-", event_status="completed",
+            registration_link="https://x", number_of_stages=1, organization=None)
+        resp = self.client.patch(
+            "/partners/admin/esl/",
+            {"can_read_events": True, "include_kills": True, "allow_all_native_afc": True,
+             "allowed_events": [ev.pk], "allowed_organizations": [org.pk]},
+            content_type="application/json", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 200)
+        p.refresh_from_db()
+        self.assertTrue(p.can_read_events)
+        self.assertTrue(p.include_kills)
+        self.assertTrue(p.allow_all_native_afc)
+        self.assertEqual(set(p.allowed_events.values_list("pk", flat=True)), {ev.pk})
+        self.assertEqual(set(p.allowed_organizations.values_list("pk", flat=True)), {org.pk})
+
+    def test_edit_rejects_unknown_field(self):
+        # The whitelist is the guard: a key that is NOT a toggle/scope field is a 400,
+        # so a typo or a malicious body can never set an arbitrary Partner attribute
+        # (e.g. status="active" bypassing suspend, or contact_email).
+        p = Partner.objects.create(name="ESL", slug="esl")
+        resp = self.client.patch(
+            "/partners/admin/esl/", {"contact_email": "leak@x.com"},
+            content_type="application/json", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 400)
+        p.refresh_from_db()
+        self.assertEqual(p.contact_email, "")        # untouched
+
+    # ── suspend toggle ──
+    def test_suspend_toggles_status(self):
+        p = Partner.objects.create(name="ESL", slug="esl")
+        resp = self.client.post(
+            "/partners/admin/esl/suspend/", {"suspend": True},
+            content_type="application/json", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 200)
+        p.refresh_from_db()
+        self.assertEqual(p.status, "suspended")
+        # un-suspend flips it back.
+        self.client.post(
+            "/partners/admin/esl/suspend/", {"suspend": False},
+            content_type="application/json", **self._auth(self.admin_token))
+        p.refresh_from_db()
+        self.assertEqual(p.status, "active")
+
+    # ── issue key: plaintext shown ONCE, only the hash stored ──
+    def test_issue_key_returns_plaintext_once_stores_only_hash(self):
+        p = Partner.objects.create(name="ESL", slug="esl")
+        resp = self.client.post(
+            "/partners/admin/esl/keys/", {"label": "prod"},
+            content_type="application/json", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        full = body["api_key"]                        # the plaintext, shown once
+        self.assertTrue(full.startswith("afcp_"))
+        # The stored row carries ONLY prefix + hash — never the plaintext secret.
+        row = PartnerApiKey.objects.get(partner=p)
+        self.assertEqual(row.key_hash, auth.hash_key(full))
+        self.assertNotIn(full.split("_")[-1], row.key_hash)  # secret never stored raw
+        # The issued plaintext actually authenticates at the read API boundary.
+        from django.test.client import RequestFactory
+        req = RequestFactory().get("/api/v1/partner/events/", HTTP_X_API_KEY=full)
+        partner, _key = auth.authenticate_partner(req)
+        self.assertEqual(partner.partner_id, p.partner_id)
+
+    # ── revoke key: the read API then 401s with it ──
+    def test_revoke_key_makes_it_fail_auth(self):
+        from django.test.client import RequestFactory
+
+        p = Partner.objects.create(name="ESL", slug="esl")
+        # issue via the endpoint so we hold the real plaintext to revoke + test.
+        full = self.client.post(
+            "/partners/admin/esl/keys/", {},
+            content_type="application/json", **self._auth(self.admin_token)).json()["api_key"]
+        key_id = PartnerApiKey.objects.get(partner=p).key_id
+        resp = self.client.post(
+            f"/partners/admin/keys/{key_id}/revoke/", {},
+            content_type="application/json", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(PartnerApiKey.objects.get(key_id=key_id).status, "revoked")
+        # A revoked key no longer authenticates (the read API would 401).
+        req = RequestFactory().get("/api/v1/partner/events/", HTTP_X_API_KEY=full)
+        with self.assertRaises(auth.PartnerAuthError):
+            auth.authenticate_partner(req)
+
+    # ── publish: flips Event.partner_published (the read API's gate) ──
+    def test_publish_event_flips_flag(self):
+        from afc_tournament_and_scrims.models import Event
+
+        ev = Event.objects.create(
+            event_name="AFC Open", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-01-01", end_date="2026-01-02",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="100", event_rules="-", event_status="completed",
+            registration_link="https://x", number_of_stages=1, organization=None)
+        self.assertFalse(ev.partner_published)
+        resp = self.client.post(
+            f"/partners/admin/events/{ev.slug}/publish/", {"published": True},
+            content_type="application/json", **self._auth(self.admin_token))
+        self.assertEqual(resp.status_code, 200)
+        ev.refresh_from_db()
+        self.assertTrue(ev.partner_published)
+        # un-publish flips it back off.
+        self.client.post(
+            f"/partners/admin/events/{ev.slug}/publish/", {"published": False},
+            content_type="application/json", **self._auth(self.admin_token))
+        ev.refresh_from_db()
+        self.assertFalse(ev.partner_published)
