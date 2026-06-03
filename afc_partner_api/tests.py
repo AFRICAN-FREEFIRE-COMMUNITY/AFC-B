@@ -528,3 +528,36 @@ class SerializeTests(TestCase):
         # Sanity: an UNSCOPED fold (the old bug) WOULD have summed both events.
         lifetime = serialize_player(self.player1, self.partner)
         self.assertEqual(lifetime["kills"], 6 + 50)  # proves the seed actually spans 2 events
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Task 5 — per-key rate-limit tests.
+#
+# check_rate_limit(key) is the abuse guard every read endpoint runs right after
+# auth: a fixed window of one wall-clock minute, counted per key in the shared
+# Redis cache. The contract this locks in: the first rate_limit_per_min calls in a
+# window pass, and the very next call (the (N+1)th) raises RateLimitExceeded.
+#
+# We drive it with a tiny stand-in object (not a real PartnerApiKey row) because the
+# limiter only touches two attributes — .key_prefix (the bucket id) and
+# .rate_limit_per_min (the ceiling) — so a DB row would be pure overhead and would
+# couple this unit test to the model. cache.clear() first so a leftover bucket from a
+# previous run (Redis persists across the test process) can't make the count start
+# above zero and flip the pass/raise boundary.
+# Full spec: WEBSITE/tasks/partner-api-design.md (§7 rate limiting).
+# ──────────────────────────────────────────────────────────────────────────────
+class RateLimitTests(TestCase):
+    def test_blocks_over_limit(self):
+        from django.core.cache import cache
+
+        from afc_partner_api import ratelimit
+
+        # Wipe any stale bucket so the window genuinely starts at zero.
+        cache.clear()
+        # Fake key: just the two attributes the limiter reads. Limit of 3 keeps the
+        # boundary (3 ok, 4th blocked) explicit and fast.
+        key = type("K", (), {"key_prefix": "afcp_test", "rate_limit_per_min": 3})()
+        for _ in range(3):
+            ratelimit.check_rate_limit(key)  # at-or-under the limit -> passes
+        with self.assertRaises(ratelimit.RateLimitExceeded):
+            ratelimit.check_rate_limit(key)  # one over -> blocked
