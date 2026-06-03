@@ -491,3 +491,204 @@ class RewardsFromStandingsTests(SimpleTestCase):
 
     def test_skips_placements_beyond_field_size(self):
         self.assertEqual(scoring.rewards_from_standings(["T1"], {"1": 10, "2": 7}), {"T1": 10})
+
+
+# ── Phase 3 (Task 5): the standings BUILDER applies the two helpers ON READ. ──
+# The pure helpers above are pinned in isolation; this exercises the full
+# get_all_leaderboard_details_for_event endpoint (request -> ORM aggregate ->
+# champion/carry-over overlay -> JSON) so a wiring bug in the view (wrong id key,
+# unmaterialized queryset, missing re-sort) is caught. Squad event, real DB.
+
+
+class GetAllLeaderboardDetailsScoringModesDBTests(TestCase):
+    """End-to-end DB test for Task 5.
+
+    Champion-Point case: a 2-match Finals lobby with threshold 20. Team B Booyahs
+    match 1 to reach exactly 20 (crossing during the match, so NOT champion yet), then
+    Booyahs match 2 while already at 20 entering it -> B is crowned. The endpoint must:
+      - pin B to overall[0] with is_champion True (even though A could otherwise tie/beat
+        it on raw points in a different scenario — here B leads anyway, but the crown flag
+        and the is_decided group flag are what we assert),
+      - mark the group payload is_decided True with champion_id == B.
+
+    A separate plain stage (both toggles off) must be unchanged: standings ordered purely
+    by points, no crown, no carry-over line. That guards the regression path.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+        # Admin user + forged session token (same pattern as the other DB tests in this
+        # module: role="admin" passes the endpoint's `admin.role != "admin"` gate directly).
+        self.admin = User.objects.create(
+            username="lb_admin",
+            email="lb_admin@example.com",
+            full_name="Leaderboard Admin",
+            role="admin",
+            password="x",
+        )
+        self.token = SessionToken.objects.create(
+            user=self.admin,
+            token="lb-admin-token-1234567890",
+            expires_at=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=1),
+        )
+
+        self.today = datetime.date.today()
+        self.event = Event.objects.create(
+            competition_type="tournament",
+            participant_type="squad",  # squad -> the team branch of the standings builder
+            event_type="internal",
+            max_teams_or_players=16,
+            event_name="Champion Point Cup",
+            event_mode="virtual",
+            start_date=self.today,
+            end_date=self.today,
+            registration_open_date=self.today,
+            registration_end_date=self.today,
+            prizepool="0",
+            event_rules="rules",
+            event_status="ongoing",
+            registration_link="https://example.com/reg",
+            number_of_stages=1,
+            creator=self.admin,
+        )
+
+        # Two teams that will receive results in both matches.
+        self.team_a = Team.objects.create(
+            team_name="Alpha", team_tag="ALP", join_settings="open",
+            team_creator=self.admin, team_owner=self.admin, country="NG",
+        )
+        self.team_b = Team.objects.create(
+            team_name="Bravo", team_tag="BRV", join_settings="open",
+            team_creator=self.admin, team_owner=self.admin, country="NG",
+        )
+        self.tt_a = TournamentTeam.objects.create(
+            event=self.event, team=self.team_a, registered_by=self.admin,
+        )
+        self.tt_b = TournamentTeam.objects.create(
+            event=self.event, team=self.team_b, registered_by=self.admin,
+        )
+
+    def _make_stage_group(self, *, stage_name, champion_enabled, threshold, match_count):
+        """Create a stage + one group + a leaderboard + `match_count` matches, all sharing
+        the canonical scoring config. Returns (stage, group, [matches])."""
+        stage = Stages.objects.create(
+            event=self.event,
+            stage_name=stage_name,
+            start_date=self.today,
+            end_date=self.today,
+            number_of_groups=1,
+            stage_format="br - normal",
+            teams_qualifying_from_stage=1,
+            champion_point_enabled=champion_enabled,
+            champion_point_threshold=threshold,
+        )
+        group = StageGroups.objects.create(
+            stage=stage,
+            group_name=f"{stage_name} Lobby",
+            playing_date=self.today,
+            playing_time=datetime.time(18, 0),
+            teams_qualifying=1,
+            match_count=match_count,
+        )
+        leaderboard = Leaderboard.objects.create(
+            leaderboard_name=f"{stage_name} LB",
+            event=self.event,
+            stage=stage,
+            group=group,
+            creator=self.admin,
+            placement_points={"1": 12, "2": 9},
+            kill_point=1.0,
+            leaderboard_method="manual",
+        )
+        matches = [
+            Match.objects.create(
+                leaderboard=leaderboard,
+                group=group,
+                match_number=n,
+                match_map="bermuda",
+                scoring_settings={"placement_points": {"1": 12, "2": 9}, "kill_point": 1},
+            )
+            for n in range(1, match_count + 1)
+        ]
+        return stage, group, matches
+
+    def _enter(self, match, rows):
+        """POST one manual team result. `rows` is a list of (tournament_team, placement, kills)."""
+        results = [
+            {
+                "tournament_team_id": tt.tournament_team_id,
+                "placement": placement,
+                "played": True,
+                "players": [{"kills": kills, "damage": 0, "assists": 0, "played": True}],
+            }
+            for (tt, placement, kills) in rows
+        ]
+        resp = self.client.post(
+            "/events/enter-team-match-result-manual/",
+            data={"match_id": match.match_id, "results": json.dumps(results)},
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def _fetch_details(self):
+        resp = self.client.post(
+            "/events/get-all-leaderboard-details-for-event/",
+            data={"event_id": self.event.event_id},
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return resp.json()
+
+    def _group_for_stage(self, payload, stage_id):
+        stage = next(s for s in payload["stages"] if s["stage_id"] == stage_id)
+        return stage["groups"][0]
+
+    def test_champion_point_stage_crowns_and_marks_decided(self):
+        # Champion-Point Finals: threshold 20, two matches.
+        stage, group, matches = self._make_stage_group(
+            stage_name="Finals", champion_enabled=True, threshold=20, match_count=2,
+        )
+
+        # Match 1: B booyahs to exactly 20 (12 placement + 8 kills). B was 0 entering, so this
+        # crossing booyah must NOT crown B yet. A places 2nd (9 pts).
+        self._enter(matches[0], [(self.tt_b, 1, 8), (self.tt_a, 2, 0)])
+        # Match 2: B booyahs again while ALREADY at 20 entering -> B is the champion.
+        self._enter(matches[1], [(self.tt_b, 1, 0), (self.tt_a, 2, 0)])
+
+        grp = self._group_for_stage(self._fetch_details(), stage.stage_id)
+        overall = grp["overall_leaderboard"]
+
+        # B sits at #0 and is flagged champion; the group reports the stage as decided.
+        self.assertEqual(overall[0]["tournament_team_id"], self.tt_b.tournament_team_id)
+        self.assertTrue(overall[0]["is_champion"])
+        self.assertTrue(grp["is_decided"])
+        self.assertEqual(grp["champion_id"], self.tt_b.tournament_team_id)
+        self.assertEqual(grp["champion_point_threshold"], 20)
+        # A is not the champion.
+        a_row = next(r for r in overall if r["tournament_team_id"] == self.tt_a.tournament_team_id)
+        self.assertFalse(a_row["is_champion"])
+
+    def test_plain_stage_is_unchanged(self):
+        # Both toggles off: pure points order, no crown, not decided.
+        stage, group, matches = self._make_stage_group(
+            stage_name="Group Stage", champion_enabled=False, threshold=None, match_count=1,
+        )
+        # A wins the lobby on points (12 placement + 5 kills = 17); B trails (9 + 0 = 9).
+        self._enter(matches[0], [(self.tt_a, 1, 5), (self.tt_b, 2, 0)])
+
+        grp = self._group_for_stage(self._fetch_details(), stage.stage_id)
+        overall = grp["overall_leaderboard"]
+
+        # Ordered by points: A first, B second — exactly as before this feature.
+        self.assertEqual(overall[0]["tournament_team_id"], self.tt_a.tournament_team_id)
+        self.assertEqual(overall[0]["effective_total"], 17)
+        self.assertEqual(overall[1]["tournament_team_id"], self.tt_b.tournament_team_id)
+        # No champion crowned, group not decided, carry-over is zero for every row.
+        self.assertFalse(grp["is_decided"])
+        self.assertIsNone(grp["champion_id"])
+        self.assertFalse(grp["champion_point_enabled"])
+        for r in overall:
+            self.assertFalse(r["is_champion"])
+            self.assertEqual(r["carry_over_points"], 0)
