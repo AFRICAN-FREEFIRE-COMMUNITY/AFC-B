@@ -52,6 +52,8 @@ urlpatterns = [
     # BR Round-Robin (sub-project B): per-day + cumulative standings for a round-robin stage.
     path('get-round-robin-standings/', get_round_robin_standings, name='get_round_robin_standings'),
     path('advance-group-competitors-to-next-stage/', advance_group_competitors_to_next_stage, name='advance_group_competitors_to_next_stage'),
+    # BR Round-Robin (sub-project B): advance top-N from the CUMULATIVE table (or top-K per base group).
+    path('advance-round-robin/', advance_round_robin, name='advance_round_robin'),
     path('edit-solo-match-result/', edit_solo_match_result, name='edit_solo_match_result'),
     path('edit-leaderboard/', edit_leaderboard, name='edit_leaderboard'),
     path('remove-non-nigeria-registered-competitors/', remove_non_nigeria_registered_competitors, name='remove_non_nigeria_registered_competitors'),

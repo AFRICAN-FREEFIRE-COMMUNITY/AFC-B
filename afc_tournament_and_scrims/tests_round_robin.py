@@ -21,6 +21,7 @@ from afc_tournament_and_scrims.models import (
     Event,
     Stages,
     StageGroups,
+    StageCompetitor,
     StageGroupCompetitor,
     Leaderboard,
     Match,
@@ -667,3 +668,144 @@ class RoundRobinEditEventTests(TestCase):
         self.assertIn("one base group", edit.json()["message"])
         # Pre-transaction guard → nothing changed (base-group count untouched).
         self.assertEqual(self.stage.round_robin_groups.count(), groups_before)
+
+
+class RoundRobinAdvanceTests(TestCase):
+    """End-to-end test for advancing a finished round-robin stage into the next stage (Task 5).
+
+    A round-robin stage decides who advances by its CUMULATIVE standings (every team summed
+    across every lobby it played), not by any single lobby — that's the whole point of the
+    format. `advance-round-robin` therefore:
+      • computes `cumulative_standings(stage)` (the same authoritative table the standings
+        endpoint returns), takes the top `stage.teams_qualifying_from_stage` teams overall,
+        and seeds them as `StageCompetitor` rows in the NEXT stage via the SAME plumbing the
+        existing `advance_group_competitors_to_next_stage` uses; or
+      • with `mode="per_group"`, advances the top `qualify_per_group` teams of EACH base group
+        (RoundRobinGroup) instead of overall — for formats that guarantee per-group qualifiers.
+
+    Fixture: 2 base groups (A, B) of 2 teams each, a 1-game-day lobby merging A+B, and a single
+    match whose entered stats give a clean cumulative order (A1 > B1 > A2 > B2). A SECOND stage
+    sits after this one so advancement has somewhere to seed into.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        D = datetime.date(2026, 6, 1)
+
+        # Admin + live token so the advance endpoint's _is_event_admin gate passes.
+        self.admin = User.objects.create(
+            username="rr_adv_admin", email="rr_adv_admin@afc.test",
+            full_name="RR Advance Admin", role="admin")
+        self.token = SessionToken.objects.create(
+            user=self.admin, token="rr-advance-token",
+            expires_at=datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc))
+
+        self.event = Event.objects.create(
+            event_name="Round Robin Advance Cup", competition_type="tournament",
+            participant_type="squad", event_type="internal", max_teams_or_players=16,
+            event_mode="virtual", start_date=D, end_date=D, registration_open_date=D,
+            registration_end_date=D, prizepool="$1000", event_rules="rules",
+            event_status="ongoing", registration_link="https://afc.test/reg",
+            number_of_stages=2, creator=self.admin, is_draft=False)
+
+        # The round-robin SOURCE stage — qualify the top 2 overall. start_date drives the
+        # "next stage" lookup the existing advance uses, so the next stage starts strictly later.
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="Round Robin Stage", start_date=D,
+            end_date=D, number_of_groups=2, stage_format="br - round robin",
+            teams_qualifying_from_stage=2)
+        # The destination stage (a plain BR final) — advancement seeds StageCompetitor here.
+        self.next_stage = Stages.objects.create(
+            event=self.event, stage_name="Finals", start_date=D + datetime.timedelta(days=1),
+            end_date=D + datetime.timedelta(days=1), number_of_groups=1,
+            stage_format="br - normal", teams_qualifying_from_stage=1)
+
+        # Two base groups A and B, two teams each.
+        self.grp_a = RoundRobinGroup.objects.create(stage=self.stage, label="A", order=0)
+        self.grp_b = RoundRobinGroup.objects.create(stage=self.stage, label="B", order=1)
+        self.tt_a1 = self._make_tt("A1")
+        self.tt_a2 = self._make_tt("A2")
+        self.tt_b1 = self._make_tt("B1")
+        self.tt_b2 = self._make_tt("B2")
+        self.grp_a.teams.add(self.tt_a1, self.tt_a2)
+        self.grp_b.teams.add(self.tt_b1, self.tt_b2)
+
+        # One game-day-1 lobby merging A+B, with one finished match. Points set so the
+        # cumulative order is unambiguous: A1 (30) > B1 (24) > A2 (18) > B2 (10).
+        self.lobby = StageGroups.objects.create(
+            stage=self.stage, group_name="Day 1 Lobby",
+            playing_date=D, playing_time=datetime.time(19, 0),
+            teams_qualifying=2, match_count=1, match_maps=["bermuda"], game_day=1)
+        self.lobby.source_groups.add(self.grp_a, self.grp_b)
+        leaderboard = Leaderboard.objects.create(
+            leaderboard_name="Day 1 LB", event=self.event, stage=self.stage,
+            group=self.lobby, creator=self.admin, leaderboard_method="manual")
+        match = Match.objects.create(
+            leaderboard=leaderboard, group=self.lobby, match_number=1,
+            match_map="bermuda", result_inputted=True)
+        self._stat(match, self.tt_a1, placement=1, kills=8, placement_points=20, kill_points=8)  # 28
+        self._stat(match, self.tt_b1, placement=2, kills=4, placement_points=15, kill_points=4)  # 19
+        self._stat(match, self.tt_a2, placement=3, kills=3, placement_points=10, kill_points=3)  # 13
+        self._stat(match, self.tt_b2, placement=4, kills=1, placement_points=5, kill_points=1)   # 6
+
+    def _make_tt(self, name):
+        team = Team.objects.create(
+            team_name=name, join_settings="open", team_creator=self.admin,
+            team_owner=self.admin, team_captain=self.admin, country="Nigeria")
+        return TournamentTeam.objects.create(event=self.event, team=team)
+
+    def _stat(self, match, tt, placement, kills, placement_points, kill_points):
+        return TournamentTeamMatchStats.objects.create(
+            match=match, tournament_team=tt, placement=placement, kills=kills,
+            placement_points=placement_points, kill_points=kill_points,
+            total_points=placement_points + kill_points)
+
+    def _advance(self, **extra):
+        payload = {"event_id": self.event.event_id, "stage_id": self.stage.stage_id}
+        payload.update(extra)
+        return self.client.post(
+            "/events/advance-round-robin/",
+            data=payload, content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+
+    def _advanced_team_names(self):
+        return set(
+            StageCompetitor.objects
+            .filter(stage=self.next_stage, tournament_team__isnull=False)
+            .values_list("tournament_team__team__team_name", flat=True))
+
+    def test_overall_advances_top_n_from_cumulative(self):
+        # Default mode: top teams_qualifying_from_stage (2) of the WHOLE-stage cumulative table.
+        resp = self._advance()
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+        # Cumulative order is A1 (28) > B1 (19) > A2 (13) > B2 (6); top 2 = {A1, B1}.
+        self.assertEqual(self._advanced_team_names(), {"A1", "B1"})
+
+    def test_per_group_advances_top_k_of_each_group(self):
+        # mode=per_group, qualify_per_group=1 → the single best team of EACH base group:
+        # A's best is A1, B's best is B1 → {A1, B1} (same pair here, but selected per-group).
+        resp = self._advance(mode="per_group", qualify_per_group=1)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(self._advanced_team_names(), {"A1", "B1"})
+
+    def test_per_group_top_2_takes_both_teams_of_each_group(self):
+        # qualify_per_group=2 with 2 teams per group → every team advances (top-2 of each).
+        resp = self._advance(mode="per_group", qualify_per_group=2)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(self._advanced_team_names(), {"A1", "A2", "B1", "B2"})
+
+    def test_non_admin_is_rejected(self):
+        # The endpoint is admin-gated: a plain player token must be refused (403).
+        player = User.objects.create(
+            username="rr_adv_player", email="rr_adv_player@afc.test",
+            full_name="RR Advance Player", role="player")
+        player_token = SessionToken.objects.create(
+            user=player, token="rr-advance-player-token",
+            expires_at=datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc))
+        resp = self.client.post(
+            "/events/advance-round-robin/",
+            data={"event_id": self.event.event_id, "stage_id": self.stage.stage_id},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {player_token.token}")
+        self.assertEqual(resp.status_code, 403, resp.content)
