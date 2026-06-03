@@ -1,0 +1,4677 @@
+{
+  "info": {
+    "name": "AFC Backend API \u2014 GET smoke",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "api_key",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "afc_auth",
+      "item": [
+        {
+          "name": "GET /auth/verify/<uidb64>/<token>/ \u2014 Email-link verification \u2014 activates the user account via uidb64+token URL params.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/verify/MQ/abc123def456/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "verify",
+                "MQ",
+                "abc123def456"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-user-profile/ \u2014 Return full profile + aggregated stats (kills, wins, MVPs, booyahs, tournaments) for the authenticated user.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/get-user-profile/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-user-profile"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-all-news/ \u2014 Return all news articles ordered by creation date (newest first).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-all-news/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-all-news"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-all-roles/ \u2014 Return all defined roles (role_id, role_name, description).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-all-roles/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-all-roles"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-all-user-and-user-roles/ \u2014 Return all users with their assigned roles, status, and last login.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-all-user-and-user-roles/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-all-user-and-user-roles"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-admin-history/ \u2014 Return all admin action history ordered by timestamp (descending).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-admin-history/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-admin-history"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-total-number-of-users/ \u2014 Return total user count and count of active (verified) users.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-total-number-of-users/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-total-number-of-users"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/connect-discord/callback/ \u2014 OAuth2 callback from Discord; exchanges code for access token, joins guild, saves discord_id to user, then redirects to frontend.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/connect-discord/callback/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "connect-discord",
+                "callback"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/connect-discord/ \u2014 Initiate Discord OAuth2 flow for tournament registration; redirects to Discord authorize URL.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/connect-discord/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "connect-discord"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/connect-discord-account/ \u2014 Initiate Discord OAuth2 flow to link Discord account to user profile; session_token passed as query param.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/connect-discord-account/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "connect-discord-account"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/is-discord-account-connected/ \u2014 Return whether the authenticated user has a Discord account linked.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/is-discord-account-connected/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "is-discord-account-connected"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-all-login-history/ \u2014 Return all login history records for all users ordered by creation date.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-all-login-history/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-all-login-history"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-notifications/ \u2014 Return all notifications for the authenticated user ordered by creation date.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/get-notifications/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-notifications"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-total-players-count/ \u2014 Return total count of users with role='player'.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-total-players-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-total-players-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-active-players-count/ \u2014 Return count of active players (role='player', status='active').",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-active-players-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-active-players-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-banned-players-count/ \u2014 Return count of banned players (role='player', status='banned').",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-banned-players-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-banned-players-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-new-players-count/ \u2014 Return count of new players who joined this calendar month.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-new-players-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-new-players-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-average-total-kills-per-player/ \u2014 Return average kills per player per match for solo, team, and combined.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-average-total-kills-per-player/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-average-total-kills-per-player"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-top-mvp-player/ \u2014 Return the player with the most MVP awards.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-top-mvp-player/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-top-mvp-player"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-top-winner-player/ \u2014 Return the player with the most total wins (solo + team combined).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-top-winner-player/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-top-winner-player"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/get-admin-activities/ \u2014 Return the latest 100 admin activity log entries ordered by timestamp.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/get-admin-activities/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "get-admin-activities"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_tournament_and_scrims",
+      "item": [
+        {
+          "name": "GET /events/get-all-events/ \u2014 List all published (non-draft) events.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-all-events/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-all-events"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-all-events-paginated/ \u2014 List published events with limit/offset pagination.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-all-events-paginated/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-all-events-paginated"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-all-tournaments-and-scrims/ \u2014 List all published events (minimal fields: id, name, date, status).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-all-tournaments-and-scrims/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-all-tournaments-and-scrims"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-all-tournaments-and-scrims-paginated/ \u2014 List all published events with pagination (minimal fields).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-all-tournaments-and-scrims-paginated/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-all-tournaments-and-scrims-paginated"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-all-tournaments-and-scrims-separated/ \u2014 List all published events separated into tournaments and scrims arrays.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-all-tournaments-and-scrims-separated/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-all-tournaments-and-scrims-separated"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-all-tournaments-and-scrims-separated-paginated/ \u2014 List published events separated into tournaments/scrims with pagination.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-all-tournaments-and-scrims-separated-paginated/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-all-tournaments-and-scrims-separated-paginated"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-total-events-count/ \u2014 Return the total count of all events (including drafts).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-total-events-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-total-events-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-total-tournaments-count/ \u2014 Return count of published tournament-type events.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-total-tournaments-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-total-tournaments-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-total-scrims-count/ \u2014 Return count of published scrim-type events.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-total-scrims-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-total-scrims-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-upcoming-events-count/ \u2014 Return count of published events with status 'upcoming'.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-upcoming-events-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-upcoming-events-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-ongoing-events-count/ \u2014 Return count of published events with status 'ongoing'.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-ongoing-events-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-ongoing-events-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-completed-events-count/ \u2014 Return count of published events with status 'completed'.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-completed-events-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-completed-events-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-average-participants-per-event/ \u2014 Return average max_teams_or_players across all events.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-average-participants-per-event/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-average-participants-per-event"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-most-popular-event-format/ \u2014 Return the most frequently used event format.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-most-popular-event-format/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-most-popular-event-format"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-stage-role-assignment-progress/ \u2014 Get the current Discord role assignment progress for a stage.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/events/get-stage-role-assignment-progress/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-stage-role-assignment-progress"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-all-leaderboards/ \u2014 Get all leaderboards for a given event.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/events/get-all-leaderboards/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-all-leaderboards"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-drafted-events/ \u2014 List all draft events (requires authentication).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/events/get-drafted-events/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-drafted-events"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-my-drafted-events/ \u2014 List draft events created by the authenticated user.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/events/get-my-drafted-events/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-my-drafted-events"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-total-kills/ \u2014 Return aggregate total kills across all solo and team matches.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-total-kills/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-total-kills"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-all-tournament-player-match-stats/ \u2014 Return all TournamentPlayerMatchStats records.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-all-tournament-player-match-stats/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-all-tournament-player-match-stats"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/get-all-sponsors/ \u2014 List all users with the sponsor_admin role.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/get-all-sponsors/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "get-all-sponsors"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/total-members-this-month/ \u2014 Return the count of new user registrations this calendar month.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/total-members-this-month/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "total-members-this-month"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/total-team-this-month/ \u2014 Return the count of new teams created this calendar month.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/total-team-this-month/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "total-team-this-month"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/total-active-tournaments/ \u2014 Return count of tournaments that are currently active (started but not ended).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/total-active-tournaments/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "total-active-tournaments"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/total-published-news/ \u2014 Return the total count of news articles.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/events/total-published-news/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "total-published-news"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/export-participants/ \u2014 Export event participant list as a CSV or XLSX file download.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/events/export-participants/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "export-participants"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_team",
+      "item": [
+        {
+          "name": "GET /team/view-join-requests/ \u2014 List all pending join requests for the team owned by the authenticated user.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/team/view-join-requests/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "view-join-requests"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-all-teams/ \u2014 Return a list of all teams with basic info (no auth required).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-all-teams/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-all-teams"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-team-details-based-on-invite/<str:invite_id>/ \u2014 Return public team details for a given invite ID without requiring login.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-team-details-based-on-invite/550e8400-e29b-41d4-a716-446655440000/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-team-details-based-on-invite",
+                "550e8400-e29b-41d4-a716-446655440000"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-number-of-teams/ \u2014 Return the total number of teams (no auth required).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-number-of-teams/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-number-of-teams"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-total-teams-count/ \u2014 Return total count of all teams (admin dashboard stat).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-total-teams-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-total-teams-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-current-active-teams-count/ \u2014 Return count of teams that are not banned.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-current-active-teams-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-current-active-teams-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-banned-teams-count/ \u2014 Return count of banned teams.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-banned-teams-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-banned-teams-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-new-teams-count/ \u2014 Return count of teams created in the last 7 days.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-new-teams-count/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-new-teams-count"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-average-members-per-team/ \u2014 Return average number of members per team.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-average-members-per-team/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-average-members-per-team"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-team-with-highest-wins/ \u2014 Return the team with the most placement-1 finishes across all tournament matches.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-team-with-highest-wins/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-team-with-highest-wins"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/get-top-earning-teams/ \u2014 Return the top 5 teams sorted by total_earnings descending.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/team/get-top-earning-teams/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "get-top-earning-teams"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/admin-search-players/ \u2014 Admin: search users by username or email (requires admin/head_admin/teams_admin role); returns up to 10 matches with current team.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/team/admin-search-players/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "admin-search-players"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /team/admin-get-team-event-history/ \u2014 Admin: paginated list of events a team has participated in (requires admin/moderator/support role).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/team/admin-get-team-event-history/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "team",
+                "admin-get-team-event-history"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_awards",
+      "item": [
+        {
+          "name": "GET /awards/categories/view/ \u2014 List all award categories with their section names.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/categories/view/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "categories",
+                "view"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/nominees/view/ \u2014 List all nominees with their linked categories.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/nominees/view/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "nominees",
+                "view"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/category-nominee/all/ \u2014 Return all sections with their categories and each category's nominees (full tree).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/category-nominee/all/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "category-nominee",
+                "all"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/sections/all/ \u2014 List all sections (id and name only).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/sections/all/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "sections",
+                "all"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/get-total-votes-cast/ \u2014 Return the total number of votes cast across all categories.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/get-total-votes-cast/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "get-total-votes-cast"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/get-total-voters/ \u2014 Return the count of distinct users who have cast at least one vote.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/get-total-voters/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "get-total-voters"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/get-votes-per-category/ \u2014 Return vote counts grouped by category, sorted descending.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/get-votes-per-category/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "get-votes-per-category"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/get-votes-per-nominee/ \u2014 Return vote percentage per nominee across all categories.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/get-votes-per-nominee/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "get-votes-per-nominee"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/get-votes-per-section/ \u2014 Return vote counts grouped by section, sorted descending.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/get-votes-per-section/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "get-votes-per-section"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/get-voting-timeline/ \u2014 Return daily vote counts over time (votes grouped by date).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/get-voting-timeline/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "get-voting-timeline"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /awards/get-total-votes-per-nominee-per-category/ \u2014 Return vote counts broken down by nominee within each category.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/awards/get-total-votes-per-nominee-per-category/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "awards",
+                "get-total-votes-per-nominee-per-category"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_shop",
+      "item": [
+        {
+          "name": "GET /shop/view-all-products/ \u2014 List all products with their variants (admin only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/view-all-products/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-all-products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/view-current-stock-status/ \u2014 List stock levels and availability for all product variants (admin only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/view-current-stock-status/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-current-stock-status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/view-all-orders/ \u2014 List all orders (up to 500) with line items (admin only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/view-all-orders/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-all-orders"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/orders-today/ \u2014 List all orders placed today (admin only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/orders-today/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "orders-today"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/orders-this-week/ \u2014 List all orders placed in the current week (admin only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/orders-this-week/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "orders-this-week"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/orders-this-month/ \u2014 List all orders placed in the current month (admin only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/orders-this-month/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "orders-this-month"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/view-all-coupons/ \u2014 List all coupons with metadata and validity status (admin only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/view-all-coupons/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-all-coupons"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/view-product-details/ \u2014 Get details of a single product (auth commented out \u2014 public endpoint).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/shop/view-product-details/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-product-details"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/get-my-cart/ \u2014 Retrieve the authenticated user's current cart contents and subtotal.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/get-my-cart/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "get-my-cart"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/get-my-orders/ \u2014 List all orders belonging to the authenticated user.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/get-my-orders/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "get-my-orders"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/get-order-details/ \u2014 Get full details of a specific order owned by the authenticated user.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/get-order-details/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "get-order-details"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/get-order-details-for-admin/ \u2014 Get full order details including customer PII and transaction IDs (admin role required).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/get-order-details-for-admin/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "get-order-details-for-admin"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/get-coupon-conversion-rate/ \u2014 Return conversion rate (paid orders using coupon / total orders since coupon creation). NOTE: view expects a 'slug' path param but the registered URL has none \u2014 the view will error at runtime unless the URL is updated.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/shop/get-coupon-conversion-rate/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "get-coupon-conversion-rate"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/get-all-fulfillments/ \u2014 List all fulfillment records including provider payloads (any authenticated user, but exposes sensitive voucher data \u2014 effectively admin use).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/get-all-fulfillments/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "get-all-fulfillments"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/test-denom/ \u2014 Dev/debug endpoint: fetch denominations for brand_id 113 from Mintroute (no auth, no restrictions).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/shop/test-denom/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "test-denom"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/test-brands/ \u2014 Dev/debug endpoint: fetch brands for country_id 2 from Mintroute (no auth, no restrictions).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/shop/test-brands/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "test-brands"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_player",
+      "item": [
+        {
+          "name": "GET /player/get-all-players/ \u2014 Return all users with aggregated stats (kills, wins, MVPs, ban status, team name).",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/player/get-all-players/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "get-all-players"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_player_market",
+      "item": [
+        {
+          "name": "GET /player-market/get-recruitment-posts/ \u2014 List all recruitment posts (both TEAM_RECRUITMENT and PLAYER_AVAILABLE), no auth required",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/player-market/get-recruitment-posts/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "get-recruitment-posts"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/view-team-recruitment-posts/ \u2014 List all TEAM_RECRUITMENT posts with roles, countries, and expiry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/player-market/view-team-recruitment-posts/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "view-team-recruitment-posts"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/view-player-availability-posts/ \u2014 List all PLAYER_AVAILABLE posts with roles, country, and availability type",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/player-market/view-player-availability-posts/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "view-player-availability-posts"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/view-applications/ \u2014 Team owner views all applications to their team's recruitment post, including player stats",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/view-applications/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "view-applications"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/view-my-applications/ \u2014 Authenticated player views all of their own applications with status and stats",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/view-my-applications/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "view-my-applications"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/application-details/ \u2014 Get full detail of a single application (player, team, post, stats, chat_id); accessible by player or team staff",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/application-details/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "application-details"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/trial-chat/messages/ \u2014 Fetch all messages in a trial chat (accessible by player or team owner/manager/coach)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/trial-chat/messages/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "trial-chat",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/trial-chats/ \u2014 List all trial chats the authenticated user is a participant in (as player or team staff)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/trial-chats/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "trial-chats"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/my-trial-invites/ \u2014 Player views all direct trial invites they have received from teams",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/my-trial-invites/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "my-trial-invites"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/admin/all-trials-and-applications/ \u2014 Admin/moderator views all applications system-wide with optional status, team_id, and player_id filters",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/admin/all-trials-and-applications/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "admin",
+                "all-trials-and-applications"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/post-details/ \u2014 Public: fetch full detail of a single recruitment post by post_id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/player-market/post-details/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "post-details"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/my-posts/ \u2014 Authenticated user views all recruitment posts they created",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/my-posts/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "my-posts"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/view-applications/ \u2014 Duplicate URL registration in urls.py (same view_applications handler); behaves identically to the first /player-market/view-applications/ entry",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/view-applications/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "view-applications"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_ocr",
+      "item": [
+        {
+          "name": "GET /events/ocr-sessions/ \u2014 List all OCR sessions (admin only), optionally filtered by match_id. Returns up to 100 most recent.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/events/ocr-sessions/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "ocr-sessions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_rankings",
+      "item": [
+        {
+          "name": "GET /rankings/teams/monthly/ \u2014 List team rankings for a given month (paginated); ?month=YYYY-MM, defaults to latest populated month.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rankings/teams/monthly/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "teams",
+                "monthly"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/teams/quarterly/ \u2014 List team quarterly rankings for a season (publish-gated); ?season_id= optional.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rankings/teams/quarterly/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "teams",
+                "quarterly"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/teams/annual/ \u2014 List annual team leaderboard entries for a year; ?year= defaults to current year.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rankings/teams/annual/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "teams",
+                "annual"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/teams/<int:team_id>/score/ \u2014 Get a single team's monthly + quarterly score breakdown.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rankings/teams/1/score/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "teams",
+                "1",
+                "score"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/players/monthly/ \u2014 List player monthly rankings; ?month=YYYY-MM, defaults to latest populated month.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rankings/players/monthly/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "players",
+                "monthly"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/players/quarterly/ \u2014 List player quarterly rankings for a season (publish-gated); ?season_id= optional.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rankings/players/quarterly/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "players",
+                "quarterly"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/players/annual/ \u2014 List annual player leaderboard entries for a year; ?year= defaults to current year.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rankings/players/annual/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "players",
+                "annual"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/players/<int:player_id>/score/ \u2014 Get a single player's monthly + quarterly score breakdown.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rankings/players/1/score/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "players",
+                "1",
+                "score"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/seasons/ \u2014 GET: public paginated list of all seasons. POST: create a new season (head_admin only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/seasons/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "seasons"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/seasons/current/ \u2014 Return the currently active season (is_active=True), or null.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rankings/seasons/current/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "seasons",
+                "current"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/seasons/<int:season_id>/transfer-log/ \u2014 Paginated list of a season's transfer-window change history (ranking admins, read-only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/seasons/1/transfer-log/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "seasons",
+                "1",
+                "transfer-log"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/admin/audit-log/ \u2014 Filtered, paginated audit log of all ranking admin writes (read-only, ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/admin/audit-log/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "admin",
+                "audit-log"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/admin/teams/<int:team_id>/raw/ \u2014 Recompute and return the raw component breakdown behind a team's current-quarter score (read-only, ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/admin/teams/1/raw/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "admin",
+                "teams",
+                "1",
+                "raw"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/admin/players/<int:player_id>/raw/ \u2014 Recompute and return the raw component breakdown behind a player's current-quarter score (read-only, ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/admin/players/1/raw/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "admin",
+                "players",
+                "1",
+                "raw"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/ghost-teams/ \u2014 GET: paginated list of ghost teams with filters. POST: create a new ghost team with roster (ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/ghost-teams/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "ghost-teams"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/scoring-config/defaults/ \u2014 Return the constants.py factory-default scoring rules snapshot (ranking admins, read-only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/scoring-config/defaults/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "scoring-config",
+                "defaults"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/scoring-config/ \u2014 GET: active scoring config + version history. POST: draft and activate a new scoring config version (ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/scoring-config/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "scoring-config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/event-tier-rules/ \u2014 GET: list tier rules ordered by priority. POST: create a new tier rule (ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/event-tier-rules/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "event-tier-rules"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/admin/tournament-prizes/ \u2014 List prize payouts (newest first) with optional ?season_id filter (prize admins, read-only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/admin/tournament-prizes/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "admin",
+                "tournament-prizes"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/admin/results/markers/ \u2014 List a season's tournaments with their counting-control state and active exclusion counts (ranking admins, read-only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/admin/results/markers/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "admin",
+                "results",
+                "markers"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/event-counting/<int:event_id>/ \u2014 GET: counting control state for one event. PATCH: set count_winner/count_placement/count_kills toggles (ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/event-counting/1/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "event-counting",
+                "1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/result-exclusions/ \u2014 GET: list result exclusions (filter by ?event_id or ?season_id). POST: create a result exclusion for one team or player (ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/result-exclusions/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "result-exclusions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/admin/seasons/<int:season_id>/social/ \u2014 List all teams with their social media snapshot for a season (ranking admins, read-only).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/admin/seasons/1/social/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "admin",
+                "seasons",
+                "1",
+                "social"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/admin/recalc-status/ \u2014 Best-effort recalc and evaluation status for a season (read-only, ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/admin/recalc-status/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "admin",
+                "recalc-status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/admin/teams/quarterly/ \u2014 Ungated admin draft preview of team quarterly scores including unpublished tiers (ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/admin/teams/quarterly/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "admin",
+                "teams",
+                "quarterly"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /rankings/admin/players/quarterly/ \u2014 Ungated admin draft preview of player quarterly scores including unpublished tiers (ranking admins).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/rankings/admin/players/quarterly/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rankings",
+                "admin",
+                "players",
+                "quarterly"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_organizers",
+      "item": [
+        {
+          "name": "GET /organizers/admin/get-all-organizations/ \u2014 Paginated oversight list of every organization; filterable by ?status= and ?search=.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/admin/get-all-organizations/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "admin",
+                "get-all-organizations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/admin/get-organization/<slug:slug>/ \u2014 Full oversight detail for one org including all members (with permissions), events, and reports placeholder.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/admin/get-organization/afc-nigeria-invitational/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "admin",
+                "get-organization",
+                "afc-nigeria-invitational"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/get-my-organizations/ \u2014 List every organization the current user is an active member of, with their role and effective permissions per org (the org-switcher feed).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/get-my-organizations/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "get-my-organizations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/get-organization/<slug:slug>/ \u2014 Return the full profile of one org plus the caller's effective permissions. Active members only; non-members receive 403.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/get-organization/afc-nigeria-invitational/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "get-organization",
+                "afc-nigeria-invitational"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/get-organization-members/<slug:slug>/ \u2014 List active members of one org (owner + sub_organizers) with roles and effective permission maps. Any active member may read.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/get-organization-members/afc-nigeria-invitational/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "get-organization-members",
+                "afc-nigeria-invitational"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/design-requests/<slug:slug>/ \u2014 POST: submit a leaderboard design request (gated by can_submit_designs); GET: list the org's own design requests (any active member).",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/design-requests/afc-nigeria-invitational/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "design-requests",
+                "afc-nigeria-invitational"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/admin/design-requests/ \u2014 AFC-staff triage queue of design requests across every org; filterable by ?status= and ?organization_id=, paginated.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/admin/design-requests/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "admin",
+                "design-requests"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/events/<int:event_id>/rating/ \u2014 Return an event's public rating aggregate (average + count). Auth optional: includes my_score when a valid Bearer token is present.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/organizers/events/101/rating/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "events",
+                "101",
+                "rating"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/event-comments/<int:event_id>/ \u2014 Return de-identified comments (text + created_at only) for an event. Gated by org_can_event(can_view_reviews); organizer/AFC admin only.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/event-comments/101/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "event-comments",
+                "101"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/metrics/<slug:slug>/ \u2014 Aggregate performance metrics for one org: event count, registered teams/players, total kills, average rating. Gated by can_view_metrics.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/metrics/afc-nigeria-invitational/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "metrics",
+                "afc-nigeria-invitational"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/admin/reports/ \u2014 AFC-staff triage list of every organization report; filterable by ?status= and ?organization_id=, paginated newest-first.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/admin/reports/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "admin",
+                "reports"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/get-organization-public/<slug:slug>/ \u2014 Public (unauthenticated) org profile page: branding, socials, and list of published (non-draft) events. Only active orgs are exposed; suspended/deleted return 404.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/organizers/get-organization-public/afc-nigeria-invitational/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "get-organization-public",
+                "afc-nigeria-invitational"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "afc_partner_api",
+      "item": [
+        {
+          "name": "GET /api/v1/partner/events/ \u2014 Paginated list of published events visible to the authenticated partner (gated by can_read_events toggle); supports ?limit and ?offset.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/partner/events/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "partner",
+                "events"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/partner/events/<slug:event_slug>/ \u2014 Single event detail card for a partner-visible event by slug (gated by can_read_events); returns 404 if event is out of scope.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/partner/events/afc-championship-2026/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "partner",
+                "events",
+                "afc-championship-2026"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/partner/events/<slug:event_slug>/stages/ \u2014 Paginated stages of an event with groups nested inside each stage (gated by can_read_stages); 404 if event out of scope.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/partner/events/afc-championship-2026/stages/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "partner",
+                "events",
+                "afc-championship-2026",
+                "stages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/partner/events/<slug:event_slug>/matches/ \u2014 Paginated matches of an event with room credentials stripped by the serializer firewall (gated by can_read_matches); 404 if event out of scope.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/partner/events/afc-championship-2026/matches/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "partner",
+                "events",
+                "afc-championship-2026",
+                "matches"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/partner/events/<slug:event_slug>/standings/ \u2014 Paginated ranked final standings for an event (gated by can_read_standings); rows are pre-ranked in memory then paged; 404 if event out of scope.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/partner/events/afc-championship-2026/standings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "partner",
+                "events",
+                "afc-championship-2026",
+                "standings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/partner/events/<slug:event_slug>/teams/ \u2014 Paginated tournament teams of an event with per-event aggregated toggled stats (gated by can_read_teams); 404 if event out of scope.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/partner/events/afc-championship-2026/teams/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "partner",
+                "events",
+                "afc-championship-2026",
+                "teams"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/partner/events/<slug:event_slug>/players/ \u2014 Paginated players who recorded stats in an event, each with per-event (not lifetime) toggled stats scoped to their tournament team (gated by can_read_players); 404 if event out of scope.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/partner/events/afc-championship-2026/players/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "partner",
+                "events",
+                "afc-championship-2026",
+                "players"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /partners/admin/list/ \u2014 Paginated oversight list of all partners with active-key counts; supports ?status= (active/suspended) and ?search= (name or slug); requires partner-admin role.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/partners/admin/list/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "partners",
+                "admin",
+                "list"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /partners/admin/<slug:slug>/ \u2014 GET returns full partner config (all 14 toggles, scope id-lists, key metadata); PATCH does whitelist-validated partial update of toggles and scope fields; requires partner-admin role.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/partners/admin/espn-africa/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "partners",
+                "admin",
+                "espn-africa"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

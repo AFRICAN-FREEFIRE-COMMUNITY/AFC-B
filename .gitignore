@@ -12,3 +12,7 @@ __pycache__/
 *.pyd
 
 
+
+# Postman: local env holds a real token/key — never commit
+postman/.local.env.json
+postman/smoke_results.json
