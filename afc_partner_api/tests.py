@@ -81,6 +81,17 @@ class PartnerAuthTests(TestCase):
         self.assertNotIn(full.split("_")[-1], row.key_hash)  # secret never stored raw
         self.assertEqual(row.key_hash, auth.hash_key(full))
 
+    def test_forged_secret_with_known_prefix_rejected(self):
+        # The critical branch: an attacker who knows a key's PREFIX but not its secret.
+        # The prefix matches a stored active row (so the lookup succeeds), but the secret
+        # tail is wrong — the constant-time compare_digest must reject it. Without this
+        # test the actual credential check is never exercised on a mismatch.
+        full = self._issue()
+        ns, prefix, _secret = full.split("_")            # afcp_<prefix>_<secret>
+        forged = f"{ns}_{prefix}_{'0' * 48}"             # right prefix, wrong secret
+        with self.assertRaises(auth.PartnerAuthError):
+            auth.authenticate_partner(self._req(forged))
+
     def test_bad_key_rejected(self):
         self._issue()
         with self.assertRaises(auth.PartnerAuthError):
