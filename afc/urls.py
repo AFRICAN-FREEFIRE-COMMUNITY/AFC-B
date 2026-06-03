@@ -32,6 +32,10 @@ urlpatterns = [
     path("events/", include('afc_ocr.urls')),
     path("rankings/", include('afc_rankings.urls')),
     path("organizers/", include('afc_organizers.urls')),
+    # Versioned, read-only partner data API (afc_partner_api). Mounted under a /v1/
+    # prefix so a future breaking version can ship as /api/v2/partner/ without
+    # disrupting existing partner integrations.
+    path("api/v1/partner/", include('afc_partner_api.partner_urls')),
 
 ]
 

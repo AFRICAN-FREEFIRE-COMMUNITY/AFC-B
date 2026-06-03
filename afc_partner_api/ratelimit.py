@@ -49,7 +49,18 @@ def check_rate_limit(key):
     # resets the window's expiry.
     cache.add(bucket, 0, WINDOW_SECONDS)
     # Atomic +1 for THIS request; returns the new running total for the window.
-    count = cache.incr(bucket)
+    #
+    # TTL-boundary race guard: there is a tiny window where add() succeeds but the
+    # bucket's 60s TTL elapses (or the minute rolls over) BEFORE incr() runs — django_redis'
+    # incr() then raises ValueError on the now-missing key. Rather than 500 on that rare
+    # race, we treat it as the FIRST request of a brand-new window: re-create the bucket at
+    # count 1 with a fresh TTL. (Worst case we under-count by the one expired request, which
+    # is the safe direction for a rate limiter.)
+    try:
+        count = cache.incr(bucket)
+    except ValueError:
+        cache.set(bucket, 1, WINDOW_SECONDS)
+        count = 1
     # Ceiling is inclusive: a limit of N admits N calls, the (N+1)th trips the guard.
     if count > key.rate_limit_per_min:
         raise RateLimitExceeded()

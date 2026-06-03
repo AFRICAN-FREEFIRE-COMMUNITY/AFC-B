@@ -561,3 +561,276 @@ class RateLimitTests(TestCase):
             ratelimit.check_rate_limit(key)  # at-or-under the limit -> passes
         with self.assertRaises(ratelimit.RateLimitExceeded):
             ratelimit.check_rate_limit(key)  # one over -> blocked
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Task 6 — read-endpoint tests (the whole request→response stack, end-to-end).
+#
+# These drive the live Django test Client against the mounted /api/v1/partner/
+# routes, so they exercise EVERY layer of the partner_endpoint decorator together:
+# authenticate_partner → check_rate_limit → resource toggle → scope filter →
+# serializer firewall. The unit tests above proved each layer in isolation; THESE
+# prove they are wired in the right order, that the HTTP status codes are correct,
+# and that the pagination envelope is shaped as the spec promises. The contracts
+# locked in (spec §6/§7/§9):
+#   • valid key + resource toggle ON  -> 200 with a {results, has_more, next_offset,
+#                                        total_count} pagination envelope
+#   • resource toggle OFF             -> 403 resource_not_enabled (auth succeeded but
+#                                        the partner isn't entitled to that resource)
+#   • out-of-scope / unpublished slug -> 404 (NOT 403 — we never confirm an event a
+#                                        partner can't see even exists; spec landmine)
+#   • bad / missing key               -> 401 (PartnerAuthError -> 401)
+#   • over the per-minute limit       -> 429 with a Retry-After header
+#   • a field toggle (include_*)      -> reflected in the serialized body
+#
+# We issue a real key the way the admin endpoint will (store prefix+hash only), grant
+# the partner one published event, and clear the cache in setUp so a leftover bucket
+# from a prior run can't trip the rate-limit boundary early.
+# Full spec: WEBSITE/tasks/partner-api-design.md (§9 endpoints).
+# ──────────────────────────────────────────────────────────────────────────────
+class PartnerEndpointTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        from afc_auth.models import User
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import (
+            Event, Stages, StageGroups, Leaderboard, Match,
+            TournamentTeam, TournamentTeamMatchStats, TournamentPlayerMatchStats,
+        )
+
+        # Fresh rate-limit window for every test (Redis persists across the process).
+        cache.clear()
+
+        # ── partner under test: all toggles default OFF (least privilege) ──
+        self.partner = Partner.objects.create(name="ESL", slug="esl")
+
+        # ── one published, completed native AFC event the partner is granted ──
+        self.event = Event.objects.create(
+            event_name="AFC Open", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-01-01", end_date="2026-01-02",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="$1000", event_rules="-", event_status="completed",
+            registration_link="https://x", tournament_tier="tier_1", number_of_stages=1,
+            partner_published=True, organization=None)
+        self.partner.allowed_events.add(self.event)
+
+        # ── an event the partner is NOT scoped to (published, but never granted) ──
+        # Used to prove out-of-scope reads 404, not 403 (don't confirm existence).
+        self.other_event = Event.objects.create(
+            event_name="Secret Cup", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-02-01", end_date="2026-02-02",
+            registration_open_date="2026-01-01", registration_end_date="2026-01-20",
+            prizepool="$500", event_rules="-", event_status="completed",
+            registration_link="https://x", tournament_tier="tier_2", number_of_stages=1,
+            partner_published=True, organization=None)
+
+        # ── stage -> group -> leaderboard -> match -> teams + finalized stats ──
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="Grand Final", start_date="2026-01-02",
+            end_date="2026-01-02", number_of_groups=1, stage_format="br - normal",
+            teams_qualifying_from_stage=2, stage_status="completed")
+        self.group = StageGroups.objects.create(
+            stage=self.stage, group_name="Group A", playing_date="2026-01-02",
+            playing_time="18:00", teams_qualifying=2, match_count=1, match_maps=["bermuda"])
+        self.admin = User.objects.create_user(
+            username="afcstaff", email="afc@x.com", password="x", full_name="AFC Staff",
+            role="admin")
+        self.leaderboard = Leaderboard.objects.create(
+            leaderboard_name="GF LB", event=self.event, stage=self.stage, group=self.group,
+            creator=self.admin, placement_points={"1": 12, "2": 9}, kill_point=1.0,
+            leaderboard_method="manual")
+        self.match = Match.objects.create(
+            leaderboard=self.leaderboard, group=self.group, match_number=1, match_map="bermuda",
+            room_id="SECRET123", room_password="hunter2", room_name="AFC-GF-ROOM",
+            result_inputted=True, scoring_settings={"per_kill": 1})
+
+        self.player1 = User.objects.create_user(
+            username="ProGamer", email="p1@x.com", password="x", full_name="Real Name One",
+            uid="UID0001", role="player", discord_id="discord-1")
+        self.team1 = Team.objects.create(
+            team_name="Team Alpha", team_tag="ALP", join_settings="open",
+            team_creator=self.player1, team_owner=self.player1, country="Nigeria")
+        self.tteam = TournamentTeam.objects.create(
+            event=self.event, team=self.team1, status="active", result_finalized=True,
+            is_tournament_winner=True, reached_finals=True)
+        self.tts1 = TournamentTeamMatchStats.objects.create(
+            match=self.match, tournament_team=self.tteam, placement=1, kills=10, damage=2500,
+            assists=4, placement_points=12, kill_points=10, total_points=22)
+        TournamentPlayerMatchStats.objects.create(
+            team_stats=self.tts1, player=self.player1, kills=10, damage=2500, assists=4)
+
+        # ── issue a real key (store prefix+hash only; keep the plaintext to send) ──
+        full, prefix, h = auth.generate_key()
+        PartnerApiKey.objects.create(partner=self.partner, key_prefix=prefix, key_hash=h)
+        self.api_key = full
+
+    def _get(self, path, key="__default__"):
+        # key="__default__" sentinel -> use the issued key; pass None/"" to test missing.
+        api_key = self.api_key if key == "__default__" else (key or "")
+        return self.client.get(path, HTTP_X_API_KEY=api_key)
+
+    # ── 200 + pagination envelope ──
+    def test_list_events_ok_with_pagination(self):
+        # can_read_events ON -> 200 list, scoped to the one granted event, with the
+        # full pagination envelope the spec promises.
+        self.partner.can_read_events = True
+        self.partner.save()
+        resp = self._get("/api/v1/partner/events/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["total_count"], 1)           # only the granted event
+        self.assertEqual(body["results"][0]["slug"], self.event.slug)
+        # pagination metadata present and correctly shaped for a single-page result.
+        self.assertFalse(body["has_more"])
+        self.assertIsNone(body["next_offset"])
+        self.assertIn("results", body)
+
+    def test_pagination_limit_and_has_more(self):
+        # A limit smaller than the result set -> has_more True + a next_offset cursor.
+        from afc_tournament_and_scrims.models import Event
+
+        # grant a second published event so the list has two rows.
+        second = Event.objects.create(
+            event_name="AFC Two", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-01-05", end_date="2026-01-06",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="$1", event_rules="-", event_status="completed",
+            registration_link="https://x", tournament_tier="tier_1", number_of_stages=1,
+            partner_published=True, organization=None)
+        self.partner.allowed_events.add(second)
+        self.partner.can_read_events = True
+        self.partner.save()
+        resp = self._get("/api/v1/partner/events/?limit=1&offset=0")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(len(body["results"]), 1)          # page size honored
+        self.assertEqual(body["total_count"], 2)
+        self.assertTrue(body["has_more"])
+        self.assertEqual(body["next_offset"], 1)           # offset+limit, more remain
+
+    # ── 403 when the resource toggle is OFF ──
+    def test_resource_toggle_off_403(self):
+        # auth succeeds but can_read_events defaults OFF -> 403 resource_not_enabled.
+        resp = self._get("/api/v1/partner/events/")
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.json()["error"], "resource_not_enabled")
+
+    # ── 404 (NOT 403) for an out-of-scope / unpublished event slug ──
+    def test_out_of_scope_event_404(self):
+        # The other event exists + is published, but the partner was never granted it.
+        # We must answer 404 (not 403) so we never confirm an unseen event exists.
+        self.partner.can_read_events = True
+        self.partner.save()
+        resp = self._get(f"/api/v1/partner/events/{self.other_event.slug}/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_unknown_slug_404(self):
+        self.partner.can_read_events = True
+        self.partner.save()
+        resp = self._get("/api/v1/partner/events/does-not-exist/")
+        self.assertEqual(resp.status_code, 404)
+
+    # ── 401 for bad / missing credentials ──
+    def test_bad_key_401(self):
+        resp = self._get("/api/v1/partner/events/", key="afcp_zzzz_deadbeef")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_missing_key_401(self):
+        resp = self._get("/api/v1/partner/events/", key=None)
+        self.assertEqual(resp.status_code, 401)
+
+    # ── 429 when over the per-minute limit (+ Retry-After header) ──
+    def test_over_rate_limit_429(self):
+        # Drop the limit to 1 so the SECOND call in the window trips the guard. The
+        # response must carry Retry-After so a well-behaved client backs off.
+        self.partner.can_read_events = True
+        self.partner.save()
+        PartnerApiKey.objects.update(rate_limit_per_min=1)
+        first = self._get("/api/v1/partner/events/")
+        self.assertEqual(first.status_code, 200)           # 1st call: under the limit
+        second = self._get("/api/v1/partner/events/")
+        self.assertEqual(second.status_code, 429)          # 2nd call: over the limit
+        self.assertEqual(second["Retry-After"], "60")
+
+    # ── field toggle reflected in the body ──
+    def test_field_toggle_reflected_in_body(self):
+        # include_prize OFF -> no prize_pool in the event payload; ON -> it appears.
+        self.partner.can_read_events = True
+        self.partner.save()
+        off = self._get(f"/api/v1/partner/events/{self.event.slug}/").json()
+        self.assertNotIn("prize_pool", off)
+        self.partner.include_prize = True
+        self.partner.save()
+        on = self._get(f"/api/v1/partner/events/{self.event.slug}/").json()
+        self.assertEqual(on["prize_pool"], "$1000")
+
+    # ── the other six resources mount + gate on their own toggle ──
+    def test_stages_endpoint_toggle_and_scope(self):
+        # toggle off -> 403; on -> 200 list of the event's stages (with groups nested).
+        resp_off = self._get(f"/api/v1/partner/events/{self.event.slug}/stages/")
+        self.assertEqual(resp_off.status_code, 403)
+        self.partner.can_read_stages = True
+        self.partner.save()
+        resp = self._get(f"/api/v1/partner/events/{self.event.slug}/stages/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["total_count"], 1)
+        self.assertEqual(body["results"][0]["stage_name"], "Grand Final")
+
+    def test_matches_endpoint_toggle_and_scope(self):
+        self.partner.can_read_matches = True
+        self.partner.save()
+        resp = self._get(f"/api/v1/partner/events/{self.event.slug}/matches/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["total_count"], 1)
+        self.assertEqual(body["results"][0]["match_number"], 1)
+        # room creds must NEVER appear in a match payload.
+        import json
+        self.assertNotIn("room_password", json.dumps(body))
+
+    def test_standings_endpoint_toggle_and_scope(self):
+        self.partner.can_read_standings = True
+        self.partner.save()
+        resp = self._get(f"/api/v1/partner/events/{self.event.slug}/standings/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["total_count"], 1)           # one team competed
+        self.assertEqual(body["results"][0]["team"], "Team Alpha")
+        self.assertEqual(body["results"][0]["rank"], 1)
+
+    def test_teams_endpoint_toggle_and_scope(self):
+        self.partner.can_read_teams = True
+        self.partner.save()
+        resp = self._get(f"/api/v1/partner/events/{self.event.slug}/teams/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["total_count"], 1)
+        self.assertEqual(body["results"][0]["team"], "Team Alpha")
+
+    def test_players_endpoint_toggle_and_scope(self):
+        self.partner.can_read_players = True
+        self.partner.save()
+        resp = self._get(f"/api/v1/partner/events/{self.event.slug}/players/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertGreaterEqual(body["total_count"], 1)
+        usernames = {r["username"] for r in body["results"]}
+        self.assertIn("ProGamer", usernames)
+        # PII (real name / discord / email) must never leak through the players list.
+        import json
+        text = json.dumps(body)
+        self.assertNotIn("Real Name One", text)
+        self.assertNotIn("discord-1", text)
+
+    # ── nested resources also 404 for out-of-scope events ──
+    def test_nested_resource_out_of_scope_404(self):
+        # stages of an event the partner can't see -> 404, even with the toggle on.
+        self.partner.can_read_stages = True
+        self.partner.save()
+        resp = self._get(f"/api/v1/partner/events/{self.other_event.slug}/stages/")
+        self.assertEqual(resp.status_code, 404)
