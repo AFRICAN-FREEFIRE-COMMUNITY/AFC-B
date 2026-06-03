@@ -49,6 +49,8 @@ urlpatterns = [
     path('sync-group-discord-roles/', sync_group_discord_roles, name='sync_group_discord_roles'),
     path('reconcile-group-roles/', reconcile_group_roles, name='reconcile_group_roles'),
     path('get-all-leaderboard-details-for-event/', get_all_leaderboard_details_for_event, name='get_all_leaderboard_details_for_event'),
+    # BR Round-Robin (sub-project B): per-day + cumulative standings for a round-robin stage.
+    path('get-round-robin-standings/', get_round_robin_standings, name='get_round_robin_standings'),
     path('advance-group-competitors-to-next-stage/', advance_group_competitors_to_next_stage, name='advance_group_competitors_to_next_stage'),
     path('edit-solo-match-result/', edit_solo_match_result, name='edit_solo_match_result'),
     path('edit-leaderboard/', edit_leaderboard, name='edit_leaderboard'),

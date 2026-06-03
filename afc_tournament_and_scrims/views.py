@@ -11147,6 +11147,87 @@ def get_all_leaderboard_details_for_event(request):
     }, status=200)
 
 
+# ── BR Round-Robin (sub-project B, Task 3): three-view standings endpoint ──
+# A round-robin stage's results read three ways off the SAME match stats:
+#   • per-lobby   — already served by get_all_leaderboard_details_for_event (a lobby is a
+#                   StageGroups row), so we do NOT duplicate it here;
+#   • per-day     — round_robin.day_standings(stage, day): sum one game day's lobbies;
+#   • cumulative  — round_robin.cumulative_standings(stage): sum the whole stage, the
+#                   round-robin table the format is built around.
+# This endpoint bundles the per-day + cumulative tables plus the structural blocks the UI
+# needs to render the toggle (`groups` = base A/B/C identity, `game_days` = which lobbies
+# fall on which day). Admin-gated like the other event-results endpoints.
+@api_view(["POST"])
+def get_round_robin_standings(request):
+    # round_robin holds the pure aggregators; imported locally to keep the module-level
+    # import list untouched (this file imports per-function throughout).
+    from . import round_robin
+
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    # Results are admin-facing → gate on _is_event_admin (which uses the correct
+    # role__role_name__in path; NEVER role_name__in, which FieldErrors).
+    if not _is_event_admin(user):
+        return Response({"message": "You do not have permission."}, status=403)
+
+    event_id = request.data.get("event_id")
+    stage_id = request.data.get("stage_id")
+    if not event_id or not stage_id:
+        return Response({"message": "event_id and stage_id are required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    # Scope the stage to the event so a mismatched pair can't read another event's stage.
+    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+    # (1) Base-group structure (A/B/C…). RoundRobinGroup has Meta.ordering = ["order"], so
+    # `round_robin_groups.all()` is already A→B→C; we just echo label + member team names.
+    groups_payload = [
+        {
+            "label": grp.label,
+            "team_names": list(
+                grp.teams.values_list("team__team_name", flat=True)
+            ),
+        }
+        for grp in stage.round_robin_groups.all()
+    ]
+
+    # (2) Game-day map: each day → the lobby (StageGroups) ids that fall on it. A day can
+    # hold MULTIPLE lobbies (multiple group-merges per day), so we bucket by game_day.
+    # Only round-robin lobbies carry a game_day; exclude the nulls defensively.
+    game_days = {}
+    day_lobbies = (
+        stage.groups.filter(game_day__isnull=False).order_by("game_day", "group_id")
+    )
+    for lobby in day_lobbies:
+        game_days.setdefault(lobby.game_day, []).append(lobby.group_id)
+    game_days_payload = [
+        {"day": day, "lobbies": lobbies}
+        for day, lobbies in sorted(game_days.items())
+    ]
+
+    # (3) Per-day standings: one summed table per game day (each filters to that day only).
+    per_day_payload = {
+        day: round_robin.day_standings(stage, day) for day in game_days.keys()
+    }
+
+    # (4) Cumulative standings: the whole-stage round-robin table (teams summed across
+    # every lobby they played).
+    cumulative_payload = round_robin.cumulative_standings(stage)
+
+    return Response({
+        "groups": groups_payload,
+        "game_days": game_days_payload,
+        "per_day": per_day_payload,
+        "cumulative": cumulative_payload,
+    }, status=200)
+
+
 # @api_view(["POST"])
 # def get_all_leaderboard_details_for_event(request):
 #     auth = request.headers.get("Authorization")
