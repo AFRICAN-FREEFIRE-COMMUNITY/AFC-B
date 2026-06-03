@@ -11034,15 +11034,21 @@ def get_all_leaderboard_details_for_event(request):
             # solo and tournament_team_id for team — both already present in the rows above.
             overall = list(overall)
             id_key = "competitor_id" if event.participant_type == "solo" else "tournament_team_id"
+            # Name tiebreaker key matches the DB .order_by() tail for each branch:
+            # team rows expose the `team_name` alias, solo rows `competitor__user__username`.
+            name_key = "competitor__user__username" if event.participant_type == "solo" else "team_name"
 
             # (1) Point-Rush carry-over: seed each competitor's running total with the bonus
             # banked from any earlier stage whose point_rush_target_stage is THIS stage. We add
             # it into effective_total so the standings (and the champion replay below) see it.
             carry_over = _carry_over_for_stage(stage, event.participant_type)
+            carry_over_changed_order = False  # did any nonzero bonus land? -> standings may shift
             for row in overall:
                 bonus = carry_over.get(row[id_key], 0)
                 row["carry_over_points"] = bonus
                 row["effective_total"] = int(row.get("effective_total", 0)) + bonus
+                if bonus:
+                    carry_over_changed_order = True
 
             # (2) Champion-Point: replay this lobby's matches in play order (matches_payload is
             # already match_number-ordered) through the pure win-rule helper. A team is champion
@@ -11063,10 +11069,28 @@ def get_all_leaderboard_details_for_event(request):
                 )
                 stage_is_decided = champion_id is not None
 
-            # (3) Re-sort by the carry-over-adjusted total (then kills), and pin the champion to
-            # #0 if one exists — the FE renders server order verbatim (qualified/eliminated badges
-            # are positional), so the champion must physically lead the list, not just be flagged.
-            overall.sort(key=lambda r: (-int(r["effective_total"]), -int(r.get("total_kills", 0))))
+            # (3) Re-sort ONLY when a scoring-mode overlay actually changed something — i.e. a
+            # nonzero carry-over bonus landed, or a champion was crowned. On a plain stage (both
+            # toggles off, no carry-over) the DB `.order_by()` above is already authoritative and
+            # we MUST NOT touch it: re-sorting here would drop the DB's full tiebreaker chain
+            # (-total_booyah, last_match_placement, name) and silently reorder ties, which flips
+            # the FE's positional qualified/eliminated badges.
+            #
+            # When we do re-sort, replicate that exact chain on top of the carry-over-adjusted
+            # effective_total so two competitors level on points break the same way the DB would:
+            #   -effective_total, -total_booyah, -total_kills, last_match_placement, name.
+            if carry_over_changed_order or champion_id is not None:
+                overall.sort(key=lambda r: (
+                    -int(r.get("effective_total", 0)),
+                    -int(r.get("total_booyah", 0)),
+                    -int(r.get("total_kills", 0)),
+                    int(r.get("last_match_placement", 999)),
+                    r.get(name_key) or "",
+                ))
+            # Pin the champion to #0 if one exists — the FE renders server order verbatim
+            # (qualified/eliminated badges are positional), so the champion must physically lead
+            # the list, not just be flagged. Stable sort preserves the tiebreaker order above for
+            # everyone else.
             if champion_id is not None:
                 overall.sort(key=lambda r: 0 if r[id_key] == champion_id else 1)
             for r in overall:

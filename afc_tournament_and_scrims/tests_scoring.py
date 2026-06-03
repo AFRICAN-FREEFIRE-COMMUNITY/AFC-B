@@ -692,3 +692,44 @@ class GetAllLeaderboardDetailsScoringModesDBTests(TestCase):
         for r in overall:
             self.assertFalse(r["is_champion"])
             self.assertEqual(r["carry_over_points"], 0)
+
+    def test_plain_stage_tie_preserves_db_tiebreaker_order(self):
+        # Regression guard for the unconditional-resort bug: on a PLAIN stage (both toggles
+        # off, no carry-over), two teams tied on effective_total must stay in the DB's full
+        # tiebreaker order (-total_booyah, then -total_kills, ...). The old code re-sorted
+        # every stage by (effective_total, total_kills) only — which promotes kills ABOVE
+        # booyahs and can flip which team leads (and therefore which team the FE's positional
+        # qualified/eliminated badge marks). test_plain_stage_is_unchanged never hits this
+        # path because its two teams differ on points (17 vs 9).
+        #
+        # Construct the tie: 2 matches, both teams end on effective_total 21, but A has the
+        # Booyah edge (1 booyah) while B has the kill edge (more total kills). The DB orders
+        # by -total_booyah BEFORE -total_kills, so A must lead.
+        #   Team A: M1 placement 1 (12) + 0 kills = 12 ; M2 placement 2 (9) + 0 kills = 9  -> 21, booyah=1, kills=0
+        #   Team B: M1 placement 2 (9)  + 0 kills = 9  ; M2 placement 2... can't both be 2nd.
+        # Use distinct placements per match so each match is internally consistent:
+        #   M1: A=1st (12 pts, booyah), B=2nd (9 pts)            -> A:12  B:9
+        #   M2: A=2nd (9 pts), B=1st (12 pts, booyah)            -> A:21  B:21  (now both booyah=1)
+        # That ties booyah too. To isolate the kills-vs-booyah ordering we instead give B the
+        # kills and keep A's single booyah unique:
+        #   M1: A=1st (12, booyah, 0 kills), B=2nd (9, 0 kills)  -> A:12 (b=1,k=0)  B:9  (b=0,k=0)
+        #   M2: A=3rd (8, 0 kills),          B=2nd (9, 3 kills)  -> A:20 (b=1,k=0)  B:21 (b=0,k=3)
+        # That doesn't tie effective_total. Simplest clean tie that separates booyah from kills:
+        #   M1: A=1st (12, booyah, 0k), B=2nd (9, 3k)            -> A:12 (b=1,k=0)  B:12 (b=0,k=3)
+        # Single match, both at 12, A has the booyah and B has the kills. DB ranks A first
+        # (booyah beats kills); the buggy resort would rank B first (kills only).
+        stage, group, matches = self._make_stage_group(
+            stage_name="Tie Stage", champion_enabled=False, threshold=None, match_count=1,
+        )
+        # A: placement 1 (12 pts) + 0 kills = 12, booyah=1.  B: placement 2 (9 pts) + 3 kills = 12, booyah=0.
+        self._enter(matches[0], [(self.tt_a, 1, 0), (self.tt_b, 2, 3)])
+
+        grp = self._group_for_stage(self._fetch_details(), stage.stage_id)
+        overall = grp["overall_leaderboard"]
+
+        # Both tied on effective_total = 12.
+        self.assertEqual(overall[0]["effective_total"], 12)
+        self.assertEqual(overall[1]["effective_total"], 12)
+        # A must lead on the booyah tiebreaker (DB order), NOT B on kills (the old buggy order).
+        self.assertEqual(overall[0]["tournament_team_id"], self.tt_a.tournament_team_id)
+        self.assertEqual(overall[1]["tournament_team_id"], self.tt_b.tournament_team_id)
