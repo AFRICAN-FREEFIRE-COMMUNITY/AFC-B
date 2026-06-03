@@ -206,8 +206,10 @@ gated on `include_mvp`.
 ```
 
 A ranked list, winners first. `rank` is a derived 1-based ordinal. For **solo**
-events each row carries `username` + `in_game_id` instead of `team`. The stat fields
-(`placement`, `kills`, `damage`, `assists`) appear only for the field toggles you have.
+events each row carries `username` + `in_game_id` instead of `team`, and the stat
+fields are `placement` + `kills` only (gated by the `include_placements` / `include_kills`
+toggles). Team-event standings additionally expose `damage` + `assists` (gated by
+`include_damage` / `include_assists`); solo events do not record those.
 
 ### 3.6 `GET /events/{slug}/teams/` — teams
 
