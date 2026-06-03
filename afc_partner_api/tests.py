@@ -416,6 +416,29 @@ class SerializeTests(TestCase):
         for r in rows:
             self._assert_no_forbidden(r)
 
+    def test_standings_rank_by_effective_total_not_stale_total_points(self):
+        # Regression guard for the ranking-metric mismatch: standings MUST rank by the
+        # recomputed effective_total (placement+kill+bonus-penalty), the SAME metric the
+        # admin standings view uses, NOT the stored total_points column (which can be
+        # stale). We make the two diverge: give the team with the LOWER stored
+        # total_points a bonus that flips the true (effective) ranking. If standings still
+        # ranked by total_points, Team Alpha would lead; with effective_total, Team Bravo
+        # must lead.
+        #
+        #   Team Alpha (tts1): total_points=22, no bonus/penalty -> effective=12+10=22
+        #   Team Bravo (tts2): stored total_points=15 (STALE) but a +20 bonus banked later
+        #                      -> effective = 9 + 6 + 20 = 35  (beats Alpha's 22)
+        self.tts2.bonus_points = 20
+        self.tts2.save(update_fields=["bonus_points"])
+
+        from afc_partner_api.serialize import serialize_standings
+
+        rows = serialize_standings(self.event, self.partner)
+        # Bravo's higher effective_total wins despite its lower stored total_points.
+        self.assertEqual(rows[0]["team"], "Team Bravo")
+        self.assertEqual(rows[0]["rank"], 1)
+        self.assertEqual(rows[1]["team"], "Team Alpha")
+
     # ── player ──
     def test_player_serialization_public_handle_only(self):
         import json
@@ -424,10 +447,84 @@ class SerializeTests(TestCase):
 
         self.partner.include_kills = True
         self.partner.save()
-        out = serialize_player(self.player1, self.partner)
+        # Scope the fold to player1's team in THIS event (the per-event/roster contract).
+        out = serialize_player(self.player1, self.partner, tournament_team=self.tteam)
         # public in-game handle + id only — NEVER full_name/email/discord.
         self.assertEqual(out["username"], "ProGamer")
         self.assertEqual(out["in_game_id"], "UID0001")
         self.assertNotIn("Real Name One", json.dumps(out, default=str))  # PII name never leaks
         self.assertNotIn("discord-1", json.dumps(out, default=str))      # discord id never leaks
         self._assert_no_forbidden(out)
+
+    def test_player_stats_scoped_to_event_not_lifetime(self):
+        # Regression guard for the cross-event leak: serialize_player MUST fold only the
+        # stats the player recorded for THIS team in THIS event, never their lifetime
+        # totals across every event they ever played. We give player1 a SECOND event with
+        # a big stat row; the per-event fold (scoped via tournament_team) must ignore it,
+        # while an UNSCOPED fold would wrongly sum both. The single-event seed in setUp
+        # can't catch this (lifetime == per-event there), so we add the second event here.
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import (
+            Event, Stages, StageGroups, Leaderboard, Match,
+            TournamentTeam, TournamentTeamMatchStats, TournamentPlayerMatchStats,
+        )
+
+        # A second, unrelated published event where player1 also competes.
+        other_event = Event.objects.create(
+            event_name="AFC Spring", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-03-01", end_date="2026-03-02",
+            registration_open_date="2026-02-01", registration_end_date="2026-02-20",
+            prizepool="$500", event_rules="-", event_status="completed",
+            registration_link="https://x", tournament_tier="tier_1", number_of_stages=1,
+            partner_published=True, organization=None)
+        other_stage = Stages.objects.create(
+            event=other_event, stage_name="Final", start_date="2026-03-02",
+            end_date="2026-03-02", number_of_groups=1, stage_format="br - normal",
+            teams_qualifying_from_stage=2, stage_status="completed")
+        other_group = StageGroups.objects.create(
+            stage=other_stage, group_name="Group A", playing_date="2026-03-02",
+            playing_time="18:00", teams_qualifying=2, match_count=1, match_maps=["bermuda"])
+        other_lb = Leaderboard.objects.create(
+            leaderboard_name="Spring LB", event=other_event, stage=other_stage,
+            group=other_group, creator=self.admin, placement_points={"1": 12}, kill_point=1.0,
+            leaderboard_method="manual")
+        other_match = Match.objects.create(
+            leaderboard=other_lb, group=other_group, match_number=1, match_map="bermuda",
+            result_inputted=True)
+        # player1's team1 also entered the other event; give it a large stat row.
+        other_tteam = TournamentTeam.objects.create(
+            event=other_event, team=self.team1, status="active", result_finalized=True)
+        other_tts = TournamentTeamMatchStats.objects.create(
+            match=other_match, tournament_team=other_tteam, placement=1, kills=99, damage=9999,
+            assists=99, placement_points=12, kill_points=99, total_points=111)
+        TournamentPlayerMatchStats.objects.create(
+            team_stats=other_tts, player=self.player1, kills=50, damage=5000, assists=50)
+
+        from afc_partner_api.serialize import serialize_player
+
+        self.partner.include_kills = True
+        self.partner.include_damage = True
+        self.partner.include_assists = True
+        self.partner.save()
+
+        # Scoped to THIS event's team -> only the setUp row (6/1500/2), NOT the spring row.
+        scoped = serialize_player(self.player1, self.partner, tournament_team=self.tteam)
+        self.assertEqual(scoped["kills"], 6)
+        self.assertEqual(scoped["damage"], 1500)
+        self.assertEqual(scoped["assists"], 2)
+
+        # And the roster path (serialize_team -> serialize_player) must be scoped too:
+        # Team Alpha's roster in THIS event reports the per-event numbers, not lifetime.
+        from afc_partner_api.serialize import serialize_team
+
+        self.partner.include_rosters = True
+        self.partner.save()
+        team_out = serialize_team(self.tteam, self.partner)
+        alpha_roster = {p["username"]: p for p in team_out["roster"]}
+        self.assertEqual(alpha_roster["ProGamer"]["kills"], 6)     # per-event, not 6+50
+        self.assertEqual(alpha_roster["ProGamer"]["damage"], 1500)  # per-event, not 1500+5000
+
+        # Sanity: an UNSCOPED fold (the old bug) WOULD have summed both events.
+        lifetime = serialize_player(self.player1, self.partner)
+        self.assertEqual(lifetime["kills"], 6 + 50)  # proves the seed actually spans 2 events
