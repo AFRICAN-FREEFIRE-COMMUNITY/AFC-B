@@ -87,6 +87,9 @@ class Event(models.Model):
     # afc_rankings scores once an AFC admin verifies it. Native AFC events (organization=None)
     # are unaffected — aggregation only excludes org events where this is still False.
     rankings_verified = models.BooleanField(default=False)
+    # partner API gate: only events an AFC admin has explicitly published are reachable
+    # through the read-only partner API (afc_partner_api). Defaults off; AFC flips it.
+    partner_published = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)
     is_draft = models.BooleanField(default=True)
     registration_restriction = models.CharField(
