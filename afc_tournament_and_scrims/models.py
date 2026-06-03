@@ -171,7 +171,11 @@ class Stages(models.Model):
         ("cs - league", "Clash Squad - League"),
         ("cs - knockout", "Clash Squad - Knockout"),
         ("cs - double elimination", "Clash Squad - Double Elimination"),
-        ("cs - round robin", "Clash Squad - Round Robin")
+        ("cs - round robin", "Clash Squad - Round Robin"),
+        # BR Round-Robin (sub-project B): base groups A/B/C merge into game-day lobbies.
+        # Distinct from the dead "br - roundrobin" (mislabelled "Knockout") entry above —
+        # that one is left untouched for backward compatibility.
+        ("br - round robin", "Battle Royale - Round Robin")
     ]
 
     STAGE_STATUS_CHOICES = [
@@ -228,6 +232,25 @@ class StageGroups(models.Model):
     prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     prize_distribution = models.JSONField(default=dict, null=True, blank=True) # {"1": "50%", "2": "30%", "3": "20%"}
 
+    # ── BR Round-Robin (sub-project B): a StageGroups row doubles as a game-day LOBBY ──
+    # For a round-robin stage, each game day is a lobby formed by MERGING base groups
+    # (RoundRobinGroup). game_day numbers the day within the stage; source_groups records
+    # which base groups were merged to fill this lobby. Both stay null/empty for every
+    # other stage format, so nothing else changes. RoundRobinGroup is referenced by string
+    # because it is declared after this class (forward reference).
+    game_day = models.PositiveIntegerField(null=True, blank=True)
+    source_groups = models.ManyToManyField("RoundRobinGroup", blank=True, related_name="lobbies")
+
+
+# ---------------- Round-Robin Base Group ----------------
+class RoundRobinGroup(models.Model):
+    """Base group (A/B/C…) in a Round-Robin stage. Teams keep this identity; game-day
+    lobbies are formed by merging base groups (see StageGroups.source_groups)."""
+    group_id = models.AutoField(primary_key=True)
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="round_robin_groups")
+    label = models.CharField(max_length=20)
+    order = models.PositiveIntegerField(default=0)
+    teams = models.ManyToManyField("TournamentTeam", blank=True, related_name="round_robin_groups")
 
 
 # ---------------- Registered Competitors ----------------
