@@ -13,7 +13,7 @@ Run: .venv/Scripts/python.exe manage.py test afc_tournament_and_scrims.tests_rou
 """
 import datetime
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from afc_auth.models import User
 from afc_team.models import Team
@@ -24,6 +24,7 @@ from afc_tournament_and_scrims.models import (
     TournamentTeam,
     RoundRobinGroup,
 )
+from afc_tournament_and_scrims.round_robin import round_robin_schedule
 
 
 class RoundRobinSchemaTests(TestCase):
@@ -77,3 +78,69 @@ class RoundRobinSchemaTests(TestCase):
         self.assertIn(grp, lobby.source_groups.all())
         # Reverse accessor: team → the base groups it belongs to.
         self.assertIn(grp, self.tt.round_robin_groups.all())
+
+
+class RoundRobinScheduleTests(SimpleTestCase):
+    """Unit tests for the pure schedule generator (Task 2).
+
+    `round_robin_schedule` is intentionally DB-free: it takes base-group ids and
+    emits one lobby spec per *unordered* pairing of groups, one pairing per
+    game-day. So N base groups → C(N, 2) lobbies (round-robin of group merges).
+    These tests use `SimpleTestCase` (no DB) since the function never touches the ORM.
+    """
+
+    def test_three_groups_make_three_pairings(self):
+        # A,B,C → the three unordered pairings A+B, A+C, B+C, on game-days 1..3.
+        specs = round_robin_schedule(["A", "B", "C"])
+
+        self.assertEqual(len(specs), 3)
+        self.assertEqual([s["game_day"] for s in specs], [1, 2, 3])
+        self.assertEqual(
+            [s["source_group_ids"] for s in specs],
+            [["A", "B"], ["A", "C"], ["B", "C"]],
+        )
+
+    def test_four_groups_make_six_pairings(self):
+        # C(4, 2) = 6 lobbies, game-days numbered contiguously 1..6.
+        specs = round_robin_schedule(["A", "B", "C", "D"])
+
+        self.assertEqual(len(specs), 6)
+        self.assertEqual([s["game_day"] for s in specs], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(
+            [s["source_group_ids"] for s in specs],
+            [["A", "B"], ["A", "C"], ["A", "D"], ["B", "C"], ["B", "D"], ["C", "D"]],
+        )
+
+    def test_games_per_day_and_maps_propagate(self):
+        # games_per_day → each lobby's match_count; maps → each lobby's match_maps.
+        specs = round_robin_schedule(
+            ["A", "B"], games_per_day=3, maps=["bermuda", "purgatory"])
+
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["match_count"], 3)
+        self.assertEqual(specs[0]["match_maps"], ["bermuda", "purgatory"])
+
+    def test_maps_default_to_bermuda(self):
+        # No maps given → default to the single Bermuda map (BR default lobby map).
+        specs = round_robin_schedule(["A", "B"])
+
+        self.assertEqual(specs[0]["match_maps"], ["bermuda"])
+        self.assertEqual(specs[0]["match_count"], 1)  # games_per_day default is 1
+
+    def test_maps_are_copied_not_aliased(self):
+        # Each spec must own a fresh list so mutating one lobby's maps can't
+        # bleed into the caller's input or another spec (defensive: `list(...)`).
+        src = ["bermuda"]
+        specs = round_robin_schedule(["A", "B", "C"], maps=src)
+
+        specs[0]["match_maps"].append("kalahari")
+        self.assertEqual(src, ["bermuda"])  # caller's list untouched
+        self.assertEqual(specs[1]["match_maps"], ["bermuda"])  # sibling untouched
+
+    def test_single_group_has_nothing_to_merge(self):
+        # One base group can't form a pairing → no lobbies to schedule.
+        self.assertEqual(round_robin_schedule(["A"]), [])
+
+    def test_empty_groups_return_empty(self):
+        # Degenerate input is safe: no groups → no schedule.
+        self.assertEqual(round_robin_schedule([]), [])

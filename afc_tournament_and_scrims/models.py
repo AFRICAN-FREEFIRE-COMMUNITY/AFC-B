@@ -252,6 +252,11 @@ class RoundRobinGroup(models.Model):
     order = models.PositiveIntegerField(default=0)
     teams = models.ManyToManyField("TournamentTeam", blank=True, related_name="round_robin_groups")
 
+    class Meta:
+        # Self-enforce A/B/C order everywhere groups are read (schedule generation,
+        # standings, UI) so later tasks never have to re-sort by `order` by hand.
+        ordering = ["order"]
+
 
 # ---------------- Registered Competitors ----------------
 class RegisteredCompetitors(models.Model):
