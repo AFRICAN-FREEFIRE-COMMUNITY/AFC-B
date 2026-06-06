@@ -2496,7 +2496,9 @@ def edit_event(request):
 
 @api_view(["GET"])
 def get_total_events_count(request):
-    total_events = Event.objects.count(is_draft=False)
+    # FIX: QuerySet.count() takes no kwargs — the is_draft predicate must go in .filter()
+    # (matches sibling count views below, e.g. get_total_tournaments_count). Counts published (non-draft) events.
+    total_events = Event.objects.filter(is_draft=False).count()
     return Response({"total_events": total_events}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
@@ -2545,7 +2547,10 @@ def get_most_popular_event_format(request):
     events = Event.objects.all()
 
     for event in events:
-        fmt = event.format
+        # Event has no `format` field (event.format raised AttributeError -> 500).
+        # Use event_mode, the real Event field for how the event runs.
+        # Stored choice keys: 'virtual' (Online), 'physical(lan)', 'hybrid' (models.py L25-29, L61).
+        fmt = event.event_mode
         if fmt in format_counts:
             format_counts[fmt] += 1
         else:

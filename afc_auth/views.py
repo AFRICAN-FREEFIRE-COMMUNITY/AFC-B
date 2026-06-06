@@ -3274,7 +3274,9 @@ def get_top_winner_player(request):
         TournamentTeamMatchStats.objects
         .filter(placement=1)
         .values("tournament_team__members__user_id", "tournament_team__members__user__username")
-        .annotate(wins=Count("id"))
+        # TournamentTeamMatchStats sets team_stats_id as its explicit PK, so it has no `id` field;
+        # count its real PK (matches repo convention, e.g. afc_team/views.py:951,967) to avoid FieldError -> 500
+        .annotate(wins=Count("team_stats_id"))
     )
 
     # Merge in python (simple + safe)

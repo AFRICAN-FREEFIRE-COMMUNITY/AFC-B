@@ -14,7 +14,7 @@ urlpatterns = [
     path("update-application-status/", update_application_status, name="update_application_status"),
     path("get-player-contact/", get_player_contact, name="get_player_contact"),
     path("finalize-trial/", finalize_trial, name="finalize_trial"),
-    path("view-applications/", view_applications, name="view_applications"),
+    # removed duplicate "view-applications/" route (already registered above on line 13)
     path("view-my-applications/", view_my_applications, name="view_my_applications"),
     path("application-details/", view_application_details, name="view_application_details"),
     path("trial-chat/messages/", get_trial_chat_messages, name="get_trial_chat_messages"),
