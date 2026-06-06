@@ -786,9 +786,10 @@ def view_applications(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
-    try:
-        team = Team.objects.get(team_owner=user)
-    except Team.DoesNotExist:
+    # team_owner is a non-unique ForeignKey (a user can own >1 team), so .get() can raise
+    # MultipleObjectsReturned -> uncaught 500. Use .filter().first() to deterministically pick one team.
+    team = Team.objects.filter(team_owner=user).order_by("team_id").first()
+    if not team:
         return Response({"message": "Team not found"}, status=404)
 
 

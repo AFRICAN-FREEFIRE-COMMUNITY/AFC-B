@@ -2109,14 +2109,26 @@ def get_weekly_usage_and_saving_generated(request):
 
 
 @api_view(["GET"])
-def get_coupon_conversion_rate(request, slug):
+def get_coupon_conversion_rate(request):
+    # The registered route (urls.py:45) has no path converter, so Django never
+    # passes a `slug` positional arg -> the old signature raised
+    # TypeError: missing 1 required positional argument 'slug' at dispatch (500).
+    # Read the coupon slug from the query string instead: GET ?slug=<coupon-slug>.
+    slug = request.GET.get("slug")
+    if not slug:
+        return Response({"message": "slug query param is required."}, status=400)
 
     coupon = get_object_or_404(Coupon, slug=slug)
 
-    # Orders since coupon was created
-    total_orders = Order.objects.filter(
-        created_at__gte=coupon.start_at if coupon.start_at else coupon.created_at
-    ).count()
+    # Orders since the coupon became active. NOTE: the Coupon model has no
+    # `created_at` field, so the previous `else coupon.created_at` fallback was a
+    # latent AttributeError (-> 500) for any coupon with start_at unset (the
+    # default, since start_at is nullable). When start_at is None we cannot anchor
+    # on a creation time, so count all orders (no date filter) rather than crash.
+    orders_qs = Order.objects.all()
+    if coupon.start_at:
+        orders_qs = orders_qs.filter(created_at__gte=coupon.start_at)
+    total_orders = orders_qs.count()
 
     if total_orders == 0:
         return Response({

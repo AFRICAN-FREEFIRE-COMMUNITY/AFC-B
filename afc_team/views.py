@@ -717,8 +717,13 @@ def view_join_requests(request):
         )
 
     try:
-        # Find the team where the user is the owner
-        team = Team.objects.get(team_owner=user)
+        # Find the team where the user is the owner.
+        # team_owner is a ForeignKey (related_name='owned_teams', models.py:25), so a user
+        # can own multiple teams -- .get() would raise MultipleObjectsReturned -> 500. Use
+        # .filter().first() (the repo convention, see lines 89/411/1277) + a guard instead.
+        team = Team.objects.filter(team_owner=user).first()
+        if not team:
+            return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
 
         # Fetch all pending join requests for the team
         join_requests = JoinRequest.objects.filter(team=team, status_of_request="unattended_to")
@@ -735,8 +740,6 @@ def view_join_requests(request):
 
         return Response({"join_requests": requests_data}, status=status.HTTP_200_OK)
 
-    except Team.DoesNotExist:
-        return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
@@ -1653,7 +1656,8 @@ def get_team_with_highest_wins(request):
         .filter(placement=1)
         .values(team_id=F("tournament_team__team__team_id"),
                 team_name=F("tournament_team__team__team_name"))
-        .annotate(total_wins=Count("id"))
+        # Count by the model's real PK "team_stats_id" — TournamentTeamMatchStats has no auto "id" field (explicit AutoField PK), matching Count("team_stats_id") used elsewhere in this file
+        .annotate(total_wins=Count("team_stats_id"))
         .order_by("-total_wins", "team_name")
         .first()
     )
