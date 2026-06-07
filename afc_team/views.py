@@ -1350,6 +1350,19 @@ def _can_manage_roster(user, team):
     ).exists()
 
 
+def _transfer_window_open():
+    """True when player<->staff roster moves are allowed.
+
+    Tied to the active ranking season's transfer window (admins toggle it) — the SAME lock
+    that already gates kicks. If there is no active season, there is no lock (treated as open).
+    """
+    from afc_rankings.models import Season
+    active = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+    if not active:
+        return True
+    return active.is_transfer_window_open()
+
+
 @api_view(["POST"])
 def manage_team_roster(request):
     try:
@@ -1409,16 +1422,38 @@ def manage_team_roster(request):
 
             failures = []
 
-            # Management role — the actor cannot change their OWN role (no self-promote),
-            # and the team owner's role is protected (a coach must not be able to demote the owner).
+            # ── Management-role change rules ──────────────────────────────────────
+            # Role families: PLAYER roles can hold an in-game slot + count toward the 6-player
+            # cap; STAFF roles (coach/manager/analyst) are support-only and cannot be fielded.
+            STAFF_ROLES = {"coach", "manager", "analyst"}
+            PLAYER_ROLES = {"team_captain", "vice_captain", "member"}
             if new_m_role and new_m_role != tm.management_role:
+                # Crossing the player<->staff boundary is the abuse-prone move (parking an extra
+                # player as "staff" to dodge the 6-player cap, then swapping them back in), so it
+                # is gated by the transfer window.
+                crossing = (
+                    (tm.management_role in PLAYER_ROLES and new_m_role in STAFF_ROLES)
+                    or (tm.management_role in STAFF_ROLES and new_m_role in PLAYER_ROLES)
+                )
                 if tm.member == user:
                     failures.append("You cannot change your own management role")
                 elif tm.member_id == team.team_owner_id:
                     failures.append("The team owner's management role cannot be changed")
                 elif new_m_role not in valid_m_roles:
                     failures.append("Invalid management_role")
+                elif crossing and not _transfer_window_open():
+                    failures.append("Player/staff role changes are only allowed during the transfer window")
+                elif new_m_role in STAFF_ROLES and TeamMembers.objects.filter(
+                    team=team, management_role=new_m_role
+                ).exclude(member_id=tm.member_id).exists():
+                    # Cap: at most one coach, one manager, one analyst per team.
+                    failures.append(f"This team already has a {new_m_role.replace('_', ' ')}")
                 else:
+                    # Player -> staff: staff are non-players, so drop any in-game role they held
+                    # (closes the "park a player as staff, then swap them back" loophole).
+                    if new_m_role in STAFF_ROLES and tm.in_game_role:
+                        tm.in_game_role = None
+                        existing_in_game_count = max(0, existing_in_game_count - 1)
                     tm.management_role = new_m_role
 
             # In-game role — None means skip, "" means clear
