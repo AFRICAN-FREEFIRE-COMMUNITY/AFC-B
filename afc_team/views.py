@@ -1335,6 +1335,21 @@ def get_team_details_based_on_invite(request, invite_id):
     return Response({"team": team_data}, status=status.HTTP_200_OK)
 
 
+def _can_manage_roster(user, team):
+    """Who may manage a team's roster (change roles + kick members).
+
+    Allowed: the team OWNER, and any member whose management_role is 'coach'.
+    NOT allowed: team captains, vice captains, managers, analysts, members.
+    The check is bound to THIS team (the team looked up by team_id), so it can
+    never authorize managing a different team's roster.
+    """
+    if team.team_owner_id == user.user_id:
+        return True
+    return TeamMembers.objects.filter(
+        team=team, member=user, management_role="coach"
+    ).exists()
+
+
 @api_view(["POST"])
 def manage_team_roster(request):
     try:
@@ -1364,9 +1379,9 @@ def manage_team_roster(request):
         except Team.DoesNotExist:
             return Response({"error": "Team not found"}, status=404)
 
-        # Only team owner allowed
-        if team.team_owner != user:
-            return Response({"error": "Only the team owner can manage the roster"}, status=403)
+        # Roster management is allowed for the team owner OR a coach (see _can_manage_roster).
+        if not _can_manage_roster(user, team):
+            return Response({"error": "Only the team owner or a coach can manage the roster"}, status=403)
 
         # Valid role sets
         valid_m_roles = [choice[0] for choice in TeamMembers.MANAGEMENT_ROLE_CHOICES]
@@ -1394,10 +1409,13 @@ def manage_team_roster(request):
 
             failures = []
 
-            # Management role — owner cannot change their own
+            # Management role — the actor cannot change their OWN role (no self-promote),
+            # and the team owner's role is protected (a coach must not be able to demote the owner).
             if new_m_role and new_m_role != tm.management_role:
                 if tm.member == user:
-                    failures.append("Owner cannot change their own management role")
+                    failures.append("You cannot change your own management role")
+                elif tm.member_id == team.team_owner_id:
+                    failures.append("The team owner's management role cannot be changed")
                 elif new_m_role not in valid_m_roles:
                     failures.append("Invalid management_role")
                 else:
@@ -1421,10 +1439,13 @@ def manage_team_roster(request):
             tm.save()
 
             if failures:
+                # Hard blocks (self-role-change / owner-protected) mean nothing was applied for
+                # this member -> "failed"; any other mix means some changes landed -> "partial".
+                _HARD_BLOCKS = ("You cannot change your own", "The team owner's management role")
                 results.append({
                     "member_id": member_id,
                     "username": tm.member.username,
-                    "status": "partial" if not all(f.startswith("Owner") for f in failures) else "failed",
+                    "status": "failed" if all(f.startswith(_HARD_BLOCKS) for f in failures) else "partial",
                     "reasons": failures,
                     "management_role": tm.management_role,
                     "in_game_role": tm.in_game_role,
@@ -1484,9 +1505,9 @@ def kick_team_member(request):
         except Team.DoesNotExist:
             return Response({"error": "Team not found"}, status=404)
 
-        # Only team owner allowed
-        if team.team_owner != user:
-            return Response({"error": "Only the team owner can kick members"}, status=403)
+        # Kicking is allowed for the team owner OR a coach (see _can_manage_roster).
+        if not _can_manage_roster(user, team):
+            return Response({"error": "Only the team owner or a coach can kick members"}, status=403)
 
         # Roster moves are locked outside the transfer window — members cannot be kicked
         # while the window is CLOSED (matches the player-leave + disband locks). The window
@@ -1505,9 +1526,13 @@ def kick_team_member(request):
         except TeamMembers.DoesNotExist:
             return Response({"error": "Member not in team"}, status=404)
 
-        # Prevent owner from kicking themselves
+        # You cannot kick yourself.
         if tm.member == user:
-            return Response({"error": "Owner cannot kick themselves"}, status=400)
+            return Response({"error": "You cannot kick yourself"}, status=400)
+
+        # The team owner cannot be kicked (a coach must not be able to remove the owner).
+        if tm.member_id == team.team_owner_id:
+            return Response({"error": "The team owner cannot be kicked."}, status=400)
 
         kicked_member_username = tm.member.username
         tm.delete()
