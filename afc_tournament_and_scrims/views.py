@@ -2946,6 +2946,71 @@ from rest_framework.response import Response
 from rest_framework import status
 
 
+# ── Event page-view tracking (hardened) ──────────────────────────────────────────
+# User-agent fragments that mark a request as a bot / link-unfurl crawler. Their hits
+# must NOT inflate event view counts. This list also covers the link-embed crawlers
+# (Discord, X/Twitter, WhatsApp, Slack, Telegram, Facebook) that fetch a page when its
+# link is shared, so the new OG embeds don't pollute the numbers.
+_VIEW_BOT_UA_MARKERS = (
+    "bot", "crawler", "spider", "slurp", "facebookexternalhit", "discordbot",
+    "twitterbot", "whatsapp", "telegrambot", "slackbot", "embedly", "preview",
+    "headlesschrome", "python-requests", "curl", "wget", "go-http-client",
+)
+# Do not re-count the SAME viewer (a logged-in user, or an IP for anonymous) on the
+# SAME event within this window, so refreshes / quick re-opens do not inflate views.
+_VIEW_DEDUPE_WINDOW = timedelta(minutes=30)
+
+
+def _record_event_view(request, event, user):
+    """Record ONE EventPageView for a real, human, non-staff, non-owner visit.
+
+    Skips, so the count reflects genuine audience interest:
+      • bots / link-unfurl crawlers (matched on the user-agent),
+      • AFC platform admins (their own browsing should not inflate counts),
+      • members of the organization that OWNS the event (an org can't pad its own views),
+      • a repeat view by the same viewer on the same event inside the dedupe window.
+
+    Best-effort: any failure here is swallowed so view tracking can never break the
+    event page load. Called by get_event_details (public) and get_event_details_for_admin
+    (admins are filtered out by the role check, so admin loads never count).
+    """
+    try:
+        ua = (request.META.get("HTTP_USER_AGENT") or "").lower()
+        if any(marker in ua for marker in _VIEW_BOT_UA_MARKERS):
+            return  # bot / crawler / link-preview fetch
+
+        # AFC staff: don't count their own browsing.
+        if user is not None and getattr(user, "role", None) == "admin":
+            return
+
+        # Members of the org that owns this event: don't let an org inflate its own
+        # event's views. AFC-official events have no organization, so this is skipped.
+        if user is not None and event.organization_id:
+            from afc_organizers.models import OrganizationMember
+            if OrganizationMember.objects.filter(
+                organization_id=event.organization_id, user=user
+            ).exists():
+                return
+
+        ip = get_client_ip(request)
+        since = timezone.now() - _VIEW_DEDUPE_WINDOW
+        recent = EventPageView.objects.filter(event=event, viewed_at__gte=since)
+        if user is not None:
+            recent = recent.filter(user=user)            # same logged-in viewer
+        elif ip:
+            recent = recent.filter(user__isnull=True, ip_address=ip)  # same anon IP
+        else:
+            recent = None  # cannot identify the viewer -> always record
+        if recent is not None and recent.exists():
+            return  # already counted this viewer recently
+
+        EventPageView.objects.create(
+            event=event, user=user or None, ip_address=ip, viewed_at=timezone.now()
+        )
+    except Exception:
+        pass  # view tracking is best-effort; never break the response
+
+
 @api_view(["POST"])
 def get_event_details(request):
     user = None
@@ -3295,13 +3360,8 @@ def get_event_details(request):
 
     event_data["stages"] = stages_payload
 
-    # -------- PAGE VIEW TRACKING --------
-    EventPageView.objects.create(
-        event=event,
-        user=user if user else None,
-        ip_address=get_client_ip(request),
-        viewed_at=timezone.now()
-    )
+    # -------- PAGE VIEW TRACKING (hardened: bots, staff, org members + refreshes excluded) --------
+    _record_event_view(request, event, user)
 
     return Response({"event_details": event_data}, status=200)
 
@@ -7859,7 +7919,9 @@ def get_event_details_for_admin(request):
     social_shares = event.social_shares.count()
     streams = list(event.stream_channels.values_list("channel_url", flat=True))
 
-    EventPageView.objects.create(event=event, ip_address=request.META.get('REMOTE_ADDR'), user=admin)
+    # Hardened recorder; the admin who loads this admin view is filtered out by the
+    # staff check inside, so opening the admin event page never inflates view counts.
+    _record_event_view(request, event, admin)
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
 
@@ -10743,6 +10805,11 @@ def get_all_leaderboards(request):
             "event": {
                 "event_id": lb.event.event_id,
                 "event_name": lb.event.event_name,
+                # competition_type ("tournament" / "scrims") lets the admin Leaderboards
+                # page (frontend app/(a)/a/leaderboards/page.tsx) split the total count into
+                # the "Tournament Leaderboards" vs "Scrim Leaderboards" stat cards. The value
+                # comes from Event.competition_type (see Event.COMPETITION_TYPE_CHOICES).
+                "competition_type": lb.event.competition_type,
             },
             "stage": {
                 "stage_id": lb.stage.stage_id,
@@ -17885,26 +17952,80 @@ def broadcast_announcement(request):
     return Response({"message": f"Announcement sent to {count} users.", "recipients": count}, status=200)
 
 
+# ── export_participants renderers ──
+# This endpoint takes its OWN `?format=csv|xlsx` business parameter. DRF, however,
+# reserves the `format` query param for content-negotiation (format suffixes): if
+# the value does not match any configured renderer's `.format`, DRF raises Http404
+# DURING DISPATCH, so the view body never runs and the client gets a confusing
+# 404 (`?format=csv` 404s, `?format=xlsx` 404s) instead of the export. To stop that
+# collision we register passthrough renderers whose `.format` matches our own
+# values, so negotiation always succeeds and our view builds the real HttpResponse.
+# (Without this, the entire export feature is unreachable via its documented
+# `?format=` contract.)
+from rest_framework.renderers import BaseRenderer, JSONRenderer
+from rest_framework.decorators import renderer_classes
+
+
+class _PassthroughCSVRenderer(BaseRenderer):
+    media_type = "text/csv"
+    format = "csv"
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return data
+
+
+class _PassthroughXLSXRenderer(BaseRenderer):
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    format = "xlsx"
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return data
+
+
+# JSONRenderer LAST/included so the error Responses ({"message": ...}, 400) this
+# view returns for bad input still serialize as JSON. The csv/xlsx renderers only
+# exist to satisfy negotiation on `?format=csv|xlsx`; the happy path returns a raw
+# HttpResponse and never uses them.
 @api_view(["GET"])
+@renderer_classes([JSONRenderer, _PassthroughCSVRenderer, _PassthroughXLSXRenderer])
 def export_participants(request):
+    # NOTE: openpyxl is imported LAZILY (inside the xlsx branch below), NOT here.
+    # The CSV export uses only the stdlib `csv` module, so a prod host that is
+    # missing openpyxl must still be able to export CSV. Importing openpyxl at the
+    # top of the view made the ENTIRE endpoint 500 with ModuleNotFoundError on
+    # prod even for csv requests. (openpyxl is listed in requirements*.txt so a
+    # clean deploy installs it; this just stops a missing wheel from breaking csv.)
     import csv
-    import openpyxl
     from io import BytesIO
-    from django.http import HttpResponse
+    from django.http import HttpResponse, JsonResponse
+
+    # Error responses use Django's JsonResponse rather than DRF Response. WHY:
+    # this view advertises csv/xlsx passthrough renderers (see above) so the
+    # `?format=` business param does not 404 in negotiation. But those passthrough
+    # renderers would then mangle a DRF Response error body (rendering the dict as
+    # raw bytes under text/csv). JsonResponse sidesteps DRF content negotiation
+    # entirely, so every bad-input branch returns clean JSON with the right status.
 
     user, err = _get_event_action_user(request)
     if err:
-        return err
+        # err is a DRF Response built by the auth helper; re-emit it as JSON so the
+        # csv/xlsx passthrough renderer cannot mangle the 400/401/403 body.
+        return JsonResponse(err.data, status=err.status_code)
 
     event_id = request.query_params.get("event_id")
     fmt = request.query_params.get("format", "csv").lower()
 
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return JsonResponse({"message": "event_id is required."}, status=400)
     if fmt not in ("csv", "xlsx"):
-        return Response({"message": "format must be csv or xlsx."}, status=400)
+        return JsonResponse({"message": "format must be csv or xlsx."}, status=400)
 
-    event = get_object_or_404(Event, event_id=event_id)
+    # Explicit lookup instead of get_object_or_404 so a missing event returns a
+    # clean JSON 404 (get_object_or_404 raises Http404, which DRF would otherwise
+    # render through the negotiated csv/xlsx passthrough renderer).
+    event = Event.objects.filter(event_id=event_id).first()
+    if not event:
+        return JsonResponse({"message": "Event not found."}, status=404)
 
     rows = []
     if event.participant_type == "solo":
@@ -17942,6 +18063,18 @@ def export_participants(request):
     safe_name = event.event_name.replace(" ", "_")
 
     if fmt == "xlsx":
+        # Lazy import + graceful degradation: if openpyxl is not installed on this
+        # host, do not 500 with ModuleNotFoundError. Tell the caller to use csv
+        # instead. (Prevents ModuleNotFoundError: No module named 'openpyxl'.)
+        try:
+            import openpyxl
+        except ModuleNotFoundError:
+            # JsonResponse (not DRF Response) so the csv/xlsx passthrough renderer
+            # cannot mangle this error body. (Prevents ModuleNotFoundError 500.)
+            return JsonResponse(
+                {"message": "xlsx export is unavailable on this server. Please use format=csv."},
+                status=503,
+            )
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Participants"

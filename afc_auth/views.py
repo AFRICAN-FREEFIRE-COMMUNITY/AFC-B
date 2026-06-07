@@ -595,22 +595,43 @@ If you did not request this, please ignore this email.
 #     return Response({"message": "A new verification code has been sent to your email."}, status=status.HTTP_200_OK)
 
 
+# NOTE: this view was previously also named `verify_token`, which collided with the
+# password-reset `verify_token` POST view defined later in this module. Because
+# urls.py does `from .views import *`, the later definition won the name, so the
+# `verify/<uidb64>/<token>/` route actually bound to the POST view, which has signature
+# (request) and cannot accept the uidb64/token URL kwargs -> TypeError 500 on every
+# request to that route. Renamed to a unique name so the route binds to THIS view.
 @api_view(["GET"])
-def verify_token(request, uidb64, token):
+def verify_email_token(request, uidb64, token):
+    # Decode the uidb64 first, in its own guard. A malformed uidb64 (not valid
+    # base64, or base64 that does not decode to utf-8) raises ValueError /
+    # DjangoUnicodeDecodeError from urlsafe_base64_decode/force_str. A value that
+    # decodes to a non-numeric string then raises ValueError/TypeError from
+    # User.objects.get(pk=...) because the pk (user_id) is an integer AutoField.
+    # None of those were caught by the old `except User.DoesNotExist` only, so a
+    # malformed token like /verify/MQ/sampletoken/ 500'd. Treat all of these as a
+    # bad request (400) rather than an unhandled 500.
     try:
         uid = force_str(urlsafe_base64_decode(uidb64))
+    except (ValueError, TypeError, OverflowError):
+        # prevents ValueError / DjangoUnicodeDecodeError on undecodable uidb64
+        return Response({"error": "Invalid or malformed token."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
         user = User.objects.get(pk=uid)
-
-        # Validate token
-        if default_token_generator.check_token(user, token):
-            user.is_active = True  # Activate user after verification
-            user.save()
-            return Response({"message": "Email verified successfully!"}, status=status.HTTP_200_OK)
-        else:
-            return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
-
-    except User.DoesNotExist:
+    except (User.DoesNotExist, ValueError, TypeError):
+        # prevents User.DoesNotExist (no such user) and ValueError/TypeError
+        # (uid decoded to a non-integer that the integer pk lookup rejects)
         return Response({"error": "Invalid user."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Validate token. check_token already returns False (never raises) for a
+    # malformed token in this Django version, so no extra guard is needed here.
+    if default_token_generator.check_token(user, token):
+        user.is_active = True  # Activate user after verification
+        user.save()
+        return Response({"message": "Email verified successfully!"}, status=status.HTTP_200_OK)
+    else:
+        return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
     
 
 @api_view(["POST"])
@@ -1706,17 +1727,28 @@ def get_admin_info(request):
         )
 
 
-    if not user.is_admin:
+    # The User model has no `is_admin` field/property (only `role`), so the old
+    # `user.is_admin` raised AttributeError -> 500 on every call. Use the same
+    # role check the rest of this module uses (user.role == "admin").
+    if user.role != "admin":
         return Response({"message": "User is not an admin."}, status=status.HTTP_403_FORBIDDEN)
 
-    # Return admin information
+    # Return admin information.
+    # Fixes the AttributeError chain that previously 500'd this endpoint:
+    #   - user.id            -> the pk is `user_id` (use that explicitly)
+    #   - user.roles.all()   -> there is no `roles` related manager; the related_name
+    #                           on UserRoles is `userroles`, each row's role is a
+    #                           Roles FK whose label field is `role_name` (not `name`)
+    admin_roles = list(
+        UserRoles.objects.filter(user=user).values_list("role__role_name", flat=True)
+    )
     admin_info = {
-        "id": user.id,
+        "id": user.user_id,
         "email": user.email,
         "name": user.username,
         "is_active": user.is_active,
         "status": user.status,
-        "admin_roles": [role.name for role in user.roles.all()]
+        "admin_roles": admin_roles,
     }
 
     return Response({"message": "Admin information retrieved successfully.", "data": admin_info}, status=status.HTTP_200_OK)
@@ -1732,12 +1764,19 @@ def get_all_roles(request):
 
 @api_view(["GET"])
 def get_all_user_and_user_roles(request):
+    # Admin Settings -> users + their granular roles (frontend app/(a)/a/settings/page.tsx).
+    # PERFORMANCE: previously ran a UserRoles query PLUS a lazy ur.role load PER user inside the
+    # loop -> ~10k+ queries for 6,316 users (~6s). Now: one grouped UserRoles fetch with the role
+    # joined (select_related), assembled into a {user_id: [role_name,...]} dict. Same response
+    # shape, 2 queries total.
+    roles_by_user = {}
+    for ur in UserRoles.objects.select_related("role").all():
+        roles_by_user.setdefault(ur.user_id, []).append(ur.role.role_name)
+
     users = User.objects.all()
     users_data = []
 
     for user in users:
-        user_roles = UserRoles.objects.filter(user=user)
-        roles = [ur.role.role_name for ur in user_roles]
         users_data.append({
             "user_id": user.user_id,
             "username": user.username,
@@ -1745,7 +1784,7 @@ def get_all_user_and_user_roles(request):
             "role": user.role,
             "status": user.status,
             "last_login": user.last_login,
-            "roles": roles,
+            "roles": roles_by_user.get(user.user_id, []),
             "created_at": user.created_at
         })
 

@@ -90,8 +90,12 @@ def get_organization_public(request, slug):
         {
             "name": org.name,
             "slug": org.slug,
-            "logo": org.logo.url if org.logo else None,
-            "default_banner": org.default_banner.url if org.default_banner else None,
+            # ABSOLUTE urls (http://host/media/...). A relative "/media/..." resolves
+            # against the FRONTEND origin (:3000), which doesn't serve media, so the
+            # logo/banner 404'd and showed only fallbacks. build_absolute_uri points at
+            # the backend, matching how event/news images are served.
+            "logo": request.build_absolute_uri(org.logo.url) if org.logo else None,
+            "default_banner": request.build_absolute_uri(org.default_banner.url) if org.default_banner else None,
             "description": org.description,
             "socials": org.socials,
             "events": events_data,
@@ -176,7 +180,12 @@ def get_organizations_directory(request):
         organizations.append({
             "slug": org.slug,
             "name": org.name,
-            "logo": org.logo.url if org.logo else None,
+            # ABSOLUTE urls so next/image (banner) + the Avatar (logo) actually load
+            # them from the backend; a relative "/media/..." 404s against the frontend
+            # origin (this is why the uploaded logo showed nothing on the cards).
+            "logo": request.build_absolute_uri(org.logo.url) if org.logo else None,
+            # Cover image shown atop each directory card on the frontend.
+            "default_banner": request.build_absolute_uri(org.default_banner.url) if org.default_banner else None,
             "description": org.description,
             "event_count": org.pub_event_count,
             # verified = the org has at least one AFC-verified event result.

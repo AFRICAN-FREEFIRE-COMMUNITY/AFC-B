@@ -22,6 +22,36 @@
       "name": "afc_auth",
       "item": [
         {
+          "name": "GET /auth/verify/MQ/sampletoken/ - verify_email_token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/verify/MQ/sampletoken/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "verify",
+                "MQ",
+                "sampletoken"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "GET /auth/get-user-profile/ - get_user_profile",
           "request": {
             "method": "GET",
@@ -1414,7 +1444,7 @@
           ]
         },
         {
-          "name": "GET /organizers/metrics/sample-slug/ - Roll up every event an organization owns into one flat stat block for the organizer",
+          "name": "GET /organizers/metrics/sample-slug/ - Roll up every event an organization owns into ONE rich metrics payload for the",
           "request": {
             "method": "GET",
             "header": [
@@ -1883,7 +1913,7 @@
       "name": "afc_player",
       "item": [
         {
-          "name": "GET /player/get-all-players/ - get_all_users",
+          "name": "GET /player/get-all-players/ - ADMIN players list. Returns EVERY user with lightweight aggregate stats",
           "request": {
             "method": "GET",
             "header": [
@@ -3072,6 +3102,39 @@
               "path": [
                 "shop",
                 "view-all-products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/view-active-products/ - PUBLIC storefront product list -- only ACTIVE products, no auth required.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/view-active-products/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-active-products"
               ]
             }
           },

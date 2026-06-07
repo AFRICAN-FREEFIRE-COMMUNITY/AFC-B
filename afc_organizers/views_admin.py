@@ -202,8 +202,11 @@ def admin_create_organization(request):
     )
 
     # ── grant the owner the platform 'organizer' role (idempotent) ──
-    # get_or_create so re-provisioning for the same person never duplicates rows.
-    organizer_role = Roles.objects.get(role_name="organizer")
+    # The owner gets organizer access AUTOMATICALLY here, the moment the org is created -
+    # no separate manual role-assignment step is needed. get_or_create on BOTH the Roles row
+    # and the UserRoles link so this never 500s if the 'organizer' role was never seeded, and
+    # never duplicates rows on re-provisioning.
+    organizer_role, _ = Roles.objects.get_or_create(role_name="organizer")
     UserRoles.objects.get_or_create(user=owner, role=organizer_role)
 
     return Response(
@@ -299,8 +302,10 @@ def admin_get_organization(request, slug):
     # detail.members/events/reports), NOT nested inside organization.
     org_dict = _serialize_org(org)
     org_dict.update({
-        "logo": org.logo.url if org.logo else None,
-        "default_banner": org.default_banner.url if org.default_banner else None,
+        # Absolute urls (served from the backend); relative "/media/..." would 404 on
+        # the frontend origin. Matches the public + organizer endpoints.
+        "logo": request.build_absolute_uri(org.logo.url) if org.logo else None,
+        "default_banner": request.build_absolute_uri(org.default_banner.url) if org.default_banner else None,
         "description": org.description,
         "socials": org.socials or {},
     })

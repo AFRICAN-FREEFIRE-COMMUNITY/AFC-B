@@ -8,7 +8,11 @@ urlpatterns = [
     # path("admin/", admin.site.urls),
     # path('admin-login/', admin_login, name='admin_login'),
     path('signup/', signup, name='signup'),
-    path('verify/<uidb64>/<token>/', verify_token, name='verify_token'),
+    # Email-verification link (GET, decodes uidb64 + checks token). Uses the renamed
+    # view `verify_email_token` so it no longer collides with the password-reset
+    # `verify_token` POST view below (the name clash silently bound this route to the
+    # wrong view and caused a TypeError 500). See views.verify_email_token.
+    path('verify/<uidb64>/<token>/', verify_email_token, name='verify_email_token'),
     path('login/', login, name='login'),
     # path('logout/', logout, name='logout'),
     path('send-verification-token/', send_verification_token, name='send_verification_token'),

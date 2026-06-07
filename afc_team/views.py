@@ -864,9 +864,19 @@ def edit_team(request):
 
 @api_view(["GET"])
 def get_all_teams(request):
-    teams = Team.objects.all()
-    teams_data = []
+    # Admin team list (frontend app/(a)/a/teams/page.tsx -> GET /team/get-all-teams/).
+    # PERFORMANCE: previously this lazy-loaded team_creator + team_owner usernames AND ran a
+    # TeamMembers count() PER team inside the loop -> ~3 queries x 567 teams (~1700 queries,
+    # ~7.5s). Now: select_related the two owner/creator FKs (one join) + a single grouped
+    # member-count query assembled into a dict. Same response shape, ~3 queries total.
+    teams = Team.objects.all().select_related("team_creator", "team_owner")
 
+    member_counts = {
+        row["team"]: row["c"]
+        for row in TeamMembers.objects.values("team").annotate(c=Count("pk"))
+    }
+
+    teams_data = []
     for team in teams:
         teams_data.append({
             "team_id": team.team_id,
@@ -881,7 +891,7 @@ def get_all_teams(request):
             "team_tier": team.team_tier,
             "team_description": team.team_description,
             "country": team.country,
-            "member_count": TeamMembers.objects.filter(team=team).count()
+            "member_count": member_counts.get(team.team_id, 0),
         })
 
     return Response({"teams": teams_data}, status=status.HTTP_200_OK)
@@ -962,8 +972,83 @@ def _team_tier_history(team):
     return history
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# PRIVACY HELPERS (team stats visibility)
+# ──────────────────────────────────────────────────────────────────────────────
+# Detailed team statistics (win/loss totals, win rate, average kills/placement,
+# per-event tournament performance, recent matches) are PRIVATE: only CURRENT
+# members of that team — plus AFC admins — may see them. Anonymous or non-member
+# viewers get the team's public identity (name, tier, member list) but NOT the
+# detailed numbers.
+#
+# "Member" is REAL roster membership in afc_team.TeamMembers (one row per
+# (team, member)). These helpers are consumed by get_team_details below. The
+# frontend caller is TeamStatisticsTab.tsx, which now sends the viewer's Bearer
+# token when logged in and reads the `stats_visible` flag in the response.
+
+
+def _viewer_from_request(request):
+    """
+    Resolve the OPTIONAL viewer from an Authorization: Bearer <token> header.
+
+    get_team_details stays public (no token required), so a missing / malformed /
+    expired token simply yields None (anonymous viewer) instead of an error.
+    Returns a User instance or None. Uses the shared validate_token helper so this
+    behaves identically to the authenticated team endpoints.
+    """
+    auth = request.headers.get("Authorization") or ""
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    return validate_token(token)
+
+
+def _can_view_team_stats(viewer, team):
+    """
+    Decide whether `viewer` (a User or None) may see `team`'s detailed stats.
+
+    True when the viewer is an AFC admin (User.role == "admin") OR a current
+    member of THIS team (a TeamMembers row for this (team, viewer)). Anonymous
+    (viewer is None) or non-member viewers => False.
+
+    Query cost: at most one tiny indexed existence check on TeamMembers. No N+1.
+    """
+    if viewer is None:
+        return False
+
+    # AFC admins always see full stats (consistent with require_admin elsewhere).
+    if getattr(viewer, "role", None) == "admin":
+        return True
+
+    # Member of this exact team?
+    return TeamMembers.objects.filter(team=team, member=viewer).exists()
+
+
 @api_view(["POST"])
 def get_team_details(request):
+    """
+    PUBLIC team detail + PRIVACY-GATED team statistics, keyed by team_name.
+
+    Powers the public team page (frontend teams/[id]/page.tsx) and, in particular,
+    the detailed "Statistics" tab (TeamStatisticsTab.tsx).
+
+    AUTH (optional): stays public, but reads an OPTIONAL Authorization: Bearer
+    <session-token> header to identify the viewer (via the shared validate_token).
+    A missing/expired token simply means "anonymous viewer".
+
+    PRIVACY (stats_visible): the DETAILED performance numbers (win/loss totals,
+    win rate, average kills/placement, per-event tournament_performance[],
+    recent_matches[]) are visible ONLY to CURRENT MEMBERS of this team
+    (afc_team.TeamMembers rows for this team) and to AFC admins. For everyone else
+    `stats_visible` is False and those sensitive numbers are ZEROED / EMPTIED.
+    The team's public IDENTITY (name, tag, logo, tier, description, country,
+    member count, member list, social links, ban info, tier_history) is ALWAYS
+    returned. Back-compatible: no keys renamed — we only add `stats_visible` and
+    gate the values behind it. TeamStatisticsTab.tsx reads `stats_visible` and
+    shows a "members only" message when it is False.
+    """
     team_name = request.data.get("team_name")
 
     if not team_name:
@@ -973,6 +1058,13 @@ def get_team_details(request):
         team = Team.objects.get(team_name=team_name)
     except Team.DoesNotExist:
         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # ── Viewer + team-stats visibility (self-membership / admin gate) ──────────
+    # Resolve the OPTIONAL viewer from the Bearer token (None when anonymous), then
+    # decide whether they may see the DETAILED team stats: a current member of THIS
+    # team, or an AFC admin. Non-members get the public identity only.
+    viewer = _viewer_from_request(request)
+    stats_visible = _can_view_team_stats(viewer, team)
 
     # Members
     members_qs = TeamMembers.objects.filter(team=team).select_related("member")
@@ -995,80 +1087,96 @@ def get_team_details(request):
         for lnk in TeamSocialMediaLinks.objects.filter(team=team)
     ]
 
-    # Aggregate match stats across all tournament entries
-    agg = TournamentTeamMatchStats.objects.filter(
-        tournament_team__team=team
-    ).aggregate(
-        total_matches=Count("team_stats_id"),
-        total_wins=Count("team_stats_id", filter=Q(placement=1)),
-        avg_kills=Avg("kills"),
-        avg_placement=Avg("placement"),
-    )
-    total_matches = agg["total_matches"] or 0
-    total_wins = agg["total_wins"] or 0
-    win_rate = round((total_wins / total_matches) * 100, 1) if total_matches else 0
-
-    # Per-event tournament performance
-    tournament_teams = TournamentTeam.objects.filter(team=team).select_related("event")
+    # ── DETAILED STATS (members + admins only) ────────────────────────────────
+    # Everything from here to recent_matches is the sensitive performance block.
+    # We compute it ONLY when stats_visible is True; otherwise we short-circuit to
+    # zeroed scalars + empty lists so no private number is computed or leaked. The
+    # default values below are exactly what a brand-new team with no matches would
+    # return, so the shape is identical either way (back-compatible).
+    total_matches = 0
+    total_wins = 0
+    win_rate = 0
+    avg_kills = 0
+    avg_placement = 0
     tournament_performance = []
-    for tt in tournament_teams:
-        tt_agg = TournamentTeamMatchStats.objects.filter(tournament_team=tt).aggregate(
-            total_points=Sum("total_points"),
-            total_kills=Sum("kills"),
-            matches_played=Count("team_stats_id"),
-            best_placement=Min("placement"),
+    recent_matches = []
+
+    if stats_visible:
+        # Aggregate match stats across all tournament entries
+        agg = TournamentTeamMatchStats.objects.filter(
+            tournament_team__team=team
+        ).aggregate(
+            total_matches=Count("team_stats_id"),
+            total_wins=Count("team_stats_id", filter=Q(placement=1)),
+            avg_kills=Avg("kills"),
+            avg_placement=Avg("placement"),
         )
+        total_matches = agg["total_matches"] or 0
+        total_wins = agg["total_wins"] or 0
+        win_rate = round((total_wins / total_matches) * 100, 1) if total_matches else 0
+        avg_kills = round(float(agg["avg_kills"] or 0), 1)
+        avg_placement = round(float(agg["avg_placement"] or 0), 1)
 
-        # ── ADDITIVE: per-event date + per-event prize earned ──
-        # event_date: prefer the event's scheduled start_date; fall back to the team's
-        # registration date for this event when start_date is missing. Both are real fields.
-        event_date = None
-        if tt.event.start_date:
-            event_date = tt.event.start_date.isoformat()
-        elif tt.registration_date:
-            event_date = tt.registration_date.isoformat()
+        # Per-event tournament performance
+        tournament_teams = TournamentTeam.objects.filter(team=team).select_related("event")
+        for tt in tournament_teams:
+            tt_agg = TournamentTeamMatchStats.objects.filter(tournament_team=tt).aggregate(
+                total_points=Sum("total_points"),
+                total_kills=Sum("kills"),
+                matches_played=Count("team_stats_id"),
+                best_placement=Min("placement"),
+            )
 
-        # prize_earned: the sum of EventPrizePayout rows recorded for THIS team in THIS
-        # event (payout rows carry tournament_team + amount). Real, cleanly derivable.
-        # Returns "0.00" when no payout row exists for this team/event (truthful zero,
-        # not a fabricated figure).
-        prize_earned = EventPrizePayout.objects.filter(
-            event=tt.event, tournament_team=tt
-        ).aggregate(total=Sum("amount"))["total"]
+            # ── ADDITIVE: per-event date + per-event prize earned ──
+            # event_date: prefer the event's scheduled start_date; fall back to the team's
+            # registration date for this event when start_date is missing. Both are real fields.
+            event_date = None
+            if tt.event.start_date:
+                event_date = tt.event.start_date.isoformat()
+            elif tt.registration_date:
+                event_date = tt.registration_date.isoformat()
 
-        tournament_performance.append({
-            "event_id": tt.event.event_id,
-            "name": tt.event.event_name,
-            "competition_type": tt.event.competition_type,
-            "event_status": tt.event.event_status,
-            "team_status": tt.status,
-            "best_placement": tt_agg["best_placement"],
-            "total_points": tt_agg["total_points"] or 0,
-            "total_kills": tt_agg["total_kills"] or 0,
-            "matches_played": tt_agg["matches_played"] or 0,
-            # additive keys (existing keys above are untouched):
-            "event_date": event_date,
-            "prize_earned": str(prize_earned) if prize_earned is not None else "0.00",
-        })
+            # prize_earned: the sum of EventPrizePayout rows recorded for THIS team in THIS
+            # event (payout rows carry tournament_team + amount). Real, cleanly derivable.
+            # Returns "0.00" when no payout row exists for this team/event (truthful zero,
+            # not a fabricated figure).
+            prize_earned = EventPrizePayout.objects.filter(
+                event=tt.event, tournament_team=tt
+            ).aggregate(total=Sum("amount"))["total"]
 
-    # Last 10 match stats
-    recent_stat_qs = (
-        TournamentTeamMatchStats.objects.filter(tournament_team__team=team)
-        .select_related("match", "tournament_team__event")
-        .order_by("-match__match_date")[:10]
-    )
-    recent_matches = [
-        {
-            "event_name": s.tournament_team.event.event_name,
-            "match_number": s.match.match_number,
-            "match_map": s.match.match_map,
-            "placement": s.placement,
-            "kills": s.kills,
-            "total_points": s.total_points,
-            "match_date": s.match.match_date,
-        }
-        for s in recent_stat_qs
-    ]
+            tournament_performance.append({
+                "event_id": tt.event.event_id,
+                "name": tt.event.event_name,
+                "competition_type": tt.event.competition_type,
+                "event_status": tt.event.event_status,
+                "team_status": tt.status,
+                "best_placement": tt_agg["best_placement"],
+                "total_points": tt_agg["total_points"] or 0,
+                "total_kills": tt_agg["total_kills"] or 0,
+                "matches_played": tt_agg["matches_played"] or 0,
+                # additive keys (existing keys above are untouched):
+                "event_date": event_date,
+                "prize_earned": str(prize_earned) if prize_earned is not None else "0.00",
+            })
+
+        # Last 10 match stats
+        recent_stat_qs = (
+            TournamentTeamMatchStats.objects.filter(tournament_team__team=team)
+            .select_related("match", "tournament_team__event")
+            .order_by("-match__match_date")[:10]
+        )
+        recent_matches = [
+            {
+                "event_name": s.tournament_team.event.event_name,
+                "match_number": s.match.match_number,
+                "match_map": s.match.match_map,
+                "placement": s.placement,
+                "kills": s.kills,
+                "total_points": s.total_points,
+                "match_date": s.match.match_date,
+            }
+            for s in recent_stat_qs
+        ]
 
     # Ban info
     ban_info = None
@@ -1108,16 +1216,23 @@ def get_team_details(request):
         "total_members": members_qs.count(),
         "members": members_data,
         "social_media_links": social_links,
-        # Stats
+        # ── Privacy flag: True only for current team members + AFC admins ──
+        # When False, every detailed-stat field below is the zeroed/empty default
+        # (no private number leaks). TeamStatisticsTab.tsx reads this flag and shows
+        # a "Team stats are visible to team members only." message instead of the
+        # numbers, keeping the public identity above visible.
+        "stats_visible": stats_visible,
+        # Stats (zeroed when stats_visible is False)
         "total_wins": total_wins,
         "total_losses": total_matches - total_wins,
         "win_rate": win_rate,
-        "average_kills": round(float(agg["avg_kills"] or 0), 1),
-        "average_placement": round(float(agg["avg_placement"] or 0), 1),
-        # Performance
+        "average_kills": avg_kills,
+        "average_placement": avg_placement,
+        # Performance (empty lists when stats_visible is False)
         "tournament_performance": tournament_performance,
         "recent_matches": recent_matches,
         # additive: per-season tier / rank history (publish-gated; [] when nothing published)
+        # Always returned — tier/rank are public ranking data, not private team stats.
         "tier_history": tier_history,
     }
 

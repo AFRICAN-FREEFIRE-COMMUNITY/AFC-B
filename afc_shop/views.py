@@ -293,6 +293,59 @@ def view_all_products(request):
     return Response({"products": data}, status=200)
 
 
+@api_view(["GET"])
+def view_active_products(request):
+    """
+    PUBLIC storefront product list -- only ACTIVE products, no auth required.
+
+    Purpose:  Drives the user-facing shop (/shop). The admin list `view_all_products`
+              is `require_admin` and returns every status, so the storefront could only
+              load for admins (regular players got 403, anonymous 401). This is the public
+              counterpart: same posture as view_active_categories / view_product_details.
+    Auth:     public (no token).
+    Response: 200 { products: [...] }  -- identical item shape to view_all_products so the
+              frontend mapping is unchanged; only `status == "active"` products are returned.
+    Consumed by: ShopClient.tsx (app/(user)/shop/_components/ShopClient.tsx).
+    """
+    qs = (
+        Product.objects.filter(status="active")
+        .order_by("-created_at")
+        .select_related("category")
+        .prefetch_related("variants", "media")
+    )
+
+    data = []
+    for p in qs:
+        data.append({
+            "id": p.id,
+            "name": p.name,
+            "type": p.product_type,
+            "category": _serialize_category(p.category),
+            "description": p.description,
+            "status": p.status,
+            "is_limited_stock": p.is_limited_stock,
+            "image": _abs_url(request, p.image),
+            "media": _serialize_media(request, p),
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
+            # storefront only needs sellable variants; an inactive variant is hidden here.
+            "variants": [{
+                "id": v.id,
+                "sku": v.sku,
+                "title": v.title,
+                "price": str(v.price),
+                "diamonds_amount": v.diamonds_amount,
+                "stock_qty": v.stock_qty,
+                "is_active": v.is_active,
+                "in_stock": v.is_in_stock(),
+                "ean": v.ean,
+                "created_at": v.created_at,
+                "updated_at": v.updated_at,
+            } for v in p.variants.all() if v.is_active]
+        })
+    return Response({"products": data}, status=200)
+
+
 @api_view(["POST"])
 def edit_product(request):
     """
@@ -581,19 +634,42 @@ def view_all_orders(request):
     admin, err = require_admin(request)
     if err: return err
 
-    qs = Order.objects.all().prefetch_related("items__variant__product").order_by("-created_at")[:500]
+    # select_related("user", "coupon") so the related rows are fetched in the same
+    # query AND so a dangling FK surfaces predictably rather than via a lazy hit
+    # mid-serialization.
+    qs = (
+        Order.objects.all()
+        .select_related("user", "coupon")
+        .prefetch_related("items__variant__product")
+        .order_by("-created_at")[:500]
+    )
 
     data = []
     for o in qs:
+        # Guard: o.user / o.coupon are non-deferred FKs, but on prod an order can
+        # reference a user/coupon row that was hard-deleted outside the ORM. The
+        # `if o.user` truthiness check does NOT catch that: resolving the relation
+        # raises User.DoesNotExist (RelatedObjectDoesNotExist), which would 500 the
+        # whole list. Resolve each FK defensively so one bad row degrades to null
+        # instead of taking down the entire admin orders view.
+        try:
+            username = o.user.username if o.user_id else None
+        except Exception:
+            username = None
+        try:
+            coupon_code = o.coupon.code if o.coupon_id else None
+        except Exception:
+            coupon_code = None
+
         data.append({
             "order_id": o.id,
             "user_id": o.user_id,
-            "username": o.user.username if o.user else None,
+            "username": username,
             "status": o.status,
             "subtotal": str(o.subtotal),
             "discount_total": str(o.discount_total),
             "total": str(o.total),
-            "coupon_code": o.coupon.code if o.coupon else None,
+            "coupon_code": coupon_code,
             "created_at": o.created_at,
             "items": [{
                 "variant_id": it.variant_id,
@@ -608,7 +684,46 @@ def view_all_orders(request):
 
 
 def _orders_in_range(start_dt, end_dt):
-    return Order.objects.filter(created_at__gte=start_dt, created_at__lt=end_dt)
+    # select_related the FKs so resolving o.user / o.coupon during serialization
+    # does not fire a lazy per-row query (and so a dangling FK surfaces here, not
+    # mid-loop). The today/week/month summaries all reuse this.
+    return (
+        Order.objects.filter(created_at__gte=start_dt, created_at__lt=end_dt)
+        .select_related("user", "coupon")
+    )
+
+
+def _serialize_order_summary(o):
+    """
+    Flat summary row for the today/week/month order lists.
+
+    Resolves the user + coupon FKs DEFENSIVELY: on prod an order can point at a
+    user/coupon that was hard-deleted outside the ORM. `o.user.username if o.user
+    else None` does NOT protect against that, because resolving the relation
+    raises User.DoesNotExist (RelatedObjectDoesNotExist) which bubbles up as an
+    unhandled error and 500s the endpoint. Reading via the FK id and catching the
+    lookup keeps one bad row from taking down the whole report.
+    """
+    try:
+        username = o.user.username if o.user_id else None
+    except Exception:
+        username = None
+    try:
+        coupon_code = o.coupon.code if o.coupon_id else None
+    except Exception:
+        coupon_code = None
+
+    return {
+        "order_id": o.id,
+        "user_id": o.user_id,
+        "username": username,
+        "status": o.status,
+        "subtotal": str(o.subtotal),
+        "discount_total": str(o.discount_total),
+        "total": str(o.total),
+        "coupon_code": coupon_code,
+        "created_at": o.created_at,
+    }
 
 
 @api_view(["GET"])
@@ -620,17 +735,7 @@ def orders_today(request):
         timezone.now().replace(hour=0, minute=0, second=0, microsecond=0),
         timezone.now().replace(hour=23, minute=59, second=59, microsecond=999999)
     )
-    data = [{
-        "order_id": o.id,
-        "user_id": o.user_id,
-        "username": o.user.username if o.user else None,
-        "status": o.status,
-        "subtotal": str(o.subtotal),
-        "discount_total": str(o.discount_total),
-        "total": str(o.total),
-        "coupon_code": o.coupon.code if o.coupon else None,
-        "created_at": o.created_at,
-    } for o in orders]
+    data = [_serialize_order_summary(o) for o in orders]
     return Response({"orders": data}, status=200)
 
 
@@ -643,17 +748,7 @@ def orders_this_week(request):
         timezone.now() - timedelta(days=timezone.now().weekday()),
         timezone.now()
     )
-    data = [{
-        "order_id": o.id,
-        "user_id": o.user_id,
-        "username": o.user.username if o.user else None,
-        "status": o.status,
-        "subtotal": str(o.subtotal),
-        "discount_total": str(o.discount_total),
-        "total": str(o.total),
-        "coupon_code": o.coupon.code if o.coupon else None,
-        "created_at": o.created_at,
-    } for o in orders]
+    data = [_serialize_order_summary(o) for o in orders]
     return Response({"orders": data}, status=200)
 
 
@@ -666,17 +761,7 @@ def orders_this_month(request):
         timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0),
         timezone.now()
     )
-    data = [{
-        "order_id": o.id,
-        "user_id": o.user_id,
-        "username": o.user.username if o.user else None,
-        "status": o.status,
-        "subtotal": str(o.subtotal),
-        "discount_total": str(o.discount_total),
-        "total": str(o.total),
-        "coupon_code": o.coupon.code if o.coupon else None,
-        "created_at": o.created_at,
-    } for o in orders]
+    data = [_serialize_order_summary(o) for o in orders]
     return Response({"orders": data}, status=200)
 
 
@@ -1701,11 +1786,28 @@ def verify_paystack_payment(request):
 @api_view(["POST"])
 @csrf_exempt
 def paystack_webhook(request):
+    # A public webhook receives whatever Paystack (or a probe / bad caller) posts,
+    # so it must tolerate a missing signature header, an unset secret key, and an
+    # empty or malformed JSON body. Every one of those is bad INPUT, not a server
+    # fault, so we answer 400 and never let it bubble up to a 500.
 
     signature = request.headers.get("x-paystack-signature")
 
+    # Guard: missing signature header. Without it the request cannot be a genuine
+    # Paystack webhook, so reject before doing any work. (Prevents the later
+    # `signature != computed` from silently passing on a None secret env.)
+    if not signature:
+        return Response({"message": "Missing signature"}, status=400)
+
+    # Guard: PAYSTACK_SECRET_KEY may be unset in the environment (os.getenv -> None).
+    # Calling .encode() on None raises AttributeError ('NoneType' has no attribute
+    # 'encode'); treat an unconfigured key as a request we cannot verify -> 400.
+    secret = settings.PAYSTACK_SECRET_KEY
+    if not secret:
+        return Response({"message": "Webhook verification unavailable"}, status=400)
+
     computed = hmac.new(
-        settings.PAYSTACK_SECRET_KEY.encode(),
+        secret.encode(),
         request.body,
         hashlib.sha512
     ).hexdigest()
@@ -1713,13 +1815,29 @@ def paystack_webhook(request):
     if signature != computed:
         return Response({"message": "Invalid signature"}, status=400)
 
-    payload = json.loads(request.body)
+    # Guard: an empty or non-JSON body makes json.loads raise (ValueError /
+    # JSONDecodeError). Bad payload -> 400, never 500.
+    try:
+        payload = json.loads(request.body)
+    except (ValueError, TypeError):
+        return Response({"message": "Invalid payload"}, status=400)
+    if not isinstance(payload, dict):
+        return Response({"message": "Invalid payload"}, status=400)
 
     if payload.get("event") != "charge.success":
         return Response({"message": "Ignored"}, status=200)
 
-    data = payload["data"]
-    order_id = data["metadata"]["order_id"]
+    # Guard: `data` / `data.metadata.order_id` may be absent on a malformed event.
+    # Using payload["data"] / data["metadata"]["order_id"] would raise KeyError
+    # (TypeError if `data` is not a dict). Read defensively and 400 if order_id
+    # is missing rather than letting the lookup explode.
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return Response({"message": "Invalid payload"}, status=400)
+    metadata = data.get("metadata") or {}
+    order_id = metadata.get("order_id") if isinstance(metadata, dict) else None
+    if not order_id:
+        return Response({"message": "order_id is required"}, status=400)
 
     order = Order.objects.prefetch_related("items__variant").filter(id=order_id).first()
 
@@ -1729,8 +1847,10 @@ def paystack_webhook(request):
     with transaction.atomic():
 
         order.status = "paid"
-        order.paystack_transaction_id = str(data["id"])
-        order.payment_method = data["channel"]
+        # Guard: read id/channel with .get() so a verified-but-sparse payload
+        # cannot raise KeyError here after the order has already been located.
+        order.paystack_transaction_id = str(data.get("id") or "")
+        order.payment_method = data.get("channel") or ""
         order.paid_at = timezone.now()
         order.save()
 
