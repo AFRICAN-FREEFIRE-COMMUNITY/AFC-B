@@ -4842,6 +4842,39 @@
               }
             }
           ]
+        },
+        {
+          "name": "GET /organizers/get-organizations-public/ - organizers_public_directory",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/get-organizations-public/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "get-organizations-public"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -6423,6 +6456,181 @@
                 "player-market",
                 "delete-post"
               ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player-market/report-post/ - File an abuse report against a player-market post. Open to ANY logged-in user.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/report-post/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "report-post"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/admin/reports/ - Triage list of every market report for moderators. Gated by _is_market_moderator",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/admin/reports/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "admin",
+                "reports"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PATCH /player-market/admin/reports/1/ - Triage one report: update its status and/or resolution_notes, recording the",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/admin/reports/1/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "admin",
+                "reports",
+                "1"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player-market/admin/ban/ - Ban a PLAYER or a TEAM from the player market for a duration (or permanently).",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/admin/ban/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "admin",
+                "ban"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             }
           },
           "event": [
@@ -8231,7 +8439,7 @@
       "name": "afc_shop",
       "item": [
         {
-          "name": "POST /shop/add-product/ - add_product",
+          "name": "POST /shop/add-product/ - Create a product + its variants in one request.",
           "request": {
             "method": "POST",
             "header": [
@@ -8310,7 +8518,7 @@
           ]
         },
         {
-          "name": "POST /shop/edit-product/ - edit_product",
+          "name": "POST /shop/edit-product/ - Update a product's fields, its category, optional image, and (optionally)",
           "request": {
             "method": "POST",
             "header": [
@@ -8738,7 +8946,7 @@
           ]
         },
         {
-          "name": "GET /shop/view-product-details/ - view_product_details",
+          "name": "GET /shop/view-product-details/ - Public product detail (no auth) used by both the user detail page and the",
           "request": {
             "method": "GET",
             "header": [
@@ -9936,6 +10144,302 @@
                 "shop",
                 "test-brands"
               ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/view-all-categories/ - List every category (active + inactive) with product counts.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/view-all-categories/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-all-categories"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/view-active-categories/ - List only active categories, ordered for display.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/view-active-categories/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-active-categories"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /shop/create-category/ - Create a new product category.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/create-category/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "create-category"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /shop/edit-category/ - Update an existing category.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/edit-category/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "edit-category"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /shop/delete-category/ - Delete a category.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/delete-category/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "delete-category"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /shop/add-product-media/ - Upload one or more media files (images + videos) for a product.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/add-product-media/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "add-product-media"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /shop/delete-product-media/ - Delete a single media item from a product's gallery.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/delete-product-media/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "delete-product-media"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             }
           },
           "event": [
