@@ -51,6 +51,7 @@ urlpatterns = [
     path("get-notifications/", get_notifications, name="get_notifications"),
     path("send-notification/", send_notification, name="send_notification"),
     path("send-notification-to-multiple-users/", send_notification_to_multiple_users, name="send_notification_to_multiple_users"),
+    path("admin-send-message/", admin_send_message, name="admin_send_message"),
     path("view-notification/", view_notification, name="view_notification"),
     path('get-total-players-count/', get_total_players_count, name='get_total_players_count'),
     path('get-active-players-count/', get_active_players_count, name='get_active_players_count'),

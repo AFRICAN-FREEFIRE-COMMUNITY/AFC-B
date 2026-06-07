@@ -1833,6 +1833,16 @@ def edit_event(request):
     for date_field in ["start_date", "end_date", "registration_open_date", "registration_end_date"]:
         update_field(date_field, parse_date)
 
+    # Times were saved on create but were missing here, so editing an event silently
+    # dropped any time change. Persist them too (raw "HH:MM" string, or None to clear),
+    # matching how create_event stores them.
+    for time_field in [
+        "registration_start_time", "registration_end_time",
+        "event_start_time", "event_end_time",
+    ]:
+        if time_field in request.data:
+            setattr(event, time_field, request.data.get(time_field) or None)
+
     if event.registration_open_date and event.registration_end_date:
         if event.registration_open_date > event.registration_end_date:
             return Response({"message": "registration_open_date cannot be after registration_end_date."}, status=400)
@@ -2983,6 +2993,21 @@ def get_event_details(request):
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
 
+    # -------- CAPACITY SNAPSHOT (M: waitlist) --------
+    # active_registered = non-waitlisted registrations, counted exactly the way
+    # register_for_event enforces the cap, so the "is_full" flag below stays in
+    # lock-step with what actually blocks registration:
+    #   solo -> RegisteredCompetitors (registered/approved, not waitlisted)
+    #   team -> TournamentTeam (not waitlisted)
+    if event.participant_type == "solo":
+        active_registered = RegisteredCompetitors.objects.filter(
+            event=event, status__in=["registered", "approved"], is_waitlisted=False
+        ).count()
+    else:
+        active_registered = TournamentTeam.objects.filter(
+            event=event, is_waitlisted=False
+        ).count()
+
     # -------- BASIC EVENT DATA --------
     event_data = {
         "event_id": event.event_id,
@@ -3025,10 +3050,23 @@ def get_event_details(request):
             }
             for se in sponsors
         ],
-        "is_waitlist enabled": event.is_waitlist_enabled,
+        # M: waitlist flags. Keys were previously emitted with stray spaces
+        # ("is_waitlist enabled") so the frontend could never read them — fixed to
+        # clean snake_case keys the EventDetails interface can consume.
+        "is_waitlist_enabled": event.is_waitlist_enabled,
         "waitlist_capacity": event.waitlist_capacity,
-        "waitlist discord_ role_id": event.waitlist_discord_role_id,
-        # "slots_left": slots_left,
+        "waitlist_discord_role_id": event.waitlist_discord_role_id,
+        # K: registration/event window times ("HH:MM"). The frontend already combines
+        # these with the *_date fields to gate the Register button; they simply were
+        # never serialized here, so the gate always fell back to date-only.
+        "registration_start_time": event.registration_start_time,
+        "registration_end_time": event.registration_end_time,
+        "event_start_time": event.event_start_time,
+        "event_end_time": event.event_end_time,
+        # M: capacity snapshot so the frontend can switch Register -> Join Waitlist
+        # once the active roster is full (matches register_for_event enforcement).
+        "registered_count": active_registered,
+        "is_full": active_registered >= event.max_teams_or_players,
     }
 
     # ============================================================
@@ -3778,6 +3816,17 @@ def get_event_details_not_logged_in(request):
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor").all()
 
+    # M: capacity snapshot (same counting rule as register_for_event) so the public,
+    # logged-out event page can show "Registration full / Join Waitlist" too.
+    if event.participant_type == "solo":
+        active_registered = RegisteredCompetitors.objects.filter(
+            event=event, status__in=["registered", "approved"], is_waitlisted=False
+        ).count()
+    else:
+        active_registered = TournamentTeam.objects.filter(
+            event=event, is_waitlisted=False
+        ).count()
+
     event_data = {
         "event_id": event.event_id,
         "competition_type": event.competition_type,
@@ -3814,8 +3863,18 @@ def get_event_details_not_logged_in(request):
                 "sponsor_username": se.sponsor.username
             }
             for se in sponsors
-        ]
-
+        ],
+        # K: registration/event window times ("HH:MM"), mirrored from the logged-in
+        # response so the public page gates registration on the same window.
+        "registration_start_time": event.registration_start_time,
+        "registration_end_time": event.registration_end_time,
+        "event_start_time": event.event_start_time,
+        "event_end_time": event.event_end_time,
+        # M: waitlist flags + capacity snapshot for the logged-out register CTA.
+        "is_waitlist_enabled": event.is_waitlist_enabled,
+        "waitlist_capacity": event.waitlist_capacity,
+        "registered_count": active_registered,
+        "is_full": active_registered >= event.max_teams_or_players,
     }
 
     # ✅ KEEP registered competitors section (as you requested)
@@ -7799,13 +7858,20 @@ def get_event_details_for_admin(request):
             }
             for se in sponsors
             ],
-            "is_waitlist enabled": event.is_waitlist_enabled,
+            # M: fixed key names (were emitted with stray spaces, unreadable by clients).
+            "is_waitlist_enabled": event.is_waitlist_enabled,
             "waitlist_capacity": event.waitlist_capacity,
-            "waitlist discord_ role_id": event.waitlist_discord_role_id,       
+            "waitlist_discord_role_id": event.waitlist_discord_role_id,
+            # K: event start/end times so the admin analytics view can show them.
+            "event_start_time": event.event_start_time,
+            "event_end_time": event.event_end_time,
             },
         "registration_timeline": {
             "registration_start_date": event.registration_open_date,
             "registration_end_date": event.registration_end_date,
+            # K: registration window times alongside the dates.
+            "registration_start_time": event.registration_start_time,
+            "registration_end_time": event.registration_end_time,
             "registration_window_days": registration_window_days,
             "days_left_for_registration": days_until_registration_close,
             "registration_timeseries": timeseries,
