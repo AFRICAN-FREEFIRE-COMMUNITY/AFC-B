@@ -1,8 +1,23 @@
 # AFC Backend — Postman Collection
 
-A Postman collection covering **every** backend route (382 endpoints / 396 requests across
-12 apps), auto-generated from the live Django URL resolver — so it can never drift out of
-sync with the code by hand.
+A Postman collection covering **every** backend route, generated from the live Django URL
+resolver — so it can never drift out of sync with the code by hand.
+
+## Add new APIs / regenerate (do this whenever you add or change an endpoint)
+
+```bash
+# from backend/  (uses the project venv)
+.venv/Scripts/python.exe postman/generate.py
+```
+
+`postman/generate.py` walks `get_resolver()`, introspects each DRF view's allowed HTTP
+methods, fills sample path params, sets the auth header (Bearer `{{token}}` by default,
+`X-API-Key {{api_key}}` for the partner API, none for public routes), and rewrites both
+collection files below. New endpoints appear automatically — no hand-editing the JSON.
+Then re-run the newman smoke (below) to catch any new 500s. Commit the regenerated `*.json`.
+
+> Write-request bodies are emitted as an empty `{}` placeholder — fill the real payload
+> before firing a POST/PUT/PATCH. The GET smoke needs no body.
 
 ## Files
 
