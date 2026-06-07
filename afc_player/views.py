@@ -18,6 +18,13 @@ from afc_tournament_and_scrims.models import (
     Match
 )
 
+# Shared player-stats aggregation (reused by the admin + public player endpoints).
+from afc_player.aggregation import (
+    compute_player_stats,
+    basic_player_profile,
+    player_tier_history,
+)
+
 
 
 # Create your views here.
@@ -80,6 +87,11 @@ def get_all_users(request):
 
 @api_view(["POST"])
 def get_player_details(request):
+    # ADMIN player profile (keyed by player_id). The heavy stat aggregation now lives in
+    # afc_player.aggregation.compute_player_stats so the public player page can reuse the
+    # EXACT same numbers (single source of truth, no drift). This response keeps every key
+    # it returned before — the shared helper produces the same scalar names — and additionally
+    # gains per_event[] / recent_matches[] breakdown lists (additive; old callers ignore them).
 
     player_id = request.data.get("player_id")
 
@@ -88,101 +100,105 @@ def get_player_details(request):
 
     player = get_object_or_404(User, user_id=player_id)
 
-    stats = TournamentPlayerMatchStats.objects.filter(
-        player=player
-    ).select_related(
-        "team_stats__match__leaderboard__event"
-    )
+    # Shared aggregation (kills/wins/mvps/kdr/avg_damage/win_rate + scrim/tournament splits
+    # + booyahs + per_event[] + recent_matches[]). Defensive against null leaderboards.
+    agg = compute_player_stats(player, include_breakdown=True)
 
-    total_kills = 0
-    total_damage = 0
-    total_matches = stats.count()
-
-    scrim_kills = 0
-    tournament_kills = 0
-
-    for s in stats:
-        total_kills += s.kills
-        total_damage += s.damage
-
-        event_type = s.team_stats.match.leaderboard.event.competition_type
-
-        if event_type == "scrims":
-            scrim_kills += s.kills
-        else:
-            tournament_kills += s.kills
-
-    # MVPs
-    total_mvps = Match.objects.filter(mvp=player).count()
-
-    # Wins / Booyahs
-    team_ids = TournamentTeamMember.objects.filter(user=player).values_list("tournament_team", flat=True)
-
-    team_stats = TournamentTeamMatchStats.objects.filter(
-        tournament_team_id__in=team_ids
-    ).select_related("match__leaderboard__event")
-
-    total_wins = 0
-    scrim_wins = 0
-    tournament_wins = 0
-
-    scrim_booyah = 0
-    tournament_booyah = 0
-
-    for t in team_stats:
-        event_type = t.match.leaderboard.event.competition_type
-
-        if t.placement == 1:
-            total_wins += 1
-
-            if event_type == "scrims":
-                scrim_wins += 1
-                scrim_booyah += 1
-            else:
-                tournament_wins += 1
-                tournament_booyah += 1
-
-    # Calculations
-    kdr = total_kills / total_matches if total_matches > 0 else 0
-    avg_damage = total_damage / total_matches if total_matches > 0 else 0
-    win_rate = (total_wins / total_matches * 100) if total_matches > 0 else 0
-
-    # Team
+    # Team + roles (unchanged behaviour: last tournament team for display name, current
+    # TeamMembers row for in-game / management role).
     team_member = TournamentTeamMember.objects.filter(user=player).last()
     team_name = team_member.tournament_team.team.team_name if team_member else None
     member = TeamMembers.objects.filter(member=player).first()
-
-
-    
     in_game_role = member.in_game_role if member else None
     management_role = member.management_role if member else None
-
 
     return Response({
         "player_id": player.user_id,
         "name": player.username,
         "team": team_name,
-        "email": player.email,
+        "email": player.email,            # admin surface — PII allowed here (auth-gated)
         "uid": player.uid,
         "discord_username": player.discord_username,
         "country": player.country,
         "in_game_role": in_game_role,
         "management_role": management_role,
 
-        "kdr": round(kdr, 2),
-        "avg_damage": round(avg_damage, 2),
-        "win_rate": round(win_rate, 2),
+        # ── scalar aggregates (unchanged keys, now from the shared helper) ──
+        "kdr": agg["kdr"],
+        "avg_damage": agg["avg_damage"],
+        "win_rate": agg["win_rate"],
 
-        "total_kills": total_kills,
-        "total_wins": total_wins,
-        "total_mvps": total_mvps,
+        "total_kills": agg["total_kills"],
+        "total_wins": agg["total_wins"],
+        "total_mvps": agg["total_mvps"],
 
-        "scrims_kills": scrim_kills,
-        "tournaments_kills": tournament_kills,
+        "scrims_kills": agg["scrims_kills"],
+        "tournaments_kills": agg["tournaments_kills"],
 
-        "scrims_wins": scrim_wins,
-        "tournaments_wins": tournament_wins,
+        "scrims_wins": agg["scrims_wins"],
+        "tournaments_wins": agg["tournaments_wins"],
 
-        "scrim_booyah": scrim_booyah,
-        "tournament_booyah": tournament_booyah,
+        "scrim_booyah": agg["scrim_booyah"],
+        "tournament_booyah": agg["tournament_booyah"],
+
+        # ── NEW additive breakdown (admin page can render the same tables the public page does) ──
+        "total_matches": agg["total_matches"],
+        "per_event": agg["per_event"],
+        "recent_matches": agg["recent_matches"],
+    })
+
+
+@api_view(["POST"])
+def get_public_player_stats(request):
+    """
+    PUBLIC player profile + stats (NO auth), keyed by USERNAME / IGN.
+
+    This is the public counterpart to the admin get_player_details above. It powers the
+    public Player Profile page (feature D). It returns:
+      • a NON-sensitive identity block (NO email / no PII)        — basic_player_profile()
+      • the SAME aggregated stats as the admin endpoint           — compute_player_stats()
+      • a per-event list and per-match breakdown                  — included in the agg
+      • the player's published tier / rank history per season     — player_tier_history()
+
+    Body: {"player_ign": "<username>"}.
+    A player with no recorded matches simply returns zeroes and empty lists (truthful
+    empty state — nothing is fabricated). A player on no team returns team: null.
+    """
+    player_ign = request.data.get("player_ign")
+    if not player_ign:
+        return Response({"message": "player_ign is required."}, status=400)
+
+    try:
+        player = User.objects.get(username=player_ign)
+    except User.DoesNotExist:
+        return Response({"message": "Player not found."}, status=404)
+
+    # Identity (public, no PII) + full stat block (scalars + per_event + recent_matches)
+    profile = basic_player_profile(player, request=request)
+    stats = compute_player_stats(player, include_breakdown=True)
+    tier_history = player_tier_history(player)
+
+    return Response({
+        "player": {
+            **profile,
+            # scalar aggregates
+            "total_matches": stats["total_matches"],
+            "total_kills": stats["total_kills"],
+            "total_wins": stats["total_wins"],
+            "total_mvps": stats["total_mvps"],
+            "kdr": stats["kdr"],
+            "avg_damage": stats["avg_damage"],
+            "win_rate": stats["win_rate"],
+            "scrims_kills": stats["scrims_kills"],
+            "tournaments_kills": stats["tournaments_kills"],
+            "scrims_wins": stats["scrims_wins"],
+            "tournaments_wins": stats["tournaments_wins"],
+            "scrim_booyah": stats["scrim_booyah"],
+            "tournament_booyah": stats["tournament_booyah"],
+            # breakdown lists
+            "per_event": stats["per_event"],
+            "recent_matches": stats["recent_matches"],
+            # published tier / rank history (gated by afc_rankings publish flags)
+            "tier_history": tier_history,
+        }
     })
