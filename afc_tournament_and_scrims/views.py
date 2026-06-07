@@ -18088,6 +18088,162 @@ def broadcast_announcement(request):
     return Response({"message": f"Announcement sent to {count} users.", "recipients": count}, status=200)
 
 
+# ── per-GROUP broadcast (AFC official + organizer) ─────────────────────────────
+# Why this exists: the event-edit "Stages & Groups" tab (StagesGroupsTab.tsx, reused
+# by BOTH the AFC admin edit page and the organizer edit page) had an UNLABELLED bell
+# icon per group that only fired the fixed room-details push (send_match_room_details_
+# notification_to_competitor) AND was hard-gated to admins-only (so it 403'd for
+# organizers). The user asked for a clearer per-group broadcast on both surfaces. This
+# endpoint backs the upgraded SendNotificationModal "Message group" composer.
+#
+# Difference vs the two neighbours:
+#   - broadcast_announcement (above) = event-WIDE, custom title/message, AFC-staff gate.
+#   - send_match_room_details_notification_to_competitor = per-group, FIXED room text,
+#     admin-only, one Notification PER MATCH per user (spammy).
+#   - broadcast_to_group (this) = per-GROUP, EITHER a custom title/message OR an
+#     auto room-details summary, deduped to ONE Notification per recipient, and gated
+#     so AFC event admins OR an organizer who can edit THIS event can use it.
+#
+# Recipients = every player (solo) or team-member (squad) currently slotted into the
+# given StageGroup (via StageGroupCompetitor), deduped by user.
+# Consumed by: frontend app/(a)/a/events/_components/SendNotificationModal.tsx
+#   (rendered inside StagesGroupsTab on /a/events/<slug>/edit and
+#    /organizer/events/<slug>/edit).
+def _group_recipient_users(event, group):
+    """Deduped list of Users in a StageGroup. Solo -> each competitor's user;
+    team/squad -> each member of each team in the group. Mirrors the recipient
+    resolution in send_match_room_details_notification_to_competitor but returns a
+    de-duplicated set so a custom broadcast lands once per person."""
+    users = {}
+    if event.participant_type == "solo":
+        competitors = (StageGroupCompetitor.objects
+                       .select_related("player__user")
+                       .filter(stage_group=group, player__isnull=False))
+        for sc in competitors:
+            u = sc.player.user
+            if u and u.user_id not in users:
+                users[u.user_id] = u
+    else:
+        teams = (StageGroupCompetitor.objects
+                 .select_related("tournament_team")
+                 .filter(stage_group=group, tournament_team__isnull=False))
+        for sgc in teams:
+            for m in sgc.tournament_team.members.select_related("user").all():
+                if m.user and m.user.user_id not in users:
+                    users[m.user.user_id] = m.user
+    return list(users.values())
+
+
+def _group_room_details_text(event, group):
+    """Build a single room-details summary message for a whole group (all its maps
+    that have room info set), or None when no map has room details yet."""
+    matches = Match.objects.filter(group=group).order_by("match_number")
+    blocks = []
+    for match in matches:
+        if match.room_id and match.room_name and match.room_password:
+            blocks.append(
+                f"Match {match.match_number}"
+                f"{f' ({match.match_map})' if match.match_map else ''}:\n"
+                f"  Room ID: {match.room_id}\n"
+                f"  Room Name: {match.room_name}\n"
+                f"  Password: {match.room_password}"
+            )
+    if not blocks:
+        return None
+    header = (
+        f"Room details for '{event.event_name}'\n"
+        f"Stage: {group.stage.stage_name}\n"
+        f"Group: {group.group_name}\n"
+    )
+    return header + "\n" + "\n\n".join(blocks)
+
+
+@api_view(["POST"])
+def broadcast_to_group(request):
+    """POST /events/broadcast-to-group/
+    Body: { event_id, group_id, mode: 'custom'|'room_details', title?, message? }
+      - mode='custom'       -> sends {title?, message} (message required).
+      - mode='room_details' -> auto-builds the group's room-details summary.
+    Auth: Bearer token; allowed for AFC event admins (_is_event_admin) OR an organizer
+    who can edit this event (org_can_event(can_edit_events)). Sends ONE in-app
+    Notification per recipient (deduped). Returns { message, recipients }.
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.data.get("event_id")
+    group_id = request.data.get("group_id")
+    if not event_id or not group_id:
+        return Response({"message": "event_id and group_id are required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    # group must belong to a stage of THIS event (stops a caller broadcasting into a
+    # group from a different event by smuggling a foreign group_id).
+    group = get_object_or_404(StageGroups, group_id=group_id, stage__event=event)
+
+    # AUTH: AFC event admin OR an organizer who can edit this event (owner always can).
+    # Native (org=None) events fall to AFC-admin-only via org_can_event.
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response(
+            {"message": "You do not have permission to message this group."}, status=403
+        )
+
+    mode = (request.data.get("mode") or "custom").strip()
+
+    if mode == "room_details":
+        title = f"Match Room Details: {event.event_name}"
+        message = _group_room_details_text(event, group)
+        if not message:
+            return Response(
+                {"message": "No room details have been set for this group's maps yet."},
+                status=400,
+            )
+    else:
+        title = (request.data.get("title") or "").strip()
+        message = (request.data.get("message") or "").strip()
+        if not message:
+            return Response({"message": "A message is required."}, status=400)
+
+    recipients = _group_recipient_users(event, group)
+    if not recipients:
+        return Response(
+            {"message": "This group has no players to message yet.", "recipients": 0},
+            status=400,
+        )
+
+    # ONE Notification per recipient (deduped), tagged group_broadcast + linked to the
+    # event so it threads under the event in the user's notifications.
+    Notifications.objects.bulk_create([
+        Notifications(
+            user=u,
+            title=title or None,
+            message=message,
+            related_event=event,
+            notification_type="group_broadcast",
+        )
+        for u in recipients
+    ])
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="broadcast_to_group",
+        description=(
+            f"Group broadcast ({mode}) to {group.stage.stage_name} > {group.group_name} "
+            f"in {event.event_name} (ID: {event.event_id}): {len(recipients)} recipients"
+        ),
+    )
+
+    return Response(
+        {"message": f"Message sent to {len(recipients)} players in {group.group_name}.",
+         "recipients": len(recipients)},
+        status=200,
+    )
+
+
 # ── export_participants renderers ──
 # This endpoint takes its OWN `?format=csv|xlsx` business parameter. DRF, however,
 # reserves the `format` query param for content-negotiation (format suffixes): if

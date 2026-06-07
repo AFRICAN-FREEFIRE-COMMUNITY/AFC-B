@@ -105,6 +105,8 @@ urlpatterns = [
     path("cancel-event/", cancel_event, name="cancel_event"),
     path("complete-event/", complete_event, name="complete_event"),
     path("broadcast-announcement/", broadcast_announcement, name="broadcast_announcement"),
+    # per-group broadcast composer (AFC official + organizer). See broadcast_to_group.
+    path("broadcast-to-group/", broadcast_to_group, name="broadcast_to_group"),
     path("export-participants/", export_participants, name="export_participants"),
     # organizers: toggle Event.rankings_verified (platform org admins only).
     path("verify-event/", verify_event, name="verify_event"),
