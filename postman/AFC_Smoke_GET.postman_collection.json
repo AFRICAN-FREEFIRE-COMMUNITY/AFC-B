@@ -1514,6 +1514,39 @@
               }
             }
           ]
+        },
+        {
+          "name": "GET /organizers/get-organizations-public/ - organizers_public_directory",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/get-organizations-public/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "get-organizations-public"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -2270,6 +2303,40 @@
               "path": [
                 "player-market",
                 "my-posts"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /player-market/admin/reports/ - Triage list of every market report for moderators. Gated by _is_market_moderator",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player-market/admin/reports/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player-market",
+                "admin",
+                "reports"
               ]
             }
           },
@@ -3219,7 +3286,7 @@
           ]
         },
         {
-          "name": "GET /shop/view-product-details/ - view_product_details",
+          "name": "GET /shop/view-product-details/ - Public product detail (no auth) used by both the user detail page and the",
           "request": {
             "method": "GET",
             "header": [
@@ -3500,6 +3567,72 @@
               "path": [
                 "shop",
                 "test-brands"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/view-all-categories/ - List every category (active + inactive) with product counts.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/view-all-categories/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-all-categories"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shop/view-active-categories/ - List only active categories, ordered for display.",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shop/view-active-categories/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "shop",
+                "view-active-categories"
               ]
             }
           },
