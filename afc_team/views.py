@@ -8,7 +8,7 @@ from rest_framework import status
 from afc_auth.views import validate_token
 from afc_leaderboard_calc import models
 from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
-from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats
+from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats, EventPrizePayout
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
 from afc_auth.models import AdminHistory, Notifications, TeamBan, User, UserProfile, UserRoles
 from django.utils.timezone import now
@@ -914,6 +914,51 @@ def get_all_teams(request):
 #     return Response({"team": team_data}, status=status.HTTP_200_OK)
 
 
+def _team_tier_history(team):
+    """
+    Per-season tier + rank history for a team, sourced from the real afc_rankings
+    TeamQuarterlyScore table — ONLY for seasons whose tiers/rankings have been published.
+
+    tier is exposed only when Season.tiers_published; rank only when
+    Season.rankings_published (the two are independent publish gates, matching the public
+    rankings read API exactly). Seasons that expose nothing publicly yet are skipped.
+
+    Returns a list (possibly empty) of:
+      {season_id, season_name, year, quarter, tier, tier_label, rank}
+
+    If afc_rankings is unavailable, returns [] so get_team_details degrades gracefully.
+    """
+    try:
+        from afc_rankings.models import TeamQuarterlyScore
+        from afc_rankings.serializers import TIER_LABELS
+    except Exception:
+        return []
+
+    rows = (
+        TeamQuarterlyScore.objects.filter(team=team)
+        .select_related("season")
+        .order_by("season__year", "season__quarter")
+    )
+
+    history = []
+    for r in rows:
+        season = r.season
+        tier = r.tier_assigned if season.tiers_published else None
+        rank = r.rank if season.rankings_published else None
+        if tier is None and rank is None:
+            continue  # nothing published for this season yet
+        history.append({
+            "season_id": season.season_id,
+            "season_name": season.name,
+            "year": season.year,
+            "quarter": season.quarter,
+            "tier": tier,
+            "tier_label": TIER_LABELS.get(tier) if tier is not None else None,
+            "rank": rank,
+        })
+    return history
+
+
 @api_view(["POST"])
 def get_team_details(request):
     team_name = request.data.get("team_name")
@@ -970,6 +1015,24 @@ def get_team_details(request):
             matches_played=Count("team_stats_id"),
             best_placement=Min("placement"),
         )
+
+        # ── ADDITIVE: per-event date + per-event prize earned ──
+        # event_date: prefer the event's scheduled start_date; fall back to the team's
+        # registration date for this event when start_date is missing. Both are real fields.
+        event_date = None
+        if tt.event.start_date:
+            event_date = tt.event.start_date.isoformat()
+        elif tt.registration_date:
+            event_date = tt.registration_date.isoformat()
+
+        # prize_earned: the sum of EventPrizePayout rows recorded for THIS team in THIS
+        # event (payout rows carry tournament_team + amount). Real, cleanly derivable.
+        # Returns "0.00" when no payout row exists for this team/event (truthful zero,
+        # not a fabricated figure).
+        prize_earned = EventPrizePayout.objects.filter(
+            event=tt.event, tournament_team=tt
+        ).aggregate(total=Sum("amount"))["total"]
+
         tournament_performance.append({
             "event_id": tt.event.event_id,
             "name": tt.event.event_name,
@@ -980,6 +1043,9 @@ def get_team_details(request):
             "total_points": tt_agg["total_points"] or 0,
             "total_kills": tt_agg["total_kills"] or 0,
             "matches_played": tt_agg["matches_played"] or 0,
+            # additive keys (existing keys above are untouched):
+            "event_date": event_date,
+            "prize_earned": str(prize_earned) if prize_earned is not None else "0.00",
         })
 
     # Last 10 match stats
@@ -1014,6 +1080,12 @@ def get_team_details(request):
     except TeamBan.DoesNotExist:
         pass
 
+    # ── ADDITIVE: per-season tier / rank history (from afc_rankings, publish-gated) ──
+    # Sourced from the real TeamQuarterlyScore table. tier is shown only for seasons whose
+    # tiers are published; rank only when rankings are published — mirroring the public
+    # rankings read API's two independent publish gates. Empty list when nothing published.
+    tier_history = _team_tier_history(team)
+
     team_data = {
         "team_id": team.team_id,
         "team_name": team.team_name,
@@ -1042,6 +1114,8 @@ def get_team_details(request):
         # Performance
         "tournament_performance": tournament_performance,
         "recent_matches": recent_matches,
+        # additive: per-season tier / rank history (publish-gated; [] when nothing published)
+        "tier_history": tier_history,
     }
 
     return Response({"team": team_data}, status=status.HTTP_200_OK)
