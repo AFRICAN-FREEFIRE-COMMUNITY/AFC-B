@@ -32,7 +32,7 @@ therefore needs a retroactive, cross-period recalc. That spans many months/seaso
 NOT a single enqueue_team() call, so it is intentionally left to the coordinator — see the
 ``# TODO(recalc)`` marker in ``approve_claim``. We do NOT enqueue inline here.
 """
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view
@@ -227,6 +227,66 @@ def ghost_create(request):
         _audit(
             user, "ghost_claim", "create", reason,
             object_ref=ghost.ghost_team_id, before={}, after=after,
+        )
+
+    return Response(after, status=status.HTTP_201_CREATED)
+
+
+# ───────────────────────── ADD SINGLE PLAYER ─────────────────────────
+@api_view(["POST"])
+def ghost_player_create(request, ghost_team_id):
+    """POST ghost-teams/<uuid>/players/ — append ONE ghost player to an existing ghost team.
+
+    This is the surface the admin *Players* page uses to "create a ghost player": a ghost
+    player is always a roster slot on a ghost team (``GhostPlayer.ghost_team`` is non-null),
+    so the body must say which ghost team it belongs to (the <uuid> in the path).
+
+    Body:
+      ign     (required) — the in-game name for the new slot
+      reason  (required, >=10 chars — the audit reason)
+
+    Unlike ``ghost_update`` (which REPLACES the whole roster), this only APPENDS one slot, so
+    the existing roster is left untouched. The new slot number is ``max(existing slots) + 1``
+    so the roster stays a clean 1..N sequence even after repeated single adds.
+
+    Same freeze rule as ``ghost_update``: only allowed while ``claim_status == 'unclaimed'`` —
+    a pending/claimed ghost is frozen (adding to a claimed ghost would silently rewrite a real
+    team's roster), so we 400 instead. Audit: object_type="ghost_claim", action="add_player".
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    reason, err = _require_reason(request)
+    if err:
+        return err
+    ghost, err = _get_ghost_or_404(ghost_team_id)
+    if err:
+        return err
+
+    # freeze guard — mirror ghost_update: only unclaimed ghosts accept roster edits.
+    if ghost.claim_status != "unclaimed":
+        return Response(
+            {"message": f"Cannot add a player to a ghost team with claim_status '{ghost.claim_status}'. "
+                        "Only unclaimed ghost teams are editable."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # one ign, non-blank — same normalisation rule _clean_players applies per entry.
+    ign = (request.data.get("ign") or "").strip()
+    if not ign:
+        return Response({"message": "ign is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    with transaction.atomic():
+        before = serialize_ghost(ghost)
+        # next slot = highest current slot + 1 (1 when the roster is empty) → clean 1..N order.
+        next_slot = (ghost.players.aggregate(m=models.Max("slot"))["m"] or 0) + 1
+        GhostPlayer.objects.create(ghost_team=ghost, ign=ign, slot=next_slot)
+
+        ghost = GhostTeam.objects.prefetch_related("players").get(pk=ghost.pk)
+        after = serialize_ghost(ghost)
+        _audit(
+            user, "ghost_claim", "add_player", reason,
+            object_ref=ghost.ghost_team_id, before=before, after=after,
         )
 
     return Response(after, status=status.HTTP_201_CREATED)

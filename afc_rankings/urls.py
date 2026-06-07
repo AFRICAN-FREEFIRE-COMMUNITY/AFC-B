@@ -104,6 +104,9 @@ urlpatterns = [
     path("ghost-teams/<uuid:ghost_team_id>/",
          _route(GET=admin_ghost.ghost_detail, PATCH=admin_ghost.ghost_update, DELETE=admin_ghost.ghost_delete),
          name="rankings_ghost_team_detail"),
+    # append ONE ghost player to an existing (unclaimed) ghost team — used by the admin Players page.
+    path("ghost-teams/<uuid:ghost_team_id>/players/", admin_ghost.ghost_player_create,
+         name="rankings_ghost_player_create"),
     path("ghost-teams/<uuid:ghost_team_id>/approve-claim/", admin_ghost.ghost_approve_claim,
          name="rankings_ghost_approve_claim"),
     path("ghost-teams/<uuid:ghost_team_id>/revoke-claim/", admin_ghost.ghost_revoke_claim,
