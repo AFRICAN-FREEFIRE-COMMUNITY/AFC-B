@@ -12,6 +12,9 @@ from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatch
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
 from afc_auth.models import AdminHistory, Notifications, TeamBan, User, UserProfile, UserRoles
 from django.utils.timezone import now
+# Invite.invite_id is a UUID. Looking it up with a non-UUID value (e.g. a tampered URL)
+# raises ValidationError, NOT DoesNotExist, so we catch it to return 404 instead of 500.
+from django.core.exceptions import ValidationError
 from django.db.models import Avg, Count, F, Min, Q, Sum
 from .models import Team, TeamMembers, Invite, TeamSocialMediaLinks
 import json
@@ -1331,7 +1334,9 @@ def respond_invite(request, invite_id):
 
     try:
         invite = Invite.objects.get(invite_id=invite_id)
-    except Invite.DoesNotExist:
+    except (Invite.DoesNotExist, ValidationError, ValueError):
+        # DoesNotExist = no such invite; ValidationError/ValueError = the id wasn't even a
+        # valid UUID (the route is <str:invite_id>). Either way it's a 404, never a 500.
         return Response({"message": "Invite not found."}, status=404)
 
     if invite.is_expired():
@@ -1389,7 +1394,9 @@ def respond_invite(request, invite_id):
 def get_team_details_based_on_invite(request, invite_id):
     try:
         invite = Invite.objects.get(invite_id=invite_id)
-    except Invite.DoesNotExist:
+    except (Invite.DoesNotExist, ValidationError, ValueError):
+        # DoesNotExist = no such invite; ValidationError/ValueError = the id wasn't even a
+        # valid UUID (the route is <str:invite_id>). Either way it's a 404, never a 500.
         return Response({"message": "Invite not found."}, status=404)
 
     if invite.is_expired():
