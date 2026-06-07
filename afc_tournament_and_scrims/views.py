@@ -4445,17 +4445,36 @@ def register_for_event(request):
         if not set(roster_member_ids).issubset(team_member_ids):
             return Response({"message": "One or more roster players are not members of this team."}, status=400)
 
-        # Prevent players being in two rosters for the same event
-        already_in_event_roster_ids = set(
+        # Prevent players being in two rosters for the same event.
+        # Fetch the conflicting roster rows WITH the player + the team they are
+        # already registered in (select_related = one query, no N+1), so the error
+        # can name WHO is the problem and WHERE they're already registered — a
+        # captain needs that to know which player to drop. (Previously this only
+        # returned a generic message + bare user_ids.)
+        conflicting_members = list(
             TournamentTeamMember.objects.filter(
                 user_id__in=roster_member_ids,
-                tournament_team__event=event
-            ).values_list("user_id", flat=True)
+                tournament_team__event=event,
+            ).select_related("user", "tournament_team__team")
         )
-        if already_in_event_roster_ids:
+        if conflicting_members:
+            conflicts = [
+                {
+                    "user_id": m.user_id,
+                    "username": m.user.username,
+                    "team_name": m.tournament_team.team.team_name,
+                }
+                for m in conflicting_members
+            ]
+            # Human-readable: "PlayerX (already registered in Team Alpha), PlayerY (…)"
+            detail = ", ".join(
+                f"{c['username']} (already registered in {c['team_name']})"
+                for c in conflicts
+            )
             return Response({
-                "message": "One or more players are already in another roster for this event.",
-                "user_ids": list(already_in_event_roster_ids)
+                "message": f"Cannot register: {detail}.",
+                "conflicts": conflicts,
+                "user_ids": [c["user_id"] for c in conflicts],  # kept for backwards-compat
             }, status=409)
 
         roster_users = list(User.objects.filter(user_id__in=roster_member_ids))
