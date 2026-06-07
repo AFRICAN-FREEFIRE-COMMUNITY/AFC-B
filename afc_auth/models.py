@@ -91,10 +91,16 @@ class SessionToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 
+    # Session lifetime. The frontend stores the auth_token cookie for 7 days, so the
+    # server-side token must match — otherwise the cookie lingers but every request
+    # 401s within the hour, which is exactly the "logged in but everything fails after
+    # ~15-60 min" behaviour. Keep these in sync (frontend COOKIE_OPTIONS expires: 7).
+    SESSION_LIFETIME = timedelta(days=7)
+
     def save(self, *args, **kwargs):
-        # Automatically set expiry to 20 mins after creation if not provided
+        # Default the expiry to the full 7-day session window when not explicitly set.
         if not self.expires_at:
-            self.expires_at = timezone.now() + timedelta(minutes=60)
+            self.expires_at = timezone.now() + self.SESSION_LIFETIME
         super().save(*args, **kwargs)
 
     def is_expired(self):

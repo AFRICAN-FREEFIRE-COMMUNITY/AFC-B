@@ -1288,10 +1288,17 @@ def respond_invite(request, invite_id):
         if TeamMembers.objects.filter(team=invite.team).count() >= 8:
             return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Ensure there are not more than 6 players with member management role
+        # Ensure there are not more than 6 players with member management role.
+        # Explain the rule so the inviter/joiner knows the fix is to use a staff role.
         player_count = TeamMembers.objects.filter(team=invite.team, management_role='member').count()
         if player_count > 6:
-            return Response({'message': 'The team already has 6 players with member role.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({
+                'message': (
+                    'This team already has the maximum of 6 players. Anyone else must '
+                    'join as staff (coach, manager, or analyst), which does not take a '
+                    'player slot.'
+                )
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         TeamMembers.objects.create(
             team=invite.team,
@@ -1465,7 +1472,11 @@ def manage_team_roster(request):
                 elif tm.management_role not in ALLOWED_IG_ROLES:
                     failures.append("Only players (captain, vice captain, member) can have in-game roles")
                 elif not tm.in_game_role and existing_in_game_count >= MAX_IN_GAME:
-                    failures.append("Maximum of 6 players can have in-game roles")
+                    failures.append(
+                        "A team can field at most 6 players. To add more people, give them a "
+                        "staff role (coach, manager, or analyst) instead. Staff do not count "
+                        "toward the 6-player limit."
+                    )
                 else:
                     if not tm.in_game_role:
                         existing_in_game_count += 1

@@ -3180,6 +3180,118 @@ def send_notification_to_multiple_users(request):
     return Response({"message": "Notifications sent successfully."}, status=status.HTTP_201_CREATED)
 
 
+@api_view(["POST"])
+def admin_send_message(request):
+    """
+    Admin -> direct message to a single PLAYER or a whole TEAM, over push (in-app
+    Notifications), email, or both. Backs the "Send Message" control on the admin
+    Players + Teams detail pages so an admin can reach a specific player or every
+    member of a team without going through an event broadcast.
+
+    Payload:
+      target_type : "player" | "team"
+      target_id   : user_id (player) or team_id (team)
+      title       : optional subject / notification title
+      message     : required body text
+      delivery    : "push" | "email" | "both"   (default "both")
+    """
+    # ── auth (mirror the sibling notification endpoints) ──
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    if user.role != "admin":
+        return Response({"message": "You do not have permission to send messages."}, status=status.HTTP_403_FORBIDDEN)
+
+    # ── input ──
+    target_type = (request.data.get("target_type") or "").strip().lower()
+    target_id = request.data.get("target_id")
+    title = (request.data.get("title") or "").strip()
+    message = (request.data.get("message") or "").strip()
+    delivery = (request.data.get("delivery") or "both").strip().lower()
+
+    if target_type not in ("player", "team"):
+        return Response({"message": "target_type must be 'player' or 'team'."}, status=status.HTTP_400_BAD_REQUEST)
+    if not target_id:
+        return Response({"message": "target_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not message:
+        return Response({"message": "message is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if delivery not in ("push", "email", "both"):
+        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=status.HTTP_400_BAD_REQUEST)
+
+    want_push = delivery in ("push", "both")
+    want_email = delivery in ("email", "both")
+
+    # ── resolve recipients ──
+    # Local import so afc_auth has no import-time dependency on afc_team
+    # (afc_team imports from afc_auth, so a top-level import here could cycle).
+    from afc_team.models import Team, TeamMembers
+
+    if target_type == "player":
+        try:
+            recipients = [User.objects.get(user_id=target_id)]
+        except User.DoesNotExist:
+            return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+        target_label = recipients[0].username
+    else:
+        try:
+            team = Team.objects.get(team_id=target_id)
+        except Team.DoesNotExist:
+            return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        recipients = [
+            tm.member
+            for tm in TeamMembers.objects.filter(team=team).select_related("member")
+            if tm.member
+        ]
+        target_label = team.team_name
+        if not recipients:
+            return Response({"message": "This team has no members to message."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # ── deliver ──
+    pushed = 0
+    emailed = 0
+    # Push: one in-app Notification row per recipient (bulk for the team case).
+    if want_push:
+        Notifications.objects.bulk_create([
+            Notifications(
+                user=r,
+                title=title or None,
+                message=message,
+                notification_type="admin_message",
+            )
+            for r in recipients
+        ])
+        pushed = len(recipients)
+    # Email: best-effort per recipient. send_email() already validates the address
+    # and returns False on failure, so one bad address never blocks the rest.
+    if want_email:
+        subject = title or "A message from African Free Fire Community"
+        html_body = (
+            f"<p>{message}</p>"
+            "<p style='color:#888;font-size:12px'>Sent by the AFC admin team.</p>"
+        )
+        for r in recipients:
+            if r.email and send_email(r.email, subject, html_body):
+                emailed += 1
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="admin_send_message",
+        description=(
+            f"Sent {delivery} message to {target_type} '{target_label}' "
+            f"({pushed} pushed, {emailed} emailed)"
+        ),
+    )
+
+    return Response({
+        "message": f"Message sent to {target_label}.",
+        "recipients": len(recipients),
+        "pushed": pushed,
+        "emailed": emailed,
+    }, status=status.HTTP_201_CREATED)
+
 
 @api_view(["GET"])
 def get_total_players_count(request):
