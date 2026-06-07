@@ -3031,7 +3031,11 @@ def get_event_details(request):
     if not slug:
         return Response({"message": "slug is required."}, status=400)
 
-    event = get_object_or_404(Event, slug=slug)
+    # select_related("organization") avoids an extra query when we echo the owning
+    # org's id/name/slug below (used by the organizer edit page's ownership guard).
+    event = get_object_or_404(
+        Event.objects.select_related("organization"), slug=slug
+    )
 
     # -------- IS REGISTERED CHECK --------
     is_registered = False
@@ -3077,6 +3081,17 @@ def get_event_details(request):
     event_data = {
         "event_id": event.event_id,
         "slug": event.slug,
+        # ── Owning-organization context (additive; null for native AFC events) ──
+        # Lets an organizer surface verify an event belongs to the selected org
+        # before opening it for edit (the organizer edit page guards on
+        # organization_slug == the selected org's slug). The org-scoped events list
+        # (get_all_events) already exposes these same three keys, but that list omits
+        # drafts; this endpoint returns drafts too, so it's the reliable guard source
+        # for the organizer edit page. Consumed by:
+        #   frontend app/(organizer)/organizer/events/[slug]/edit/page.tsx
+        "organization_id": event.organization_id,
+        "organization_name": event.organization.name if event.organization_id else None,
+        "organization_slug": event.organization.slug if event.organization_id else None,
         "competition_type": event.competition_type,
         "participant_type": event.participant_type,
         "event_type": event.event_type,
@@ -10194,8 +10209,9 @@ def create_leaderboard(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved from event_id —
+    # org members with can_upload_results may create leaderboards for THEIR org's events.
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
@@ -10210,6 +10226,13 @@ def create_leaderboard(request):
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
     group = get_object_or_404(StageGroups, group_id=group_id, stage=stage)
+
+    # ── AUTH (event-scoped): event derived directly from request event_id (then stage/group
+    # are validated to belong to it). AFC event admins always pass; otherwise allow org
+    # members holding can_upload_results on the event's owning org. org_can_event treats
+    # native (org=None) events as admin-only, so organizers never touch events outside their org.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     if not leaderboard_name:
         leaderboard_name = f"{event.event_name} - {stage.stage_name} - {group.group_name}"
@@ -11424,14 +11447,22 @@ def get_all_leaderboard_details_for_event(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved from event_id.
+    # This is a READ of the full per-event leaderboard detail (admin/organizer surface), so we
+    # scope it: org members managing THEIR org's results may view it.
 
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+
+    # ── AUTH (event-scoped, read): event derived directly from request event_id. AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     stages_payload = []
     stages = event.stages.all().order_by("stage_id")
@@ -12976,7 +13007,7 @@ def edit_leaderboard(request):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
 
     leaderboard_id = request.data.get("leaderboard_id")
@@ -12984,6 +13015,12 @@ def edit_leaderboard(request):
         return Response({"message": "leaderboard_id is required."}, status=400)
 
     lb = get_object_or_404(Leaderboard, leaderboard_id=leaderboard_id)
+
+    # ── AUTH (event-scoped): event derived from the leaderboard's own FK (lb.event). AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", lb.event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     # optional updates
     new_stage_id = request.data.get("stage_id")
@@ -13039,8 +13076,12 @@ def edit_solo_match_result(request):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event — org members with can_upload_results may edit
+    # solo results for THEIR org's events.
 
     match_id = request.data.get("match_id")
     rows = request.data.get("rows")
@@ -13053,6 +13094,13 @@ def edit_solo_match_result(request):
         return Response({"message": "Match must be linked to a group."}, status=400)
 
     event = match.group.stage.event
+
+    # ── AUTH (event-scoped): event derived via match_id -> match.group.stage.event. AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+
     if event.participant_type != "solo":
         return Response({"message": "This endpoint is for solo only."}, status=400)
 
@@ -13200,8 +13248,9 @@ def delete_match(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event — org members with can_upload_results may delete
+    # matches for THEIR org's events.
 
     # -------------- INPUT --------------
     match_id = request.data.get("match_id")
@@ -13212,6 +13261,14 @@ def delete_match(request):
     renumber = str(request.data.get("renumber", "true")).lower() in ("1", "true", "yes")
 
     match = get_object_or_404(Match, match_id=match_id)
+
+    # ── AUTH (event-scoped): event derived via match_id -> match.group.stage.event (a match is
+    # always linked to a group -> stage -> event). AFC event admins always pass; otherwise allow
+    # org members holding can_upload_results on the event's owning org. Native (org=None) events
+    # stay admin-only.
+    _del_event = match.group.stage.event if match.group else None
+    if not _is_event_admin(admin) and not (_del_event and org_can_event(admin, "can_upload_results", _del_event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     if match.result_inputted and not force:
         return Response({
@@ -13406,8 +13463,11 @@ def create_leaderboard_manually(request):
         return Response({"message": "Invalid token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "No permission"}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved from event_id —
+    # org members with can_upload_results may create leaderboards for THEIR org's events.
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
@@ -13419,6 +13479,12 @@ def create_leaderboard_manually(request):
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
     group = get_object_or_404(StageGroups, group_id=group_id, stage=stage)
+
+    # ── AUTH (event-scoped): event derived directly from request event_id (stage/group are
+    # validated to belong to it). AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     apply_to_all = str(request.data.get("apply_to_all")).lower() == "true"
 
@@ -14328,8 +14394,9 @@ def edit_match_result(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+    # NOTE: permission is finalised below, once the owning event is resolved via the match's
+    # leaderboard (lb.event) — org members with can_upload_results may edit results for THEIR
+    # org's events.
 
     # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
@@ -14348,6 +14415,12 @@ def edit_match_result(request):
         return Response({"message": "No leaderboard linked/found for this match."}, status=400)
 
     event = lb.event
+
+    # ── AUTH (event-scoped): event derived via match_id -> _get_lb_for_match(match).event. AFC
+    # event admins always pass; otherwise allow org members holding can_upload_results on the
+    # event's owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
@@ -15168,7 +15241,30 @@ def get_drafted_events(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    events = Event.objects.filter(is_draft=True).order_by("-created_at")
+
+    qs = Event.objects.filter(is_draft=True)
+
+    # ORGANIZER DRAFTS: when ?organization_id is given, scope the drafts to that one org
+    # and require the caller to be an AFC admin OR an org member who can create/edit its
+    # events (so an organizer sees ONLY their own org's drafts, and cannot read another
+    # org's). Consumed by the organizer Drafts page (app/(organizer)/organizer/events/drafts).
+    organization_id = request.GET.get("organization_id")
+    if organization_id:
+        org = Organization.objects.filter(organization_id=organization_id).first()
+        if not org:
+            return Response({"message": "Organization not found."}, status=404)
+        if not (
+            _is_event_admin(user)
+            or org_can(user, "can_create_events", org)
+            or org_can(user, "can_edit_events", org)
+        ):
+            return Response(
+                {"message": "You do not have permission to view this organization's drafts."},
+                status=403,
+            )
+        qs = qs.filter(organization=org)
+
+    events = qs.order_by("-created_at")
     event_list = []
     for event in events:
         event_list.append({
@@ -16686,8 +16782,12 @@ def edit_match_scoring_config(request):
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token."}, status=400)
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event — org members with can_upload_results may edit a
+    # match's scoring config for THEIR org's events.
 
     match_id = request.data.get("match_id")
     scoring_settings = request.data.get("scoring_settings")
@@ -16696,6 +16796,13 @@ def edit_match_scoring_config(request):
     if not isinstance(scoring_settings, dict):
         return Response({"message": "scoring_settings must be a dictionary."}, status=400)
     match = get_object_or_404(Match, match_id=match_id)
+
+    # ── AUTH (event-scoped): event derived via match_id -> match.group.stage.event. AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    _cfg_event = match.group.stage.event if match.group else None
+    if not _is_event_admin(admin) and not (_cfg_event and org_can_event(admin, "can_upload_results", _cfg_event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     match.scoring_settings = scoring_settings
     match.save(update_fields=["scoring_settings"])
@@ -17517,8 +17624,10 @@ def upload_match_result_image(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event — org members with can_upload_results may run OCR
+    # result uploads for THEIR org's events.
 
     match_id = request.data.get("match_id")
     if not match_id:
@@ -17535,6 +17644,12 @@ def upload_match_result_image(request):
 
     event = match.group.stage.event
     participant_type = event.participant_type  # "solo", "duo", or "squad"
+
+    # ── AUTH (event-scoped): event derived via match_id -> match.group.stage.event. AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     # -------- LEADERBOARD / SCORING --------
     leaderboard = match.leaderboard or Leaderboard.objects.filter(
@@ -17760,14 +17875,25 @@ def get_match_result_images(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event. This is a READ, but result images are admin/organizer
+    # surface only, so we still scope it: org members managing THEIR org's results may view them.
 
     match_id = request.data.get("match_id")
     if not match_id:
         return Response({"message": "match_id is required."}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
+
+    # ── AUTH (event-scoped, read): event derived via match_id -> match.group.stage.event. AFC
+    # event admins always pass; otherwise allow org members holding can_upload_results on the
+    # event's owning org (the same role that manages results may view their evidence images).
+    # Native (org=None) events stay admin-only.
+    _img_event = match.group.stage.event if match.group else None
+    if not _is_event_admin(admin) and not (_img_event and org_can_event(admin, "can_upload_results", _img_event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+
     images = MatchResultImage.objects.filter(match=match).order_by("uploaded_at")
 
     data = [
@@ -17793,14 +17919,24 @@ def delete_match_result_image(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved via the image's
+    # match (image -> match -> group.stage.event) — org members with can_upload_results may
+    # delete result images for THEIR org's events.
 
     image_id = request.data.get("image_id")
     if not image_id:
         return Response({"message": "image_id is required."}, status=400)
 
     img = get_object_or_404(MatchResultImage, image_id=image_id)
+
+    # ── AUTH (event-scoped): event derived via image_id -> img.match.group.stage.event. AFC
+    # event admins always pass; otherwise allow org members holding can_upload_results on the
+    # event's owning org. Native (org=None) events stay admin-only.
+    _img_event = img.match.group.stage.event if (img.match and img.match.group) else None
+    if not _is_event_admin(admin) and not (_img_event and org_can_event(admin, "can_upload_results", _img_event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+
     img.image.delete(save=False)
     img.delete()
 
