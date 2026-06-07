@@ -13,6 +13,10 @@ from afc_auth.models import BannedPlayer, Notifications
 from afc_team.models import Team, TeamMembers
 from .models import Country, DirectTrialInvite, PlayerReport, RecruitmentApplication, RecruitmentPost, TrialChat, TrialChatMessage, TrialInvite
 from afc_auth.views import send_email, validate_token
+# Market-ban enforcement guard (feature "J-market-reporting"). Returns the active
+# MarketBan blocking a user from acting on the market, or None. Used to block a banned
+# poster (or a member of a banned team) before any post/apply/invite row is created.
+from .views_moderation import _active_market_ban
 from afc_tournament_and_scrims.models import TournamentPlayerMatchStats, TournamentTeamMatchStats
 
 
@@ -30,6 +34,16 @@ def create_recruitment_post(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session."}, status=401)
+
+    # ── MARKET-BAN GUARD (feature "J-market-reporting") ──
+    # A banned player (or a member of a banned team) cannot create a market post.
+    # Reporting is NOT gated by this — only the create/apply/invite actions are.
+    market_ban = _active_market_ban(user)
+    if market_ban:
+        return Response(
+            {"message": f"You are banned from the player market. Reason: {market_ban.reason}"},
+            status=403,
+        )
 
     data = request.data
 
@@ -199,7 +213,15 @@ def apply_to_team(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session."}, status=401)
-    
+
+    # ── MARKET-BAN GUARD (feature "J-market-reporting") ──
+    # A banned player (or a member of a banned team) cannot apply to a team.
+    market_ban = _active_market_ban(user)
+    if market_ban:
+        return Response(
+            {"message": f"You are banned from the player market. Reason: {market_ban.reason}"},
+            status=403,
+        )
 
     post_id = request.data.get("post_id")
     post = RecruitmentPost.objects.get(id=post_id)
@@ -1123,6 +1145,15 @@ def invite_player_to_trial(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session."}, status=401)
+
+    # ── MARKET-BAN GUARD (feature "J-market-reporting") ──
+    # A banned user (or a member of a banned team) cannot send a trial invite.
+    market_ban = _active_market_ban(user)
+    if market_ban:
+        return Response(
+            {"message": f"You are banned from the player market. Reason: {market_ban.reason}"},
+            status=403,
+        )
 
     post_id = request.data.get("post_id")
     invite_message = request.data.get("message", "")

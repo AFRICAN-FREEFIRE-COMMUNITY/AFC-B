@@ -80,4 +80,9 @@ urlpatterns = [
     # ───────────────────────── Public org page (unauthenticated) ─────────────────────────
     path("get-organization-public/<slug:slug>/", views_public.get_organization_public,
          name="organizers_public"),
+    # Public organizer DIRECTORY — backs the new "Organizers" tab on the frontend
+    # /tournaments page (app/(user)/tournaments/page.tsx). Lists active orgs that
+    # have published events, with logo + derived event_count / verified / tier.
+    path("get-organizations-public/", views_public.get_organizations_directory,
+         name="organizers_public_directory"),
 ]
