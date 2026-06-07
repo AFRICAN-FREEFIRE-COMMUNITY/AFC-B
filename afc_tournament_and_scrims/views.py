@@ -4307,12 +4307,26 @@ def register_for_event(request):
 
         
         if is_public == False:
+            # ── private-event invite gate (SOLO) ──
+            # Mirrors the TEAM gate below — keep both in sync.
             invite_token = request.data.get("invite_token")
             if not invite_token:
                 return Response({"message": "invite_token is required for private events."}, status=400)
-            if not EventInviteToken.objects.filter(event=event, token=invite_token, is_used=False).exists():
-                return Response({"message": "Invalid or already used invite token."}, status=403)
-            if EventInviteToken.objects.filter(event=event, token=invite_token, is_used=True).exists():
+
+            # Fetch the token row ONCE so shared/expiry checks all read the same record.
+            invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
+            if not invite:
+                return Response({"message": "Invalid invite token."}, status=403)
+
+            # Enforce expiry (previously ignored): an expired link cannot register anyone.
+            if invite.expires_at and timezone.now() > invite.expires_at:
+                return Response({"message": "This invite link has expired."}, status=403)
+
+            # Single-use tokens are consumed after one registration; a SHARED token is the
+            # reusable FCFS link, so it is accepted regardless of is_used. The event's
+            # capacity check below (active_count >= max_teams_or_players) is what closes a
+            # shared link once all slots are filled.
+            if not invite.is_shared and invite.is_used:
                 return Response({"message": "Invite token has already been used."}, status=403)
 
         # Discord checks
@@ -4411,10 +4425,12 @@ def register_for_event(request):
                 user=user,
                 status="registered"
             )
-            # update the token as used
-            if is_public == False:
+            # Mark the token used — but ONLY for single-use tokens. A SHARED token
+            # (is_shared=True) is the reusable FCFS link and must stay open for the next
+            # registrant; the capacity check above is what eventually closes it.
+            if is_public == False and not invite.is_shared:
                 EventInviteToken.objects.filter(event=event, token=invite_token).update(is_used=True, used_by=user, used_at=timezone.now())
-                
+
 
             # Queue discord role
             role_id = getattr(settings, "DISCORD_TOURNAMENT_SOLO_ROLE_ID", None)
@@ -4578,14 +4594,28 @@ def register_for_event(request):
         
         # Other verification
         if is_public == False:
+            # ── private-event invite gate (TEAM) ──
+            # Mirrors the SOLO gate above — keep both in sync.
             invite_token = request.data.get("invite_token")
             if not invite_token:
                 return Response({"message": "invite_token is required for private events."}, status=400)
-            if not EventInviteToken.objects.filter(event=event, token=invite_token, is_used=False).exists():
-                return Response({"message": "Invalid or already used invite token."}, status=403)
-            if EventInviteToken.objects.filter(event=event, token=invite_token, is_used=True).exists():
+
+            # Fetch the token row ONCE so shared/expiry checks all read the same record.
+            invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
+            if not invite:
+                return Response({"message": "Invalid invite token."}, status=403)
+
+            # Enforce expiry (previously ignored): an expired link cannot register anyone.
+            if invite.expires_at and timezone.now() > invite.expires_at:
+                return Response({"message": "This invite link has expired."}, status=403)
+
+            # Single-use tokens are consumed after one registration; a SHARED token is the
+            # reusable FCFS link, so it is accepted regardless of is_used. The event's
+            # capacity check below (active_count >= max_teams_or_players) is what closes a
+            # shared link once all slots are filled.
+            if not invite.is_shared and invite.is_used:
                 return Response({"message": "Invite token has already been used."}, status=403)
-            
+
 
         # Register
         with transaction.atomic():
@@ -4716,10 +4746,12 @@ def register_for_event(request):
 
             TournamentTeamMember.objects.bulk_create(member_rows, batch_size=200)
 
-            # update the token as used
-            if is_public == False:
+            # Mark the token used — but ONLY for single-use tokens. A SHARED token
+            # (is_shared=True) is the reusable FCFS link and must stay open for the next
+            # team; the capacity check above is what eventually closes it.
+            if is_public == False and not invite.is_shared:
                 EventInviteToken.objects.filter(event=event, token=invite_token).update(is_used=True, used_by=user, used_at=timezone.now())
-                
+
 
 
 
@@ -15142,18 +15174,53 @@ def generate_single_use_invite_link_for_private_event(request):
     )
     if event.is_public:
         return Response({"message": "Event is already public. No invite link needed."}, status=400)
+
+    # SHARED vs single-use:
+    #   is_shared=True  -> ONE reusable first-come-first-serve link; many people register
+    #                      through it and it is never consumed. FCFS is enforced by the
+    #                      event capacity cap in register_for_event (active_count >=
+    #                      max_teams_or_players), which closes the link once full.
+    #   is_shared=False -> today's behavior: a single-use link consumed by one registration.
+    # Accept truthy strings ("true"/"1") as well as real booleans from JSON clients.
+    is_shared = request.data.get("is_shared", False)
+    if isinstance(is_shared, str):
+        is_shared = is_shared.strip().lower() in ("true", "1", "yes")
+
+    # Optional expiry: after expires_in_days the link stops registering anyone. The
+    # register_for_event invite gate enforces this (it was previously ignored).
+    expires_at = None
+    expires_in_days = request.data.get("expires_in_days")
+    if expires_in_days not in (None, ""):
+        try:
+            days = int(expires_in_days)
+        except (TypeError, ValueError):
+            return Response({"message": "expires_in_days must be an integer number of days."}, status=400)
+        if days < 1:
+            return Response({"message": "expires_in_days must be at least 1."}, status=400)
+        expires_at = timezone.now() + timedelta(days=days)
+
     # Generate a unique token (you can use UUID or any other method)
     import uuid
     event_slug = event.slug
     token = str(uuid.uuid4())
     # Store the token with an association to the event (you may want to create a model for this)
-    EventInviteToken.objects.create(event=event, token=token, created_by=admin)
-    # Construct the invite link (replace with your frontend URL)
+    EventInviteToken.objects.create(
+        event=event,
+        token=token,
+        created_by=admin,
+        is_shared=is_shared,
+        expires_at=expires_at,
+    )
+    # Construct the invite link (replace with your frontend URL). The user-side
+    # registration page reads ?invitation=<token>, so a shared link works with the
+    # existing flow — it just is not consumed.
     invite_link = f"https://africanfreefirecommunity.com/tournaments/{event_slug}?invitation={token}"
     return Response({
         "message": "Invite link generated.",
         "event_id": event.event_id,
         "invite_link": invite_link,
+        "is_shared": is_shared,
+        "expires_at": expires_at,
     }, status=200)
 
 
@@ -15222,6 +15289,10 @@ def get_all_invite_links_for_private_event(request):
             "is_used": token.is_used,
             "used_by": token.used_by.username if token.used_by else None,
             "used_at": token.used_at,
+            # is_shared distinguishes the reusable FCFS link from single-use links so the
+            # admin UI can label it; expires_at lets the UI show when a link stops working.
+            "is_shared": token.is_shared,
+            "expires_at": token.expires_at,
         })
     return Response({
         "message": f"{len(invite_links)} invite links retrieved.",
@@ -15414,11 +15485,19 @@ def check_invite_token_status(request):
     invite = EventInviteToken.objects.filter(token=token).first()
     if not invite:
         return Response({"message": "Invalid token."}, status=404)
+    # Surface is_shared/expiry so the user-side page can tell a reusable FCFS link
+    # (still valid even when is_used is True) apart from a consumed single-use link,
+    # and so it can show an "expired" state. is_expired mirrors the register_for_event
+    # gate so the frontend and backend agree on when a link stops working.
+    is_expired = bool(invite.expires_at and timezone.now() > invite.expires_at)
     return Response({
         "token": invite.token,
         "is_used": invite.is_used,
         "used_by": invite.used_by.username if invite.used_by else None,
         "used_at": invite.used_at,
+        "is_shared": invite.is_shared,
+        "expires_at": invite.expires_at,
+        "is_expired": is_expired,
     }, status=200)
 
 
