@@ -16,3 +16,8 @@ __pycache__/
 # Postman: local env holds a real token/key — never commit
 postman/.local.env.json
 postman/smoke_results.json
+
+# Local-only: production DB dump (real user PII) + dev server logs — never commit
+_prod_import/
+_runserver.log
+_verify_bugfix.py

@@ -7,6 +7,15 @@ from afc_auth.models import AdminHistory, User
 from django.db.models.functions import TruncDate
 from django.db.models import Count
 from afc_awards.models import Category, CategoryNominee, Nominee, Section, Vote
+# validate_token is the repo's canonical session-auth helper: it resolves a
+# SessionToken.token -> its User (or None on miss/expiry). The awards views used to
+# do User.objects.get(session_token=...), but `session_token` is NOT a field on the
+# active User model (it is commented out in afc_auth/models.py). That bad ORM field
+# reference raised django.core.exceptions.FieldError (NOT User.DoesNotExist, so it
+# was never caught) and turned every awards endpoint into a 500 on any request,
+# including an empty {} body. Using validate_token mirrors the rest of the codebase
+# and authenticates against the real SessionToken table.
+from afc_auth.views import validate_token
 # Create your views here.
 
 @api_view(['POST'])
@@ -18,9 +27,11 @@ def add_new_category(request):
             return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
-        try:
-            user = User.objects.get(session_token=session_token)
-        except User.DoesNotExist:
+        # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+        # instead of the non-existent User.session_token field. validate_token returns
+        # None on an invalid/expired token, which we surface as a clean 401.
+        user = validate_token(session_token)
+        if not user:
             return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
         name = request.data.get('name')
@@ -63,9 +74,11 @@ def delete_category(request):
         )
 
     session_token = session_token.split(" ")[1]
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
+    # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+    # instead of the non-existent User.session_token field. validate_token returns
+    # None on an invalid/expired token, which we surface as a clean 401.
+    user = validate_token(session_token)
+    if not user:
         return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # --- Validate category_id ---
@@ -101,9 +114,11 @@ def add_new_nominee(request):
             return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
-        try:
-            user = User.objects.get(session_token=session_token)
-        except User.DoesNotExist:
+        # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+        # instead of the non-existent User.session_token field. validate_token returns
+        # None on an invalid/expired token, which we surface as a clean 401.
+        user = validate_token(session_token)
+        if not user:
             return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
         name = request.data.get('name')
@@ -151,9 +166,11 @@ def delete_nominee(request):
         return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
+    # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+    # instead of the non-existent User.session_token field. validate_token returns
+    # None on an invalid/expired token, which we surface as a clean 401.
+    user = validate_token(session_token)
+    if not user:
         return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     nominee_id = request.data.get('nominee_id')
@@ -187,9 +204,11 @@ def add_nominee_to_category(request):
             return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
-        try:
-            user = User.objects.get(session_token=session_token)
-        except User.DoesNotExist:
+        # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+        # instead of the non-existent User.session_token field. validate_token returns
+        # None on an invalid/expired token, which we surface as a clean 401.
+        user = validate_token(session_token)
+        if not user:
             return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
         category_id = request.data.get('category_id')
@@ -235,9 +254,11 @@ def remove_nominee_from_category(request):
             return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
-        try:
-            user = User.objects.get(session_token=session_token)
-        except User.DoesNotExist:
+        # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+        # instead of the non-existent User.session_token field. validate_token returns
+        # None on an invalid/expired token, which we surface as a clean 401.
+        user = validate_token(session_token)
+        if not user:
             return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
         category_id = request.data.get('category_id')
@@ -272,9 +293,11 @@ def add_section(request):
             return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
-        try:
-            user = User.objects.get(session_token=session_token)
-        except User.DoesNotExist:
+        # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+        # instead of the non-existent User.session_token field. validate_token returns
+        # None on an invalid/expired token, which we surface as a clean 401.
+        user = validate_token(session_token)
+        if not user:
             return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
         name = request.data.get('name')
@@ -302,9 +325,11 @@ def submit_votes(request):
         return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
+    # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+    # instead of the non-existent User.session_token field. validate_token returns
+    # None on an invalid/expired token, which we surface as a clean 401.
+    user = validate_token(session_token)
+    if not user:
         return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # --- Extract data ---
@@ -464,9 +489,11 @@ def edit_category(request):
             return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
-        try:
-            user = User.objects.get(session_token=session_token)
-        except User.DoesNotExist:
+        # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+        # instead of the non-existent User.session_token field. validate_token returns
+        # None on an invalid/expired token, which we surface as a clean 401.
+        user = validate_token(session_token)
+        if not user:
             return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
         category_id = request.data.get('category_id')
@@ -510,9 +537,11 @@ def edit_nominee(request):
             return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
-        try:
-            user = User.objects.get(session_token=session_token)
-        except User.DoesNotExist:
+        # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+        # instead of the non-existent User.session_token field. validate_token returns
+        # None on an invalid/expired token, which we surface as a clean 401.
+        user = validate_token(session_token)
+        if not user:
             return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
         nominee_id = request.data.get('nominee_id')
@@ -552,9 +581,11 @@ def confirm_user_vote_status(request):
         return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
-    try:
-        user = User.objects.get(session_token=session_token)
-    except User.DoesNotExist:
+    # Prevents FieldError 500: resolve the bearer token via the SessionToken table
+    # instead of the non-existent User.session_token field. validate_token returns
+    # None on an invalid/expired token, which we surface as a clean 401.
+    user = validate_token(session_token)
+    if not user:
         return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     section_id = request.data.get("section_id")

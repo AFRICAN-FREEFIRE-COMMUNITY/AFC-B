@@ -6,6 +6,11 @@ from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from datetime import datetime
+# timezone is also imported lower in this module (line ~363) for the trial/invite
+# expiry logic; we import it at the top too so create_recruitment_post (the first view
+# in the file) can compute "today" for the one-active-post rule without depending on the
+# later import. Re-importing the same name is harmless in Python.
+from django.utils import timezone
 
 from django.db.models import Q, Sum
 
@@ -21,6 +26,28 @@ from afc_tournament_and_scrims.models import TournamentPlayerMatchStats, Tournam
 
 
 TRANSFER_WINDOW_STATUS = "OPEN"  # This can be dynamically set based on date or admin input
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §J  Player-market posting + tryout rules (feature "J-market-rules")
+# ──────────────────────────────────────────────────────────────────────────────
+# These two caps are surfaced to players on the user-facing market page
+# (frontend/app/(user)/player-markets/page.tsx) via InfoTip rules copy, and are
+# enforced here on the backend so the rules can't be bypassed by hitting the API
+# directly.
+#
+# MAX_ACTIVE_POSTS — a user may have at most ONE active recruitment post at a time
+#   (any type: a player-availability post OR a team-recruitment post). "Active" means
+#   is_active=True AND post_expiry_date >= today. Enforced in create_recruitment_post
+#   below. Close or let the current post expire before creating a new one.
+#
+# MAX_ACTIVE_TRIALS — a player may be in at most TWO active tryouts (trials) at once.
+#   "Active" means a RecruitmentApplication in status TRIAL_ONGOING. Enforced in BOTH
+#   places a player enters a trial: when a team INVITES an applicant (handle the team's
+#   "INVITE" action) and when a player ACCEPTS a direct trial invite. Both checks read
+#   this single constant so they can never drift apart.
+MAX_ACTIVE_POSTS = 1
+MAX_ACTIVE_TRIALS = 2
 
 
 @api_view(["POST"])
@@ -45,6 +72,41 @@ def create_recruitment_post(request):
             status=403,
         )
 
+    # ── ONE-ACTIVE-POST RULE (feature "J-market-rules", J1) ──
+    # A user may have at most MAX_ACTIVE_POSTS (=1) active recruitment post at a time,
+    # counting BOTH a player-availability post and a team-recruitment post.
+    #
+    # "Active" == NOT expired. NOTE: RecruitmentPost.is_active is a model @property
+    # (post_expiry_date >= today), NOT a queryable DB field — a `.filter(is_active=True)`
+    # raises FieldError. So "active" is enforced purely as post_expiry_date >= today,
+    # which is exactly what that property means. An expired post no longer counts, so the
+    # user can post again once their old one lapses.
+    #
+    # Ownership: every post sets created_by=user; player posts ALSO set player=user.
+    # We match on created_by OR player so a player who already has a live availability
+    # post (or a team owner who already has a live recruitment post) is blocked. This
+    # mirrors how the FE filters "My Posts" (player == in_game_name / team == own team).
+    #
+    # Surfaced to users on the Create Post flow + the rules summary on
+    # frontend/app/(user)/player-markets/page.tsx (player_market.create_post_rule /
+    # player_market.rules_summary InfoTips). The FE shows a friendly toast on this 400.
+    today = timezone.now().date()
+    active_posts = RecruitmentPost.objects.filter(
+        Q(created_by=user) | Q(player=user),
+        post_expiry_date__gte=today,
+    ).count()
+    if active_posts >= MAX_ACTIVE_POSTS:
+        return Response(
+            {
+                "message": (
+                    "You already have an active post. You can only have one active "
+                    "post at a time. Close or let your current post expire before "
+                    "creating a new one."
+                )
+            },
+            status=400,
+        )
+
     data = request.data
 
     try:
@@ -62,58 +124,55 @@ def create_recruitment_post(request):
             if not country:
                 return Response({"message": "Invalid country code"}, status=400)
 
-        post = RecruitmentPost.objects.create(
+        # Build the post in memory and set EVERY field BEFORE the first save(), so a
+        # request missing an optional field can never leave a half-written orphan row.
+        # (The old code create()d the row first, then set fields + saved again; if an
+        # optional NOT NULL text column was missing it 500'd on the second save and left
+        # a partial row behind, which would also wrongly count against the one-post cap.)
+        post = RecruitmentPost(
             post_type=post_type,
             country=country,
             post_expiry_date=datetime.strptime(expiry, "%Y-%m-%d").date(),
-            created_by=user
+            created_by=user,
         )
-
 
         # ---------------- PLAYER POST ----------------
         if post_type == "PLAYER_AVAILABLE":
             post.player = user
-            post.primary_role = data.get("primary_role")
-            post.secondary_role = data.get("secondary_role")
-            post.availability_type = data.get("availability_type")
-            post.additional_info = data.get("additional_info")
+            # Coalesce optional text fields to "" : these columns are NOT NULL with no
+            # default, so a missing value (None) would raise IntegrityError on save.
+            post.primary_role = data.get("primary_role") or ""
+            post.secondary_role = data.get("secondary_role") or ""
+            post.availability_type = data.get("availability_type") or ""
+            post.additional_info = data.get("additional_info") or ""
+            post.save()  # single INSERT
 
-            # Set multiple countries (list of country codes, e.g. ["NG", "GH", "KE"])
+            # Set multiple countries (list of country names) once the row has a PK.
             country_names = data.get("country_names", [])
             if country_names:
-                selected_countries = Country.objects.filter(name__in=country_names)
-                post.countries.set(selected_countries)
+                post.countries.set(Country.objects.filter(name__in=country_names))
 
         # ---------------- TEAM POST ----------------
         elif post_type == "TEAM_RECRUITMENT":
             try:
                 team = Team.objects.get(team_owner=user)
             except Team.DoesNotExist:
-                team = None   
+                team = None
             if not team:
                 return Response({"message": "You must own a team to create a recruitment post"}, status=400)
             post.team = team
-            post.roles_needed = data.get("roles_needed")  # JSON
-            post.minimum_tier_required = data.get("minimum_tier_required")
-            post.commitment_type = data.get("commitment_type")
-            post.recruitment_criteria = data.get("recruitment_criteria")
-            post.save()
+            post.roles_needed = data.get("roles_needed")  # JSON (nullable)
+            post.minimum_tier_required = data.get("minimum_tier_required") or ""
+            post.commitment_type = data.get("commitment_type") or ""
+            post.recruitment_criteria = data.get("recruitment_criteria") or ""
+            post.save()  # single INSERT
 
-            # Set multiple countries (list of country codes, e.g. ["NG", "GH", "KE"])
             country_names = data.get("country_names", [])
             if country_names:
-                selected_countries = Country.objects.filter(name__in=country_names)
-                post.countries.set(selected_countries)
-
-            return Response({
-                "message": "Recruitment post created successfully",
-                "post_id": post.id
-            }, status=201)
+                post.countries.set(Country.objects.filter(name__in=country_names))
 
         else:
             return Response({"message": "Invalid post_type"}, status=400)
-
-        post.save()
 
         return Response({
             "message": "Recruitment post created successfully",
@@ -223,8 +282,21 @@ def apply_to_team(request):
             status=403,
         )
 
+    # ── INPUT GUARD ──
+    # post_id is required. On an empty/blank body request.data.get returns None, and
+    # RecruitmentPost.objects.get(id=None) raises RecruitmentPost.DoesNotExist (a
+    # malformed/non-numeric id raises ValueError) — both previously bubbled up as an
+    # unhandled 500. Validate the field first (missing -> 400), then guard the lookup
+    # (not found / bad id -> 404) so bad input returns a clean 4xx instead.
     post_id = request.data.get("post_id")
-    post = RecruitmentPost.objects.get(id=post_id)
+    if not post_id:
+        return Response({"message": "post_id is required."}, status=400)
+
+    try:
+        post = RecruitmentPost.objects.get(id=post_id)
+    except (RecruitmentPost.DoesNotExist, ValueError):
+        return Response({"message": "Recruitment post not found."}, status=404)
+
     # ensure the applier is currently not in a team
     if TeamMembers.objects.filter(member=user).exists():
         return Response({"message": "You must leave your current team before applying"}, status=400)
@@ -361,9 +433,19 @@ def update_application_status(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session."}, status=401)
+    # ── INPUT GUARD ──
+    # application_id is required. On an empty/blank body request.data.get returns None,
+    # and RecruitmentApplication.objects.get(id=None) raises DoesNotExist (a malformed
+    # id raises ValueError) — both previously bubbled up as an unhandled 500. Validate
+    # first (missing -> 400), then guard the lookup (not found / bad id -> 404).
     application_id = request.data.get("application_id")
+    if not application_id:
+        return Response({"message": "application_id is required."}, status=400)
 
-    application = RecruitmentApplication.objects.get(id=application_id)
+    try:
+        application = RecruitmentApplication.objects.get(id=application_id)
+    except (RecruitmentApplication.DoesNotExist, ValueError):
+        return Response({"message": "Application not found."}, status=404)
 
     # Ensure user owns the team
     if application.team.team_owner != user:
@@ -481,15 +563,21 @@ def update_application_status(request):
     elif action == "INVITE":
         player = application.player
 
-        # Check if player is already in 2 active trials
+        # ── MAX-2-CONCURRENT-TRYOUTS RULE (feature "J-market-rules", J2) ──
+        # A player may be in at most MAX_ACTIVE_TRIALS (=2) active tryouts at once.
+        # "Active" = a RecruitmentApplication in status TRIAL_ONGOING. This is the
+        # TEAM-side gate: a team inviting an applicant into a trial. The player-side
+        # gate (accepting a direct trial invite) lives in respond_to_trial_invite and
+        # reads the SAME constant + uses the SAME wording so the two can't drift.
+        # Surfaced to players via the player_market.tryout_limit InfoTip on the FE.
         active_trials = RecruitmentApplication.objects.filter(
             player=player,
             status="TRIAL_ONGOING"
         ).count()
 
-        if active_trials >= 2:
+        if active_trials >= MAX_ACTIVE_TRIALS:
             return Response({
-                "message": f"{player.username} is currently in {active_trials} active trial(s) and cannot be in more than 2 at a time."
+                "message": f"You can be in at most {MAX_ACTIVE_TRIALS} active tryouts at a time."
             }, status=400)
 
         application.status = "TRIAL_ONGOING"
@@ -715,9 +803,19 @@ def get_player_contact(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
+    # ── INPUT GUARD ──
+    # application_id is required. On an empty/blank body request.data.get returns None,
+    # and RecruitmentApplication.objects.get(id=None) raises DoesNotExist (a malformed
+    # id raises ValueError) — both previously bubbled up as an unhandled 500. Validate
+    # first (missing -> 400), then guard the lookup (not found / bad id -> 404).
     application_id = request.data.get("application_id")
+    if not application_id:
+        return Response({"message": "application_id is required."}, status=400)
 
-    application = RecruitmentApplication.objects.get(id=application_id)
+    try:
+        application = RecruitmentApplication.objects.get(id=application_id)
+    except (RecruitmentApplication.DoesNotExist, ValueError):
+        return Response({"message": "Application not found."}, status=404)
 
     if application.team.team_owner != user:
         return Response({"message": "Unauthorized"}, status=403)
@@ -725,7 +823,10 @@ def get_player_contact(request):
     if not application.contact_unlocked:
         return Response({"message": "Contact locked"}, status=403)
 
-    if application.invite_expires_at < timezone.now():
+    # invite_expires_at is nullable (model: null=True). When it is None, "None < now()"
+    # raises TypeError -> 500. Treat a missing expiry as not-yet-unlocked: no live invite
+    # window means contact is effectively locked, so return the same 403 as a stale one.
+    if application.invite_expires_at is None or application.invite_expires_at < timezone.now():
         return Response({"message": "Invite expired"}, status=403)
 
     player = application.player
@@ -769,9 +870,19 @@ def finalize_trial(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session."}, status=401)
+    # ── INPUT GUARD ──
+    # application_id is required. On an empty/blank body request.data.get returns None,
+    # and RecruitmentApplication.objects.get(id=None) raises DoesNotExist (a malformed
+    # id raises ValueError) — both previously bubbled up as an unhandled 500. Validate
+    # first (missing -> 400), then guard the lookup (not found / bad id -> 404).
     application_id = request.data.get("application_id")
+    if not application_id:
+        return Response({"message": "application_id is required."}, status=400)
 
-    application = RecruitmentApplication.objects.get(id=application_id)
+    try:
+        application = RecruitmentApplication.objects.get(id=application_id)
+    except (RecruitmentApplication.DoesNotExist, ValueError):
+        return Response({"message": "Application not found."}, status=404)
 
     if application.team.team_owner != user:
         return Response({"message": "Unauthorized"}, status=403)
@@ -1346,12 +1457,16 @@ def respond_to_direct_trial_invite(request):
         return Response({"message": "Invite declined."}, status=200)
 
     elif action == "ACCEPT":
+        # ── MAX-2-CONCURRENT-TRYOUTS RULE (feature "J-market-rules", J2) ──
+        # Player-side gate: a player accepting a DIRECT trial invite. Same cap and same
+        # wording as the team-side gate in handle_application_action so the rule is
+        # consistent everywhere a player can enter a trial. See MAX_ACTIVE_TRIALS.
         player_active_trials = RecruitmentApplication.objects.filter(
             player=user, status="TRIAL_ONGOING"
         ).count()
-        if player_active_trials >= 2:
+        if player_active_trials >= MAX_ACTIVE_TRIALS:
             return Response({
-                "message": f"You are already in {player_active_trials} active trial(s). You cannot be in more than 2 at a time."
+                "message": f"You can be in at most {MAX_ACTIVE_TRIALS} active tryouts at a time."
             }, status=400)
 
         team_active_trials = RecruitmentApplication.objects.filter(

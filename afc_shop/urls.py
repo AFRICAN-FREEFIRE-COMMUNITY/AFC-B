@@ -7,7 +7,8 @@ from django.conf.urls.static import static
 urlpatterns = [
     # path("admin/", admin.site.urls),
     path('add-product/', add_product, name='add_product'),
-    path('view-all-products/', view_all_products, name='view_all_products'),
+    path('view-all-products/', view_all_products, name='view_all_products'),          # admin: every status
+    path('view-active-products/', view_active_products, name='view_active_products'),  # public: storefront (active only)
     path('edit-product/', edit_product, name='edit_product'),
     path('delete-product/', delete_product, name='delete_product'),
     path('deactivate-product/', deactivate_product, name='deactivate_product'),

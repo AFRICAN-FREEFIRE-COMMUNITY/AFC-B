@@ -180,6 +180,12 @@ def _serialize_report(report):
         "status": report.status,
         "resolution_notes": report.resolution_notes,
         # reporter / reviewed_by are SET_NULL FKs — surface the username or None.
+        # reporter_id is the reporter's User id, exposed so the admin "Ban reporter
+        # (false report)" action (feature "J-market-rules", J5) can call admin_market_ban
+        # with scope="player", target_id=reporter_id when a report is judged false or
+        # abusive. None when the reporter row was deleted (SET_NULL) — the FE hides the
+        # ban-reporter action in that case.
+        "reporter_id": report.reporter_id,
         "reporter_username": report.reporter.username if report.reporter else None,
         "reviewed_by_username": report.reviewed_by.username if report.reviewed_by else None,
         "created_at": report.created_at.isoformat() if report.created_at else None,
@@ -220,7 +226,9 @@ def file_market_report(request):
                                (the client cannot spoof who it is reporting).
       • category  (optional) — one of MarketReport.CATEGORY_CHOICES; defaults "other".
       • details   (required) — free text describing what happened.
-      • evidence  (optional) — image upload (screenshot / screen recording frame).
+      • evidence  (required) — image upload (screenshot / screen recording frame). As of
+                               feature "J-market-rules" (J4) this is COMPULSORY; a report
+                               with no evidence is rejected with 400.
 
     Response: 201 {"message"} on success; 400 on bad input; 404 if the post is gone.
     Auth: Bearer token (any valid session). 400/401 on bad auth.
@@ -276,8 +284,17 @@ def file_market_report(request):
     if not details:
         return Response({"message": "Please describe what happened."}, status=400)
 
-    # ── optional evidence image from a multipart upload ──
+    # ── REQUIRED evidence image (feature "J-market-rules", J4) ──
+    # Evidence is now COMPULSORY: a report cannot be filed without an uploaded image
+    # (a screenshot / screen-recording frame). This raises the bar for filing a report
+    # and discourages baseless / joke reports — which, if judged false, can get the
+    # REPORTER banned (J5). The model field stays null=True/blank=True so OLD rows that
+    # predate this rule remain valid; we enforce the requirement HERE at the view only.
+    # The FE report dialog (MarketReportDialog.tsx) mirrors this by disabling the submit
+    # button until an image is attached, so users see the rule before they hit this 400.
     evidence = request.FILES.get("evidence")
+    if not evidence:
+        return Response({"message": "Evidence is required to file a report."}, status=400)
 
     # ── create the report (always starts "open"; reporter is the caller) ──
     MarketReport.objects.create(
