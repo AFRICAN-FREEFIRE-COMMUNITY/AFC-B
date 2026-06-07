@@ -146,6 +146,18 @@ class EventInviteToken(models.Model):
     is_used = models.BooleanField(default=False)
     used_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="used_invite_tokens")
     used_at = models.DateTimeField(null=True, blank=True)
+    # ── shared (reusable) invite link ──
+    # A SHARED token (is_shared=True) is ONE reusable link that many people register
+    # through. It is NEVER consumed: the register_for_event invite gate accepts it
+    # regardless of is_used, and the post-registration "mark used" step skips it so it
+    # stays open. FCFS is still enforced by the EXISTING capacity check
+    # (active_count >= event.max_teams_or_players -> "Registration limit reached" /
+    # waitlist): the first max_teams_or_players registrations through the shared link
+    # take the slots, then the event is full and the link can no longer register anyone.
+    # A NON-shared token (is_shared=False, the default) keeps today's single-use behavior:
+    # it is consumed by the first successful registration (is_used=True) and rejected
+    # afterwards.
+    is_shared = models.BooleanField(default=False)
 
 
 class SponsorEvent(models.Model):
