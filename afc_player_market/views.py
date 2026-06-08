@@ -1111,7 +1111,8 @@ def get_trial_chat_messages(request):
         "application_id": app.id,
         "status": app.status,
         "team": app.team.team_name,
-        "team_logo": app.team.team_logo.url if app.team.team_logo else None,
+        # Absolute URL (API host) so the logo loads; bare .url is relative and 404s off the frontend origin.
+        "team_logo": request.build_absolute_uri(app.team.team_logo.url) if app.team.team_logo else None,
         "player": app.player.username,
         "messages": data,
     }, status=200)
@@ -1402,7 +1403,8 @@ def view_my_trial_invites(request):
             "invite_id": invite.id,
             "team": invite.team.team_name,
             "team_id": invite.team.team_id,
-            "team_logo": invite.team.team_logo.url if invite.team.team_logo else None,
+            # Absolute URL (API host) so the logo loads; bare .url is relative and 404s off the frontend origin.
+            "team_logo": request.build_absolute_uri(invite.team.team_logo.url) if invite.team.team_logo else None,
             "message": invite.message,
             "status": invite.status,
             "post_id": invite.player_post.id,
@@ -1625,7 +1627,8 @@ def view_application_details(request):
             "id": app.team.team_id,
             "name": app.team.team_name,
             "tag": app.team.team_tag,
-            "logo": app.team.team_logo.url if app.team.team_logo else None,
+            # Absolute URL (API host) so the logo loads; bare .url is relative and 404s off the frontend origin.
+            "logo": request.build_absolute_uri(app.team.team_logo.url) if app.team.team_logo else None,
             "tier": app.team.team_tier,
             "country": app.team.country,
         },
@@ -1687,7 +1690,8 @@ def get_post_details(request):
 
         # Team fields
         "team": post.team.team_name if post.team else None,
-        "team_logo": post.team.team_logo.url if post.team and post.team.team_logo else None,
+        # Absolute URL (API host) so the logo loads; bare .url is relative and 404s off the frontend origin.
+        "team_logo": request.build_absolute_uri(post.team.team_logo.url) if post.team and post.team.team_logo else None,
         "roles_needed": post.roles_needed,
         "minimum_tier_required": post.minimum_tier_required,
         "commitment_type": post.commitment_type,
