@@ -159,6 +159,11 @@ DATABASES = {
         'PASSWORD': os.getenv("DB_PASSWORD"),
         'HOST': os.getenv("DB_HOST", "localhost"),
         'PORT': os.getenv("DB_PORT", "3306"),
+        # Force the CONNECTION charset to utf8mb4 so 4-byte characters (emoji + some stylized
+        # unicode in Free Fire player names, e.g. the OCR training labels) can be written.
+        # Without this the connection defaulted to utf8mb3 and a 4-byte char raised
+        # OperationalError 1366 "Incorrect string value" even though the columns are utf8mb4.
+        'OPTIONS': {'charset': 'utf8mb4'},
     }
 }
 
@@ -221,6 +226,29 @@ CELERY_TASK_SERIALIZER = 'json'
 # Rankings recalc: run inline on commit in dev (no worker needed); set False + run
 # `celery -A afc worker -Q rankings_recalc` in production for async recalculation.
 RANKINGS_RECALC_SYNC = DEBUG
+
+# OCR ML retrain loop (Phase 4): same inline-in-dev pattern as RANKINGS_RECALC_SYNC.
+# When True (defaults to DEBUG) the afc_ocr tasks can be invoked inline without a Celery
+# worker (handy for local testing / management runs). In production set it False and run a
+# dedicated worker for the ocr_ml queue: `celery -A afc worker -Q ocr_ml` (+ `celery -A afc beat`
+# for the nightly autolabel / weekly retrain-trigger schedule wired in afc/celery_config.py).
+OCR_ML_SYNC = DEBUG
+
+# OCR inference routing (Phase 3). The upload path tries the self-hosted local student first
+# and only escalates to Gemini when the confidence gate is not satisfied (afc_ocr/services/
+# ocr_confidence). All env-overridable so the cost/accuracy trade can be tuned in prod.
+#   OCR_LOCAL_FIRST     - master switch for local-first routing (False => always Gemini).
+#   OCR_GEMINI_FALLBACK - allow Gemini as the fallback/teacher (False => local best-effort
+#                         only; combined with a missing GEMINI_API_KEY this is the zero-API
+#                         budget mode the platform must survive in).
+#   OCR_GATE_*          - the gate thresholds (see ocr_confidence.gate).
+# The active local model bundle is resolved at runtime by afc_ocr.services.model_registry
+# (media/models/current); no path is hardcoded here.
+OCR_LOCAL_FIRST = os.getenv("OCR_LOCAL_FIRST", "True").strip().lower() == "true"
+OCR_GEMINI_FALLBACK = os.getenv("OCR_GEMINI_FALLBACK", "True").strip().lower() == "true"
+OCR_GATE_MIN_MEAN_SCORE = float(os.getenv("OCR_GATE_MIN_MEAN_SCORE", "0.80"))
+OCR_GATE_MIN_NAMED_FRAC = float(os.getenv("OCR_GATE_MIN_NAMED_FRAC", "0.70"))
+OCR_GATE_MAX_OVERSIZED_FRAC = float(os.getenv("OCR_GATE_MAX_OVERSIZED_FRAC", "0.15"))
 
 
 CACHES = {
