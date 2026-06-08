@@ -167,8 +167,6 @@ def send_email(to_address, subject, html_body):
     from_address = 'info@africanfreefirecommunity.com'
     password = os.getenv("EMAIL_PASSWORD")
 
-    print("EMAIL PASSWORD:", password)  # DEBUG
-
     try:
         msg = MIMEMultipart()
         msg['From'] = from_address
@@ -193,8 +191,121 @@ def send_email(to_address, subject, html_body):
     except Exception as e:
         traceback.print_exc()
         return False
-    
-    
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Branded transactional email templates (2026-06-08)
+# ──────────────────────────────────────────────────────────────────────────────
+# Build the HTML bodies passed to send_email(). One shared shell (_email_shell) gives every
+# AFC email the same dark branded look (wordmark header, dark card, footer + disclaimer); each
+# builder fills the middle. EMAIL-SAFE HTML ONLY: tables + inline styles + web-safe fonts (no
+# flexbox / external CSS), so it renders consistently across mail clients. accent='green' for
+# normal mail, 'gold' for password/security mail. Used by: signup + resend (verification code),
+# verify_code (welcome), request/reset password token (reset token), reset_password +
+# change_password (password-changed confirmation). Replaces the old plain-text bodies.
+SITE_URL = "https://africanfreefirecommunity.com"
+
+
+def _email_shell(body_inner_html, accent="green"):
+    """Wrap an email's inner table rows in the shared AFC branded shell. `body_inner_html` is the
+    <tr>...</tr> content between the header and footer; `accent` is 'green' (default) or 'gold'."""
+    a = "#34d27b" if accent == "green" else "#f5c518"
+    grad = "linear-gradient(135deg,#0c1f15 0%,#0f1411 60%)" if accent == "green" \
+        else "linear-gradient(135deg,#1f1608 0%,#0f1411 60%)"
+    hb = "#1d2a22" if accent == "green" else "#2a2113"
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:24px 0;background:#070a08;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#0f1411;border:1px solid #1d2a22;border-radius:16px;overflow:hidden;">
+  <tr><td style="background:{grad};padding:34px 0 26px;text-align:center;border-bottom:1px solid {hb};">
+    <div style="font-size:26px;font-weight:800;color:#ffffff;letter-spacing:.5px;">AFRICAN <span style="color:{a};">FREE FIRE</span></div>
+    <div style="font-size:11px;letter-spacing:5px;color:#7c8c83;text-transform:uppercase;margin-top:6px;">COMMUNITY</div>
+  </td></tr>
+  {body_inner_html}
+  <tr><td style="padding:18px 44px 30px;border-top:1px solid #1d2a22;">
+    <div style="font-size:12px;color:#55635a;">African Free Fire Community &nbsp;&bull;&nbsp; <a href="{SITE_URL}" style="color:{a};text-decoration:none;">africanfreefirecommunity.com</a></div>
+  </td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def email_verification_code(username, code):
+    """Signup / resend verification-code email (green). Consumed by signup + resend_code."""
+    inner = f"""
+  <tr><td style="padding:38px 44px 8px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">Verify your account</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">Hi <span style="color:#e8efe9;font-weight:600;">{username}</span>, welcome to the arena. Enter this code on <a href="{SITE_URL}/verify" style="color:#34d27b;text-decoration:none;font-weight:600;">africanfreefirecommunity.com</a> to finish creating your account.</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 8px;" align="center">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#0a120d;border:1px solid #2c7a4d;border-radius:12px;padding:18px 34px;">
+      <span style="font-size:38px;font-weight:800;letter-spacing:12px;color:#34d27b;font-family:Consolas,Menlo,monospace;">{code}</span>
+    </td></tr></table>
+  </td></tr>
+  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">This code expires in 10 minutes.</div></td></tr>
+  <tr><td style="padding:0 44px 8px;">
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">If you did not create an AFC account, you can safely ignore this email. Never share this code with anyone, AFC staff will never ask for it.</div>
+  </td></tr>"""
+    return _email_shell(inner, "green")
+
+
+def email_welcome(username):
+    """Welcome / account-created email, sent after verification succeeds (green). verify_code."""
+    inner = f"""
+  <tr><td style="padding:40px 44px 6px;text-align:center;">
+    <div style="font-size:46px;">&#127881;</div>
+    <div style="font-size:23px;font-weight:800;color:#ffffff;margin-top:10px;">You're in, {username}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">Your account is verified and ready. Join tournaments, climb the rankings, build your team, and rep your country across Africa.</div>
+  </td></tr>
+  <tr><td style="padding:26px 44px 10px;" align="center">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#34d27b;border-radius:10px;">
+      <a href="{SITE_URL}" style="display:inline-block;padding:14px 40px;font-size:15px;font-weight:700;color:#062012;text-decoration:none;">Enter the Community</a>
+    </td></tr></table>
+  </td></tr>
+  <tr><td style="padding:22px 44px 30px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td width="33%" style="text-align:center;padding:8px;"><div style="font-size:22px;">&#127942;</div><div style="font-size:12px;color:#8b988f;margin-top:6px;">Compete in tournaments</div></td>
+      <td width="33%" style="text-align:center;padding:8px;"><div style="font-size:22px;">&#128200;</div><div style="font-size:12px;color:#8b988f;margin-top:6px;">Climb the rankings</div></td>
+      <td width="33%" style="text-align:center;padding:8px;"><div style="font-size:22px;">&#129309;</div><div style="font-size:12px;color:#8b988f;margin-top:6px;">Find your team</div></td>
+    </tr></table>
+  </td></tr>"""
+    return _email_shell(inner, "green")
+
+
+def email_reset_token(token):
+    """Forgot-password reset-token email (gold security accent). reset-password request views."""
+    inner = f"""
+  <tr><td style="padding:38px 44px 8px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">Reset your password</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">We received a request to reset your password. Use the token below to set a new one.</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 8px;" align="center">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#16120a;border:1px solid #7a611f;border-radius:12px;padding:18px 34px;">
+      <span style="font-size:34px;font-weight:800;letter-spacing:10px;color:#f5c518;font-family:Consolas,Menlo,monospace;">{token}</span>
+    </td></tr></table>
+  </td></tr>
+  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">This token expires in 10 minutes.</div></td></tr>
+  <tr><td style="padding:0 44px 8px;">
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">If you did not request a password reset, ignore this email, your password stays unchanged. Never share this token.</div>
+  </td></tr>"""
+    return _email_shell(inner, "gold")
+
+
+def email_password_changed(username, when_text):
+    """Password-changed confirmation (green). reset_password + change_password."""
+    inner = f"""
+  <tr><td style="padding:40px 44px 6px;text-align:center;">
+    <div style="width:64px;height:64px;line-height:64px;border-radius:50%;background:#0a120d;border:1px solid #2c7a4d;margin:0 auto;font-size:30px;color:#34d27b;">&#10003;</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">Your password was changed</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">This confirms the password for <span style="color:#e8efe9;font-weight:600;">{username}</span> was updated on {when_text}.</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 30px;">
+    <div style="background:#16120a;border:1px solid #4a3a14;border-radius:10px;padding:14px 18px;font-size:13px;line-height:1.6;color:#d8c98f;">
+      Did not do this? Your account may be at risk. Reset your password immediately and contact <a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">support</a>.
+    </div>
+  </td></tr>"""
+    return _email_shell(inner, "green")
+
+
 # def send_email(to_address, subject, html_body):
 #     # Gmail SMTP server credentials
 #     # smtp_server = 'smtp.gmail.com'
@@ -404,15 +515,8 @@ def signup(request):
                 verification_code = random.randint(100000, 999999)
                 cache.set(f"verification_code_{existing_user.user_id}", verification_code, timeout=600)
 
-                subject = 'Your Verification Code'
-                message = f'''Hi {existing_user.username},
-
-Your verification code is: {verification_code}
-
-Please enter this code in the app to verify your account.
-
-If you did not create an account, please ignore this email.
-'''
+                subject = 'Verify your AFC account'
+                message = email_verification_code(existing_user.username, verification_code)
                 send_email(email, subject, message)
 
                 return Response({
@@ -437,15 +541,8 @@ If you did not create an account, please ignore this email.
         cache.set(f"verification_code_{user.user_id}", verification_code, timeout=600)
 
         # Send verification email
-        subject = 'Your Verification Code'
-        message = f'''Hi {in_game_name},
-
-Your verification code is: {verification_code}
-
-Please enter this code in the app to verify your account.
-
-If you did not create an account, please ignore this email.
-'''
+        subject = 'Verify your AFC account'
+        message = email_verification_code(in_game_name, verification_code)
         try:
             send_email(email, subject, message)
         except Exception as e:
@@ -487,6 +584,13 @@ def verify_code(request):
 
     # Remove the verification code after successful verification
     cache.delete(f"verification_code_{user.user_id}")
+
+    # Welcome / account-created email. Best-effort: a mail failure must never block the
+    # account from being verified, so we swallow any send error.
+    try:
+        send_email(user.email, "Welcome to African Free Fire Community", email_welcome(user.username))
+    except Exception as e:
+        print(f"Welcome email failed for {user.email}: {e}")
 
     return Response({"message": "Account verified successfully."}, status=status.HTTP_200_OK)
 
@@ -538,17 +642,8 @@ def resend_verification_code(request):
     cache.set(cooldown_key, True, timeout=240)
 
     # 📧 Send email
-    subject = "Your New Verification Code"
-    message = f'''Hi {user.username},
-
-You requested a new verification code.
-
-Your new verification code is: {verification_code}
-
-Please enter this code in the app to verify your account.
-
-If you did not request this, please ignore this email.
-'''
+    subject = "Your new AFC verification code"
+    message = email_verification_code(user.username, verification_code)
     send_email(user.email, subject, message)
 
     return Response(
@@ -1589,8 +1684,8 @@ def send_verification_token(request):
     email = user.email
 
     # Send email
-    subject = "Your Password Reset Token"
-    message = f"Your password reset token is: {token}"
+    subject = "Reset your AFC password"
+    message = email_reset_token(token)
     send_email(email, subject, message)
 
     return Response({"message": "Password reset token has been sent to your email."}, status=status.HTTP_200_OK)
@@ -1651,6 +1746,13 @@ def reset_password(request):
 
     reset_token.delete()  # remove token after successful password reset
 
+    # Password-changed confirmation (best-effort; never block the reset on a mail error).
+    try:
+        when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
+        send_email(user.email, "Your AFC password was changed", email_password_changed(user.username, when))
+    except Exception as e:
+        print(f"Password-changed email failed for {user.email}: {e}")
+
     return Response({"message": "Password has been reset successfully."}, status=status.HTTP_200_OK)
 
 
@@ -1691,8 +1793,8 @@ def resend_token(request):
     )
 
     # Resend email
-    subject = "Your New Password Reset Token"
-    message = f"Your new password reset token is: {token}\nIt will expire in 10 minutes."
+    subject = "Your new AFC password reset token"
+    message = email_reset_token(token)
     send_email(email, subject, message)
 
     return Response({"message": "A new password reset token has been sent to your email."}, status=status.HTTP_200_OK)
@@ -1711,9 +1813,17 @@ def change_password(request):
 
     if user.check_password(old_password):
         user.set_password(new_password)
+        user.save()  # BUGFIX: save() was missing, so the new password never persisted.
+
+        # Password-changed confirmation (best-effort; never block the change on a mail error).
+        try:
+            when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
+            send_email(user.email, "Your AFC password was changed", email_password_changed(user.username, when))
+        except Exception as e:
+            print(f"Password-changed email failed for {user.email}: {e}")
 
         return Response({"message": "Password Changed Successfully."}, status=status.HTTP_200_OK)
-    
+
     else:
         return Response({"message": "You have Inputted the wrong password."}, status=status.HTTP_400_BAD_REQUEST)
 
