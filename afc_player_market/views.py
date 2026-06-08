@@ -14,14 +14,16 @@ from django.utils import timezone
 
 from django.db.models import Q, Sum
 
-from afc_auth.models import BannedPlayer, Notifications
+from afc_auth.models import BannedPlayer, LoginHistory, Notifications
 from afc_team.models import Team, TeamMembers
 from .models import Country, DirectTrialInvite, PlayerReport, RecruitmentApplication, RecruitmentPost, TrialChat, TrialChatMessage, TrialInvite
 from afc_auth.views import send_email, validate_token
 # Market-ban enforcement guard (feature "J-market-reporting"). Returns the active
 # MarketBan blocking a user from acting on the market, or None. Used to block a banned
 # poster (or a member of a banned team) before any post/apply/invite row is created.
-from .views_moderation import _active_market_ban
+# _is_market_moderator (same module) gates the admin-only surfaces — reused here to let
+# AFC staff READ any trial chat (feature "K-admin-chat-read").
+from .views_moderation import _active_market_ban, _is_market_moderator
 from afc_tournament_and_scrims.models import TournamentPlayerMatchStats, TournamentTeamMatchStats
 
 
@@ -48,6 +50,92 @@ TRANSFER_WINDOW_STATUS = "OPEN"  # This can be dynamically set based on date or 
 #   this single constant so they can never drift apart.
 MAX_ACTIVE_POSTS = 1
 MAX_ACTIVE_TRIALS = 2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §K  Country restriction (feature "K-country-gate", 2026-06-08)
+# ──────────────────────────────────────────────────────────────────────────────
+# A recruitment post can target a set of countries (RecruitmentPost.countries M2M).
+# When that set is non-empty, only actors LOCATED in one of those countries may act:
+#   • apply_to_team          — the APPLYING PLAYER must be located in the team post's countries
+#   • invite_player_to_trial — the RECRUITER must be located in the player post's countries
+#
+# "Located" = the actor's most-recent login country (LoginHistory.country, an ISO-2 code
+# captured per login — the freshest location signal we have, chosen by the project owner),
+# falling back to User.country (the signup-IP country, also a code). We compare against the
+# post's Country rows by CODE first, then NAME (case-insensitive), because this codebase
+# holds three country representations that don't always align: User/LoginHistory store
+# ISO-2 codes ("NG"), the Country table has name+code, and the FE picker sends names.
+# Matching on both makes the gate robust to that drift.
+#
+# Fail policy: ENFORCE when we can locate the actor (block when their country isn't in the
+# set). If the actor has NO location signal at all (no login history AND empty User.country
+# — rare, since signup captures it) we ALLOW, to avoid false-blocking a legit user. An empty
+# post.countries means "open to everyone" → always allow.
+#
+# Connects to: apply_to_team + invite_player_to_trial (callers below); LoginHistory/User in
+# afc_auth (location source); RecruitmentPost.countries (the target set, set in
+# create_recruitment_post). The FE shows the same restriction on the post card/dialogs so a
+# user sees it before they try to apply (player-markets/page.tsx).
+
+def _resolve_countries(values):
+    """Resolve a list of strings (country NAMES or ISO-2 CODES) to Country rows.
+
+    Tolerant by design: the FE country picker sends names while other call sites may send
+    codes, so we match each value by code OR name, case-insensitive, de-duped. Used by
+    create_recruitment_post / edit_recruitment_post to populate RecruitmentPost.countries.
+    """
+    out, seen = [], set()
+    for v in values or []:
+        v = (v or "").strip()
+        if not v:
+            continue
+        c = Country.objects.filter(Q(code__iexact=v) | Q(name__iexact=v)).first()
+        if c and c.id not in seen:
+            seen.add(c.id)
+            out.append(c)
+    return out
+
+
+def _actor_country_code(user):
+    """The actor's current location as a country code/name string.
+
+    Most-recent LoginHistory.country (per-login IP geolocation, the owner-chosen signal),
+    else User.country (signup IP). Returns '' when neither is known.
+    """
+    latest = (
+        LoginHistory.objects.filter(user=user)
+        .exclude(country__isnull=True)
+        .exclude(country="")
+        .order_by("-created_at")
+        .values_list("country", flat=True)
+        .first()
+    )
+    return (latest or getattr(user, "country", "") or "").strip()
+
+
+def _country_gate(user, post):
+    """Return an error Response if `user` is NOT allowed to act on `post` by country, else
+    None. Open post (no target countries) or un-locatable actor → allowed (see fail policy
+    in the §K header)."""
+    target = list(post.countries.all())
+    if not target:
+        return None  # post is open to everyone
+    actor = _actor_country_code(user)
+    if not actor:
+        return None  # cannot determine the actor's location — do not false-block
+    actor = actor.upper()
+    allowed = {c.code.upper() for c in target if c.code} | {c.name.upper() for c in target if c.name}
+    if actor in allowed:
+        return None
+    names = ", ".join(c.name for c in target)
+    return Response(
+        {"message": (
+            f"This post is open only to players located in: {names}. "
+            "Your account location (from your most recent login) does not match."
+        )},
+        status=403,
+    )
 
 
 @api_view(["POST"])
@@ -147,10 +235,21 @@ def create_recruitment_post(request):
             post.additional_info = data.get("additional_info") or ""
             post.save()  # single INSERT
 
-            # Set multiple countries (list of country names) once the row has a PK.
-            country_names = data.get("country_names", [])
-            if country_names:
-                post.countries.set(Country.objects.filter(name__in=country_names))
+            # Target countries (the restriction set). The FE country picker sends a list of
+            # country NAMES under "country_codes" (legacy key name); older callers used
+            # "country_names"/codes. _resolve_countries matches either by name OR ISO-2 code,
+            # so the selection actually persists (previously dropped — FE key never matched
+            # the BE key, leaving the M2M empty). This M2M drives the country gate
+            # (_country_gate) and the FE "Open to" display. Mirror the first into the legacy
+            # single `country` FK so existing readers keep working.
+            target = _resolve_countries(
+                data.get("countries") or data.get("country_names") or data.get("country_codes")
+            )
+            if target:
+                post.countries.set(target)
+                if not post.country:
+                    post.country = target[0]
+                    post.save(update_fields=["country"])
 
         # ---------------- TEAM POST ----------------
         elif post_type == "TEAM_RECRUITMENT":
@@ -167,9 +266,16 @@ def create_recruitment_post(request):
             post.recruitment_criteria = data.get("recruitment_criteria") or ""
             post.save()  # single INSERT
 
-            country_names = data.get("country_names", [])
-            if country_names:
-                post.countries.set(Country.objects.filter(name__in=country_names))
+            # Target countries — same tolerant resolution as the player branch (see comment
+            # above). Drives the country gate + FE "Open to" display for team posts.
+            target = _resolve_countries(
+                data.get("countries") or data.get("country_names") or data.get("country_codes")
+            )
+            if target:
+                post.countries.set(target)
+                if not post.country:
+                    post.country = target[0]
+                    post.save(update_fields=["country"])
 
         else:
             return Response({"message": "Invalid post_type"}, status=400)
@@ -195,6 +301,9 @@ def get_recruitment_posts(request):
             "id": post.id,
             "post_type": post.post_type,
             "country": post.country.name if post.country else None,
+            # Target countries (restriction set) so the FE can show "Open to: …" on every
+            # surface that lists posts. Same shape as the other list endpoints.
+            "countries": list(post.countries.values("name", "code")),
             "expiry": post.post_expiry_date,
             "created_at": post.created_at,
 
@@ -250,7 +359,11 @@ def view_all_player_availability_post(request):
         data.append({
             "id": post.id,
             "player": post.player.username if post.player else None,
-            "country": post.country,
+            "country": post.country.name if post.country else None,
+            # Target countries (the restriction set). Returned so the FE can show "Open to: …"
+            # on the post card/dialog — previously omitted here, so the main market UI never
+            # displayed the restriction. Same shape as view_all_team_recruitment_post.
+            "countries": list(post.countries.values("name", "code")),
             "primary_role": post.primary_role,
             "secondary_role": post.secondary_role,
             "availability_type": post.availability_type,
@@ -303,6 +416,13 @@ def apply_to_team(request):
     
     if post.post_type != "TEAM_RECRUITMENT":
         return Response({"message": "Invalid post"}, status=400)
+
+    # ── COUNTRY GATE (feature "K-country-gate") ──
+    # If the team's post targets specific countries, only players LOCATED in one of those
+    # countries (by most-recent login country) may apply. See §K helper for the policy.
+    country_block = _country_gate(user, post)
+    if country_block:
+        return country_block
 
     application_message = request.data.get("application_message", "")
 
@@ -1089,7 +1209,12 @@ def get_trial_chat_messages(request):
     except (TrialChat.DoesNotExist, ValueError):
         return Response({"message": "Chat not found."}, status=404)
 
-    if not _is_trial_chat_participant(user, chat):
+    # AFC staff may READ any trial chat for oversight/moderation (feature "K-admin-chat-read",
+    # disclosed in the Privacy Policy + Terms). The read gate allows the trial participants
+    # (player / team owner / coach / manager) OR a market moderator. Staff get READ access
+    # only — send_trial_chat_message keeps the participant-only gate, so an admin cannot post
+    # into someone's trial conversation, only observe it.
+    if not (_is_trial_chat_participant(user, chat) or _is_market_moderator(user)):
         return Response({"message": "Unauthorized."}, status=403)
 
     messages = chat.messages.select_related("sender").all()
@@ -1291,6 +1416,14 @@ def invite_player_to_trial(request):
 
     if not team:
         return Response({"message": "You must be a team owner, manager, or coach to send a trial invite."}, status=403)
+
+    # ── COUNTRY GATE (feature "K-country-gate") ──
+    # If the player's availability post targets specific countries (the countries they are
+    # open to play for/from), only a recruiter LOCATED in one of those countries (by most-
+    # recent login country) may invite them. Mirrors apply_to_team's gate. See §K helper.
+    country_block = _country_gate(user, post)
+    if country_block:
+        return country_block
 
     if TeamMembers.objects.filter(team=team, member=post.player).exists():
         return Response({"message": "This player is already in your team."}, status=400)
@@ -1787,9 +1920,13 @@ def edit_recruitment_post(request):
             if field in data:
                 setattr(post, field, data[field])
 
-        if "country_names" in data:
-            selected_countries = Country.objects.filter(name__in=data["country_names"])
-            post.countries.set(selected_countries)
+        # Target countries — tolerant to the FE key ("country_codes", holding names) and the
+        # legacy "country_names"/codes. _resolve_countries matches by name OR code. Setting
+        # only when a key is present lets an edit clear the restriction (empty list).
+        if any(k in data for k in ("countries", "country_names", "country_codes")):
+            post.countries.set(_resolve_countries(
+                data.get("countries") or data.get("country_names") or data.get("country_codes")
+            ))
 
     # Team post fields
     elif post.post_type == "TEAM_RECRUITMENT":
@@ -1797,9 +1934,13 @@ def edit_recruitment_post(request):
             if field in data:
                 setattr(post, field, data[field])
 
-        if "country_names" in data:
-            selected_countries = Country.objects.filter(name__in=data["country_names"])
-            post.countries.set(selected_countries)
+        # Target countries — tolerant to the FE key ("country_codes", holding names) and the
+        # legacy "country_names"/codes. _resolve_countries matches by name OR code. Setting
+        # only when a key is present lets an edit clear the restriction (empty list).
+        if any(k in data for k in ("countries", "country_names", "country_codes")):
+            post.countries.set(_resolve_countries(
+                data.get("countries") or data.get("country_names") or data.get("country_codes")
+            ))
 
     post.save()
     return Response({"message": "Post updated successfully."}, status=200)
