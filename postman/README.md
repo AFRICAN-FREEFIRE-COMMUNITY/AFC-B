@@ -28,6 +28,50 @@ Then re-run the newman smoke (below) to catch any new 500s. Commit the regenerat
 | `AFC_Smoke_GET.postman_collection.json` | ✅ | The read-only (`GET`, non-destructive) subset (149 requests), each with a `status < 500` reachability test. Safe to run end-to-end. |
 | `.local.env.json` | ❌ gitignored | A real environment with a live token + key for local runs. Never committed. |
 
+## The team DEV collection (`WEBSITE/AFC.postman_collection.json`) + folder conventions
+
+There are **two** collections, and they are NOT the same file:
+
+| Collection | Path | Foldering |
+|---|---|---|
+| **AUTO** (source of truth for "what exists") | `backend/postman/AFC_Backend_API.postman_collection.json` | One flat folder **per Django app** — generated, never hand-edited. |
+| **DEV** (the one the team imports + drives) | `WEBSITE/AFC.postman_collection.json` (repo root, **not** committed to either git repo) | **Hand-curated by audience/area**, see the rule below. |
+
+Keep DEV current after a code change:
+
+```bash
+# from backend/
+.venv/Scripts/python.exe postman/generate.py        # 1. regen AUTO from the resolver
+.venv/Scripts/python.exe postman/merge_into_dev.py   # 2. APPEND new endpoints into DEV
+# 3. if you RETIRED an endpoint, also remove it from DEV by hand (merge only adds).
+```
+
+### 🗂️ DEV folder rule (so admin endpoints don't keep landing in the wrong place)
+
+**Group by AUDIENCE, not just by app.** An app can have routes for several audiences, and
+they must go to different DEV folders:
+
+- **AFC-staff / platform-admin endpoints → under the top-level `Admin Ap's` folder**, in a
+  sub-folder named for the area (`EVENT`, `LEADERBOARD`, `SHOP`, `RANKINGS`, `ORGANIZERS`, …).
+  A route is "admin" if it is gated to AFC staff (role admin/moderator/support, the
+  `event_admin`/`head_admin` userroles, or `is_platform_org_admin`) — e.g. anything under an
+  `.../admin/...` path such as `organizers/admin/*`.
+- **End-user / org-member / partner-facing endpoints → their OWN top-level folder**
+  (`TEAM(user)`, `EVENTS (user)`, `PLAYER MARKET`, `ORGANIZERS (organizer + public)`,
+  `PARTNER API`, …).
+- **Public / unauthenticated reads** live with their user-facing folder.
+
+Worked example (the organizers app, fixed 2026-06-08): `afc_organizers` serves three
+audiences (`views_admin` = AFC staff, `views_organizer` = org members, `views_public`).
+So its 28 routes split into **`Admin Ap's > ORGANIZERS`** (the 11 `organizers/admin/*`
+provisioning + oversight + design/report triage routes) and **`ORGANIZERS (organizer +
+public)`** (the 17 org-member + public routes). Do the same for any future multi-audience app.
+
+> `merge_into_dev.py` appends a new endpoint next to existing endpoints with the same
+> path-prefix, so once an app's admin routes live under `Admin Ap's`, future admin routes
+> for that app land there automatically. When you add the FIRST admin route for a brand-new
+> app, place it under `Admin Ap's` by hand so the convention holds.
+
 ## Auth model (three styles — set per request automatically)
 
 The collection sets the right auth header on each request based on how that view reads credentials:

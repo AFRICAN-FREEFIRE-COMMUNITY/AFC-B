@@ -17,6 +17,14 @@ HOW IT WORKS
   prefix (only as a last resort). Existing DEV requests are never modified or reordered.
 - A timestamped backup of DEV is written before saving (AFC.postman_collection.bak.json).
 
+FOLDER CONVENTION (see postman/README.md "DEV folder rule"): the DEV collection groups by
+AUDIENCE, not just app. AFC-staff / platform-admin routes (e.g. anything under an
+`.../admin/...` path) belong under the top-level "Admin Ap's" folder in an area sub-folder
+(EVENT / SHOP / RANKINGS / ORGANIZERS / ...); end-user / org-member / public routes get their
+own top-level folder. This script appends next to same-path-prefix endpoints, so once an
+app's admin routes live under "Admin Ap's" the rest follow automatically; place the FIRST
+admin route of a brand-new app there by hand. (Organizers were re-split this way 2026-06-08.)
+
 RUN:  cd backend && .venv/Scripts/python.exe postman/merge_into_dev.py
 """
 import os
