@@ -1108,9 +1108,40 @@ def edit_news(request):
 
 @api_view(["GET"])
 def get_all_news(request):
-    news_list = News.objects.all().order_by('-created_at')
-    news_data = []
+    # PERFORMANCE (2026-06-08): the news page was slow for two compounding reasons.
+    #  1. Backend N+1: this loop lazy-loaded news.author + news.related_event per row
+    #     (~2N+1 queries) — the same anti-pattern get_all_teams already fixed. Now
+    #     select_related both FKs (one join).
+    #  2. Frontend 1+N waterfall: app/(user)/news/page.tsx fired one POST
+    #     /auth/get-news-likes-dislikes-count/ PER article and blocked the whole page until
+    #     the slowest resolved. We now fold like/dislike COUNTS and the caller's
+    #     liked/disliked state into THIS single response (grouped aggregates, a few queries
+    #     total) so the FE renders from one request and the per-item loop is deleted.
+    # Consumed by frontend/app/(user)/news/page.tsx and _components/LatestNews.tsx.
+    from django.db.models import Count
 
+    news_list = News.objects.select_related("author", "related_event").order_by("-created_at")
+
+    # Like/dislike counts in ONE grouped query each → {news_id: count}.
+    like_counts = dict(
+        NewsLike.objects.values_list("news").annotate(c=Count("pk")).values_list("news", "c")
+    )
+    dislike_counts = dict(
+        NewsDislike.objects.values_list("news").annotate(c=Count("pk")).values_list("news", "c")
+    )
+
+    # The caller's own liked/disliked sets (optional auth: Bearer header or ?token=). Two
+    # set queries instead of two-per-article. Anonymous viewers just get empty sets.
+    liked_ids, disliked_ids = set(), set()
+    auth = request.headers.get("Authorization", "")
+    token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else request.GET.get("token")
+    if token:
+        viewer = validate_token(token)
+        if viewer:
+            liked_ids = set(NewsLike.objects.filter(user=viewer).values_list("news_id", flat=True))
+            disliked_ids = set(NewsDislike.objects.filter(user=viewer).values_list("news_id", flat=True))
+
+    news_data = []
     for news in news_list:
         news_data.append({
             "news_id": news.news_id,
@@ -1119,10 +1150,14 @@ def get_all_news(request):
             "category": news.category,
             "related_event": news.related_event.event_name if news.related_event else None,
             "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
-            "author": news.author.username,
+            "author": news.author.username if news.author else None,
             "created_at": news.created_at,
             "slug": news.slug,
-            # "updated_at": news.updated_at
+            # Folded-in reaction data — removes the per-article frontend request.
+            "likes": like_counts.get(news.news_id, 0),
+            "dislikes": dislike_counts.get(news.news_id, 0),
+            "is_liked_by_user": news.news_id in liked_ids,
+            "is_disliked_by_user": news.news_id in disliked_ids,
         })
 
     return Response({"news": news_data}, status=status.HTTP_200_OK)
