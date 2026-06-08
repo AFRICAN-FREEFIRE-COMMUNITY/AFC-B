@@ -1,5 +1,16 @@
 from django.urls import path, include
 from .views import *
+# Paid-event registration payments (feature "paid-events", Phase 1): Stripe Checkout init/verify,
+# the webhook backstop, and the admin escrow (list/release/refund). Kept in its own module so the
+# money-handling code is isolated from the big views.py.
+from .event_payments import (
+    init_registration_payment,
+    verify_registration_payment,
+    stripe_webhook,
+    admin_list_event_payments,
+    admin_release_payment,
+    admin_refund_payment,
+)
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -9,6 +20,14 @@ urlpatterns = [
     # path('admin-login/', admin_login, name='admin_login'),
     path('create-event/', create_event, name='create_event'),
     path('edit-event/', edit_event, name='edit_event'),
+
+    # ── Paid-event registration payments (Stripe) ──
+    path('init-registration-payment/', init_registration_payment, name='init_registration_payment'),
+    path('verify-registration-payment/', verify_registration_payment, name='verify_registration_payment'),
+    path('stripe-webhook/', stripe_webhook, name='stripe_event_webhook'),
+    path('admin/event-payments/', admin_list_event_payments, name='admin_list_event_payments'),
+    path('admin/event-payments/release/', admin_release_payment, name='admin_release_payment'),
+    path('admin/event-payments/refund/', admin_refund_payment, name='admin_refund_payment'),
     # DEPRECATED / HIDDEN: like create-leaderboard-manually, this manual create path is
     # no longer used - leaderboards are created AUTOMATICALLY for every group at event
     # setup (create_event + edit_event sync). Its only FE caller, UpdatedConfigurePointSystem,
