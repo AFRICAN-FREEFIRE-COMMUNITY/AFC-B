@@ -197,6 +197,20 @@ def get_player_details(request):
     # it returned before — the shared helper produces the same scalar names — and additionally
     # gains per_event[] / recent_matches[] breakdown lists (additive; old callers ignore them).
 
+    # AUTH (2026-06-08): this endpoint returns PII (player.email) and is the ADMIN players
+    # directory detail (frontend app/(a)/a/players/[id]/page.tsx sends a Bearer token). It
+    # previously had NO check despite the "auth-gated" comment below, so any caller could POST
+    # a player_id and read that player's email. Require a valid token AND an AFC staff caller
+    # (coarse role admin/moderator/support OR any granular UserRoles row).
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=400)
+    caller = validate_token(auth.split(" ")[1])
+    if not caller:
+        return Response({"message": "Invalid session."}, status=401)
+    if caller.role not in ("admin", "moderator", "support") and not caller.userroles.exists():
+        return Response({"message": "Unauthorized."}, status=403)
+
     player_id = request.data.get("player_id")
 
     if not player_id:
