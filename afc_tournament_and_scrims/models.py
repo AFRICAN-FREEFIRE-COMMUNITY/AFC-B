@@ -555,3 +555,53 @@ class EventPrizePayout(models.Model):
             models.Index(fields=["event", "tournament_team"]),
         ]
 
+
+class EventRegistrationPayment(models.Model):
+    """Pay-to-register ESCROW record for a PAID event (feature "paid-events", Phase 1).
+
+    The entry fee is charged via Stripe Checkout and HELD in AFC's Stripe balance (Stripe is the
+    custodian, not the organizer, not AFC's bank). A registration is only allowed for a paid event
+    once a row here is status="paid" (see register_for_event's paid guard), so a user who pays can
+    always finish registering, even if they close the tab (their paid record persists).
+    release_status tracks the escrow: "held" until an AFC admin RELEASES it (after the event runs)
+    or REFUNDS it. The actual organizer transfer (Stripe Connect) is a later phase; release here
+    records the decision. Mirrors afc_shop.Order's Stripe fields.
+
+    Consumed by afc_tournament_and_scrims/event_payments.py (init / verify / webhook / admin
+    list+release+refund) and the register_for_event paid guard. The FE registration modal inits a
+    payment, redirects to Stripe Checkout, then completes registration on return.
+    """
+    STATUS_CHOICES = [("pending", "Pending"), ("paid", "Paid"), ("failed", "Failed"), ("refunded", "Refunded")]
+    RELEASE_CHOICES = [("held", "Held"), ("released", "Released"), ("refunded", "Refunded")]
+
+    payment_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="registration_payments")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="event_registration_payments")
+    team = models.ForeignKey("afc_team.Team", on_delete=models.SET_NULL, null=True, blank=True)  # duo/squad payer's team
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3, default="USD")
+    provider = models.CharField(max_length=20, default="stripe")            # stripe | paystack (future)
+    # Stripe handles (test or live depending on env). session = the Checkout Session we redirect to;
+    # payment_intent = the underlying charge (used for refunds).
+    stripe_session_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    stripe_payment_intent = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="pending")
+    release_status = models.CharField(max_length=12, choices=RELEASE_CHOICES, default="held")
+    paid_at = models.DateTimeField(null=True, blank=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+    released_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="released_event_payments")
+    refunded_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["event", "user"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["release_status"]),
+        ]
+
+    def __str__(self):
+        return f"EventRegistrationPayment({self.event_id} {self.user_id} {self.amount}{self.currency} {self.status})"
+

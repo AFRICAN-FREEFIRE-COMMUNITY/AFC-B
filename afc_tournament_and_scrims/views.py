@@ -4434,6 +4434,25 @@ def register_for_event(request):
         return Response({"message": "Registration is closed."}, status=403)
 
     # -------------------------
+    # PAID EVENT GATE (feature "paid-events", Phase 1)
+    # -------------------------
+    # A paid event can only be registered for AFTER the entry fee is paid. The fee is charged via
+    # Stripe (held in AFC's Stripe balance) by event_payments.init_registration_payment; once that
+    # row is status="paid", registration is allowed. This makes a paid registration safe to
+    # complete even if the user closed the tab after paying (their paid record persists).
+    if event.registration_type == "paid":
+        from .models import EventRegistrationPayment
+        has_paid = EventRegistrationPayment.objects.filter(
+            event=event, user=user, status="paid"
+        ).exclude(release_status="refunded").exists()
+        if not has_paid:
+            return Response(
+                {"message": "Payment required. Please pay the entry fee to register.",
+                 "code": "payment_required"},
+                status=402,
+            )
+
+    # -------------------------
     # SOLO
     # -------------------------
     if participant_type == "solo":
