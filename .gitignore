@@ -49,3 +49,13 @@ media/ocr_shadow/
 #   media/ocr_training/synth/<sha>.png    -> synthetic name crops (P0 generator)
 #   media/ocr_training/synth/rec_gt.txt   -> PaddleOCR recognition ground-truth manifest
 media/ocr_training/
+
+# Local virtualenvs + the local-GPU training work dir. Huge + machine-specific, never
+# committed. .venv = the serving env (onnxruntime inference); .venv-train = the SEPARATE
+# Paddle GPU training env (paddle pins older numpy, kept out of the serving env). The
+# train_cycle.py work dir holds downloaded datasets + logs + built model bundles.
+.venv/
+.venv-train/
+afc_ocr/training/_work/
+afc_ocr/training/logs/
+*.log

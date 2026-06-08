@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  afc_ocr_train_cycle.xml
+  ==============================================================================
+  Windows Task Scheduler definition for the hands-off weekly OCR training loop.
+  This task runs afc_ocr.training.train_cycle on the operator's PC (RTX 3060) once
+  a week. It is the scheduled trigger for the loop documented in
+  setup_windows_schedule.md.
+
+  KEY BEHAVIOURS (configured below, called out so they are auditable):
+    - Trigger: WEEKLY, every Sunday at 03:00 local time.
+    - StartWhenAvailable = true  -> "run as soon as possible after a missed start":
+        if the PC was OFF at 03:00 Sunday, the task runs the next time the PC is on.
+    - RunOnlyIfNetworkAvailable = true -> never fires when offline (it must reach the
+        AFC API to pull data + push the model).
+    - WakeToRun = false -> the task does NOT wake the PC from sleep to run; it waits
+        for the PC to be awake (paired with StartWhenAvailable so a missed run still
+        happens on next wake/boot).
+    - DisallowStartIfOnBatteries / StopIfGoingOnBatteries = false: a desktop has no
+        battery, but leaving these false means a laptop would still attempt the run.
+
+  PLACEHOLDERS the registration script (register_schedule.ps1) fills in:
+    {{PYTHON_EXE}}  -> absolute path to the backend venv python
+                       (e.g. C:\...\WEBSITE\backend\.venv\Scripts\python.exe)
+    {{WORKING_DIR}} -> the backend repo dir (so `-m afc_ocr.training.train_cycle` resolves)
+    {{USER_ID}}     -> the account the task runs as (the interactive operator account)
+
+  The admin token + API base are NOT in this file. They are read from the operator's
+  USER environment variables (AFC_API_BASE / AFC_OCR_TOKEN) at run time, so the secret
+  never lives in this task definition. See setup_windows_schedule.md.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>AFC self-hosted OCR student model: weekly automated local-GPU fine-tune cycle. Pulls new gold training data from the AFC API, fine-tunes PP-OCRv5_mobile_rec locally on the RTX 3060, runs the eval gate, and pushes the improved model back. See afc_ocr/training/setup_windows_schedule.md.</Description>
+    <URI>\AFC\afc_ocr_train_cycle</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <!-- 03:00 local time; the date part is ignored for a weekly recurrence, only the
+           time-of-day and the DaysOfWeek matter. -->
+      <StartBoundary>2026-01-04T03:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <DaysOfWeek>
+          <Sunday />
+        </DaysOfWeek>
+        <WeeksInterval>1</WeeksInterval>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <!-- Runs as the interactive operator account, only when logged on, with the
+           account's normal (limited) rights. The fine-tune needs the user's GPU/driver
+           access + the user env vars (AFC_OCR_TOKEN), so an interactive principal is
+           correct here. -->
+      <UserId>{{USER_ID}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <!-- desktop has no battery; keeping both false means a laptop still attempts the run -->
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <!-- must reach the AFC API: do not run while offline -->
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <!-- the fine-tune can take a while; allow up to 6 hours, then the scheduler stops it -->
+    <ExecutionTimeLimit>PT6H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <!-- the backend venv python -->
+      <Command>{{PYTHON_EXE}}</Command>
+      <!-- run the orchestrator as a module; no force or dry-run flags for the real weekly run -->
+      <Arguments>-m afc_ocr.training.train_cycle</Arguments>
+      <!-- the backend repo dir, so `-m afc_ocr.training.train_cycle` resolves the package -->
+      <WorkingDirectory>{{WORKING_DIR}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
