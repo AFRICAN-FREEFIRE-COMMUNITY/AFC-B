@@ -283,3 +283,9 @@ GEOIP_PATH = "/home/ubuntu/ipinfo"
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY")
 PAYSTACK_CALLBACK_URL = "https://africanfreefirecommunity.com/shop/orders/success"
+
+# Stripe (paid events). Env-driven; TEST keys locally, LIVE keys set on the prod server only,
+# never in git. STRIPE_WEBHOOK_SECRET is added once the webhook endpoint is registered.
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")

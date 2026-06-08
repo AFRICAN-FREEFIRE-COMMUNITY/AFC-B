@@ -40,6 +40,20 @@ class Organization(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # ── Paid-event terms (feature "paid-events", 2026-06-08) ──
+    # An organizer must read + accept the paid-event terms (escrow held by the processor, AFC
+    # releases to the organizer only after the event runs, first 10 paid tournaments per org are
+    # 0% fee then AFC takes 2%, refund handling) BEFORE creating their first PAID event. We record
+    # WHEN they accepted + WHO + which terms version, so a later terms change can re-prompt.
+    # Set by create_event when an org first submits a paid event with terms accepted; read by the
+    # FE to decide whether to show the terms modal. Null = not yet accepted.
+    paid_terms_accepted_at = models.DateTimeField(null=True, blank=True)
+    paid_terms_accepted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="accepted_org_paid_terms",
+    )
+    paid_terms_version = models.CharField(max_length=20, blank=True, default="")
+
     def __str__(self):
         return f"{self.name} ({self.slug})"
 
