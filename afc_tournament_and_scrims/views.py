@@ -10202,6 +10202,11 @@ from django.db import transaction
 
 @api_view(["POST"])
 def create_leaderboard(request):
+    # DEPRECATED (no longer in use), same as create_leaderboard_manually. Leaderboards
+    # are created AUTOMATICALLY for every group when an event's stages/groups/maps are set
+    # up (create_event ~L1055 + edit_event group sync ~L2153). The URL route for this view
+    # is commented out in urls.py so it is unreachable; its only FE caller
+    # (UpdatedConfigurePointSystem) is dead code. Retained only to avoid churn.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)

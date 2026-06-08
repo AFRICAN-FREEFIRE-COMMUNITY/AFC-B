@@ -3598,6 +3598,40 @@
           ]
         },
         {
+          "name": "GET /events/ocr-session/11111111-1111-1111-1111-111111111111/ - GET    /events/ocr-session/<id>/  \u2014 fetch draft",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/events/ocr-session/11111111-1111-1111-1111-111111111111/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "ocr-session",
+                "11111111-1111-1111-1111-111111111111"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "PATCH /events/ocr-session/11111111-1111-1111-1111-111111111111/ - GET    /events/ocr-session/<id>/  \u2014 fetch draft",
           "request": {
             "method": "PATCH",
@@ -3630,40 +3664,6 @@
                   "language": "json"
                 }
               }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "GET /events/ocr-session/11111111-1111-1111-1111-111111111111/ - GET    /events/ocr-session/<id>/  \u2014 fetch draft",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/events/ocr-session/11111111-1111-1111-1111-111111111111/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "events",
-                "ocr-session",
-                "11111111-1111-1111-1111-111111111111"
-              ]
             }
           },
           "event": [
@@ -4305,6 +4305,40 @@
           ]
         },
         {
+          "name": "GET /organizers/design-requests/sample-slug/ - Member-scoped leaderboard-design requests for one org (resolved by <slug>):",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/design-requests/sample-slug/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "design-requests",
+                "sample-slug"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "POST /organizers/design-requests/sample-slug/ - Member-scoped leaderboard-design requests for one org (resolved by <slug>):",
           "request": {
             "method": "POST",
@@ -4337,40 +4371,6 @@
                   "language": "json"
                 }
               }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "GET /organizers/design-requests/sample-slug/ - Member-scoped leaderboard-design requests for one org (resolved by <slug>):",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/organizers/design-requests/sample-slug/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "organizers",
-                "design-requests",
-                "sample-slug"
-              ]
             }
           },
           "event": [
@@ -5399,6 +5399,40 @@
           ]
         },
         {
+          "name": "GET /partners/admin/sample-slug/ - partner_admin_detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/partners/admin/sample-slug/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "partners",
+                "admin",
+                "sample-slug"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "PATCH /partners/admin/sample-slug/ - partner_admin_detail",
           "request": {
             "method": "PATCH",
@@ -5431,40 +5465,6 @@
                   "language": "json"
                 }
               }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "GET /partners/admin/sample-slug/ - partner_admin_detail",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "X-API-Key",
-                "value": "{{api_key}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/partners/admin/sample-slug/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "partners",
-                "admin",
-                "sample-slug"
-              ]
             }
           },
           "event": [
@@ -12086,52 +12086,6 @@
               "path": [
                 "events",
                 "edit-event"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "POST /events/create-leaderboard/ - create_leaderboard",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/events/create-leaderboard/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "events",
-                "create-leaderboard"
               ]
             },
             "body": {
