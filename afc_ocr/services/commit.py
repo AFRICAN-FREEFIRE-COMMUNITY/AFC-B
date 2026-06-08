@@ -3,17 +3,10 @@ from collections import defaultdict
 
 from django.db import transaction, models as dm
 
-DEFAULT_PLACEMENT = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
-
-
-def _normalize_pp(pp):
-    if not pp:
-        return DEFAULT_PLACEMENT
-    try:
-        normalized = {int(k): int(v) for k, v in pp.items()}
-        return normalized if normalized else DEFAULT_PLACEMENT
-    except Exception:
-        return DEFAULT_PLACEMENT
+# Single source of truth for the per-match point formula + placement-points normalizer.
+# Previously OCR carried its own DEFAULT_PLACEMENT + _normalize_pp copies, which is exactly
+# how OCR scoring drifted from manual entry — both now go through scoring.* (see scoring.py).
+from afc_tournament_and_scrims import scoring
 
 
 def _get_lb_for_match(match):
@@ -48,15 +41,17 @@ def commit_team_result(match, final_rows: list):
 
     lb = _get_lb_for_match(match)
 
-    scoring = match.scoring_settings or {}
-    if isinstance(scoring, str):
-        scoring = json.loads(scoring)
+    # `scoring` is now the imported module; use a distinct local name for the match's
+    # per-match scoring config so it doesn't shadow scoring.compute_* / normalize_*.
+    scoring_cfg = match.scoring_settings or {}
+    if isinstance(scoring_cfg, str):
+        scoring_cfg = json.loads(scoring_cfg)
 
     lb_pp = lb.placement_points if lb else {}
-    placement_points = _normalize_pp(scoring.get("placement_points") or lb_pp)
-    kill_point         = float(scoring.get("kill_point", lb.kill_point if lb else 1.0))
-    points_per_assist  = float(scoring.get("points_per_assist", 0))
-    points_per_damage  = float(scoring.get("points_per_1000_damage", 0))
+    placement_points = scoring.normalize_placement_points(scoring_cfg.get("placement_points") or lb_pp)
+    kill_point         = float(scoring_cfg.get("kill_point", lb.kill_point if lb else 1.0))
+    points_per_assist  = float(scoring_cfg.get("points_per_assist", 0))
+    points_per_damage  = float(scoring_cfg.get("points_per_1000_damage", 0))
 
     # Group rows by placement
     groups: dict = defaultdict(list)
@@ -77,11 +72,15 @@ def commit_team_result(match, final_rows: list):
             bonus_pts    = int(rows[0].get("bonus_points", 0))
             penalty_pts  = int(rows[0].get("penalty_points", 0))
 
-            pp    = placement_points.get(placement, 0)
-            kp    = team_kills * kill_point
-            ap    = team_assists * points_per_assist
-            dp    = (team_damage / 1000) * points_per_damage
-            total = pp + kp + ap + dp + bonus_pts - penalty_pts
+            # Shared team formula (same one manual entry uses). NOTE: the old code stored
+            # int(round(total)); scoring uses int(total). Identical for integer point settings;
+            # this keeps OCR in lockstep with the canonical formula (see report).
+            pts = scoring.compute_team_points(
+                placement_points=placement_points, kill_point=kill_point,
+                points_per_assist=points_per_assist, points_per_1000_damage=points_per_damage,
+                placement=placement, kills=team_kills, damage=team_damage, assists=team_assists,
+                bonus=bonus_pts, penalty=penalty_pts, played=True,
+            )
 
             team_stat = TournamentTeamMatchStats.objects.create(
                 match=match,
@@ -90,9 +89,9 @@ def commit_team_result(match, final_rows: list):
                 kills=team_kills,
                 damage=team_damage,
                 assists=team_assists,
-                placement_points=int(pp),
-                kill_points=int(kp),
-                total_points=int(round(total)),
+                placement_points=pts["placement_points"],
+                kill_points=pts["kill_points"],
+                total_points=pts["total_points"],
                 played=True,
                 bonus_points=bonus_pts,
                 penalty_points=penalty_pts,
@@ -133,7 +132,7 @@ def commit_solo_result(match, final_rows: list):
         raise ValueError("No leaderboard found for this match.")
 
     event = _get_event_for_match(match)
-    placement_points = _normalize_pp(lb.placement_points)
+    placement_points = scoring.normalize_placement_points(lb.placement_points)
     kill_point = lb.kill_point
 
     with transaction.atomic():
@@ -153,18 +152,21 @@ def commit_solo_result(match, final_rows: list):
             if not competitor:
                 continue
 
-            pp    = placement_points.get(placement, 0)
-            kp    = kills * kill_point
-            total = pp + kp
+            # Shared solo formula. NOTE: the old code stored kill_points/total as floats
+            # (kills * kill_point); scoring returns int kill points. Identical at kill_point=1.0.
+            pts = scoring.compute_solo_points(
+                placement_points=placement_points, kill_point=kill_point,
+                placement=placement, kills=kills, played=True,
+            )
 
             SoloPlayerMatchStats.objects.create(
                 match=match,
                 competitor=competitor,
                 placement=placement,
                 kills=kills,
-                placement_points=int(pp),
-                kill_points=kp,
-                total_points=total,
+                placement_points=pts["placement_points"],
+                kill_points=pts["kill_points"],
+                total_points=pts["total_points"],
             )
 
         match.result_inputted = True

@@ -70,11 +70,26 @@ class Event(models.Model):
     event_status = models.CharField(max_length=20, choices=EVENT_STATUS_CHOICES)
     registration_link = models.URLField()
     tournament_tier = models.CharField(max_length=20, choices=TOURNAMENT_TIER_CHOICES, default="tier_3")
+    # rankings §4/§7.2 — prize money conversion locked at award date
+    prize_currency = models.CharField(max_length=3, default="NGN")  # USD | NGN
+    usd_to_ngn_rate = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    prizepool_ngn_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     event_banner = models.ImageField(upload_to='event_banner/', null=True)
     number_of_stages = models.PositiveIntegerField()
     uploaded_rules = models.FileField(upload_to='event_rules/', null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_events', null=True, blank=True)
+    # organizers: owning organization (null = native AFC event). SET_NULL so soft-deleting an
+    # org re-homes its events to AFC instead of destroying tournaments/registrations/results.
+    organization = models.ForeignKey("afc_organizers.Organization", null=True, blank=True,
+                                     on_delete=models.SET_NULL, related_name="events")
+    # organizers integrity gate: an org-owned event's results only count toward the official
+    # afc_rankings scores once an AFC admin verifies it. Native AFC events (organization=None)
+    # are unaffected — aggregation only excludes org events where this is still False.
+    rankings_verified = models.BooleanField(default=False)
+    # partner API gate: only events an AFC admin has explicitly published are reachable
+    # through the read-only partner API (afc_partner_api). Defaults off; AFC flips it.
+    partner_published = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)
     is_draft = models.BooleanField(default=True)
     registration_restriction = models.CharField(
@@ -131,6 +146,18 @@ class EventInviteToken(models.Model):
     is_used = models.BooleanField(default=False)
     used_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="used_invite_tokens")
     used_at = models.DateTimeField(null=True, blank=True)
+    # ── shared (reusable) invite link ──
+    # A SHARED token (is_shared=True) is ONE reusable link that many people register
+    # through. It is NEVER consumed: the register_for_event invite gate accepts it
+    # regardless of is_used, and the post-registration "mark used" step skips it so it
+    # stays open. FCFS is still enforced by the EXISTING capacity check
+    # (active_count >= event.max_teams_or_players -> "Registration limit reached" /
+    # waitlist): the first max_teams_or_players registrations through the shared link
+    # take the slots, then the event is full and the link can no longer register anyone.
+    # A NON-shared token (is_shared=False, the default) keeps today's single-use behavior:
+    # it is consumed by the first successful registration (is_used=True) and rejected
+    # afterwards.
+    is_shared = models.BooleanField(default=False)
 
 
 class SponsorEvent(models.Model):
@@ -149,13 +176,18 @@ class Stages(models.Model):
     STAGE_FORMAT_CHOICES = [
         ("br - normal", "Battle Royale - Normal"),
         ("br - roundrobin", "Battle Royale - Knockout"),
-        ("br - point rush", "Battle Royale - Point Rush"),
-        ("br - champion rush", "Battle Royale - Champion Rush"),
+        # NOTE: "br - point rush" / "br - champion rush" used to be scoring *formats* here.
+        # They are now per-stage TOGGLES (champion_point_enabled / point_rush_enabled below),
+        # combinable with any bracket format, so they are no longer format choices.
         ("cs - normal", "Clash Squad - Normal"),
         ("cs - league", "Clash Squad - League"),
         ("cs - knockout", "Clash Squad - Knockout"),
         ("cs - double elimination", "Clash Squad - Double Elimination"),
-        ("cs - round robin", "Clash Squad - Round Robin")
+        ("cs - round robin", "Clash Squad - Round Robin"),
+        # BR Round-Robin (sub-project B): base groups A/B/C merge into game-day lobbies.
+        # Distinct from the dead "br - roundrobin" (mislabelled "Knockout") entry above —
+        # that one is left untouched for backward compatibility.
+        ("br - round robin", "Battle Royale - Round Robin")
     ]
 
     STAGE_STATUS_CHOICES = [
@@ -178,6 +210,25 @@ class Stages(models.Model):
     prizepool = models.CharField(max_length=40, null=True, blank=True)
     prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     prize_distribution = models.JSONField(default=dict,null=True, blank=True) # {"1": "50%", "2": "30%", "3": "20%"}
+    is_finals_stage = models.BooleanField(default=False)  # rankings §4.5/§6.1 — admin marks the finals stage
+
+    # ── Scoring-mode config (scoring-modes sub-project A). Both features are independent
+    # and combinable per stage. They are computed ON READ in the standings builder
+    # (nothing here persists derived points), matching how standings already work, so an
+    # admin edit auto-corrects the leaderboard. See WEBSITE/tasks/scoring-modes-design.md. ──
+    # Champion-Point: a stage is decided by a match-point WIN rule (first competitor to
+    # Booyah while already at/over the threshold) rather than by summed points.
+    champion_point_enabled = models.BooleanField(default=False)
+    champion_point_threshold = models.PositiveIntegerField(null=True, blank=True)  # required when enabled
+    # Point-Rush: this stage's per-lobby standings hand out a placement→bonus reward that
+    # carries over into a LATER stage (point_rush_target_stage). on_delete=SET_NULL so
+    # deleting the target stage just nulls the link, it does not cascade to the source.
+    point_rush_enabled = models.BooleanField(default=False)
+    point_rush_reward = models.JSONField(default=dict, blank=True)  # {"1":10,"2":7,...} placement→bonus
+    point_rush_target_stage = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="point_rush_sources",  # target.point_rush_sources -> stages that feed it
+    )
 
 class StageGroups(models.Model):
     group_id = models.AutoField(primary_key=True)
@@ -193,6 +244,30 @@ class StageGroups(models.Model):
     prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     prize_distribution = models.JSONField(default=dict, null=True, blank=True) # {"1": "50%", "2": "30%", "3": "20%"}
 
+    # ── BR Round-Robin (sub-project B): a StageGroups row doubles as a game-day LOBBY ──
+    # For a round-robin stage, each game day is a lobby formed by MERGING base groups
+    # (RoundRobinGroup). game_day numbers the day within the stage; source_groups records
+    # which base groups were merged to fill this lobby. Both stay null/empty for every
+    # other stage format, so nothing else changes. RoundRobinGroup is referenced by string
+    # because it is declared after this class (forward reference).
+    game_day = models.PositiveIntegerField(null=True, blank=True)
+    source_groups = models.ManyToManyField("RoundRobinGroup", blank=True, related_name="lobbies")
+
+
+# ---------------- Round-Robin Base Group ----------------
+class RoundRobinGroup(models.Model):
+    """Base group (A/B/C…) in a Round-Robin stage. Teams keep this identity; game-day
+    lobbies are formed by merging base groups (see StageGroups.source_groups)."""
+    group_id = models.AutoField(primary_key=True)
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="round_robin_groups")
+    label = models.CharField(max_length=20)
+    order = models.PositiveIntegerField(default=0)
+    teams = models.ManyToManyField("TournamentTeam", blank=True, related_name="round_robin_groups")
+
+    class Meta:
+        # Self-enforce A/B/C order everywhere groups are read (schedule generation,
+        # standings, UI) so later tasks never have to re-sort by `order` by hand.
+        ordering = ["order"]
 
 
 # ---------------- Registered Competitors ----------------
@@ -254,6 +329,10 @@ class Match(models.Model):
     group = models.ForeignKey(StageGroups, on_delete=models.CASCADE, related_name="matches", null=True, blank=True)
     mvp = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="mvp_matches")
     match_date = models.DateTimeField(auto_now_add=True)
+    # afc_rankings buckets stats by played_on (actual play date), NOT match_date
+    # (auto_now_add). Backfill played_on for historical matches or they bucket into the
+    # wrong month/quarter.
+    played_on = models.DateField(null=True, blank=True)  # rankings: actual play date for month/quarter bucketing (match_date is entry date)
     match_number = models.PositiveIntegerField()
     room_id = models.CharField(max_length=50, null=True, blank=True)
     room_password = models.CharField(max_length=50, null=True, blank=True)
@@ -291,6 +370,13 @@ class TournamentTeam(models.Model):
     registration_date = models.DateTimeField(auto_now_add=True)
     country = models.CharField(max_length=100, null=True, blank=True) # Store country at time of registration for historical accuracy
     is_waitlisted = models.BooleanField(default=False)
+    # rankings result markers — set by admin at result entry via afc_rankings.admin_results
+    # (spec §4.4/§4.5/§5.1); consumed by afc_rankings.aggregation to award win/finals points.
+    # result_finalized gates whether aggregation counts this event at all.
+    is_tournament_winner = models.BooleanField(default=False)
+    reached_finals = models.BooleanField(default=False)
+    finals_appearances = models.PositiveIntegerField(default=0)
+    result_finalized = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.team.team_name} in {self.event.event_name}"

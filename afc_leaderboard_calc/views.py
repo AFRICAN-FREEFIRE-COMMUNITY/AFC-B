@@ -85,7 +85,19 @@ def extract_data_from_image(image_path, json_schema):
 def create_tournament(request):
     name = request.data.get("name")
     session_token = request.data.get("session_token")
-    teams_names = request.data.getlist("teams_names")
+
+    # ── guard: read teams_names without assuming a QueryDict ──
+    # A JSON body (or empty {} body) makes request.data a plain dict, which has no
+    # .getlist(). Calling .getlist() on it raised AttributeError -> HTTP 500 before
+    # the required-field check below ever ran. Use getlist when available
+    # (multipart/form-encoded QueryDict), otherwise fall back to .get() and coerce
+    # to a list. Prevents: AttributeError ('dict' object has no attribute 'getlist').
+    if hasattr(request.data, "getlist"):
+        teams_names = request.data.getlist("teams_names")
+    else:
+        teams_names = request.data.get("teams_names") or []
+        if not isinstance(teams_names, list):
+            teams_names = [teams_names]
 
     if not name or not session_token:
         return Response({"status": "error", "message": "Name and session token are required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -179,10 +191,27 @@ def process_match_result_images(match_id):
 
 @api_view(["POST"])
 def upload_match_results(request, tournament_id, match_number):
+    # ── guard: tournament_id comes from the URL as a raw string ──
+    # Tournament's PK is an AutoField (integer). A non-numeric slug like
+    # "sample-slug" makes Tournament.objects.get(pk=...) raise ValueError during int
+    # coercion, NOT Tournament.DoesNotExist, so the old except clause missed it and
+    # it surfaced as HTTP 500. Catch ValueError/TypeError alongside DoesNotExist and
+    # return a clean 404. Prevents: ValueError (invalid literal for int()).
     try:
         tournament = Tournament.objects.get(pk=tournament_id)
-    except Tournament.DoesNotExist:
+    except (Tournament.DoesNotExist, ValueError, TypeError):
         return Response({"status": "error", "message": "Tournament not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # ── guard: match_number must be a positive integer ──
+    # match_number is a PositiveIntegerField. A non-numeric value like "sample" would
+    # make get_or_create() below raise ValueError on the DB write/lookup -> HTTP 500.
+    # Validate up front and return 400. Prevents: ValueError (invalid match_number).
+    try:
+        match_number = int(match_number)
+        if match_number < 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        return Response({"status": "error", "message": "Match number must be a positive integer."}, status=status.HTTP_400_BAD_REQUEST)
 
     images = request.FILES.getlist("result_images")
     if not images or len(images) > 4:

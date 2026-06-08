@@ -9,7 +9,12 @@ urlpatterns = [
     # path('admin-login/', admin_login, name='admin_login'),
     path('create-event/', create_event, name='create_event'),
     path('edit-event/', edit_event, name='edit_event'),
-    path('create-leaderboard/', create_leaderboard, name='create_leaderboard'),
+    # DEPRECATED / HIDDEN: like create-leaderboard-manually, this manual create path is
+    # no longer used - leaderboards are created AUTOMATICALLY for every group at event
+    # setup (create_event + edit_event sync). Its only FE caller, UpdatedConfigurePointSystem,
+    # is dead code (imported by nothing). Route commented out so it can't be reached; the
+    # view function is kept (marked deprecated) but unused.
+    # path('create-leaderboard/', create_leaderboard, name='create_leaderboard'),
     path('get-all-events/', get_all_events, name='get_all_events'),
     path('get-event-details/', get_event_details, name='get_event_details'),
     path('get-all-events-paginated/', get_all_events_paginated, name='get_all_events_paginated'),
@@ -49,13 +54,22 @@ urlpatterns = [
     path('sync-group-discord-roles/', sync_group_discord_roles, name='sync_group_discord_roles'),
     path('reconcile-group-roles/', reconcile_group_roles, name='reconcile_group_roles'),
     path('get-all-leaderboard-details-for-event/', get_all_leaderboard_details_for_event, name='get_all_leaderboard_details_for_event'),
+    # BR Round-Robin (sub-project B): per-day + cumulative standings for a round-robin stage.
+    path('get-round-robin-standings/', get_round_robin_standings, name='get_round_robin_standings'),
     path('advance-group-competitors-to-next-stage/', advance_group_competitors_to_next_stage, name='advance_group_competitors_to_next_stage'),
+    # BR Round-Robin (sub-project B): advance top-N from the CUMULATIVE table (or top-K per base group).
+    path('advance-round-robin/', advance_round_robin, name='advance_round_robin'),
     path('edit-solo-match-result/', edit_solo_match_result, name='edit_solo_match_result'),
     path('edit-leaderboard/', edit_leaderboard, name='edit_leaderboard'),
     path('remove-non-nigeria-registered-competitors/', remove_non_nigeria_registered_competitors, name='remove_non_nigeria_registered_competitors'),
     path('delete-match/', delete_match, name='delete_match'),
     path('edit-match-details/', edit_match_details, name='edit_match_details'),
-    path('create-leaderboard-manually/', create_leaderboard_manually, name='create_leaderboard_manually'),
+    # DEPRECATED / HIDDEN: manual leaderboard creation is no longer used. Leaderboards
+    # are created AUTOMATICALLY for every group when an event's stages/groups/maps are
+    # set up (create_event + edit_event sync). The route is commented out so the dead
+    # endpoint can't be reached; the view function is kept (marked deprecated) but
+    # unused. The FE "Create Leaderboard" entry points are hidden to match.
+    # path('create-leaderboard-manually/', create_leaderboard_manually, name='create_leaderboard_manually'),
     path('enter-solo-match-result-manual/', enter_solo_match_result_manual, name='enter_solo_match_result_manual'),
     path('enter-team-match-result-manual/', enter_team_match_result_manual, name='enter_team_match_result_manual'),
     path('edit-match-result/', edit_match_result, name='edit_match_result'),
@@ -98,4 +112,12 @@ urlpatterns = [
     path("upload-match-result-image/", upload_match_result_image, name="upload_match_result_image"),
     path("get-match-result-images/", get_match_result_images, name="get_match_result_images"),
     path("delete-match-result-image/", delete_match_result_image, name="delete_match_result_image"),
+    path("cancel-event/", cancel_event, name="cancel_event"),
+    path("complete-event/", complete_event, name="complete_event"),
+    path("broadcast-announcement/", broadcast_announcement, name="broadcast_announcement"),
+    # per-group broadcast composer (AFC official + organizer). See broadcast_to_group.
+    path("broadcast-to-group/", broadcast_to_group, name="broadcast_to_group"),
+    path("export-participants/", export_participants, name="export_participants"),
+    # organizers: toggle Event.rankings_verified (platform org admins only).
+    path("verify-event/", verify_event, name="verify_event"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
