@@ -123,6 +123,21 @@ class Event(models.Model):
     registration_start_time = models.TimeField(null=True, blank=True)
     registration_end_time = models.TimeField(null=True, blank=True)
 
+    # ── Paid registration (feature "paid-events", 2026-06-08) ──────────────────────────────
+    # registration_type: "free" keeps the current instant-register flow; "paid" means a
+    # registration is only created AFTER the entry fee is paid. registration_fee is the entry
+    # amount in registration_fee_currency (USD base; admin picks per event). The CHARGE + ESCROW
+    # (funds held by the payment processor, e.g. Stripe Connect, and released to the organizer
+    # by an AFC admin only after the event runs) is the separate payment phase. These three
+    # fields are the create/edit + display layer: set in create_event / edit_event, shown on the
+    # admin + organizer event forms, and read by the public event page to decide free-vs-paid
+    # registration. For an organizer-owned event, the organizer must have accepted the paid-event
+    # terms (afc_organizers.Organization.paid_terms_accepted_at) before a paid event is created.
+    REGISTRATION_TYPE_CHOICES = [("free", "Free"), ("paid", "Paid")]
+    registration_type = models.CharField(max_length=10, choices=REGISTRATION_TYPE_CHOICES, default="free")
+    registration_fee = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    registration_fee_currency = models.CharField(max_length=3, default="USD")
+
 
 
     def save(self, *args, **kwargs):
