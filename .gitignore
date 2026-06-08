@@ -28,3 +28,24 @@ _verify_bugfix.py
 # They stay on local disk (gitignored) so local dev still runs.
 **/migrations/*.py
 !**/migrations/__init__.py
+
+# OCR self-hosted model loop (P4): every artifact the retrain + blue-green swap
+# produces is LOCAL only and must never be pushed. Student model bundles are built
+# off-box on a GPU and dropped in by ops; the 'current' pointer, retrain-request
+# markers, and shadow logs are runtime state. None of it belongs in git.
+#   media/models/current            -> active-model pointer file (or posix symlink)
+#   media/models/current.prev       -> previous pointer, kept for instant rollback()
+#   media/models/student_v*/        -> deployed student bundles (rec.onnx + keys + VERSION)
+#   media/ocr_retrain/              -> retrain_requested markers + dataset-snapshot requests
+#   media/ocr_shadow/               -> shadow student-vs-committed comparison logs
+media/models/
+media/ocr_retrain/
+media/ocr_shadow/
+
+# OCR training corpus (P0 + Phase 1): admin-captured screenshots and synthetic
+# name crops plus their rec_gt.txt manifest. This is generated training data (and
+# may contain real-screenshot-derived pixels), all LOCAL only and never pushed:
+#   media/ocr_training/<sha>.<ext>        -> real admin-confirmed screenshots
+#   media/ocr_training/synth/<sha>.png    -> synthetic name crops (P0 generator)
+#   media/ocr_training/synth/rec_gt.txt   -> PaddleOCR recognition ground-truth manifest
+media/ocr_training/
