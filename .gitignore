@@ -21,3 +21,10 @@ postman/smoke_results.json
 _prod_import/
 _runserver.log
 _verify_bugfix.py
+
+# Django migrations are generated on the server (makemigrations on the AWS console),
+# NOT committed — committing local migrations conflicts with the server-generated ones.
+# Keep each migrations package marker (__init__.py); ignore the generated migration files.
+# They stay on local disk (gitignored) so local dev still runs.
+**/migrations/*.py
+!**/migrations/__init__.py
