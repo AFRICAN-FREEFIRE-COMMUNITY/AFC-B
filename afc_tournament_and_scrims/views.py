@@ -148,6 +148,10 @@ def get_all_events(request):
             "prizepool": event.prizepool,
             "prizepool_cash_value": event.prizepool_cash_value,
             "prize_distribution": event.prize_distribution,
+            # Paid-registration: cards can show a "Paid" badge + the fee.
+            "registration_type": event.registration_type,
+            "registration_fee": event.registration_fee,
+            "registration_fee_currency": event.registration_fee_currency,
             "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
             "slug": event.slug,
             "is_public": event.is_public,
@@ -941,9 +945,44 @@ def create_event(request):
     if isinstance(is_public, str):
         is_public = is_public.lower() in ("1", "true", "yes")
 
+    # ── Paid registration parse + validate (feature "paid-events", 2026-06-08) ──
+    # "free" keeps instant registration; "paid" requires a positive fee, and for an
+    # organizer-owned event the org must have accepted the paid-event terms first (recorded on
+    # the Organization). The actual charge/escrow is the payment phase; here we only persist the
+    # fee config + gate the terms acceptance.
+    from decimal import Decimal, InvalidOperation
+    registration_type = request.data.get("registration_type", "free")
+    registration_fee_currency = (request.data.get("registration_fee_currency") or "USD").upper()[:3]
+    registration_fee = None
+    if registration_type not in ("free", "paid"):
+        return Response({"error": "registration_type must be 'free' or 'paid'."}, status=400)
+    if registration_type == "paid":
+        try:
+            registration_fee = Decimal(str(request.data.get("registration_fee")))
+        except (InvalidOperation, TypeError):
+            return Response({"error": "A valid registration_fee is required for a paid event."}, status=400)
+        if registration_fee <= 0:
+            return Response({"error": "registration_fee must be greater than 0 for a paid event."}, status=400)
+        # Organizer paid events: require + record acceptance of the paid-event terms (once per org).
+        if org is not None and not org.paid_terms_accepted_at:
+            accepted = str(request.data.get("paid_terms_accepted", "")).lower() in ("true", "1", "yes")
+            if not accepted:
+                return Response(
+                    {"error": "You must accept the paid-event terms before creating a paid event.",
+                     "code": "paid_terms_required"},
+                    status=400,
+                )
+            org.paid_terms_accepted_at = timezone.now()
+            org.paid_terms_accepted_by = user
+            org.paid_terms_version = "2026-06-08"
+            org.save(update_fields=["paid_terms_accepted_at", "paid_terms_accepted_by", "paid_terms_version"])
+
     # ---------------- CREATE EVERYTHING ----------------
     with transaction.atomic():
         event = Event.objects.create(
+            registration_type=registration_type,
+            registration_fee=registration_fee,
+            registration_fee_currency=registration_fee_currency,
             competition_type=request.data.get("competition_type"),
             participant_type=request.data.get("participant_type"),
             event_type=request.data.get("event_type"),
@@ -1865,6 +1904,28 @@ def edit_event(request):
         if not isinstance(pd, dict):
             return Response({"message": "prize_distribution must be a JSON object."}, status=400)
         event.prize_distribution = pd
+
+    # ── Paid registration (feature "paid-events") ──
+    if "registration_type" in request.data:
+        rt = request.data.get("registration_type")
+        if rt not in ("free", "paid"):
+            return Response({"message": "registration_type must be 'free' or 'paid'."}, status=400)
+        event.registration_type = rt
+    if "registration_fee_currency" in request.data:
+        event.registration_fee_currency = (request.data.get("registration_fee_currency") or "USD").upper()[:3]
+    if "registration_fee" in request.data:
+        raw = request.data.get("registration_fee")
+        if raw in (None, "", "null"):
+            event.registration_fee = None
+        else:
+            from decimal import Decimal, InvalidOperation
+            try:
+                event.registration_fee = Decimal(str(raw))
+            except (InvalidOperation, TypeError):
+                return Response({"message": "registration_fee must be a number."}, status=400)
+    # A paid event must end up with a positive fee.
+    if event.registration_type == "paid" and (event.registration_fee is None or event.registration_fee <= 0):
+        return Response({"message": "A paid event needs a registration_fee greater than 0."}, status=400)
 
     if "event_banner" in request.FILES:
         event.event_banner = request.FILES.get("event_banner")
@@ -3104,6 +3165,10 @@ def get_event_details(request):
         "registration_end_date": event.registration_end_date,
         "prizepool": event.prizepool,
         "prize_distribution": event.prize_distribution,
+        # Paid registration (feature "paid-events"): the event page decides free vs paid + fee.
+        "registration_type": event.registration_type,
+        "registration_fee": event.registration_fee,
+        "registration_fee_currency": event.registration_fee_currency,
         "event_rules": event.event_rules,
         "event_status": event.event_status,
         "registration_link": event.registration_link,
@@ -3916,6 +3981,10 @@ def get_event_details_not_logged_in(request):
         "registration_end_date": event.registration_end_date,
         "prizepool": event.prizepool,
         "prize_distribution": event.prize_distribution,
+        # Paid registration (feature "paid-events"): the event page decides free vs paid + fee.
+        "registration_type": event.registration_type,
+        "registration_fee": event.registration_fee,
+        "registration_fee_currency": event.registration_fee_currency,
         "event_rules": event.event_rules,
         "event_status": event.event_status,
         "registration_link": event.registration_link,
