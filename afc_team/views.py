@@ -881,7 +881,11 @@ def get_all_teams(request):
         teams_data.append({
             "team_id": team.team_id,
             "team_name": team.team_name,
-            "team_logo": team.team_logo.url if team.team_logo else None,
+            # Absolute URL (API host) so the logo loads from api.africanfreefirecommunity.com.
+            # `.url` alone is relative (/media/...), which the browser resolves against the FRONTEND
+            # origin where no media lives -> 404 / blank logos on /teams. Matches the build_absolute_uri
+            # pattern used by the other team endpoints (get_team_details, etc.).
+            "team_logo": request.build_absolute_uri(team.team_logo.url) if team.team_logo else None,
             "team_tag": team.team_tag,
             "join_settings": team.join_settings,
             "creation_date": team.creation_date,

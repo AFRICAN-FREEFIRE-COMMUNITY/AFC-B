@@ -34,7 +34,11 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 # Defaults to True for local dev; PRODUCTION MUST set the env var DEBUG=False.
 DEBUG = os.getenv("DEBUG", "True").strip().lower() == "true"
 
-ALLOWED_HOSTS = ["https://afc.pythonanywhere.com/", "afc.pythonanywhere.com", "98.94.15.73", "*"]
+# Env-driven, comma-separated (mirrors the DEBUG pattern above). Defaults to "*" so local dev and
+# the EB/ALB health checks that hit the instance by IP keep working. PRODUCTION SHOULD set the
+# real hostnames, e.g. ALLOWED_HOSTS=api.africanfreefirecommunity.com,africanfreefirecommunity.com
+# (The old afc.pythonanywhere.com / 98.94.15.73 entries were stale - AFC now runs on AWS EC2.)
+ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "*").split(",") if h.strip()]
 
 
 MEDIA_URL = '/media/'
@@ -157,18 +161,6 @@ DATABASES = {
         'PORT': os.getenv("DB_PORT", "3306"),
     }
 }
-
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'AFC$default',
-#         'USER': 'AFC',
-#         'PASSWORD': 'afc@AFRICANFFC.1234',
-#         'HOST': 'AFC.mysql.pythonanywhere-services.com',  # Or your remote host
-#         'PORT': '3306',       # Or your custom port if different
-#     }
-# }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
