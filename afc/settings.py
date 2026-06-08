@@ -159,6 +159,11 @@ DATABASES = {
         'PASSWORD': os.getenv("DB_PASSWORD"),
         'HOST': os.getenv("DB_HOST", "localhost"),
         'PORT': os.getenv("DB_PORT", "3306"),
+        # Force the CONNECTION charset to utf8mb4 so 4-byte characters (emoji + some stylized
+        # unicode in Free Fire player names, e.g. the OCR training labels) can be written.
+        # Without this the connection defaulted to utf8mb3 and a 4-byte char raised
+        # OperationalError 1366 "Incorrect string value" even though the columns are utf8mb4.
+        'OPTIONS': {'charset': 'utf8mb4'},
     }
 }
 
