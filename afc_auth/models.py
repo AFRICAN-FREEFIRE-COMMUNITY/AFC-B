@@ -31,7 +31,7 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, null=False, default="player")
     # session_token = models.CharField(max_length=16)
     full_name = models.CharField(max_length=40)
-    country = models.CharField(max_length=40)
+    country = models.CharField(max_length=40, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=False, default="active")
     last_login = models.DateTimeField(null=True)
     discord_id = models.CharField(max_length=50, null=True, blank=True, unique=True, db_index=True)
@@ -91,10 +91,16 @@ class SessionToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 
+    # Session lifetime. The frontend stores the auth_token cookie for 7 days, so the
+    # server-side token must match — otherwise the cookie lingers but every request
+    # 401s within the hour, which is exactly the "logged in but everything fails after
+    # ~15-60 min" behaviour. Keep these in sync (frontend COOKIE_OPTIONS expires: 7).
+    SESSION_LIFETIME = timedelta(days=7)
+
     def save(self, *args, **kwargs):
-        # Automatically set expiry to 20 mins after creation if not provided
+        # Default the expiry to the full 7-day session window when not explicitly set.
         if not self.expires_at:
-            self.expires_at = timezone.now() + timedelta(minutes=60)
+            self.expires_at = timezone.now() + self.SESSION_LIFETIME
         super().save(*args, **kwargs)
 
     def is_expired(self):
@@ -128,12 +134,15 @@ class LoginHistory(models.Model):
 class Roles(models.Model):
     ROLES = [
         ("head_admin", "Head Admin"),
+        ("metrics_admin", "Metrics Admin"),
         ("shop_admin", "Shop Admin"),
         ("news_admin", "News Admin"),
         ("event_admin", "Event Admin"),
         ("teams_admin", "Teams Admin"),
         ("partner_admin", "Partner Admin"),
         ("sponsor_admin", "Sponsor Admin"),
+        ("organizer", "Organizer"),              # granted to any active OrganizationMember
+        ("organizer_admin", "Organizer Admin"),  # AFC staff who oversee organizations
     ]
 
     role_id = models.AutoField(primary_key=True)

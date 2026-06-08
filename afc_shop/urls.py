@@ -7,7 +7,8 @@ from django.conf.urls.static import static
 urlpatterns = [
     # path("admin/", admin.site.urls),
     path('add-product/', add_product, name='add_product'),
-    path('view-all-products/', view_all_products, name='view_all_products'),
+    path('view-all-products/', view_all_products, name='view_all_products'),          # admin: every status
+    path('view-active-products/', view_active_products, name='view_active_products'),  # public: storefront (active only)
     path('edit-product/', edit_product, name='edit_product'),
     path('delete-product/', delete_product, name='delete_product'),
     path('deactivate-product/', deactivate_product, name='deactivate_product'),
@@ -48,4 +49,16 @@ urlpatterns = [
     path("get-all-fulfillments/", get_all_fulfillments, name="get_all_fulfillments"),
     path("test-denom/", test_denom, name="test_denom"),
     path("test-brands/", test_brands, name="test_brands"),
+
+    # ── Category CRUD (admin-managed product categories) ──
+    # Powers the user shop category tabs + the admin "Manage Categories" surface.
+    path("view-all-categories/", view_all_categories, name="view_all_categories"),       # admin: full list
+    path("view-active-categories/", view_active_categories, name="view_active_categories"),  # public: shop tabs
+    path("create-category/", create_category, name="create_category"),
+    path("edit-category/", edit_category, name="edit_category"),
+    path("delete-category/", delete_category, name="delete_category"),
+
+    # ── Product media (multi-image + video gallery) ──
+    path("add-product-media/", add_product_media, name="add_product_media"),
+    path("delete-product-media/", delete_product_media, name="delete_product_media"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -35,9 +35,19 @@ class Team(models.Model):
     
 
 class TeamSocialMediaLinks(models.Model):
-    team = models.ForeignKey(Team, on_delete=models.CASCADE)
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="social_links")
     platform = models.CharField(max_length=20)
     link = models.URLField(max_length=200)
+    # rankings §7.3 — verified follower count snapshot inputs.
+    # Verified by admin via afc_rankings.admin_social; snapshotted per-season into
+    # TeamSocialSnapshot by aggregation for the social_media_pts component of the team
+    # quarterly score.
+    follower_count = models.PositiveIntegerField(null=True, blank=True)
+    followers_verified_at = models.DateTimeField(null=True, blank=True)
+    verified_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="verified_social_counts",
+    )
     
 
 
@@ -66,7 +76,10 @@ class TeamMembers(models.Model):
 
 
     class Meta:
-        unique_together = ('team', 'member')  # <-- prevents duplicates
+        unique_together = ('team', 'member')
+        constraints = [
+            models.UniqueConstraint(fields=['member'], name='unique_member_one_team'),
+        ]
 
     def __str__(self):
         return f"{self.member.username} - {self.team.team_name} ({self.management_role})"

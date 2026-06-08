@@ -13,8 +13,19 @@ from django.utils.dateparse import parse_date
 from afc_auth.views import assign_discord_role, check_discord_membership, check_discord_membership_v3, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
 # from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
-from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+# Single source of truth for the per-match point formula (see scoring.py). Imported
+# as `scoring_lib` (not bare `scoring`) on purpose: several result-entry views already
+# use a LOCAL variable named `scoring` for `match.scoring_settings`, which would shadow
+# a bare module import and break `scoring.compute_*` inside those functions.
+from afc_tournament_and_scrims import scoring as scoring_lib
+from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
+# organizers: org-scope permission helpers + the Organization tenant model. These let org
+# members (owner / sub_organizer) manage their OWN org's events while AFC admins keep full
+# oversight. All gating goes through org_can / org_can_event so the owner/admin-bypass rules
+# stay in afc_organizers/permissions.py (single source of truth).
+from afc_organizers.permissions import org_can, org_can_event, is_platform_org_admin
+from afc_organizers.models import Organization
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -39,6 +50,20 @@ def paginate_queryset(request, queryset, serializer_func):
     result_page = paginator.paginate_queryset(queryset, request)
     serialized = [serializer_func(obj) for obj in result_page]
     return paginator.get_paginated_response(serialized)
+
+
+# ── event-admin check (AFC platform side) ──
+# Single helper replacing the duplicated inline admin checks scattered across the event
+# endpoints. True for the core staff roles OR users carrying the event_admin / head_admin
+# granular role. Org-scope permissions (organizer owners / sub_organizers) are handled
+# separately via org_can / org_can_event — this only answers "is this an AFC event admin?".
+def _is_event_admin(user):
+    # NOTE: UserRoles has no `role_name` field — the granular role name lives on the related
+    # Roles row, so the correct lookup is `role__role_name__in` (the older inline gates in this
+    # file use the buggy `role_name__in`, which FieldErrors for a non-staff event_admin; this
+    # helper uses the correct path so org/event-admin checks actually work).
+    return user.role in ["admin", "moderator", "support"] or \
+        user.userroles.filter(role__role_name__in=["event_admin", "head_admin"]).exists()
 
 
 from celery import shared_task
@@ -104,7 +129,12 @@ def update_event_and_stage_statuses():
 
 @api_view(["GET"])
 def get_all_events(request):
-    events = Event.objects.filter(is_draft=False)
+    # select_related("organization") avoids an N+1 when we read each event's org name/slug.
+    events = Event.objects.filter(is_draft=False).select_related("organization")
+    # optional org filter: when present, scope the list to one organization's events.
+    organization_id = request.GET.get("organization_id")
+    if organization_id:
+        events = events.filter(organization_id=organization_id)
     event_list = []
     for event in events:
         event_list.append({
@@ -121,6 +151,11 @@ def get_all_events(request):
             "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
             "slug": event.slug,
             "is_public": event.is_public,
+            # organizer context: null for native AFC events, populated for org-owned events.
+            "organization_id": event.organization_id,
+            "organization_name": event.organization.name if event.organization_id else None,
+            "organization_slug": event.organization.slug if event.organization_id else None,
+            "rankings_verified": event.rankings_verified,
         })
     return Response({"events": event_list}, status=status.HTTP_200_OK)
 
@@ -130,7 +165,12 @@ def get_all_events_paginated(request):
     limit = int(request.GET.get("limit", 10))
     offset = int(request.GET.get("offset", 0))
 
-    events = Event.objects.filter(is_draft=False).order_by("-start_date")
+    # select_related("organization") avoids an N+1 when we read each event's org name/slug.
+    events = Event.objects.filter(is_draft=False).select_related("organization").order_by("-start_date")
+    # optional org filter: when present, scope the list to one organization's events.
+    organization_id = request.GET.get("organization_id")
+    if organization_id:
+        events = events.filter(organization_id=organization_id)
     total = events.count()
 
     # slice manually (faster than Paginator for large tables)
@@ -147,7 +187,12 @@ def get_all_events_paginated(request):
         "prizepool": event.prizepool,
         "prizepool_cash_value": event.prizepool_cash_value,
         "prize_distribution": event.prize_distribution,
-        "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(), 
+        "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
+        # organizer context: null for native AFC events, populated for org-owned events.
+        "organization_id": event.organization_id,
+        "organization_name": event.organization.name if event.organization_id else None,
+        "organization_slug": event.organization.slug if event.organization_id else None,
+        "rankings_verified": event.rankings_verified,
     } for event in paginated]
 
     return Response({
@@ -301,6 +346,436 @@ def _as_list(val):
     v = _maybe_json(val, default=[])
     return v if isinstance(v, list) else []
 
+
+def _validate_scoring_modes(stages_data):
+    """Validate the per-stage scoring-mode config (Champion-Point / Point-Rush) for a
+    create/edit payload. `stages_data` is the submit-ordered list of stage dicts; the
+    Point-Rush target is referenced by `point_rush_target_index` (0-based position in this
+    same list). Returns an error message string on the first problem, or None if all good.
+
+    Rules (scoring-modes sub-project A):
+      • Champion-Point on  → champion_point_threshold must be a positive int.
+      • Point-Rush on      → point_rush_reward must be a non-empty mapping AND a
+                             point_rush_target_index must be supplied.
+      • A Point-Rush stage may not target itself (carry-over only flows to a LATER stage).
+    Callers turn the returned message into a 400 Response so no partial event is written."""
+    n = len(stages_data)
+    for idx, stage_data in enumerate(stages_data):
+        # ── Champion-Point: needs a threshold > 0 ──
+        if stage_data.get("champion_point_enabled"):
+            threshold = stage_data.get("champion_point_threshold")
+            try:
+                threshold = int(threshold) if threshold not in (None, "") else 0
+            except (TypeError, ValueError):
+                threshold = 0
+            if threshold <= 0:
+                return "Champion-Point stages need a threshold > 0."
+
+        # ── Point-Rush: needs a reward table AND a target stage index ──
+        if stage_data.get("point_rush_enabled"):
+            reward = stage_data.get("point_rush_reward")
+            if not isinstance(reward, dict) or not reward:
+                return "Point-Rush stages need a non-empty reward table."
+            tgt_idx = stage_data.get("point_rush_target_index")
+            if tgt_idx is None or tgt_idx == "":
+                return "Point-Rush stages need a target stage to carry over into."
+            try:
+                tgt_idx = int(tgt_idx)
+            except (TypeError, ValueError):
+                return "Point-Rush target stage index must be a number."
+            if tgt_idx == idx:
+                return "A Point-Rush stage cannot carry over into itself."
+            if not (0 <= tgt_idx < n):
+                return "Point-Rush target stage index is out of range."
+    return None
+
+
+# ── BR Round-Robin (sub-project B, Task 4) ────────────────────────────────────────────
+# The literal a stage's `stage_format` must equal for the round-robin builders below to
+# fire. Distinct from the dead "br - roundrobin" (mislabelled "Knockout") choice; see the
+# RoundRobinGroup / Stages.STAGE_FORMAT_CHOICES comments in models.py.
+ROUND_ROBIN_FORMAT = "br - round robin"
+
+
+def _validate_round_robin_groups(stages_data):
+    """Validate the base-group team assignments in a create/edit payload (Task 4 landmine #3).
+
+    The plan requires: "A team must belong to exactly one base group." `_build_round_robin_groups`
+    and `_resolve_round_robin_team_ids` would otherwise silently accept the same team listed in
+    two base groups, which corrupts per-group advancement (a team would sit in two groups) and
+    the cumulative standings. So we guard it here, BEFORE the transaction opens, mirroring
+    `_validate_scoring_modes`: only round-robin stages are checked; the first duplicate team
+    found in two groups of the SAME stage returns an error message (callers turn it into a 400
+    so no partial event is written). `stages_data` is the submit-ordered list of stage dicts.
+
+    Returns an error message string on the first problem, or None if every round-robin stage is
+    clean. (Unknown/blank team ids are ignored here — `_resolve_round_robin_team_ids` already
+    skips them; we only police the uniqueness invariant the plan calls out.)
+    """
+    for stage_data in stages_data:
+        if stage_data.get("stage_format") != ROUND_ROBIN_FORMAT:
+            continue
+        seen_team_ids = set()  # team ids already claimed by an earlier base group in this stage
+        for grp_data in stage_data.get("round_robin_groups", []):
+            for raw_id in grp_data.get("team_ids") or []:
+                try:
+                    team_id = int(raw_id)
+                except (TypeError, ValueError):
+                    continue  # mirror _resolve_round_robin_team_ids: skip un-parseable ids
+                if team_id in seen_team_ids:
+                    return (
+                        "A team can only belong to one base group in a round-robin stage "
+                        f"(team id {team_id} appears in more than one group)."
+                    )
+                seen_team_ids.add(team_id)
+    return None
+
+
+def _resolve_round_robin_team_ids(team_ids, event, user):
+    """Turn the FE-supplied `team_ids` into THIS event's TournamentTeam rows.
+
+    A base group carries `team_ids` (Team primary keys). The round-robin stage lives on a
+    just-created/edited event, so a Team may not yet have a TournamentTeam for it — we
+    create one on demand (status "active", registered_by=user), exactly the shape
+    `register_*` uses elsewhere in this file. Already-linked teams are reused, so calling
+    this for overlapping groups (or re-editing) never duplicates a TournamentTeam.
+
+    Returns the TournamentTeam rows in the SAME order as `team_ids` (skipping ids whose
+    Team doesn't exist — a bad id can't poison the whole stage build).
+    """
+    resolved = []
+    for team_id in team_ids or []:
+        try:
+            team_id = int(team_id)
+        except (TypeError, ValueError):
+            continue
+        team = Team.objects.filter(team_id=team_id).first()
+        if not team:
+            continue  # unknown team id → skip rather than 500 the whole create
+        # get_or_create keys on (event, team) so a team already entered (e.g. via the
+        # registration flow) is reused; only genuinely-new entries get a fresh TT.
+        tt, _ = TournamentTeam.objects.get_or_create(
+            event=event,
+            team=team,
+            defaults={"status": "active", "registered_by": user,
+                      "country": team.country},
+        )
+        resolved.append(tt)
+    return resolved
+
+
+def _materialise_round_robin_lobby(stage, event, user, lobby_spec, source_groups, default_date, default_time):
+    """Create ONE game-day lobby (a StageGroups row) for a round-robin stage.
+
+    Mirrors the lobby/leaderboard/match creation already in create_event, plus the two
+    round-robin extras: it stamps `game_day` + `source_groups` on the StageGroups and seeds
+    StageGroupCompetitor from the UNION of the merged base groups' teams (so the lobby's
+    roster is exactly the teams of the groups that were merged into it).
+
+    `lobby_spec` is a dict shaped like a `round_robin_schedule` spec OR a manual game-day:
+      {game_day, match_count, match_maps, group_name?(optional label)}.
+    `source_groups` is the list of RoundRobinGroup rows this lobby merges.
+    `default_date`/`default_time` fill StageGroups' required playing_date/time (a generated
+    schedule has no per-lobby date, so we reuse the stage start as a sensible placeholder).
+    """
+    game_day = lobby_spec["game_day"]
+    match_maps = list(lobby_spec.get("match_maps") or ["bermuda"])
+    match_count = int(lobby_spec.get("match_count") or 0)
+
+    # Default lobby name encodes the day + the merged group labels (e.g. "Day 1: A+B"),
+    # unless the caller passed an explicit name (manual game-day mode may).
+    group_name = lobby_spec.get("group_name") or (
+        f"Day {game_day}: " + "+".join(g.label for g in source_groups)
+    )
+
+    lobby = StageGroups.objects.create(
+        stage=stage,
+        group_name=group_name,
+        playing_date=default_date,
+        playing_time=default_time,
+        teams_qualifying=int(lobby_spec.get("teams_qualifying", stage.teams_qualifying_from_stage)),
+        match_count=match_count,
+        match_maps=match_maps,
+        game_day=game_day,
+    )
+    # Stamp which base groups were merged into this lobby (the round-robin link).
+    lobby.source_groups.set(source_groups)
+
+    # Auto-create a leaderboard for the lobby (same shape as the normal-group path).
+    leaderboard = Leaderboard.objects.create(
+        leaderboard_name=f"{stage.stage_name} - {lobby.group_name}",
+        event=event,
+        stage=stage,
+        group=lobby,
+        creator=user,
+        leaderboard_method="manual",
+        placement_points={},
+        kill_point=1.0,
+    )
+
+    # Create exactly match_count matches, cycling the lobby's maps (mirrors create_event).
+    default_map = match_maps[0] if match_maps else "bermuda"
+    matches_to_create = [
+        Match(
+            leaderboard=leaderboard,
+            group=lobby,
+            match_map=match_maps[(num - 1) % len(match_maps)] if match_maps else default_map,
+            match_number=num,
+        )
+        for num in range(1, match_count + 1)
+    ]
+    if matches_to_create:
+        Match.objects.bulk_create(matches_to_create, batch_size=500)
+
+    # Seed the lobby's competitors from the UNION of its merged base groups' teams. A team
+    # that sits in two merged groups (shouldn't happen — a team belongs to one base group —
+    # but be defensive) collapses to a single competitor via the dedupe + ignore_conflicts.
+    seen = set()
+    sgc_rows = []
+    for grp in source_groups:
+        for tt in grp.teams.all():
+            if tt.tournament_team_id in seen:
+                continue
+            seen.add(tt.tournament_team_id)
+            sgc_rows.append(StageGroupCompetitor(
+                stage_group=lobby, tournament_team=tt, status="active"))
+    if sgc_rows:
+        StageGroupCompetitor.objects.bulk_create(
+            sgc_rows, batch_size=500, ignore_conflicts=True)
+
+    return lobby
+
+
+def _build_round_robin_groups(stage, event, user, stage_data, reuse_groups_by_label=None):
+    """Create (or reuse) the base groups (A/B/C…) for a round-robin stage and wire their teams.
+
+    `stage_data["round_robin_groups"]` is `[{label, order, team_ids}]`. Returns the resulting
+    RoundRobinGroup rows in submit order so the caller can hand their ids to the schedule
+    generator (order matters: it fixes which pairing falls on which game day).
+
+    `reuse_groups_by_label` (edit path only): a `{label: RoundRobinGroup}` map of base groups
+    that MUST survive because a played lobby still points at them (see `_edit_round_robin_stage`).
+    A payload group whose label matches one of these REUSES that exact row (re-attaching teams +
+    updating order) instead of creating a new one. Without this, the edit path would keep the
+    protected rows AND create fresh duplicates of the same labels — corrupting the base-group set
+    (Task 4 bug: 3 base groups → 5 with duplicate A/B). When None (create path), every group is
+    created fresh as before.
+    """
+    reuse_groups_by_label = reuse_groups_by_label or {}
+    created_groups = []
+    for idx, grp_data in enumerate(stage_data.get("round_robin_groups", [])):
+        label = grp_data.get("label") or chr(ord("A") + idx)  # A, B, C… fallback
+        order = int(grp_data.get("order", idx))
+
+        # Reuse a protected (played-lobby-sourced) group of this label so the played lobby keeps
+        # pointing at the SAME row; otherwise create a fresh base group.
+        grp = reuse_groups_by_label.get(label)
+        if grp is not None:
+            if grp.order != order:
+                grp.order = order
+                grp.save(update_fields=["order"])
+        else:
+            grp = RoundRobinGroup.objects.create(stage=stage, label=label, order=order)
+
+        # Resolve the sent Team ids → this event's TournamentTeam rows and attach them. .set()
+        # replaces the membership, so a reused group's roster is refreshed from the payload too.
+        tts = _resolve_round_robin_team_ids(grp_data.get("team_ids"), event, user)
+        grp.teams.set(tts)
+        created_groups.append(grp)
+    return created_groups
+
+
+def _round_robin_lobby_is_played(lobby):
+    """True if any match in this lobby has an entered result.
+
+    Edit-time guard (Task 4 / landmine): regenerating the schedule must NOT wipe a lobby
+    that already has results entered. result_inputted=True marks a match whose stats the
+    admin has saved, so a lobby with ANY such match is "played" and stays untouched.
+    """
+    return lobby.matches.filter(result_inputted=True).exists()
+
+
+def _edit_round_robin_stage(stage, event, user, stage_data):
+    """Rebuild a round-robin stage's base groups + lobbies on EDIT, preserving played play.
+
+    Mirrors `_build_round_robin_stage` but is non-destructive about real results:
+      • lobbies with entered results (result_inputted=True on any match) are KEPT verbatim —
+        their base groups, matches, stats and competitors are never touched;
+      • every UNPLAYED lobby is deleted and regenerated from the (possibly edited) payload.
+
+    Returns the StageGroups ids of every round-robin lobby that should survive the edit
+    (kept-played + freshly-regenerated), so the caller can add them to `kept_group_ids` and
+    stop `delete_missing` from sweeping the just-built lobbies away.
+    """
+    from . import round_robin  # local import: this file imports per-function throughout
+
+    # Played lobbies are sacred — keep them and the base groups they reference.
+    existing_lobbies = list(stage.groups.filter(game_day__isnull=False))
+    played_lobbies = [lb for lb in existing_lobbies if _round_robin_lobby_is_played(lb)]
+    kept_lobby_ids = [lb.group_id for lb in played_lobbies]
+
+    # Base groups still referenced by a kept (played) lobby must survive too, so we don't
+    # orphan a played lobby's source_groups. Everything else is rebuildable. We key these
+    # protected groups by LABEL: the payload below re-sends the same labels (A/B/C…), and a
+    # played lobby points at the protected A/B rows — so the regenerated lobbies must reuse
+    # those exact rows, not freshly-created duplicates of the same labels (Task 4 bug:
+    # recreating the full set alongside the survivors leaked 3 base groups → 5).
+    protected_group_ids = set()
+    protected_groups_by_label = {}
+    for lb in played_lobbies:
+        for src in lb.source_groups.all():
+            protected_group_ids.add(src.group_id)
+            protected_groups_by_label[src.label] = src
+
+    # Delete the UNPLAYED lobbies (cascade drops their matches/leaderboard/competitors and
+    # clears the source_groups M2M) so we can regenerate them cleanly below.
+    unplayed_ids = [
+        lb.group_id for lb in existing_lobbies if lb.group_id not in kept_lobby_ids]
+    if unplayed_ids:
+        StageGroups.objects.filter(group_id__in=unplayed_ids).delete()
+
+    # Drop the base groups that are NOT protected by a played lobby. Protected ones stay so the
+    # played lobbies keep their identity; the payload rebuild below REUSES them by label (rather
+    # than recreating duplicates) and creates only the genuinely-new labels.
+    stage.round_robin_groups.exclude(group_id__in=protected_group_ids).delete()
+
+    # Rebuild the base groups from the payload (same helper as create), reusing the protected
+    # rows for labels a played lobby still depends on. Result: exactly the payload's base-group
+    # set (no duplicate labels), with the played lobby's groups preserved verbatim.
+    created_groups = _build_round_robin_groups(
+        stage, event, user, stage_data, reuse_groups_by_label=protected_groups_by_label)
+
+    default_date = stage.start_date
+    default_time = parse_time("19:00")
+
+    # Regenerate lobbies for the (edited) base groups, but SKIP any game day already covered
+    # by a kept played lobby so we never duplicate a day that has results.
+    played_days = {lb.game_day for lb in played_lobbies}
+
+    if stage_data.get("generate_schedule"):
+        games_per_day = int(stage_data.get("games_per_day", 1) or 1)
+        maps = stage_data.get("round_robin_maps") or stage_data.get("match_maps")
+        specs = round_robin.round_robin_schedule(
+            [g.group_id for g in created_groups], games_per_day=games_per_day, maps=maps)
+        by_id = {g.group_id: g for g in created_groups}
+        for spec in specs:
+            if spec["game_day"] in played_days:
+                continue  # that day already has a played lobby → don't overwrite it
+            sources = [by_id[gid] for gid in spec["source_group_ids"] if gid in by_id]
+            lobby = _materialise_round_robin_lobby(
+                stage, event, user, spec, sources, default_date, default_time)
+            kept_lobby_ids.append(lobby.group_id)
+    else:
+        for gd in stage_data.get("game_days", []):
+            if gd.get("game_day") in played_days:
+                continue
+            sources = [
+                created_groups[i]
+                for i in gd.get("source_group_indexes", [])
+                if isinstance(i, int) and 0 <= i < len(created_groups)
+            ]
+            if not sources:
+                continue
+            lobby = _materialise_round_robin_lobby(
+                stage, event, user, gd, sources, default_date, default_time)
+            kept_lobby_ids.append(lobby.group_id)
+
+    return kept_lobby_ids
+
+
+def _build_round_robin_stage(stage, event, user, stage_data):
+    """Build a whole round-robin stage's groups + game-day lobbies on CREATE.
+
+    Two ways to get lobbies (the FE picks one):
+      • generate_schedule:true → run the pure `round_robin_schedule` over the base-group ids
+        (in order) and materialise every C(n,2) pairing into a game-day lobby; or
+      • game_days:[{game_day, source_group_indexes, match_count, match_maps}] → a MANUAL
+        list of lobbies, each referencing base groups by their 0-based index in
+        round_robin_groups (lets an admin hand-build the schedule instead of generating it).
+    """
+    from . import round_robin  # local import: this file imports per-function throughout
+
+    created_groups = _build_round_robin_groups(stage, event, user, stage_data)
+
+    # Reuse the stage's start date + a default lobby time for the generated lobbies (a
+    # generated schedule carries no per-lobby date/time; the admin sets real ones on edit).
+    # parse_time is imported at module level (used by edit_event); "19:00" is the standard
+    # AFC evening lobby slot, just a placeholder the admin can override later.
+    default_date = stage.start_date
+    default_time = parse_time("19:00")
+
+    if stage_data.get("generate_schedule"):
+        games_per_day = int(stage_data.get("games_per_day", 1) or 1)
+        maps = stage_data.get("round_robin_maps") or stage_data.get("match_maps")
+        specs = round_robin.round_robin_schedule(
+            [g.group_id for g in created_groups], games_per_day=games_per_day, maps=maps)
+        # Map group_id → RoundRobinGroup so each spec's source_group_ids become rows.
+        by_id = {g.group_id: g for g in created_groups}
+        for spec in specs:
+            sources = [by_id[gid] for gid in spec["source_group_ids"] if gid in by_id]
+            _materialise_round_robin_lobby(
+                stage, event, user, spec, sources, default_date, default_time)
+    else:
+        # Manual game-day list: each lobby names its source base groups by index.
+        for gd in stage_data.get("game_days", []):
+            sources = [
+                created_groups[i]
+                for i in gd.get("source_group_indexes", [])
+                if isinstance(i, int) and 0 <= i < len(created_groups)
+            ]
+            if not sources:
+                continue  # a lobby with no source groups has nothing to merge → skip
+            _materialise_round_robin_lobby(
+                stage, event, user, gd, sources, default_date, default_time)
+
+
+def _round_robin_stage_echo(stage):
+    """Echo a round-robin stage's structure so the FE event editor can rehydrate it.
+
+    Returns None for any non-round-robin stage (so callers can drop the key for them), or a
+    dict the stage builder reads back:
+      {
+        "round_robin_groups": [{group_id, label, order, team_ids, team_names}],  # base groups
+        "game_days": [                                                            # lobbies by day
+          {"game_day": N, "lobbies": [{group_id, source_group_ids}]}
+        ],
+      }
+    `team_ids` are TournamentTeam ids (what the builder seeds from); `source_group_ids` are
+    RoundRobinGroup ids — together they let the FE redraw the groups + the schedule exactly.
+    """
+    if stage.stage_format != ROUND_ROBIN_FORMAT:
+        return None
+
+    # Base groups A/B/C… (Meta.ordering = ["order"] keeps them in order). Echo each group's
+    # member teams as both id (for seeding) and name (for display).
+    groups_echo = []
+    for grp in stage.round_robin_groups.all():
+        teams = list(grp.teams.values("tournament_team_id", "team__team_name"))
+        groups_echo.append({
+            "group_id": grp.group_id,
+            "label": grp.label,
+            "order": grp.order,
+            "team_ids": [t["tournament_team_id"] for t in teams],
+            "team_names": [t["team__team_name"] for t in teams],
+        })
+
+    # Lobbies bucketed by game day, each with the base-group ids it merged.
+    days = {}
+    lobbies = stage.groups.filter(game_day__isnull=False).order_by("game_day", "group_id")
+    for lobby in lobbies:
+        days.setdefault(lobby.game_day, []).append({
+            "group_id": lobby.group_id,
+            "source_group_ids": list(
+                lobby.source_groups.values_list("group_id", flat=True)),
+        })
+    game_days_echo = [
+        {"game_day": day, "lobbies": lobby_list}
+        for day, lobby_list in sorted(days.items())
+    ]
+
+    return {"round_robin_groups": groups_echo, "game_days": game_days_echo}
+
+
 @api_view(["POST"])
 def create_event(request):
     # ---------------- AUTH ----------------
@@ -313,9 +788,21 @@ def create_event(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
-    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(
-        role_name__in=["event_admin", "head_admin"]
-    ).exists():
+    # ── org-aware permission gate ──
+    # AFC event admins can always create native (org=None) events. If an organization_id is
+    # supplied, the request is an organizer creating an event under THEIR org — allow it only
+    # when the user is an AFC admin OR has can_create_events on that org (org_can also lets
+    # owners + platform admins through). No org_id + not an AFC admin → blocked.
+    is_admin_creator = _is_event_admin(user)
+    org = None
+    organization_id = request.data.get("organization_id")
+    if organization_id:
+        org = Organization.objects.filter(organization_id=organization_id).first()
+        if not org:
+            return Response({"message": "Organization not found."}, status=404)
+        if not (is_admin_creator or org_can(user, "can_create_events", org)):
+            return Response({"message": "You do not have permission to create events for this organization."}, status=403)
+    elif not is_admin_creator:
         return Response({"message": "You do not have permission to create an event."}, status=403)
 
     # ---------------- REQUIRED FIELDS ----------------
@@ -434,6 +921,18 @@ def create_event(request):
     # ---------------- STAGES DATA ----------------
     stages_data = _as_list(request.data.get("stages"))
 
+    # Validate the per-stage scoring-mode config BEFORE the transaction so a bad payload
+    # fails fast with a 400 and never writes a half-built event.
+    scoring_mode_error = _validate_scoring_modes(stages_data)
+    if scoring_mode_error:
+        return Response({"message": scoring_mode_error}, status=400)
+
+    # Same pre-transaction guard for round-robin base groups: a team must belong to exactly
+    # one base group (Task 4 landmine #3). Fails fast with a 400 before any write.
+    round_robin_groups_error = _validate_round_robin_groups(stages_data)
+    if round_robin_groups_error:
+        return Response({"message": round_robin_groups_error}, status=400)
+
     is_draft = request.data.get("is_draft", True)
     if isinstance(is_draft, str):
         is_draft = is_draft.lower() in ("1", "true", "yes")
@@ -467,6 +966,7 @@ def create_event(request):
             uploaded_rules=request.FILES.get("uploaded_rules"),
             is_draft=is_draft,
             creator = user,
+            organization=org,  # owning org for organizer-created events; None for native AFC events
 
             # ✅ restriction fields
             registration_restriction=registration_restriction,
@@ -504,6 +1004,10 @@ def create_event(request):
             )
 
         # stages + groups + matches
+        # Track every created Stages row in submit order so we can wire Point-Rush
+        # carry-over targets in a SECOND PASS below (a stage may point at a LATER stage
+        # that does not exist yet while we are still building this one).
+        created_stages = []
         for stage_data in stages_data:
             stage = Stages.objects.create(
                 event=event,
@@ -516,8 +1020,22 @@ def create_event(request):
                 stage_discord_role_id=stage_data.get("stage_discord_role_id"),
                 prizepool=stage_data.get("prizepool"),
                 prizepool_cash_value=stage_data.get("prizepool_cash_value") if stage_data.get("prizepool_cash_value") else 0,
-                prize_distribution=stage_data.get("prize_distribution", {})
+                prize_distribution=stage_data.get("prize_distribution", {}),
+                # ── Scoring-mode config (scoring-modes sub-project A). The 4 scalars store
+                # directly; point_rush_target_stage is resolved in the second pass below. ──
+                champion_point_enabled=bool(stage_data.get("champion_point_enabled", False)),
+                champion_point_threshold=stage_data.get("champion_point_threshold") or None,
+                point_rush_enabled=bool(stage_data.get("point_rush_enabled", False)),
+                point_rush_reward=stage_data.get("point_rush_reward") or {},
             )
+            created_stages.append(stage)
+
+            # ── BR Round-Robin (sub-project B, Task 4): a round-robin stage sends BASE
+            # groups (round_robin_groups) instead of plain `groups`, and we build the base
+            # groups + game-day lobbies from them. The normal `groups` loop below then runs
+            # over an empty list, so the two paths don't collide. ──
+            if stage_data.get("stage_format") == ROUND_ROBIN_FORMAT:
+                _build_round_robin_stage(stage, event, user, stage_data)
 
             for group_data in stage_data.get("groups", []):
                 group = StageGroups.objects.create(
@@ -562,6 +1080,19 @@ def create_event(request):
                     ))
                 if matches_to_create:
                     Match.objects.bulk_create(matches_to_create, batch_size=500)
+
+        # ── Second pass: wire Point-Rush carry-over targets now that every Stages row
+        # exists. The FE sends point_rush_target_index = the 0-based position of the target
+        # stage in the submitted `stages` array, so we zip created_stages (built in submit
+        # order above) against stages_data. (Self-target / out-of-range were already rejected
+        # by _validate_scoring_modes before the transaction.) ──
+        for src_stage, stage_data in zip(created_stages, stages_data):
+            tgt_idx = stage_data.get("point_rush_target_index")
+            if src_stage.point_rush_enabled and tgt_idx is not None and tgt_idx != "":
+                tgt_idx = int(tgt_idx)
+                if 0 <= tgt_idx < len(created_stages):
+                    src_stage.point_rush_target_stage = created_stages[tgt_idx]
+                    src_stage.save(update_fields=["point_rush_target_stage"])
 
         AdminHistory.objects.create(
             admin_user=user,
@@ -749,9 +1280,8 @@ def delete_event(request):
             status=status.HTTP_401_UNAUTHORIZED
         )
 
-    # Permission check
-    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
-        return Response({"message": "You do not have permission to delete an event."}, status=403)
+    # Permission check (org-aware, resolved AFTER we have the event below)
+    is_admin = _is_event_admin(user)
 
     event_id = request.data.get("event_id")
     if not event_id:
@@ -761,7 +1291,13 @@ def delete_event(request):
         event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
         return Response({"message": "Event not found."}, status=404)
-    
+
+    # AFC admins may delete any event; an org member needs can_edit_events on the event's
+    # owning org. org_can_event treats native (org=None) events as admin-only, so org
+    # members can never delete AFC events.
+    if not is_admin and not org_can_event(user, "can_edit_events", event):
+        return Response({"message": "You do not have permission to modify this event."}, status=403)
+
     AdminHistory.objects.create(
         admin_user=user,
         action="delete_event",
@@ -1229,10 +1765,8 @@ def edit_event(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
-    if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(
-        role_name__in=["event_admin", "head_admin"]
-    ).exists():
-        return Response({"message": "You do not have permission to edit an event."}, status=403)
+    # Permission check (org-aware, resolved AFTER we have the event below)
+    is_admin = _is_event_admin(user)
 
     event_id = request.data.get("event_id")
     if not event_id:
@@ -1241,6 +1775,12 @@ def edit_event(request):
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
         return Response({"message": "Event not found."}, status=404)
+
+    # AFC admins may edit any event; an org member needs can_edit_events on the event's
+    # owning org. org_can_event treats native (org=None) events as admin-only, so org
+    # members can never edit AFC events.
+    if not is_admin and not org_can_event(user, "can_edit_events", event):
+        return Response({"message": "You do not have permission to modify this event."}, status=403)
 
     old_snapshot = snapshot_event(event)
 
@@ -1292,6 +1832,16 @@ def edit_event(request):
 
     for date_field in ["start_date", "end_date", "registration_open_date", "registration_end_date"]:
         update_field(date_field, parse_date)
+
+    # Times were saved on create but were missing here, so editing an event silently
+    # dropped any time change. Persist them too (raw "HH:MM" string, or None to clear),
+    # matching how create_event stores them.
+    for time_field in [
+        "registration_start_time", "registration_end_time",
+        "event_start_time", "event_end_time",
+    ]:
+        if time_field in request.data:
+            setattr(event, time_field, request.data.get(time_field) or None)
 
     if event.registration_open_date and event.registration_end_date:
         if event.registration_open_date > event.registration_end_date:
@@ -1398,7 +1948,7 @@ def edit_event(request):
     
     # ensure the evnt hasnt started if they wanna chnage the event type
 
-    if "event_type" in request.data:
+    if "event_type" in request.data and request.data.get("event_type") != event.event_type:
         if event.start_date and event.start_date <= timezone.now().date():
             return Response({"message": "Cannot change event_type after the event has started."}, status=400)
 
@@ -1457,6 +2007,20 @@ def edit_event(request):
 
     delete_missing = str(request.data.get("delete_missing", "false")).lower() in ("1", "true", "yes")
 
+    # Validate the per-stage scoring-mode config BEFORE the transaction opens so a bad
+    # payload fails fast with a 400 and never partially mutates the event (returning a
+    # non-2xx INSIDE transaction.atomic would still COMMIT, so the guard must live here).
+    if "stages" in request.data:
+        scoring_mode_error = _validate_scoring_modes(as_list(request.data.get("stages")))
+        if scoring_mode_error:
+            return Response({"message": scoring_mode_error}, status=400)
+
+        # Same pre-transaction guard for round-robin base groups: a team must belong to
+        # exactly one base group (Task 4 landmine #3). Fails fast before the edit commits.
+        round_robin_groups_error = _validate_round_robin_groups(as_list(request.data.get("stages")))
+        if round_robin_groups_error:
+            return Response({"message": round_robin_groups_error}, status=400)
+
     with transaction.atomic():
         event.save()
 
@@ -1499,6 +2063,9 @@ def edit_event(request):
 
             kept_stage_ids = []
             kept_group_ids = []
+            # Track upserted Stages in submit order for the Point-Rush target second pass
+            # below (a stage may target a LATER stage not yet upserted while we process this one).
+            upserted_stages = []
 
             for stage_data in stages_data:
                 stage_id = stage_data.get("stage_id")
@@ -1517,6 +2084,12 @@ def edit_event(request):
                     # if prizepool_cash_value is provided, convert to float, otherwise set to None to avoid overwriting existing value
                     "prizepool_cash_value": float(stage_data.get("prizepool_cash_value")) if stage_data.get("prizepool_cash_value") else None,
                     "prize_distribution": stage_data.get("prize_distribution", {}),
+                    # ── Scoring-mode config (scoring-modes sub-project A). 4 scalars upsert
+                    # directly; point_rush_target_stage is resolved in the second pass below. ──
+                    "champion_point_enabled": bool(stage_data.get("champion_point_enabled", False)),
+                    "champion_point_threshold": stage_data.get("champion_point_threshold") or None,
+                    "point_rush_enabled": bool(stage_data.get("point_rush_enabled", False)),
+                    "point_rush_reward": stage_data.get("point_rush_reward") or {},
                 }
 
                 if stage_id:
@@ -1528,6 +2101,15 @@ def edit_event(request):
                     stage = Stages.objects.create(event=event, **stage_defaults)
 
                 kept_stage_ids.append(stage.stage_id)
+                upserted_stages.append(stage)
+
+                # ── BR Round-Robin (sub-project B, Task 4): rebuild base groups + lobbies
+                # from round_robin_groups, KEEPING lobbies that already have entered results.
+                # The returned lobby ids go into kept_group_ids so delete_missing below does
+                # not sweep the freshly-built lobbies (they carry no group_id in the payload).
+                if stage_data.get("stage_format") == ROUND_ROBIN_FORMAT:
+                    kept_group_ids.extend(
+                        _edit_round_robin_stage(stage, event, user, stage_data))
 
                 for group_data in stage_data.get("groups", []):
                     group_id = group_data.get("group_id")
@@ -1622,6 +2204,23 @@ def edit_event(request):
                     Match.objects.filter(group=group)\
                         .exclude(match_number__in=kept_match_numbers)\
                         .delete()
+
+            # ── Second pass: wire Point-Rush carry-over targets now that every stage is
+            # upserted. point_rush_target_index is the 0-based position of the target stage
+            # in the submitted `stages` array, which maps 1:1 to upserted_stages (built in
+            # submit order above). We always set/clear the link so an edit that turns the
+            # toggle off, or repoints it, is reflected (None clears a stale target). ──
+            for src_stage, stage_data in zip(upserted_stages, stages_data):
+                target_stage = None
+                if src_stage.point_rush_enabled:
+                    tgt_idx = stage_data.get("point_rush_target_index")
+                    if tgt_idx is not None and tgt_idx != "":
+                        tgt_idx = int(tgt_idx)
+                        if 0 <= tgt_idx < len(upserted_stages):
+                            target_stage = upserted_stages[tgt_idx]
+                if src_stage.point_rush_target_stage_id != (target_stage.stage_id if target_stage else None):
+                    src_stage.point_rush_target_stage = target_stage
+                    src_stage.save(update_fields=["point_rush_target_stage"])
 
             if delete_missing:
                 StageGroups.objects.filter(stage__event=event).exclude(group_id__in=kept_group_ids).delete()
@@ -1907,7 +2506,9 @@ def edit_event(request):
 
 @api_view(["GET"])
 def get_total_events_count(request):
-    total_events = Event.objects.count(is_draft=False)
+    # FIX: QuerySet.count() takes no kwargs — the is_draft predicate must go in .filter()
+    # (matches sibling count views below, e.g. get_total_tournaments_count). Counts published (non-draft) events.
+    total_events = Event.objects.filter(is_draft=False).count()
     return Response({"total_events": total_events}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
@@ -1956,7 +2557,10 @@ def get_most_popular_event_format(request):
     events = Event.objects.all()
 
     for event in events:
-        fmt = event.format
+        # Event has no `format` field (event.format raised AttributeError -> 500).
+        # Use event_mode, the real Event field for how the event runs.
+        # Stored choice keys: 'virtual' (Online), 'physical(lan)', 'hybrid' (models.py L25-29, L61).
+        fmt = event.event_mode
         if fmt in format_counts:
             format_counts[fmt] += 1
         else:
@@ -2342,6 +2946,71 @@ from rest_framework.response import Response
 from rest_framework import status
 
 
+# ── Event page-view tracking (hardened) ──────────────────────────────────────────
+# User-agent fragments that mark a request as a bot / link-unfurl crawler. Their hits
+# must NOT inflate event view counts. This list also covers the link-embed crawlers
+# (Discord, X/Twitter, WhatsApp, Slack, Telegram, Facebook) that fetch a page when its
+# link is shared, so the new OG embeds don't pollute the numbers.
+_VIEW_BOT_UA_MARKERS = (
+    "bot", "crawler", "spider", "slurp", "facebookexternalhit", "discordbot",
+    "twitterbot", "whatsapp", "telegrambot", "slackbot", "embedly", "preview",
+    "headlesschrome", "python-requests", "curl", "wget", "go-http-client",
+)
+# Do not re-count the SAME viewer (a logged-in user, or an IP for anonymous) on the
+# SAME event within this window, so refreshes / quick re-opens do not inflate views.
+_VIEW_DEDUPE_WINDOW = timedelta(minutes=30)
+
+
+def _record_event_view(request, event, user):
+    """Record ONE EventPageView for a real, human, non-staff, non-owner visit.
+
+    Skips, so the count reflects genuine audience interest:
+      • bots / link-unfurl crawlers (matched on the user-agent),
+      • AFC platform admins (their own browsing should not inflate counts),
+      • members of the organization that OWNS the event (an org can't pad its own views),
+      • a repeat view by the same viewer on the same event inside the dedupe window.
+
+    Best-effort: any failure here is swallowed so view tracking can never break the
+    event page load. Called by get_event_details (public) and get_event_details_for_admin
+    (admins are filtered out by the role check, so admin loads never count).
+    """
+    try:
+        ua = (request.META.get("HTTP_USER_AGENT") or "").lower()
+        if any(marker in ua for marker in _VIEW_BOT_UA_MARKERS):
+            return  # bot / crawler / link-preview fetch
+
+        # AFC staff: don't count their own browsing.
+        if user is not None and getattr(user, "role", None) == "admin":
+            return
+
+        # Members of the org that owns this event: don't let an org inflate its own
+        # event's views. AFC-official events have no organization, so this is skipped.
+        if user is not None and event.organization_id:
+            from afc_organizers.models import OrganizationMember
+            if OrganizationMember.objects.filter(
+                organization_id=event.organization_id, user=user
+            ).exists():
+                return
+
+        ip = get_client_ip(request)
+        since = timezone.now() - _VIEW_DEDUPE_WINDOW
+        recent = EventPageView.objects.filter(event=event, viewed_at__gte=since)
+        if user is not None:
+            recent = recent.filter(user=user)            # same logged-in viewer
+        elif ip:
+            recent = recent.filter(user__isnull=True, ip_address=ip)  # same anon IP
+        else:
+            recent = None  # cannot identify the viewer -> always record
+        if recent is not None and recent.exists():
+            return  # already counted this viewer recently
+
+        EventPageView.objects.create(
+            event=event, user=user or None, ip_address=ip, viewed_at=timezone.now()
+        )
+    except Exception:
+        pass  # view tracking is best-effort; never break the response
+
+
 @api_view(["POST"])
 def get_event_details(request):
     user = None
@@ -2362,7 +3031,11 @@ def get_event_details(request):
     if not slug:
         return Response({"message": "slug is required."}, status=400)
 
-    event = get_object_or_404(Event, slug=slug)
+    # select_related("organization") avoids an extra query when we echo the owning
+    # org's id/name/slug below (used by the organizer edit page's ownership guard).
+    event = get_object_or_404(
+        Event.objects.select_related("organization"), slug=slug
+    )
 
     # -------- IS REGISTERED CHECK --------
     is_registered = False
@@ -2389,10 +3062,36 @@ def get_event_details(request):
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
 
+    # -------- CAPACITY SNAPSHOT (M: waitlist) --------
+    # active_registered = non-waitlisted registrations, counted exactly the way
+    # register_for_event enforces the cap, so the "is_full" flag below stays in
+    # lock-step with what actually blocks registration:
+    #   solo -> RegisteredCompetitors (registered/approved, not waitlisted)
+    #   team -> TournamentTeam (not waitlisted)
+    if event.participant_type == "solo":
+        active_registered = RegisteredCompetitors.objects.filter(
+            event=event, status__in=["registered", "approved"], is_waitlisted=False
+        ).count()
+    else:
+        active_registered = TournamentTeam.objects.filter(
+            event=event, is_waitlisted=False
+        ).count()
+
     # -------- BASIC EVENT DATA --------
     event_data = {
         "event_id": event.event_id,
         "slug": event.slug,
+        # ── Owning-organization context (additive; null for native AFC events) ──
+        # Lets an organizer surface verify an event belongs to the selected org
+        # before opening it for edit (the organizer edit page guards on
+        # organization_slug == the selected org's slug). The org-scoped events list
+        # (get_all_events) already exposes these same three keys, but that list omits
+        # drafts; this endpoint returns drafts too, so it's the reliable guard source
+        # for the organizer edit page. Consumed by:
+        #   frontend app/(organizer)/organizer/events/[slug]/edit/page.tsx
+        "organization_id": event.organization_id,
+        "organization_name": event.organization.name if event.organization_id else None,
+        "organization_slug": event.organization.slug if event.organization_id else None,
         "competition_type": event.competition_type,
         "participant_type": event.participant_type,
         "event_type": event.event_type,
@@ -2431,10 +3130,23 @@ def get_event_details(request):
             }
             for se in sponsors
         ],
-        "is_waitlist enabled": event.is_waitlist_enabled,
+        # M: waitlist flags. Keys were previously emitted with stray spaces
+        # ("is_waitlist enabled") so the frontend could never read them — fixed to
+        # clean snake_case keys the EventDetails interface can consume.
+        "is_waitlist_enabled": event.is_waitlist_enabled,
         "waitlist_capacity": event.waitlist_capacity,
-        "waitlist discord_ role_id": event.waitlist_discord_role_id,
-        # "slots_left": slots_left,
+        "waitlist_discord_role_id": event.waitlist_discord_role_id,
+        # K: registration/event window times ("HH:MM"). The frontend already combines
+        # these with the *_date fields to gate the Register button; they simply were
+        # never serialized here, so the gate always fell back to date-only.
+        "registration_start_time": event.registration_start_time,
+        "registration_end_time": event.registration_end_time,
+        "event_start_time": event.event_start_time,
+        "event_end_time": event.event_end_time,
+        # M: capacity snapshot so the frontend can switch Register -> Join Waitlist
+        # once the active roster is full (matches register_for_event enforcement).
+        "registered_count": active_registered,
+        "is_full": active_registered >= event.max_teams_or_players,
     }
 
     # ============================================================
@@ -2645,20 +3357,26 @@ def get_event_details(request):
             "prizepool_cash_value": stage.prizepool_cash_value,
             "prize_distribution": stage.prize_distribution,
             "stage_format": stage.stage_format,
+            # ── Scoring-mode config echo so the edit form can re-hydrate the toggles.
+            # point_rush_target_stage_id is the stage_id of the target; the FE maps it
+            # back to a 0-based index when populating point_rush_target_index. ──
+            "champion_point_enabled": stage.champion_point_enabled,
+            "champion_point_threshold": stage.champion_point_threshold,
+            "point_rush_enabled": stage.point_rush_enabled,
+            "point_rush_reward": stage.point_rush_reward or {},
+            "point_rush_target_stage_id": stage.point_rush_target_stage_id,
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
             "groups": groups_payload,
+            # ── BR Round-Robin echo (None for every other format): base groups + the
+            # game-day lobbies' source group ids, so the FE stage builder can rehydrate. ──
+            "round_robin": _round_robin_stage_echo(stage),
         })
 
     event_data["stages"] = stages_payload
 
-    # -------- PAGE VIEW TRACKING --------
-    EventPageView.objects.create(
-        event=event,
-        user=user if user else None,
-        ip_address=get_client_ip(request),
-        viewed_at=timezone.now()
-    )
+    # -------- PAGE VIEW TRACKING (hardened: bots, staff, org members + refreshes excluded) --------
+    _record_event_view(request, event, user)
 
     return Response({"event_details": event_data}, status=200)
 
@@ -3173,6 +3891,17 @@ def get_event_details_not_logged_in(request):
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor").all()
 
+    # M: capacity snapshot (same counting rule as register_for_event) so the public,
+    # logged-out event page can show "Registration full / Join Waitlist" too.
+    if event.participant_type == "solo":
+        active_registered = RegisteredCompetitors.objects.filter(
+            event=event, status__in=["registered", "approved"], is_waitlisted=False
+        ).count()
+    else:
+        active_registered = TournamentTeam.objects.filter(
+            event=event, is_waitlisted=False
+        ).count()
+
     event_data = {
         "event_id": event.event_id,
         "competition_type": event.competition_type,
@@ -3209,8 +3938,18 @@ def get_event_details_not_logged_in(request):
                 "sponsor_username": se.sponsor.username
             }
             for se in sponsors
-        ]
-
+        ],
+        # K: registration/event window times ("HH:MM"), mirrored from the logged-in
+        # response so the public page gates registration on the same window.
+        "registration_start_time": event.registration_start_time,
+        "registration_end_time": event.registration_end_time,
+        "event_start_time": event.event_start_time,
+        "event_end_time": event.event_end_time,
+        # M: waitlist flags + capacity snapshot for the logged-out register CTA.
+        "is_waitlist_enabled": event.is_waitlist_enabled,
+        "waitlist_capacity": event.waitlist_capacity,
+        "registered_count": active_registered,
+        "is_full": active_registered >= event.max_teams_or_players,
     }
 
     # ✅ KEEP registered competitors section (as you requested)
@@ -3643,12 +4382,26 @@ def register_for_event(request):
 
         
         if is_public == False:
+            # ── private-event invite gate (SOLO) ──
+            # Mirrors the TEAM gate below — keep both in sync.
             invite_token = request.data.get("invite_token")
             if not invite_token:
                 return Response({"message": "invite_token is required for private events."}, status=400)
-            if not EventInviteToken.objects.filter(event=event, token=invite_token, is_used=False).exists():
-                return Response({"message": "Invalid or already used invite token."}, status=403)
-            if EventInviteToken.objects.filter(event=event, token=invite_token, is_used=True).exists():
+
+            # Fetch the token row ONCE so shared/expiry checks all read the same record.
+            invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
+            if not invite:
+                return Response({"message": "Invalid invite token."}, status=403)
+
+            # Enforce expiry (previously ignored): an expired link cannot register anyone.
+            if invite.expires_at and timezone.now() > invite.expires_at:
+                return Response({"message": "This invite link has expired."}, status=403)
+
+            # Single-use tokens are consumed after one registration; a SHARED token is the
+            # reusable FCFS link, so it is accepted regardless of is_used. The event's
+            # capacity check below (active_count >= max_teams_or_players) is what closes a
+            # shared link once all slots are filled.
+            if not invite.is_shared and invite.is_used:
                 return Response({"message": "Invite token has already been used."}, status=403)
 
         # Discord checks
@@ -3747,10 +4500,12 @@ def register_for_event(request):
                 user=user,
                 status="registered"
             )
-            # update the token as used
-            if is_public == False:
+            # Mark the token used — but ONLY for single-use tokens. A SHARED token
+            # (is_shared=True) is the reusable FCFS link and must stay open for the next
+            # registrant; the capacity check above is what eventually closes it.
+            if is_public == False and not invite.is_shared:
                 EventInviteToken.objects.filter(event=event, token=invite_token).update(is_used=True, used_by=user, used_at=timezone.now())
-                
+
 
             # Queue discord role
             role_id = getattr(settings, "DISCORD_TOURNAMENT_SOLO_ROLE_ID", None)
@@ -3840,17 +4595,36 @@ def register_for_event(request):
         if not set(roster_member_ids).issubset(team_member_ids):
             return Response({"message": "One or more roster players are not members of this team."}, status=400)
 
-        # Prevent players being in two rosters for the same event
-        already_in_event_roster_ids = set(
+        # Prevent players being in two rosters for the same event.
+        # Fetch the conflicting roster rows WITH the player + the team they are
+        # already registered in (select_related = one query, no N+1), so the error
+        # can name WHO is the problem and WHERE they're already registered — a
+        # captain needs that to know which player to drop. (Previously this only
+        # returned a generic message + bare user_ids.)
+        conflicting_members = list(
             TournamentTeamMember.objects.filter(
                 user_id__in=roster_member_ids,
-                tournament_team__event=event
-            ).values_list("user_id", flat=True)
+                tournament_team__event=event,
+            ).select_related("user", "tournament_team__team")
         )
-        if already_in_event_roster_ids:
+        if conflicting_members:
+            conflicts = [
+                {
+                    "user_id": m.user_id,
+                    "username": m.user.username,
+                    "team_name": m.tournament_team.team.team_name,
+                }
+                for m in conflicting_members
+            ]
+            # Human-readable: "PlayerX (already registered in Team Alpha), PlayerY (…)"
+            detail = ", ".join(
+                f"{c['username']} (already registered in {c['team_name']})"
+                for c in conflicts
+            )
             return Response({
-                "message": "One or more players are already in another roster for this event.",
-                "user_ids": list(already_in_event_roster_ids)
+                "message": f"Cannot register: {detail}.",
+                "conflicts": conflicts,
+                "user_ids": [c["user_id"] for c in conflicts],  # kept for backwards-compat
             }, status=409)
 
         roster_users = list(User.objects.filter(user_id__in=roster_member_ids))
@@ -3895,14 +4669,28 @@ def register_for_event(request):
         
         # Other verification
         if is_public == False:
+            # ── private-event invite gate (TEAM) ──
+            # Mirrors the SOLO gate above — keep both in sync.
             invite_token = request.data.get("invite_token")
             if not invite_token:
                 return Response({"message": "invite_token is required for private events."}, status=400)
-            if not EventInviteToken.objects.filter(event=event, token=invite_token, is_used=False).exists():
-                return Response({"message": "Invalid or already used invite token."}, status=403)
-            if EventInviteToken.objects.filter(event=event, token=invite_token, is_used=True).exists():
+
+            # Fetch the token row ONCE so shared/expiry checks all read the same record.
+            invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
+            if not invite:
+                return Response({"message": "Invalid invite token."}, status=403)
+
+            # Enforce expiry (previously ignored): an expired link cannot register anyone.
+            if invite.expires_at and timezone.now() > invite.expires_at:
+                return Response({"message": "This invite link has expired."}, status=403)
+
+            # Single-use tokens are consumed after one registration; a SHARED token is the
+            # reusable FCFS link, so it is accepted regardless of is_used. The event's
+            # capacity check below (active_count >= max_teams_or_players) is what closes a
+            # shared link once all slots are filled.
+            if not invite.is_shared and invite.is_used:
                 return Response({"message": "Invite token has already been used."}, status=403)
-            
+
 
         # Register
         with transaction.atomic():
@@ -4033,10 +4821,12 @@ def register_for_event(request):
 
             TournamentTeamMember.objects.bulk_create(member_rows, batch_size=200)
 
-            # update the token as used
-            if is_public == False:
+            # Mark the token used — but ONLY for single-use tokens. A SHARED token
+            # (is_shared=True) is the reusable FCFS link and must stay open for the next
+            # team; the capacity check above is what eventually closes it.
+            if is_public == False and not invite.is_shared:
                 EventInviteToken.objects.filter(event=event, token=invite_token).update(is_used=True, used_by=user, used_at=timezone.now())
-                
+
 
 
 
@@ -4240,9 +5030,24 @@ from django.shortcuts import get_object_or_404
 
 @api_view(["POST"])
 def confirm_player(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
 
     member_id = request.data.get("member_id")
     member = get_object_or_404(TournamentTeamMember, id=member_id)
+    event = member.tournament_team.event
+
+    # ── registration gate ──
+    # AFC admins manage registrations for any event; org members need
+    # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
 
     # جلوگیری از تکرار
     if member.status == "active":
@@ -4487,10 +5292,26 @@ from django.shortcuts import get_object_or_404
 
 @api_view(["POST"])
 def reject_player(request):
+    # ---------------- AUTH ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
     member_id = request.data.get("member_id")
     reason = request.data.get("reason", "No reason provided")
 
     member = get_object_or_404(TournamentTeamMember, id=member_id)
+    event = member.tournament_team.event
+
+    # ── registration gate ──
+    # AFC admins manage registrations for any event; org members need
+    # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
 
     # Prevent duplicate rejection
     if member.status == "rejected":
@@ -7091,6 +7912,18 @@ def get_event_details_for_admin(request):
             "stage_format": stage.stage_format,
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
+            # ── Scoring-mode config echo so the edit form re-hydrates the toggles. The edit
+            # page merges this admin payload's stages over get-event-details, so these must
+            # be present here too (mirrors get_event_details). point_rush_target_stage_id is
+            # the stage_id of the target; the FE maps it back to a 0-based index.
+            "champion_point_enabled": stage.champion_point_enabled,
+            "champion_point_threshold": stage.champion_point_threshold,
+            "point_rush_enabled": stage.point_rush_enabled,
+            "point_rush_reward": stage.point_rush_reward or {},
+            "point_rush_target_stage_id": stage.point_rush_target_stage_id,
+            # ── BR Round-Robin echo (None for every other format): base groups + the
+            # game-day lobbies' source group ids, so the admin editor can rehydrate. ──
+            "round_robin": _round_robin_stage_echo(stage),
         })
 
     pageviews = event.pageviews.count()
@@ -7101,7 +7934,9 @@ def get_event_details_for_admin(request):
     social_shares = event.social_shares.count()
     streams = list(event.stream_channels.values_list("channel_url", flat=True))
 
-    EventPageView.objects.create(event=event, ip_address=request.META.get('REMOTE_ADDR'), user=admin)
+    # Hardened recorder; the admin who loads this admin view is filtered out by the
+    # staff check inside, so opening the admin event page never inflates view counts.
+    _record_event_view(request, event, admin)
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
 
@@ -7132,13 +7967,20 @@ def get_event_details_for_admin(request):
             }
             for se in sponsors
             ],
-            "is_waitlist enabled": event.is_waitlist_enabled,
+            # M: fixed key names (were emitted with stray spaces, unreadable by clients).
+            "is_waitlist_enabled": event.is_waitlist_enabled,
             "waitlist_capacity": event.waitlist_capacity,
-            "waitlist discord_ role_id": event.waitlist_discord_role_id,       
+            "waitlist_discord_role_id": event.waitlist_discord_role_id,
+            # K: event start/end times so the admin analytics view can show them.
+            "event_start_time": event.event_start_time,
+            "event_end_time": event.event_end_time,
             },
         "registration_timeline": {
             "registration_start_date": event.registration_open_date,
             "registration_end_date": event.registration_end_date,
+            # K: registration window times alongside the dates.
+            "registration_start_time": event.registration_start_time,
+            "registration_end_time": event.registration_end_time,
             "registration_window_days": registration_window_days,
             "days_left_for_registration": days_until_registration_close,
             "registration_timeseries": timeseries,
@@ -9360,6 +10202,11 @@ from django.db import transaction
 
 @api_view(["POST"])
 def create_leaderboard(request):
+    # DEPRECATED (no longer in use), same as create_leaderboard_manually. Leaderboards
+    # are created AUTOMATICALLY for every group when an event's stages/groups/maps are set
+    # up (create_event ~L1055 + edit_event group sync ~L2153). The URL route for this view
+    # is commented out in urls.py so it is unreachable; its only FE caller
+    # (UpdatedConfigurePointSystem) is dead code. Retained only to avoid churn.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
@@ -9367,8 +10214,9 @@ def create_leaderboard(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved from event_id —
+    # org members with can_upload_results may create leaderboards for THEIR org's events.
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
@@ -9383,6 +10231,13 @@ def create_leaderboard(request):
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
     group = get_object_or_404(StageGroups, group_id=group_id, stage=stage)
+
+    # ── AUTH (event-scoped): event derived directly from request event_id (then stage/group
+    # are validated to belong to it). AFC event admins always pass; otherwise allow org
+    # members holding can_upload_results on the event's owning org. org_can_event treats
+    # native (org=None) events as admin-only, so organizers never touch events outside their org.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     if not leaderboard_name:
         leaderboard_name = f"{event.event_name} - {stage.stage_name} - {group.group_name}"
@@ -9822,8 +10677,8 @@ def upload_solo_match_result(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+    # NOTE: auth is finalised below, after the owning event is resolved — org members with
+    # can_upload_results may upload for THEIR org's events, so we need the event in hand first.
 
     # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
@@ -9842,6 +10697,13 @@ def upload_solo_match_result(request):
         return Response({"message": "This match is not linked to a group."}, status=400)
 
     event = match.group.stage.event
+
+    # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org. org_can_event treats native
+    # (org=None) events as admin-only, so organizers can never touch events outside their org.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
     if event.participant_type != "solo":
         return Response({"message": "This API is for SOLO events only."}, status=400)
 
@@ -9912,9 +10774,17 @@ def upload_solo_match_result(request):
         if not rc:
             continue
 
-        placement_pts = int(placement_points.get(p["placement"], 0))
-        kill_pts = int(round(p["kills"] * kill_point_value))
-        total_pts = placement_pts + kill_pts
+        # Route through the shared solo formula (kills always counted on an upload row).
+        # NOTE: this drops the old int(round(...)) on kill points in favour of scoring's
+        # int() truncation, so all call sites agree. Identical for the default kill_point=1.0;
+        # only differs if a leaderboard uses a fractional kill_point (see report).
+        pts = scoring_lib.compute_solo_points(
+            placement_points=placement_points, kill_point=kill_point_value,
+            placement=p["placement"], kills=p["kills"], played=True,
+        )
+        placement_pts = pts["placement_points"]
+        kill_pts = pts["kill_points"]
+        total_pts = pts["total_points"]
 
         stats_to_create.append(
             SoloPlayerMatchStats(
@@ -9963,6 +10833,11 @@ def get_all_leaderboards(request):
             "event": {
                 "event_id": lb.event.event_id,
                 "event_name": lb.event.event_name,
+                # competition_type ("tournament" / "scrims") lets the admin Leaderboards
+                # page (frontend app/(a)/a/leaderboards/page.tsx) split the total count into
+                # the "Tournament Leaderboards" vs "Scrim Leaderboards" stat cards. The value
+                # comes from Event.competition_type (see Event.COMPETITION_TYPE_CHOICES).
+                "competition_type": lb.event.competition_type,
             },
             "stage": {
                 "stage_id": lb.stage.stage_id,
@@ -10500,6 +11375,74 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 
+
+# ── Scoring-modes (sub-project A): on-read helpers for the standings builder below. ──
+# Champion-Point + Point-Rush are computed ON READ (nothing derived is persisted), so an
+# admin edit auto-corrects the leaderboard — these two helpers feed the pure logic in
+# scoring.py (champion_for_group / rewards_from_standings) the per-lobby data it needs.
+# Both live at module scope (not nested) so the builder can call them per group cheaply.
+
+
+def _group_ranked_ids(group, participant_type):
+    """Return this lobby's competitor ids in current finishing order (1st..last).
+
+    The id is the tournament_team_id (team events) or competitor_id (solo events). The sort
+    mirrors the standings sort the builder uses — total effective points first, then kills —
+    so Point-Rush rewards land on whoever is actually 1st/2nd/3rd in the lobby right now.
+    `effective_total` = placement + kill + bonus - penalty, computed the same way as in the
+    per-group OVERALL aggregate below (kept in sync deliberately)."""
+    if participant_type == "solo":
+        rows = (
+            SoloPlayerMatchStats.objects.filter(match__group=group)
+            .values("competitor_id")
+            .annotate(
+                total=Coalesce(Sum("placement_points"), 0)
+                + Coalesce(Sum("kill_points"), 0)
+                + Coalesce(Sum("bonus_points"), 0)
+                - Coalesce(Sum("penalty_points"), 0),
+                kills=Coalesce(Sum("kills"), 0),
+            )
+            .order_by("-total", "-kills")
+        )
+        return [r["competitor_id"] for r in rows]
+
+    rows = (
+        TournamentTeamMatchStats.objects.filter(match__group=group)
+        .values("tournament_team_id")
+        .annotate(
+            total=Coalesce(Sum("placement_points"), 0)
+            + Coalesce(Sum("kill_points"), 0)
+            + Coalesce(Sum("bonus_points"), 0)
+            - Coalesce(Sum("penalty_points"), 0),
+            kills=Coalesce(Sum("kills"), 0),
+        )
+        .order_by("-total", "-kills")
+    )
+    return [r["tournament_team_id"] for r in rows]
+
+
+def _carry_over_for_stage(stage, participant_type):
+    """Sum Point-Rush bonuses banked for `stage` by every source stage that targets it.
+
+    A source stage hands out its `point_rush_reward` table (placement->bonus) PER LOBBY of
+    that source stage — so a 2-lobby source seeds two sets of 1st/2nd/3rd bonuses. We walk
+    `stage.point_rush_sources` (the reverse FK of point_rush_target_stage) and accumulate,
+    keyed by competitor id, into a {id: bonus} dict the builder folds into each row's total."""
+    from collections import defaultdict
+
+    out = defaultdict(int)
+    for src in stage.point_rush_sources.all():  # stages whose point_rush_target_stage == stage
+        if not src.point_rush_enabled:
+            continue
+        # Per lobby of the SOURCE stage: rank its standings, map the reward table onto them.
+        for grp in src.groups.all():
+            ranked = _group_ranked_ids(grp, participant_type)
+            rewards = scoring_lib.rewards_from_standings(ranked, src.point_rush_reward or {})
+            for cid, bonus in rewards.items():
+                out[cid] += bonus
+    return dict(out)
+
+
 @api_view(["POST"])
 def get_all_leaderboard_details_for_event(request):
     auth = request.headers.get("Authorization")
@@ -10509,14 +11452,22 @@ def get_all_leaderboard_details_for_event(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved from event_id.
+    # This is a READ of the full per-event leaderboard detail (admin/organizer surface), so we
+    # scope it: org members managing THEIR org's results may view it.
 
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+
+    # ── AUTH (event-scoped, read): event derived directly from request event_id. AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     stages_payload = []
     stages = event.stages.all().order_by("stage_id")
@@ -10730,6 +11681,74 @@ def get_all_leaderboard_details_for_event(request):
                     )
                 )
 
+            # ── Scoring-modes overlay (sub-project A): applied ON READ, per lobby. ──
+            # `overall` is a QuerySet of dict rows; materialize it so we can mutate each row
+            # (add carry-over, re-sort, flag the champion). The id key is competitor_id for
+            # solo and tournament_team_id for team — both already present in the rows above.
+            overall = list(overall)
+            id_key = "competitor_id" if event.participant_type == "solo" else "tournament_team_id"
+            # Name tiebreaker key matches the DB .order_by() tail for each branch:
+            # team rows expose the `team_name` alias, solo rows `competitor__user__username`.
+            name_key = "competitor__user__username" if event.participant_type == "solo" else "team_name"
+
+            # (1) Point-Rush carry-over: seed each competitor's running total with the bonus
+            # banked from any earlier stage whose point_rush_target_stage is THIS stage. We add
+            # it into effective_total so the standings (and the champion replay below) see it.
+            carry_over = _carry_over_for_stage(stage, event.participant_type)
+            carry_over_changed_order = False  # did any nonzero bonus land? -> standings may shift
+            for row in overall:
+                bonus = carry_over.get(row[id_key], 0)
+                row["carry_over_points"] = bonus
+                row["effective_total"] = int(row.get("effective_total", 0)) + bonus
+                if bonus:
+                    carry_over_changed_order = True
+
+            # (2) Champion-Point: replay this lobby's matches in play order (matches_payload is
+            # already match_number-ordered) through the pure win-rule helper. A team is champion
+            # the first time it Booyahs while its running total ENTERING that match was already
+            # at/over the threshold. carry_over counts toward the threshold (head start).
+            champion_id = None
+            stage_is_decided = False
+            if stage.champion_point_enabled and stage.champion_point_threshold:
+                replay = [
+                    {"rows": [
+                        {"id": s[id_key], "placement": s["placement"], "points": s["effective_total"]}
+                        for s in m["stats"]
+                    ]}
+                    for m in matches_payload
+                ]
+                champion_id = scoring_lib.champion_for_group(
+                    replay, int(stage.champion_point_threshold), carry_over=dict(carry_over),
+                )
+                stage_is_decided = champion_id is not None
+
+            # (3) Re-sort ONLY when a scoring-mode overlay actually changed something — i.e. a
+            # nonzero carry-over bonus landed, or a champion was crowned. On a plain stage (both
+            # toggles off, no carry-over) the DB `.order_by()` above is already authoritative and
+            # we MUST NOT touch it: re-sorting here would drop the DB's full tiebreaker chain
+            # (-total_booyah, last_match_placement, name) and silently reorder ties, which flips
+            # the FE's positional qualified/eliminated badges.
+            #
+            # When we do re-sort, replicate that exact chain on top of the carry-over-adjusted
+            # effective_total so two competitors level on points break the same way the DB would:
+            #   -effective_total, -total_booyah, -total_kills, last_match_placement, name.
+            if carry_over_changed_order or champion_id is not None:
+                overall.sort(key=lambda r: (
+                    -int(r.get("effective_total", 0)),
+                    -int(r.get("total_booyah", 0)),
+                    -int(r.get("total_kills", 0)),
+                    int(r.get("last_match_placement", 999)),
+                    r.get(name_key) or "",
+                ))
+            # Pin the champion to #0 if one exists — the FE renders server order verbatim
+            # (qualified/eliminated badges are positional), so the champion must physically lead
+            # the list, not just be flagged. Stable sort preserves the tiebreaker order above for
+            # everyone else.
+            if champion_id is not None:
+                overall.sort(key=lambda r: 0 if r[id_key] == champion_id else 1)
+            for r in overall:
+                r["is_champion"] = (champion_id is not None and r[id_key] == champion_id)
+
             groups_payload.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
@@ -10747,7 +11766,12 @@ def get_all_leaderboard_details_for_event(request):
                     "last_updated": leaderboard.last_updated,
                 },
                 "matches": matches_payload,
-                "overall_leaderboard": list(overall),
+                "overall_leaderboard": overall,
+                # ── Scoring-modes flags consumed by the results UI (crown + decided banner) ──
+                "champion_point_enabled": stage.champion_point_enabled,
+                "champion_point_threshold": stage.champion_point_threshold,
+                "is_decided": stage_is_decided,
+                "champion_id": champion_id,
             })
 
         stages_payload.append({
@@ -10764,6 +11788,87 @@ def get_all_leaderboard_details_for_event(request):
         "event_name": event.event_name,
         "participant_type": event.participant_type,
         "stages": stages_payload
+    }, status=200)
+
+
+# ── BR Round-Robin (sub-project B, Task 3): three-view standings endpoint ──
+# A round-robin stage's results read three ways off the SAME match stats:
+#   • per-lobby   — already served by get_all_leaderboard_details_for_event (a lobby is a
+#                   StageGroups row), so we do NOT duplicate it here;
+#   • per-day     — round_robin.day_standings(stage, day): sum one game day's lobbies;
+#   • cumulative  — round_robin.cumulative_standings(stage): sum the whole stage, the
+#                   round-robin table the format is built around.
+# This endpoint bundles the per-day + cumulative tables plus the structural blocks the UI
+# needs to render the toggle (`groups` = base A/B/C identity, `game_days` = which lobbies
+# fall on which day). Admin-gated like the other event-results endpoints.
+@api_view(["POST"])
+def get_round_robin_standings(request):
+    # round_robin holds the pure aggregators; imported locally to keep the module-level
+    # import list untouched (this file imports per-function throughout).
+    from . import round_robin
+
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    # Results are admin-facing → gate on _is_event_admin (which uses the correct
+    # role__role_name__in path; NEVER role_name__in, which FieldErrors).
+    if not _is_event_admin(user):
+        return Response({"message": "You do not have permission."}, status=403)
+
+    event_id = request.data.get("event_id")
+    stage_id = request.data.get("stage_id")
+    if not event_id or not stage_id:
+        return Response({"message": "event_id and stage_id are required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    # Scope the stage to the event so a mismatched pair can't read another event's stage.
+    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+    # (1) Base-group structure (A/B/C…). RoundRobinGroup has Meta.ordering = ["order"], so
+    # `round_robin_groups.all()` is already A→B→C; we just echo label + member team names.
+    groups_payload = [
+        {
+            "label": grp.label,
+            "team_names": list(
+                grp.teams.values_list("team__team_name", flat=True)
+            ),
+        }
+        for grp in stage.round_robin_groups.all()
+    ]
+
+    # (2) Game-day map: each day → the lobby (StageGroups) ids that fall on it. A day can
+    # hold MULTIPLE lobbies (multiple group-merges per day), so we bucket by game_day.
+    # Only round-robin lobbies carry a game_day; exclude the nulls defensively.
+    game_days = {}
+    day_lobbies = (
+        stage.groups.filter(game_day__isnull=False).order_by("game_day", "group_id")
+    )
+    for lobby in day_lobbies:
+        game_days.setdefault(lobby.game_day, []).append(lobby.group_id)
+    game_days_payload = [
+        {"day": day, "lobbies": lobbies}
+        for day, lobbies in sorted(game_days.items())
+    ]
+
+    # (3) Per-day standings: one summed table per game day (each filters to that day only).
+    per_day_payload = {
+        day: round_robin.day_standings(stage, day) for day in game_days.keys()
+    }
+
+    # (4) Cumulative standings: the whole-stage round-robin table (teams summed across
+    # every lobby they played).
+    cumulative_payload = round_robin.cumulative_standings(stage)
+
+    return Response({
+        "groups": groups_payload,
+        "game_days": game_days_payload,
+        "per_day": per_day_payload,
+        "cumulative": cumulative_payload,
     }, status=200)
 
 
@@ -11527,6 +12632,181 @@ def advance_group_competitors_to_next_stage(request):
     }, status=200)
 
 
+@api_view(["POST"])
+def advance_round_robin(request):
+    """Advance teams out of a finished BR Round-Robin stage into the next stage (Task 5).
+
+    A round-robin stage is decided by its CUMULATIVE table (every team summed across every
+    lobby it played) — NOT by any one lobby — so it can't reuse
+    `advance_group_competitors_to_next_stage`, which advances from a single StageGroups/lobby.
+    This is the parallel path for the whole stage:
+
+      • default (overall): take the top `stage.teams_qualifying_from_stage` teams of
+        `round_robin.cumulative_standings(stage)` (the same authoritative, server-sorted table
+        the standings endpoint returns), then
+      • mode="per_group": instead take the top `qualify_per_group` teams of EACH base group
+        (RoundRobinGroup), by ranking that group's members within the cumulative table — for
+        formats that guarantee per-group qualifiers rather than a single overall cut.
+
+    Either way the winners are seeded into the NEXT stage using the SAME plumbing the existing
+    advance uses: `StageCompetitor.get_or_create(stage=next_stage, tournament_team=..., player=None)`
+    plus the per-member Discord-role queue, so advancement behaves identically downstream.
+    """
+    # round_robin holds the cumulative aggregator; imported locally to match this file's
+    # per-function import idiom (the standings endpoint imports it the same way).
+    from . import round_robin
+
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    # Admin-gated via _is_event_admin (correct role__role_name__in path; never role_name__in).
+    if not _is_event_admin(user):
+        return Response({"message": "You do not have permission."}, status=403)
+
+    event_id = request.data.get("event_id")
+    stage_id = request.data.get("stage_id")
+    if not event_id or not stage_id:
+        return Response({"message": "event_id and stage_id are required."}, status=400)
+
+    # mode + qualify_per_group drive per-group vs overall selection.
+    mode = request.data.get("mode", "overall")
+    if mode not in ("overall", "per_group"):
+        return Response({"message": "mode must be 'overall' or 'per_group'."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    # Scope the stage to the event so a mismatched pair can't advance another event's stage.
+    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+    if stage.stage_format != "br - round robin":
+        return Response({"message": "Stage is not a Round-Robin stage."}, status=400)
+
+    # Find the next stage exactly the way the existing advance does (start_date first,
+    # falling back to stage_id ordering), so both paths agree on "the next stage".
+    if stage.start_date:
+        next_stage = (Stages.objects
+                      .filter(event=event, start_date__gt=stage.start_date)
+                      .order_by("start_date", "stage_id")
+                      .first())
+    else:
+        next_stage = (Stages.objects
+                      .filter(event=event, stage_id__gt=stage.stage_id)
+                      .order_by("stage_id")
+                      .first())
+
+    if not next_stage:
+        return Response({"message": "No next stage found after this stage."}, status=400)
+
+    # The cumulative table is the single source of truth for ranking (already server-sorted by
+    # effective_total → booyahs → kills → name). Each row carries tournament_team_id.
+    cumulative = round_robin.cumulative_standings(stage)
+    if not cumulative:
+        return Response({"message": "No standings found (no results entered?)."}, status=400)
+
+    # Pick the advancing tournament_team_ids per mode.
+    if mode == "per_group":
+        # Top-K of EACH base group. K from the payload; default 1 (a single qualifier/group).
+        try:
+            qualify_per_group = int(request.data.get("qualify_per_group", 1))
+        except (TypeError, ValueError):
+            return Response({"message": "qualify_per_group must be an integer."}, status=400)
+        if qualify_per_group <= 0:
+            return Response({"message": "qualify_per_group must be > 0."}, status=400)
+
+        # Cumulative order is authoritative, so a team's rank WITHIN its group is just its
+        # position in the cumulative list filtered to that group's members. Walk the
+        # cumulative rows once (already sorted) and keep the first K seen per base group.
+        winner_ids = []
+        for grp in stage.round_robin_groups.all():
+            member_ids = set(grp.teams.values_list("tournament_team_id", flat=True))
+            taken = 0
+            for row in cumulative:
+                if taken >= qualify_per_group:
+                    break
+                if row["tournament_team_id"] in member_ids:
+                    winner_ids.append(row["tournament_team_id"])
+                    taken += 1
+    else:
+        # Overall: the top N of the whole-stage cumulative table.
+        qualify_n = int(stage.teams_qualifying_from_stage or 0)
+        if qualify_n <= 0:
+            return Response(
+                {"message": "stage.teams_qualifying_from_stage must be > 0."}, status=400)
+        winner_ids = [row["tournament_team_id"] for row in cumulative[:qualify_n]]
+
+    if not winner_ids:
+        return Response({"message": "No winners selected."}, status=400)
+
+    created_count = 0
+    queued_roles = 0
+    already_advanced_count = 0
+
+    # Seed the winners into the next stage with the SAME plumbing as the group-level advance.
+    with transaction.atomic():
+        already_ids = set(
+            StageCompetitor.objects.filter(stage=next_stage, tournament_team_id__in=winner_ids)
+            .values_list("tournament_team_id", flat=True)
+        )
+
+        winners = TournamentTeam.objects.prefetch_related("members__user").filter(
+            tournament_team_id__in=winner_ids
+        )
+        to_advance = [tt for tt in winners if tt.tournament_team_id not in already_ids]
+        already_advanced_count = len(set(winner_ids)) - len(to_advance)
+
+        for tt in to_advance:
+            _, created = StageCompetitor.objects.get_or_create(
+                stage=next_stage,
+                tournament_team=tt,
+                player=None,
+                defaults={"status": "active"},
+            )
+            if created:
+                created_count += 1
+
+            # Queue the next stage's Discord role for every team member (same as the
+            # group-level advance), so role assignment carries over unchanged.
+            if next_stage.stage_discord_role_id:
+                for m in tt.members.all():
+                    u = m.user
+                    if u and u.discord_id:
+                        DiscordRoleAssignment.objects.get_or_create(
+                            user=u,
+                            discord_id=u.discord_id,
+                            role_id=next_stage.stage_discord_role_id,
+                            stage=next_stage,
+                            group=None,
+                            defaults={"status": "pending"},
+                        )
+                        queued_roles += 1
+
+    # Kick off the role-assignment worker only if anything was queued (mirrors the existing advance).
+    progress_id = None
+    if queued_roles > 0 and next_stage.stage_discord_role_id:
+        progress = DiscordStageRoleAssignmentProgress.objects.create(
+            stage=next_stage,
+            total=queued_roles,
+            status="running",
+        )
+        assign_stage_roles_from_db_task.delay(str(progress.id), next_stage.stage_id)
+        progress_id = str(progress.id)
+
+    return Response({
+        "message": "Advance complete.",
+        "from_stage": stage.stage_name,
+        "to_stage": next_stage.stage_name,
+        "mode": mode,
+        "qualified_count": len(set(winner_ids)),
+        "newly_advanced": created_count,
+        "already_advanced": already_advanced_count,
+        "discord_roles_queued": queued_roles,
+        "progress_id": progress_id,
+    }, status=200)
+
+
 # @api_view(["POST"])
 # def advance_group_competitors_to_next_stage(request):
 #     auth = request.headers.get("Authorization")
@@ -11732,7 +13012,7 @@ def edit_leaderboard(request):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
 
     leaderboard_id = request.data.get("leaderboard_id")
@@ -11740,6 +13020,12 @@ def edit_leaderboard(request):
         return Response({"message": "leaderboard_id is required."}, status=400)
 
     lb = get_object_or_404(Leaderboard, leaderboard_id=leaderboard_id)
+
+    # ── AUTH (event-scoped): event derived from the leaderboard's own FK (lb.event). AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", lb.event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     # optional updates
     new_stage_id = request.data.get("stage_id")
@@ -11795,8 +13081,12 @@ def edit_solo_match_result(request):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event — org members with can_upload_results may edit
+    # solo results for THEIR org's events.
 
     match_id = request.data.get("match_id")
     rows = request.data.get("rows")
@@ -11809,6 +13099,13 @@ def edit_solo_match_result(request):
         return Response({"message": "Match must be linked to a group."}, status=400)
 
     event = match.group.stage.event
+
+    # ── AUTH (event-scoped): event derived via match_id -> match.group.stage.event. AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+
     if event.participant_type != "solo":
         return Response({"message": "This endpoint is for solo only."}, status=400)
 
@@ -11842,10 +13139,21 @@ def edit_solo_match_result(request):
             if "penalty_points" in r:
                 stats.penalty_points = int(r["penalty_points"] or 0)
 
-            # recalc points
-            stats.placement_points = placement_points.get(stats.placement, 0)
-            stats.kill_points = int(stats.kills * kill_point)
-            stats.total_points = stats.placement_points + stats.kill_points + stats.bonus_points - stats.penalty_points
+            # Recalc points through the shared solo formula so this edit path can never
+            # drift from manual/OCR solo entry (Task 2 — route EVERY live point-calc site
+            # through scoring.compute_*). This row is always being re-scored, so played=True.
+            #
+            # NOTE: this endpoint (unlike the manual-entry solo path) folds bonus/penalty
+            # into total_points. compute_solo_points intentionally returns placement+kills
+            # only, so we add bonus - penalty back on top here to preserve the exact stored
+            # total this endpoint produced before the refactor.
+            pts = scoring_lib.compute_solo_points(
+                placement_points=placement_points, kill_point=kill_point,
+                placement=stats.placement, kills=stats.kills, played=True,
+            )
+            stats.placement_points = pts["placement_points"]
+            stats.kill_points = pts["kill_points"]
+            stats.total_points = pts["total_points"] + stats.bonus_points - stats.penalty_points
 
             stats.save()
 
@@ -11945,8 +13253,9 @@ def delete_match(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event — org members with can_upload_results may delete
+    # matches for THEIR org's events.
 
     # -------------- INPUT --------------
     match_id = request.data.get("match_id")
@@ -11957,6 +13266,14 @@ def delete_match(request):
     renumber = str(request.data.get("renumber", "true")).lower() in ("1", "true", "yes")
 
     match = get_object_or_404(Match, match_id=match_id)
+
+    # ── AUTH (event-scoped): event derived via match_id -> match.group.stage.event (a match is
+    # always linked to a group -> stage -> event). AFC event admins always pass; otherwise allow
+    # org members holding can_upload_results on the event's owning org. Native (org=None) events
+    # stay admin-only.
+    _del_event = match.group.stage.event if match.group else None
+    if not _is_event_admin(admin) and not (_del_event and org_can_event(admin, "can_upload_results", _del_event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     if match.result_inputted and not force:
         return Response({
@@ -12146,13 +13463,21 @@ def _normalize_placement_points(pp):
 
 @api_view(["POST"])
 def create_leaderboard_manually(request):
+    # DEPRECATED (no longer in use). Leaderboards are created AUTOMATICALLY for every
+    # group when an event's stages/groups/maps are set up (see create_event ~L1055 and
+    # the edit_event group sync ~L2153). The URL route for this view is commented out in
+    # urls.py so it is unreachable; the function is retained only to avoid churn. Do not
+    # wire it back up without removing the auto-create paths first.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "No permission"}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved from event_id —
+    # org members with can_upload_results may create leaderboards for THEIR org's events.
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
@@ -12164,6 +13489,12 @@ def create_leaderboard_manually(request):
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
     group = get_object_or_404(StageGroups, group_id=group_id, stage=stage)
+
+    # ── AUTH (event-scoped): event derived directly from request event_id (stage/group are
+    # validated to belong to it). AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     apply_to_all = str(request.data.get("apply_to_all")).lower() == "true"
 
@@ -12248,6 +13579,102 @@ def create_leaderboard_manually(request):
                 match.leaderboard = lb
                 match.save(update_fields=["scoring_settings", "leaderboard"])
 
+        # -------- SEED PLACEHOLDER STATS (all zeros) --------
+        # Gives the edit page something to render immediately after creation.
+        # Prefer group-specific competitors; fall back to all event-level ones.
+        if event.participant_type == "solo":
+            group_comps = list(
+                StageGroupCompetitor.objects.filter(
+                    stage_group=group, player__isnull=False, status="active"
+                ).select_related("player")
+            )
+            competitors = (
+                [gc.player for gc in group_comps]
+                if group_comps
+                else list(RegisteredCompetitors.objects.filter(
+                    event=event, status__in=["registered", "approved"]
+                ))
+            )
+            if competitors:
+                rows = []
+                for match in matches:
+                    existing = set(
+                        SoloPlayerMatchStats.objects.filter(match=match)
+                        .values_list("competitor_id", flat=True)
+                    )
+                    for comp in competitors:
+                        if comp.id not in existing:
+                            rows.append(SoloPlayerMatchStats(
+                                match=match,
+                                competitor=comp,
+                                placement=0,
+                                kills=0,
+                                placement_points=0,
+                                kill_points=0,
+                                bonus_points=0,
+                                penalty_points=0,
+                                total_points=0,
+                                played=False,
+                            ))
+                if rows:
+                    SoloPlayerMatchStats.objects.bulk_create(
+                        rows, batch_size=500, ignore_conflicts=True
+                    )
+        else:
+            # Team event (duo / squad)
+            group_team_comps = list(
+                StageGroupCompetitor.objects.filter(
+                    stage_group=group, tournament_team__isnull=False, status="active"
+                ).select_related("tournament_team")
+            )
+            teams = (
+                [gc.tournament_team for gc in group_team_comps]
+                if group_team_comps
+                else list(TournamentTeam.objects.filter(event=event, status="active"))
+            )
+            if teams:
+                members_by_team = {}
+                for m in TournamentTeamMember.objects.filter(
+                    tournament_team__in=teams, status="active"
+                ).select_related("user"):
+                    members_by_team.setdefault(m.tournament_team_id, []).append(m)
+
+                for match in matches:
+                    existing_team_ids = set(
+                        TournamentTeamMatchStats.objects.filter(match=match)
+                        .values_list("tournament_team_id", flat=True)
+                    )
+                    for team in teams:
+                        if team.tournament_team_id in existing_team_ids:
+                            continue
+                        ts = TournamentTeamMatchStats.objects.create(
+                            match=match,
+                            tournament_team=team,
+                            placement=0,
+                            kills=0,
+                            damage=0,
+                            assists=0,
+                            placement_points=0,
+                            kill_points=0,
+                            bonus_points=0,
+                            penalty_points=0,
+                            total_points=0,
+                            played=False,
+                        )
+                        team_members = members_by_team.get(team.tournament_team_id, [])
+                        if team_members:
+                            TournamentPlayerMatchStats.objects.bulk_create([
+                                TournamentPlayerMatchStats(
+                                    team_stats=ts,
+                                    player=member.user,
+                                    kills=0,
+                                    damage=0,
+                                    assists=0,
+                                    played=False,
+                                )
+                                for member in team_members
+                            ], batch_size=200, ignore_conflicts=True)
+
     return Response({
         "message": "Leaderboard created successfully.",
         "leaderboard_id": lb.leaderboard_id,
@@ -12292,8 +13719,8 @@ def enter_team_match_result_manual(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+    # NOTE: permission is finalised below, after the owning event is resolved — org members
+    # with can_upload_results may enter results for THEIR org's events.
 
     # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
@@ -12311,6 +13738,12 @@ def enter_team_match_result_manual(request):
         return Response({"message": "No leaderboard linked/found for this match."}, status=400)
 
     event = lb.event
+
+    # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org (native events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission."}, status=403)
+
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
 
@@ -12391,21 +13824,15 @@ def enter_team_match_result_manual(request):
             total_damage = sum(int(p.get("damage") or 0) for p in played_players)
             total_assists = sum(int(p.get("assists") or 0) for p in played_players)
 
-            placement_pts = placement_points.get(placement, 0) if team_played else 0
-            kill_pts = total_kills * kill_point
-            assist_pts = total_assists * points_per_assist
-            damage_pts = (total_damage / 1000) * points_per_1000_damage
-
             bonus = int(team_item.get("bonus_points") or 0)
             penalty = int(team_item.get("penalty_points") or 0)
 
-            total_pts = (
-                placement_pts +
-                kill_pts +
-                assist_pts +
-                damage_pts +
-                bonus -
-                penalty
+            # Shared team formula — the three point columns now come from scoring (no inline copy).
+            pts = scoring_lib.compute_team_points(
+                placement_points=placement_points, kill_point=kill_point,
+                points_per_assist=points_per_assist, points_per_1000_damage=points_per_1000_damage,
+                placement=placement, kills=total_kills, damage=total_damage, assists=total_assists,
+                bonus=bonus, penalty=penalty, played=team_played,
             )
 
             team_stats_to_create.append(
@@ -12416,11 +13843,11 @@ def enter_team_match_result_manual(request):
                     kills=total_kills,
                     damage=total_damage,
                     assists=total_assists,
-                    placement_points=int(placement_pts),
-                    kill_points=int(kill_pts),
+                    placement_points=pts["placement_points"],
+                    kill_points=pts["kill_points"],
                     bonus_points=bonus,
                     penalty_points=penalty,
-                    total_points=int(total_pts),
+                    total_points=pts["total_points"],
                 )
             )
 
@@ -12864,8 +14291,9 @@ def enter_solo_match_result_manual(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+
+    # NOTE: permission is finalised below, after the owning event is resolved — org members
+    # with can_upload_results may enter results for THEIR org's events.
 
     match_id = request.data.get("match_id")
     players_payload = _parse_json_or_value(request.data.get("players"), default=None)
@@ -12881,6 +14309,12 @@ def enter_solo_match_result_manual(request):
         return Response({"message": "No leaderboard linked/found for this match."}, status=400)
 
     event = lb.event
+
+    # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org (native events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission."}, status=403)
+
     if event.participant_type != "solo":
         return Response({"message": "This endpoint is for SOLO events only."}, status=400)
 
@@ -12906,9 +14340,14 @@ def enter_solo_match_result_manual(request):
             placement = int(p.get("placement") or 0) if played else 0
             kills = int(p.get("kills") or 0) if played else 0
 
-            placement_pts = placement_points.get(placement, 0) if played else 0
-            kill_pts = int(kills * kill_point) if played else 0
-            total_pts = placement_pts + kill_pts
+            # Shared solo formula (was the inline placement+kills copy at this line).
+            pts = scoring_lib.compute_solo_points(
+                placement_points=placement_points, kill_point=kill_point,
+                placement=placement, kills=kills, played=played,
+            )
+            placement_pts = pts["placement_points"]
+            kill_pts = pts["kill_points"]
+            total_pts = pts["total_points"]
 
             rows.append(SoloPlayerMatchStats(
                 match=match,
@@ -12965,8 +14404,9 @@ def edit_match_result(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
+    # NOTE: permission is finalised below, once the owning event is resolved via the match's
+    # leaderboard (lb.event) — org members with can_upload_results may edit results for THEIR
+    # org's events.
 
     # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
@@ -12985,6 +14425,12 @@ def edit_match_result(request):
         return Response({"message": "No leaderboard linked/found for this match."}, status=400)
 
     event = lb.event
+
+    # ── AUTH (event-scoped): event derived via match_id -> _get_lb_for_match(match).event. AFC
+    # event admins always pass; otherwise allow org members holding can_upload_results on the
+    # event's owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
@@ -13067,21 +14513,15 @@ def edit_match_result(request):
             total_damage = sum(int(p.get("damage") or 0) for p in played_players)
             total_assists = sum(int(p.get("assists") or 0) for p in played_players)
 
-            placement_pts = placement_points.get(placement, 0) if team_played else 0
-            kill_pts = total_kills * kill_point
-            assist_pts = total_assists * points_per_assist
-            damage_pts = (total_damage / 1000) * points_per_1000_damage
-
             bonus = int(team_item.get("bonus_points") or 0)
             penalty = int(team_item.get("penalty_points") or 0)
 
-            total_pts = (
-                placement_pts +
-                kill_pts +
-                assist_pts +
-                damage_pts +
-                bonus -
-                penalty
+            # Shared team formula — the three point columns now come from scoring (no inline copy).
+            pts = scoring_lib.compute_team_points(
+                placement_points=placement_points, kill_point=kill_point,
+                points_per_assist=points_per_assist, points_per_1000_damage=points_per_1000_damage,
+                placement=placement, kills=total_kills, damage=total_damage, assists=total_assists,
+                bonus=bonus, penalty=penalty, played=team_played,
             )
 
             team_stats_to_create.append(
@@ -13092,11 +14532,11 @@ def edit_match_result(request):
                     kills=total_kills,
                     damage=total_damage,
                     assists=total_assists,
-                    placement_points=int(placement_pts),
-                    kill_points=int(kill_pts),
+                    placement_points=pts["placement_points"],
+                    kill_points=pts["kill_points"],
                     bonus_points=bonus,
                     penalty_points=penalty,
-                    total_points=int(total_pts),
+                    total_points=pts["total_points"],
                 )
             )
 
@@ -13640,8 +15080,6 @@ def disqualify_player(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
 
     # -------- INPUT --------
     event_id = request.data.get("event_id")
@@ -13655,6 +15093,13 @@ def disqualify_player(request):
         return Response({"message": "registered_competitor_id or user_id is required."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+
+    # ── registration gate (org-aware, resolved after we have the event) ──
+    # AFC admins manage registrations for any event; org members need
+    # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+
     if event.participant_type != "solo":
         return Response({"message": "This endpoint is for SOLO events only."}, status=400)
 
@@ -13722,8 +15167,6 @@ def disqualify_team(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
 
     # -------- INPUT --------
     event_id = request.data.get("event_id")
@@ -13737,6 +15180,13 @@ def disqualify_team(request):
         return Response({"message": "tournament_team_id or team_id is required."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+
+    # ── registration gate (org-aware, resolved after we have the event) ──
+    # AFC admins manage registrations for any event; org members need
+    # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for TEAM events only (duo/squad)."}, status=400)
 
@@ -13801,7 +15251,30 @@ def get_drafted_events(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    events = Event.objects.filter(is_draft=True).order_by("-created_at")
+
+    qs = Event.objects.filter(is_draft=True)
+
+    # ORGANIZER DRAFTS: when ?organization_id is given, scope the drafts to that one org
+    # and require the caller to be an AFC admin OR an org member who can create/edit its
+    # events (so an organizer sees ONLY their own org's drafts, and cannot read another
+    # org's). Consumed by the organizer Drafts page (app/(organizer)/organizer/events/drafts).
+    organization_id = request.GET.get("organization_id")
+    if organization_id:
+        org = Organization.objects.filter(organization_id=organization_id).first()
+        if not org:
+            return Response({"message": "Organization not found."}, status=404)
+        if not (
+            _is_event_admin(user)
+            or org_can(user, "can_create_events", org)
+            or org_can(user, "can_edit_events", org)
+        ):
+            return Response(
+                {"message": "You do not have permission to view this organization's drafts."},
+                status=403,
+            )
+        qs = qs.filter(organization=org)
+
+    events = qs.order_by("-created_at")
     event_list = []
     for event in events:
         event_list.append({
@@ -13874,18 +15347,53 @@ def generate_single_use_invite_link_for_private_event(request):
     )
     if event.is_public:
         return Response({"message": "Event is already public. No invite link needed."}, status=400)
+
+    # SHARED vs single-use:
+    #   is_shared=True  -> ONE reusable first-come-first-serve link; many people register
+    #                      through it and it is never consumed. FCFS is enforced by the
+    #                      event capacity cap in register_for_event (active_count >=
+    #                      max_teams_or_players), which closes the link once full.
+    #   is_shared=False -> today's behavior: a single-use link consumed by one registration.
+    # Accept truthy strings ("true"/"1") as well as real booleans from JSON clients.
+    is_shared = request.data.get("is_shared", False)
+    if isinstance(is_shared, str):
+        is_shared = is_shared.strip().lower() in ("true", "1", "yes")
+
+    # Optional expiry: after expires_in_days the link stops registering anyone. The
+    # register_for_event invite gate enforces this (it was previously ignored).
+    expires_at = None
+    expires_in_days = request.data.get("expires_in_days")
+    if expires_in_days not in (None, ""):
+        try:
+            days = int(expires_in_days)
+        except (TypeError, ValueError):
+            return Response({"message": "expires_in_days must be an integer number of days."}, status=400)
+        if days < 1:
+            return Response({"message": "expires_in_days must be at least 1."}, status=400)
+        expires_at = timezone.now() + timedelta(days=days)
+
     # Generate a unique token (you can use UUID or any other method)
     import uuid
     event_slug = event.slug
     token = str(uuid.uuid4())
     # Store the token with an association to the event (you may want to create a model for this)
-    EventInviteToken.objects.create(event=event, token=token, created_by=admin)
-    # Construct the invite link (replace with your frontend URL)
+    EventInviteToken.objects.create(
+        event=event,
+        token=token,
+        created_by=admin,
+        is_shared=is_shared,
+        expires_at=expires_at,
+    )
+    # Construct the invite link (replace with your frontend URL). The user-side
+    # registration page reads ?invitation=<token>, so a shared link works with the
+    # existing flow — it just is not consumed.
     invite_link = f"https://africanfreefirecommunity.com/tournaments/{event_slug}?invitation={token}"
     return Response({
         "message": "Invite link generated.",
         "event_id": event.event_id,
         "invite_link": invite_link,
+        "is_shared": is_shared,
+        "expires_at": expires_at,
     }, status=200)
 
 
@@ -13954,6 +15462,10 @@ def get_all_invite_links_for_private_event(request):
             "is_used": token.is_used,
             "used_by": token.used_by.username if token.used_by else None,
             "used_at": token.used_at,
+            # is_shared distinguishes the reusable FCFS link from single-use links so the
+            # admin UI can label it; expires_at lets the UI show when a link stops working.
+            "is_shared": token.is_shared,
+            "expires_at": token.expires_at,
         })
     return Response({
         "message": f"{len(invite_links)} invite links retrieved.",
@@ -14146,11 +15658,19 @@ def check_invite_token_status(request):
     invite = EventInviteToken.objects.filter(token=token).first()
     if not invite:
         return Response({"message": "Invalid token."}, status=404)
+    # Surface is_shared/expiry so the user-side page can tell a reusable FCFS link
+    # (still valid even when is_used is True) apart from a consumed single-use link,
+    # and so it can show an "expired" state. is_expired mirrors the register_for_event
+    # gate so the frontend and backend agree on when a link stops working.
+    is_expired = bool(invite.expires_at and timezone.now() > invite.expires_at)
     return Response({
         "token": invite.token,
         "is_used": invite.is_used,
         "used_by": invite.used_by.username if invite.used_by else None,
         "used_at": invite.used_at,
+        "is_shared": invite.is_shared,
+        "expires_at": invite.expires_at,
+        "is_expired": is_expired,
     }, status=200)
 
 
@@ -14741,8 +16261,11 @@ def upload_team_match_result(request):
         return Response({"message": "Invalid token."}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
+
+    # NOTE: permission is finalised below, after the owning event is resolved — org members
+    # with can_upload_results may upload for THEIR org's events.
 
     match_id = request.data.get("match_id")
     if not match_id:
@@ -14758,6 +16281,12 @@ def upload_team_match_result(request):
         return Response({"message": "Match not linked to group."}, status=400)
 
     event = match.group.stage.event
+
+    # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
+    # holding can_upload_results on the event's owning org (native events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "Unauthorized."}, status=403)
+
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
 
@@ -14842,9 +16371,14 @@ def upload_team_match_result(request):
 
             total_kills = sum(p["kills"] for p in players)
 
-            placement_pts = placement_points.get(placement, 0)
-            kill_pts = total_kills * kill_point
-            total_pts = placement_pts + kill_pts
+            # Shared team formula. This log-upload path carries no assists/damage/bonus/penalty,
+            # so they pass through as 0 (placement + kills only) — same result as the old inline calc.
+            pts = scoring_lib.compute_team_points(
+                placement_points=placement_points, kill_point=kill_point,
+                points_per_assist=0, points_per_1000_damage=0,
+                placement=placement, kills=total_kills, damage=0, assists=0,
+                bonus=0, penalty=0, played=True,
+            )
 
             team_stats_to_create.append(
                 TournamentTeamMatchStats(
@@ -14854,9 +16388,9 @@ def upload_team_match_result(request):
                     kills=total_kills,
                     damage=0,
                     assists=0,
-                    placement_points=int(placement_pts),
-                    kill_points=int(kill_pts),
-                    total_points=int(total_pts),
+                    placement_points=pts["placement_points"],
+                    kill_points=pts["kill_points"],
+                    total_points=pts["total_points"],
                 )
             )
 
@@ -15258,8 +16792,12 @@ def edit_match_scoring_config(request):
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token."}, status=400)
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event — org members with can_upload_results may edit a
+    # match's scoring config for THEIR org's events.
 
     match_id = request.data.get("match_id")
     scoring_settings = request.data.get("scoring_settings")
@@ -15268,6 +16806,13 @@ def edit_match_scoring_config(request):
     if not isinstance(scoring_settings, dict):
         return Response({"message": "scoring_settings must be a dictionary."}, status=400)
     match = get_object_or_404(Match, match_id=match_id)
+
+    # ── AUTH (event-scoped): event derived via match_id -> match.group.stage.event. AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    _cfg_event = match.group.stage.event if match.group else None
+    if not _is_event_admin(admin) and not (_cfg_event and org_can_event(admin, "can_upload_results", _cfg_event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     match.scoring_settings = scoring_settings
     match.save(update_fields=["scoring_settings"])
@@ -16089,8 +17634,10 @@ def upload_match_result_image(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event — org members with can_upload_results may run OCR
+    # result uploads for THEIR org's events.
 
     match_id = request.data.get("match_id")
     if not match_id:
@@ -16107,6 +17654,12 @@ def upload_match_result_image(request):
 
     event = match.group.stage.event
     participant_type = event.participant_type  # "solo", "duo", or "squad"
+
+    # ── AUTH (event-scoped): event derived via match_id -> match.group.stage.event. AFC event
+    # admins always pass; otherwise allow org members holding can_upload_results on the event's
+    # owning org. Native (org=None) events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     # -------- LEADERBOARD / SCORING --------
     leaderboard = match.leaderboard or Leaderboard.objects.filter(
@@ -16172,9 +17725,15 @@ def upload_match_result_image(request):
                 unmatched.append({"name": name, "placement": placement})
                 continue
 
-            placement_pts = placement_points.get(placement, 0)
-            kill_pts = int(round(kills * kill_point))
-            total_pts = placement_pts + kill_pts
+            # Shared solo formula. NOTE: drops the old int(round(...)) on kill points in favour
+            # of scoring's int() truncation so every call site agrees (identical at kill_point=1.0).
+            pts = scoring_lib.compute_solo_points(
+                placement_points=placement_points, kill_point=kill_point,
+                placement=placement, kills=kills, played=True,
+            )
+            placement_pts = pts["placement_points"]
+            kill_pts = pts["kill_points"]
+            total_pts = pts["total_points"]
 
             stats_to_create.append(
                 SoloPlayerMatchStats(
@@ -16236,9 +17795,18 @@ def upload_match_result_image(request):
                     continue
 
                 total_kills = sum(int(p.get("kills") or 0) for p in players)
-                placement_pts = placement_points.get(placement, 0)
-                kill_pts = int(round(total_kills * kill_point))
-                total_pts = placement_pts + kill_pts
+                # Shared team formula (image-upload path: no assists/damage/bonus/penalty -> 0).
+                # NOTE: drops the old int(round(...)) on kill points in favour of scoring's int()
+                # truncation so every call site agrees (identical at the default kill_point=1.0).
+                pts = scoring_lib.compute_team_points(
+                    placement_points=placement_points, kill_point=kill_point,
+                    points_per_assist=0, points_per_1000_damage=0,
+                    placement=placement, kills=total_kills, damage=0, assists=0,
+                    bonus=0, penalty=0, played=True,
+                )
+                placement_pts = pts["placement_points"]
+                kill_pts = pts["kill_points"]
+                total_pts = pts["total_points"]
 
                 team_stats_to_create.append(
                     TournamentTeamMatchStats(
@@ -16308,7 +17876,7 @@ def upload_match_result_image(request):
     }, status=201)
 
 
-@api_view(["GET"])
+@api_view(["POST"])
 def get_match_result_images(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
@@ -16317,20 +17885,31 @@ def get_match_result_images(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
 
-    match_id = request.query_params.get("match_id")
+    # NOTE: permission is finalised below, once the owning event is resolved via
+    # match_id -> match.group.stage.event. This is a READ, but result images are admin/organizer
+    # surface only, so we still scope it: org members managing THEIR org's results may view them.
+
+    match_id = request.data.get("match_id")
     if not match_id:
         return Response({"message": "match_id is required."}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
+
+    # ── AUTH (event-scoped, read): event derived via match_id -> match.group.stage.event. AFC
+    # event admins always pass; otherwise allow org members holding can_upload_results on the
+    # event's owning org (the same role that manages results may view their evidence images).
+    # Native (org=None) events stay admin-only.
+    _img_event = match.group.stage.event if match.group else None
+    if not _is_event_admin(admin) and not (_img_event and org_can_event(admin, "can_upload_results", _img_event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+
     images = MatchResultImage.objects.filter(match=match).order_by("uploaded_at")
 
     data = [
         {
             "image_id": img.image_id,
-            "url": img.image.url,
+            "image_url": request.build_absolute_uri(img.image.url),
             "note": img.note,
             "uploaded_by": img.uploaded_by.username if img.uploaded_by else None,
             "uploaded_at": img.uploaded_at,
@@ -16350,15 +17929,511 @@ def delete_match_result_image(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    # NOTE: permission is finalised below, once the owning event is resolved via the image's
+    # match (image -> match -> group.stage.event) — org members with can_upload_results may
+    # delete result images for THEIR org's events.
 
     image_id = request.data.get("image_id")
     if not image_id:
         return Response({"message": "image_id is required."}, status=400)
 
     img = get_object_or_404(MatchResultImage, image_id=image_id)
+
+    # ── AUTH (event-scoped): event derived via image_id -> img.match.group.stage.event. AFC
+    # event admins always pass; otherwise allow org members holding can_upload_results on the
+    # event's owning org. Native (org=None) events stay admin-only.
+    _img_event = img.match.group.stage.event if (img.match and img.match.group) else None
+    if not _is_event_admin(admin) and not (_img_event and org_can_event(admin, "can_upload_results", _img_event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+
     img.image.delete(save=False)
     img.delete()
+
+
+# ── Event Actions ──────────────────────────────────────────────────────────────
+
+def _get_event_action_user(request):
+    """Validate auth and return (user, error_response)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+    allowed = user.role in ["admin", "moderator", "support"]
+    if not allowed:
+        allowed = user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists()
+    if not allowed:
+        return None, Response({"message": "You do not have permission to perform this action."}, status=403)
+    return user, None
+
+
+def _notify_all_registered(event, title, message):
+    """Create in-app Notifications for every active registered competitor."""
+    notified = set()
+    if event.participant_type == "solo":
+        for rc in RegisteredCompetitors.objects.select_related("user").filter(
+            event=event, status__in=["registered", "approved"]
+        ):
+            if rc.user and rc.user_id not in notified:
+                notified.add(rc.user_id)
+                Notifications.objects.create(
+                    user=rc.user, title=title, message=message, related_event=event
+                )
+    else:
+        for tt in TournamentTeam.objects.filter(event=event, status="active"):
+            for member in TournamentTeamMember.objects.select_related("user").filter(
+                tournament_team=tt, status__in=["active", "approved"]
+            ):
+                if member.user and member.user_id not in notified:
+                    notified.add(member.user_id)
+                    Notifications.objects.create(
+                        user=member.user, title=title, message=message, related_event=event
+                    )
+    return len(notified)
+
+
+@api_view(["POST"])
+def cancel_event(request):
+    user, err = _get_event_action_user(request)
+    if err:
+        return err
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    if event.event_status in ["cancelled", "completed"]:
+        return Response({"message": f"Event is already {event.event_status}."}, status=400)
+
+    event.event_status = "cancelled"
+    event.save(update_fields=["event_status"])
+
+    count = _notify_all_registered(
+        event,
+        title=f"Event Cancelled: {event.event_name}",
+        message=(
+            f"The event '{event.event_name}' has been cancelled. "
+            "We apologize for the inconvenience. Registrations have been frozen."
+        ),
+    )
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="cancel_event",
+        description=f"Cancelled event {event.event_name} (ID: {event.event_id})",
+    )
+
+    return Response(
+        {"message": f"Event '{event.event_name}' has been cancelled.", "notifications_sent": count},
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def complete_event(request):
+    user, err = _get_event_action_user(request)
+    if err:
+        return err
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    if event.event_status in ["completed", "cancelled"]:
+        return Response({"message": f"Event is already {event.event_status}."}, status=400)
+
+    event.event_status = "completed"
+    event.save(update_fields=["event_status"])
+
+    count = _notify_all_registered(
+        event,
+        title=f"Tournament Complete: {event.event_name}",
+        message=(
+            f"The tournament '{event.event_name}' has officially concluded. "
+            "Results are now locked. Thank you for participating!"
+        ),
+    )
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="complete_event",
+        description=f"Marked event {event.event_name} (ID: {event.event_id}) as completed",
+    )
+
+    return Response(
+        {"message": f"Event '{event.event_name}' has been marked as complete.", "notifications_sent": count},
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def broadcast_announcement(request):
+    user, err = _get_event_action_user(request)
+    if err:
+        return err
+
+    event_id = request.data.get("event_id")
+    title = request.data.get("title", "").strip()
+    message = request.data.get("message", "").strip()
+
+    if not event_id or not title or not message:
+        return Response({"message": "event_id, title, and message are required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    count = _notify_all_registered(event, title=title, message=message)
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="broadcast_announcement",
+        description=f"Broadcast announcement to event {event.event_name} (ID: {event.event_id}): {title}",
+    )
+
+    return Response({"message": f"Announcement sent to {count} users.", "recipients": count}, status=200)
+
+
+# ── per-GROUP broadcast (AFC official + organizer) ─────────────────────────────
+# Why this exists: the event-edit "Stages & Groups" tab (StagesGroupsTab.tsx, reused
+# by BOTH the AFC admin edit page and the organizer edit page) had an UNLABELLED bell
+# icon per group that only fired the fixed room-details push (send_match_room_details_
+# notification_to_competitor) AND was hard-gated to admins-only (so it 403'd for
+# organizers). The user asked for a clearer per-group broadcast on both surfaces. This
+# endpoint backs the upgraded SendNotificationModal "Message group" composer.
+#
+# Difference vs the two neighbours:
+#   - broadcast_announcement (above) = event-WIDE, custom title/message, AFC-staff gate.
+#   - send_match_room_details_notification_to_competitor = per-group, FIXED room text,
+#     admin-only, one Notification PER MATCH per user (spammy).
+#   - broadcast_to_group (this) = per-GROUP, EITHER a custom title/message OR an
+#     auto room-details summary, deduped to ONE Notification per recipient, and gated
+#     so AFC event admins OR an organizer who can edit THIS event can use it.
+#
+# Recipients = every player (solo) or team-member (squad) currently slotted into the
+# given StageGroup (via StageGroupCompetitor), deduped by user.
+# Consumed by: frontend app/(a)/a/events/_components/SendNotificationModal.tsx
+#   (rendered inside StagesGroupsTab on /a/events/<slug>/edit and
+#    /organizer/events/<slug>/edit).
+def _group_recipient_users(event, group):
+    """Deduped list of Users in a StageGroup. Solo -> each competitor's user;
+    team/squad -> each member of each team in the group. Mirrors the recipient
+    resolution in send_match_room_details_notification_to_competitor but returns a
+    de-duplicated set so a custom broadcast lands once per person."""
+    users = {}
+    if event.participant_type == "solo":
+        competitors = (StageGroupCompetitor.objects
+                       .select_related("player__user")
+                       .filter(stage_group=group, player__isnull=False))
+        for sc in competitors:
+            u = sc.player.user
+            if u and u.user_id not in users:
+                users[u.user_id] = u
+    else:
+        teams = (StageGroupCompetitor.objects
+                 .select_related("tournament_team")
+                 .filter(stage_group=group, tournament_team__isnull=False))
+        for sgc in teams:
+            for m in sgc.tournament_team.members.select_related("user").all():
+                if m.user and m.user.user_id not in users:
+                    users[m.user.user_id] = m.user
+    return list(users.values())
+
+
+def _group_room_details_text(event, group):
+    """Build a single room-details summary message for a whole group (all its maps
+    that have room info set), or None when no map has room details yet."""
+    matches = Match.objects.filter(group=group).order_by("match_number")
+    blocks = []
+    for match in matches:
+        if match.room_id and match.room_name and match.room_password:
+            blocks.append(
+                f"Match {match.match_number}"
+                f"{f' ({match.match_map})' if match.match_map else ''}:\n"
+                f"  Room ID: {match.room_id}\n"
+                f"  Room Name: {match.room_name}\n"
+                f"  Password: {match.room_password}"
+            )
+    if not blocks:
+        return None
+    header = (
+        f"Room details for '{event.event_name}'\n"
+        f"Stage: {group.stage.stage_name}\n"
+        f"Group: {group.group_name}\n"
+    )
+    return header + "\n" + "\n\n".join(blocks)
+
+
+@api_view(["POST"])
+def broadcast_to_group(request):
+    """POST /events/broadcast-to-group/
+    Body: { event_id, group_id, mode: 'custom'|'room_details', title?, message? }
+      - mode='custom'       -> sends {title?, message} (message required).
+      - mode='room_details' -> auto-builds the group's room-details summary.
+    Auth: Bearer token; allowed for AFC event admins (_is_event_admin) OR an organizer
+    who can edit this event (org_can_event(can_edit_events)). Sends ONE in-app
+    Notification per recipient (deduped). Returns { message, recipients }.
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.data.get("event_id")
+    group_id = request.data.get("group_id")
+    if not event_id or not group_id:
+        return Response({"message": "event_id and group_id are required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    # group must belong to a stage of THIS event (stops a caller broadcasting into a
+    # group from a different event by smuggling a foreign group_id).
+    group = get_object_or_404(StageGroups, group_id=group_id, stage__event=event)
+
+    # AUTH: AFC event admin OR an organizer who can edit this event (owner always can).
+    # Native (org=None) events fall to AFC-admin-only via org_can_event.
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response(
+            {"message": "You do not have permission to message this group."}, status=403
+        )
+
+    mode = (request.data.get("mode") or "custom").strip()
+
+    if mode == "room_details":
+        title = f"Match Room Details: {event.event_name}"
+        message = _group_room_details_text(event, group)
+        if not message:
+            return Response(
+                {"message": "No room details have been set for this group's maps yet."},
+                status=400,
+            )
+    else:
+        title = (request.data.get("title") or "").strip()
+        message = (request.data.get("message") or "").strip()
+        if not message:
+            return Response({"message": "A message is required."}, status=400)
+
+    recipients = _group_recipient_users(event, group)
+    if not recipients:
+        return Response(
+            {"message": "This group has no players to message yet.", "recipients": 0},
+            status=400,
+        )
+
+    # ONE Notification per recipient (deduped), tagged group_broadcast + linked to the
+    # event so it threads under the event in the user's notifications.
+    Notifications.objects.bulk_create([
+        Notifications(
+            user=u,
+            title=title or None,
+            message=message,
+            related_event=event,
+            notification_type="group_broadcast",
+        )
+        for u in recipients
+    ])
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="broadcast_to_group",
+        description=(
+            f"Group broadcast ({mode}) to {group.stage.stage_name} > {group.group_name} "
+            f"in {event.event_name} (ID: {event.event_id}): {len(recipients)} recipients"
+        ),
+    )
+
+    return Response(
+        {"message": f"Message sent to {len(recipients)} players in {group.group_name}.",
+         "recipients": len(recipients)},
+        status=200,
+    )
+
+
+# ── export_participants renderers ──
+# This endpoint takes its OWN `?format=csv|xlsx` business parameter. DRF, however,
+# reserves the `format` query param for content-negotiation (format suffixes): if
+# the value does not match any configured renderer's `.format`, DRF raises Http404
+# DURING DISPATCH, so the view body never runs and the client gets a confusing
+# 404 (`?format=csv` 404s, `?format=xlsx` 404s) instead of the export. To stop that
+# collision we register passthrough renderers whose `.format` matches our own
+# values, so negotiation always succeeds and our view builds the real HttpResponse.
+# (Without this, the entire export feature is unreachable via its documented
+# `?format=` contract.)
+from rest_framework.renderers import BaseRenderer, JSONRenderer
+from rest_framework.decorators import renderer_classes
+
+
+class _PassthroughCSVRenderer(BaseRenderer):
+    media_type = "text/csv"
+    format = "csv"
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return data
+
+
+class _PassthroughXLSXRenderer(BaseRenderer):
+    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    format = "xlsx"
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return data
+
+
+# JSONRenderer LAST/included so the error Responses ({"message": ...}, 400) this
+# view returns for bad input still serialize as JSON. The csv/xlsx renderers only
+# exist to satisfy negotiation on `?format=csv|xlsx`; the happy path returns a raw
+# HttpResponse and never uses them.
+@api_view(["GET"])
+@renderer_classes([JSONRenderer, _PassthroughCSVRenderer, _PassthroughXLSXRenderer])
+def export_participants(request):
+    # NOTE: openpyxl is imported LAZILY (inside the xlsx branch below), NOT here.
+    # The CSV export uses only the stdlib `csv` module, so a prod host that is
+    # missing openpyxl must still be able to export CSV. Importing openpyxl at the
+    # top of the view made the ENTIRE endpoint 500 with ModuleNotFoundError on
+    # prod even for csv requests. (openpyxl is listed in requirements*.txt so a
+    # clean deploy installs it; this just stops a missing wheel from breaking csv.)
+    import csv
+    from io import BytesIO
+    from django.http import HttpResponse, JsonResponse
+
+    # Error responses use Django's JsonResponse rather than DRF Response. WHY:
+    # this view advertises csv/xlsx passthrough renderers (see above) so the
+    # `?format=` business param does not 404 in negotiation. But those passthrough
+    # renderers would then mangle a DRF Response error body (rendering the dict as
+    # raw bytes under text/csv). JsonResponse sidesteps DRF content negotiation
+    # entirely, so every bad-input branch returns clean JSON with the right status.
+
+    user, err = _get_event_action_user(request)
+    if err:
+        # err is a DRF Response built by the auth helper; re-emit it as JSON so the
+        # csv/xlsx passthrough renderer cannot mangle the 400/401/403 body.
+        return JsonResponse(err.data, status=err.status_code)
+
+    event_id = request.query_params.get("event_id")
+    fmt = request.query_params.get("format", "csv").lower()
+
+    if not event_id:
+        return JsonResponse({"message": "event_id is required."}, status=400)
+    if fmt not in ("csv", "xlsx"):
+        return JsonResponse({"message": "format must be csv or xlsx."}, status=400)
+
+    # Explicit lookup instead of get_object_or_404 so a missing event returns a
+    # clean JSON 404 (get_object_or_404 raises Http404, which DRF would otherwise
+    # render through the negotiated csv/xlsx passthrough renderer).
+    event = Event.objects.filter(event_id=event_id).first()
+    if not event:
+        return JsonResponse({"message": "Event not found."}, status=404)
+
+    rows = []
+    if event.participant_type == "solo":
+        for rc in RegisteredCompetitors.objects.select_related("user").filter(event=event).order_by("registration_date"):
+            u = rc.user
+            rows.append({
+                "Username": u.username if u else "",
+                "Full Name": u.full_name if u else "",
+                "Email": u.email if u else "",
+                "Discord ID": u.discord_id if u else "",
+                "Discord Username": u.discord_username if u else "",
+                "Status": rc.status,
+                "Waitlisted": rc.is_waitlisted,
+                "Registration Date": rc.registration_date.strftime("%Y-%m-%d %H:%M") if rc.registration_date else "",
+            })
+    else:
+        for tt in TournamentTeam.objects.select_related("team").filter(event=event).order_by("registration_date"):
+            team_name = tt.team.team_name if tt.team else ""
+            for member in TournamentTeamMember.objects.select_related("user").filter(tournament_team=tt):
+                u = member.user
+                rows.append({
+                    "Team Name": team_name,
+                    "Team Status": tt.status,
+                    "Waitlisted": tt.is_waitlisted,
+                    "Player Username": u.username if u else "",
+                    "Player Full Name": u.full_name if u else "",
+                    "Player Email": u.email if u else "",
+                    "Discord ID": u.discord_id if u else "",
+                    "Discord Username": u.discord_username if u else "",
+                    "Member Status": member.status,
+                    "Registration Date": tt.registration_date.strftime("%Y-%m-%d %H:%M") if tt.registration_date else "",
+                })
+
+    headers = list(rows[0].keys()) if rows else []
+    safe_name = event.event_name.replace(" ", "_")
+
+    if fmt == "xlsx":
+        # Lazy import + graceful degradation: if openpyxl is not installed on this
+        # host, do not 500 with ModuleNotFoundError. Tell the caller to use csv
+        # instead. (Prevents ModuleNotFoundError: No module named 'openpyxl'.)
+        try:
+            import openpyxl
+        except ModuleNotFoundError:
+            # JsonResponse (not DRF Response) so the csv/xlsx passthrough renderer
+            # cannot mangle this error body. (Prevents ModuleNotFoundError 500.)
+            return JsonResponse(
+                {"message": "xlsx export is unavailable on this server. Please use format=csv."},
+                status=503,
+            )
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Participants"
+        if headers:
+            ws.append(headers)
+            for row in rows:
+                ws.append([row[h] for h in headers])
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        response = HttpResponse(
+            output.read(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{safe_name}_participants.xlsx"'
+        return response
+    else:
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="{safe_name}_participants.csv"'
+        if headers:
+            writer = csv.DictWriter(response, fieldnames=headers)
+            writer.writeheader()
+            writer.writerows(rows)
+        return response
+
+
+# ── verify an event for rankings integrity ──
+# Toggles Event.rankings_verified. This is the AFC oversight gate that decides whether an
+# (organizer-run) event counts toward afc_rankings, so it is restricted to PLATFORM org
+# admins only (head_admin / organizer_admin) via is_platform_org_admin — not the broader
+# _is_event_admin set. AFC keeps the final say on what feeds the ranking system.
+@api_view(["POST"])
+def verify_event(request):
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # rankings-integrity decision → platform org admins only.
+    if not is_platform_org_admin(user):
+        return Response({"message": "You do not have permission to verify events."}, status=403)
+
+    event = Event.objects.filter(event_id=request.data.get("event_id")).first()
+    if not event:
+        return Response({"message": "Event not found."}, status=404)
+
+    # default to verifying when the flag is omitted; accept an explicit false to un-verify.
+    event.rankings_verified = bool(request.data.get("verified", True))
+    event.save(update_fields=["rankings_verified"])
+
+    return Response({
+        "message": "Event verification updated.",
+        "event_id": event.event_id,
+        "rankings_verified": event.rankings_verified,
+    }, status=200)
 
     return Response({"message": "Image deleted successfully."})

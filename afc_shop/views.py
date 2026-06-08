@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from afc_auth.views import require_admin, validate_token
 from afc_leaderboard import models
-from .models import Cart, CartItem, Coupon, Fulfillment, Order, OrderItem, Product, ProductVariant, Redemption, ShopChangeLog
+from .models import Cart, CartItem, Category, Coupon, Fulfillment, Order, OrderItem, Product, ProductMedia, ProductVariant, Redemption, ShopChangeLog
 from afc_auth.models import User
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -56,6 +56,71 @@ from django.utils import timezone
 
 # Create your views here.
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Shop media limits + helpers (shared by the product + media views below).
+#
+# Server-side caps so a buyer-facing gallery never ingests an oversized file.
+# The frontend also limits client-side, but these are the authoritative checks.
+# ─────────────────────────────────────────────────────────────────────────────
+MAX_IMAGE_BYTES = 5 * 1024 * 1024        # 5 MB per product image
+MAX_VIDEO_BYTES = 50 * 1024 * 1024       # 50 MB per product video
+
+# Accepted upload content-type prefixes, keyed by media_type. Used to classify
+# and reject uploads in add_product_media.
+ALLOWED_IMAGE_PREFIX = "image/"
+ALLOWED_VIDEO_PREFIX = "video/"
+
+
+def _abs_url(request, file_field):
+    """
+    Build an absolute media URL for an Image/FileField, or None if empty.
+    Mirrors the request.build_absolute_uri(...) pattern used in afc_team.views
+    so the frontend always receives a fully-qualified URL it can render.
+    """
+    if not file_field:
+        return None
+    try:
+        return request.build_absolute_uri(file_field.url)
+    except Exception:
+        return None
+
+
+def _serialize_media(request, product):
+    """
+    Serialise a product's media gallery (images + videos) into the array shape
+    the frontend ShopClient / ProductDetailPage consume:
+        [{ id, url, media_type, ordering }, ...]
+    Ordered by `ordering` then id (the model Meta ordering), so the primary
+    image (ordering=0) comes first.
+    """
+    return [
+        {
+            "id": m.id,
+            "url": _abs_url(request, m.file),
+            "media_type": m.media_type,
+            "ordering": m.ordering,
+        }
+        for m in product.media.all()
+    ]
+
+
+def _serialize_category(category):
+    """
+    Serialise a Category into the shape the frontend category tabs / admin list
+    consume. Returns None when a product has no structured category yet (legacy
+    diamond rows) so the frontend can fall back to the legacy product_type.
+    """
+    if not category:
+        return None
+    return {
+        "id": category.id,
+        "name": category.name,
+        "slug": category.slug,
+        "is_physical": category.is_physical,
+        "is_active": category.is_active,
+    }
+
+
 def get_changes(old_obj, new_data, fields):
     changes = {}
 
@@ -74,27 +139,74 @@ def get_changes(old_obj, new_data, fields):
 
 @api_view(["POST"])
 def add_product(request):
+    """
+    Create a product + its variants in one request.
+
+    Purpose:  Admin creates any catalogue product (diamonds OR physical goods).
+    Auth:     require_admin (Bearer session token, role == "admin").
+    Request:  name, product_type (legacy slug string), OR category_id /
+              category_slug (preferred), description, is_limited_stock, status,
+              optional `image` (multipart file), variants[] (list of dicts).
+    Response: 201 { message, product_id, variant_ids }.
+    Consumed by: AddProductModal.tsx on /a/shop/inventory.
+
+    GENERALISED: the old hard-coded `product_type in [diamonds|bundle|gun_skin]`
+    whitelist is gone. Any non-empty type/category is accepted so the shop can
+    sell arbitrary categories created via the Category CRUD. `product_type` is
+    kept in sync with the chosen category's slug for backward-compat readers.
+    """
     admin, err = require_admin(request)
     if err: return err
 
     name = request.data.get("name")
     product_type = request.data.get("product_type")
     description = request.data.get("description", "")
-    is_limited_stock = bool(request.data.get("is_limited_stock", False))
+    is_limited_stock = str(request.data.get("is_limited_stock", "false")).lower() in ("true", "1", "yes")
     status_val = request.data.get("status", "active")
+
+    # Resolve the structured category (preferred) by id or slug. Falls back to
+    # the legacy `product_type` string when no category is supplied (back-compat).
+    category = None
+    category_id = request.data.get("category_id")
+    category_slug = request.data.get("category_slug")
+    if category_id:
+        category = Category.objects.filter(id=category_id).first()
+    elif category_slug:
+        category = Category.objects.filter(slug=category_slug).first()
+
+    # Keep product_type in sync with the category slug so every legacy code path
+    # (e.g. the frontend `product.type` filter) keeps working unchanged.
+    if category:
+        product_type = category.slug
 
     variants = request.data.get("variants", [])  # list of {sku,title,price,diamonds_amount,stock_qty,meta}
 
-    if not name or product_type not in ["diamonds", "bundle", "gun_skin"]:
-        return Response({"message": "name and valid product_type are required."}, status=400)
+    # When the request is multipart (because an image file rides along), nested
+    # arrays arrive as a JSON string. Parse it back into a list so both the
+    # JSON-body and multipart-body callers reach the same code path.
+    if isinstance(variants, str):
+        try:
+            variants = json.loads(variants)
+        except (ValueError, TypeError):
+            return Response({"message": "variants must be a valid JSON list."}, status=400)
+
+    # GENERALISED guard: require a name + a non-empty type/category (no whitelist).
+    if not name or not product_type:
+        return Response({"message": "name and a product_type or category are required."}, status=400)
 
     if not isinstance(variants, list) or len(variants) == 0:
         return Response({"message": "variants must be a non-empty list."}, status=400)
+
+    # Optional primary image (multipart). Additional images/videos are uploaded
+    # separately via add_product_media after the product exists.
+    image = request.FILES.get("image")
 
     product = Product.objects.create(
         name=name,
         description=description,
         product_type=product_type,
+        category=category,
+        image=image,
         is_limited_stock=is_limited_stock,
         status=status_val
     )
@@ -141,16 +253,27 @@ def view_all_products(request):
     admin, err = require_admin(request)
     if err: return err
 
-    qs = Product.objects.all().order_by("-created_at").prefetch_related("variants")
+    # prefetch media + category alongside variants so the gallery and category
+    # badge render without N+1 queries.
+    qs = (
+        Product.objects.all()
+        .order_by("-created_at")
+        .select_related("category")
+        .prefetch_related("variants", "media")
+    )
 
     data = []
     for p in qs:
         data.append({
             "id": p.id,
             "name": p.name,
-            "type": p.product_type,
+            "type": p.product_type,           # legacy slug string (back-compat)
+            "category": _serialize_category(p.category),  # structured category or None
+            "description": p.description,
             "status": p.status,
             "is_limited_stock": p.is_limited_stock,
+            "image": _abs_url(request, p.image),          # primary card thumbnail
+            "media": _serialize_media(request, p),        # full image+video gallery
             "created_at": p.created_at,
             "updated_at": p.updated_at,
             "variants": [{
@@ -170,8 +293,74 @@ def view_all_products(request):
     return Response({"products": data}, status=200)
 
 
+@api_view(["GET"])
+def view_active_products(request):
+    """
+    PUBLIC storefront product list -- only ACTIVE products, no auth required.
+
+    Purpose:  Drives the user-facing shop (/shop). The admin list `view_all_products`
+              is `require_admin` and returns every status, so the storefront could only
+              load for admins (regular players got 403, anonymous 401). This is the public
+              counterpart: same posture as view_active_categories / view_product_details.
+    Auth:     public (no token).
+    Response: 200 { products: [...] }  -- identical item shape to view_all_products so the
+              frontend mapping is unchanged; only `status == "active"` products are returned.
+    Consumed by: ShopClient.tsx (app/(user)/shop/_components/ShopClient.tsx).
+    """
+    qs = (
+        Product.objects.filter(status="active")
+        .order_by("-created_at")
+        .select_related("category")
+        .prefetch_related("variants", "media")
+    )
+
+    data = []
+    for p in qs:
+        data.append({
+            "id": p.id,
+            "name": p.name,
+            "type": p.product_type,
+            "category": _serialize_category(p.category),
+            "description": p.description,
+            "status": p.status,
+            "is_limited_stock": p.is_limited_stock,
+            "image": _abs_url(request, p.image),
+            "media": _serialize_media(request, p),
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
+            # storefront only needs sellable variants; an inactive variant is hidden here.
+            "variants": [{
+                "id": v.id,
+                "sku": v.sku,
+                "title": v.title,
+                "price": str(v.price),
+                "diamonds_amount": v.diamonds_amount,
+                "stock_qty": v.stock_qty,
+                "is_active": v.is_active,
+                "in_stock": v.is_in_stock(),
+                "ean": v.ean,
+                "created_at": v.created_at,
+                "updated_at": v.updated_at,
+            } for v in p.variants.all() if v.is_active]
+        })
+    return Response({"products": data}, status=200)
+
+
 @api_view(["POST"])
 def edit_product(request):
+    """
+    Update a product's fields, its category, optional image, and (optionally)
+    its variants.
+
+    Purpose:  Admin edits any catalogue product.
+    Auth:     require_admin.
+    Request:  product_id (required); any of name / description / product_type /
+              status / is_limited_stock; optional category_id|category_slug;
+              optional `image` (multipart); optional variants[] for in-place
+              variant edits.
+    Response: 200 { message }.
+    Consumed by: /a/shop/inventory/[id]/page.tsx edit form.
+    """
     admin, err = require_admin(request)
     if err: return err
 
@@ -189,10 +378,35 @@ def edit_product(request):
         "is_limited_stock": product.is_limited_stock,
     }
 
-    # product fields
-    for field in ["name", "description", "product_type", "status", "is_limited_stock"]:
+    # plain text product fields (skip is_limited_stock — coerced below)
+    for field in ["name", "description", "product_type", "status"]:
         if field in request.data:
             setattr(product, field, request.data.get(field))
+
+    # is_limited_stock may arrive as a "true"/"false" string under multipart, so
+    # coerce it to a real bool rather than assigning the raw string.
+    if "is_limited_stock" in request.data:
+        product.is_limited_stock = str(request.data.get("is_limited_stock")).lower() in ("true", "1", "yes")
+
+    # Re-point the structured category if supplied, and keep product_type in sync
+    # with its slug so legacy readers (e.g. the frontend type filter) stay correct.
+    category_id = request.data.get("category_id")
+    category_slug = request.data.get("category_slug")
+    if category_id or category_slug:
+        new_category = None
+        if category_id:
+            new_category = Category.objects.filter(id=category_id).first()
+        elif category_slug:
+            new_category = Category.objects.filter(slug=category_slug).first()
+        if new_category:
+            product.category = new_category
+            product.product_type = new_category.slug
+
+    # Replace the primary image only when a new file is actually uploaded.
+    new_image = request.FILES.get("image")
+    if new_image:
+        product.image = new_image
+
     product.save()
 
     new_data = request.data
@@ -209,6 +423,12 @@ def edit_product(request):
 
     # variant updates (optional)
     variants = request.data.get("variants")  # list of {id, ...fields}
+    # Parse a JSON string back to a list when the request came in as multipart.
+    if isinstance(variants, str):
+        try:
+            variants = json.loads(variants)
+        except (ValueError, TypeError):
+            return Response({"message": "variants must be a valid JSON list."}, status=400)
     if variants is not None:
         if not isinstance(variants, list):
             return Response({"message": "variants must be a list."}, status=400)
@@ -414,19 +634,42 @@ def view_all_orders(request):
     admin, err = require_admin(request)
     if err: return err
 
-    qs = Order.objects.all().prefetch_related("items__variant__product").order_by("-created_at")[:500]
+    # select_related("user", "coupon") so the related rows are fetched in the same
+    # query AND so a dangling FK surfaces predictably rather than via a lazy hit
+    # mid-serialization.
+    qs = (
+        Order.objects.all()
+        .select_related("user", "coupon")
+        .prefetch_related("items__variant__product")
+        .order_by("-created_at")[:500]
+    )
 
     data = []
     for o in qs:
+        # Guard: o.user / o.coupon are non-deferred FKs, but on prod an order can
+        # reference a user/coupon row that was hard-deleted outside the ORM. The
+        # `if o.user` truthiness check does NOT catch that: resolving the relation
+        # raises User.DoesNotExist (RelatedObjectDoesNotExist), which would 500 the
+        # whole list. Resolve each FK defensively so one bad row degrades to null
+        # instead of taking down the entire admin orders view.
+        try:
+            username = o.user.username if o.user_id else None
+        except Exception:
+            username = None
+        try:
+            coupon_code = o.coupon.code if o.coupon_id else None
+        except Exception:
+            coupon_code = None
+
         data.append({
             "order_id": o.id,
             "user_id": o.user_id,
-            "username": o.user.username if o.user else None,
+            "username": username,
             "status": o.status,
             "subtotal": str(o.subtotal),
             "discount_total": str(o.discount_total),
             "total": str(o.total),
-            "coupon_code": o.coupon_code,
+            "coupon_code": coupon_code,
             "created_at": o.created_at,
             "items": [{
                 "variant_id": it.variant_id,
@@ -441,7 +684,46 @@ def view_all_orders(request):
 
 
 def _orders_in_range(start_dt, end_dt):
-    return Order.objects.filter(created_at__gte=start_dt, created_at__lt=end_dt)
+    # select_related the FKs so resolving o.user / o.coupon during serialization
+    # does not fire a lazy per-row query (and so a dangling FK surfaces here, not
+    # mid-loop). The today/week/month summaries all reuse this.
+    return (
+        Order.objects.filter(created_at__gte=start_dt, created_at__lt=end_dt)
+        .select_related("user", "coupon")
+    )
+
+
+def _serialize_order_summary(o):
+    """
+    Flat summary row for the today/week/month order lists.
+
+    Resolves the user + coupon FKs DEFENSIVELY: on prod an order can point at a
+    user/coupon that was hard-deleted outside the ORM. `o.user.username if o.user
+    else None` does NOT protect against that, because resolving the relation
+    raises User.DoesNotExist (RelatedObjectDoesNotExist) which bubbles up as an
+    unhandled error and 500s the endpoint. Reading via the FK id and catching the
+    lookup keeps one bad row from taking down the whole report.
+    """
+    try:
+        username = o.user.username if o.user_id else None
+    except Exception:
+        username = None
+    try:
+        coupon_code = o.coupon.code if o.coupon_id else None
+    except Exception:
+        coupon_code = None
+
+    return {
+        "order_id": o.id,
+        "user_id": o.user_id,
+        "username": username,
+        "status": o.status,
+        "subtotal": str(o.subtotal),
+        "discount_total": str(o.discount_total),
+        "total": str(o.total),
+        "coupon_code": coupon_code,
+        "created_at": o.created_at,
+    }
 
 
 @api_view(["GET"])
@@ -453,17 +735,7 @@ def orders_today(request):
         timezone.now().replace(hour=0, minute=0, second=0, microsecond=0),
         timezone.now().replace(hour=23, minute=59, second=59, microsecond=999999)
     )
-    data = [{
-        "order_id": o.id,
-        "user_id": o.user_id,
-        "username": o.user.username if o.user else None,
-        "status": o.status,
-        "subtotal": str(o.subtotal),
-        "discount_total": str(o.discount_total),
-        "total": str(o.total),
-        "coupon_code": o.coupon_code,
-        "created_at": o.created_at,
-    } for o in orders]
+    data = [_serialize_order_summary(o) for o in orders]
     return Response({"orders": data}, status=200)
 
 
@@ -476,17 +748,7 @@ def orders_this_week(request):
         timezone.now() - timedelta(days=timezone.now().weekday()),
         timezone.now()
     )
-    data = [{
-        "order_id": o.id,
-        "user_id": o.user_id,
-        "username": o.user.username if o.user else None,
-        "status": o.status,
-        "subtotal": str(o.subtotal),
-        "discount_total": str(o.discount_total),
-        "total": str(o.total),
-        "coupon_code": o.coupon_code,
-        "created_at": o.created_at,
-    } for o in orders]
+    data = [_serialize_order_summary(o) for o in orders]
     return Response({"orders": data}, status=200)
 
 
@@ -499,17 +761,8 @@ def orders_this_month(request):
         timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0),
         timezone.now()
     )
-    data = [{
-        "order_id": o.id,
-        "user_id": o.user_id,
-        "username": o.user.username if o.user else None,
-        "status": o.status,
-        "subtotal": str(o.subtotal),
-        "discount_total": str(o.discount_total),
-        "total": str(o.total),
-        "coupon_code": o.coupon_code,
-        "created_at": o.created_at,
-    } for o in orders]
+    data = [_serialize_order_summary(o) for o in orders]
+    return Response({"orders": data}, status=200)
 
 
 @api_view(["GET"])
@@ -569,19 +822,31 @@ def create_coupon(request):
 
 @api_view(["GET"])
 def view_product_details(request):
+    """
+    Public product detail (no auth) used by both the user detail page and the
+    admin edit page. Now returns the structured category, the primary image,
+    and the full media gallery (images + videos) alongside the variants.
+    Consumed by: ProductDetailPage.tsx (user) + /a/shop/inventory/[id] (admin).
+    """
     # admin, err = require_admin(request)
     # if err: return err
     product_id = request.GET.get("product_id")
 
-    product = get_object_or_404(Product, id=product_id)
+    product = get_object_or_404(
+        Product.objects.select_related("category").prefetch_related("variants", "media"),
+        id=product_id,
+    )
 
     data = {
         "id": product.id,
         "name": product.name,
-        "type": product.product_type,
+        "type": product.product_type,                  # legacy slug string
+        "category": _serialize_category(product.category),
         "description": product.description,
         "status": product.status,
         "is_limited_stock": product.is_limited_stock,
+        "image": _abs_url(request, product.image),     # primary image
+        "media": _serialize_media(request, product),   # image+video gallery
         "created_at": product.created_at,
         "updated_at": product.updated_at,
         "variants": [{
@@ -1521,11 +1786,28 @@ def verify_paystack_payment(request):
 @api_view(["POST"])
 @csrf_exempt
 def paystack_webhook(request):
+    # A public webhook receives whatever Paystack (or a probe / bad caller) posts,
+    # so it must tolerate a missing signature header, an unset secret key, and an
+    # empty or malformed JSON body. Every one of those is bad INPUT, not a server
+    # fault, so we answer 400 and never let it bubble up to a 500.
 
     signature = request.headers.get("x-paystack-signature")
 
+    # Guard: missing signature header. Without it the request cannot be a genuine
+    # Paystack webhook, so reject before doing any work. (Prevents the later
+    # `signature != computed` from silently passing on a None secret env.)
+    if not signature:
+        return Response({"message": "Missing signature"}, status=400)
+
+    # Guard: PAYSTACK_SECRET_KEY may be unset in the environment (os.getenv -> None).
+    # Calling .encode() on None raises AttributeError ('NoneType' has no attribute
+    # 'encode'); treat an unconfigured key as a request we cannot verify -> 400.
+    secret = settings.PAYSTACK_SECRET_KEY
+    if not secret:
+        return Response({"message": "Webhook verification unavailable"}, status=400)
+
     computed = hmac.new(
-        settings.PAYSTACK_SECRET_KEY.encode(),
+        secret.encode(),
         request.body,
         hashlib.sha512
     ).hexdigest()
@@ -1533,13 +1815,29 @@ def paystack_webhook(request):
     if signature != computed:
         return Response({"message": "Invalid signature"}, status=400)
 
-    payload = json.loads(request.body)
+    # Guard: an empty or non-JSON body makes json.loads raise (ValueError /
+    # JSONDecodeError). Bad payload -> 400, never 500.
+    try:
+        payload = json.loads(request.body)
+    except (ValueError, TypeError):
+        return Response({"message": "Invalid payload"}, status=400)
+    if not isinstance(payload, dict):
+        return Response({"message": "Invalid payload"}, status=400)
 
     if payload.get("event") != "charge.success":
         return Response({"message": "Ignored"}, status=200)
 
-    data = payload["data"]
-    order_id = data["metadata"]["order_id"]
+    # Guard: `data` / `data.metadata.order_id` may be absent on a malformed event.
+    # Using payload["data"] / data["metadata"]["order_id"] would raise KeyError
+    # (TypeError if `data` is not a dict). Read defensively and 400 if order_id
+    # is missing rather than letting the lookup explode.
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return Response({"message": "Invalid payload"}, status=400)
+    metadata = data.get("metadata") or {}
+    order_id = metadata.get("order_id") if isinstance(metadata, dict) else None
+    if not order_id:
+        return Response({"message": "order_id is required"}, status=400)
 
     order = Order.objects.prefetch_related("items__variant").filter(id=order_id).first()
 
@@ -1549,8 +1847,10 @@ def paystack_webhook(request):
     with transaction.atomic():
 
         order.status = "paid"
-        order.paystack_transaction_id = str(data["id"])
-        order.payment_method = data["channel"]
+        # Guard: read id/channel with .get() so a verified-but-sparse payload
+        # cannot raise KeyError here after the order has already been located.
+        order.paystack_transaction_id = str(data.get("id") or "")
+        order.payment_method = data.get("channel") or ""
         order.paid_at = timezone.now()
         order.save()
 
@@ -2108,14 +2408,26 @@ def get_weekly_usage_and_saving_generated(request):
 
 
 @api_view(["GET"])
-def get_coupon_conversion_rate(request, slug):
+def get_coupon_conversion_rate(request):
+    # The registered route (urls.py:45) has no path converter, so Django never
+    # passes a `slug` positional arg -> the old signature raised
+    # TypeError: missing 1 required positional argument 'slug' at dispatch (500).
+    # Read the coupon slug from the query string instead: GET ?slug=<coupon-slug>.
+    slug = request.GET.get("slug")
+    if not slug:
+        return Response({"message": "slug query param is required."}, status=400)
 
     coupon = get_object_or_404(Coupon, slug=slug)
 
-    # Orders since coupon was created
-    total_orders = Order.objects.filter(
-        created_at__gte=coupon.start_at if coupon.start_at else coupon.created_at
-    ).count()
+    # Orders since the coupon became active. NOTE: the Coupon model has no
+    # `created_at` field, so the previous `else coupon.created_at` fallback was a
+    # latent AttributeError (-> 500) for any coupon with start_at unset (the
+    # default, since start_at is nullable). When start_at is None we cannot anchor
+    # on a creation time, so count all orders (no date filter) rather than crash.
+    orders_qs = Order.objects.all()
+    if coupon.start_at:
+        orders_qs = orders_qs.filter(created_at__gte=coupon.start_at)
+    total_orders = orders_qs.count()
 
     if total_orders == 0:
         return Response({
@@ -2208,3 +2520,301 @@ def get_coupon_details_with_code(request):
     }
 
     return Response({"coupon_details": data}, status=200)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CATEGORY CRUD  (admin-managed product categories)
+#
+# These power the "Manage Categories" surface on /a/shop/inventory and the user
+# shop category tabs. They generalise the shop beyond the old diamond-only set.
+#   - view_all_categories      (admin)  : full list incl. inactive + product count
+#   - view_active_categories   (public) : active categories for the user shop tabs
+#   - create_category / edit_category / delete_category (admin)
+# Auth + response conventions mirror the product/coupon views above.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _serialize_category_full(category):
+    """
+    Admin-facing category serialisation: includes inactive state, ordering, and
+    a live product count so the admin table can show usage before deleting.
+    """
+    return {
+        "id": category.id,
+        "name": category.name,
+        "slug": category.slug,
+        "description": category.description,
+        "is_physical": category.is_physical,
+        "is_active": category.is_active,
+        "ordering": category.ordering,
+        "product_count": category.products.count(),
+        "created_at": category.created_at,
+        "updated_at": category.updated_at,
+    }
+
+
+@api_view(["GET"])
+def view_all_categories(request):
+    """
+    List every category (active + inactive) with product counts.
+
+    Purpose:  Admin category management table.
+    Auth:     require_admin.
+    Response: 200 { categories: [ {id,name,slug,is_physical,is_active,ordering,product_count,...} ] }.
+    Consumed by: ManageCategoriesModal on /a/shop/inventory.
+    """
+    admin, err = require_admin(request)
+    if err: return err
+
+    qs = Category.objects.all().prefetch_related("products")
+    data = [_serialize_category_full(c) for c in qs]
+    return Response({"categories": data}, status=200)
+
+
+@api_view(["GET"])
+def view_active_categories(request):
+    """
+    List only active categories, ordered for display.
+
+    Purpose:  Drives the user shop category tabs (replaces the hard-coded
+              frontend `shopProductTypes = ["diamonds"]`).
+    Auth:     public (no token) -- same posture as view_product_details.
+    Response: 200 { categories: [ {id,name,slug,is_physical,is_active} ] }.
+    Consumed by: ShopClient.tsx tab bar.
+    """
+    qs = Category.objects.filter(is_active=True)
+    data = [_serialize_category(c) for c in qs]
+    return Response({"categories": data}, status=200)
+
+
+@api_view(["POST"])
+def create_category(request):
+    """
+    Create a new product category.
+
+    Purpose:  Admin adds a category (e.g. "Jerseys") so products can be filed
+              under it and it appears as a user shop tab.
+    Auth:     require_admin.
+    Request:  name (required), description, is_physical (bool), is_active (bool),
+              ordering (int).
+    Response: 201 { message, category }.
+    Consumed by: ManageCategoriesModal "Add category" form.
+    """
+    admin, err = require_admin(request)
+    if err: return err
+
+    name = (request.data.get("name") or "").strip()
+    if not name:
+        return Response({"message": "name is required."}, status=400)
+
+    # Reject duplicates up front for a clean message (the unique constraint would
+    # otherwise surface as a 500 IntegrityError).
+    if Category.objects.filter(name__iexact=name).exists():
+        return Response({"message": "A category with this name already exists."}, status=400)
+
+    category = Category.objects.create(
+        name=name,
+        description=request.data.get("description", ""),
+        is_physical=str(request.data.get("is_physical", "true")).lower() in ("true", "1", "yes"),
+        is_active=str(request.data.get("is_active", "true")).lower() in ("true", "1", "yes"),
+        ordering=int(request.data.get("ordering") or 0),
+    )
+
+    return Response(
+        {"message": "Category created.", "category": _serialize_category_full(category)},
+        status=201,
+    )
+
+
+@api_view(["POST"])
+def edit_category(request):
+    """
+    Update an existing category.
+
+    Purpose:  Admin renames a category or toggles its visibility / shipping flag.
+    Auth:     require_admin.
+    Request:  category_id (required); any of name / description / is_physical /
+              is_active / ordering.
+    Response: 200 { message, category }.
+    Consumed by: ManageCategoriesModal inline edit.
+
+    NOTE: we keep the existing slug stable on rename so product_type values that
+    already reference it (and any saved links) do not break.
+    """
+    admin, err = require_admin(request)
+    if err: return err
+
+    category_id = request.data.get("category_id")
+    if not category_id:
+        return Response({"message": "category_id is required."}, status=400)
+
+    category = get_object_or_404(Category, id=category_id)
+
+    name = request.data.get("name")
+    if name is not None:
+        name = name.strip()
+        if not name:
+            return Response({"message": "name cannot be empty."}, status=400)
+        # Guard against renaming onto another category's name.
+        if Category.objects.filter(name__iexact=name).exclude(id=category.id).exists():
+            return Response({"message": "Another category already uses this name."}, status=400)
+        category.name = name
+
+    if "description" in request.data:
+        category.description = request.data.get("description", "")
+    if "is_physical" in request.data:
+        category.is_physical = str(request.data.get("is_physical")).lower() in ("true", "1", "yes")
+    if "is_active" in request.data:
+        category.is_active = str(request.data.get("is_active")).lower() in ("true", "1", "yes")
+    if "ordering" in request.data:
+        try:
+            category.ordering = int(request.data.get("ordering") or 0)
+        except (ValueError, TypeError):
+            return Response({"message": "ordering must be a number."}, status=400)
+
+    category.save()
+
+    return Response(
+        {"message": "Category updated.", "category": _serialize_category_full(category)},
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def delete_category(request):
+    """
+    Delete a category.
+
+    Purpose:  Admin removes an unused category.
+    Auth:     require_admin.
+    Request:  category_id (required).
+    Response: 200 { message }  |  400 if products still reference it.
+    Consumed by: ManageCategoriesModal delete action.
+
+    SAFETY: refuse to delete a category that still has products attached so the
+    admin does not silently orphan the catalogue. (Product.category is SET_NULL,
+    so a forced delete would only null the link -- but blocking is clearer.)
+    """
+    admin, err = require_admin(request)
+    if err: return err
+
+    category_id = request.data.get("category_id")
+    if not category_id:
+        return Response({"message": "category_id is required."}, status=400)
+
+    category = get_object_or_404(Category, id=category_id)
+
+    product_count = category.products.count()
+    if product_count > 0:
+        return Response(
+            {"message": f"Cannot delete: {product_count} product(s) still use this category. Reassign or remove them first."},
+            status=400,
+        )
+
+    category.delete()
+    return Response({"message": "Category deleted."}, status=200)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PRODUCT MEDIA  (multi-image + video gallery per product)
+#
+# A product can carry many images and videos via the ProductMedia table. These
+# endpoints upload and remove individual media items; the gallery itself is
+# returned inside view_all_products / view_product_details as a `media` array.
+#   - add_product_media     (admin) : multipart upload, one or many files
+#   - delete_product_media  (admin) : remove a single media item
+# Size limits are enforced here (the authoritative server-side check).
+# ═════════════════════════════════════════════════════════════════════════════
+
+@api_view(["POST"])
+def add_product_media(request):
+    """
+    Upload one or more media files (images + videos) for a product.
+
+    Purpose:  Admin attaches a gallery to a product.
+    Auth:     require_admin.
+    Request:  multipart -- product_id (required) + one or more files under the
+              field name `files` (use request.FILES.getlist). Each file is
+              classified by its content-type (image/* or video/*) and capped
+              (images <= 5 MB, videos <= 50 MB).
+    Response: 201 { message, media: [ {id,url,media_type,ordering} ] }.
+    Consumed by: the media uploader in AddProductModal / the edit product page.
+    """
+    admin, err = require_admin(request)
+    if err: return err
+
+    product_id = request.data.get("product_id")
+    if not product_id:
+        return Response({"message": "product_id is required."}, status=400)
+
+    product = get_object_or_404(Product, id=product_id)
+
+    # Accept the field under `files` (multi) or fall back to a single `file`.
+    files = request.FILES.getlist("files") or request.FILES.getlist("file")
+    if not files:
+        return Response({"message": "No files uploaded."}, status=400)
+
+    # Continue numbering from the current count so new uploads append to the end
+    # of the existing gallery.
+    existing = product.media.count()
+    created = []
+
+    for index, f in enumerate(files):
+        content_type = (getattr(f, "content_type", "") or "").lower()
+
+        # Classify by content-type and validate size against the matching cap.
+        if content_type.startswith(ALLOWED_IMAGE_PREFIX):
+            media_type = "image"
+            if f.size > MAX_IMAGE_BYTES:
+                return Response(
+                    {"message": f"Image '{f.name}' exceeds the 5 MB limit."},
+                    status=400,
+                )
+        elif content_type.startswith(ALLOWED_VIDEO_PREFIX):
+            media_type = "video"
+            if f.size > MAX_VIDEO_BYTES:
+                return Response(
+                    {"message": f"Video '{f.name}' exceeds the 50 MB limit."},
+                    status=400,
+                )
+        else:
+            return Response(
+                {"message": f"Unsupported file type for '{f.name}'. Only images and videos are allowed."},
+                status=400,
+            )
+
+        media = ProductMedia.objects.create(
+            product=product,
+            file=f,
+            media_type=media_type,
+            ordering=existing + index,
+        )
+        created.append({
+            "id": media.id,
+            "url": _abs_url(request, media.file),
+            "media_type": media.media_type,
+            "ordering": media.ordering,
+        })
+
+    return Response({"message": "Media uploaded.", "media": created}, status=201)
+
+
+@api_view(["POST"])
+def delete_product_media(request):
+    """
+    Delete a single media item from a product's gallery.
+
+    Purpose:  Admin removes one image/video.
+    Auth:     require_admin.
+    Request:  media_id (required).
+    Response: 200 { message }.
+    Consumed by: the media uploader's per-item remove button.
+    """
+    admin, err = require_admin(request)
+    if err: return err
+
+    media_id = request.data.get("media_id")
+    if not media_id:
+        return Response({"message": "media_id is required."}, status=400)
+
+    media = get_object_or_404(ProductMedia, id=media_id)
+    media.delete()
+    return Response({"message": "Media deleted."}, status=200)

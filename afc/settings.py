@@ -30,7 +30,9 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Env-driven so production can disable it (a DEBUG=True page leaks tracebacks/settings/SQL).
+# Defaults to True for local dev; PRODUCTION MUST set the env var DEBUG=False.
+DEBUG = os.getenv("DEBUG", "True").strip().lower() == "true"
 
 ALLOWED_HOSTS = ["https://afc.pythonanywhere.com/", "afc.pythonanywhere.com", "98.94.15.73", "*"]
 
@@ -64,6 +66,9 @@ INSTALLED_APPS = [
     'afc_player',
     'afc_player_market',
     'afc_ocr',
+    'afc_rankings',
+    'afc_organizers',
+    'afc_partner_api',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -137,6 +142,11 @@ WSGI_APPLICATION = 'afc.wsgi.application'
 #     }
 # }
 
+# Env-driven DB config. The defaults are the LOCAL dev values, so local keeps working with
+# no env set. PRODUCTION MUST set DB_USER/DB_PASSWORD/DB_HOST (and DB_NAME) to a DEDICATED
+# app user on the real DB host — NOT root@localhost. Deploying these root@localhost defaults
+# to production is what causes the intermittent 1698 "Access denied for user 'root'@'localhost'"
+# 500s (root@localhost uses socket auth, so a password/TCP login is rejected).
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
@@ -215,6 +225,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CELERY_BROKER_URL = 'redis://localhost:6379/0'  # Redis URL
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
+
+# Rankings recalc: run inline on commit in dev (no worker needed); set False + run
+# `celery -A afc worker -Q rankings_recalc` in production for async recalculation.
+RANKINGS_RECALC_SYNC = DEBUG
 
 
 CACHES = {

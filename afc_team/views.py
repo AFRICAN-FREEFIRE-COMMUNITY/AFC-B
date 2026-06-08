@@ -8,14 +8,16 @@ from rest_framework import status
 from afc_auth.views import validate_token
 from afc_leaderboard_calc import models
 from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
-from afc_tournament_and_scrims.models import TournamentTeamMatchStats
+from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats, EventPrizePayout
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
-from afc_auth.models import Notifications, User, UserProfile
+from afc_auth.models import AdminHistory, Notifications, TeamBan, User, UserProfile, UserRoles
 from django.utils.timezone import now
-from django.db.models import Q
+# Invite.invite_id is a UUID. Looking it up with a non-UUID value (e.g. a tampered URL)
+# raises ValidationError, NOT DoesNotExist, so we catch it to return 404 instead of 500.
+from django.core.exceptions import ValidationError
+from django.db.models import Avg, Count, F, Min, Q, Sum
 from .models import Team, TeamMembers, Invite, TeamSocialMediaLinks
 import json
-from django.db.models import Count, F
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -405,6 +407,17 @@ def disband_team(request):
         # Validate team ownership
         team = Team.objects.get(team_id=team_id, team_owner=user)
 
+        # Roster moves are locked outside the transfer window — a team cannot be disbanded
+        # while the window is CLOSED (matches the player-leave lock in exit_team). The window
+        # is the active ranking season's range (afc_rankings.Season), toggled by admins.
+        from afc_rankings.models import Season
+        active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+        if active_season and not active_season.is_transfer_window_open():
+            return Response(
+                {"message": "The transfer window is currently closed. Teams cannot be disbanded until it reopens."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # Create a report before deleting the team
         Report.objects.create(
             team=team,
@@ -707,8 +720,13 @@ def view_join_requests(request):
         )
 
     try:
-        # Find the team where the user is the owner
-        team = Team.objects.get(team_owner=user)
+        # Find the team where the user is the owner.
+        # team_owner is a ForeignKey (related_name='owned_teams', models.py:25), so a user
+        # can own multiple teams -- .get() would raise MultipleObjectsReturned -> 500. Use
+        # .filter().first() (the repo convention, see lines 89/411/1277) + a guard instead.
+        team = Team.objects.filter(team_owner=user).first()
+        if not team:
+            return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
 
         # Fetch all pending join requests for the team
         join_requests = JoinRequest.objects.filter(team=team, status_of_request="unattended_to")
@@ -725,8 +743,6 @@ def view_join_requests(request):
 
         return Response({"join_requests": requests_data}, status=status.HTTP_200_OK)
 
-    except Team.DoesNotExist:
-        return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
@@ -848,9 +864,19 @@ def edit_team(request):
 
 @api_view(["GET"])
 def get_all_teams(request):
-    teams = Team.objects.all()
-    teams_data = []
+    # Admin team list (frontend app/(a)/a/teams/page.tsx -> GET /team/get-all-teams/).
+    # PERFORMANCE: previously this lazy-loaded team_creator + team_owner usernames AND ran a
+    # TeamMembers count() PER team inside the loop -> ~3 queries x 567 teams (~1700 queries,
+    # ~7.5s). Now: select_related the two owner/creator FKs (one join) + a single grouped
+    # member-count query assembled into a dict. Same response shape, ~3 queries total.
+    teams = Team.objects.all().select_related("team_creator", "team_owner")
 
+    member_counts = {
+        row["team"]: row["c"]
+        for row in TeamMembers.objects.values("team").annotate(c=Count("pk"))
+    }
+
+    teams_data = []
     for team in teams:
         teams_data.append({
             "team_id": team.team_id,
@@ -865,7 +891,7 @@ def get_all_teams(request):
             "team_tier": team.team_tier,
             "team_description": team.team_description,
             "country": team.country,
-            "member_count": TeamMembers.objects.filter(team=team).count()
+            "member_count": member_counts.get(team.team_id, 0),
         })
 
     return Response({"teams": teams_data}, status=status.HTTP_200_OK)
@@ -901,8 +927,128 @@ def get_all_teams(request):
 #     return Response({"team": team_data}, status=status.HTTP_200_OK)
 
 
+def _team_tier_history(team):
+    """
+    Per-season tier + rank history for a team, sourced from the real afc_rankings
+    TeamQuarterlyScore table — ONLY for seasons whose tiers/rankings have been published.
+
+    tier is exposed only when Season.tiers_published; rank only when
+    Season.rankings_published (the two are independent publish gates, matching the public
+    rankings read API exactly). Seasons that expose nothing publicly yet are skipped.
+
+    Returns a list (possibly empty) of:
+      {season_id, season_name, year, quarter, tier, tier_label, rank}
+
+    If afc_rankings is unavailable, returns [] so get_team_details degrades gracefully.
+    """
+    try:
+        from afc_rankings.models import TeamQuarterlyScore
+        from afc_rankings.serializers import TIER_LABELS
+    except Exception:
+        return []
+
+    rows = (
+        TeamQuarterlyScore.objects.filter(team=team)
+        .select_related("season")
+        .order_by("season__year", "season__quarter")
+    )
+
+    history = []
+    for r in rows:
+        season = r.season
+        tier = r.tier_assigned if season.tiers_published else None
+        rank = r.rank if season.rankings_published else None
+        if tier is None and rank is None:
+            continue  # nothing published for this season yet
+        history.append({
+            "season_id": season.season_id,
+            "season_name": season.name,
+            "year": season.year,
+            "quarter": season.quarter,
+            "tier": tier,
+            "tier_label": TIER_LABELS.get(tier) if tier is not None else None,
+            "rank": rank,
+        })
+    return history
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PRIVACY HELPERS (team stats visibility)
+# ──────────────────────────────────────────────────────────────────────────────
+# Detailed team statistics (win/loss totals, win rate, average kills/placement,
+# per-event tournament performance, recent matches) are PRIVATE: only CURRENT
+# members of that team — plus AFC admins — may see them. Anonymous or non-member
+# viewers get the team's public identity (name, tier, member list) but NOT the
+# detailed numbers.
+#
+# "Member" is REAL roster membership in afc_team.TeamMembers (one row per
+# (team, member)). These helpers are consumed by get_team_details below. The
+# frontend caller is TeamStatisticsTab.tsx, which now sends the viewer's Bearer
+# token when logged in and reads the `stats_visible` flag in the response.
+
+
+def _viewer_from_request(request):
+    """
+    Resolve the OPTIONAL viewer from an Authorization: Bearer <token> header.
+
+    get_team_details stays public (no token required), so a missing / malformed /
+    expired token simply yields None (anonymous viewer) instead of an error.
+    Returns a User instance or None. Uses the shared validate_token helper so this
+    behaves identically to the authenticated team endpoints.
+    """
+    auth = request.headers.get("Authorization") or ""
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    return validate_token(token)
+
+
+def _can_view_team_stats(viewer, team):
+    """
+    Decide whether `viewer` (a User or None) may see `team`'s detailed stats.
+
+    True when the viewer is an AFC admin (User.role == "admin") OR a current
+    member of THIS team (a TeamMembers row for this (team, viewer)). Anonymous
+    (viewer is None) or non-member viewers => False.
+
+    Query cost: at most one tiny indexed existence check on TeamMembers. No N+1.
+    """
+    if viewer is None:
+        return False
+
+    # AFC admins always see full stats (consistent with require_admin elsewhere).
+    if getattr(viewer, "role", None) == "admin":
+        return True
+
+    # Member of this exact team?
+    return TeamMembers.objects.filter(team=team, member=viewer).exists()
+
+
 @api_view(["POST"])
 def get_team_details(request):
+    """
+    PUBLIC team detail + PRIVACY-GATED team statistics, keyed by team_name.
+
+    Powers the public team page (frontend teams/[id]/page.tsx) and, in particular,
+    the detailed "Statistics" tab (TeamStatisticsTab.tsx).
+
+    AUTH (optional): stays public, but reads an OPTIONAL Authorization: Bearer
+    <session-token> header to identify the viewer (via the shared validate_token).
+    A missing/expired token simply means "anonymous viewer".
+
+    PRIVACY (stats_visible): the DETAILED performance numbers (win/loss totals,
+    win rate, average kills/placement, per-event tournament_performance[],
+    recent_matches[]) are visible ONLY to CURRENT MEMBERS of this team
+    (afc_team.TeamMembers rows for this team) and to AFC admins. For everyone else
+    `stats_visible` is False and those sensitive numbers are ZEROED / EMPTIED.
+    The team's public IDENTITY (name, tag, logo, tier, description, country,
+    member count, member list, social links, ban info, tier_history) is ALWAYS
+    returned. Back-compatible: no keys renamed — we only add `stats_visible` and
+    gate the values behind it. TeamStatisticsTab.tsx reads `stats_visible` and
+    shows a "members only" message when it is False.
+    """
     team_name = request.data.get("team_name")
 
     if not team_name:
@@ -913,30 +1059,143 @@ def get_team_details(request):
     except Team.DoesNotExist:
         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    # Team members
+    # ── Viewer + team-stats visibility (self-membership / admin gate) ──────────
+    # Resolve the OPTIONAL viewer from the Bearer token (None when anonymous), then
+    # decide whether they may see the DETAILED team stats: a current member of THIS
+    # team, or an AFC admin. Non-members get the public identity only.
+    viewer = _viewer_from_request(request)
+    stats_visible = _can_view_team_stats(viewer, team)
+
+    # Members
     members_qs = TeamMembers.objects.filter(team=team).select_related("member")
     members_data = [
         {
-            "id": member.member.user_id,
-            "uid": member.member.uid,
-            "username": member.member.username,
-            "management_role": member.management_role,
-            "in_game_role": member.in_game_role,
-            "join_date": member.join_date,
-            "discord_id": member.member.discord_id,
+            "id": m.member.user_id,
+            "uid": m.member.uid,
+            "username": m.member.username,
+            "management_role": m.management_role,
+            "in_game_role": m.in_game_role,
+            "join_date": m.join_date,
+            "discord_id": m.member.discord_id,
         }
-        for member in members_qs
+        for m in members_qs
     ]
 
-    # Social media links
-    social_links_qs = TeamSocialMediaLinks.objects.filter(team=team)
+    # Social links
     social_links = [
-        {
-            "platform": link.platform,
-            "link": link.link,
-        }
-        for link in social_links_qs
+        {"platform": lnk.platform, "link": lnk.link}
+        for lnk in TeamSocialMediaLinks.objects.filter(team=team)
     ]
+
+    # ── DETAILED STATS (members + admins only) ────────────────────────────────
+    # Everything from here to recent_matches is the sensitive performance block.
+    # We compute it ONLY when stats_visible is True; otherwise we short-circuit to
+    # zeroed scalars + empty lists so no private number is computed or leaked. The
+    # default values below are exactly what a brand-new team with no matches would
+    # return, so the shape is identical either way (back-compatible).
+    total_matches = 0
+    total_wins = 0
+    win_rate = 0
+    avg_kills = 0
+    avg_placement = 0
+    tournament_performance = []
+    recent_matches = []
+
+    if stats_visible:
+        # Aggregate match stats across all tournament entries
+        agg = TournamentTeamMatchStats.objects.filter(
+            tournament_team__team=team
+        ).aggregate(
+            total_matches=Count("team_stats_id"),
+            total_wins=Count("team_stats_id", filter=Q(placement=1)),
+            avg_kills=Avg("kills"),
+            avg_placement=Avg("placement"),
+        )
+        total_matches = agg["total_matches"] or 0
+        total_wins = agg["total_wins"] or 0
+        win_rate = round((total_wins / total_matches) * 100, 1) if total_matches else 0
+        avg_kills = round(float(agg["avg_kills"] or 0), 1)
+        avg_placement = round(float(agg["avg_placement"] or 0), 1)
+
+        # Per-event tournament performance
+        tournament_teams = TournamentTeam.objects.filter(team=team).select_related("event")
+        for tt in tournament_teams:
+            tt_agg = TournamentTeamMatchStats.objects.filter(tournament_team=tt).aggregate(
+                total_points=Sum("total_points"),
+                total_kills=Sum("kills"),
+                matches_played=Count("team_stats_id"),
+                best_placement=Min("placement"),
+            )
+
+            # ── ADDITIVE: per-event date + per-event prize earned ──
+            # event_date: prefer the event's scheduled start_date; fall back to the team's
+            # registration date for this event when start_date is missing. Both are real fields.
+            event_date = None
+            if tt.event.start_date:
+                event_date = tt.event.start_date.isoformat()
+            elif tt.registration_date:
+                event_date = tt.registration_date.isoformat()
+
+            # prize_earned: the sum of EventPrizePayout rows recorded for THIS team in THIS
+            # event (payout rows carry tournament_team + amount). Real, cleanly derivable.
+            # Returns "0.00" when no payout row exists for this team/event (truthful zero,
+            # not a fabricated figure).
+            prize_earned = EventPrizePayout.objects.filter(
+                event=tt.event, tournament_team=tt
+            ).aggregate(total=Sum("amount"))["total"]
+
+            tournament_performance.append({
+                "event_id": tt.event.event_id,
+                "name": tt.event.event_name,
+                "competition_type": tt.event.competition_type,
+                "event_status": tt.event.event_status,
+                "team_status": tt.status,
+                "best_placement": tt_agg["best_placement"],
+                "total_points": tt_agg["total_points"] or 0,
+                "total_kills": tt_agg["total_kills"] or 0,
+                "matches_played": tt_agg["matches_played"] or 0,
+                # additive keys (existing keys above are untouched):
+                "event_date": event_date,
+                "prize_earned": str(prize_earned) if prize_earned is not None else "0.00",
+            })
+
+        # Last 10 match stats
+        recent_stat_qs = (
+            TournamentTeamMatchStats.objects.filter(tournament_team__team=team)
+            .select_related("match", "tournament_team__event")
+            .order_by("-match__match_date")[:10]
+        )
+        recent_matches = [
+            {
+                "event_name": s.tournament_team.event.event_name,
+                "match_number": s.match.match_number,
+                "match_map": s.match.match_map,
+                "placement": s.placement,
+                "kills": s.kills,
+                "total_points": s.total_points,
+                "match_date": s.match.match_date,
+            }
+            for s in recent_stat_qs
+        ]
+
+    # Ban info
+    ban_info = None
+    try:
+        tb = TeamBan.objects.get(team=team)
+        ban_info = {
+            "reason": tb.reason,
+            "ban_start_date": tb.ban_start_date,
+            "ban_end_date": tb.ban_end_date,
+            "banned_by": tb.banned_by.username,
+        }
+    except TeamBan.DoesNotExist:
+        pass
+
+    # ── ADDITIVE: per-season tier / rank history (from afc_rankings, publish-gated) ──
+    # Sourced from the real TeamQuarterlyScore table. tier is shown only for seasons whose
+    # tiers are published; rank only when rankings are published — mirroring the public
+    # rankings read API's two independent publish gates. Empty list when nothing published.
+    tier_history = _team_tier_history(team)
 
     team_data = {
         "team_id": team.team_id,
@@ -947,13 +1206,34 @@ def get_team_details(request):
         "creation_date": team.creation_date,
         "team_creator": team.team_creator.username,
         "team_owner": team.team_owner.username,
+        "team_captain": team.team_captain.username if team.team_captain else None,
         "is_banned": team.is_banned,
+        "ban_info": ban_info,
         "team_tier": team.team_tier,
         "team_description": team.team_description,
         "country": team.country,
+        "total_earnings": str(team.total_earnings or 0),
         "total_members": members_qs.count(),
         "members": members_data,
         "social_media_links": social_links,
+        # ── Privacy flag: True only for current team members + AFC admins ──
+        # When False, every detailed-stat field below is the zeroed/empty default
+        # (no private number leaks). TeamStatisticsTab.tsx reads this flag and shows
+        # a "Team stats are visible to team members only." message instead of the
+        # numbers, keeping the public identity above visible.
+        "stats_visible": stats_visible,
+        # Stats (zeroed when stats_visible is False)
+        "total_wins": total_wins,
+        "total_losses": total_matches - total_wins,
+        "win_rate": win_rate,
+        "average_kills": avg_kills,
+        "average_placement": avg_placement,
+        # Performance (empty lists when stats_visible is False)
+        "tournament_performance": tournament_performance,
+        "recent_matches": recent_matches,
+        # additive: per-season tier / rank history (publish-gated; [] when nothing published)
+        # Always returned — tier/rank are public ranking data, not private team stats.
+        "tier_history": tier_history,
     }
 
     return Response({"team": team_data}, status=status.HTTP_200_OK)
@@ -1077,6 +1357,17 @@ def exit_team(request):
         if team.team_owner == user:
             return Response({"message": "Team owners cannot exit their own team. Please transfer ownership or disband the team."}, status=status.HTTP_403_FORBIDDEN)
 
+        # Roster moves are locked outside the transfer window — a player can only leave a
+        # team while the window is OPEN. The window is defined on the active ranking season
+        # (afc_rankings.Season) and toggled by admins. Admin kicks/removals are unaffected.
+        from afc_rankings.models import Season
+        active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+        if active_season and not active_season.is_transfer_window_open():
+            return Response(
+                {"message": "The transfer window is currently closed. You cannot leave your team until it reopens."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # Remove the user from the team
         team_member.delete()
 
@@ -1158,7 +1449,9 @@ def respond_invite(request, invite_id):
 
     try:
         invite = Invite.objects.get(invite_id=invite_id)
-    except Invite.DoesNotExist:
+    except (Invite.DoesNotExist, ValidationError, ValueError):
+        # DoesNotExist = no such invite; ValidationError/ValueError = the id wasn't even a
+        # valid UUID (the route is <str:invite_id>). Either way it's a 404, never a 500.
         return Response({"message": "Invite not found."}, status=404)
 
     if invite.is_expired():
@@ -1177,25 +1470,35 @@ def respond_invite(request, invite_id):
     invite.save()
 
     if action == "accept":
-        # Only add if not already in the team
-        if not TeamMembers.objects.filter(team=invite.team, member=user).exists():
-
-            # Ensure the team is not up to 8 players yet
-            if TeamMembers.objects.filter(team=invite.team).count() >= 8:
-                return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
-
-            # Ensure there are not more than 6 players with member management role
-            player_count = TeamMembers.objects.filter(team=invite.team, management_role='member').count()
-            if player_count > 6:
-                return Response({'message': 'The team already has 6 players with member role.'}, status=status.HTTP_400_BAD_REQUEST)
-            TeamMembers.objects.create(
-                team=invite.team,
-                member=user,
-                management_role=invite.role_to_be_given_upon_acceptance
+        # Check if user is already in any team
+        existing_membership = TeamMembers.objects.filter(member=user).select_related("team").first()
+        if existing_membership:
+            return Response(
+                {"message": f"You are already a member of '{existing_membership.team.team_name}'. Leave that team before joining another."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        else:
-            return Response({"message": "You are already a member of this team."}, status=400)
+        # Ensure the team is not up to 8 players yet
+        if TeamMembers.objects.filter(team=invite.team).count() >= 8:
+            return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Ensure there are not more than 6 players with member management role.
+        # Explain the rule so the inviter/joiner knows the fix is to use a staff role.
+        player_count = TeamMembers.objects.filter(team=invite.team, management_role='member').count()
+        if player_count > 6:
+            return Response({
+                'message': (
+                    'This team already has the maximum of 6 players. Anyone else must '
+                    'join as staff (coach, manager, or analyst), which does not take a '
+                    'player slot.'
+                )
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        TeamMembers.objects.create(
+            team=invite.team,
+            member=user,
+            management_role=invite.role_to_be_given_upon_acceptance
+        )
         return Response({"message": f"You have joined {invite.team.team_name} successfully."})
 
     else:
@@ -1206,7 +1509,9 @@ def respond_invite(request, invite_id):
 def get_team_details_based_on_invite(request, invite_id):
     try:
         invite = Invite.objects.get(invite_id=invite_id)
-    except Invite.DoesNotExist:
+    except (Invite.DoesNotExist, ValidationError, ValueError):
+        # DoesNotExist = no such invite; ValidationError/ValueError = the id wasn't even a
+        # valid UUID (the route is <str:invite_id>). Either way it's a 404, never a 500.
         return Response({"message": "Invite not found."}, status=404)
 
     if invite.is_expired():
@@ -1231,6 +1536,34 @@ def get_team_details_based_on_invite(request, invite_id):
     }
 
     return Response({"team": team_data}, status=status.HTTP_200_OK)
+
+
+def _can_manage_roster(user, team):
+    """Who may manage a team's roster (change roles + kick members).
+
+    Allowed: the team OWNER, and any member whose management_role is 'coach'.
+    NOT allowed: team captains, vice captains, managers, analysts, members.
+    The check is bound to THIS team (the team looked up by team_id), so it can
+    never authorize managing a different team's roster.
+    """
+    if team.team_owner_id == user.user_id:
+        return True
+    return TeamMembers.objects.filter(
+        team=team, member=user, management_role="coach"
+    ).exists()
+
+
+def _transfer_window_open():
+    """True when player<->staff roster moves are allowed.
+
+    Tied to the active ranking season's transfer window (admins toggle it) — the SAME lock
+    that already gates kicks. If there is no active season, there is no lock (treated as open).
+    """
+    from afc_rankings.models import Season
+    active = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+    if not active:
+        return True
+    return active.is_transfer_window_open()
 
 
 @api_view(["POST"])
@@ -1262,20 +1595,18 @@ def manage_team_roster(request):
         except Team.DoesNotExist:
             return Response({"error": "Team not found"}, status=404)
 
-        # Only team owner allowed
-        if team.team_owner != user:
-            return Response({"error": "Only the team owner can manage the roster"}, status=403)
+        # Roster management is allowed for the team owner OR a coach (see _can_manage_roster).
+        if not _can_manage_roster(user, team):
+            return Response({"error": "Only the team owner or a coach can manage the roster"}, status=403)
 
         # Valid role sets
         valid_m_roles = [choice[0] for choice in TeamMembers.MANAGEMENT_ROLE_CHOICES]
         valid_i_roles = [choice[0] for choice in TeamMembers.IN_GAME_ROLE_CHOICES]
 
         results = []
-        # count current in-game roles
         existing_in_game_count = TeamMembers.objects.filter(
-            team=team,
-            in_game_role__isnull=False
-        ).count()
+            team=team, in_game_role__isnull=False
+        ).exclude(in_game_role="").count()
 
         MAX_IN_GAME = 6
         ALLOWED_IG_ROLES = {"team_captain", "vice_captain", "member"}
@@ -1283,94 +1614,104 @@ def manage_team_roster(request):
         for data in updates:
             member_id = data.get("member_id")
             new_m_role = data.get("management_role")
-            new_i_role = data.get("in_game_role")
+            # None means "don’t touch", "" means "clear the role"
+            new_i_role = data.get("in_game_role", None)
 
             try:
                 tm = TeamMembers.objects.get(team=team, member_id=member_id)
             except TeamMembers.DoesNotExist:
-                results.append({
-                    "member_id": member_id,
-                    "status": "failed",
-                    "reason": "Member not in team"
-                })
+                results.append({"member_id": member_id, "status": "failed", "reasons": ["Member not in team"]})
                 continue
 
-            # Prevent owner from demoting themselves unless allowed
-            if tm.member == user and new_m_role and new_m_role != tm.management_role:
-                results.append({
-                    "member_id": member_id,
-                    "status": "failed",
-                    "reason": "Owner cannot change their own management role"
-                })
-                continue
+            failures = []
 
-            # Validate management role
-            if new_m_role:
-                if new_m_role not in valid_m_roles:
-                    results.append({
-                        "member_id": member_id,
-                        "status": "failed",
-                        "reason": "Invalid management_role"
-                    })
-                    continue
-                tm.management_role = new_m_role
+            # ── Management-role change rules ──────────────────────────────────────
+            # Role families: PLAYER roles can hold an in-game slot + count toward the 6-player
+            # cap; STAFF roles (coach/manager/analyst) are support-only and cannot be fielded.
+            STAFF_ROLES = {"coach", "manager", "analyst"}
+            PLAYER_ROLES = {"team_captain", "vice_captain", "member"}
+            if new_m_role and new_m_role != tm.management_role:
+                # Crossing the player<->staff boundary is the abuse-prone move (parking an extra
+                # player as "staff" to dodge the 6-player cap, then swapping them back in), so it
+                # is gated by the transfer window.
+                crossing = (
+                    (tm.management_role in PLAYER_ROLES and new_m_role in STAFF_ROLES)
+                    or (tm.management_role in STAFF_ROLES and new_m_role in PLAYER_ROLES)
+                )
+                if tm.member == user:
+                    failures.append("You cannot change your own management role")
+                elif tm.member_id == team.team_owner_id:
+                    failures.append("The team owner's management role cannot be changed")
+                elif new_m_role not in valid_m_roles:
+                    failures.append("Invalid management_role")
+                elif crossing and not _transfer_window_open():
+                    failures.append("Player/staff role changes are only allowed during the transfer window")
+                elif new_m_role in STAFF_ROLES and TeamMembers.objects.filter(
+                    team=team, management_role=new_m_role
+                ).exclude(member_id=tm.member_id).exists():
+                    # Cap: at most one coach, one manager, one analyst per team.
+                    failures.append(f"This team already has a {new_m_role.replace('_', ' ')}")
+                else:
+                    # Player -> staff: staff are non-players, so drop any in-game role they held
+                    # (closes the "park a player as staff, then swap them back" loophole).
+                    if new_m_role in STAFF_ROLES and tm.in_game_role:
+                        tm.in_game_role = None
+                        existing_in_game_count = max(0, existing_in_game_count - 1)
+                    tm.management_role = new_m_role
 
-            # Validate in-game role
-            if new_i_role:
-
-                # ❌ only certain management roles allowed
-                if tm.management_role not in ALLOWED_IG_ROLES:
-                    results.append({
-                        "member_id": member_id,
-                        "status": "failed",
-                        "reason": "Only players (captain, vice captain, member) can have in-game roles"
-                    })
-                    continue
-
-                # ❌ max 6 players rule
-                if not tm.in_game_role:  # only count NEW assignments
-                    if existing_in_game_count >= MAX_IN_GAME:
-                        results.append({
-                            "member_id": member_id,
-                            "status": "failed",
-                            "reason": "Maximum of 6 players can have in-game roles"
-                        })
-                        continue
-
-                    existing_in_game_count += 1  # increment since we’re adding
-
-                # validate role
-                if new_i_role not in valid_i_roles:
-                    results.append({
-                        "member_id": member_id,
-                        "status": "failed",
-                        "reason": "Invalid in_game_role"
-                    })
-                    continue
-
-                tm.in_game_role = new_i_role
+            # In-game role — None means skip, "" means clear
+            if new_i_role is not None:
+                if new_i_role == "":
+                    tm.in_game_role = None
+                elif new_i_role not in valid_i_roles:
+                    failures.append("Invalid in_game_role")
+                elif tm.management_role not in ALLOWED_IG_ROLES:
+                    failures.append("Only players (captain, vice captain, member) can have in-game roles")
+                elif not tm.in_game_role and existing_in_game_count >= MAX_IN_GAME:
+                    failures.append(
+                        "A team can field at most 6 players. To add more people, give them a "
+                        "staff role (coach, manager, or analyst) instead. Staff do not count "
+                        "toward the 6-player limit."
+                    )
+                else:
+                    if not tm.in_game_role:
+                        existing_in_game_count += 1
+                    tm.in_game_role = new_i_role
 
             tm.save()
 
-            results.append({
-                "member_id": member_id,
-                "status": "success",
-                "management_role": tm.management_role,
-                "in_game_role": tm.in_game_role
-            })
+            if failures:
+                # Hard blocks (self-role-change / owner-protected) mean nothing was applied for
+                # this member -> "failed"; any other mix means some changes landed -> "partial".
+                _HARD_BLOCKS = ("You cannot change your own", "The team owner's management role")
+                results.append({
+                    "member_id": member_id,
+                    "username": tm.member.username,
+                    "status": "failed" if all(f.startswith(_HARD_BLOCKS) for f in failures) else "partial",
+                    "reasons": failures,
+                    "management_role": tm.management_role,
+                    "in_game_role": tm.in_game_role,
+                })
+            else:
+                results.append({
+                    "member_id": member_id,
+                    "username": tm.member.username,
+                    "status": "success",
+                    "management_role": tm.management_role,
+                    "in_game_role": tm.in_game_role,
+                })
+                Report.objects.create(
+                    team=team,
+                    user=user,
+                    action="role_changed",
+                    description=f"{tm.member.username}’s roles updated: management_role={tm.management_role}, in_game_role={tm.in_game_role} by {user.username}."
+                )
 
-
-            # Log the action in the Report table
-            Report.objects.create(
-                team=team,
-                user=user,
-                action="roster_updated",
-                description=f"{tm.member.username}'s roles updated to management_role: {tm.management_role}, in_game_role: {tm.in_game_role} by {user.username}."
-            )
-
+        any_failed = any(r["status"] in ("failed", "partial") for r in results)
         return Response({
-            "message": "Bulk roster update completed",
-            "results": results
+            "message": "Roster update completed" if not any_failed else "Some updates could not be applied — see results for details.",
+            "results": results,
+            "has_errors": any_failed,
         }, status=200)
 
     except Exception as e:
@@ -1406,9 +1747,20 @@ def kick_team_member(request):
         except Team.DoesNotExist:
             return Response({"error": "Team not found"}, status=404)
 
-        # Only team owner allowed
-        if team.team_owner != user:
-            return Response({"error": "Only the team owner can kick members"}, status=403)
+        # Kicking is allowed for the team owner OR a coach (see _can_manage_roster).
+        if not _can_manage_roster(user, team):
+            return Response({"error": "Only the team owner or a coach can kick members"}, status=403)
+
+        # Roster moves are locked outside the transfer window — members cannot be kicked
+        # while the window is CLOSED (matches the player-leave + disband locks). The window
+        # is the active ranking season's range (afc_rankings.Season), toggled by admins.
+        from afc_rankings.models import Season
+        active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+        if active_season and not active_season.is_transfer_window_open():
+            return Response(
+                {"error": "The transfer window is currently closed. Members cannot be kicked until it reopens."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Get team member to kick
         try:
@@ -1416,9 +1768,13 @@ def kick_team_member(request):
         except TeamMembers.DoesNotExist:
             return Response({"error": "Member not in team"}, status=404)
 
-        # Prevent owner from kicking themselves
+        # You cannot kick yourself.
         if tm.member == user:
-            return Response({"error": "Owner cannot kick themselves"}, status=400)
+            return Response({"error": "You cannot kick yourself"}, status=400)
+
+        # The team owner cannot be kicked (a coach must not be able to remove the owner).
+        if tm.member_id == team.team_owner_id:
+            return Response({"error": "The team owner cannot be kicked."}, status=400)
 
         kicked_member_username = tm.member.username
         tm.delete()
@@ -1567,7 +1923,8 @@ def get_team_with_highest_wins(request):
         .filter(placement=1)
         .values(team_id=F("tournament_team__team__team_id"),
                 team_name=F("tournament_team__team__team_name"))
-        .annotate(total_wins=Count("id"))
+        # Count by the model's real PK "team_stats_id" — TournamentTeamMatchStats has no auto "id" field (explicit AutoField PK), matching Count("team_stats_id") used elsewhere in this file
+        .annotate(total_wins=Count("team_stats_id"))
         .order_by("-total_wins", "team_name")
         .first()
     )
@@ -1584,3 +1941,348 @@ def get_top_earning_teams(request):
     qs = Team.objects.order_by("-total_earnings")[:5]
     data = [{"team_id": t.team_id, "team_name": t.team_name, "total_earnings": t.total_earnings} for t in qs]
     return Response({"top_earning_teams": data}, status=status.HTTP_200_OK)
+
+
+def _is_admin(user):
+    """Return True if the user is a full admin or has head_admin/teams_admin role."""
+    if user.role == "admin":
+        return True
+    return UserRoles.objects.filter(
+        user=user,
+        role__role_name__in=["head_admin", "teams_admin"]
+    ).exists()
+
+
+def _get_authed_user(request):
+    """Validate Bearer token and return (user, error_response)."""
+    session_token = request.headers.get("Authorization", "")
+    if not session_token or not session_token.startswith("Bearer "):
+        return None, Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    return user, None
+
+
+@api_view(["GET"])
+def admin_search_players(request):
+    admin, err = _get_authed_user(request)
+    if err:
+        return err
+    if not _is_admin(admin):
+        return Response({"message": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+    query = request.query_params.get("q", "").strip()
+    if len(query) < 2:
+        return Response({"players": []}, status=status.HTTP_200_OK)
+
+    matched = User.objects.filter(
+        Q(username__icontains=query) | Q(email__icontains=query)
+    )[:10]
+
+    results = []
+    for u in matched:
+        membership = TeamMembers.objects.filter(member=u).select_related("team").first()
+        results.append({
+            "user_id": u.user_id,
+            "username": u.username,
+            "email": u.email,
+            "current_team": {
+                "team_id": membership.team.team_id,
+                "team_name": membership.team.team_name,
+            } if membership else None,
+        })
+
+    return Response({"players": results}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def admin_remove_member(request):
+    admin, err = _get_authed_user(request)
+    if err:
+        return err
+    if not _is_admin(admin):
+        return Response({"message": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+    team_id = request.data.get("team_id")
+    member_id = request.data.get("member_id")
+
+    if not team_id or not member_id:
+        return Response({"message": "team_id and member_id are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        team = Team.objects.get(team_id=team_id)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        tm = TeamMembers.objects.get(team=team, member_id=member_id)
+    except TeamMembers.DoesNotExist:
+        return Response({"message": "Member not found in this team."}, status=status.HTTP_404_NOT_FOUND)
+
+    if team.team_owner_id == tm.member_id:
+        return Response({"message": "Cannot remove the team owner."}, status=status.HTTP_400_BAD_REQUEST)
+
+    removed_member = tm.member
+    removed_username = removed_member.username
+    tm.delete()
+
+    Report.objects.create(
+        team=team,
+        user=admin,
+        action="player_removed",
+        description=f"{removed_username} was removed from {team.team_name} by admin {admin.username}."
+    )
+    Notifications.objects.create(
+        user=removed_member,
+        message=f"You have been removed from the team '{team.team_name}' by an admin.",
+        notification_type="team_kick"
+    )
+    Notifications.objects.create(
+        user=team.team_owner,
+        message=f"{removed_username} was removed from your team '{team.team_name}' by an admin.",
+        notification_type="team_kick"
+    )
+
+    return Response({"message": f"{removed_username} has been removed from {team.team_name}."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def admin_add_member(request):
+    admin, err = _get_authed_user(request)
+    if err:
+        return err
+    if not _is_admin(admin):
+        return Response({"message": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+    team_id = request.data.get("team_id")
+    player_id = request.data.get("player_id")
+    management_role = request.data.get("management_role", "member")
+    force_move = request.data.get("force_move", False)
+    override_limit = request.data.get("override_limit", False)
+
+    if not team_id or not player_id:
+        return Response({"message": "team_id and player_id are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    valid_roles = [choice[0] for choice in TeamMembers.MANAGEMENT_ROLE_CHOICES]
+    if management_role not in valid_roles:
+        return Response({"message": f"Invalid role. Must be one of: {', '.join(valid_roles)}."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        team = Team.objects.get(team_id=team_id)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        player = User.objects.get(user_id=player_id)
+    except User.DoesNotExist:
+        return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if TeamMembers.objects.filter(team=team, member=player).exists():
+        return Response({"message": "Player is already a member of this team."}, status=status.HTTP_400_BAD_REQUEST)
+
+    existing = TeamMembers.objects.filter(member=player).select_related("team").first()
+    if existing:
+        if not force_move:
+            return Response({
+                "message": f"Player is currently on team '{existing.team.team_name}'.",
+                "error_code": "player_on_team",
+                "current_team": existing.team.team_name,
+            }, status=status.HTTP_400_BAD_REQUEST)
+        Report.objects.create(
+            team=existing.team,
+            user=admin,
+            action="player_removed",
+            description=f"{player.username} was force-moved from '{existing.team.team_name}' to '{team.team_name}' by admin {admin.username}."
+        )
+        Notifications.objects.create(
+            user=existing.team.team_owner,
+            message=f"{player.username} was removed from your team '{existing.team.team_name}' by an admin.",
+            notification_type="team_kick"
+        )
+        existing.delete()
+
+    current_count = TeamMembers.objects.filter(team=team).count()
+    if current_count >= 8 and not override_limit:
+        return Response({
+            "message": f"Team already has {current_count} members (above the 8-member limit).",
+            "error_code": "team_full",
+            "current_count": current_count,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    TeamMembers.objects.create(team=team, member=player, management_role=management_role)
+
+    Report.objects.create(
+        team=team,
+        user=admin,
+        action="player_joined",
+        description=f"{player.username} was added to '{team.team_name}' as {management_role} by admin {admin.username}."
+    )
+    Notifications.objects.create(
+        user=player,
+        message=f"You have been added to the team '{team.team_name}' by an admin.",
+        notification_type="team_join"
+    )
+    Notifications.objects.create(
+        user=team.team_owner,
+        message=f"{player.username} has been added to your team '{team.team_name}' by an admin.",
+        notification_type="team_join"
+    )
+
+
+# ── Admin Team Management ──────────────────────────────────────────────────────
+
+def _require_team_admin(request):
+    """Validate Bearer token and require admin/moderator/support role. Returns (user, err)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+    if user.role not in ["admin", "moderator", "support"]:
+        return None, Response({"message": "You do not have permission to perform this action."}, status=403)
+    return user, None
+
+
+@api_view(["GET"])
+def admin_get_team_event_history(request):
+    user, err = _require_team_admin(request)
+    if err:
+        return err
+
+    team_id = request.query_params.get("team_id")
+    if not team_id:
+        return Response({"message": "team_id is required."}, status=400)
+
+    try:
+        page = max(1, int(request.query_params.get("page", 1)))
+        page_size = min(50, max(1, int(request.query_params.get("page_size", 10))))
+    except ValueError:
+        return Response({"message": "page and page_size must be integers."}, status=400)
+
+    team = get_object_or_404(Team, team_id=team_id)
+
+    qs = TournamentTeam.objects.filter(team=team).select_related("event").order_by("-registration_date")
+    total = qs.count()
+    offset = (page - 1) * page_size
+    entries = qs[offset : offset + page_size]
+
+    results = [
+        {
+            "event_id": tt.event.event_id,
+            "event_name": tt.event.event_name,
+            "competition_type": tt.event.competition_type,
+            "event_status": tt.event.event_status,
+            "team_status": tt.status,
+            "registration_date": tt.registration_date,
+            "is_waitlisted": tt.is_waitlisted,
+        }
+        for tt in entries
+    ]
+
+    return Response(
+        {
+            "results": results,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, (total + page_size - 1) // page_size),
+        },
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def admin_change_team_tier(request):
+    user, err = _require_team_admin(request)
+    if err:
+        return err
+
+    team_id = request.data.get("team_id")
+    tier = str(request.data.get("tier", "")).strip()
+
+    if not team_id:
+        return Response({"message": "team_id is required."}, status=400)
+    if tier not in ["1", "2", "3"]:
+        return Response({"message": "tier must be 1, 2, or 3."}, status=400)
+
+    team = get_object_or_404(Team, team_id=team_id)
+    old_tier = team.team_tier
+    team.team_tier = tier
+    team.save(update_fields=["team_tier"])
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="change_team_tier",
+        description=f"Changed tier of '{team.team_name}' (ID: {team.team_id}) from {old_tier} to {tier}.",
+    )
+    Notifications.objects.create(
+        user=team.team_owner,
+        message=f"Your team '{team.team_name}' has been moved to Tier {tier} by an admin.",
+        notification_type="team_update",
+    )
+
+    return Response(
+        {"message": f"Team tier updated from {old_tier} to {tier}.", "new_tier": tier},
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def admin_transfer_team_ownership(request):
+    user, err = _require_team_admin(request)
+    if err:
+        return err
+
+    team_id = request.data.get("team_id")
+    new_owner_id = request.data.get("new_owner_id")
+
+    if not team_id or not new_owner_id:
+        return Response({"message": "team_id and new_owner_id are required."}, status=400)
+
+    team = get_object_or_404(Team, team_id=team_id)
+    new_owner = get_object_or_404(User, user_id=new_owner_id)
+    old_owner = team.team_owner
+
+    if new_owner == old_owner:
+        return Response({"message": "New owner is already the team owner."}, status=400)
+
+    if not TeamMembers.objects.filter(team=team, member=new_owner).exists():
+        return Response({"message": "New owner must be a current team member."}, status=400)
+
+    # Update management roles
+    TeamMembers.objects.filter(team=team, member=old_owner).update(management_role="member")
+    TeamMembers.objects.filter(team=team, member=new_owner).update(management_role="team_captain")
+
+    team.team_owner = new_owner
+    team.save(update_fields=["team_owner"])
+
+    Report.objects.create(
+        team=team,
+        user=new_owner,
+        action="role_assigned",
+        description=f"Admin {user.username} transferred ownership from {old_owner.username} to {new_owner.username}.",
+    )
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="transfer_team_ownership",
+        description=f"Transferred ownership of '{team.team_name}' from {old_owner.username} to {new_owner.username}.",
+    )
+    Notifications.objects.create(
+        user=new_owner,
+        message=f"You are now the owner of '{team.team_name}'. Ownership was transferred by an admin.",
+        notification_type="team_update",
+    )
+    Notifications.objects.create(
+        user=old_owner,
+        message=f"Ownership of '{team.team_name}' has been transferred to {new_owner.username} by an admin.",
+        notification_type="team_update",
+    )
+
+    return Response(
+        {"message": f"Ownership transferred to {new_owner.username} successfully."},
+        status=200,
+    )
+
+    return Response({"message": f"{player.username} has been added to {team.team_name} as {management_role}."}, status=status.HTTP_201_CREATED)

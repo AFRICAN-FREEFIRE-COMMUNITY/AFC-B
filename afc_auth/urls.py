@@ -8,7 +8,11 @@ urlpatterns = [
     # path("admin/", admin.site.urls),
     # path('admin-login/', admin_login, name='admin_login'),
     path('signup/', signup, name='signup'),
-    path('verify/<uidb64>/<token>/', verify_token, name='verify_token'),
+    # Email-verification link (GET, decodes uidb64 + checks token). Uses the renamed
+    # view `verify_email_token` so it no longer collides with the password-reset
+    # `verify_token` POST view below (the name clash silently bound this route to the
+    # wrong view and caused a TypeError 500). See views.verify_email_token.
+    path('verify/<uidb64>/<token>/', verify_email_token, name='verify_email_token'),
     path('login/', login, name='login'),
     # path('logout/', logout, name='logout'),
     path('send-verification-token/', send_verification_token, name='send_verification_token'),
@@ -51,6 +55,7 @@ urlpatterns = [
     path("get-notifications/", get_notifications, name="get_notifications"),
     path("send-notification/", send_notification, name="send_notification"),
     path("send-notification-to-multiple-users/", send_notification_to_multiple_users, name="send_notification_to_multiple_users"),
+    path("admin-send-message/", admin_send_message, name="admin_send_message"),
     path("view-notification/", view_notification, name="view_notification"),
     path('get-total-players-count/', get_total_players_count, name='get_total_players_count'),
     path('get-active-players-count/', get_active_players_count, name='get_active_players_count'),

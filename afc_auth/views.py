@@ -320,7 +320,7 @@ def login(request):
         session_token = generate_session_token()
 
         SessionToken.objects.create(user=user, token=session_token)
-        
+
         # Save session token to the user model
         user.last_login = timezone.now()
         user.save()
@@ -595,22 +595,43 @@ If you did not request this, please ignore this email.
 #     return Response({"message": "A new verification code has been sent to your email."}, status=status.HTTP_200_OK)
 
 
+# NOTE: this view was previously also named `verify_token`, which collided with the
+# password-reset `verify_token` POST view defined later in this module. Because
+# urls.py does `from .views import *`, the later definition won the name, so the
+# `verify/<uidb64>/<token>/` route actually bound to the POST view, which has signature
+# (request) and cannot accept the uidb64/token URL kwargs -> TypeError 500 on every
+# request to that route. Renamed to a unique name so the route binds to THIS view.
 @api_view(["GET"])
-def verify_token(request, uidb64, token):
+def verify_email_token(request, uidb64, token):
+    # Decode the uidb64 first, in its own guard. A malformed uidb64 (not valid
+    # base64, or base64 that does not decode to utf-8) raises ValueError /
+    # DjangoUnicodeDecodeError from urlsafe_base64_decode/force_str. A value that
+    # decodes to a non-numeric string then raises ValueError/TypeError from
+    # User.objects.get(pk=...) because the pk (user_id) is an integer AutoField.
+    # None of those were caught by the old `except User.DoesNotExist` only, so a
+    # malformed token like /verify/MQ/sampletoken/ 500'd. Treat all of these as a
+    # bad request (400) rather than an unhandled 500.
     try:
         uid = force_str(urlsafe_base64_decode(uidb64))
+    except (ValueError, TypeError, OverflowError):
+        # prevents ValueError / DjangoUnicodeDecodeError on undecodable uidb64
+        return Response({"error": "Invalid or malformed token."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
         user = User.objects.get(pk=uid)
-
-        # Validate token
-        if default_token_generator.check_token(user, token):
-            user.is_active = True  # Activate user after verification
-            user.save()
-            return Response({"message": "Email verified successfully!"}, status=status.HTTP_200_OK)
-        else:
-            return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
-
-    except User.DoesNotExist:
+    except (User.DoesNotExist, ValueError, TypeError):
+        # prevents User.DoesNotExist (no such user) and ValueError/TypeError
+        # (uid decoded to a non-integer that the integer pk lookup rejects)
         return Response({"error": "Invalid user."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Validate token. check_token already returns False (never raises) for a
+    # malformed token in this Django version, so no extra guard is needed here.
+    if default_token_generator.check_token(user, token):
+        user.is_active = True  # Activate user after verification
+        user.save()
+        return Response({"message": "Email verified successfully!"}, status=status.HTTP_200_OK)
+    else:
+        return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
     
 
 @api_view(["POST"])
@@ -821,7 +842,7 @@ def ban_player(request):
         return Response({"message": "Player IGN and duration are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        player = User.objects.get(in_game_name=player_ign)
+        player = User.objects.get(username=player_ign)
     except User.DoesNotExist:
         return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1706,17 +1727,28 @@ def get_admin_info(request):
         )
 
 
-    if not user.is_admin:
+    # The User model has no `is_admin` field/property (only `role`), so the old
+    # `user.is_admin` raised AttributeError -> 500 on every call. Use the same
+    # role check the rest of this module uses (user.role == "admin").
+    if user.role != "admin":
         return Response({"message": "User is not an admin."}, status=status.HTTP_403_FORBIDDEN)
 
-    # Return admin information
+    # Return admin information.
+    # Fixes the AttributeError chain that previously 500'd this endpoint:
+    #   - user.id            -> the pk is `user_id` (use that explicitly)
+    #   - user.roles.all()   -> there is no `roles` related manager; the related_name
+    #                           on UserRoles is `userroles`, each row's role is a
+    #                           Roles FK whose label field is `role_name` (not `name`)
+    admin_roles = list(
+        UserRoles.objects.filter(user=user).values_list("role__role_name", flat=True)
+    )
     admin_info = {
-        "id": user.id,
+        "id": user.user_id,
         "email": user.email,
         "name": user.username,
         "is_active": user.is_active,
         "status": user.status,
-        "admin_roles": [role.name for role in user.roles.all()]
+        "admin_roles": admin_roles,
     }
 
     return Response({"message": "Admin information retrieved successfully.", "data": admin_info}, status=status.HTTP_200_OK)
@@ -1732,12 +1764,19 @@ def get_all_roles(request):
 
 @api_view(["GET"])
 def get_all_user_and_user_roles(request):
+    # Admin Settings -> users + their granular roles (frontend app/(a)/a/settings/page.tsx).
+    # PERFORMANCE: previously ran a UserRoles query PLUS a lazy ur.role load PER user inside the
+    # loop -> ~10k+ queries for 6,316 users (~6s). Now: one grouped UserRoles fetch with the role
+    # joined (select_related), assembled into a {user_id: [role_name,...]} dict. Same response
+    # shape, 2 queries total.
+    roles_by_user = {}
+    for ur in UserRoles.objects.select_related("role").all():
+        roles_by_user.setdefault(ur.user_id, []).append(ur.role.role_name)
+
     users = User.objects.all()
     users_data = []
 
     for user in users:
-        user_roles = UserRoles.objects.filter(user=user)
-        roles = [ur.role.role_name for ur in user_roles]
         users_data.append({
             "user_id": user.user_id,
             "username": user.username,
@@ -1745,7 +1784,7 @@ def get_all_user_and_user_roles(request):
             "role": user.role,
             "status": user.status,
             "last_login": user.last_login,
-            "roles": roles,
+            "roles": roles_by_user.get(user.user_id, []),
             "created_at": user.created_at
         })
 
@@ -3180,6 +3219,118 @@ def send_notification_to_multiple_users(request):
     return Response({"message": "Notifications sent successfully."}, status=status.HTTP_201_CREATED)
 
 
+@api_view(["POST"])
+def admin_send_message(request):
+    """
+    Admin -> direct message to a single PLAYER or a whole TEAM, over push (in-app
+    Notifications), email, or both. Backs the "Send Message" control on the admin
+    Players + Teams detail pages so an admin can reach a specific player or every
+    member of a team without going through an event broadcast.
+
+    Payload:
+      target_type : "player" | "team"
+      target_id   : user_id (player) or team_id (team)
+      title       : optional subject / notification title
+      message     : required body text
+      delivery    : "push" | "email" | "both"   (default "both")
+    """
+    # ── auth (mirror the sibling notification endpoints) ──
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    if user.role != "admin":
+        return Response({"message": "You do not have permission to send messages."}, status=status.HTTP_403_FORBIDDEN)
+
+    # ── input ──
+    target_type = (request.data.get("target_type") or "").strip().lower()
+    target_id = request.data.get("target_id")
+    title = (request.data.get("title") or "").strip()
+    message = (request.data.get("message") or "").strip()
+    delivery = (request.data.get("delivery") or "both").strip().lower()
+
+    if target_type not in ("player", "team"):
+        return Response({"message": "target_type must be 'player' or 'team'."}, status=status.HTTP_400_BAD_REQUEST)
+    if not target_id:
+        return Response({"message": "target_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not message:
+        return Response({"message": "message is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if delivery not in ("push", "email", "both"):
+        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=status.HTTP_400_BAD_REQUEST)
+
+    want_push = delivery in ("push", "both")
+    want_email = delivery in ("email", "both")
+
+    # ── resolve recipients ──
+    # Local import so afc_auth has no import-time dependency on afc_team
+    # (afc_team imports from afc_auth, so a top-level import here could cycle).
+    from afc_team.models import Team, TeamMembers
+
+    if target_type == "player":
+        try:
+            recipients = [User.objects.get(user_id=target_id)]
+        except User.DoesNotExist:
+            return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+        target_label = recipients[0].username
+    else:
+        try:
+            team = Team.objects.get(team_id=target_id)
+        except Team.DoesNotExist:
+            return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        recipients = [
+            tm.member
+            for tm in TeamMembers.objects.filter(team=team).select_related("member")
+            if tm.member
+        ]
+        target_label = team.team_name
+        if not recipients:
+            return Response({"message": "This team has no members to message."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # ── deliver ──
+    pushed = 0
+    emailed = 0
+    # Push: one in-app Notification row per recipient (bulk for the team case).
+    if want_push:
+        Notifications.objects.bulk_create([
+            Notifications(
+                user=r,
+                title=title or None,
+                message=message,
+                notification_type="admin_message",
+            )
+            for r in recipients
+        ])
+        pushed = len(recipients)
+    # Email: best-effort per recipient. send_email() already validates the address
+    # and returns False on failure, so one bad address never blocks the rest.
+    if want_email:
+        subject = title or "A message from African Free Fire Community"
+        html_body = (
+            f"<p>{message}</p>"
+            "<p style='color:#888;font-size:12px'>Sent by the AFC admin team.</p>"
+        )
+        for r in recipients:
+            if r.email and send_email(r.email, subject, html_body):
+                emailed += 1
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="admin_send_message",
+        description=(
+            f"Sent {delivery} message to {target_type} '{target_label}' "
+            f"({pushed} pushed, {emailed} emailed)"
+        ),
+    )
+
+    return Response({
+        "message": f"Message sent to {target_label}.",
+        "recipients": len(recipients),
+        "pushed": pushed,
+        "emailed": emailed,
+    }, status=status.HTTP_201_CREATED)
+
 
 @api_view(["GET"])
 def get_total_players_count(request):
@@ -3274,7 +3425,9 @@ def get_top_winner_player(request):
         TournamentTeamMatchStats.objects
         .filter(placement=1)
         .values("tournament_team__members__user_id", "tournament_team__members__user__username")
-        .annotate(wins=Count("id"))
+        # TournamentTeamMatchStats sets team_stats_id as its explicit PK, so it has no `id` field;
+        # count its real PK (matches repo convention, e.g. afc_team/views.py:951,967) to avoid FieldError -> 500
+        .annotate(wins=Count("team_stats_id"))
     )
 
     # Merge in python (simple + safe)

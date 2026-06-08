@@ -16,6 +16,8 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -28,5 +30,21 @@ urlpatterns = [
     path("player/", include('afc_player.urls')),
     path("player-market/", include('afc_player_market.urls')),
     path("events/", include('afc_ocr.urls')),
+    path("rankings/", include('afc_rankings.urls')),
+    path("organizers/", include('afc_organizers.urls')),
+    # Versioned, read-only partner data API (afc_partner_api). Mounted under a /v1/
+    # prefix so a future breaking version can ship as /api/v2/partner/ without
+    # disrupting existing partner integrations.
+    path("api/v1/partner/", include('afc_partner_api.partner_urls')),
+    # AFC-staff partner-admin surface (provision partners, set scope/toggles, issue/
+    # revoke keys, publish events). Mounted at partners/ so its routes are
+    # partners/admin/… — the human Bearer-authenticated provisioning surface, kept
+    # OFF the versioned partner-facing read tree above.
+    path("partners/", include('afc_partner_api.admin_urls')),
 
 ]
+
+# In development, the Django dev server must serve uploaded media itself
+# (in production this is handled by S3/static hosting).
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
