@@ -59,7 +59,12 @@ urlpatterns = [
     path('remove-non-nigeria-registered-competitors/', remove_non_nigeria_registered_competitors, name='remove_non_nigeria_registered_competitors'),
     path('delete-match/', delete_match, name='delete_match'),
     path('edit-match-details/', edit_match_details, name='edit_match_details'),
-    path('create-leaderboard-manually/', create_leaderboard_manually, name='create_leaderboard_manually'),
+    # DEPRECATED / HIDDEN: manual leaderboard creation is no longer used. Leaderboards
+    # are created AUTOMATICALLY for every group when an event's stages/groups/maps are
+    # set up (create_event + edit_event sync). The route is commented out so the dead
+    # endpoint can't be reached; the view function is kept (marked deprecated) but
+    # unused. The FE "Create Leaderboard" entry points are hidden to match.
+    # path('create-leaderboard-manually/', create_leaderboard_manually, name='create_leaderboard_manually'),
     path('enter-solo-match-result-manual/', enter_solo_match_result_manual, name='enter_solo_match_result_manual'),
     path('enter-team-match-result-manual/', enter_team_match_result_manual, name='enter_team_match_result_manual'),
     path('edit-match-result/', edit_match_result, name='edit_match_result'),

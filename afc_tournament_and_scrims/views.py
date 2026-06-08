@@ -13458,6 +13458,11 @@ def _normalize_placement_points(pp):
 
 @api_view(["POST"])
 def create_leaderboard_manually(request):
+    # DEPRECATED (no longer in use). Leaderboards are created AUTOMATICALLY for every
+    # group when an event's stages/groups/maps are set up (see create_event ~L1055 and
+    # the edit_event group sync ~L2153). The URL route for this view is commented out in
+    # urls.py so it is unreachable; the function is retained only to avoid churn. Do not
+    # wire it back up without removing the auto-create paths first.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token"}, status=400)

@@ -4305,40 +4305,6 @@
           ]
         },
         {
-          "name": "GET /organizers/design-requests/sample-slug/ - Member-scoped leaderboard-design requests for one org (resolved by <slug>):",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/organizers/design-requests/sample-slug/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "organizers",
-                "design-requests",
-                "sample-slug"
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
-                ]
-              }
-            }
-          ]
-        },
-        {
           "name": "POST /organizers/design-requests/sample-slug/ - Member-scoped leaderboard-design requests for one org (resolved by <slug>):",
           "request": {
             "method": "POST",
@@ -4371,6 +4337,40 @@
                   "language": "json"
                 }
               }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /organizers/design-requests/sample-slug/ - Member-scoped leaderboard-design requests for one org (resolved by <slug>):",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/organizers/design-requests/sample-slug/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "organizers",
+                "design-requests",
+                "sample-slug"
+              ]
             }
           },
           "event": [
@@ -14111,52 +14111,6 @@
           ]
         },
         {
-          "name": "POST /events/create-leaderboard-manually/ - create_leaderboard_manually",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/events/create-leaderboard-manually/",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "events",
-                "create-leaderboard-manually"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
-                ]
-              }
-            }
-          ]
-        },
-        {
           "name": "POST /events/enter-solo-match-result-manual/ - enter_solo_match_result_manual",
           "request": {
             "method": "POST",
@@ -16068,6 +16022,52 @@
               "path": [
                 "events",
                 "broadcast-announcement"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /events/broadcast-to-group/ - POST /events/broadcast-to-group/",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/events/broadcast-to-group/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "events",
+                "broadcast-to-group"
               ]
             },
             "body": {
