@@ -78,9 +78,13 @@ keep the GPU training stack isolated. Create it once, then install Paddle into i
 # 1. paddlepaddle-gpu, CUDA 12.6 build, from the official Paddle package index:
 .\.venv-train\Scripts\python.exe -m pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
 
-# 2. PaddleOCR (the recognizer training code) + paddle2onnx (the ONNX exporter) + requests
-#    (train_cycle.py talks to the AFC server over HTTP):
-.\.venv-train\Scripts\python.exe -m pip install paddleocr paddle2onnx requests
+# 2. paddle2onnx (the ONNX exporter) + requests (train_cycle.py HTTP). PIN paddle2onnx to
+#    1.3.1: the latest paddle2onnx/paddlex/paddleocr demand a paddle NIGHTLY and will not
+#    import against the stable paddlepaddle-gpu==3.0.0 above. Do NOT pip install paddleocr
+#    here, it drags in paddlex which has the same nightly requirement. The PP-OCRv5 fine-tune
+#    runs from a CLONE of the PaddleOCR GitHub repo (tools/train.py), not the pip package, so
+#    the pip paddleocr inference API is not needed on the trainer.
+.\.venv-train\Scripts\python.exe -m pip install paddle2onnx==1.3.1 requests
 ```
 
 Notes:
