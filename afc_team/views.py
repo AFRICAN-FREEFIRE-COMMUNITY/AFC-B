@@ -1295,6 +1295,19 @@ def get_user_current_team(request):
 
 @api_view(["POST"])
 def get_player_details(request):
+    # AUTH (2026-06-08): returns PII (user.email) + profile pics. Previously UNGATED — any
+    # caller could POST a player_ign and read that player's email. No current frontend caller
+    # (effectively orphaned), so we lock it to AFC staff (coarse role OR any granular UserRoles
+    # row). Mirrors the gate added to afc_player.get_player_details.
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid token."}, status=status.HTTP_400_BAD_REQUEST)
+    caller = validate_token(auth.split(" ")[1])
+    if not caller:
+        return Response({"message": "Invalid session."}, status=status.HTTP_401_UNAUTHORIZED)
+    if caller.role not in ("admin", "moderator", "support") and not caller.userroles.exists():
+        return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
+
     player_ign = request.data.get("player_ign")
 
     if not player_ign:
