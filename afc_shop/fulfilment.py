@@ -496,19 +496,33 @@ def order_mark_completed(request):
     except Exception as e:
         logger.warning("order-completed email failed for order #%s: %s", order.id, e)
 
-    # ── Stripe Connect vendor payout hook (Phase B3) ───────────────────────────
-    # The order is now completed -> AFC owes the vendor their share. settle_order_payout
-    # (afc_shop/connect.py) computes order.total minus the platform fee and either
-    # transfers it to the vendor's connected Stripe account (-> VendorPayout "paid") or,
-    # if the vendor has not finished Connect onboarding, records it "owed" for an admin
-    # to release later. It is best-effort + idempotent (one payout per order) and NEVER
-    # raises, so a payout hiccup can never undo the completion above. Imported lazily to
-    # avoid any import cycle between fulfilment.py and connect.py.
+    # ── PROVIDER-AWARE vendor payout hook (Phase B3) ───────────────────────────
+    # The order is now completed -> AFC owes the vendor their share. AFC pays out on the
+    # vendor's CHOSEN rail (Vendor.payout_provider):
+    #   - "paystack" (DEFAULT, African/Nigerian vendors): settle_order_payout_paystack
+    #     (afc_shop/paystack_payout.py) -> a Paystack Transfer to the vendor's saved bank.
+    #     This is the primary rail because Stripe Connect cannot pay out to NGN/most-African
+    #     banks, but Paystack can, and the shop already charges via Paystack.
+    #   - "stripe" (non-African vendors only): settle_order_payout (afc_shop/connect.py)
+    #     -> a Stripe Transfer to the vendor's connected Stripe account.
+    # Both compute order.total minus the MARKETPLACE_FEE_PERCENT platform fee, write the
+    # SAME VendorPayout ledger row (idempotent, one per order), and either pay it ("paid")
+    # or record it "owed" for an admin to release/retry once the vendor's payout details
+    # exist. Both are best-effort + NEVER raise, so a payout hiccup can never undo the
+    # completion above. Imported lazily to avoid any import cycle.
     try:
-        from .connect import settle_order_payout
-        settle_order_payout(order)
+        payout_vendor = _order_vendor(order)
+        if payout_vendor and payout_vendor.payout_provider == "stripe":
+            # Non-African vendor on the Stripe Connect rail.
+            from .connect import settle_order_payout
+            settle_order_payout(order)
+        else:
+            # Default rail: Paystack Transfers (covers payout_provider="paystack" and any
+            # vendor without an explicit provider — the model defaults to "paystack").
+            from .paystack_payout import settle_order_payout_paystack
+            settle_order_payout_paystack(order)
     except Exception as e:  # payout must never block / 500 the completion
-        logger.warning("settle_order_payout failed for order #%s: %s", order.id, e)
+        logger.warning("vendor payout failed for order #%s: %s", order.id, e)
 
     return Response({"message": "Order completed", "fulfilment_state": order.fulfilment_state}, status=200)
 
