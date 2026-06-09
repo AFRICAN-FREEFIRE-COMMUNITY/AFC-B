@@ -111,6 +111,17 @@ urlpatterns = [
          name="rankings_ghost_approve_claim"),
     path("ghost-teams/<uuid:ghost_team_id>/revoke-claim/", admin_ghost.ghost_revoke_claim,
          name="rankings_ghost_revoke_claim"),
+    # flat ghost-player surface — the ghost team is OPTIONAL here (a standalone / "parked" IGN).
+    # GET = list (attached + standalone, ?unattached / ?ghost_team_id filters), POST = flat create
+    # (body { ign, reason, ghost_team_id? }; consumed by the FE CreateGhostPlayerModal). The PK is
+    # the integer GhostPlayer.id (NOT a uuid), so the detail route uses <int:player_id>.
+    path("ghost-players/",
+         _route(GET=admin_ghost.ghost_players_list, POST=admin_ghost.ghost_player_create_flat),
+         name="rankings_ghost_players"),
+    path("ghost-players/<int:player_id>/",
+         _route(GET=admin_ghost.ghost_player_detail, PATCH=admin_ghost.ghost_player_update,
+                DELETE=admin_ghost.ghost_player_delete),
+         name="rankings_ghost_player_detail"),
 
     # ───────────────────────── Phase 2 — Scoring Config (versioned) ─────────────────────────
     # scoring-config/defaults/ is listed before the collection so it never shadows; literal

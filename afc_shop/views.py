@@ -255,8 +255,12 @@ def view_all_products(request):
 
     # prefetch media + category alongside variants so the gallery and category
     # badge render without N+1 queries.
+    # Exclude "archived" products: archive is the soft-deleted state used by
+    # delete_product when a product has order history and cannot be hard-deleted, so a
+    # "deleted" product must not reappear in the admin catalog (owner request 2026-06-09).
+    # "active" + "inactive" (hidden-but-kept, via deactivate_product) still show.
     qs = (
-        Product.objects.all()
+        Product.objects.exclude(status="archived")
         .order_by("-created_at")
         .select_related("category")
         .prefetch_related("variants", "media")
@@ -532,6 +536,27 @@ def delete_product_variant(request):
 
 @api_view(["POST"])
 def delete_product(request):
+    """
+    Delete a catalog product.
+
+    Behaviour (owner request 2026-06-09: "delete should actually delete, not just soft
+    delete"). A delete now HARD-deletes the product (its row, and via the CASCADE on
+    ProductVariant.product / ProductMedia.product its variants and media) whenever that is
+    safe. The ONLY thing that blocks a real delete is order history: OrderItem.variant is a
+    PROTECT FK (see afc_shop/models.py OrderItem.variant), so a product whose variant has
+    ever been ordered cannot be removed without destroying that order record. In that one
+    case we fall back to archiving (status="archived") and tell the admin why. Archived
+    products are also excluded from the admin catalog list (view_all_products), so a
+    "deleted" product disappears from the catalog either way.
+
+    Request:  { product_id }
+    Response: 200 { message, deleted: bool }  (deleted=false means it was archived because
+              it has order history rather than truly removed)
+    Auth:     require_admin (shop_admin / head_admin).
+    Consumed by: the admin shop catalog delete action (app/(a)/a/shop, ProductsTab delete
+    button -> POST /shop/delete-product/). The FE shows res.data.message and refetches the
+    list, so a hard-deleted or archived product both vanish from the admin catalog.
+    """
     admin, err = require_admin(request)
     if err: return err
 
@@ -540,10 +565,37 @@ def delete_product(request):
         return Response({"message": "product_id is required."}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
-    product.status = "archived"
-    product.save(update_fields=["status"])
+    product_name = product.name
 
-    return Response({"message": "Product archived (soft deleted)."}, status=200)
+    # Try a REAL delete first. ProductVariant.product + ProductMedia.product are CASCADE, so
+    # deleting the product removes its variants and media too. But OrderItem.variant is
+    # PROTECT, so if any variant was ever ordered Django raises ProtectedError and nothing
+    # is deleted -- we then archive instead to preserve that order history.
+    from django.db.models.deletion import ProtectedError
+    try:
+        product.delete()
+        ShopChangeLog.objects.create(
+            admin_user=admin,
+            action="product_deleted",
+            details={"product_id": product_id, "name": product_name},
+        )
+        return Response({"message": "Product deleted.", "deleted": True}, status=200)
+    except ProtectedError:
+        # Referenced by past orders: keep the row (so those orders stay intact) but archive
+        # it so it leaves the catalog. This is the only case delete cannot be a true delete.
+        product.status = "archived"
+        product.save(update_fields=["status"])
+        ShopChangeLog.objects.create(
+            admin_user=admin,
+            action="product_archived",
+            details={"product_id": product_id, "name": product_name,
+                     "reason": "has order history (a variant is referenced by past orders)"},
+        )
+        return Response({
+            "message": ("This product has order history, so it was archived instead of "
+                        "deleted to keep those order records. It no longer shows in the catalog."),
+            "deleted": False,
+        }, status=200)
 
 
 @api_view(["POST"])
