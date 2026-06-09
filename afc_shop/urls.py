@@ -16,6 +16,26 @@ from .fulfilment import (
     order_mark_completed,
     vendor_my_orders,
 )
+# Marketplace vendor management + product approval + vendor product CRUD (Phase B1,
+# afc_shop/vendors.py). Imported explicitly (not via *) so the admin "Manage vendors"
+# / "Product approvals" endpoints and the vendor-dashboard CRUD endpoints are clearly
+# sourced. Vendors are INVITE-ONLY (admins create them); admins approve each product.
+from .vendors import (
+    # A) admin vendor management
+    admin_create_vendor,
+    admin_list_vendors,
+    admin_set_vendor_status,
+    admin_assign_product_vendor,
+    # B) admin product approval
+    admin_list_pending_products,
+    admin_approve_product,
+    admin_reject_product,
+    # C) vendor product CRUD
+    vendor_my_products,
+    vendor_create_product,
+    vendor_update_product,
+    vendor_submit_product,
+)
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -96,4 +116,31 @@ urlpatterns = [
     path("fulfilment/mark-shipped/", vendor_mark_shipped, name="vendor_mark_shipped"),
     path("fulfilment/mark-completed/", order_mark_completed, name="order_mark_completed"),
     path("fulfilment/my-orders/", vendor_my_orders, name="vendor_my_orders"),
+
+    # ── Marketplace Phase B1: admin vendor management (INVITE-ONLY) ──
+    # The admin shop "Manage vendors" surface. Admins LINK an existing User to a new
+    # Vendor (no public application), list/suspend vendors, and re-home products to a
+    # vendor. All require_admin (afc_shop/vendors.py cluster A).
+    path("admin/vendors/create/", admin_create_vendor, name="admin_create_vendor"),
+    path("admin/vendors/list/", admin_list_vendors, name="admin_list_vendors"),
+    path("admin/vendors/set-status/", admin_set_vendor_status, name="admin_set_vendor_status"),
+    path("admin/vendors/assign-product/", admin_assign_product_vendor, name="admin_assign_product_vendor"),
+
+    # ── Marketplace Phase B1: admin product approval queue ──
+    # The admin shop "Product approvals" surface. Lists submitted vendor products and
+    # approves/rejects them. Only approved (+ active) vendor products reach the
+    # storefront (gate in views.view_active_products). require_admin (vendors.py cluster B).
+    path("admin/products/pending/", admin_list_pending_products, name="admin_list_pending_products"),
+    path("admin/products/approve/", admin_approve_product, name="admin_approve_product"),
+    path("admin/products/reject/", admin_reject_product, name="admin_reject_product"),
+
+    # ── Marketplace Phase B1: vendor self-serve product CRUD ──
+    # The vendor dashboard (Phase B2 frontend). Gated to the CALLER's own ACTIVE
+    # Vendor (vendors._require_active_vendor). A vendor manages only their own
+    # products and can never approve their own (draft -> submitted only). vendors.py
+    # cluster C.
+    path("vendor/products/", vendor_my_products, name="vendor_my_products"),
+    path("vendor/products/create/", vendor_create_product, name="vendor_create_product"),
+    path("vendor/products/update/", vendor_update_product, name="vendor_update_product"),
+    path("vendor/products/submit/", vendor_submit_product, name="vendor_submit_product"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
