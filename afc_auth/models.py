@@ -133,6 +133,10 @@ class LoginHistory(models.Model):
 
 class Roles(models.Model):
     ROLES = [
+        # super_admin sits ABOVE head_admin: full access, and can only be granted/removed by another
+        # super_admin (a head_admin cannot touch it). Seeded + assigned on prod via the
+        # `ensure_super_admin` management command. See afc_auth/views.py role-edit guards.
+        ("super_admin", "Super Admin"),
         ("head_admin", "Head Admin"),
         ("metrics_admin", "Metrics Admin"),
         ("shop_admin", "Shop Admin"),
@@ -277,6 +281,75 @@ class AdminHistory(models.Model):
     action = models.CharField(max_length=50)  # e.g., "banned_player", "edited_news"
     description = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
+
+
+class AuditLog(models.Model):
+    """
+    Sitewide AUTOMATIC admin audit log.
+
+    AdminHistory (above) is written by hand in ~40 scattered places and only covers a handful of
+    apps. AuditLog instead records EVERY mutating request (POST/PUT/PATCH/DELETE) made by a user who
+    holds an admin/staff role, with zero per-view code, so a new admin endpoint is covered the moment
+    it ships. This is the "sitewide automatic" audit log the project asked for.
+
+    How it connects end to end:
+      - Written by : afc_auth/middleware.py -> AuditLogMiddleware (best-effort, never raises). It
+                     resolves the acting User from the Bearer SessionToken (same mechanism as
+                     afc_auth.views.validate_token) and logs only admin/staff actors.
+      - Read by    : afc_auth/views.py -> get_audit_log  (GET /auth/get-audit-log/, admin-gated,
+                     paginated + filtered with the afc_partner_api {results, has_more, ...} envelope).
+      - Surfaced on: frontend app/(a)/a/history/page.tsx (the admin "History" page).
+
+    Snapshot fields (actor_username / actor_role) are copied at write time so a row stays meaningful
+    even if the User is later renamed or deleted (actor FK is SET_NULL). `metadata` holds a small,
+    REDACTED JSON blob (URL kwargs + query params with secret-looking keys stripped) - never raw
+    request bodies, passwords or tokens (project security rule: never log secrets/PII).
+    """
+    id = models.AutoField(primary_key=True)
+
+    # ── who acted (FK + snapshots) ──────────────────────────────────────────────────────────────
+    # actor may become null if the User is later deleted; the username/role snapshots below preserve
+    # who it was at the moment of the action.
+    actor = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="audit_logs"
+    )
+    actor_username = models.CharField(max_length=40, db_index=True)        # snapshot of actor.username
+    actor_role = models.CharField(max_length=160, blank=True, default="")  # snapshot e.g. "admin" or "player+shop_admin"
+
+    # ── what happened ───────────────────────────────────────────────────────────────────────────
+    # `summary` is the HUMAN-READABLE short form shown in the table (e.g. "Edited an event #163"),
+    # computed in the middleware from the action slug + target. `action` is the underlying slug
+    # (e.g. "edit_event") kept for filtering; `view_name` is the fully-qualified view for debugging.
+    # `path`/`method` are the raw request line (shown in the expandable details, not the table).
+    summary = models.CharField(max_length=255, blank=True, default="")
+    action = models.CharField(max_length=120, db_index=True)
+    method = models.CharField(max_length=10)
+    path = models.CharField(max_length=512)
+    view_name = models.CharField(max_length=255, blank=True, default="")
+
+    # Best-effort target identity, pulled from the resolved URL kwargs (e.g. {"product_id": 3} ->
+    # target_type="product_id", target_id="3").
+    target_type = models.CharField(max_length=120, blank=True, default="")
+    target_id = models.CharField(max_length=120, blank=True, default="")
+
+    # ── result + request context ────────────────────────────────────────────────────────────────
+    status_code = models.PositiveIntegerField(null=True, blank=True)
+    ip_address = models.CharField(max_length=45, blank=True, default="")   # IPv6-safe, matches LoginHistory
+    user_agent = models.TextField(blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)                  # redacted kwargs + query params
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]  # newest first; the read endpoint relies on this default order
+        indexes = [
+            models.Index(fields=["-created_at"]),
+            models.Index(fields=["actor", "-created_at"]),
+            models.Index(fields=["action", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.actor_username} {self.method} {self.action} ({self.status_code}) @ {self.created_at:%Y-%m-%d %H:%M}"
 
 
 class Notifications(models.Model):

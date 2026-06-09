@@ -85,6 +85,11 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # Sitewide automatic admin audit log. Sits AFTER AuthenticationMiddleware so the request
+    # pipeline + URL resolution are in place; it resolves the acting User from the Bearer
+    # SessionToken itself (AFC does not use Django sessions) and records every admin/staff
+    # mutation into afc_auth.AuditLog. Best-effort, never breaks a request. See afc_auth/middleware.py.
+    'afc_auth.middleware.AuditLogMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

@@ -36,11 +36,16 @@ urlpatterns = [
     path('get-admin-info/', get_admin_info, name='get_admin_info'),
     path('get-all-roles/', get_all_roles, name='get_all_roles'),
     path('get-all-user-and-user-roles/', get_all_user_and_user_roles, name='get_all_user_and_user_roles'),
+    # Typeahead user lookup for the <UserSearchSelect/> picker (admin bulk-notify, team invites, etc.).
+    path('search-users/', search_users, name='search_users'),
     path('suspend-user/', suspend_user, name='suspend_user'),
     path('activate-user/', activate_user, name='activate_user'),
     path('assign-roles-to-user/', assign_roles_to_user, name='assign_roles_to_user'),
     path('edit-user-roles/', edit_user_roles, name='edit_user_roles'),
     path('get-admin-history/', get_admin_history, name='get_admin_history'),
+    # Sitewide automatic admin audit log (rich, auto-captured by afc_auth.middleware.AuditLogMiddleware).
+    # Paginated + filterable; consumed by the admin History page frontend app/(a)/a/history/page.tsx.
+    path('get-audit-log/', get_audit_log, name='get_audit_log'),
     path('get-total-number-of-users/', get_total_number_of_users, name='get_total_number_of_users'),
     path('ban-team/', ban_team, name='ban_team'),
     path('unban-team/', unban_team, name='unban_team'),
