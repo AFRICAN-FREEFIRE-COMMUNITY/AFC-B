@@ -12,6 +12,25 @@ This module owns the admin CRUD + claim transitions for that lifecycle:
     list/detail/create/update/delete  ghost-teams/[<uuid>/]
     approve-claim / revoke-claim       ghost-teams/<uuid>/{approve,revoke}-claim/
 
+Standalone ("parked") ghost players
+-----------------------------------
+``GhostPlayer.ghost_team`` is NULLABLE (see the model), so a ghost player can also exist on
+its own — a provisional in-game name that is not yet attached to any ghost team. The flat
+ghost-player surface here owns that case (so an admin no longer has to pick a ghost team
+just to park an IGN):
+
+    list/create        ghost-players/                      (GET list, POST flat create)
+    detail/update/del  ghost-players/<int:player_id>/      (GET / PATCH / DELETE)
+
+A standalone player is INERT for scoring: nothing in the scoring/aggregation/recalc path
+reads GhostPlayer (result attribution is GhostTeam-keyed via
+TeamMonthlyScore.ghost_team / TeamQuarterlyScore.ghost_team), so a team-less ghost player
+is purely parked IGN data. The freeze guard (claim_status != "unclaimed" -> 400) therefore
+only applies when the player IS attached to a team; standalone rows are always editable and
+deletable. The flat create is consumed by the FE CreateGhostPlayerModal
+(``rankingsAdminApi.createGhostPlayerFlat``); the nested
+``ghost-teams/<uuid>/players/`` append route below is kept for the existing roster-append flow.
+
 It is function-based DRF (``@api_view``) with manual-dict serialization, matching
 ``views.py`` / ``serializers.py``. The auth + audit foundation is reused verbatim from
 ``admin_views.py`` — DO NOT reimplement it here:
@@ -45,12 +64,30 @@ from .serializers import paginate
 
 
 # ───────────────────────── local serializers (manual-dict, like serializers.py) ─────────────────────────
-def serialize_ghost_player(p):
-    """One ghost roster slot → dict. ``slot`` is 1-based display order."""
+def serialize_ghost_player(p, team_name=...):
+    """One ghost roster slot → dict. ``slot`` is 1-based display order.
+
+    ``ghost_team_id`` / ``ghost_team_name`` are NULL for a standalone ("parked") player —
+    one created on its own, not attached to any ghost team. They are additive: the existing
+    ``id`` / ``ign`` / ``slot`` keys are unchanged, so the nested-roster callers (serialize_ghost)
+    keep working as before while the flat ghost-player surface gets the team context it needs.
+
+    ``team_name`` is an optional N+1 guard: serialize_ghost already holds the parent ghost,
+    so it passes the name in to avoid dereferencing ``p.ghost_team`` once per roster row (the
+    reverse FK is not cached by ``prefetch_related("players")``). The flat surface omits it and
+    relies on ``select_related("ghost_team")`` instead. ``...`` (Ellipsis) = "not provided".
+    """
+    if team_name is ...:
+        # no hint from the caller: read the team name off the (select_related) relation,
+        # null-safe — None for a standalone player.
+        team_name = p.ghost_team.team_name if p.ghost_team_id else None
     return {
         "id": p.id,
         "ign": p.ign,
         "slot": p.slot,
+        # null-safe: read the FK id without a DB hit; None means standalone (no team).
+        "ghost_team_id": str(p.ghost_team_id) if p.ghost_team_id else None,
+        "ghost_team_name": team_name,
     }
 
 
@@ -79,7 +116,9 @@ def serialize_ghost(g):
         # provenance
         "created_by": g.created_by_id,
         "created_at": g.created_at.isoformat() if g.created_at else None,
-        "players": [serialize_ghost_player(p) for p in g.players.all()],
+        # pass g.team_name in as the team-name hint so the roster serializer never has to
+        # re-query the reverse FK per player (these are all this ghost's own players).
+        "players": [serialize_ghost_player(p, team_name=g.team_name) for p in g.players.all()],
     }
 
 
@@ -290,6 +329,269 @@ def ghost_player_create(request, ghost_team_id):
         )
 
     return Response(after, status=status.HTTP_201_CREATED)
+
+
+# ═════════════════════ FLAT ghost-player surface (team-OPTIONAL) ═════════════════════
+# These handlers own the standalone / "parked" ghost player: a GhostPlayer whose ghost_team
+# FK is NULL (a provisional in-game name not yet attached to any ghost team). They sit under
+# the flat ``ghost-players/`` URL space (urls.py), keyed on the integer GhostPlayer.id, and
+# are CONSUMED BY the FE CreateGhostPlayerModal (rankingsAdminApi.createGhostPlayerFlat) so an
+# admin can park an IGN without being forced to pick a ghost team. Standalone rows are inert
+# for scoring (nothing in the scoring/recalc path reads GhostPlayer), so the freeze guard only
+# bites when the player is attached to a non-unclaimed team. Auth/reason/audit reuse the same
+# admin_views.py foundation as the rest of this module.
+def _get_player_or_404(player_id):
+    """Fetch a GhostPlayer (with its ghost team select_related) or return ``(None, Response 404)``.
+
+    Mirrors ``_get_ghost_or_404`` so the flat handlers keep the auth/reason short-circuit shape::
+
+        player, err = _get_player_or_404(player_id)
+        if err: return err
+    """
+    player = GhostPlayer.objects.select_related("ghost_team").filter(pk=player_id).first()
+    if not player:
+        return None, Response({"message": "Ghost player not found."}, status=status.HTTP_404_NOT_FOUND)
+    return player, None
+
+
+@api_view(["POST"])
+def ghost_player_create_flat(request):
+    """POST ghost-players/ — create ONE ghost player, with the ghost team OPTIONAL.
+
+    This is the surface the admin *Players* page uses to "create a ghost player" without being
+    forced onto a ghost team. CONSUMED BY the FE CreateGhostPlayerModal
+    (``rankingsAdminApi.createGhostPlayerFlat``).
+
+    Request body:
+      ign           (required, non-blank) — the in-game name for the new player
+      ghost_team_id (optional, uuid)      — if given, attach the player to that ghost team;
+                                            if absent/blank, create a STANDALONE (team-less) player
+      reason        (required, >=10 chars — the audit reason; KEPT for every write)
+
+    Behaviour:
+      - attached (ghost_team_id given): re-apply the freeze guard (the team must be
+        ``claim_status == 'unclaimed'`` or 400), then slot = max(existing slots) + 1 — mirrors
+        ``ghost_player_create`` so the roster stays a clean 1..N sequence.
+      - standalone (no ghost_team_id): create GhostPlayer(ghost_team=None, slot=1); slot is not
+        meaningful with no roster, so it is a fixed 1. The freeze guard is skipped (a team-less
+        player is inert for scoring).
+
+    Response: 201 with serialize_ghost_player(player) (includes ghost_team_id / ghost_team_name,
+    both NULL for a standalone player).
+    Auth: head_admin | metrics_admin (via _auth). Audit: object_type="ghost_claim",
+    action="add_player_flat", object_ref = the player id (standalone) or the team id (attached).
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    reason, err = _require_reason(request)   # KEEP the >=10-char reason gate on every write.
+    if err:
+        return err
+
+    # one ign, non-blank — same normalisation rule the nested route + _clean_players apply.
+    ign = (request.data.get("ign") or "").strip()
+    if not ign:
+        return Response({"message": "ign is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # ghost_team_id is OPTIONAL: blank/absent => standalone parked player.
+    ghost_team_id = (request.data.get("ghost_team_id") or "").strip() or None
+
+    with transaction.atomic():
+        if ghost_team_id:
+            # ── attached path: mirror ghost_player_create (freeze guard + append slot) ──
+            ghost, err = _get_ghost_or_404(ghost_team_id)
+            if err:
+                return err
+            if ghost.claim_status != "unclaimed":
+                return Response(
+                    {"message": f"Cannot add a player to a ghost team with claim_status "
+                                f"'{ghost.claim_status}'. Only unclaimed ghost teams are editable."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # next slot = highest current slot + 1 (1 when empty) → clean 1..N roster order.
+            next_slot = (ghost.players.aggregate(m=models.Max("slot"))["m"] or 0) + 1
+            player = GhostPlayer.objects.create(ghost_team=ghost, ign=ign, slot=next_slot)
+            object_ref = str(ghost.ghost_team_id)
+        else:
+            # ── standalone path: team-less, inert, freeze skipped, fixed slot 1 ──
+            player = GhostPlayer.objects.create(ghost_team=None, ign=ign, slot=1)
+            object_ref = str(player.id)
+
+        # re-fetch with the team select_related so the response is null-safe + query-free.
+        player = GhostPlayer.objects.select_related("ghost_team").get(pk=player.pk)
+        after = serialize_ghost_player(player)
+        _audit(
+            user, "ghost_claim", "add_player_flat", reason,
+            object_ref=object_ref, before={}, after=after,
+        )
+
+    return Response(after, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+def ghost_players_list(request):
+    """GET ghost-players/ — paginated list of ALL ghost players (attached + standalone).
+
+    Read-only (skips the reason + audit steps, per the admin_views.py contract).
+
+    Query filters:
+      ?unattached=true        only standalone players (ghost_team IS NULL)
+      ?ghost_team_id=<uuid>   only players on that one ghost team
+
+    Sort: ``-id`` (creation order) — for standalone rows ``slot`` is always 1, so it is not a
+    meaningful sort key; newest-first by id is the predictable order across both kinds.
+
+    Response: ``{results: [serialize_ghost_player...], pagination}`` (the canonical envelope).
+    Auth: head_admin | metrics_admin (via _auth).
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+
+    # select_related so serialize_ghost_player can read ghost_team_name without an N+1.
+    qs = GhostPlayer.objects.select_related("ghost_team").all()
+
+    # ?unattached=true → standalone players only (team-less parked IGNs).
+    if (request.GET.get("unattached") or "").strip().lower() == "true":
+        qs = qs.filter(ghost_team__isnull=True)
+
+    # ?ghost_team_id=<uuid> → narrow to one ghost team's roster.
+    ghost_team_id = (request.GET.get("ghost_team_id") or "").strip()
+    if ghost_team_id:
+        qs = qs.filter(ghost_team_id=ghost_team_id)
+
+    # -id = creation order; slot isn't meaningful for standalone rows (always 1).
+    qs = qs.order_by("-id")
+
+    items, meta = paginate(request, qs)
+    return Response({"results": [serialize_ghost_player(p) for p in items], "pagination": meta})
+
+
+@api_view(["GET"])
+def ghost_player_detail(request, player_id):
+    """GET ghost-players/<int:player_id>/ — one ghost player (attached or standalone). Read-only.
+
+    Response: serialize_ghost_player(player). Auth: head_admin | metrics_admin (via _auth).
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    player, err = _get_player_or_404(player_id)
+    if err:
+        return err
+    return Response(serialize_ghost_player(player))
+
+
+@api_view(["PATCH"])
+def ghost_player_update(request, player_id):
+    """PATCH ghost-players/<int:player_id>/ — edit ign and/or slot of one ghost player.
+
+    Request body (all optional except reason; only present fields are patched):
+      ign     (optional, non-blank if present) — new in-game name
+      slot    (optional, positive int)         — new display order
+      reason  (required, >=10 chars — the audit reason)
+
+    Freeze: applied ONLY when the player is attached to a team whose ``claim_status`` is not
+    "unclaimed" (editing a claimed team's roster would rewrite a real team's history → 400).
+    A standalone player (ghost_team NULL) is ALWAYS editable.
+
+    First cut: this does NOT move a standalone player onto a team (no ghost_team_id field is
+    accepted here) — attaching/claiming is a separate, later step.
+
+    Response: serialize_ghost_player(player). Auth: head_admin | metrics_admin (via _auth).
+    Audit: object_type="ghost_claim", action="update_player".
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    reason, err = _require_reason(request)
+    if err:
+        return err
+    player, err = _get_player_or_404(player_id)
+    if err:
+        return err
+
+    # freeze guard — only bites when attached to a non-unclaimed team; standalone is free.
+    if player.ghost_team_id and player.ghost_team.claim_status != "unclaimed":
+        return Response(
+            {"message": f"Cannot edit a player on a ghost team with claim_status "
+                        f"'{player.ghost_team.claim_status}'. Only unclaimed ghost teams are editable."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        before = serialize_ghost_player(player)
+
+        # patch only the fields present in the body.
+        if "ign" in request.data:
+            new_ign = (request.data.get("ign") or "").strip()
+            if not new_ign:
+                return Response({"message": "ign cannot be blank."}, status=status.HTTP_400_BAD_REQUEST)
+            player.ign = new_ign
+        if "slot" in request.data:
+            try:
+                new_slot = int(request.data.get("slot"))
+            except (TypeError, ValueError):
+                return Response({"message": "slot must be a positive integer."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if new_slot < 1:
+                return Response({"message": "slot must be a positive integer."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            player.slot = new_slot
+        player.save()
+
+        player = GhostPlayer.objects.select_related("ghost_team").get(pk=player.pk)
+        after = serialize_ghost_player(player)
+        _audit(
+            user, "ghost_claim", "update_player", reason,
+            object_ref=str(player.id), before=before, after=after,
+        )
+
+    return Response(after)
+
+
+@api_view(["DELETE"])
+def ghost_player_delete(request, player_id):
+    """DELETE ghost-players/<int:player_id>/ — remove one ghost player.
+
+    Request body:
+      reason  (required, >=10 chars — the audit reason)
+
+    Freeze: applied ONLY when the player is attached to a team whose ``claim_status`` is not
+    "unclaimed" (deleting a claimed team's slot would rewrite a real team's roster → 400). A
+    standalone player (ghost_team NULL) is ALWAYS deletable.
+
+    Response: ``{message}``. Auth: head_admin | metrics_admin (via _auth).
+    Audit: object_type="ghost_claim", action="delete_player".
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    reason, err = _require_reason(request)
+    if err:
+        return err
+    player, err = _get_player_or_404(player_id)
+    if err:
+        return err
+
+    # freeze guard — only bites when attached to a non-unclaimed team; standalone is free.
+    if player.ghost_team_id and player.ghost_team.claim_status != "unclaimed":
+        return Response(
+            {"message": f"Cannot delete a player on a ghost team with claim_status "
+                        f"'{player.ghost_team.claim_status}'. Only unclaimed ghost teams are editable."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        before = serialize_ghost_player(player)
+        ref = str(player.id)
+        player.delete()
+        _audit(
+            user, "ghost_claim", "delete_player", reason,
+            object_ref=ref, before=before, after={},
+        )
+
+    return Response({"message": "Ghost player deleted."}, status=status.HTTP_200_OK)
 
 
 # ───────────────────────── UPDATE ─────────────────────────

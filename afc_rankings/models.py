@@ -499,13 +499,26 @@ class TeamSocialSnapshot(models.Model):
 
 # ──────────────────────── §19.4b GhostPlayer ────────────────────────
 class GhostPlayer(models.Model):
-    """A provisional roster slot on a ghost team.
+    """A provisional roster slot, optionally attached to a ghost team.
 
     Off-platform tournament results attribute to these in-game names until the ghost
     team is claimed by a real team, at which point the slots map onto that team's
     players. Created/edited from the ghost-team admin surfaces (Rankings + Teams page).
+
+    ``ghost_team`` is OPTIONAL: a NULL ghost_team is a standalone / "parked" ghost player
+    (an in-game name created on its own, not yet attached to any ghost team). Standalone
+    rows are inert for scoring — nothing in the scoring/aggregation/recalc path reads
+    GhostPlayer — so they are purely parked IGN data that can be attached/claimed later.
     """
-    ghost_team = models.ForeignKey(GhostTeam, on_delete=models.CASCADE, related_name="players")
+    # ghost_team is OPTIONAL (null=True): a NULL ghost_team means a standalone / "parked"
+    # ghost player — a provisional in-game name that exists on its own, not yet attached to
+    # any ghost team. It can be attached/claimed later. Such a row is inert for scoring:
+    # nothing in the scoring/aggregation/recalc path reads GhostPlayer (result attribution is
+    # GhostTeam-keyed, via TeamMonthlyScore.ghost_team / TeamQuarterlyScore.ghost_team), so a
+    # team-less ghost player is purely parked IGN data. CASCADE still applies when attached:
+    # deleting the ghost team removes its slots.
+    ghost_team = models.ForeignKey(GhostTeam, on_delete=models.CASCADE, related_name="players",
+                                   null=True, blank=True)
     ign = models.CharField(max_length=100)                 # in-game name
     slot = models.PositiveSmallIntegerField(default=1)     # display order in the roster (1-based)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -515,7 +528,9 @@ class GhostPlayer(models.Model):
         indexes = [models.Index(fields=["ghost_team"])]
 
     def __str__(self):
-        return f"{self.ign} [{self.ghost_team.team_name}]"
+        # null-safe: a standalone player (ghost_team NULL) prints "[no team]" instead of
+        # dereferencing a missing relation.
+        return f"{self.ign} [{self.ghost_team.team_name if self.ghost_team_id else 'no team'}]"
 
 
 # ═════════════════════ Admin-editable config and result-marker models (not the spec score tables) ═════════════════════
