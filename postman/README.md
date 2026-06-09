@@ -23,7 +23,7 @@ Then re-run the newman smoke (below) to catch any new 500s. Commit the regenerat
 
 | File | Commit? | What |
 |---|---|---|
-| `AFC_Backend_API.postman_collection.json` | ✅ | Full collection — all endpoints, grouped into a folder per Django app. Uses `{{base_url}}` / `{{token}}` / `{{api_key}}` variables (no secrets baked in). |
+| `AFC_Backend_API.postman_collection.json` | ✅ | Full collection — all endpoints, grouped into NESTED folders: a top folder per app (e.g. `shop`, `rankings`), each split into feature sub-folders by the view's module (e.g. `shop / fulfilment`, `shop / vendors`, `shop / whatsapp_webhook`, `rankings / admin_overrides`). Uses `{{base_url}}` / `{{token}}` / `{{api_key}}` variables (no secrets baked in). |
 | `AFC_Backend_API.postman_environment.template.json` | ✅ | Environment template — copy it, paste your own token/key. |
 | `AFC_Smoke_GET.postman_collection.json` | ✅ | The read-only (`GET`, non-destructive) subset (149 requests), each with a `status < 500` reachability test. Safe to run end-to-end. |
 | `.local.env.json` | ❌ gitignored | A real environment with a live token + key for local runs. Never committed. |
@@ -34,7 +34,7 @@ There are **two** collections, and they are NOT the same file:
 
 | Collection | Path | Foldering |
 |---|---|---|
-| **AUTO** (source of truth for "what exists") | `backend/postman/AFC_Backend_API.postman_collection.json` | One flat folder **per Django app** — generated, never hand-edited. |
+| **AUTO** (source of truth for "what exists") | `backend/postman/AFC_Backend_API.postman_collection.json` | NESTED folders **app → feature module** (e.g. `shop / vendors`) — generated, never hand-edited. |
 | **DEV** (the one the team imports + drives) | `WEBSITE/AFC.postman_collection.json` (repo root, **not** committed to either git repo) | **Hand-curated by audience/area**, see the rule below. |
 
 Keep DEV current after a code change:
