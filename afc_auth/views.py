@@ -17,7 +17,10 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
-from .models import AdminHistory, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import AdminHistory, AuditLog, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+# set_audit lets these admin views supply a SPECIFIC human audit summary (entity name + before/after)
+# that the AuditLogMiddleware records instead of its generic "Edited ... #id" fallback.
+from afc_auth.audit import set_audit
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -137,6 +140,35 @@ def require_admin(request):
         return None, Response({"message": "You do not have permission."}, status=403)
 
     return admin, None
+
+
+def _user_role_names(user):
+    """Granular role names a user holds (the UserRoles -> Roles.role_name set). Cheap, one query."""
+    if not user:
+        return set()
+    return set(user.userroles.values_list("role__role_name", flat=True))
+
+
+def _is_super_admin(user):
+    """super_admin = the top role, above head_admin. Only a super_admin can manage the super_admin
+    role or modify another super_admin (see assign_roles_to_user / edit_user_roles)."""
+    return bool(user) and ("super_admin" in _user_role_names(user) or user.is_superuser)
+
+
+def require_head_admin(request):
+    """Gate for the most sensitive admin surfaces (e.g. the audit log). Allows ONLY head_admin or
+    super_admin (NOT plain role=='admin'). Returns (user, None) on success, (None, Response) on
+    failure - same shape as require_admin."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+    roles = _user_role_names(user)
+    if "head_admin" not in roles and "super_admin" not in roles and not user.is_superuser:
+        return None, Response({"message": "Head admin access required."}, status=403)
+    return user, None
 
 
 
@@ -873,6 +905,7 @@ def ban_team(request):
         banned_by=user
     )
 
+    set_audit(request, f"Banned the team {team.team_name} ({reason})")
     AdminHistory.objects.create(
         admin_user=user,
         action="banned_team",
@@ -955,6 +988,7 @@ def unban_team(request):
     except TeamBan.DoesNotExist:
         return Response({"message": "Team is not banned."}, status=status.HTTP_400_BAD_REQUEST)
     
+    set_audit(request, f"Unbanned the team {team.team_name}")
     AdminHistory.objects.create(
         admin_user=user,
         action="unbanned_team",
@@ -1031,6 +1065,7 @@ def ban_player(request):
         reason=reason
     )
 
+    set_audit(request, f"Banned the player {player_ign} for {duration} days ({reason})")
     AdminHistory.objects.create(
         admin_user=user,
         action="banned_player",
@@ -1102,6 +1137,7 @@ def unban_player(request):
     ban_entry.is_active = False
     ban_entry.save()
 
+    set_audit(request, f"Unbanned the player {player_ign}")
     AdminHistory.objects.create(
         admin_user=user,
         action="unbanned_player",
@@ -1185,6 +1221,7 @@ def create_news(request):
         author=user
     )
 
+    set_audit(request, f"Posted the news '{news_title}'")
     AdminHistory.objects.create(
         admin_user=user,
         action="created_news",
@@ -1270,6 +1307,7 @@ def edit_news(request):
     news.images = images
     news.save()
 
+    set_audit(request, f"Edited the news '{news_title}'")
     AdminHistory.objects.create(
         admin_user=user,
         action="edited_news",
@@ -1417,6 +1455,7 @@ def delete_news(request):
             pass  # User has news_editor role, allow deletion
         return Response({"message": "You do not have permission to delete this news."}, status=status.HTTP_403_FORBIDDEN)
 
+    set_audit(request, f"Deleted the news '{news.news_title}'")
     news.delete()
 
     AdminHistory.objects.create(
@@ -2027,6 +2066,68 @@ def get_all_user_and_user_roles(request):
     return Response({"users": users_data}, status=status.HTTP_200_OK)
 
 
+@api_view(["GET"])
+def search_users(request):
+    """
+    GET /auth/search-users/?q=<text>&limit=10 - typeahead lookup of EXISTING users.
+
+    Powers the reusable <UserSearchSelect/> typeahead (frontend components/ui/user-search-select.tsx)
+    used wherever a human picks an existing user instead of typing a raw username/email - e.g. admin
+    bulk notifications (settings) and team member invites. Returns a short, ranked match list.
+
+    Auth: any logged-in user (Bearer SessionToken).
+    PRIVACY: email is matched + returned ONLY for admin callers. Ordinary users match by username
+    (which IS the in-game name here), full_name and uid, and never see other users' emails - this
+    stops email enumeration through the typeahead. Requires q >= 2 chars so it can't dump the table.
+
+    Response: { results: [ {user_id, username, full_name, role, email?} ], total_count }
+    (the `email` key is present only when the caller is an admin/staff member.)
+    """
+    from django.db.models import Q
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=status.HTTP_400_BAD_REQUEST)
+    requester = validate_token(auth.split(" ", 1)[1])
+    if not requester:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    q = request.GET.get("q", "").strip()
+    if len(q) < 2:
+        # Require at least 2 characters so the endpoint never returns the whole user table.
+        return Response({"results": [], "total_count": 0}, status=status.HTTP_200_OK)
+
+    try:
+        limit = min(max(int(request.GET.get("limit", 10)), 1), 25)
+    except (TypeError, ValueError):
+        limit = 10
+
+    # Admin = base role "admin" OR any granular UserRoles row (mirrors the audit-log predicate).
+    is_admin = requester.role == "admin" or requester.userroles.exists()
+
+    # Everyone matches by username (= IGN), full_name and uid. Admins additionally match by email.
+    cond = Q(username__icontains=q) | Q(full_name__icontains=q) | Q(uid__icontains=q)
+    if is_admin:
+        cond |= Q(email__icontains=q)
+
+    qs = User.objects.filter(cond).order_by("username")
+    total = qs.count()
+
+    results = []
+    for u in qs[:limit]:
+        item = {
+            "user_id": u.user_id,
+            "username": u.username,
+            "full_name": u.full_name,
+            "role": u.role,
+        }
+        if is_admin:
+            item["email"] = u.email  # email exposed to admin callers only (privacy)
+        results.append(item)
+
+    return Response({"results": results, "total_count": total}, status=status.HTTP_200_OK)
+
+
 @api_view(["POST"])
 def suspend_user(request):
     # Retrieve session token
@@ -2066,6 +2167,7 @@ def suspend_user(request):
     user.status = "suspended"
     user.save()
 
+    set_audit(request, f"Suspended the user {user.username}")
     AdminHistory.objects.create(
         admin_user=user,
         action="suspended_user",
@@ -2123,6 +2225,7 @@ def activate_user(request):
     user.status = "active"
     user.save()
 
+    set_audit(request, f"Activated the user {user.username}")
     AdminHistory.objects.create(
         admin_user=user,
         action="activated_user",
@@ -2247,6 +2350,18 @@ def assign_roles_to_user(request):
             status=status.HTTP_404_NOT_FOUND
         )
 
+    # super_admin protection: only a super_admin may grant the super_admin role or modify a user who
+    # already holds it. A head_admin cannot touch a super_admin (this runs BEFORE the reset below so
+    # we never strip a super_admin's roles and then fail).
+    new_role_names = {role.role_name for role in roles}
+    if not _is_super_admin(admin_user) and (
+        "super_admin" in new_role_names or "super_admin" in _user_role_names(user)
+    ):
+        return Response(
+            {"status": "error", "message": "Only a super admin can manage the super admin role."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     # 🔑 Reset: remove all existing roles first
     UserRoles.objects.filter(user=user).delete()
 
@@ -2256,6 +2371,7 @@ def assign_roles_to_user(request):
 
 
 
+    set_audit(request, f"Assigned roles ({', '.join([role.role_name for role in roles])}) to {user.username}")
     AdminHistory.objects.create(
         admin_user=admin_user,
         action="assigned_roles",
@@ -2313,6 +2429,20 @@ def edit_user_roles(request):
     except User.DoesNotExist:
         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # super_admin protection: only a super_admin may grant/remove the super_admin role or modify a
+    # user who already holds it. Runs before the role reset below so a head_admin can never strip a
+    # super_admin. (new_role_ids=[] would remove all roles, so the target-is-super check matters too.)
+    new_role_names = set(
+        Roles.objects.filter(role_id__in=new_role_ids).values_list("role_name", flat=True)
+    )
+    if not _is_super_admin(admin_user) and (
+        "super_admin" in new_role_names or "super_admin" in _user_role_names(user)
+    ):
+        return Response(
+            {"message": "Only a super admin can manage the super admin role."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     # Clear existing roles
     UserRoles.objects.filter(user=user).delete()
 
@@ -2320,6 +2450,7 @@ def edit_user_roles(request):
     if new_role_ids == []:
         user.role = "player"
         user.save()
+        set_audit(request, f"Removed all admin roles from {user.username}")
         AdminHistory.objects.create(
             admin_user=admin_user,
             action="edited_user_roles",
@@ -2347,6 +2478,7 @@ def edit_user_roles(request):
     user.role = "admin"
     user.save()
     
+    set_audit(request, f"Updated {user.username}'s roles to: {', '.join(new_role_names) or 'none'}")
     AdminHistory.objects.create(
         admin_user=admin_user,
         action="edited_user_roles",
@@ -2489,6 +2621,115 @@ def get_admin_history(request):
         })
 
     return Response({"admin_history": history_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_audit_log(request):
+    """
+    GET /auth/get-audit-log/ - paginated, filterable read of the sitewide admin audit log.
+
+    Auth     : admin only. Reuses require_admin() (Bearer SessionToken -> User with role == "admin"),
+               the same gate as the other admin read endpoints in this module.
+    Source   : afc_auth.AuditLog rows, written AUTOMATICALLY by afc_auth.middleware.AuditLogMiddleware
+               on every admin/staff mutation (POST/PUT/PATCH/DELETE) across the whole platform.
+    Consumed : frontend app/(a)/a/history/page.tsx (the admin "History" page) via lib authHeaders()
+               (Bearer auth_token cookie) + the {results, has_more, next_offset, total_count} envelope.
+
+    Query params (all optional):
+      q          case-insensitive search over actor username / request path / action slug
+      actor      filter by actor username (icontains)
+      action     filter by action slug (icontains)
+      method     exact HTTP method (POST/PUT/PATCH/DELETE)
+      status     exact response status code
+      date_from  ISO date (YYYY-MM-DD), inclusive lower bound on created_at (by calendar date)
+      date_to    ISO date (YYYY-MM-DD), inclusive upper bound on created_at (by calendar date)
+      limit      page size, default 25, max 100   } house pagination idiom, mirrors afc_partner_api
+      offset     row offset, default 0            } -> {results, has_more, next_offset, total_count}
+    """
+    # Django's Q is imported locally: this module's top-level `Q` is the (unrelated) sympy.Q, so a
+    # module-level import here would shadow it and risk side effects elsewhere. Local keeps it surgical.
+    from django.db.models import Q
+
+    # Audit log is HEAD-ADMIN ONLY (head_admin or super_admin), not every role=="admin" user.
+    admin, err = require_head_admin(request)
+    if err:
+        return err
+
+    qs = AuditLog.objects.all()  # newest-first via AuditLog.Meta.ordering
+
+    # ── filters (each applied only when its param is present) ───────────────────────────────────
+    q = request.GET.get("q", "").strip()
+    if q:
+        qs = qs.filter(
+            Q(actor_username__icontains=q)
+            | Q(summary__icontains=q)
+            | Q(path__icontains=q)
+            | Q(action__icontains=q)
+        )
+
+    actor = request.GET.get("actor", "").strip()
+    if actor:
+        qs = qs.filter(actor_username__icontains=actor)
+
+    action = request.GET.get("action", "").strip()
+    if action:
+        qs = qs.filter(action__icontains=action)
+
+    method = request.GET.get("method", "").strip().upper()
+    if method:
+        qs = qs.filter(method=method)
+
+    status_filter = request.GET.get("status", "").strip()
+    if status_filter.isdigit():
+        qs = qs.filter(status_code=int(status_filter))
+
+    date_from = request.GET.get("date_from", "").strip()
+    if date_from:
+        qs = qs.filter(created_at__date__gte=date_from)
+
+    date_to = request.GET.get("date_to", "").strip()
+    if date_to:
+        qs = qs.filter(created_at__date__lte=date_to)
+
+    # ── pagination (afc_partner_api idiom: limit/offset -> envelope) ────────────────────────────
+    try:
+        limit = min(max(int(request.GET.get("limit", 25)), 1), 100)
+    except (TypeError, ValueError):
+        limit = 25
+    try:
+        offset = max(int(request.GET.get("offset", 0)), 0)
+    except (TypeError, ValueError):
+        offset = 0
+
+    total = qs.count()
+    rows = qs.select_related("actor")[offset:offset + limit]
+
+    results = [{
+        "id": r.id,
+        "actor_username": r.actor_username,
+        "actor_role": r.actor_role,
+        "summary": r.summary or r.action,  # human short form; fall back to slug for old rows
+        "action": r.action,
+        "method": r.method,
+        "path": r.path,
+        "view_name": r.view_name,
+        "target_type": r.target_type,
+        "target_id": r.target_id,
+        "status_code": r.status_code,
+        "ip_address": r.ip_address,
+        "user_agent": r.user_agent,
+        "metadata": r.metadata,
+        "timestamp": r.created_at,
+    } for r in rows]
+
+    nxt = offset + limit
+    has_more = nxt < total
+    return Response({
+        "results": results,
+        "has_more": has_more,
+        "next_offset": nxt if has_more else None,
+        "total_count": total,
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -3446,6 +3687,7 @@ def send_notification_to_multiple_users(request):
         )
 
     
+    set_audit(request, f"Sent a notification to {len(recipients)} users")
     AdminHistory.objects.create(
         admin_user=user,
         action="sent_notification_multiple",
@@ -3551,6 +3793,7 @@ def admin_send_message(request):
             if r.email and send_email(r.email, subject, html_body):
                 emailed += 1
 
+    set_audit(request, f"Sent a {delivery} message to the {target_type} {target_label}")
     AdminHistory.objects.create(
         admin_user=user,
         action="admin_send_message",

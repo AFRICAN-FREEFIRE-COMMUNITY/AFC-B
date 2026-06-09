@@ -20,6 +20,9 @@ from afc_team.models import Team, TeamMembers
 from afc_tournament_and_scrims import scoring as scoring_lib
 from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
+# set_audit -> supply a SPECIFIC human audit summary (entity name + before/after) that the
+# AuditLogMiddleware records, e.g. "Changed Detty December: event type from internal to external".
+from afc_auth.audit import set_audit
 # organizers: org-scope permission helpers + the Organization tenant model. These let org
 # members (owner / sub_organizer) manage their OWN org's events while AFC admins keep full
 # oversight. All gating goes through org_can / org_can_event so the owner/admin-bypass rules
@@ -1138,6 +1141,7 @@ def create_event(request):
             action="create_event",
             description=f"Created event {event.event_name} (ID: {event.event_id})"
         )
+        set_audit(request, f"Created the event {event.event_name}")
 
     return Response({
         "message": "Event created successfully.",
@@ -1337,6 +1341,7 @@ def delete_event(request):
     if not is_admin and not org_can_event(user, "can_edit_events", event):
         return Response({"message": "You do not have permission to modify this event."}, status=403)
 
+    set_audit(request, f"Deleted the event {event.event_name}")
     AdminHistory.objects.create(
         admin_user=user,
         action="delete_event",
@@ -1671,12 +1676,26 @@ def snapshot_event(event):
     return {
         "event": {
             "event_name": event.event_name,
+            "event_type": event.event_type,
             "event_mode": event.event_mode,
             "participant_type": event.participant_type,
             "competition_type": event.competition_type,
             "max_teams_or_players": event.max_teams_or_players,
             "is_public": event.is_public,
             "is_sponsored": event.is_sponsored,
+            "event_status": event.event_status,
+            "tournament_tier": event.tournament_tier,
+            "is_draft": event.is_draft,
+            # Dates + times are editable too; snapshotting them means the audit summary can say e.g.
+            # "registration start time from 09:00 to 10:30" (str() so diff_dict compares cleanly).
+            "start_date": str(event.start_date),
+            "end_date": str(event.end_date),
+            "registration_open_date": str(event.registration_open_date),
+            "registration_end_date": str(event.registration_end_date),
+            "registration_start_time": str(event.registration_start_time),
+            "registration_end_time": str(event.registration_end_time),
+            "event_start_time": str(event.event_start_time),
+            "event_end_time": str(event.event_end_time),
         },
         "sponsors": list(
             SponsorEvent.objects.filter(event=event)
@@ -1711,6 +1730,31 @@ def diff_dict(old, new):
         if str(old[k]) != str(new[k]):
             changes.append(f"{k}: '{old[k]}' → '{new[k]}'")
     return changes
+
+
+def _humanize_change(c):
+    """Turn a diff_dict entry "event_type: 'internal' → 'external'" into the plain-English
+    "event type from internal to external" for the audit summary. Non-field diffs (sponsor/stage
+    add/remove strings) are returned as-is."""
+    import re
+    m = re.match(r"^(.+?):\s*'(.*)'\s*→\s*'(.*)'$", str(c))
+    if m:
+        field, old, new = m.groups()
+        return f"{field.replace('_', ' ').strip()} from {old} to {new}"
+    return str(c)
+
+
+def _event_edit_summary(name, changes):
+    """Build the audit summary for an event edit, e.g.
+    "Changed Detty December: event type from internal to external; registration start time from 09:00 to 10:30"."""
+    label = name or "an event"
+    if not changes:
+        return f"Edited {label} (no changes)"
+    pretty = [_humanize_change(c) for c in changes]
+    shown = "; ".join(pretty[:3])
+    if len(pretty) > 3:
+        shown += f"; and {len(pretty) - 3} more change(s)"
+    return f"Changed {label}: {shown}"
 
 
 def diff_list(name, old_list, new_list):
@@ -1865,7 +1909,7 @@ def edit_event(request):
         "competition_type", "participant_type",
         "max_teams_or_players", "event_name", "event_mode",
         "event_status", "registration_link", "tournament_tier",
-        "event_rules", "is_draft", "is_public"
+        "event_rules", "is_draft", "is_public", "event_type"
     ]:
         update_field(field)
 
@@ -2322,6 +2366,11 @@ def edit_event(request):
             "changes": changes
         }, indent=2)
     )
+
+    # Rich, specific audit summary for the admin activity log, e.g.
+    # "Changed Detty December: event type from internal to external". The full change list rides
+    # along in the expandable details.
+    set_audit(request, _event_edit_summary(event.event_name, changes), changes=changes)
 
     # AdminHistory.objects.create(
     #     admin_user=user,
@@ -18608,6 +18657,18 @@ def broadcast_to_group(request):
             f"Group broadcast ({mode}) to {group.stage.stage_name} > {group.group_name} "
             f"in {event.event_name} (ID: {event.event_id}): {len(recipients)} recipients"
         ),
+    )
+
+    # Rich audit summary, e.g. 'Sent broadcast "time for the game" to 56 players in Finals > Group A
+    # (Detty December)'. The full message body rides along in the expandable details.
+    set_audit(
+        request,
+        (
+            f"Sent broadcast \"{title or 'Group message'}\" to {len(recipients)} players in "
+            f"{group.stage.stage_name} > {group.group_name} ({event.event_name})"
+        ),
+        recipients=len(recipients),
+        message=message,
     )
 
     return Response(
