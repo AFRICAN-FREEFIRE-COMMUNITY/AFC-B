@@ -63,11 +63,28 @@ Success response: Meta's standard message-accepted body, e.g.
     {"messaging_product": "whatsapp",
      "contacts": [{"input": "<to>", "wa_id": "<wa_id>"}],
      "messages": [{"id": "wamid.XXXX"}]}
+    (c) Approved message TEMPLATE (for COLD contact, outside the 24h window):
+        {
+          "messaging_product": "whatsapp",
+          "recipient_type": "individual",
+          "to": "<E.164 digits, no +>",
+          "type": "template",
+          "template": {
+            "name": "<approved template name>",
+            "language": {"code": "<exact approved lang, e.g. en_US>"},
+            "components": [
+              {"type": "body", "parameters": [{"type": "text", "text": "<{{1}}>"}, ...]},
+              {"type": "button", "sub_type": "quick_reply", "index": 0,
+               "parameters": [{"type": "payload", "payload": "<echoed back on tap>"}]}
+            ]
+          }
+        }
 Note on the 24-hour window: WhatsApp only allows free-form (text / interactive)
 messages within 24h of the recipient's last inbound message. Outside that
-window Meta returns an error and an approved message template must be used
+window Meta returns an error and an approved message TEMPLATE must be used
 instead. This client surfaces that error in the returned dict (it does not
-silently fail). Template sending is out of scope for this module.
+silently fail). send_whatsapp_template below sends that template; notify_vendor
+sends the template first and falls back to free-form buttons if it fails.
 """
 
 import logging
@@ -283,6 +300,87 @@ def send_whatsapp_buttons(to_number: str, body: str, buttons: list) -> dict:
     return _send_message(payload)
 
 
+def send_whatsapp_template(
+    to_number: str,
+    template_name: str,
+    body_params: list,
+    button_payloads: list = None,
+    language_code: str = "en_US",
+) -> dict:
+    """
+    Send an APPROVED WhatsApp message TEMPLATE to a vendor (Meta Cloud API type "template").
+
+    This is the COLD-CONTACT path. WhatsApp only allows free-form text/interactive
+    messages within 24h of the recipient's last inbound message; a business-initiated
+    ("you have a new order") message OUTSIDE that window MUST be an approved template.
+    afc_shop/fulfilment.py notify_vendor calls THIS first for a new paid order, and
+    falls back to send_whatsapp_buttons only if it returns ok=False (most commonly the
+    template is not approved yet -> Meta error 132001).
+
+    The template `template_name` must be registered + approved in Meta with:
+      - a BODY holding N positional variables {{1}}..{{N}} (filled from body_params, in
+        order), and
+      - up to 3 QUICK-REPLY buttons (their dynamic payloads filled from button_payloads,
+        in order). When a vendor taps one, Meta/Kapso POSTs an INBOUND message of
+        type "button" carrying button.payload == the payload we set here. The webhook
+        (afc_shop/whatsapp_webhook.py) maps that "<action>:<order_id>" payload back to the
+        order. NOTE: a TEMPLATE button tap arrives as type "button", NOT the
+        "interactive.button_reply" shape that send_whatsapp_buttons' taps use, so the
+        webhook handles both shapes.
+
+    Args:
+        to_number:       recipient phone in any format; normalized to E.164 digits.
+        template_name:   the approved template name (e.g. "vendor_new_order").
+        body_params:     ordered list of strings for the body's {{1}}..{{N}} variables.
+        button_payloads: ordered list of custom payload strings, one per quick-reply
+                         button (max 3, capped here). Each becomes button.payload on the
+                         inbound tap. Pass None/[] for a template with no quick-reply buttons.
+        language_code:   the language the template was APPROVED under. MUST match exactly
+                         ("en_US" != "en"); a mismatch returns Meta error 132001. The caller
+                         passes settings.KAPSO_TEMPLATE_LANG.
+
+    Returns the dict from `_send_message` ({"ok": True, "message_id", "data"} or
+    {"ok": False, "error", ...}). Never raises.
+    """
+    to = _normalize_to_number(to_number)
+    if not to:
+        return {"ok": False, "error": "Missing or invalid recipient number.", "status_code": None, "data": None}
+    if not template_name:
+        return {"ok": False, "error": "Missing template name.", "status_code": None, "data": None}
+
+    # ── BODY component: one {"type":"text","text":...} per positional {{n}} variable, in
+    # order. Meta fills {{1}} from the first entry, {{2}} from the second, and so on. ──
+    components = [{
+        "type": "body",
+        "parameters": [{"type": "text", "text": str(p)} for p in (body_params or [])],
+    }]
+
+    # ── QUICK-REPLY button components: ONE component per button. Each carries its own
+    # 0-based INTEGER index (the button's position in the approved template) and the
+    # dynamic payload that is echoed back to our webhook on tap. Meta allows at most 3. ──
+    for idx, payload_value in enumerate((button_payloads or [])[:3]):
+        components.append({
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": idx,  # integer, canonical Meta form (0,1,2) = button position
+            "parameters": [{"type": "payload", "payload": str(payload_value)}],
+        })
+
+    # Standard Meta Cloud API template payload (see module docstring, case (c)).
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language_code},
+            "components": components,
+        },
+    }
+    return _send_message(payload)
+
+
 def download_whatsapp_media(media_id: str) -> dict:
     """
     Download the bytes of an INBOUND WhatsApp media item (a photo / document a vendor
@@ -376,6 +474,16 @@ def download_whatsapp_media(media_id: str) -> dict:
 #   -> the handler routes on interactive.button_reply.id (e.g. "order_received",
 #      "set_ship_date", "mark_shipped") to advance the order. (A list-picker reply
 #      instead carries interactive.list_reply.{id,title}.)
+#
+# (a2) A TEMPLATE quick-reply button TAP (from send_whatsapp_template) arrives DIFFERENTLY
+#      - as type "button" with a TOP-LEVEL button object (NOT interactive.button_reply):
+#     {
+#       "from": "<vendor wa_id>",
+#       "type": "button",
+#       "button": {"payload": "<the payload we set, e.g. ack:123>", "text": "<button label>"}
+#     }
+#   -> the handler reads button.payload (same "<action>:<order_id>" encoding) to advance
+#      the order. The webhook handles BOTH (a) and (a2).
 #
 # (b) MEDIA (vendor sends a photo / document such as a shipping receipt):
 #     {
