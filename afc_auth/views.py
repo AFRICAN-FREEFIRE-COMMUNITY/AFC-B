@@ -60,6 +60,8 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
+from django.db import IntegrityError  # backstop for the username/email unique-constraint race in signup()
+from django.db.models import Q  # OR-query for the unverified-takeover lookup in signup()
 from utils.ipinfo_lookup import lookup_ip
 
 import re
@@ -218,9 +220,17 @@ def _email_shell(body_inner_html, accent="green"):
 <body style="margin:0;padding:24px 0;background:#070a08;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#0f1411;border:1px solid #1d2a22;border-radius:16px;overflow:hidden;">
-  <tr><td style="background:{grad};padding:34px 0 26px;text-align:center;border-bottom:1px solid {hb};">
-    <div style="font-size:26px;font-weight:800;color:#ffffff;letter-spacing:.5px;">AFRICAN <span style="color:{a};">FREE FIRE</span></div>
-    <div style="font-size:11px;letter-spacing:5px;color:#7c8c83;text-transform:uppercase;margin-top:6px;">COMMUNITY</div>
+  <tr><td style="background:{grad};padding:28px 0 22px;text-align:center;border-bottom:1px solid {hb};">
+    <!-- Actual AFC logo (owner request 2026-06-09) on a white badge. The logo art has dark
+         outlines + black tagline text, so a white badge keeps it readable on the dark header
+         regardless of the PNG's own background. Hosted at the site root: Next public/logo.png
+         -> https://africanfreefirecommunity.com/logo.png. An absolute hosted URL is required
+         because mail clients cannot load local/inline files. This shell wraps EVERY AFC email
+         (verification, welcome, reset, password-changed, and the shop/vendor order emails), so
+         the logo now appears in all of them. -->
+    <table role="presentation" cellpadding="0" cellspacing="0" align="center"><tr><td style="background:#ffffff;border-radius:14px;padding:9px 14px;">
+      <img src="{SITE_URL}/logo.png" alt="African Free Fire Community" width="92" height="92" style="display:block;border:0;outline:none;width:92px;height:auto;">
+    </td></tr></table>
   </td></tr>
   {body_inner_html}
   <tr><td style="padding:18px 44px 30px;border-top:1px solid #1d2a22;">
@@ -496,45 +506,105 @@ def signup(request):
         if password != confirm_password:
             return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check if in-game name or UID are already in use by **active users**
-        if User.objects.filter(username=in_game_name, is_active=True).exists():
-            return Response({"error": "In-game name is already in use."}, status=status.HTTP_400_BAD_REQUEST)
-        
+        # ── Uniqueness pre-checks (return FRIENDLY 400s, never the raw DB 1062 error) ──
+        #
+        # "Verified" flag note: on this User model `is_active` IS the email-verified flag.
+        #   - signup() creates the user with is_active=False (see create() below);
+        #   - verify_code() flips is_active=True only after the emailed code is confirmed;
+        #   - login() (this file, ~line 421) refuses any user with is_active=False.
+        # So is_active=False reliably means "abandoned signup: never verified, never logged in,
+        # holds no real account data". is_active=True means a live, owned account.
+        #
+        # We check uniqueness against the DB unique constraints (username, email, uid) BEFORE
+        # inserting so the user gets a clear message instead of the raw MySQL
+        # `(1062, "Duplicate entry ...")` that the bare insert would otherwise surface.
 
+        # Username (in-game name) conflict.
+        username_clash = User.objects.filter(username=in_game_name).first()
+        if username_clash and username_clash.is_active:
+            # Owned by a real, verified account → always reject, never take over.
+            return Response(
+                {"message": "That in-game name is already taken. Please choose another."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Email conflict.
+        email_clash = User.objects.filter(email=email).first()
+        if email_clash and email_clash.is_active:
+            # Owned by a real, verified account → always reject, never take over.
+            return Response(
+                {"message": "That email is already registered. Try logging in or resetting your password."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # UID conflict (only checked when a UID was supplied). Same verified-only rule.
         if uid:
-            if User.objects.filter(uid=uid, is_active=True).exists():
-                return Response({"error": "UID is already in use."}, status=status.HTTP_400_BAD_REQUEST)
+            uid_clash = User.objects.filter(uid=uid).first()
+            if uid_clash and uid_clash.is_active:
+                return Response(
+                    {"message": "That UID is already in use. Please use a different one."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        # Check for email
-        existing_user = User.objects.filter(email=email).first()
-        if existing_user:
-            if existing_user.is_active:
-                return Response({"error": "Email is already in use."}, status=status.HTTP_400_BAD_REQUEST)
-            else:
-                # User exists but not verified → resend verification code
-                verification_code = random.randint(100000, 999999)
-                cache.set(f"verification_code_{existing_user.user_id}", verification_code, timeout=600)
-
-                subject = 'Verify your AFC account'
-                message = email_verification_code(existing_user.username, verification_code)
-                send_email(email, subject, message)
-
-                return Response({
-                    "message": "You already signed up but didn't verify your email. A new verification code has been sent."
-                }, status=status.HTTP_200_OK)
-
-        # Create new user
-        user = User.objects.create(
-            username=in_game_name,
-            uid=uid if uid else None,
-            email=email,
-            is_active=False,
-            full_name=full_name,
-            country=country
+        # ── UNVERIFIED TAKEOVER (the core unblock) ──
+        #
+        # If the only thing holding the in-game name / email / UID is an UNVERIFIED user
+        # (is_active=False), that signup was abandoned (e.g. the owner typed the wrong email
+        # the first time, never got the code, and is now retrying with the right one). Such a
+        # row carries no real data, so we delete it and let the fresh registration proceed.
+        # This is what stops an abandoned wrong-email attempt from permanently locking the name.
+        #
+        # SECURITY: we ONLY ever delete is_active=False rows. A verified/active account is
+        # rejected above and never reaches here, so a takeover can never wipe a real account
+        # or let an attacker hijack someone's confirmed username/email. The CASCADE on
+        # UserProfile (and any other FK to this user) cleans up the stale profile too.
+        stale_unverified = User.objects.filter(is_active=False).filter(
+            Q(username=in_game_name) | Q(email=email)
         )
-        user.set_password(password)
-        user.save()
-        UserProfile.objects.create(user=user)
+        if uid:
+            stale_unverified = stale_unverified | User.objects.filter(is_active=False, uid=uid)
+        stale_unverified = stale_unverified.distinct()
+
+        # `country` comes from a best-effort ipinfo lookup that can fail or return None;
+        # the column is NOT NULL, so coalesce to "" to avoid a spurious IntegrityError.
+        country = country or ""
+
+        # Wrap delete + create in one transaction so we never end up half-deleted on failure.
+        # NOTE: the IntegrityError backstop is handled by the OUTER try/except (below), not
+        # inside this block. Once a query raises IntegrityError inside an atomic block the
+        # transaction is poisoned and no further queries may run until it exits, so the
+        # "which field clashed?" lookups must happen AFTER the block has rolled back.
+        try:
+            with transaction.atomic():
+                if stale_unverified.exists():
+                    stale_unverified.delete()
+
+                # Create new user (is_active=False → unverified until verify_code runs).
+                user = User.objects.create(
+                    username=in_game_name,
+                    uid=uid if uid else None,
+                    email=email,
+                    is_active=False,
+                    full_name=full_name,
+                    country=country
+                )
+                user.set_password(password)
+                user.save()
+                UserProfile.objects.create(user=user)
+        except IntegrityError:
+            # Backstop for the race (two signups for the same name between our pre-check and
+            # the insert) or any unique constraint we did not pre-check. The transaction has
+            # rolled back, so it is now safe to query which field clashed. We map straight to
+            # the friendly messages and NEVER leak the raw MySQL (1062, "Duplicate entry ...").
+            if User.objects.filter(username=in_game_name).exists():
+                return Response(
+                    {"message": "That in-game name is already taken. Please choose another."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response(
+                {"message": "That email is already registered. Try logging in or resetting your password."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Generate verification code
         verification_code = random.randint(100000, 999999)
@@ -551,8 +621,21 @@ def signup(request):
 
         return Response({"message": "Signup successful. Please check your email for the verification code."}, status=status.HTTP_201_CREATED)
 
+    except IntegrityError:
+        # Final safety net: any unique-constraint error that escapes the inner handler still
+        # returns a friendly message rather than the raw MySQL (1062, "Duplicate entry ...").
+        return Response(
+            {"message": "That in-game name or email is already registered. Please try a different one or log in."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     except Exception as e:
-        return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # Log the real error server-side for debugging, but never echo internal/DB details
+        # (which previously leaked the raw 1062 message) back to the user.
+        print(f"Signup unexpected error: {e}")
+        return Response(
+            {"message": "Something went wrong while creating your account. Please try again."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @api_view(["POST"])

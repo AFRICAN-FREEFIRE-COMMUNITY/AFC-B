@@ -282,10 +282,40 @@ GEOIP_PATH = "/home/ubuntu/ipinfo"
 
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY")
-PAYSTACK_CALLBACK_URL = "https://africanfreefirecommunity.com/shop/orders/success"
+# Where Paystack redirects the buyer after a shop payment. MUST match the real FE route
+# app/(user)/orders/success/ -> /orders/success ((user) is a route group, not in the URL).
+# It previously pointed at /shop/orders/success, which 404s (payment still completed via the
+# webhook, but the buyer landed on a dead page). This is the same success page Stripe uses.
+PAYSTACK_CALLBACK_URL = "https://africanfreefirecommunity.com/orders/success"
 
 # Stripe (paid events). Env-driven; TEST keys locally, LIVE keys set on the prod server only,
 # never in git. STRIPE_WEBHOOK_SECRET is added once the webhook endpoint is registered.
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+# Kapso (WhatsApp Cloud API proxy). Consumed by afc_shop/services/kapso.py, which the marketplace
+# fulfilment notify (afc_shop/fulfilment.py notify_vendor) calls to message product owners/vendors
+# on a paid order. Env-driven; values live in the gitignored .env locally and as server env vars on
+# prod, never in git.
+#   KAPSO_API_KEY         -> auth for the Kapso proxy, sent as the "X-API-Key" request header.
+#   KAPSO_PHONE_NUMBER_ID -> the Meta phone-number ID we send FROM (the AFC WhatsApp business number).
+#   KAPSO_PROJECT_ID / KAPSO_WHATSAPP_CONFIG_ID -> not required for the send call, but kept for the
+#   inbound webhook handler (built separately) and CLI tooling.
+KAPSO_API_KEY = os.getenv("KAPSO_API_KEY")
+KAPSO_PHONE_NUMBER_ID = os.getenv("KAPSO_PHONE_NUMBER_ID")
+KAPSO_PROJECT_ID = os.getenv("KAPSO_PROJECT_ID")
+KAPSO_WHATSAPP_CONFIG_ID = os.getenv("KAPSO_WHATSAPP_CONFIG_ID")
+
+# Shop checkout currency. Both shop payment paths (Paystack + Stripe, see
+# afc_shop/stripe_checkout.py) charge in this currency, and Stripe Connect vendor
+# payouts (afc_shop/connect.py) transfer in it too. Defaults to NGN to match the
+# Paystack flow; env-overridable if the shop currency ever changes.
+SHOP_CURRENCY = os.getenv("SHOP_CURRENCY", "NGN")
+
+# Marketplace platform fee (Stripe Connect vendor payouts, Phase B3). The percentage
+# AFC keeps off each marketplace order total before transferring the rest to the
+# vendor via Stripe Connect (afc_shop/connect.py settle_order_payout). Default 0 (no
+# cut) per the owner decision; set e.g. "2.5" to take 2.5%. Stored on each VendorPayout
+# row at settle time so a later change never rewrites past payouts.
+MARKETPLACE_FEE_PERCENT = os.getenv("MARKETPLACE_FEE_PERCENT", "0")
