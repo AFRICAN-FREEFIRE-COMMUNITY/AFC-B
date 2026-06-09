@@ -282,7 +282,11 @@ GEOIP_PATH = "/home/ubuntu/ipinfo"
 
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY")
-PAYSTACK_CALLBACK_URL = "https://africanfreefirecommunity.com/shop/orders/success"
+# Where Paystack redirects the buyer after a shop payment. MUST match the real FE route
+# app/(user)/orders/success/ -> /orders/success ((user) is a route group, not in the URL).
+# It previously pointed at /shop/orders/success, which 404s (payment still completed via the
+# webhook, but the buyer landed on a dead page). This is the same success page Stripe uses.
+PAYSTACK_CALLBACK_URL = "https://africanfreefirecommunity.com/orders/success"
 
 # Stripe (paid events). Env-driven; TEST keys locally, LIVE keys set on the prod server only,
 # never in git. STRIPE_WEBHOOK_SECRET is added once the webhook endpoint is registered.

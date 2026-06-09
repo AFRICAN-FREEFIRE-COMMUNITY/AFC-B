@@ -123,8 +123,42 @@ class Vendor(models.Model):
 
     status = models.CharField(max_length=20, choices=STATUS, default="active")
 
-    # Stripe Connect account id, set during the LATER Phase B3 payout onboarding.
-    # Blank until then; kept here so the payout work does not need a new migration.
+    # ── Payout rail (which provider AFC uses to pay THIS vendor out, Phase B3) ──────
+    # AFC's marketplace vendors are MAJORITY AFRICAN, and Stripe Connect does NOT pay
+    # out to Nigerian / most-African bank accounts. PAYSTACK does (Nigeria/Ghana/SA/
+    # Kenya) and the shop already CHARGES buyers via Paystack, so PAYSTACK TRANSFERS is
+    # the PRIMARY/DEFAULT payout rail. Stripe Connect stays only for the non-African
+    # vendors Stripe can actually reach. fulfilment.order_mark_completed reads this to
+    # route a completed order's payout to the right settle function (provider-aware):
+    #   - "paystack" -> afc_shop/paystack_payout.settle_order_payout_paystack(order)
+    #   - "stripe"   -> afc_shop/connect.settle_order_payout(order)
+    PAYOUT_PROVIDER = (
+        ("paystack", "Paystack Transfers"),  # default: African/Nigerian vendors + local bank
+        ("stripe", "Stripe Connect"),        # non-African vendors only (Stripe can't reach NGN banks)
+    )
+    payout_provider = models.CharField(
+        max_length=20, choices=PAYOUT_PROVIDER, default="paystack"
+    )
+
+    # ── Paystack Transfers bank details (the PRIMARY rail; African vendors) ─────────
+    # The vendor's LOCAL bank account AFC transfers their share to via Paystack
+    # Transfers. Set by afc_shop/paystack_payout.vendor_save_bank: the vendor picks a
+    # bank (bank_code) from list_banks, enters their account_number, AFC resolves the
+    # account_name via Paystack /bank/resolve (so the vendor confirms it is correct),
+    # then creates a Paystack Transfer RECIPIENT (paystack_recipient_code) used as the
+    # transfer destination at payout time. All blank until the vendor saves their bank.
+    bank_code = models.CharField(max_length=20, blank=True)      # Paystack bank code (e.g. "058")
+    bank_name = models.CharField(max_length=120, blank=True)     # human-readable bank name (display)
+    account_number = models.CharField(max_length=20, blank=True) # the vendor's account number (NUBAN)
+    account_name = models.CharField(max_length=120, blank=True)  # resolved holder name (from Paystack)
+    # The Paystack Transfer Recipient code (RCP_...) created from the bank details above.
+    # This is the `recipient` passed to POST /transfer at payout time (the Paystack
+    # equivalent of Stripe Connect's stripe_account_id below).
+    paystack_recipient_code = models.CharField(max_length=120, blank=True)
+
+    # Stripe Connect account id, set during the Stripe payout onboarding (NON-AFRICAN
+    # vendors only; Stripe cannot pay out to NGN/most-African banks). Blank for the
+    # Paystack-default vendors. afc_shop/connect.py writes/reads this.
     stripe_account_id = models.CharField(max_length=120, blank=True)
 
     # The admin who granted this vendor access. SET_NULL so removing an admin user

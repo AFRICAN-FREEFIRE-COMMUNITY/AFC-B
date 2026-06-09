@@ -47,6 +47,20 @@ from .connect import (
     admin_list_vendor_payouts,
     admin_release_owed_payouts,
 )
+# Marketplace Phase B3: Paystack Transfers vendor payouts (afc_shop/paystack_payout.py) —
+# the PRIMARY payout rail. AFC's vendors are majority African; Stripe Connect cannot pay
+# out to NGN/most-African banks but Paystack can, and the shop already charges via Paystack.
+# A vendor saves their local bank (resolve -> save = create a Paystack Transfer Recipient),
+# and on an order's shipped -> completed transition AFC transfers their share out via
+# Paystack. Imported explicitly (not via *) so the bank-picker + save + admin-retry endpoints
+# are clearly sourced. The Stripe path above stays only for non-African vendors.
+from .paystack_payout import (
+    list_banks,
+    resolve_account,
+    vendor_save_bank,
+    vendor_payout_method,
+    admin_retry_owed_paystack_payouts,
+)
 # Marketplace WhatsApp INBOUND webhook (afc_shop/whatsapp_webhook.py). The receiving half
 # of the two-way Kapso fulfilment flow: a vendor's button tap / inbound media advances the
 # SAME state machine the vendor page drives. GET verifies the URL with Meta; POST handles
@@ -170,6 +184,21 @@ urlpatterns = [
     path("connect/status/", vendor_connect_status, name="vendor_connect_status"),
     path("admin/payouts/", admin_list_vendor_payouts, name="admin_list_vendor_payouts"),
     path("admin/payouts/release/", admin_release_owed_payouts, name="admin_release_owed_payouts"),
+
+    # ── Marketplace Phase B3: Paystack Transfers vendor payouts (PRIMARY rail) ──
+    # afc_shop/paystack_payout.py. The vendor Payouts page picks a bank (banks/), resolves
+    # the account name (resolve-account/), then saves it (vendor/bank/) which creates a
+    # Paystack Transfer Recipient and sets payout_provider="paystack". vendor/payout-method/
+    # reports the saved method + readiness. The transfer itself fires automatically from the
+    # shipped -> completed transition (fulfilment.order_mark_completed, provider-aware).
+    # admin/payouts/retry-paystack/ (require_admin) retries owed Paystack rows once a vendor
+    # saves their bank. The admin LEDGER list is the shared admin/payouts/ above (both rails
+    # write the one VendorPayout table).
+    path("banks/", list_banks, name="list_banks"),
+    path("resolve-account/", resolve_account, name="resolve_account"),
+    path("vendor/bank/", vendor_save_bank, name="vendor_save_bank"),
+    path("vendor/payout-method/", vendor_payout_method, name="vendor_payout_method"),
+    path("admin/payouts/retry-paystack/", admin_retry_owed_paystack_payouts, name="admin_retry_owed_paystack_payouts"),
 
     # ── Marketplace: WhatsApp INBOUND webhook (afc_shop/whatsapp_webhook.py) ──
     # GET = Meta verification handshake (echo hub.challenge). POST = inbound events
