@@ -1677,6 +1677,13 @@ def get_user_profile(request):
     # Total wins (you can keep separate too)
     total_wins = int(solo_agg["total_wins"]) + int(team_wins)
 
+    # is_vendor: True if this user is an ACTIVE marketplace vendor. The FE uses it to show
+    # the "Vendor Dashboard" sidebar entry (the /vendor portal is otherwise only reachable by
+    # typing the URL, since "vendor" is a DB record, not a role). Local import avoids an
+    # afc_shop <-> afc_auth circular import at module load (afc_shop already imports from afc_auth).
+    from afc_shop.models import Vendor as _Vendor
+    is_vendor = _Vendor.objects.filter(user=user, status="active").exists()
+
     return Response({
         "user_id": user.user_id,
         "full_name": user.full_name,
@@ -1689,6 +1696,7 @@ def get_user_profile(request):
         "profile_pic": profile_pic_url,
         "roles": list(UserRoles.objects.filter(user=user).values_list("role__role_name", flat=True)),
         "is_banned": BannedPlayer.objects.filter(banned_player=user, is_active=True).exists(),
+        "is_vendor": is_vendor,
         "discord_id": user.discord_id if hasattr(user, "discord_id") else None,
         "discord_username": user.discord_username if hasattr(user, "discord_username") else None,
 
