@@ -161,12 +161,43 @@ def make_request(route, method, callback, name):
     }
 
 
-def app_of(callback):
-    """Group requests by the Django app the view lives in (its module's top package)."""
-    return (getattr(callback, "__module__", "") or "misc").split(".")[0] or "misc"
+def groups_of(callback):
+    """Two-level folder key for a view: (app_label, feature_module).
+
+    Folders are NESTED so the collection mirrors the codebase instead of dumping every
+    endpoint of a big app into one flat list. Derived from the view function's module:
+      __module__ "afc_shop.fulfilment" -> app "shop", feature "fulfilment"
+      __module__ "afc_shop.views"      -> app "shop", feature "views"
+      __module__ "afc_auth"            -> app "auth",  feature "views"  (no submodule)
+    The "afc_" prefix is stripped from the app label for a cleaner top folder name; the
+    feature is the module FILE the view lives in (e.g. views / fulfilment / vendors /
+    connect / paystack_payout / whatsapp_webhook / stripe_checkout / mintroute). Deeper
+    dotted modules collapse to their first sub-component so the tree stays 2 levels.
+    """
+    mod = (getattr(callback, "__module__", "") or "misc")
+    parts = mod.split(".")
+    app = parts[0] or "misc"
+    app_label = app[4:] if app.startswith("afc_") else app   # afc_shop -> shop
+    feature = parts[1] if len(parts) > 1 else "views"          # the module file = the feature
+    return app_label, feature
+
+
+def _folder(name, items):
+    """A Postman folder node (sorted children) used at both nesting levels."""
+    return {"name": name, "item": items}
 
 
 def collection(title, data):
+    """Build a v2.1.0 collection from a nested {app: {feature: [items]}} dict.
+
+    Top-level folders = app (sorted); each holds sub-folders = feature module (sorted),
+    each holding its requests. Apps with a single feature still nest (one sub-folder) so
+    the structure is uniform and predictable for anyone browsing the collection.
+    """
+    top = []
+    for app in sorted(data):
+        subfolders = [_folder(feat, data[app][feat]) for feat in sorted(data[app])]
+        top.append(_folder(app, subfolders))
     return {
         "info": {
             "name": title,
@@ -177,24 +208,25 @@ def collection(title, data):
             {"key": "token", "value": ""},
             {"key": "api_key", "value": ""},
         ],
-        "item": [{"name": app, "item": items} for app, items in sorted(data.items())],
+        "item": top,
     }
 
 
 def build():
     routes = walk(get_resolver())
+    # Nested grouping: data[app_label][feature_module] -> [request items].
     full, smoke = {}, {}
     n_full = n_smoke = 0
     for route, callback, name in routes:
-        app = app_of(callback)
-        if app.startswith("django"):   # skip the django-admin contrib site
-            continue
+        app_label, feature = groups_of(callback)
+        if (getattr(callback, "__module__", "") or "").startswith("django"):
+            continue   # skip the django-admin contrib site
         for method in methods_of(callback):
             item = make_request(route, method, callback, name)
-            full.setdefault(app, []).append(item)
+            full.setdefault(app_label, {}).setdefault(feature, []).append(item)
             n_full += 1
             if method == "GET":
-                smoke.setdefault(app, []).append(item)
+                smoke.setdefault(app_label, {}).setdefault(feature, []).append(item)
                 n_smoke += 1
 
     with open(os.path.join(HERE, "AFC_Backend_API.postman_collection.json"), "w", encoding="utf-8") as f:
@@ -202,8 +234,10 @@ def build():
     with open(os.path.join(HERE, "AFC_Smoke_GET.postman_collection.json"), "w", encoding="utf-8") as f:
         json.dump(collection("AFC Backend API - GET smoke", smoke), f, indent=2)
 
-    print(f"Wrote full collection: {n_full} requests across {len(full)} apps")
-    print(f"Wrote GET smoke:       {n_smoke} requests across {len(smoke)} apps")
+    n_full_folders = sum(len(feats) for feats in full.values())
+    n_smoke_folders = sum(len(feats) for feats in smoke.values())
+    print(f"Wrote full collection: {n_full} requests across {len(full)} apps / {n_full_folders} feature folders")
+    print(f"Wrote GET smoke:       {n_smoke} requests across {len(smoke)} apps / {n_smoke_folders} feature folders")
 
 
 if __name__ == "__main__":
