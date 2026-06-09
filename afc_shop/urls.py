@@ -36,6 +36,22 @@ from .vendors import (
     vendor_update_product,
     vendor_submit_product,
 )
+# Marketplace Phase B3: Stripe Connect vendor payouts (afc_shop/connect.py). AFC is the
+# custodian (mirrors the event escrow): the vendor onboards a Connect account, and on an
+# order's shipped -> completed transition AFC transfers the vendor's share out. Imported
+# explicitly (not via *) so the onboarding/status + admin payout-ledger endpoints are
+# clearly sourced.
+from .connect import (
+    vendor_connect_onboard,
+    vendor_connect_status,
+    admin_list_vendor_payouts,
+    admin_release_owed_payouts,
+)
+# Marketplace WhatsApp INBOUND webhook (afc_shop/whatsapp_webhook.py). The receiving half
+# of the two-way Kapso fulfilment flow: a vendor's button tap / inbound media advances the
+# SAME state machine the vendor page drives. GET verifies the URL with Meta; POST handles
+# inbound events. Public (Meta/Kapso is the caller), so it is NOT auth-gated.
+from .whatsapp_webhook import whatsapp_webhook
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -143,4 +159,22 @@ urlpatterns = [
     path("vendor/products/create/", vendor_create_product, name="vendor_create_product"),
     path("vendor/products/update/", vendor_update_product, name="vendor_update_product"),
     path("vendor/products/submit/", vendor_submit_product, name="vendor_submit_product"),
+
+    # ── Marketplace Phase B3: Stripe Connect vendor payouts (afc_shop/connect.py) ──
+    # connect/onboard + connect/status: the VENDOR portal connects their bank + checks
+    # payout-readiness (gated to the caller's own active Vendor). admin/payouts/* : the
+    # admin payouts ledger surface (require_admin) lists payouts + releases owed ones
+    # once a vendor is onboarded. The actual transfer is fired automatically from the
+    # shipped -> completed transition (fulfilment.order_mark_completed).
+    path("connect/onboard/", vendor_connect_onboard, name="vendor_connect_onboard"),
+    path("connect/status/", vendor_connect_status, name="vendor_connect_status"),
+    path("admin/payouts/", admin_list_vendor_payouts, name="admin_list_vendor_payouts"),
+    path("admin/payouts/release/", admin_release_owed_payouts, name="admin_release_owed_payouts"),
+
+    # ── Marketplace: WhatsApp INBOUND webhook (afc_shop/whatsapp_webhook.py) ──
+    # GET = Meta verification handshake (echo hub.challenge). POST = inbound events
+    # (button taps advance the order; inbound media -> FulfillmentEvidence). Public:
+    # Meta/Kapso is the caller, so NO auth gate (sender-number == vendor is the check).
+    # Pairs with fulfilment.notify_vendor (the outbound buttons whose taps land here).
+    path("whatsapp/webhook/", whatsapp_webhook, name="whatsapp_webhook"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

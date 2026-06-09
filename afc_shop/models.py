@@ -647,3 +647,88 @@ class MintrouteLog(models.Model):
     request_payload = models.JSONField()
     response_payload = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VendorPayout — the ledger of what AFC owes / has paid each vendor (Phase B3).
+#
+# WHY this exists (marketplace Phase B3, spec: WEBSITE/tasks/marketplace-design.md):
+#   AFC is the CUSTODIAN of marketplace money (same posture as the event paid-events
+#   escrow in afc_tournament_and_scrims/event_payments.py): the buyer pays AFC
+#   (Stripe Checkout or Paystack), the funds land in AFC's balance, the vendor
+#   fulfils, and THEN AFC transfers the vendor's share out via Stripe Connect. This
+#   table is the per-order ledger row that records each of those obligations so the
+#   money trail is auditable and a transfer is never created twice for one order.
+#
+#   One VendorPayout per (vendor, order): when an order reaches
+#   fulfilment_state="completed" (order_mark_completed in afc_shop/fulfilment.py),
+#   afc_shop/connect.py computes the vendor share (order.total minus the platform
+#   fee) and either:
+#     - creates a Stripe Transfer to vendor.stripe_account_id and records this row
+#       status="paid" + stripe_transfer_id, OR
+#     - if the vendor has NOT finished Connect onboarding (no stripe_account_id /
+#       payouts not enabled), records status="owed" so an admin can release it later
+#       (admin_release_owed_payouts) once the vendor is onboarded.
+#
+# HOW it connects:
+#   - `vendor` FK -> Vendor: who is owed/paid. `order` FK -> Order: which sale this
+#     payout settles (OneToOne in effect; enforced by unique_together so a completed
+#     order can only ever spawn ONE payout, the idempotency guard).
+#   - WRITTEN BY: afc_shop/connect.py
+#       * settle_order_payout(order)  -> called from fulfilment.order_mark_completed
+#         on the shipped -> completed transition (best-effort; never blocks the
+#         transition or 500s the request).
+#       * admin_release_owed_payouts  -> retries the Stripe Transfer for "owed" rows.
+#   - READ BY: admin_list_vendor_payouts (the admin payouts dashboard).
+#   - The PLATFORM FEE is settings.MARKETPLACE_FEE_PERCENT (default 0) applied at
+#     settle time; stored on the row (platform_fee) so a later fee change does not
+#     rewrite history.
+# ─────────────────────────────────────────────────────────────────────────────
+class VendorPayout(models.Model):
+    STATUS = (
+        # AFC owes the vendor but has NOT transferred yet (vendor not onboarded to
+        # Connect, or a transfer attempt failed). An admin releases these later.
+        ("owed", "Owed"),
+        # An admin has marked the payout for release but the transfer has not yet
+        # succeeded (transient seam; admin_release_owed_payouts moves owed -> paid).
+        ("released", "Released"),
+        # The Stripe Transfer succeeded; stripe_transfer_id is set. Terminal.
+        ("paid", "Paid"),
+    )
+
+    # The vendor being paid. CASCADE: a payout has no meaning without its vendor; if
+    # the vendor identity is deleted the ledger rows go with it (mirrors how Vendor
+    # cascades from its User).
+    vendor = models.ForeignKey(
+        "Vendor",
+        on_delete=models.CASCADE,
+        related_name="payouts",
+    )
+
+    # The completed order this payout settles. CASCADE for the same reason as vendor.
+    # unique=True (one payout per order) is the idempotency guard: settle_order_payout
+    # uses get_or_create on this FK so a re-completed/retried order never double-pays.
+    order = models.OneToOneField(
+        "Order",
+        on_delete=models.CASCADE,
+        related_name="vendor_payout",
+    )
+
+    # The vendor's SHARE actually transferred (order.total minus platform_fee). Stored
+    # in the order's currency (the shop charges in one currency, settings.SHOP_CURRENCY).
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    # AFC's cut taken off the top (order.total * MARKETPLACE_FEE_PERCENT / 100). Stored
+    # so a later fee change does not rewrite past payouts. 0 when the fee is 0 (default).
+    platform_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+
+    status = models.CharField(max_length=20, choices=STATUS, default="owed")
+
+    # The Stripe Transfer id (tr_...) once the transfer succeeds. Blank while "owed".
+    stripe_transfer_id = models.CharField(max_length=120, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Set when the row reaches status="paid" (the transfer succeeded).
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Payout to {self.vendor.display_name} for order #{self.order_id} ({self.status})"

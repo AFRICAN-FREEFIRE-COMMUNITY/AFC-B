@@ -187,23 +187,26 @@ def _transition(order, target, *, set_fields=None):
 # notify_vendor — STUB seam for the WhatsApp (Kapso) send (SEPARATE follow-up)
 # ─────────────────────────────────────────────────────────────────────────────
 def notify_vendor(order, event="received"):
-    """Notify the order's vendor that something happened (today: log + best-effort
-    email; LATER: send a WhatsApp message via Kapso).
+    """Notify the order's vendor that something happened (best-effort WhatsApp BUTTONS
+    via Kapso + an email heads-up).
 
-    THIS IS THE SEAM where the Kapso WhatsApp send will plug in (the WhatsApp SEND
-    is a SEPARATE follow-up per the build brief). For now it:
-      1. logs the event (so ops can see vendor notifications firing), and
-      2. if the vendor has a contact_email, sends them a plain heads-up via the
-         shared afc_auth send_email (best-effort; a mail failure never blocks the
-         order).
+    THE WHATSAPP CHANNEL (Kapso) is now two-way: this send puts TAPPABLE BUTTONS in
+    front of the vendor whose reply ids ENCODE the order + action ("ack:<order_id>",
+    "shipdate:<order_id>", "shipped:<order_id>"). When the vendor taps one, Meta/Kapso
+    POSTs the tap to our INBOUND webhook (afc_shop/whatsapp_webhook.py), which parses
+    "action:order_id" back out and drives the SAME _transition helpers below, so a tap
+    advances the order exactly like the fulfilment page would. (See the button-id map
+    in BUTTON_ACTIONS in whatsapp_webhook.py — the two sides MUST agree on these ids.)
+
+    For now it:
+      1. logs the event (so ops can see vendor notifications firing),
+      2. if the vendor has a whatsapp_number, sends the order summary + the 3 action
+         buttons via send_whatsapp_buttons (best-effort), and
+      3. if the vendor has a contact_email, sends them a plain heads-up via the shared
+         afc_auth send_email (best-effort; a mail failure never blocks the order).
 
     Called by notify_order_paid (event="received"). Safe to extend with more events
-    (e.g. "cancelled") without touching the state machine.
-
-    TODO(Kapso WhatsApp send): when the WhatsApp channel lands, build the order
-    summary + delivery message and POST it to the Kapso send API using
-    vendor.whatsapp_number (settings.KAPSO_API_KEY / KAPSO_PHONE_NUMBER_ID). Keep it
-    best-effort and idempotent, exactly like the email path here."""
+    (e.g. "cancelled") without touching the state machine."""
     vendor = _order_vendor(order)
     if not vendor:
         return  # not a vendor order; nothing to notify
@@ -211,23 +214,33 @@ def notify_vendor(order, event="received"):
     logger.info("notify_vendor: order #%s event=%s vendor=%s", order.id, event, vendor.display_name)
 
     # ── WhatsApp heads-up to the vendor via Kapso (best-effort, never blocks). ──
-    # Today this is a plain-text notification with the order summary. The interactive
-    # acknowledge / set-ship-date / mark-shipped BUTTONS land once the Kapso INBOUND
-    # webhook (to receive the taps) is built; until then the vendor acts from the
-    # fulfilment page. afc_shop.services.kapso.send_whatsapp_text never raises (it
-    # returns {"ok": False, ...} on failure), but we still guard so notify cannot block.
+    # We send the order summary plus 3 reply BUTTONS. Each button's reply id encodes the
+    # action and the order id as "action:order_id" so the inbound webhook can map a tap
+    # straight back to THIS order (titles are capped at 20 chars by Meta + the kapso
+    # client, so they stay short and human-readable). afc_shop.services.kapso.* never
+    # raises (it returns {"ok": False, ...} on failure), but we still guard so notify
+    # cannot block the payment/fulfilment path.
     if vendor.whatsapp_number:
         try:
-            from afc_shop.services.kapso import send_whatsapp_text
+            from afc_shop.services.kapso import send_whatsapp_buttons
             full_name = f"{order.first_name} {order.last_name}".strip()
             msg = (
                 f"New AFC order #{order.id} to fulfil.\n"
                 f"Buyer: {full_name}\n"
                 f"Deliver to: {order.address}, {order.city}, {order.state}\n"
-                f"Open your fulfilment page on africanfreefirecommunity.com to "
-                f"acknowledge it and set a ship date."
+                f"Tap a button below to act on it, or open your fulfilment page on "
+                f"africanfreefirecommunity.com."
             )
-            send_whatsapp_text(vendor.whatsapp_number, msg)
+            # reply-id encoding = "<action>:<order_id>" (parsed by whatsapp_webhook.py).
+            # Titles <=20 chars (Meta limit). Only the "received -> acknowledged" and the
+            # ship-date / shipped actions are offered here at order start; the inbound
+            # webhook enforces the real state machine, so an out-of-order tap is rejected.
+            buttons = [
+                {"id": f"ack:{order.id}", "title": "Order received"},
+                {"id": f"shipdate:{order.id}", "title": "Set ship date"},
+                {"id": f"shipped:{order.id}", "title": "Mark shipped"},
+            ]
+            send_whatsapp_buttons(vendor.whatsapp_number, msg, buttons)
         except Exception as e:  # WhatsApp must never block the order
             logger.warning("notify_vendor whatsapp failed for order #%s: %s", order.id, e)
 
@@ -312,6 +325,37 @@ def _get_order_or_404(order_id):
     )
 
 
+# ── Shared transition CORES (called by BOTH the HTTP endpoints AND the Kapso webhook) ──
+# The HTTP endpoints do their OWN Bearer auth (_authorise); the Kapso inbound webhook
+# resolves the vendor from the sender's WhatsApp number instead (no token). Both then
+# call these cores so the state change + buyer email happen IDENTICALLY no matter which
+# front door drove it (the DB is the single source of truth; logic is never duplicated).
+def apply_acknowledge(order):
+    """received -> acknowledged (+ acknowledged_at). Returns (ok, err_response).
+    No buyer email at this step (the buyer was already told "received")."""
+    return _transition(order, "acknowledged", set_fields={"acknowledged_at": timezone.now()})
+
+
+def apply_set_ship_date(order, ship_date):
+    """acknowledged -> ship_scheduled (+ ship_date). Returns (ok, err_response)."""
+    return _transition(order, "ship_scheduled", set_fields={"ship_date": ship_date})
+
+
+def apply_mark_shipped(order):
+    """ship_scheduled -> shipped (+ shipped_at), then email the buyer "on the way".
+    Returns (ok, err_response). Evidence is attached SEPARATELY by the caller (the
+    HTTP endpoint stores request.FILES; the webhook stores the inbound media), so this
+    core only owns the state change + the buyer email both paths share."""
+    ok, err = _transition(order, "shipped", set_fields={"shipped_at": timezone.now()})
+    if not ok:
+        return ok, err
+    try:
+        emails.send_order_shipped(order)
+    except Exception as e:  # best-effort; never block the transition on a mail failure
+        logger.warning("order-shipped email failed for order #%s: %s", order.id, e)
+    return True, None
+
+
 @api_view(["POST"])
 def vendor_acknowledge_order(request):
     """POST /shop/fulfilment/acknowledge/  body: { order_id }
@@ -332,7 +376,8 @@ def vendor_acknowledge_order(request):
     if err:
         return err
 
-    ok, err = _transition(order, "acknowledged", set_fields={"acknowledged_at": timezone.now()})
+    # Delegate the state change to the shared core (also used by the Kapso webhook).
+    ok, err = apply_acknowledge(order)
     if not ok:
         return err
 
@@ -361,7 +406,8 @@ def vendor_set_ship_date(request):
     if not ship_date:
         return Response({"message": "ship_date is required"}, status=400)
 
-    ok, err = _transition(order, "ship_scheduled", set_fields={"ship_date": ship_date})
+    # Delegate the state change to the shared core (also used by the Kapso webhook).
+    ok, err = apply_set_ship_date(order, ship_date)
     if not ok:
         return err
 
@@ -392,14 +438,16 @@ def vendor_mark_shipped(request):
     if err:
         return err
 
-    # Advance state first; if it is an illegal jump we do not store evidence.
-    ok, err = _transition(order, "shipped", set_fields={"shipped_at": timezone.now()})
+    # Advance state first (shared core: state change + buyer "on the way" email). If it
+    # is an illegal jump we do not store evidence. The Kapso webhook calls this same core.
+    ok, err = apply_mark_shipped(order)
     if not ok:
         return err
 
     # Store any uploaded files as evidence. request.FILES is a MultiValueDict; accept
     # every uploaded file under any field name (the page may send "evidence",
-    # multiple files, etc.). kind is inferred from the content type prefix.
+    # multiple files, etc.). kind is inferred from the content type prefix. (The Kapso
+    # webhook stores its inbound photo/video as evidence on its own side.)
     saved = 0
     note = request.data.get("note", "")
     for _field, upload in request.FILES.items():
@@ -412,12 +460,6 @@ def vendor_mark_shipped(request):
             note=note,
         )
         saved += 1
-
-    # Email the BUYER (best-effort; never block the transition on a mail failure).
-    try:
-        emails.send_order_shipped(order)
-    except Exception as e:
-        logger.warning("order-shipped email failed for order #%s: %s", order.id, e)
 
     return Response(
         {"message": "Order marked shipped", "fulfilment_state": order.fulfilment_state, "evidence_saved": saved},
@@ -453,6 +495,20 @@ def order_mark_completed(request):
         emails.send_order_completed(order)
     except Exception as e:
         logger.warning("order-completed email failed for order #%s: %s", order.id, e)
+
+    # ── Stripe Connect vendor payout hook (Phase B3) ───────────────────────────
+    # The order is now completed -> AFC owes the vendor their share. settle_order_payout
+    # (afc_shop/connect.py) computes order.total minus the platform fee and either
+    # transfers it to the vendor's connected Stripe account (-> VendorPayout "paid") or,
+    # if the vendor has not finished Connect onboarding, records it "owed" for an admin
+    # to release later. It is best-effort + idempotent (one payout per order) and NEVER
+    # raises, so a payout hiccup can never undo the completion above. Imported lazily to
+    # avoid any import cycle between fulfilment.py and connect.py.
+    try:
+        from .connect import settle_order_payout
+        settle_order_payout(order)
+    except Exception as e:  # payout must never block / 500 the completion
+        logger.warning("settle_order_payout failed for order #%s: %s", order.id, e)
 
     return Response({"message": "Order completed", "fulfilment_state": order.fulfilment_state}, status=200)
 

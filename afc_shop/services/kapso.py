@@ -283,8 +283,75 @@ def send_whatsapp_buttons(to_number: str, body: str, buttons: list) -> dict:
     return _send_message(payload)
 
 
+def download_whatsapp_media(media_id: str) -> dict:
+    """
+    Download the bytes of an INBOUND WhatsApp media item (a photo / document a vendor
+    sent, e.g. a shipping receipt) by its media id.
+
+    Used by the INBOUND webhook (afc_shop/whatsapp_webhook.py) to turn a vendor's
+    inbound photo/video into a FulfillmentEvidence file. Meta media download is a
+    TWO-STEP flow, both proxied through Kapso the same way the send endpoint is:
+      1. GET  <base>/<graph_version>/<media_id>   -> JSON { "url": "<download url>",
+                                                            "mime_type": ..., ... }
+      2. GET  <that url>                           -> the raw bytes.
+    Both calls carry the Kapso X-API-Key auth header (the Kapso proxy, not a Meta
+    bearer token), mirroring _send_message.
+
+    Args:
+        media_id: the inbound message's media id (value.messages[].image.id, etc.).
+
+    Returns (NEVER raises; the webhook treats a failure as "no evidence stored"):
+        {"ok": True,  "content": <bytes>, "mime_type": "<str>", "url": "<str>"}  on success
+        {"ok": False, "error": "<reason>", "status_code": <int|None>}            on failure
+    """
+    api_key = getattr(settings, "KAPSO_API_KEY", None)
+    if not api_key or not media_id:
+        return {"ok": False, "error": "Kapso not configured or media_id missing.", "status_code": None}
+
+    headers = {"X-API-Key": api_key}
+
+    # ── step 1: resolve the media id to a download URL + mime type ──
+    lookup_url = f"{KAPSO_BASE_URL}/{KAPSO_GRAPH_VERSION}/{media_id}"
+    try:
+        meta_resp = requests.get(lookup_url, headers=headers, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        logger.error("Kapso media lookup network error: %s", exc)
+        return {"ok": False, "error": f"Network error: {exc}", "status_code": None}
+
+    if not meta_resp.ok:
+        return {"ok": False, "error": f"Media lookup failed (HTTP {meta_resp.status_code}).",
+                "status_code": meta_resp.status_code}
+
+    try:
+        meta = meta_resp.json()
+    except ValueError:
+        return {"ok": False, "error": "Media lookup returned a non-JSON body.", "status_code": meta_resp.status_code}
+
+    download_url = meta.get("url")
+    mime_type = meta.get("mime_type", "")
+    if not download_url:
+        return {"ok": False, "error": "Media lookup response had no download url.", "status_code": meta_resp.status_code}
+
+    # ── step 2: fetch the raw bytes from the resolved URL (same auth header) ──
+    try:
+        bin_resp = requests.get(download_url, headers=headers, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        logger.error("Kapso media download network error: %s", exc)
+        return {"ok": False, "error": f"Network error: {exc}", "status_code": None}
+
+    if not bin_resp.ok:
+        return {"ok": False, "error": f"Media download failed (HTTP {bin_resp.status_code}).",
+                "status_code": bin_resp.status_code}
+
+    # Prefer the mime type from the lookup; fall back to the binary response's header.
+    if not mime_type:
+        mime_type = bin_resp.headers.get("Content-Type", "")
+
+    return {"ok": True, "content": bin_resp.content, "mime_type": mime_type, "url": download_url}
+
+
 # ════════════════════════════════════════════════════════════════════════════════
-# INBOUND WEBHOOK SHAPE (for the NEXT agent — webhook handler is NOT built here)
+# INBOUND WEBHOOK SHAPE (consumed by afc_shop/whatsapp_webhook.py — handler built there)
 # ════════════════════════════════════════════════════════════════════════════════
 # When a vendor replies, taps a button, or sends media (e.g. a shipping receipt),
 # Kapso/Meta POSTs a webhook to our server. It is the standard Meta WhatsApp Cloud

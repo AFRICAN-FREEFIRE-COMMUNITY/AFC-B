@@ -302,3 +302,16 @@ KAPSO_API_KEY = os.getenv("KAPSO_API_KEY")
 KAPSO_PHONE_NUMBER_ID = os.getenv("KAPSO_PHONE_NUMBER_ID")
 KAPSO_PROJECT_ID = os.getenv("KAPSO_PROJECT_ID")
 KAPSO_WHATSAPP_CONFIG_ID = os.getenv("KAPSO_WHATSAPP_CONFIG_ID")
+
+# Shop checkout currency. Both shop payment paths (Paystack + Stripe, see
+# afc_shop/stripe_checkout.py) charge in this currency, and Stripe Connect vendor
+# payouts (afc_shop/connect.py) transfer in it too. Defaults to NGN to match the
+# Paystack flow; env-overridable if the shop currency ever changes.
+SHOP_CURRENCY = os.getenv("SHOP_CURRENCY", "NGN")
+
+# Marketplace platform fee (Stripe Connect vendor payouts, Phase B3). The percentage
+# AFC keeps off each marketplace order total before transferring the rest to the
+# vendor via Stripe Connect (afc_shop/connect.py settle_order_payout). Default 0 (no
+# cut) per the owner decision; set e.g. "2.5" to take 2.5%. Stored on each VendorPayout
+# row at settle time so a later change never rewrites past payouts.
+MARKETPLACE_FEE_PERCENT = os.getenv("MARKETPLACE_FEE_PERCENT", "0")
