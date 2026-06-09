@@ -193,6 +193,54 @@ class Product(models.Model):
         related_name="products",
     )
 
+    # ── Marketplace: product approval workflow (Phase B1) ───────────────────────
+    # AFC approves every VENDOR-submitted product before it can reach buyers, but
+    # FIRST-PARTY AFC stock (vendor=None: diamonds, existing physical goods) must
+    # stay live without any approval step. To get both behaviours from one column
+    # the default is "approved":
+    #   - Every product that ALREADY exists (the migration back-fills this default)
+    #     and every admin-created product (add_product) is "approved" on day one,
+    #     so nothing in today's catalogue changes.
+    #   - A VENDOR-created product (vendor_create_product in views.py) is explicitly
+    #     set to "draft", so it is invisible to the storefront until an admin
+    #     approves it.
+    # The storefront gate that enforces this lives in view_active_products
+    # (status="active" AND (vendor IS NULL OR approval_status="approved")), so an
+    # unapproved vendor product can never be bought even if its status is "active".
+    #
+    # Lifecycle (vendor side -> admin side):
+    #   draft     -- vendor edits freely, not yet sent for review
+    #   submitted -- vendor pushed it to AFC (vendor_submit_product); shows in the
+    #                admin approval queue (admin_list_pending_products)
+    #   approved  -- an admin approved it (admin_approve_product); now sellable
+    #   rejected  -- an admin rejected it with a reason (admin_reject_product); the
+    #                vendor may edit and re-submit (rejected -> submitted)
+    # A vendor can NEVER move a product to "approved" (only admin endpoints do).
+    APPROVAL_STATUS = (
+        ("draft", "Draft"),          # vendor draft, not submitted (storefront-hidden)
+        ("submitted", "Submitted"),  # awaiting AFC review (storefront-hidden)
+        ("approved", "Approved"),    # AFC approved -> sellable (also the back-compat default)
+        ("rejected", "Rejected"),    # AFC rejected (storefront-hidden); vendor can re-submit
+    )
+    # default="approved": back-compat. Existing rows + admin/diamond products stay
+    # live; only vendor_create_product overrides this to "draft".
+    approval_status = models.CharField(
+        max_length=20, choices=APPROVAL_STATUS, default="approved"
+    )
+    # When the vendor submitted the product for review (set by vendor_submit_product).
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    # The admin who approved this product. SET_NULL so removing an admin user never
+    # deletes the product (preserves the approval audit trail), mirroring Vendor.created_by.
+    approved_by = models.ForeignKey(
+        "afc_auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="products_approved",
+    )
+    # Why an admin rejected the product (shown back to the vendor so they can fix it).
+    rejection_reason = models.TextField(blank=True)
+
     slug = models.SlugField(unique=True, blank=True, null=True, db_index=True)
 
     # product-level image (optional). Variants can also have images.

@@ -308,11 +308,25 @@ def view_active_products(request):
               counterpart: same posture as view_active_categories / view_product_details.
     Auth:     public (no token).
     Response: 200 { products: [...] }  -- identical item shape to view_all_products so the
-              frontend mapping is unchanged; only `status == "active"` products are returned.
+              frontend mapping is unchanged; only sellable products are returned.
     Consumed by: ShopClient.tsx (app/(user)/shop/_components/ShopClient.tsx).
+
+    MARKETPLACE GATE (Phase B1): an UNAPPROVED vendor product must never reach a
+    buyer. So the storefront returns only:
+        status == "active"  AND  (vendor IS NULL OR approval_status == "approved")
+    - vendor IS NULL    -> first-party AFC stock (diamonds, existing goods). These
+                           are unaffected: Product.approval_status defaults to
+                           "approved", but we allow them through on the NULL-vendor
+                           branch regardless, so legacy rows are never filtered out.
+    - approval_status="approved" -> the only state in which a VENDOR product is live.
+    A vendor product in draft / submitted / rejected is hidden here even if an admin
+    (or the vendor) set its status to "active". The gate is enforced in the DB query
+    (Q below) so it cannot be bypassed by the serialiser.
     """
+    from django.db.models import Q
     qs = (
         Product.objects.filter(status="active")
+        .filter(Q(vendor__isnull=True) | Q(approval_status="approved"))
         .order_by("-created_at")
         .select_related("category")
         .prefetch_related("variants", "media")
