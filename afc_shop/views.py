@@ -262,7 +262,7 @@ def view_all_products(request):
     qs = (
         Product.objects.exclude(status="archived")
         .order_by("-created_at")
-        .select_related("category")
+        .select_related("category", "vendor", "approved_by")
         .prefetch_related("variants", "media")
     )
 
@@ -278,6 +278,20 @@ def view_all_products(request):
             "is_limited_stock": p.is_limited_stock,
             "image": _abs_url(request, p.image),          # primary card thumbnail
             "media": _serialize_media(request, p),        # full image+video gallery
+            # ── Marketplace ownership + approval (owner request 2026-06-09) ──
+            # The admin inventory list previously showed only `status` (active/inactive),
+            # so a VENDOR product still awaiting approval read as "active" with no owner.
+            # Surface who owns it + its approval lifecycle so an admin can tell a pending
+            # vendor submission apart from a live first-party product. vendor_id is NULL for
+            # first-party AFC stock (diamonds etc.); approval_status defaults to "approved"
+            # for those, so they read as approved/live as before.
+            "vendor_id": p.vendor_id,
+            "vendor_name": p.vendor.display_name if p.vendor_id else None,
+            "approval_status": p.approval_status,
+            "submitted_at": p.submitted_at,
+            "approved_by": p.approved_by.username if p.approved_by_id else None,
+            "approved_at": p.approved_at,
+            "rejection_reason": p.rejection_reason,
             "created_at": p.created_at,
             "updated_at": p.updated_at,
             "variants": [{
@@ -2847,10 +2861,56 @@ def delete_category(request):
 # A product can carry many images and videos via the ProductMedia table. These
 # endpoints upload and remove individual media items; the gallery itself is
 # returned inside view_all_products / view_product_details as a `media` array.
-#   - add_product_media     (admin) : multipart upload, one or many files
-#   - delete_product_media  (admin) : remove a single media item
+#   - add_product_media          (admin)  : multipart upload, one or many files
+#   - delete_product_media       (admin)  : remove a single media item
+#   - vendor_add/delete (afc_shop/vendors.py) : the VENDOR-gated equivalents, which
+#     reuse _attach_media below so both audiences share identical validation.
 # Size limits are enforced here (the authoritative server-side check).
 # ═════════════════════════════════════════════════════════════════════════════
+
+def _attach_media(request, product, files):
+    """Validate + persist uploaded `files` as ProductMedia rows on `product`.
+
+    SHARED by the admin upload (add_product_media) and the VENDOR upload
+    (afc_shop/vendors.py vendor_add_product_media) so both classify by content-type,
+    enforce the SAME caps (images <= MAX_IMAGE_BYTES, videos <= MAX_VIDEO_BYTES), and
+    append after any existing gallery items (ordering continues from the current count).
+
+    Returns (created, error_response):
+      - on success: created = [ {id,url,media_type,ordering}, ... ], error_response = None
+      - on a bad/oversized/unsupported file: created = None, error_response = a DRF Response
+        to return as-is (any rows created before the bad file in the same batch remain;
+        callers send one batch at a time so this is acceptable).
+    """
+    existing = product.media.count()
+    created = []
+    for index, f in enumerate(files):
+        content_type = (getattr(f, "content_type", "") or "").lower()
+        # Classify by content-type and validate size against the matching cap.
+        if content_type.startswith(ALLOWED_IMAGE_PREFIX):
+            media_type = "image"
+            if f.size > MAX_IMAGE_BYTES:
+                return None, Response(
+                    {"message": f"Image '{f.name}' exceeds the 5 MB limit."}, status=400)
+        elif content_type.startswith(ALLOWED_VIDEO_PREFIX):
+            media_type = "video"
+            if f.size > MAX_VIDEO_BYTES:
+                return None, Response(
+                    {"message": f"Video '{f.name}' exceeds the 50 MB limit."}, status=400)
+        else:
+            return None, Response(
+                {"message": f"Unsupported file type for '{f.name}'. Only images and videos are allowed."},
+                status=400)
+        media = ProductMedia.objects.create(
+            product=product, file=f, media_type=media_type, ordering=existing + index)
+        created.append({
+            "id": media.id,
+            "url": _abs_url(request, media.file),
+            "media_type": media.media_type,
+            "ordering": media.ordering,
+        })
+    return created, None
+
 
 @api_view(["POST"])
 def add_product_media(request):
@@ -2880,48 +2940,9 @@ def add_product_media(request):
     if not files:
         return Response({"message": "No files uploaded."}, status=400)
 
-    # Continue numbering from the current count so new uploads append to the end
-    # of the existing gallery.
-    existing = product.media.count()
-    created = []
-
-    for index, f in enumerate(files):
-        content_type = (getattr(f, "content_type", "") or "").lower()
-
-        # Classify by content-type and validate size against the matching cap.
-        if content_type.startswith(ALLOWED_IMAGE_PREFIX):
-            media_type = "image"
-            if f.size > MAX_IMAGE_BYTES:
-                return Response(
-                    {"message": f"Image '{f.name}' exceeds the 5 MB limit."},
-                    status=400,
-                )
-        elif content_type.startswith(ALLOWED_VIDEO_PREFIX):
-            media_type = "video"
-            if f.size > MAX_VIDEO_BYTES:
-                return Response(
-                    {"message": f"Video '{f.name}' exceeds the 50 MB limit."},
-                    status=400,
-                )
-        else:
-            return Response(
-                {"message": f"Unsupported file type for '{f.name}'. Only images and videos are allowed."},
-                status=400,
-            )
-
-        media = ProductMedia.objects.create(
-            product=product,
-            file=f,
-            media_type=media_type,
-            ordering=existing + index,
-        )
-        created.append({
-            "id": media.id,
-            "url": _abs_url(request, media.file),
-            "media_type": media.media_type,
-            "ordering": media.ordering,
-        })
-
+    created, err = _attach_media(request, product, files)
+    if err:
+        return err
     return Response({"message": "Media uploaded.", "media": created}, status=201)
 
 

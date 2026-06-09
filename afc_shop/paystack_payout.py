@@ -330,6 +330,12 @@ def vendor_save_bank(request):
         },
     )
     if not ok:
+        # Log the REAL Paystack reason (e.g. "transfers not enabled", invalid bank) so prod
+        # logs explain the failure; the vendor-facing `detail` carries it to the UI too.
+        logger.warning(
+            "vendor_save_bank: transferrecipient failed for vendor #%s: %s",
+            vendor.id, body.get("message", body),
+        )
         return Response(
             {"message": "Could not save your bank for payouts. Please try again.",
              "detail": body.get("message", "")},

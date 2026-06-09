@@ -35,6 +35,9 @@ from .vendors import (
     vendor_create_product,
     vendor_update_product,
     vendor_submit_product,
+    # C2) vendor product media (multi-image + video gallery, vendor-gated)
+    vendor_add_product_media,
+    vendor_delete_product_media,
 )
 # Marketplace Phase B3: Stripe Connect vendor payouts (afc_shop/connect.py). AFC is the
 # custodian (mirrors the event escrow): the vendor onboards a Connect account, and on an
@@ -173,6 +176,9 @@ urlpatterns = [
     path("vendor/products/create/", vendor_create_product, name="vendor_create_product"),
     path("vendor/products/update/", vendor_update_product, name="vendor_update_product"),
     path("vendor/products/submit/", vendor_submit_product, name="vendor_submit_product"),
+    # Vendor media gallery (multi-image + video) on the vendor's OWN draft/rejected product.
+    path("vendor/products/media/add/", vendor_add_product_media, name="vendor_add_product_media"),
+    path("vendor/products/media/delete/", vendor_delete_product_media, name="vendor_delete_product_media"),
 
     # ── Marketplace Phase B3: Stripe Connect vendor payouts (afc_shop/connect.py) ──
     # connect/onboard + connect/status: the VENDOR portal connects their bank + checks

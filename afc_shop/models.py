@@ -263,6 +263,10 @@ class Product(models.Model):
     )
     # When the vendor submitted the product for review (set by vendor_submit_product).
     submitted_at = models.DateTimeField(null=True, blank=True)
+    # When an admin approved this product (set by admin_approve_product). Pairs with
+    # approved_by so the admin inventory list can show WHO approved it and WHEN, which the
+    # owner asked for (2026-06-09). Null until first approval; stays set thereafter.
+    approved_at = models.DateTimeField(null=True, blank=True)
     # The admin who approved this product. SET_NULL so removing an admin user never
     # deletes the product (preserves the approval audit trail), mirroring Vendor.created_by.
     approved_by = models.ForeignKey(
