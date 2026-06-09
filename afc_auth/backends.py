@@ -17,7 +17,14 @@ class EmailOrUsernameModelBackend(BaseBackend):
             return None
 
         try:
-            user = User.objects.get(Q(username=username) | Q(uid=username))
+            # Match the typed identifier against in-game name (username), game UID, OR
+            # email (case-insensitive). This lets users log in with any of the three
+            # (owner request 2026-06-09: email login was missing despite the class name,
+            # the lookup previously only checked username + uid). The non-empty guard
+            # above keeps Q(email__iexact=username) from matching rows with a NULL email.
+            user = User.objects.get(
+                Q(username=username) | Q(uid=username) | Q(email__iexact=username)
+            )
             print("user found")
         except User.DoesNotExist:
             print("user not found")

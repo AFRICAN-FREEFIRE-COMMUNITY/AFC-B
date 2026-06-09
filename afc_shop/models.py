@@ -71,6 +71,112 @@ class Category(models.Model):
         return self.name
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Vendor — an AFC-invited third-party seller in the marketplace.
+#
+# WHY this exists (marketplace Phase A, spec: WEBSITE/tasks/marketplace-design.md):
+#   The shop is becoming a multi-vendor marketplace. A Vendor is a partner who
+#   lists physical/design products; AFC collects the buyer's money and the vendor
+#   fulfils the order (acknowledge -> ship-date -> shipped + evidence). This row
+#   is the seller's identity + contact channels + (later) payout account.
+#
+# INVITE-ONLY (owner decision 2026-06-09): there is NO public "Sell on AFC"
+#   application and NO pending/approval state on the Vendor itself. An AFC admin
+#   CREATES a Vendor directly and links it to an existing User login (the same way
+#   sponsors/organizers are granted). `status` only ever flips active<->suspended;
+#   it is never "pending". (Each submitted PRODUCT is still approved separately in
+#   a later phase, but the Vendor account itself is granted, not applied for.)
+#
+# HOW it connects:
+#   - `user` FK -> afc_auth.User: the partner's login. The fulfilment endpoints in
+#     afc_shop/fulfilment.py gate each order transition on
+#     `order.items -> variant.product.vendor.user == caller` (the vendor) OR an
+#     AFC admin, so a vendor can only act on their own orders.
+#   - `Product.vendor` FK (below) links each product a vendor sells back here.
+#     Existing AFC/diamond products have vendor=None (first-party AFC stock).
+#   - `whatsapp_number` + `stripe_account_id` are seams for the SEPARATE follow-ups
+#     (Kapso WhatsApp fulfilment channel; Stripe Connect payouts in Phase B3); they
+#     are stored now so the model does not need re-migrating when those land.
+#   - `created_by` FK -> the admin who granted access (audit trail).
+# ─────────────────────────────────────────────────────────────────────────────
+class Vendor(models.Model):
+    STATUS = (
+        ("active", "Active"),        # vendor can sell + fulfil
+        ("suspended", "Suspended"), # access revoked by an admin (no new orders)
+    )
+
+    # The partner's login. CASCADE: if the underlying User is deleted, the vendor
+    # identity goes with it (a vendor cannot exist without a login to act as).
+    user = models.ForeignKey(
+        "afc_auth.User",
+        on_delete=models.CASCADE,
+        related_name="vendor_accounts",
+    )
+
+    display_name = models.CharField(max_length=120)
+    # Where buyer/fulfilment notifications about THIS vendor's orders would CC, and
+    # where the vendor receives the "you have a new order" email (notify_vendor).
+    contact_email = models.EmailField(blank=True)
+    # Kapso WhatsApp destination for the SEPARATE WhatsApp send follow-up. Stored
+    # now (blank for vendors without WhatsApp) so notify_vendor can plug in later.
+    whatsapp_number = models.CharField(max_length=30, blank=True)
+
+    status = models.CharField(max_length=20, choices=STATUS, default="active")
+
+    # ── Payout rail (which provider AFC uses to pay THIS vendor out, Phase B3) ──────
+    # AFC's marketplace vendors are MAJORITY AFRICAN, and Stripe Connect does NOT pay
+    # out to Nigerian / most-African bank accounts. PAYSTACK does (Nigeria/Ghana/SA/
+    # Kenya) and the shop already CHARGES buyers via Paystack, so PAYSTACK TRANSFERS is
+    # the PRIMARY/DEFAULT payout rail. Stripe Connect stays only for the non-African
+    # vendors Stripe can actually reach. fulfilment.order_mark_completed reads this to
+    # route a completed order's payout to the right settle function (provider-aware):
+    #   - "paystack" -> afc_shop/paystack_payout.settle_order_payout_paystack(order)
+    #   - "stripe"   -> afc_shop/connect.settle_order_payout(order)
+    PAYOUT_PROVIDER = (
+        ("paystack", "Paystack Transfers"),  # default: African/Nigerian vendors + local bank
+        ("stripe", "Stripe Connect"),        # non-African vendors only (Stripe can't reach NGN banks)
+    )
+    payout_provider = models.CharField(
+        max_length=20, choices=PAYOUT_PROVIDER, default="paystack"
+    )
+
+    # ── Paystack Transfers bank details (the PRIMARY rail; African vendors) ─────────
+    # The vendor's LOCAL bank account AFC transfers their share to via Paystack
+    # Transfers. Set by afc_shop/paystack_payout.vendor_save_bank: the vendor picks a
+    # bank (bank_code) from list_banks, enters their account_number, AFC resolves the
+    # account_name via Paystack /bank/resolve (so the vendor confirms it is correct),
+    # then creates a Paystack Transfer RECIPIENT (paystack_recipient_code) used as the
+    # transfer destination at payout time. All blank until the vendor saves their bank.
+    bank_code = models.CharField(max_length=20, blank=True)      # Paystack bank code (e.g. "058")
+    bank_name = models.CharField(max_length=120, blank=True)     # human-readable bank name (display)
+    account_number = models.CharField(max_length=20, blank=True) # the vendor's account number (NUBAN)
+    account_name = models.CharField(max_length=120, blank=True)  # resolved holder name (from Paystack)
+    # The Paystack Transfer Recipient code (RCP_...) created from the bank details above.
+    # This is the `recipient` passed to POST /transfer at payout time (the Paystack
+    # equivalent of Stripe Connect's stripe_account_id below).
+    paystack_recipient_code = models.CharField(max_length=120, blank=True)
+
+    # Stripe Connect account id, set during the Stripe payout onboarding (NON-AFRICAN
+    # vendors only; Stripe cannot pay out to NGN/most-African banks). Blank for the
+    # Paystack-default vendors. afc_shop/connect.py writes/reads this.
+    stripe_account_id = models.CharField(max_length=120, blank=True)
+
+    # The admin who granted this vendor access. SET_NULL so removing an admin user
+    # never deletes the vendor record (preserves the audit trail).
+    created_by = models.ForeignKey(
+        "afc_auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="vendors_created",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.display_name} ({self.status})"
+
+
 class Product(models.Model):
     # Legacy free-form type kept for backward-compat with existing diamond rows
     # and the old frontend `shopProductTypes` constant. New products should set
@@ -104,6 +210,70 @@ class Product(models.Model):
         on_delete=models.SET_NULL,
         related_name="products",
     )
+
+    # ── Marketplace: which vendor sells this product (Phase A) ──────────────────
+    # null/blank for FIRST-PARTY AFC stock (existing diamond products keep
+    # vendor=None). A non-null vendor marks this as a marketplace product whose
+    # orders flow through the fulfilment state machine in afc_shop/fulfilment.py.
+    # SET_NULL on delete: removing a Vendor must NEVER cascade-delete their
+    # products (they fall back to "no vendor" rather than vanishing). The reverse
+    # accessor is `vendor.products`. fulfilment.py reads
+    # `variant.product.vendor` to decide whether an order needs vendor fulfilment.
+    vendor = models.ForeignKey(
+        "Vendor",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="products",
+    )
+
+    # ── Marketplace: product approval workflow (Phase B1) ───────────────────────
+    # AFC approves every VENDOR-submitted product before it can reach buyers, but
+    # FIRST-PARTY AFC stock (vendor=None: diamonds, existing physical goods) must
+    # stay live without any approval step. To get both behaviours from one column
+    # the default is "approved":
+    #   - Every product that ALREADY exists (the migration back-fills this default)
+    #     and every admin-created product (add_product) is "approved" on day one,
+    #     so nothing in today's catalogue changes.
+    #   - A VENDOR-created product (vendor_create_product in views.py) is explicitly
+    #     set to "draft", so it is invisible to the storefront until an admin
+    #     approves it.
+    # The storefront gate that enforces this lives in view_active_products
+    # (status="active" AND (vendor IS NULL OR approval_status="approved")), so an
+    # unapproved vendor product can never be bought even if its status is "active".
+    #
+    # Lifecycle (vendor side -> admin side):
+    #   draft     -- vendor edits freely, not yet sent for review
+    #   submitted -- vendor pushed it to AFC (vendor_submit_product); shows in the
+    #                admin approval queue (admin_list_pending_products)
+    #   approved  -- an admin approved it (admin_approve_product); now sellable
+    #   rejected  -- an admin rejected it with a reason (admin_reject_product); the
+    #                vendor may edit and re-submit (rejected -> submitted)
+    # A vendor can NEVER move a product to "approved" (only admin endpoints do).
+    APPROVAL_STATUS = (
+        ("draft", "Draft"),          # vendor draft, not submitted (storefront-hidden)
+        ("submitted", "Submitted"),  # awaiting AFC review (storefront-hidden)
+        ("approved", "Approved"),    # AFC approved -> sellable (also the back-compat default)
+        ("rejected", "Rejected"),    # AFC rejected (storefront-hidden); vendor can re-submit
+    )
+    # default="approved": back-compat. Existing rows + admin/diamond products stay
+    # live; only vendor_create_product overrides this to "draft".
+    approval_status = models.CharField(
+        max_length=20, choices=APPROVAL_STATUS, default="approved"
+    )
+    # When the vendor submitted the product for review (set by vendor_submit_product).
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    # The admin who approved this product. SET_NULL so removing an admin user never
+    # deletes the product (preserves the approval audit trail), mirroring Vendor.created_by.
+    approved_by = models.ForeignKey(
+        "afc_auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="products_approved",
+    )
+    # Why an admin rejected the product (shown back to the vendor so they can fix it).
+    rejection_reason = models.TextField(blank=True)
 
     slug = models.SlugField(unique=True, blank=True, null=True, db_index=True)
 
@@ -326,6 +496,37 @@ class Order(models.Model):
     stripe_session_id = models.CharField(max_length=120, blank=True)
     stripe_payment_intent = models.CharField(max_length=120, blank=True)
 
+    # ── Marketplace fulfilment lifecycle (Phase A) ──────────────────────────────
+    # ONLY used by physical/vendor orders (an order containing a Product with a
+    # non-null vendor). Digital orders (diamond topups) leave all of these
+    # null/blank and keep using the per-item `Fulfillment` model above; this
+    # order-level lifecycle is the vendor ship-out flow, NOT the voucher flow.
+    #
+    # The state machine + the transition endpoints that read/write these fields
+    # live in afc_shop/fulfilment.py (notify_order_paid sets the initial
+    # "received"; vendor_acknowledge_order -> "acknowledged"; vendor_set_ship_date
+    # -> "ship_scheduled" + ship_date; vendor_mark_shipped -> "shipped" +
+    # shipped_at; order_mark_completed -> "completed" + completed_at). The buyer
+    # gets a branded email (afc_shop/emails.py) at received/shipped/completed.
+    FULFILMENT_STATE = (
+        ("received", "Received"),            # paid, awaiting vendor acknowledgement
+        ("acknowledged", "Acknowledged"),    # vendor has seen the order
+        ("ship_scheduled", "Ship scheduled"),# vendor committed a ship date
+        ("shipped", "Shipped"),              # dispatched (+ photo/video evidence)
+        ("completed", "Completed"),          # delivered / closed out
+        ("cancelled", "Cancelled"),          # cancelled (-> refund, no payout)
+    )
+    # null=True/blank=True: digital orders never enter this lifecycle.
+    fulfilment_state = models.CharField(
+        max_length=20, choices=FULFILMENT_STATE, null=True, blank=True
+    )
+    # Vendor-picked dispatch date (set at the acknowledged -> ship_scheduled step).
+    ship_date = models.DateField(null=True, blank=True)
+    # Transition timestamps (one per milestone), set as the order advances.
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    shipped_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
 
     def __str__(self):
         return f"Order #{self.id} - {self.user.username} - {self.status}"
@@ -386,6 +587,57 @@ class Fulfillment(models.Model):
         return f"Fulfillment {self.id} - Order {self.order.id} - {self.status}"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FulfillmentEvidence — proof-of-shipment media for a marketplace order.
+#
+# WHY this exists (marketplace Phase A):
+#   When a vendor marks an order "shipped" they attach photo/video evidence (a
+#   packed box, a tracking slip). Buyers and AFC admins can later see proof the
+#   order was actually dispatched. The SAME table will also store inbound media
+#   from the WhatsApp (Kapso) fulfilment channel in the SEPARATE follow-up, so
+#   the page and the bot record evidence identically.
+#
+# HOW it connects:
+#   - `order` FK (related_name="evidence"): one order can carry several files.
+#   - Written by `vendor_mark_shipped` in afc_shop/fulfilment.py from the uploaded
+#     files on the shipped transition (and, later, by the Kapso inbound-media
+#     webhook). Read by the per-order vendor page + admin order detail.
+#   - `uploaded_by` FK -> the vendor User (or admin) who attached it; SET_NULL so
+#     deleting that user never deletes the evidence trail.
+# ─────────────────────────────────────────────────────────────────────────────
+class FulfillmentEvidence(models.Model):
+    KIND = (
+        ("image", "Image"),
+        ("video", "Video"),
+    )
+
+    order = models.ForeignKey(
+        "Order",
+        on_delete=models.CASCADE,   # evidence is meaningless without its order
+        related_name="evidence",
+    )
+
+    # Generic FileField so the one column holds both images and short videos;
+    # `kind` tells the frontend which element to render. upload_to keeps the
+    # fulfilment proofs separate on disk from product media.
+    media = models.FileField(upload_to="fulfilment_evidence/")
+    kind = models.CharField(max_length=10, choices=KIND, default="image")
+
+    uploaded_by = models.ForeignKey(
+        "afc_auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="fulfilment_evidence_uploads",
+    )
+
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Evidence {self.id} - Order {self.order.id} ({self.kind})"
+
+
 class Redemption(models.Model):
     coupon = models.ForeignKey(Coupon, on_delete=models.CASCADE, related_name="redemptions")
     product_variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
@@ -429,3 +681,88 @@ class MintrouteLog(models.Model):
     request_payload = models.JSONField()
     response_payload = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VendorPayout — the ledger of what AFC owes / has paid each vendor (Phase B3).
+#
+# WHY this exists (marketplace Phase B3, spec: WEBSITE/tasks/marketplace-design.md):
+#   AFC is the CUSTODIAN of marketplace money (same posture as the event paid-events
+#   escrow in afc_tournament_and_scrims/event_payments.py): the buyer pays AFC
+#   (Stripe Checkout or Paystack), the funds land in AFC's balance, the vendor
+#   fulfils, and THEN AFC transfers the vendor's share out via Stripe Connect. This
+#   table is the per-order ledger row that records each of those obligations so the
+#   money trail is auditable and a transfer is never created twice for one order.
+#
+#   One VendorPayout per (vendor, order): when an order reaches
+#   fulfilment_state="completed" (order_mark_completed in afc_shop/fulfilment.py),
+#   afc_shop/connect.py computes the vendor share (order.total minus the platform
+#   fee) and either:
+#     - creates a Stripe Transfer to vendor.stripe_account_id and records this row
+#       status="paid" + stripe_transfer_id, OR
+#     - if the vendor has NOT finished Connect onboarding (no stripe_account_id /
+#       payouts not enabled), records status="owed" so an admin can release it later
+#       (admin_release_owed_payouts) once the vendor is onboarded.
+#
+# HOW it connects:
+#   - `vendor` FK -> Vendor: who is owed/paid. `order` FK -> Order: which sale this
+#     payout settles (OneToOne in effect; enforced by unique_together so a completed
+#     order can only ever spawn ONE payout, the idempotency guard).
+#   - WRITTEN BY: afc_shop/connect.py
+#       * settle_order_payout(order)  -> called from fulfilment.order_mark_completed
+#         on the shipped -> completed transition (best-effort; never blocks the
+#         transition or 500s the request).
+#       * admin_release_owed_payouts  -> retries the Stripe Transfer for "owed" rows.
+#   - READ BY: admin_list_vendor_payouts (the admin payouts dashboard).
+#   - The PLATFORM FEE is settings.MARKETPLACE_FEE_PERCENT (default 0) applied at
+#     settle time; stored on the row (platform_fee) so a later fee change does not
+#     rewrite history.
+# ─────────────────────────────────────────────────────────────────────────────
+class VendorPayout(models.Model):
+    STATUS = (
+        # AFC owes the vendor but has NOT transferred yet (vendor not onboarded to
+        # Connect, or a transfer attempt failed). An admin releases these later.
+        ("owed", "Owed"),
+        # An admin has marked the payout for release but the transfer has not yet
+        # succeeded (transient seam; admin_release_owed_payouts moves owed -> paid).
+        ("released", "Released"),
+        # The Stripe Transfer succeeded; stripe_transfer_id is set. Terminal.
+        ("paid", "Paid"),
+    )
+
+    # The vendor being paid. CASCADE: a payout has no meaning without its vendor; if
+    # the vendor identity is deleted the ledger rows go with it (mirrors how Vendor
+    # cascades from its User).
+    vendor = models.ForeignKey(
+        "Vendor",
+        on_delete=models.CASCADE,
+        related_name="payouts",
+    )
+
+    # The completed order this payout settles. CASCADE for the same reason as vendor.
+    # unique=True (one payout per order) is the idempotency guard: settle_order_payout
+    # uses get_or_create on this FK so a re-completed/retried order never double-pays.
+    order = models.OneToOneField(
+        "Order",
+        on_delete=models.CASCADE,
+        related_name="vendor_payout",
+    )
+
+    # The vendor's SHARE actually transferred (order.total minus platform_fee). Stored
+    # in the order's currency (the shop charges in one currency, settings.SHOP_CURRENCY).
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    # AFC's cut taken off the top (order.total * MARKETPLACE_FEE_PERCENT / 100). Stored
+    # so a later fee change does not rewrite past payouts. 0 when the fee is 0 (default).
+    platform_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+
+    status = models.CharField(max_length=20, choices=STATUS, default="owed")
+
+    # The Stripe Transfer id (tr_...) once the transfer succeeds. Blank while "owed".
+    stripe_transfer_id = models.CharField(max_length=120, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Set when the row reaches status="paid" (the transfer succeeded).
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Payout to {self.vendor.display_name} for order #{self.order_id} ({self.status})"
