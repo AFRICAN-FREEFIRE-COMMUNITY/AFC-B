@@ -1,5 +1,10 @@
 from django.urls import path, include
 from .views import *
+# Stripe Checkout: the SECOND shop payment provider (added alongside Paystack, see
+# afc_shop/stripe_checkout.py). Imported explicitly (not via *) so the three Stripe views are
+# clearly sourced. The Paystack routes below (buy-now / verify-paystack-payment / paystack-webhook)
+# are unchanged.
+from .stripe_checkout import stripe_buy_now, stripe_verify, stripe_webhook
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -31,6 +36,14 @@ urlpatterns = [
     path("buy-now/", buy_now, name="buy_now"),
     path("verify-paystack-payment/", verify_paystack_payment, name="verify_paystack_payment"),
     path("paystack-webhook/", paystack_webhook, name="paystack_webhook"),
+
+    # ── Stripe Checkout (second provider, alongside Paystack above) ──
+    # stripe-buy-now: CartDetails.tsx POSTs the cart here when the buyer picks Stripe -> returns a
+    #                 checkout_url to redirect to. stripe-verify: the success page confirms payment
+    #                 by session id. stripe-webhook: Stripe's server-side backstop.
+    path("stripe-buy-now/", stripe_buy_now, name="stripe_buy_now"),
+    path("stripe-verify/", stripe_verify, name="stripe_verify"),
+    path("stripe-webhook/", stripe_webhook, name="stripe_webhook"),
     path("get-my-orders/", get_my_orders, name="get_my_orders"),
     path("get-order-details/", get_order_details, name="get_order_details"),
     path("get-order-details-for-admin/", get_order_details_for_admin, name="get_order_details_for_admin"),
