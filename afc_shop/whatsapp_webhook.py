@@ -24,10 +24,12 @@ WHAT IT HANDLES
   - POST -> the inbound event envelope (Meta WhatsApp Cloud API shape, documented at
             the bottom of afc_shop/services/kapso.py). We walk
             entry[].changes[].value.messages[] and, per message:
-              * interactive.button_reply.id == "<action>:<order_id>" -> advance the
-                matching order (ack -> acknowledged, shipped -> mark shipped). The
-                "shipdate" tap can't carry a date in a plain button, so we ask the
-                vendor to send the date as text / use the page (we log + ack it).
+              * a tapped reply button encoded "<action>:<order_id>" -> advance the
+                matching order (ack -> acknowledged, shipped -> mark shipped). TWO shapes:
+                a FREE-FORM interactive button is type "interactive" (read
+                interactive.button_reply.id); a TEMPLATE quick-reply button is type
+                "button" (read button.payload). The "shipdate" tap can't carry a date in a
+                plain button, so we ask the vendor to send the date as text / use the page.
               * image/document/video for an order in ship_scheduled or shipped ->
                 download the bytes via Kapso and store a FulfillmentEvidence row.
               * text -> ignored / logged (no state change).
@@ -202,11 +204,20 @@ def _process_message(message, contacts):
     sender = message.get("from", "")
     msg_type = message.get("type", "")
 
-    # ── (a) button tap: interactive.button_reply.id == "<action>:<order_id>" ──
-    if msg_type == "interactive":
-        interactive = message.get("interactive") or {}
-        reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
-        reply_id = reply.get("id", "")
+    # ── (a) button tap: a tapped reply button whose id/payload encodes "<action>:<order_id>".
+    # TWO wire shapes, same meaning, so we pull the encoded id out of whichever arrived:
+    #   - FREE-FORM interactive buttons (send_whatsapp_buttons) -> type "interactive",
+    #     interactive.button_reply.id == "<action>:<order_id>".
+    #   - TEMPLATE quick-reply buttons (send_whatsapp_template)  -> type "button",
+    #     button.payload == "<action>:<order_id>" (button.text is the visible label).
+    # Both drive the SAME state machine via _handle_button_tap below. ──
+    if msg_type in ("interactive", "button"):
+        if msg_type == "interactive":
+            interactive = message.get("interactive") or {}
+            reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+            reply_id = reply.get("id", "")
+        else:  # msg_type == "button" -> template quick-reply tap
+            reply_id = (message.get("button") or {}).get("payload", "")
         if ":" not in reply_id:
             logger.info("whatsapp inbound: ignoring reply id '%s' (no order encoding)", reply_id)
             return

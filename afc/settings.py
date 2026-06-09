@@ -306,6 +306,17 @@ KAPSO_API_KEY = os.getenv("KAPSO_API_KEY")
 KAPSO_PHONE_NUMBER_ID = os.getenv("KAPSO_PHONE_NUMBER_ID")
 KAPSO_PROJECT_ID = os.getenv("KAPSO_PROJECT_ID")
 KAPSO_WHATSAPP_CONFIG_ID = os.getenv("KAPSO_WHATSAPP_CONFIG_ID")
+# WhatsApp message TEMPLATE used for the COLD first-contact "new order" notification.
+# WhatsApp blocks free-form messages outside the recipient's 24h window, so a business-
+# initiated order alert MUST be an approved template. notify_vendor (afc_shop/fulfilment.py)
+# sends this template via send_whatsapp_template, then falls back to free-form buttons if
+# it fails (e.g. not approved yet).
+#   KAPSO_TEMPLATE_NAME -> the approved template's name (owner registered "vendor_new_order").
+#   KAPSO_TEMPLATE_LANG -> the language code the template was APPROVED under. Meta treats
+#     "en_US" and "en" as DIFFERENT and rejects a mismatch with error 132001, so this MUST
+#     equal the template's actual language in WhatsApp Manager. Default "en_US"; override via env.
+KAPSO_TEMPLATE_NAME = os.getenv("KAPSO_TEMPLATE_NAME", "vendor_new_order")
+KAPSO_TEMPLATE_LANG = os.getenv("KAPSO_TEMPLATE_LANG", "en_US")
 
 # Shop checkout currency. Both shop payment paths (Paystack + Stripe, see
 # afc_shop/stripe_checkout.py) charge in this currency, and Stripe Connect vendor

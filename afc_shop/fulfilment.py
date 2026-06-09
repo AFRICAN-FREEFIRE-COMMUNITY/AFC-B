@@ -200,8 +200,11 @@ def notify_vendor(order, event="received"):
 
     For now it:
       1. logs the event (so ops can see vendor notifications firing),
-      2. if the vendor has a whatsapp_number, sends the order summary + the 3 action
-         buttons via send_whatsapp_buttons (best-effort), and
+      2. if the vendor has a whatsapp_number, sends the approved "vendor_new_order"
+         TEMPLATE via send_whatsapp_template (the only thing WhatsApp allows for COLD
+         contact, outside the 24h window) carrying the 3 action buttons; if that send
+         fails (e.g. template not approved yet), it FALLS BACK to send_whatsapp_buttons
+         (free-form, in-window only) so nothing breaks before approval. Best-effort, and
       3. if the vendor has a contact_email, sends them a plain heads-up via the shared
          afc_auth send_email (best-effort; a mail failure never blocks the order).
 
@@ -222,25 +225,60 @@ def notify_vendor(order, event="received"):
     # cannot block the payment/fulfilment path.
     if vendor.whatsapp_number:
         try:
-            from afc_shop.services.kapso import send_whatsapp_buttons
+            from django.conf import settings
+            from afc_shop.services.kapso import send_whatsapp_template, send_whatsapp_buttons
+
             full_name = f"{order.first_name} {order.last_name}".strip()
-            msg = (
-                f"New AFC order #{order.id} to fulfil.\n"
-                f"Buyer: {full_name}\n"
-                f"Deliver to: {order.address}, {order.city}, {order.state}\n"
-                f"Tap a button below to act on it, or open your fulfilment page on "
-                f"africanfreefirecommunity.com."
+            address = f"{order.address}, {order.city}, {order.state}".strip(", ")
+
+            # reply-id / payload encoding = "<action>:<order_id>". Used IDENTICALLY by the
+            # template (button.payload) and the free-form fallback (interactive.button_reply.id),
+            # so a tap maps back to THIS order whichever channel delivered it. The inbound
+            # webhook (whatsapp_webhook.py) enforces the real state machine, so an out-of-order
+            # tap is harmlessly rejected. Titles <=20 chars (Meta limit) on the fallback buttons.
+            ack_id = f"ack:{order.id}"
+            shipdate_id = f"shipdate:{order.id}"
+            shipped_id = f"shipped:{order.id}"
+
+            # ── PRIMARY: the approved WhatsApp TEMPLATE. This is the ONLY thing WhatsApp
+            # allows for COLD contact (outside the recipient's 24h window), so it is the
+            # correct first-contact path for a brand-new order alert. Body vars
+            # {{1}}..{{4}} = vendor name, order #, buyer, delivery address; the 3 quick-reply
+            # buttons carry the action payloads. The template name + language come from
+            # settings (KAPSO_TEMPLATE_NAME / KAPSO_TEMPLATE_LANG); the language MUST match
+            # the template's approved locale in Meta (en_US != en) or Meta returns 132001. ──
+            res = send_whatsapp_template(
+                vendor.whatsapp_number,
+                getattr(settings, "KAPSO_TEMPLATE_NAME", "vendor_new_order"),
+                body_params=[vendor.display_name, str(order.id), full_name, address],
+                button_payloads=[ack_id, shipdate_id, shipped_id],
+                language_code=getattr(settings, "KAPSO_TEMPLATE_LANG", "en_US"),
             )
-            # reply-id encoding = "<action>:<order_id>" (parsed by whatsapp_webhook.py).
-            # Titles <=20 chars (Meta limit). Only the "received -> acknowledged" and the
-            # ship-date / shipped actions are offered here at order start; the inbound
-            # webhook enforces the real state machine, so an out-of-order tap is rejected.
-            buttons = [
-                {"id": f"ack:{order.id}", "title": "Order received"},
-                {"id": f"shipdate:{order.id}", "title": "Set ship date"},
-                {"id": f"shipped:{order.id}", "title": "Mark shipped"},
-            ]
-            send_whatsapp_buttons(vendor.whatsapp_number, msg, buttons)
+
+            # ── FALLBACK: if the template send failed (most commonly it is not approved yet
+            # -> Meta 132001, or a language mismatch), drop to free-form interactive buttons.
+            # These deliver ONLY inside the 24h window, but that covers active testing and any
+            # vendor who messaged us recently, so the flow keeps working before the template is
+            # live. Once the template is approved the PRIMARY path succeeds and this is skipped. ──
+            if not res.get("ok"):
+                logger.info(
+                    "notify_vendor: template send failed for order #%s (%s); "
+                    "falling back to interactive buttons.",
+                    order.id, res.get("error"),
+                )
+                msg = (
+                    f"New AFC order #{order.id} to fulfil.\n"
+                    f"Buyer: {full_name}\n"
+                    f"Deliver to: {address}\n"
+                    f"Tap a button below to act on it, or open your fulfilment page on "
+                    f"africanfreefirecommunity.com."
+                )
+                buttons = [
+                    {"id": ack_id, "title": "Order received"},
+                    {"id": shipdate_id, "title": "Set ship date"},
+                    {"id": shipped_id, "title": "Mark shipped"},
+                ]
+                send_whatsapp_buttons(vendor.whatsapp_number, msg, buttons)
         except Exception as e:  # WhatsApp must never block the order
             logger.warning("notify_vendor whatsapp failed for order #%s: %s", order.id, e)
 
