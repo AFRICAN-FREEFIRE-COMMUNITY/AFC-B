@@ -3232,6 +3232,10 @@ def get_event_details(request):
                     "registered_competitor_id": reg.id,
                     "player_id": reg.user.user_id,
                     "username": reg.user.username,
+                    # uid + full_name so the admin "Registered Teams/Players" view can show
+                    # full player identity, not just the in-game name (owner request 2026-06-09).
+                    "uid": reg.user.uid,
+                    "full_name": reg.user.full_name,
                     "status": reg.status
                 })
 
@@ -3258,10 +3262,17 @@ def get_event_details(request):
                 "team_id": tt.team.team_id,
                 "team_name": tt.team.team_name,
                 "status": tt.status,
+                # Full player roster of THIS registered team so the admin "Registered
+                # Teams" view can expand a team to its players (owner request 2026-06-09).
+                # username is the in-game name; uid + full_name give full identity; the
+                # per-member status is the roster snapshot status (TournamentTeamMember).
                 "members": [
                     {
                         "player_id": m.user.user_id,
-                        "username": m.user.username
+                        "username": m.user.username,
+                        "uid": m.user.uid,
+                        "full_name": m.user.full_name,
+                        "status": m.status,
                     }
                     for m in tt.members.all()
                 ]

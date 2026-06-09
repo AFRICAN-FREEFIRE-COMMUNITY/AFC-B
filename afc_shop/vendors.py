@@ -70,6 +70,7 @@ from .views import (
     MAX_IMAGE_BYTES,
     MAX_VIDEO_BYTES,
     _abs_url,
+    _attach_media,
     _serialize_category,
     _serialize_media,
 )
@@ -121,6 +122,7 @@ def _serialize_vendor_product(request, product):
         # ── Phase B1 approval fields ──
         "approval_status": product.approval_status,
         "submitted_at": product.submitted_at,
+        "approved_at": product.approved_at,
         "rejection_reason": product.rejection_reason,
         "vendor_id": product.vendor_id,
         "vendor_name": product.vendor.display_name if product.vendor_id else None,
@@ -425,8 +427,9 @@ def admin_approve_product(request):
 
     product.approval_status = "approved"
     product.approved_by = admin
+    product.approved_at = timezone.now()  # stamp WHEN, for the admin inventory list
     product.rejection_reason = ""  # clear any stale rejection note
-    product.save(update_fields=["approval_status", "approved_by", "rejection_reason"])
+    product.save(update_fields=["approval_status", "approved_by", "approved_at", "rejection_reason"])
 
     # Audit row (reuses the shop change log, like the admin product views).
     ShopChangeLog.objects.create(
@@ -678,6 +681,102 @@ def vendor_update_product(request):
             pv.save()
 
     return Response({"message": "Product updated."}, status=200)
+
+
+# ── vendor media: the multi-image + video gallery, vendor-gated ──────────────────
+# These are the VENDOR equivalents of views.add_product_media / delete_product_media
+# (which are admin-only). They let a vendor build a gallery (many images + short
+# videos) on their OWN product while it is still editable (draft/rejected), reusing the
+# SAME validation + caps via views._attach_media so a vendor product behaves identically
+# to an admin one. Consumed by the vendor product editor (ProductFormDialog ->
+# ProductMediaManager, pointed at these endpoints). The buyer storefront already renders
+# product.media (ProductMediaGallery), so anything added here shows once the product is
+# approved; the admin approval queue reads the same media to review before approving.
+
+def _vendor_owns_editable_product(vendor, product):
+    """Shared gate for the vendor media endpoints: the product must belong to this
+    vendor AND be in an editable state (draft/rejected). Returns an error Response if
+    not, else None. Mirrors the ownership + state gate in vendor_update_product so media
+    edits follow the exact same rules as field edits (no touching a submitted/approved
+    product, no touching another vendor's product)."""
+    if product.vendor_id != vendor.id:
+        return Response({"message": "You do not own this product."}, status=403)
+    if product.approval_status not in ("draft", "rejected"):
+        return Response(
+            {"message": f"Only a draft or rejected product can be edited (this one is '{product.approval_status}')."},
+            status=400,
+        )
+    return None
+
+
+@api_view(["POST"])
+def vendor_add_product_media(request):
+    """
+    POST /shop/vendor/products/media/add/   multipart: product_id + files[] (image/video)
+
+    Upload one or more images/videos to the gallery of the caller-vendor's OWN
+    draft/rejected product. The VENDOR counterpart of views.add_product_media.
+
+    Auth:     Bearer -> _require_active_vendor; the product.vendor must equal the caller's
+              vendor and be draft/rejected (else 403/400) -> _vendor_owns_editable_product.
+    Request:  multipart -- product_id (required) + one or more files under `files`
+              (request.FILES.getlist). Classified image/* vs video/* and capped (images
+              <= 5 MB, videos <= 50 MB) by the SHARED views._attach_media.
+    Response: 201 { message, media: [ {id,url,media_type,ordering} ] } | 400/403/404.
+    Consumed by: ProductFormDialog -> ProductMediaManager (uploadUrl set to this route).
+    """
+    user, vendor, err = _require_active_vendor(request)
+    if err:
+        return err
+
+    product_id = request.data.get("product_id")
+    if not product_id:
+        return Response({"message": "product_id is required."}, status=400)
+    product = get_object_or_404(Product, id=product_id)
+
+    err = _vendor_owns_editable_product(vendor, product)
+    if err:
+        return err
+
+    files = request.FILES.getlist("files") or request.FILES.getlist("file")
+    if not files:
+        return Response({"message": "No files uploaded."}, status=400)
+
+    created, err = _attach_media(request, product, files)
+    if err:
+        return err
+    return Response({"message": "Media uploaded.", "media": created}, status=201)
+
+
+@api_view(["POST"])
+def vendor_delete_product_media(request):
+    """
+    POST /shop/vendor/products/media/delete/   body: { media_id }
+
+    Remove a single media item from the caller-vendor's OWN draft/rejected product's
+    gallery. The VENDOR counterpart of views.delete_product_media.
+
+    Auth:     Bearer -> _require_active_vendor; the media's product must belong to the
+              caller's vendor and be draft/rejected -> _vendor_owns_editable_product.
+    Request:  media_id (required).
+    Response: 200 { message } | 400/403/404.
+    Consumed by: ProductFormDialog -> ProductMediaManager (deleteUrl set to this route).
+    """
+    user, vendor, err = _require_active_vendor(request)
+    if err:
+        return err
+
+    media_id = request.data.get("media_id")
+    if not media_id:
+        return Response({"message": "media_id is required."}, status=400)
+    media = get_object_or_404(ProductMedia, id=media_id)
+
+    err = _vendor_owns_editable_product(vendor, media.product)
+    if err:
+        return err
+
+    media.delete()
+    return Response({"message": "Media deleted."}, status=200)
 
 
 @api_view(["POST"])
