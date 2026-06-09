@@ -11879,6 +11879,270 @@ def get_all_leaderboard_details_for_event(request):
     }, status=200)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# get_event_group_rosters  (event group-roster view)
+# ──────────────────────────────────────────────────────────────────────────────
+# PURPOSE
+#   Live-event seeding check: for one event, return the full structural tree
+#   stage -> group -> teams (and their per-event rosters) -> players, or for solo
+#   events stage -> group -> players. Lets an organizer or AFC admin confirm WHO is
+#   in WHICH group while a tournament is running. This is a pure READ; it never
+#   touches match stats or standings (that is get_all_leaderboard_details_for_event).
+#
+# REQUEST  (POST body, JSON)
+#   { "event_id": <int> }   preferred, OR
+#   { "slug": "<event-slug>" }   fallback (event_id wins when both are sent).
+#   Authorization header: "Bearer <session token>".
+#
+# RESPONSE  (200)
+#   {
+#     event_id, event_name, participant_type, is_solo,
+#     stages: [
+#       { stage_id, stage_name, stage_format, stage_status, groups: [
+#           # TEAM events (duo/squad):
+#           { group_id, group_name, teams_qualifying?, team_count, player_count,
+#             total_in_group, teams: [
+#               { tournament_team_id, team_id, team_name, team_tag,
+#                 competitor_status, players: [
+#                   { user_id, username (the IGN), uid, full_name, status } ] } ] }
+#           # SOLO events:
+#           { group_id, group_name, teams_qualifying?, team_count(=0),
+#             player_count, total_in_group, players: [
+#               { user_id, username (IGN), uid, full_name, status,
+#                 competitor_status } ] }
+#       ] }
+#     ]
+#   }
+#   An empty/unseeded stage or group is still emitted (teams: [] / players: []) so
+#   the FE can render a "not yet seeded" state instead of a missing section.
+#
+# AUTH
+#   AFC event admin (_is_event_admin) OR an org member holding
+#   can_manage_registrations on the event's owning org (org_can_event). Native AFC
+#   events (organization=None) stay admin-only via org_can_event's own rule. We use
+#   _is_event_admin / org_can_event on purpose, NOT the buggy
+#   `userroles.filter(role_name__in=...)` inline pattern found elsewhere in this file.
+#
+# CONSUMED BY  (frontend surfaces)
+#   - Organizer page: app/(organizer)/organizer/events/[slug]/groups/page.tsx
+#     (POSTs { slug }), gated client-side on can_manage_registrations || isOwner.
+#   - Admin tab:      app/(a)/a/events/[slug]/page.tsx -> "Group Rosters" tab
+#     (POSTs { event_id }).
+#
+# DATA MODEL NOTES (why the branches exist)
+#   - participant_type "solo" => players come from RegisteredCompetitors via the
+#     StageGroupCompetitor.player FK; "duo"/"squad" => teams come via the
+#     StageGroupCompetitor.tournament_team FK, and each team's per-event roster is
+#     TournamentTeamMember (NOT afc_team.TeamMembers, which carries roles we must not
+#     leak here). A StageGroupCompetitor row sets exactly one of those two FKs.
+#   - ROUND-ROBIN edge: a round-robin stage stores its team->group mapping on
+#     RoundRobinGroup.teams (M2M), NOT on StageGroupCompetitor, so a
+#     StageGroupCompetitor-only query returns EMPTY for an RR stage. We branch on
+#     stage.round_robin_groups.exists() and read the base groups instead. RR groups
+#     have no per-competitor status, so competitor_status defaults to "active".
+#
+# PERFORMANCE
+#   The naive shape is group x team x member (an N+1 per member). We avoid it by
+#   batching ALL of the event's TournamentTeamMember rows into one query, grouped
+#   into a {tournament_team_id: [member_dict, ...]} map BEFORE the stage/group loops,
+#   and by select_related on the per-group StageGroupCompetitor query (and on the RR
+#   M2M) so team/player rows carry their joined Team / User in the same query.
+@api_view(["POST"])
+def get_event_group_rosters(request):
+    # ── AUTH: identical preamble to get_all_leaderboard_details_for_event ──
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    # Resolve the event from EITHER event_id (preferred) OR slug (fallback). event_id
+    # wins when both are present, matching how the organizer FE sends slug while the
+    # admin FE sends event_id.
+    event_id = request.data.get("event_id")
+    slug = request.data.get("slug")
+    if event_id:
+        event = get_object_or_404(Event, event_id=event_id)
+    elif slug:
+        event = get_object_or_404(Event, slug=slug)
+    else:
+        return Response({"message": "event_id or slug is required."}, status=400)
+
+    # ── AUTH gate (event-scoped, read): AFC event admins always pass; otherwise the
+    # caller must hold can_manage_registrations on the event's owning org. org_can_event
+    # treats native (org=None) events as admin-only, so org members never see foreign
+    # events. We deliberately reuse _is_event_admin / org_can_event (single source of
+    # truth) rather than re-reading role rows inline. ──
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response(
+            {"message": "You do not have permission to view rosters for this event."},
+            status=403,
+        )
+
+    is_solo = (event.participant_type == "solo")
+
+    # ── PREFETCH: batch every per-event team roster up front, ONE query for the whole
+    # event, grouped by tournament_team_id. This is what keeps the loops from doing a
+    # query per team. Only meaningful for team events; harmless (empty) for solo. We
+    # carry only the roster fields TournamentTeamMember actually has (it has NO
+    # management_role / in_game_role — those live on afc_team.TeamMembers and must not
+    # be exposed here). username IS the in-game name (User.in_game_name is commented
+    # out, USERNAME_FIELD == "username"). ──
+    members_by_team = defaultdict(list)
+    if not is_solo:
+        all_members = (
+            TournamentTeamMember.objects
+            .filter(event=event)
+            .select_related("user")
+        )
+        for m in all_members:
+            members_by_team[m.tournament_team_id].append({
+                "user_id": m.user.user_id,
+                "username": m.user.username,   # the IGN
+                "uid": m.user.uid,             # nullable game UID
+                "full_name": m.user.full_name,
+                "status": m.status,            # member status on TournamentTeamMember
+            })
+
+    # Small helper: build a team's payload dict from a TournamentTeam + its competitor
+    # status. Shared by the StageGroupCompetitor branch (real per-competitor status)
+    # and the round-robin branch (status defaults "active", RR M2M has none).
+    def _team_payload(tournament_team, competitor_status):
+        team = tournament_team.team
+        return {
+            "tournament_team_id": tournament_team.tournament_team_id,
+            "team_id": team.team_id,
+            "team_name": team.team_name,
+            "team_tag": team.team_tag,
+            "competitor_status": competitor_status,
+            "players": members_by_team.get(tournament_team.tournament_team_id, []),
+        }
+
+    stages_payload = []
+    # Order stages deterministically (creation order) so the FE renders Stage 1..N.
+    for stage in event.stages.all().order_by("stage_id"):
+        groups_payload = []
+
+        # ── ROUND-ROBIN branch ──
+        # An RR stage maps teams to base groups on RoundRobinGroup.teams (M2M), so the
+        # StageGroupCompetitor table is empty for it. Read the base groups instead.
+        # RR is a team-only format, so there is no solo sub-branch here.
+        if stage.round_robin_groups.exists():
+            # prefetch_related on the teams M2M (and the joined Team) so each rr.teams
+            # iteration does not re-hit the DB.
+            rr_groups = (
+                stage.round_robin_groups
+                .all()
+                .order_by("order")
+                .prefetch_related("teams__team")
+            )
+            for rr in rr_groups:
+                teams_payload = [
+                    # RR M2M has no per-competitor status -> default "active".
+                    _team_payload(tt, "active")
+                    for tt in rr.teams.all()
+                ]
+                team_count = len(teams_payload)
+                player_count = sum(len(t["players"]) for t in teams_payload)
+                groups_payload.append({
+                    "group_id": rr.group_id,
+                    "group_name": rr.label,          # RR groups use `label` (A/B/C)
+                    "teams_qualifying": None,        # RR base groups carry no per-group quota
+                    "team_count": team_count,
+                    "player_count": player_count,
+                    "total_in_group": team_count,
+                    "teams": teams_payload,
+                })
+
+            stages_payload.append({
+                "stage_id": stage.stage_id,
+                "stage_name": stage.stage_name,
+                "stage_format": stage.stage_format,
+                "stage_status": stage.stage_status,
+                "groups": groups_payload,
+            })
+            continue  # RR stage fully handled; skip the StageGroups path below.
+
+        # ── STANDARD branch (non-RR): groups are StageGroups rows ──
+        for group in stage.groups.all().order_by("group_id"):
+
+            if is_solo:
+                # ── SOLO sub-branch: competitors carry a `player` FK to
+                # RegisteredCompetitors; the actual user is player.user. ──
+                competitors = (
+                    StageGroupCompetitor.objects
+                    .filter(stage_group=group, player__isnull=False)
+                    .select_related("player__user")
+                )
+                players_payload = []
+                for c in competitors:
+                    # Skip malformed rows where the expected slot is null.
+                    if c.player is None or c.player.user is None:
+                        continue
+                    u = c.player.user
+                    players_payload.append({
+                        "user_id": u.user_id,
+                        "username": u.username,        # the IGN
+                        "uid": u.uid,                  # nullable game UID
+                        "full_name": u.full_name,
+                        "status": c.player.status,         # RegisteredCompetitors.status
+                        "competitor_status": c.status,     # StageGroupCompetitor.status
+                    })
+                groups_payload.append({
+                    "group_id": group.group_id,
+                    "group_name": group.group_name,
+                    "teams_qualifying": group.teams_qualifying,
+                    "team_count": 0,
+                    "player_count": len(players_payload),
+                    "total_in_group": len(players_payload),
+                    "players": players_payload,
+                })
+
+            else:
+                # ── TEAM sub-branch (duo/squad): competitors carry a `tournament_team`
+                # FK; the roster comes from the prefetched members_by_team map. ──
+                competitors = (
+                    StageGroupCompetitor.objects
+                    .filter(stage_group=group, tournament_team__isnull=False)
+                    .select_related("tournament_team__team")
+                )
+                teams_payload = []
+                for c in competitors:
+                    # Skip malformed rows where the expected slot is null.
+                    if c.tournament_team is None or c.tournament_team.team is None:
+                        continue
+                    teams_payload.append(_team_payload(c.tournament_team, c.status))
+                team_count = len(teams_payload)
+                player_count = sum(len(t["players"]) for t in teams_payload)
+                groups_payload.append({
+                    "group_id": group.group_id,
+                    "group_name": group.group_name,
+                    "teams_qualifying": group.teams_qualifying,
+                    "team_count": team_count,
+                    "player_count": player_count,
+                    "total_in_group": team_count,
+                    "teams": teams_payload,
+                })
+
+        stages_payload.append({
+            "stage_id": stage.stage_id,
+            "stage_name": stage.stage_name,
+            "stage_format": stage.stage_format,
+            "stage_status": stage.stage_status,
+            "groups": groups_payload,
+        })
+
+    return Response({
+        "event_id": event.event_id,
+        "event_name": event.event_name,
+        "participant_type": event.participant_type,
+        "is_solo": is_solo,
+        "stages": stages_payload,
+    }, status=200)
+
+
 # ── BR Round-Robin (sub-project B, Task 3): three-view standings endpoint ──
 # A round-robin stage's results read three ways off the SAME match stats:
 #   • per-lobby   — already served by get_all_leaderboard_details_for_event (a lobby is a

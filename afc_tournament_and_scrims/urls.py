@@ -73,6 +73,12 @@ urlpatterns = [
     path('sync-group-discord-roles/', sync_group_discord_roles, name='sync_group_discord_roles'),
     path('reconcile-group-roles/', reconcile_group_roles, name='reconcile_group_roles'),
     path('get-all-leaderboard-details-for-event/', get_all_leaderboard_details_for_event, name='get_all_leaderboard_details_for_event'),
+    # Event group-roster view: stage -> group -> teams -> per-event roster (or solo players).
+    # Read-only seeding check used during a LIVE event. Consumed by the organizer Groups page
+    # (app/(organizer)/organizer/events/[slug]/groups/page.tsx, POSTs {slug}) and the admin
+    # "Group Rosters" tab (app/(a)/a/events/[slug]/page.tsx, POSTs {event_id}). Full URL:
+    # events/get-event-group-rosters/. Auth = AFC event admin OR org can_manage_registrations.
+    path('get-event-group-rosters/', get_event_group_rosters, name='get_event_group_rosters'),
     # BR Round-Robin (sub-project B): per-day + cumulative standings for a round-robin stage.
     path('get-round-robin-standings/', get_round_robin_standings, name='get_round_robin_standings'),
     path('advance-group-competitors-to-next-stage/', advance_group_competitors_to_next_stage, name='advance_group_competitors_to_next_stage'),
