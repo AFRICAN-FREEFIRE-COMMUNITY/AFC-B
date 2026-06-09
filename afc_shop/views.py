@@ -1427,12 +1427,51 @@ def buy_now(request):
             "line_total": base_price + tax
         })
 
-    grand_total = subtotal + total_tax
+    # ── Coupon discount (order-level), applied SERVER-SIDE ──────────────────────────
+    # The cart checkout (CartDetails.tsx buy-now) attaches the applied coupon to each
+    # item as coupon_code (the product page can carry one too). The amount we charge must
+    # NEVER trust the client, so we re-validate the coupon here and reduce the order total.
+    # Previously this was missing: the discount only showed on the client and the user was
+    # still charged the full subtotal+tax via Paystack. On payment success,
+    # verify_paystack_payment + paystack_webhook increment this coupon's used_count.
+    coupon = None
+    coupon_code = ""
+    for _it in items:
+        _cc = (_it.get("coupon_code") or "").strip()
+        if _cc:
+            coupon_code = _cc.upper()
+            break
+
+    discount = Decimal("0.00")
+    if coupon_code:
+        coupon = Coupon.objects.filter(code=coupon_code).first()
+        if not coupon:
+            return Response({"message": "Invalid coupon code."}, status=400)
+        if not coupon.is_valid_now():
+            return Response({"message": "This coupon is not valid at the moment."}, status=400)
+        if subtotal < coupon.min_order_amount:
+            return Response(
+                {"message": f"This coupon needs a minimum order of {coupon.min_order_amount}."},
+                status=400,
+            )
+        # percent -> share of the pre-tax subtotal; fixed -> flat amount. Cap at subtotal.
+        if coupon.discount_type == "percent":
+            discount = (subtotal * (coupon.discount_value / Decimal("100"))).quantize(Decimal("0.01"))
+        else:
+            discount = coupon.discount_value
+        discount = min(discount, subtotal)  # never push the order below zero
+
+    grand_total = (subtotal + total_tax - discount).quantize(Decimal("0.01"))
+    if grand_total < Decimal("0.00"):
+        grand_total = Decimal("0.00")
 
     with transaction.atomic():
         order = Order.objects.create(
             user=user,
             subtotal=subtotal,
+            tax=total_tax,
+            discount_total=discount,
+            coupon=coupon,
             total=grand_total,
             status="pending",
             first_name=request.data.get("first_name"),
@@ -1451,7 +1490,10 @@ def buy_now(request):
                 variant=i["variant"],
                 quantity=i["quantity"],
                 unit_price=i["unit_price"],
-                line_total=i["line_total"]
+                line_total=i["line_total"],
+                # snapshot the applied coupon code per line (the order-level coupon FK above
+                # is the source of truth; this is the historical per-item record).
+                coupon_code=(coupon.code if coupon else None),
             )
             for i in order_items_to_create
         ])
@@ -1687,6 +1729,12 @@ def verify_paystack_payment(request):
         order.paid_at = timezone.now()
         order.save()
 
+        # Count the coupon use now that the order is paid. The already-paid guard above
+        # makes this run exactly once per order (verify + webhook can both fire).
+        if order.coupon_id:
+            order.coupon.used_count = (order.coupon.used_count or 0) + 1
+            order.coupon.save(update_fields=["used_count"])
+
         for item in order.items.all():
             for _ in range(item.quantity):  # IMPORTANT FIX
 
@@ -1905,6 +1953,12 @@ def paystack_webhook(request):
         order.payment_method = data.get("channel") or ""
         order.paid_at = timezone.now()
         order.save()
+
+        # Count the coupon use now that the order is paid. The already-paid guard above
+        # makes this run exactly once per order (webhook + verify can both fire).
+        if order.coupon_id:
+            order.coupon.used_count = (order.coupon.used_count or 0) + 1
+            order.coupon.save(update_fields=["used_count"])
 
         for item in order.items.all():
             for _ in range(item.quantity):
