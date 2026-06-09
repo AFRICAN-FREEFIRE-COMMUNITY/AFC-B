@@ -298,11 +298,33 @@ class Order(models.Model):
 
     tax = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
 
+    # ── Payment provider (which gateway took the money for THIS order) ──────────────
+    # The shop now supports TWO checkout providers side by side: Paystack (the original,
+    # NGN card/bank/USSD) and Stripe Checkout (added alongside, charges via Stripe Checkout
+    # Session with Adaptive Pricing). `provider` records which one a given order went
+    # through so verify/webhook can route correctly and admins can tell them apart.
+    # Default "paystack" keeps every pre-existing order untouched (back-compat).
+    #   - buy_now (views.py) creates orders with the default -> provider="paystack".
+    #   - stripe_buy_now (stripe_checkout.py) sets provider="stripe".
+    PROVIDER = (
+        ("paystack", "Paystack"),
+        ("stripe", "Stripe"),
+    )
+    provider = models.CharField(max_length=20, choices=PROVIDER, default="paystack")
+
     # Paystack data
     paystack_reference = models.CharField(max_length=100, unique=True, null=True, blank=True)
     paystack_transaction_id = models.CharField(max_length=120, blank=True)
     payment_method = models.CharField(max_length=50, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
+
+    # ── Stripe data (mirrors the Paystack fields above, only set when provider="stripe") ──
+    # stripe_session_id     : the Checkout Session id (cs_...), used by stripe_verify to
+    #                         retrieve the session and confirm payment_status == "paid".
+    # stripe_payment_intent : the PaymentIntent id (pi_...), the charge reference (stored on
+    #                         payment for parity with the event payments flow / future refunds).
+    stripe_session_id = models.CharField(max_length=120, blank=True)
+    stripe_payment_intent = models.CharField(max_length=120, blank=True)
 
 
     def __str__(self):
