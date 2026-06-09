@@ -5,6 +5,17 @@ from .views import *
 # clearly sourced. The Paystack routes below (buy-now / verify-paystack-payment / paystack-webhook)
 # are unchanged.
 from .stripe_checkout import stripe_buy_now, stripe_verify, stripe_webhook
+# Marketplace fulfilment state machine (Phase A, afc_shop/fulfilment.py). Imported
+# explicitly (not via *) so the vendor transition + queue endpoints are clearly
+# sourced. These are the ONE backend API the per-order vendor page AND the Kapso
+# WhatsApp flow both call (both SEPARATE follow-ups).
+from .fulfilment import (
+    vendor_acknowledge_order,
+    vendor_set_ship_date,
+    vendor_mark_shipped,
+    order_mark_completed,
+    vendor_my_orders,
+)
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -74,4 +85,15 @@ urlpatterns = [
     # ── Product media (multi-image + video gallery) ──
     path("add-product-media/", add_product_media, name="add_product_media"),
     path("delete-product-media/", delete_product_media, name="delete_product_media"),
+
+    # ── Marketplace order fulfilment state machine (Phase A) ──
+    # The vendor (or an AFC admin) drives an order through received -> acknowledged
+    # -> ship_scheduled -> shipped (+evidence) -> completed. Consumed by the SEPARATE
+    # per-order vendor page + the SEPARATE Kapso WhatsApp flow (both POST the same
+    # endpoints). vendor-orders is the caller-vendor's PII-scoped fulfilment queue.
+    path("fulfilment/acknowledge/", vendor_acknowledge_order, name="vendor_acknowledge_order"),
+    path("fulfilment/set-ship-date/", vendor_set_ship_date, name="vendor_set_ship_date"),
+    path("fulfilment/mark-shipped/", vendor_mark_shipped, name="vendor_mark_shipped"),
+    path("fulfilment/mark-completed/", order_mark_completed, name="order_mark_completed"),
+    path("fulfilment/my-orders/", vendor_my_orders, name="vendor_my_orders"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

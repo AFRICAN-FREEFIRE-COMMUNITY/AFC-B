@@ -1755,6 +1755,14 @@ def verify_paystack_payment(request):
 
                 fulfillment.save()
 
+    # ── Marketplace fulfilment hook (Phase A) ──────────────────────────────────
+    # If this order contains a vendor (marketplace) product, start the order
+    # fulfilment lifecycle: set state="received", email the buyer, notify the
+    # vendor. No-op + idempotent for pure diamond/AFC orders. Lives outside the
+    # transaction above (it only reads + emails) and never raises into this path.
+    from .fulfilment import notify_order_paid
+    notify_order_paid(order)
+
     return Response({"message": "Payment verified"})
 
 

@@ -71,6 +71,78 @@ class Category(models.Model):
         return self.name
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Vendor — an AFC-invited third-party seller in the marketplace.
+#
+# WHY this exists (marketplace Phase A, spec: WEBSITE/tasks/marketplace-design.md):
+#   The shop is becoming a multi-vendor marketplace. A Vendor is a partner who
+#   lists physical/design products; AFC collects the buyer's money and the vendor
+#   fulfils the order (acknowledge -> ship-date -> shipped + evidence). This row
+#   is the seller's identity + contact channels + (later) payout account.
+#
+# INVITE-ONLY (owner decision 2026-06-09): there is NO public "Sell on AFC"
+#   application and NO pending/approval state on the Vendor itself. An AFC admin
+#   CREATES a Vendor directly and links it to an existing User login (the same way
+#   sponsors/organizers are granted). `status` only ever flips active<->suspended;
+#   it is never "pending". (Each submitted PRODUCT is still approved separately in
+#   a later phase, but the Vendor account itself is granted, not applied for.)
+#
+# HOW it connects:
+#   - `user` FK -> afc_auth.User: the partner's login. The fulfilment endpoints in
+#     afc_shop/fulfilment.py gate each order transition on
+#     `order.items -> variant.product.vendor.user == caller` (the vendor) OR an
+#     AFC admin, so a vendor can only act on their own orders.
+#   - `Product.vendor` FK (below) links each product a vendor sells back here.
+#     Existing AFC/diamond products have vendor=None (first-party AFC stock).
+#   - `whatsapp_number` + `stripe_account_id` are seams for the SEPARATE follow-ups
+#     (Kapso WhatsApp fulfilment channel; Stripe Connect payouts in Phase B3); they
+#     are stored now so the model does not need re-migrating when those land.
+#   - `created_by` FK -> the admin who granted access (audit trail).
+# ─────────────────────────────────────────────────────────────────────────────
+class Vendor(models.Model):
+    STATUS = (
+        ("active", "Active"),        # vendor can sell + fulfil
+        ("suspended", "Suspended"), # access revoked by an admin (no new orders)
+    )
+
+    # The partner's login. CASCADE: if the underlying User is deleted, the vendor
+    # identity goes with it (a vendor cannot exist without a login to act as).
+    user = models.ForeignKey(
+        "afc_auth.User",
+        on_delete=models.CASCADE,
+        related_name="vendor_accounts",
+    )
+
+    display_name = models.CharField(max_length=120)
+    # Where buyer/fulfilment notifications about THIS vendor's orders would CC, and
+    # where the vendor receives the "you have a new order" email (notify_vendor).
+    contact_email = models.EmailField(blank=True)
+    # Kapso WhatsApp destination for the SEPARATE WhatsApp send follow-up. Stored
+    # now (blank for vendors without WhatsApp) so notify_vendor can plug in later.
+    whatsapp_number = models.CharField(max_length=30, blank=True)
+
+    status = models.CharField(max_length=20, choices=STATUS, default="active")
+
+    # Stripe Connect account id, set during the LATER Phase B3 payout onboarding.
+    # Blank until then; kept here so the payout work does not need a new migration.
+    stripe_account_id = models.CharField(max_length=120, blank=True)
+
+    # The admin who granted this vendor access. SET_NULL so removing an admin user
+    # never deletes the vendor record (preserves the audit trail).
+    created_by = models.ForeignKey(
+        "afc_auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="vendors_created",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.display_name} ({self.status})"
+
+
 class Product(models.Model):
     # Legacy free-form type kept for backward-compat with existing diamond rows
     # and the old frontend `shopProductTypes` constant. New products should set
@@ -99,6 +171,22 @@ class Product(models.Model):
     # on_delete=SET_NULL: deleting a category must never cascade-delete products.
     category = models.ForeignKey(
         "Category",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="products",
+    )
+
+    # ── Marketplace: which vendor sells this product (Phase A) ──────────────────
+    # null/blank for FIRST-PARTY AFC stock (existing diamond products keep
+    # vendor=None). A non-null vendor marks this as a marketplace product whose
+    # orders flow through the fulfilment state machine in afc_shop/fulfilment.py.
+    # SET_NULL on delete: removing a Vendor must NEVER cascade-delete their
+    # products (they fall back to "no vendor" rather than vanishing). The reverse
+    # accessor is `vendor.products`. fulfilment.py reads
+    # `variant.product.vendor` to decide whether an order needs vendor fulfilment.
+    vendor = models.ForeignKey(
+        "Vendor",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
@@ -326,6 +414,37 @@ class Order(models.Model):
     stripe_session_id = models.CharField(max_length=120, blank=True)
     stripe_payment_intent = models.CharField(max_length=120, blank=True)
 
+    # ── Marketplace fulfilment lifecycle (Phase A) ──────────────────────────────
+    # ONLY used by physical/vendor orders (an order containing a Product with a
+    # non-null vendor). Digital orders (diamond topups) leave all of these
+    # null/blank and keep using the per-item `Fulfillment` model above; this
+    # order-level lifecycle is the vendor ship-out flow, NOT the voucher flow.
+    #
+    # The state machine + the transition endpoints that read/write these fields
+    # live in afc_shop/fulfilment.py (notify_order_paid sets the initial
+    # "received"; vendor_acknowledge_order -> "acknowledged"; vendor_set_ship_date
+    # -> "ship_scheduled" + ship_date; vendor_mark_shipped -> "shipped" +
+    # shipped_at; order_mark_completed -> "completed" + completed_at). The buyer
+    # gets a branded email (afc_shop/emails.py) at received/shipped/completed.
+    FULFILMENT_STATE = (
+        ("received", "Received"),            # paid, awaiting vendor acknowledgement
+        ("acknowledged", "Acknowledged"),    # vendor has seen the order
+        ("ship_scheduled", "Ship scheduled"),# vendor committed a ship date
+        ("shipped", "Shipped"),              # dispatched (+ photo/video evidence)
+        ("completed", "Completed"),          # delivered / closed out
+        ("cancelled", "Cancelled"),          # cancelled (-> refund, no payout)
+    )
+    # null=True/blank=True: digital orders never enter this lifecycle.
+    fulfilment_state = models.CharField(
+        max_length=20, choices=FULFILMENT_STATE, null=True, blank=True
+    )
+    # Vendor-picked dispatch date (set at the acknowledged -> ship_scheduled step).
+    ship_date = models.DateField(null=True, blank=True)
+    # Transition timestamps (one per milestone), set as the order advances.
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    shipped_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
 
     def __str__(self):
         return f"Order #{self.id} - {self.user.username} - {self.status}"
@@ -384,6 +503,57 @@ class Fulfillment(models.Model):
 
     def __str__(self):
         return f"Fulfillment {self.id} - Order {self.order.id} - {self.status}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FulfillmentEvidence — proof-of-shipment media for a marketplace order.
+#
+# WHY this exists (marketplace Phase A):
+#   When a vendor marks an order "shipped" they attach photo/video evidence (a
+#   packed box, a tracking slip). Buyers and AFC admins can later see proof the
+#   order was actually dispatched. The SAME table will also store inbound media
+#   from the WhatsApp (Kapso) fulfilment channel in the SEPARATE follow-up, so
+#   the page and the bot record evidence identically.
+#
+# HOW it connects:
+#   - `order` FK (related_name="evidence"): one order can carry several files.
+#   - Written by `vendor_mark_shipped` in afc_shop/fulfilment.py from the uploaded
+#     files on the shipped transition (and, later, by the Kapso inbound-media
+#     webhook). Read by the per-order vendor page + admin order detail.
+#   - `uploaded_by` FK -> the vendor User (or admin) who attached it; SET_NULL so
+#     deleting that user never deletes the evidence trail.
+# ─────────────────────────────────────────────────────────────────────────────
+class FulfillmentEvidence(models.Model):
+    KIND = (
+        ("image", "Image"),
+        ("video", "Video"),
+    )
+
+    order = models.ForeignKey(
+        "Order",
+        on_delete=models.CASCADE,   # evidence is meaningless without its order
+        related_name="evidence",
+    )
+
+    # Generic FileField so the one column holds both images and short videos;
+    # `kind` tells the frontend which element to render. upload_to keeps the
+    # fulfilment proofs separate on disk from product media.
+    media = models.FileField(upload_to="fulfilment_evidence/")
+    kind = models.CharField(max_length=10, choices=KIND, default="image")
+
+    uploaded_by = models.ForeignKey(
+        "afc_auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="fulfilment_evidence_uploads",
+    )
+
+    note = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Evidence {self.id} - Order {self.order.id} ({self.kind})"
 
 
 class Redemption(models.Model):

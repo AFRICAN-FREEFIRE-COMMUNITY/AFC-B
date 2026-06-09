@@ -261,6 +261,15 @@ def _mark_paid_and_fulfil(order, payment_intent=None):
     order = Order.objects.prefetch_related("items__variant").get(pk=order.pk)
     _fulfil_order(order)
 
+    # ── Marketplace fulfilment hook (Phase A) ──────────────────────────────────
+    # Mirror of the Paystack path: if this order has a vendor (marketplace) product,
+    # start the order fulfilment lifecycle (state="received" + buyer email + vendor
+    # notify). No-op + idempotent for pure diamond/AFC orders, and never raises (so a
+    # closed-tab webhook can never 500 on it). Imported lazily to avoid any import
+    # cycle between this gateway module and fulfilment.py.
+    from .fulfilment import notify_order_paid
+    notify_order_paid(order)
+
 
 # ── 1. stripe_buy_now (FE checkout -> create order + Stripe Checkout Session) ───────────────────
 @api_view(["POST"])
