@@ -10,7 +10,7 @@ from afc_leaderboard_calc import models
 from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
 from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats, EventPrizePayout
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
-from afc_auth.models import AdminHistory, Notifications, TeamBan, User, UserProfile, UserRoles
+from afc_auth.models import AdminHistory, BannedPlayer, Notifications, TeamBan, User, UserProfile, UserRoles
 from django.utils.timezone import now
 # Invite.invite_id is a UUID. Looking it up with a non-UUID value (e.g. a tampered URL)
 # raises ValidationError, NOT DoesNotExist, so we catch it to return 404 instead of 500.
@@ -21,6 +21,29 @@ import json
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Player-ban helper (shared across the team views below)
+#
+# Ban rule (afc_auth.BannedPlayer): a player is CURRENTLY banned when an is_active=True
+# row exists AND its ban_end_date is still in the future. Both conditions matter: an
+# is_active row whose ban_end_date has already passed is a stale/expired ban and must NOT
+# block the player. (TeamBan, the team-level sibling, is read separately via Team.is_banned,
+# which TeamBan.lift_ban_if_expired() keeps in sync.)
+#
+# Used by: exit_team (POST /team/exit-team/) and edit_team (POST /team/edit-team/, which is
+# also the team-profile / name / logo / social-links update surface). The tournament app's
+# register_for_event replicates this same is_active+ban_end_date__gt=now check inline
+# (afc_tournament_and_scrims/views.py) rather than importing across apps in its hot path.
+# ──────────────────────────────────────────────────────────────────────────
+def _is_player_banned(user):
+    """Return the active, non-expired BannedPlayer row for `user`, or None if the player
+    is not currently banned. Callers treat a truthy return as "blocked"."""
+    return BannedPlayer.objects.filter(
+        banned_player=user, is_active=True, ban_end_date__gt=timezone.now()
+    ).first()
+
 
 @api_view(["POST"])
 def create_team(request):
@@ -819,6 +842,16 @@ def edit_team(request):
     if team.team_owner != user:
         return Response({"message": "You do not have permission to edit this team."}, status=status.HTTP_403_FORBIDDEN)
 
+    # ── ban guard (afc_auth.BannedPlayer + Team.is_banned) ──
+    # A banned team (TeamBan -> Team.is_banned) or a banned acting user may NOT edit the team
+    # or its profile (name / logo / join settings / social links). edit_team is the team-profile
+    # update endpoint, so this single guard covers profile edits too. Placed right after the
+    # owner-permission check so the owner identity is already resolved.
+    if team.is_banned:
+        return Response({"message": "This team is banned and cannot be edited."}, status=status.HTTP_403_FORBIDDEN)
+    if _is_player_banned(user):
+        return Response({"message": "You are banned and cannot edit a team."}, status=status.HTTP_403_FORBIDDEN)
+
     # Track if team name changes
     old_team_name = team.team_name
     team_name_changed = False
@@ -1370,6 +1403,17 @@ def exit_team(request):
         team_member = TeamMembers.objects.select_related("team").get(member=user)
         team = team_member.team
 
+        # ── ban guard (afc_auth.BannedPlayer + Team.is_banned) ──
+        # A banned player, or a member of a banned team (TeamBan -> Team.is_banned), is frozen in
+        # place and cannot leave. This is an ADDITIONAL guard layered before the existing
+        # transfer-window + active-tournament locks below (those stay intact). Membership must
+        # NOT be deleted when this fires, so it returns before team_member.delete().
+        if _is_player_banned(user) or team.is_banned:
+            return Response(
+                {"message": "You cannot leave your team while you or your team is banned."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # Prevent the team owner from exiting the team
         if team.team_owner == user:
             return Response({"message": "Team owners cannot exit their own team. Please transfer ownership or disband the team."}, status=status.HTTP_403_FORBIDDEN)
@@ -1382,6 +1426,25 @@ def exit_team(request):
         if active_season and not active_season.is_transfer_window_open():
             return Response(
                 {"message": "The transfer window is currently closed. You cannot leave your team until it reopens."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Active-tournament lock (separate from, and additional to, the transfer-window guard
+        # above): a team's roster is FROZEN while it is registered for a tournament that has not
+        # finished. "Active registration" = a TournamentTeam row for this team whose status is not
+        # a removed one (disqualified / withdrawn / left) and whose event is still upcoming or
+        # ongoing (not completed). TournamentTeam lives in afc_tournament_and_scrims and is
+        # imported lazily here (same as Season) to avoid an app-level import cycle.
+        from afc_tournament_and_scrims.models import TournamentTeam
+        has_active_registration = (
+            TournamentTeam.objects.filter(team=team)
+            .exclude(status__in=["disqualified", "withdrawn", "left"])
+            .filter(event__event_status__in=["upcoming", "ongoing"])
+            .exists()
+        )
+        if has_active_registration:
+            return Response(
+                {"message": "You cannot leave your team while it is registered for an active tournament. Withdraw from the tournament first or wait until it is completed."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -1616,6 +1679,26 @@ def manage_team_roster(request):
         if not _can_manage_roster(user, team):
             return Response({"error": "Only the team owner or a coach can manage the roster"}, status=403)
 
+        # ── Transfer-window lock on POSITIONS (in_game_role) ──────────────────────
+        # In-game positions (rusher / support / grenader / sniper) can be edited ONLY while the
+        # active ranking season's transfer window is OPEN. This is the SAME pattern exit_team uses
+        # (load the active Season; if one is active and its window is closed, block), and it
+        # mirrors _transfer_window_open() used for the player<->staff move below. The check gates
+        # ONLY the in_game_role path: a request that supplies "in_game_role" for any member is a
+        # position change, so the whole call is rejected with 403 when the window is closed.
+        # Management-role (captain / manager / etc.) changes are NOT newly restricted here — they
+        # keep only the crossing rule already enforced per-member below. With no active season the
+        # guard does not fire (positions stay editable), matching the existing pattern.
+        wants_position_change = any("in_game_role" in (data or {}) for data in updates)
+        if wants_position_change:
+            from afc_rankings.models import Season
+            active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+            if active_season and not active_season.is_transfer_window_open():
+                return Response(
+                    {"error": "Positions are locked until the transfer window reopens. You can change positions while the transfer window is open."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         # Valid role sets
         valid_m_roles = [choice[0] for choice in TeamMembers.MANAGEMENT_ROLE_CHOICES]
         valid_i_roles = [choice[0] for choice in TeamMembers.IN_GAME_ROLE_CHOICES]
@@ -1776,6 +1859,25 @@ def kick_team_member(request):
         if active_season and not active_season.is_transfer_window_open():
             return Response(
                 {"error": "The transfer window is currently closed. Members cannot be kicked until it reopens."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Active-tournament lock (separate from, and additional to, the transfer-window guard
+        # above): a captain cannot remove a player while the team is registered for a tournament
+        # that has not finished. "Active registration" = a TournamentTeam row for this team whose
+        # status is not a removed one (disqualified / withdrawn / left) and whose event is still
+        # upcoming or ongoing (not completed). TournamentTeam is imported lazily (same as Season)
+        # to avoid an app-level import cycle.
+        from afc_tournament_and_scrims.models import TournamentTeam
+        has_active_registration = (
+            TournamentTeam.objects.filter(team=team)
+            .exclude(status__in=["disqualified", "withdrawn", "left"])
+            .filter(event__event_status__in=["upcoming", "ongoing"])
+            .exists()
+        )
+        if has_active_registration:
+            return Response(
+                {"error": "You cannot remove a player while the team is registered for an active tournament."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 

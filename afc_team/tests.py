@@ -66,3 +66,310 @@ class SearchTeamsTests(TestCase):
         body = self._get(q="Dyn", limit=1, tok=self.tok).json()
         self.assertEqual(len(body["results"]), 1)   # page size honored
         self.assertEqual(body["total_count"], 2)    # but total reflects all matches
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Roster-lock rules (afc_team.views)
+#
+# Rule B  — membership is FROZEN while the team has an ACTIVE tournament registration
+#           (a non-removed TournamentTeam row for an upcoming/ongoing event). Guards both
+#           exit_team (POST /team/exit-team/) and kick_team_member (POST /team/kick-team-member/),
+#           in addition to the pre-existing transfer-window guard.
+# Rule C  — in-game POSITIONS (in_game_role) can be edited only while the active ranking
+#           season's transfer window is OPEN (manage_team_roster, POST /team/manage-team-roster/).
+#           Management-role changes keep their own rule and are not newly restricted by the window.
+#
+# Fixtures mirror the existing SearchTeamsTests style: _make_user() builds a User + SessionToken
+# ("tok_<username>"), auth is sent as "Bearer <tok>". Event/TournamentTeam construction mirrors
+# afc_tournament_and_scrims/tests_round_robin.py. Tests never touch the network.
+# ──────────────────────────────────────────────────────────────────────────
+import datetime
+
+from afc_team.models import TeamMembers
+from afc_rankings.models import Season
+from afc_tournament_and_scrims.models import Event, TournamentTeam
+
+
+# A fixed date used for all the Event/Season date fields in these fixtures.
+_D = datetime.date(2026, 1, 1)
+
+
+def _make_event(creator, event_status="upcoming", name="Roster Lock Cup"):
+    """Minimal valid Event row (all required, non-null fields populated), mirroring the
+    afc_tournament_and_scrims test fixtures. event_status drives Rule B (upcoming/ongoing
+    = active; completed = finished)."""
+    return Event.objects.create(
+        event_name=name, competition_type="tournament", participant_type="squad",
+        event_type="internal", max_teams_or_players=16, event_mode="virtual",
+        start_date=_D, end_date=_D, registration_open_date=_D, registration_end_date=_D,
+        prizepool="$1000", event_rules="rules", event_status=event_status,
+        registration_link="https://afc.test/reg", number_of_stages=1,
+        creator=creator, is_draft=False,
+    )
+
+
+def _make_season(*, window_open):
+    """Active ranking Season whose transfer window is OPEN or CLOSED on today's date.
+    Open: window spans a wide range that includes today. Closed: window sits entirely in
+    the past, so is_transfer_window_open() is False today."""
+    today = datetime.date.today()
+    if window_open:
+        w_open, w_close = today - datetime.timedelta(days=5), today + datetime.timedelta(days=5)
+    else:
+        w_open, w_close = today - datetime.timedelta(days=30), today - datetime.timedelta(days=20)
+    return Season.objects.create(
+        name="Lock Season", quarter=1, year=today.year,
+        start_date=today - datetime.timedelta(days=60),
+        end_date=today + datetime.timedelta(days=60),
+        transfer_window_open=w_open, transfer_window_close=w_close,
+        is_active=True,
+    )
+
+
+class RuleB_TournamentMembershipLockTests(TestCase):
+    """Rule B: cannot leave or kick while the team is registered for an active tournament."""
+
+    def setUp(self):
+        self.client = Client()
+        # Owner cannot leave their own team (a separate, earlier guard), so the LEAVING player
+        # is a plain member; the OWNER is the one who kicks.
+        self.owner, self.owner_tok = _make_user("rb_owner")
+        self.member, self.member_tok = _make_user("rb_member")
+        self.team = Team.objects.create(
+            team_name="Lock FC", team_tag="LCK", country="NG", join_settings="open",
+            team_owner=self.owner, team_creator=self.owner,
+        )
+        TeamMembers.objects.create(team=self.team, member=self.owner, management_role="team_captain")
+        self.membership = TeamMembers.objects.create(team=self.team, member=self.member, management_role="member")
+        # Transfer window is OPEN, so ONLY Rule B (not the window guard) is under test here.
+        _make_season(window_open=True)
+
+    def _exit(self, tok):
+        return self.client.post("/team/exit-team/", {}, content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {tok}")
+
+    def _kick(self, tok, member_id):
+        return self.client.post("/team/kick-team-member/",
+                                {"team_id": self.team.team_id, "member_id": member_id},
+                                content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {tok}")
+
+    def test_exit_blocked_during_active_tournament(self):
+        # An active (upcoming) registration freezes membership: exit must 403 + NOT delete.
+        _make_event(self.owner, event_status="upcoming")
+        tt = TournamentTeam.objects.create(event=_make_event(self.owner, name="E2"), team=self.team)
+        self.assertEqual(tt.status, "active")
+        res = self._exit(self.member_tok)
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("active tournament", res.json()["message"])
+        self.assertTrue(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+    def test_kick_blocked_during_active_tournament(self):
+        # Same freeze applies to a captain/owner kick.
+        TournamentTeam.objects.create(event=_make_event(self.owner), team=self.team)
+        res = self._kick(self.owner_tok, self.member.user_id)
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("active tournament", res.json()["error"])
+        self.assertTrue(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+    def test_exit_allowed_with_no_active_registration(self):
+        # No tournament registration at all -> leave still works (window is open).
+        res = self._exit(self.member_tok)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+    def test_kick_allowed_when_only_completed_or_withdrawn_registration(self):
+        # A completed event and a withdrawn registration are both "not active" -> kick works.
+        TournamentTeam.objects.create(event=_make_event(self.owner, event_status="completed"), team=self.team)
+        TournamentTeam.objects.create(event=_make_event(self.owner, name="E_withdrawn"),
+                                      team=self.team, status="withdrawn")
+        res = self._kick(self.owner_tok, self.member.user_id)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+
+class RuleC_PositionTransferWindowTests(TestCase):
+    """Rule C: in_game_role (position) editable only while the transfer window is open."""
+
+    def setUp(self):
+        self.client = Client()
+        self.owner, self.owner_tok = _make_user("rc_owner")
+        self.player, _ = _make_user("rc_player")
+        self.team = Team.objects.create(
+            team_name="Pos FC", team_tag="POS", country="NG", join_settings="open",
+            team_owner=self.owner, team_creator=self.owner,
+        )
+        # Owner manages the roster (see _can_manage_roster). The player is a plain member who
+        # starts with the "rusher" position.
+        TeamMembers.objects.create(team=self.team, member=self.owner, management_role="team_captain")
+        self.tm = TeamMembers.objects.create(
+            team=self.team, member=self.player, management_role="member", in_game_role="rusher",
+        )
+
+    def _manage(self, updates):
+        return self.client.post("/team/manage-team-roster/",
+                                {"team_id": self.team.team_id, "updates": updates},
+                                content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {self.owner_tok}")
+
+    def test_position_change_blocked_when_window_closed(self):
+        _make_season(window_open=False)
+        res = self._manage([{"member_id": self.player.user_id, "in_game_role": "sniper"}])
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("Positions are locked", res.json()["error"])
+        self.tm.refresh_from_db()
+        self.assertEqual(self.tm.in_game_role, "rusher")  # unchanged
+
+    def test_position_change_allowed_when_window_open(self):
+        _make_season(window_open=True)
+        res = self._manage([{"member_id": self.player.user_id, "in_game_role": "sniper"}])
+        self.assertEqual(res.status_code, 200)
+        self.tm.refresh_from_db()
+        self.assertEqual(self.tm.in_game_role, "sniper")  # updated
+
+    def test_position_change_allowed_with_no_active_season(self):
+        # No active season -> no window lock (matches the existing pattern): change applies.
+        res = self._manage([{"member_id": self.player.user_id, "in_game_role": "support"}])
+        self.assertEqual(res.status_code, 200)
+        self.tm.refresh_from_db()
+        self.assertEqual(self.tm.in_game_role, "support")
+
+    def test_management_role_change_not_blocked_by_closed_window(self):
+        # Rule C must NOT add a window restriction to management-role-only changes. Promoting the
+        # member to "manager" (a STAFF role) is a player<->staff CROSSING, which the pre-existing
+        # crossing rule already gates on the window — so it is expected to be blocked when closed,
+        # but via the EXISTING per-member rule (200 + per-member failure), NOT via Rule C's
+        # top-level 403. The key assertion: this is not a Rule C 403.
+        _make_season(window_open=False)
+        res = self._manage([{"member_id": self.player.user_id, "management_role": "manager"}])
+        self.assertEqual(res.status_code, 200)  # batch contract preserved, not a Rule C 403
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ban enforcement (afc_team.views)
+#
+# Ban rule (afc_auth.BannedPlayer): a player is currently banned when an is_active=True row
+# exists AND ban_end_date is still in the FUTURE. An is_active row with a past ban_end_date is
+# expired and must NOT block. The team-level sibling is Team.is_banned (driven by TeamBan).
+#
+# These tests cover the two afc_team guards added for the ban-enforcement feature:
+#   exit_team (POST /team/exit-team/)  : a banned player, or a member of a banned team, cannot
+#                                        leave; membership must survive the 403.
+#   edit_team (POST /team/edit-team/)  : a banned team (or banned acting user) cannot be edited;
+#                                        this is also the team-PROFILE update surface (name/logo/
+#                                        join settings/social links), so it covers profile edits.
+#
+# Fixtures mirror the existing classes above: _make_user() builds User + SessionToken,
+# auth is "Bearer <tok>". No network is touched.
+# ──────────────────────────────────────────────────────────────────────────
+from django.utils import timezone
+
+from afc_auth.models import BannedPlayer
+
+
+def _ban_player(user, *, active=True, days_remaining=30):
+    """Create a BannedPlayer row for `user`. By default it is an ACTIVE, non-expired ban
+    (blocks). Pass active=False or a negative days_remaining to build a non-blocking row
+    (lifted, or expired) for the negative tests."""
+    return BannedPlayer.objects.create(
+        banned_player=user,
+        ban_duration=days_remaining,
+        ban_end_date=timezone.now() + datetime.timedelta(days=days_remaining),
+        is_active=active,
+        reason="test ban",
+    )
+
+
+class ExitTeamBanTests(TestCase):
+    """exit_team must block a banned player or a member of a banned team (without deleting
+    the membership), while leaving an unbanned player on an unbanned team unaffected."""
+
+    def setUp(self):
+        self.client = Client()
+        self.owner, self.owner_tok = _make_user("eb_owner")
+        self.member, self.member_tok = _make_user("eb_member")
+        self.team = Team.objects.create(
+            team_name="Ban Exit FC", team_tag="BEX", country="NG", join_settings="open",
+            team_owner=self.owner, team_creator=self.owner,
+        )
+        TeamMembers.objects.create(team=self.team, member=self.owner, management_role="team_captain")
+        self.membership = TeamMembers.objects.create(team=self.team, member=self.member, management_role="member")
+        # Transfer window OPEN + no tournament -> the other exit_team guards all pass, so only
+        # the NEW ban guard is under test in these cases.
+        _make_season(window_open=True)
+
+    def _exit(self, tok):
+        return self.client.post("/team/exit-team/", {}, content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {tok}")
+
+    def test_banned_player_cannot_exit(self):
+        # An active, non-expired BannedPlayer on the leaving member -> 403, membership kept.
+        _ban_player(self.member)
+        res = self._exit(self.member_tok)
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("banned", res.json()["message"].lower())
+        self.assertTrue(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+    def test_member_of_banned_team_cannot_exit(self):
+        # Team-level ban (Team.is_banned, normally set by TeamBan) -> 403, membership kept.
+        self.team.is_banned = True
+        self.team.save(update_fields=["is_banned"])
+        res = self._exit(self.member_tok)
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("banned", res.json()["message"].lower())
+        self.assertTrue(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+    def test_unbanned_player_on_unbanned_team_can_exit(self):
+        # Clean player + clean team (window open, no tournament) -> leave still works.
+        res = self._exit(self.member_tok)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+    def test_expired_ban_does_not_block_exit(self):
+        # A still-is_active row whose ban_end_date is in the PAST is expired -> must NOT block.
+        _ban_player(self.member, days_remaining=-1)
+        res = self._exit(self.member_tok)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+
+class EditTeamBanTests(TestCase):
+    """edit_team must block edits to a banned team (or by a banned owner) and leave an
+    unbanned team editable. edit_team is also the team-profile update endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.owner, self.owner_tok = _make_user("etb_owner")
+        self.team = Team.objects.create(
+            team_name="Ban Edit FC", team_tag="BED", country="NG", join_settings="by_request",
+            team_owner=self.owner, team_creator=self.owner,
+        )
+        TeamMembers.objects.create(team=self.team, member=self.owner, management_role="team_captain")
+
+    def _edit(self, tok, **data):
+        payload = {"team_id": self.team.team_id, **data}
+        return self.client.post("/team/edit-team/", payload,
+                                HTTP_AUTHORIZATION=f"Bearer {tok}")
+
+    def test_banned_team_cannot_be_edited(self):
+        self.team.is_banned = True
+        self.team.save(update_fields=["is_banned"])
+        res = self._edit(self.owner_tok, join_settings="open")
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("banned", res.json()["message"].lower())
+        self.team.refresh_from_db()
+        self.assertEqual(self.team.join_settings, "by_request")  # unchanged
+
+    def test_banned_owner_cannot_edit_team(self):
+        _ban_player(self.owner)
+        res = self._edit(self.owner_tok, join_settings="open")
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("banned", res.json()["message"].lower())
+        self.team.refresh_from_db()
+        self.assertEqual(self.team.join_settings, "by_request")  # unchanged
+
+    def test_unbanned_team_can_be_edited(self):
+        res = self._edit(self.owner_tok, join_settings="open")
+        self.assertEqual(res.status_code, 200)
+        self.team.refresh_from_db()
+        self.assertEqual(self.team.join_settings, "open")  # updated
