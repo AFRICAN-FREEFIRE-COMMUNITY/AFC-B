@@ -12,7 +12,10 @@
 # WEBSITE/tasks/organizers-design.md).
 from django.urls import path
 
-from . import views_admin, views_organizer, views_public, views_design, views_reviews, views_reports
+from . import (
+    views_admin, views_organizer, views_public, views_design,
+    views_reviews, views_reports, views_blacklist,
+)
 
 urlpatterns = [
     # ───────────────────────── AFC staff: provisioning + oversight ─────────────────────────
@@ -76,6 +79,31 @@ urlpatterns = [
     path("report-organization/<slug:slug>/", views_reports.report_organization, name="organizers_report"),
     path("admin/reports/", views_reports.admin_list_reports, name="organizers_admin_reports"),
     path("admin/reports/<int:report_id>/", views_reports.admin_update_report, name="organizers_admin_report_detail"),
+
+    # ───────────────────────── Organizer blacklist (feature "organizer-blacklist") ─────────────────────────
+    # An organizer blacklists a team for a duration; the team AND its snapshotted players (even
+    # after they leave) cannot register for THAT organizer's events. The affected party (team
+    # manager or player) can request a lift; the organizer approves/denies. Enforcement lives in
+    # afc_organizers/blacklist.py, called from register_for_event. Spec:
+    # WEBSITE/tasks/organizer-blacklist-design.md.
+    # NOTE: the more-specific string routes ("mine", "lift-requests") are listed BEFORE the
+    # generic <int:blacklist_id> routes so they are never swallowed by the int converter.
+    # The AFFECTED-PARTY discovery view (NO org gate): a team/player lists the active blacklists
+    # that affect THEM so they can request a lift. Backs the team page RequestBlacklistLift UI.
+    path("blacklists/mine/", views_blacklist.my_blacklists,
+         name="organizers_blacklists_mine"),
+    path("blacklists/lift-requests/", views_blacklist.list_lift_requests,
+         name="organizers_blacklist_lift_requests"),
+    path("blacklists/lift-requests/<int:request_id>/decide/", views_blacklist.decide_lift_request,
+         name="organizers_blacklist_decide_lift"),
+    # ONE path, two verbs: POST creates a blacklist, GET lists the org's blacklists
+    # (the view branches on request.method, mirroring views_design.design_requests).
+    path("blacklists/", views_blacklist.blacklists,
+         name="organizers_blacklists"),
+    path("blacklists/<int:blacklist_id>/lift/", views_blacklist.lift_blacklist,
+         name="organizers_blacklist_lift"),
+    path("blacklists/<int:blacklist_id>/request-lift/", views_blacklist.request_lift,
+         name="organizers_blacklist_request_lift"),
 
     # ───────────────────────── Public org page (unauthenticated) ─────────────────────────
     path("get-organization-public/<slug:slug>/", views_public.get_organization_public,

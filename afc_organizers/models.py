@@ -13,6 +13,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class Organization(models.Model):
@@ -214,3 +215,122 @@ class EventComment(models.Model):
 
     def __str__(self):
         return f"Comment(event={self.event_id} by {self.user_id})"
+
+
+# ════════ Organizer blacklist (feature "organizer-blacklist", 2026-06-10) ════════
+#
+# An organizer can blacklist a team for a fixed duration. While the blacklist is active the
+# team AND the people who were on that team at blacklist time cannot register for ANY of that
+# organizer's events. The defining behaviour is the FOLLOWS-THE-PLAYER rule: blacklisting a
+# team snapshots its CURRENT members into OrganizerBlacklistPlayer rows, and enforcement keys
+# off (organization, player), NOT (organization, team). So a snapshotted player stays blocked
+# from that organizer's events even after they leave the blacklisted team and join another one.
+#   - The team-level OrganizerBlacklist row blocks the team ENTITY (re-registering that team).
+#   - The per-player OrganizerBlacklistPlayer rows block the PEOPLE wherever they go.
+#
+# How this connects to the rest of the system:
+#   - Created / listed / lifted / decided by the organizer endpoints in
+#     afc_organizers/views_blacklist.py, gated by permissions.org_can(can_manage_registrations).
+#   - Lift requests are raised by the affected party: a team manager (captain/owner/coach/
+#     manager via afc_team helpers) or an affected player (themselves).
+#   - ENFORCED at registration time by afc_organizers/blacklist.py::organizer_blacklist_block,
+#     which afc_tournament_and_scrims.views.register_for_event calls on the TEAM path (after the
+#     existing ban checks) for any event that has an owning Organization.
+# Full spec: WEBSITE/tasks/organizer-blacklist-design.md.
+
+
+class OrganizerBlacklist(models.Model):
+    """A time-boxed blacklist of one team by one organization. The row blocks the team entity;
+    its related OrganizerBlacklistPlayer rows (related_name="players") block the snapshotted
+    people. The organizer picks a calendar date RANGE on create: `start_date` and `end_date` are
+    parsed from ISO YYYY-MM-DD (end_date stored end-of-day). A legacy `duration_days` fallback in
+    the create view still computes end_date = now + duration_days for old callers. Enforcement uses
+    `is_currently_active()` so an expired blacklist stops blocking the instant it lapses, even
+    before any nightly sweep flips its status to "expired"."""
+
+    STATUS_CHOICES = [
+        ("active", "Active"),     # live: blocks the team + its active snapshot players
+        ("lifted", "Lifted"),     # organizer (or an approved lift request) ended it early
+        ("expired", "Expired"),   # past end_date; a sweep may set this, but enforcement
+                                  # already treats a lapsed "active" row as not-blocking
+    ]
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE,
+                                     related_name="blacklists")
+    team = models.ForeignKey("afc_team.Team", on_delete=models.CASCADE,
+                             related_name="organizer_blacklists")
+    reason = models.TextField(blank=True, default="")          # why the organizer blacklisted them
+    # The organizer picks a calendar date RANGE on create. start_date is the chosen start (at
+    # day-start) and defaults to "now" when omitted; end_date is the chosen end day stored as
+    # end-of-day so the whole selected day is covered. default=timezone.now (not auto_now_add) so
+    # the create view can set start_date explicitly while still defaulting sensibly.
+    start_date = models.DateTimeField(default=timezone.now)     # when the blacklist begins
+    end_date = models.DateTimeField()                          # selected end day, end-of-day (set by view)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL,
+                                   related_name="created_organizer_blacklists")
+    status = models.CharField(max_length=8, choices=STATUS_CHOICES, default="active")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def is_currently_active(self):
+        """True only while the blacklist should still block. We require BOTH an "active" status
+        AND an end_date still in the future, so expiry is honoured live (a lapsed row never
+        blocks regardless of whether a sweep has relabelled it "expired" yet)."""
+        from django.utils import timezone
+        return self.status == "active" and self.end_date > timezone.now()
+
+    def __str__(self):
+        return f"Blacklist(org={self.organization_id} team={self.team_id} [{self.status}])"
+
+
+class OrganizerBlacklistPlayer(models.Model):
+    """One snapshotted player under an OrganizerBlacklist. Created from the team's CURRENT
+    TeamMembers at blacklist time, so the block follows the person, not the team membership.
+    `is_active=False` retires a single player's block (their individual lift was approved)
+    without ending the whole blacklist. Enforcement reads these per (organization, player):
+    see afc_organizers/blacklist.py."""
+
+    blacklist = models.ForeignKey(OrganizerBlacklist, on_delete=models.CASCADE,
+                                  related_name="players")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name="organizer_blacklist_entries")
+    is_active = models.BooleanField(default=True)              # False once this player's lift lands
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # One snapshot row per (blacklist, player) so re-snapshotting is idempotent and a player
+        # cannot be listed twice under the same blacklist.
+        unique_together = ("blacklist", "user")
+
+    def __str__(self):
+        return f"BlacklistPlayer(bl={self.blacklist_id} user={self.user_id} active={self.is_active})"
+
+
+class BlacklistLiftRequest(models.Model):
+    """A request to lift a blacklist, raised by the affected party. `scope="team"` asks for the
+    whole blacklist to be lifted (raised by a team manager); `scope="player"` asks only for one
+    person to be unblocked (raised by that player, or by a team manager on their behalf). The
+    organizer decides via views_blacklist.decide_lift_request: approving a team-scope request
+    lifts the entire blacklist; approving a player-scope request retires just that player's
+    OrganizerBlacklistPlayer (and lifts the blacklist if no active players remain)."""
+
+    SCOPE_CHOICES = [("team", "Team"), ("player", "Player")]
+    STATUS_CHOICES = [("pending", "Pending"), ("approved", "Approved"), ("denied", "Denied")]
+
+    blacklist = models.ForeignKey(OrganizerBlacklist, on_delete=models.CASCADE,
+                                  related_name="lift_requests")
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL,
+                                     related_name="blacklist_lift_requests")
+    scope = models.CharField(max_length=6, choices=SCOPE_CHOICES, default="team")
+    # Only set for player-scope requests: WHICH player is asking to be unblocked.
+    target_user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                    on_delete=models.CASCADE,
+                                    related_name="blacklist_lift_requests_targeting")
+    reason = models.TextField(blank=True, default="")          # the requester's case for a lift
+    status = models.CharField(max_length=8, choices=STATUS_CHOICES, default="pending")
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name="decided_lift_requests")
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"LiftRequest(bl={self.blacklist_id} {self.scope} [{self.status}])"
