@@ -5,6 +5,7 @@ from django.shortcuts import render
 
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+import calendar  # monthrange() for the one-month expiry cap (add_one_month, below)
 from datetime import datetime
 # timezone is also imported lower in this module (line ~363) for the trial/invite
 # expiry logic; we import it at the top too so create_recruitment_post (the first view
@@ -50,6 +51,41 @@ TRANSFER_WINDOW_STATUS = "OPEN"  # This can be dynamically set based on date or 
 #   this single constant so they can never drift apart.
 MAX_ACTIVE_POSTS = 1
 MAX_ACTIVE_TRIALS = 2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §L  One-month expiry cap (feature "L-market-expiry-cap", 2026-06-10)
+# ──────────────────────────────────────────────────────────────────────────────
+# A recruitment post (TEAM_RECRUITMENT or PLAYER_AVAILABLE) may live AT MOST one
+# calendar month before it auto-closes. There is NO new DB field and NO celery job:
+# RecruitmentPost.is_active is already a @property (post_expiry_date >= today), so a
+# post past its expiry already reads inactive (that lapse IS the auto-close). This cap
+# just stops a user from setting post_expiry_date further than one month out, so the
+# auto-close can never be pushed past a month.
+#
+# Enforced in BOTH write paths so the API can't be bypassed:
+#   • create_recruitment_post: caps relative to TODAY (a brand-new post may last up to
+#     one month from its creation day).
+#   • edit_recruitment_post: caps relative to the post's OWN created_at, so editing
+#     can't be used to extend a post past one month of total life.
+# Existing far-future rows (2027, December, …) are pulled back in line by the one-off
+# backfill command afc_player_market/management/commands/clamp_post_expiries.py.
+#
+# Surfaced to users on frontend/app/(user)/player-markets/page.tsx: both date inputs
+# carry min=today / max=(today+1 month) and a "Posts last up to 1 month" helper line,
+# and both submit handlers re-check the bound before POSTing to create-recruitment-post.
+def add_one_month(d):
+    """Return d advanced by one calendar month, clamping the day to the target month
+    length. Used to cap a recruitment post's expiry: a post may last at most one month.
+
+    Day-clamp examples (no external dependency, pure calendar arithmetic):
+      • 2026-01-15 → 2026-02-15
+      • 2026-01-31 → 2026-02-28  (Feb has no 31st; clamp to the last day)
+      • 2026-12-10 → 2027-01-10  (December rolls the year forward)
+    """
+    y = d.year + (1 if d.month == 12 else 0)
+    m = 1 if d.month == 12 else d.month + 1
+    return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1]))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -204,7 +240,25 @@ def create_recruitment_post(request):
 
         if not post_type or not expiry:
             return Response({"message": "post_type and post_expiry_date are required"}, status=400)
-        
+
+        # ── ONE-MONTH EXPIRY CAP (feature "L-market-expiry-cap") ──
+        # Parse the user-set expiry, then bound it: a post may last AT MOST one calendar
+        # month before it auto-closes (RecruitmentPost.is_active = post_expiry_date >=
+        # today). For a brand-new post the window is measured from TODAY, so the expiry
+        # must sit in [today, add_one_month(today)]. A past date is rejected too (an
+        # already-expired post would be pointless, reading inactive immediately).
+        # The FE date input enforces the same min/max, but we re-check here so a direct
+        # API call can't slip a 2027 expiry past the cap.
+        today = timezone.now().date()
+        try:
+            expiry_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+        except ValueError:
+            return Response({"message": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+        if expiry_date < today:
+            return Response({"message": "Post expiry cannot be in the past."}, status=400)
+        if expiry_date > add_one_month(today):
+            return Response({"message": "Post expiry must be within 1 month from today."}, status=400)
+
         # 🌍 Get country
         country = None
         if country_code:
@@ -220,7 +274,7 @@ def create_recruitment_post(request):
         post = RecruitmentPost(
             post_type=post_type,
             country=country,
-            post_expiry_date=datetime.strptime(expiry, "%Y-%m-%d").date(),
+            post_expiry_date=expiry_date,  # already parsed + capped above (one-month rule)
             created_by=user,
         )
 
@@ -1904,9 +1958,23 @@ def edit_recruitment_post(request):
     # Common fields
     if "post_expiry_date" in data:
         try:
-            post.post_expiry_date = datetime.strptime(data["post_expiry_date"], "%Y-%m-%d").date()
+            new_expiry = datetime.strptime(data["post_expiry_date"], "%Y-%m-%d").date()
         except ValueError:
             return Response({"message": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+
+        # ── ONE-MONTH EXPIRY CAP (feature "L-market-expiry-cap") ──
+        # An edit must not extend a post past one calendar month of TOTAL life, so the cap
+        # is measured from the post's OWN start (created_at), NOT from today. Otherwise a
+        # user could keep editing every day and roll the expiry forward indefinitely. We
+        # still reject a past date (an already-expired expiry reads inactive at once).
+        # Same bound the create path enforces from today; see add_one_month above.
+        today = timezone.now().date()
+        if new_expiry < today:
+            return Response({"message": "Post expiry cannot be in the past."}, status=400)
+        if new_expiry > add_one_month(post.created_at.date()):
+            return Response({"message": "Post expiry must be within 1 month of the post's start date."}, status=400)
+
+        post.post_expiry_date = new_expiry
 
     if "country_code" in data:
         country = Country.objects.filter(code=data["country_code"]).first()
