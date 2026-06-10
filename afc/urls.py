@@ -32,6 +32,10 @@ urlpatterns = [
     path("events/", include('afc_ocr.urls')),
     path("rankings/", include('afc_rankings.urls')),
     path("organizers/", include('afc_organizers.urls')),
+    # Standalone Leaderboards (afc_leaderboard, Phase 1). Event-less leaderboards an AFC admin or
+    # organizer creates with real-or-ghost participants + per-map results. Routes live under
+    # leaderboards/standalone/… (distinct from the event-tied tournament-leaderboard/ prefix above).
+    path("leaderboards/", include('afc_leaderboard.urls')),
     # Versioned, read-only partner data API (afc_partner_api). Mounted under a /v1/
     # prefix so a future breaking version can ship as /api/v2/partner/ without
     # disrupting existing partner integrations.

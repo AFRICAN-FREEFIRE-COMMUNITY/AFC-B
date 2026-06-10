@@ -52,8 +52,12 @@ def _envelope(request, qs, serialize_fn, extra=None):
 @api_view(["GET"])
 def teams_monthly(request):
     month = _resolve_month(request)
-    qs = (TeamMonthlyScore.objects.filter(month=month, team__isnull=False)
-          .select_related("team").order_by("rank"))
+    # Ghost teams are first-class here now: drop the team__isnull=False filter so ghost rows (ranked
+    # alongside real teams by rerank_team_month) are returned too. select_related both sides so the
+    # serializer's _team_name reads team OR ghost_team without an extra query. The serializer emits
+    # is_ghost + a "[Ghost] <name>" label so the FE can badge the row.
+    qs = (TeamMonthlyScore.objects.filter(month=month)
+          .select_related("team", "ghost_team").order_by("rank"))
     return _envelope(request, qs, S.team_monthly, {"month": month.isoformat()})
 
 
@@ -83,8 +87,10 @@ def teams_quarterly(request):
     season = _resolve_season(request)
     if not season:
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False}, "season": None})
-    qs = (TeamQuarterlyScore.objects.filter(season=season, team__isnull=False)
-          .select_related("team").order_by("rank"))
+    # Ghost teams are ranked + tiered alongside real teams now (see teams_monthly note). Drop the
+    # team__isnull=False filter; select_related both sides for the serializer's _team_name.
+    qs = (TeamQuarterlyScore.objects.filter(season=season)
+          .select_related("team", "ghost_team").order_by("rank"))
     return _gated_quarterly(request, season, qs, S.team_quarterly)
 
 
@@ -99,8 +105,11 @@ def teams_annual(request):
 @api_view(["GET"])
 def players_monthly(request):
     month = _resolve_month(request)
+    # Ghost players are ranked alongside real players now (rerank_player_month interleaves them).
+    # select_related both sides so the serializer's _player_name reads player OR ghost_player without
+    # an extra query; it emits is_ghost + a "[Ghost] <ign>" label for the FE badge.
     qs = (PlayerMonthlyScore.objects.filter(month=month)
-          .select_related("player").order_by("rank"))
+          .select_related("player", "ghost_player").order_by("rank"))
     return _envelope(request, qs, S.player_monthly, {"month": month.isoformat()})
 
 
@@ -109,8 +118,9 @@ def players_quarterly(request):
     season = _resolve_season(request)
     if not season:
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False}, "season": None})
+    # Ghost players are ranked + tiered alongside real players now (see players_monthly note).
     qs = (PlayerQuarterlyScore.objects.filter(season=season)
-          .select_related("player").order_by("rank"))
+          .select_related("player", "ghost_player").order_by("rank"))
     return _gated_quarterly(request, season, qs, S.player_quarterly)
 
 

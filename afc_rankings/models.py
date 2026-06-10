@@ -294,8 +294,15 @@ class TeamQuarterlyScore(models.Model):
 
 # ──────────────────────── §19.7 PlayerMonthlyScore ────────────────────────
 class PlayerMonthlyScore(models.Model):
-    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
-                               related_name="monthly_scores")
+    # player is now NULLABLE so a GHOST player can hold a monthly score row too. A ghost player
+    # earns points from published+counting SOLO standalone leaderboards (see afc_rankings.standalone
+    # .recalc_ghost_player_monthly, which writes ghost_player rows that rerank_player_month then
+    # interleaves with real players). Real-vs-ghost is mutually exclusive (player XOR ghost_player),
+    # mirroring the TeamMonthlyScore team-XOR-ghost_team pattern above.
+    player = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                               on_delete=models.CASCADE, related_name="monthly_scores")
+    ghost_player = models.ForeignKey("GhostPlayer", null=True, blank=True,
+                                     on_delete=models.CASCADE, related_name="monthly_scores")
     month = models.DateField()
 
     kill_pts = models.FloatField(default=0)
@@ -322,11 +329,20 @@ class PlayerMonthlyScore(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["player", "month"], name="uniq_player_month_score"),
+            # Mirror the team table: one ghost-player row per month, and player XOR ghost_player so a
+            # row is exactly one kind. (MySQL treats NULLs as distinct, so the player unique above and
+            # this ghost unique do not collide on the null side.)
+            models.UniqueConstraint(fields=["ghost_player", "month"], name="uniq_ghost_player_month_score"),
+            models.CheckConstraint(
+                name="player_month_player_xor_ghost",
+                check=(models.Q(player__isnull=False, ghost_player__isnull=True) |
+                       models.Q(player__isnull=True, ghost_player__isnull=False)),
+            ),
         ]
         indexes = [models.Index(fields=["month", "-total_score"])]
 
     def __str__(self):
-        return f"PlayerMonthly(player={self.player_id} @ {self.month}: {self.total_score})"
+        return f"PlayerMonthly({self.player_id or self.ghost_player_id} @ {self.month}: {self.total_score})"
 
 
 # ──────────────────────── §19.8 PlayerQuarterlyScore ────────────────────────
@@ -334,8 +350,14 @@ class PlayerQuarterlyScore(models.Model):
     TIER_CHOICES = [(0, "Elite"), (1, "Competitive"), (2, "Rising"), (3, "Entry")]
     TIER_SOURCE = [("team", "From Team"), ("individual", "Individual")]
 
-    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
-                               related_name="quarterly_scores")
+    # player is NULLABLE so a GHOST player can hold a quarterly score row + tier too (its tier is
+    # always the individual tier — a ghost has no team to inherit from). Written by
+    # afc_rankings.standalone.recalc_ghost_player_quarterly and ranked by rerank_player_quarter
+    # alongside real players. player XOR ghost_player (mirrors TeamQuarterlyScore team-XOR-ghost).
+    player = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                               on_delete=models.CASCADE, related_name="quarterly_scores")
+    ghost_player = models.ForeignKey("GhostPlayer", null=True, blank=True,
+                                     on_delete=models.CASCADE, related_name="quarterly_scores")
     season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="player_quarterly_scores")
 
     total_score = models.FloatField(default=0)
@@ -360,6 +382,13 @@ class PlayerQuarterlyScore(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["player", "season"], name="uniq_player_season_score"),
+            # one ghost-player row per season + player XOR ghost_player (see PlayerMonthlyScore note).
+            models.UniqueConstraint(fields=["ghost_player", "season"], name="uniq_ghost_player_season_score"),
+            models.CheckConstraint(
+                name="player_qscore_player_xor_ghost",
+                check=(models.Q(player__isnull=False, ghost_player__isnull=True) |
+                       models.Q(player__isnull=True, ghost_player__isnull=False)),
+            ),
         ]
         indexes = [
             models.Index(fields=["season", "-total_score"]),
@@ -367,7 +396,7 @@ class PlayerQuarterlyScore(models.Model):
         ]
 
     def __str__(self):
-        return f"PlayerQuarterly(player={self.player_id} @ season {self.season_id}: {self.total_score})"
+        return f"PlayerQuarterly({self.player_id or self.ghost_player_id} @ season {self.season_id}: {self.total_score})"
 
 
 # ──────────────────────── §19.9 AnnualLeaderboardEntry ────────────────────────
@@ -523,9 +552,48 @@ class GhostPlayer(models.Model):
     slot = models.PositiveSmallIntegerField(default=1)     # display order in the roster (1-based)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # ── claim lifecycle (ghost-claim-process-design.md §7) ──
+    # Mirrors the GhostTeam claim fields above, with ONE difference: a player is claimed by a
+    # real USER (afc_auth.User), not a Team. A real player requests to claim this provisional IGN
+    # (request-claim), an admin approves it (approve-claim -> claims.reattribute_ghost_player
+    # re-points this ghost's standalone LeaderboardParticipant rows + score rows onto the user)
+    # or rejects it (reject-claim). The 4 statuses + the request/approve/revoke timestamps match
+    # GhostTeam so the admin claim queue + the FE treat teams and players uniformly. CLAIM_STATUS
+    # is reused from GhostTeam (identical choices) so the two stay in lockstep.
+    #
+    # HOW IT CONNECTS: written by admin_ghost.ghost_player_request_claim (sets pending + claimed_by),
+    # admin_ghost.ghost_player_approve_claim (-> claims.reattribute_ghost_player, sets claimed),
+    # admin_ghost.ghost_player_reject_claim (resets to unclaimed). Read by serialize_ghost_player
+    # (emits these fields) + ghost_players_list?claim_status=pending (the admin pending queue).
+    CLAIM_STATUS = GhostTeam.CLAIM_STATUS
+    claim_status = models.CharField(max_length=20, choices=CLAIM_STATUS, default="unclaimed")
+    # the real user who will OWN this IGN once the claim is approved (a player claims themselves).
+    claimed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="claimed_ghost_players",
+    )
+    # the user who submitted the request (same as claimed_by for a self-claim, but kept distinct to
+    # mirror GhostTeam, where the requester and the target Team are different objects).
+    claim_requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="ghost_player_claims_requested",
+    )
+    claim_requested_at = models.DateTimeField(null=True, blank=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    claim_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="ghost_player_claims_approved",
+    )
+    claim_revoked_at = models.DateTimeField(null=True, blank=True)
+    claim_note = models.TextField(blank=True)
+
     class Meta:
         ordering = ["ghost_team", "slot"]
-        indexes = [models.Index(fields=["ghost_team"])]
+        indexes = [
+            models.Index(fields=["ghost_team"]),
+            # the admin pending-claim queue filters on this (ghost_players_list?claim_status=pending).
+            models.Index(fields=["claim_status"]),
+        ]
 
     def __str__(self):
         # null-safe: a standalone player (ghost_team NULL) prints "[no team]" instead of

@@ -11,7 +11,14 @@ GEMINI_URL = (
 )
 
 
-def build_prompt(aliases: list, team_notes: list) -> str:
+def build_prompt(aliases: list, team_notes: list, prompt_kind=None) -> str:
+    # prompt_kind selects the prompt variant:
+    #   None / "solo"      -> the existing event prompt (UNCHANGED, byte-for-byte).
+    #   "team_standings"   -> additionally ask Gemini for a team_name + summed team kills per
+    #                         placement (the standalone team-leaderboard flow, where we match the
+    #                         TEAM name against the platform team pool, not individual players).
+    # Read by call_gemini above (threaded from services.extract.extract_rows) when the standalone
+    # team OCR endpoint runs; the event flow never passes "team_standings", so it is unaffected.
     base = """You are analyzing a Free Fire battle royale match result screen.
 
 This is a TEAM match. The screen shows placements with teams/players listed.
@@ -40,6 +47,36 @@ Critical rules:
 - Return ONLY raw JSON — no markdown fences, no explanation
 """
 
+    # ── team_standings variant: ask for a team_name + summed team kills per placement ──
+    # Appended AFTER the base block so the default prompt above is never mutated. We keep the same
+    # placements[] shape (so the existing draft-row build still works) and ADD a "team_name" key
+    # plus a "kills" total at the placement level. The standalone team flow reads team_name to
+    # match against the platform team pool; players[] stays available for context.
+    if prompt_kind == "team_standings":
+        base += """
+ADDITIONAL TEAM-STANDINGS INSTRUCTIONS:
+This is a TEAM-STANDINGS read. For EACH placement, also report the team it belongs to:
+- "team_name": the team's displayed name or tag (copy it EXACTLY), or omit it if no team name
+  is visible for that placement.
+- "kills": at the PLACEMENT level, the team's total eliminations (the sum of its players' kills).
+
+Return the SAME structure with the two extra fields per placement:
+{
+  "match_type": "team",
+  "placements": [
+    {
+      "placement": 1,
+      "team_name": "TeamName",
+      "kills": 4,
+      "players": [
+        {"name": "PlayerName", "kills": 3},
+        {"name": "OtherPlayer", "kills": 1}
+      ]
+    }
+  ]
+}
+"""
+
     if aliases:
         alias_block = "\n".join(
             f'  - "{a["raw_name"]}" is the player "{a["username"]}"'
@@ -57,7 +94,11 @@ Critical rules:
     return base
 
 
-def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: list) -> dict:
+def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: list, prompt_kind=None) -> dict:
+    # prompt_kind selects the prompt variant (None/"solo" = the existing player prompt;
+    # "team_standings" = additionally read a team_name per placement). It is threaded down from
+    # services.extract.extract_rows so the standalone-leaderboard team flow can ask Gemini for a
+    # team name; the event flow passes the default (None) and is unchanged.
     api_key = getattr(settings, "GEMINI_API_KEY", "")
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not configured in settings.")
@@ -69,7 +110,7 @@ def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: l
         "contents": [
             {
                 "parts": [
-                    {"text": build_prompt(aliases, team_notes)},
+                    {"text": build_prompt(aliases, team_notes, prompt_kind=prompt_kind)},
                     {"inline_data": {"mime_type": mime_type, "data": b64}},
                 ]
             }

@@ -32,12 +32,52 @@ def _team_name(s):
     return "Unknown"
 
 
+def _player_name(s):
+    """Display label for a player score row, real OR ghost. Mirrors _team_name above so the player
+    ladders render ghost rows without dereferencing a null player. Read by player_monthly /
+    player_quarterly below; the FE shows the "[Ghost]" prefix as a badge (a ghost has no profile)."""
+    if s.player_id:
+        return s.player.username
+    if getattr(s, "ghost_player_id", None):
+        return f"[Ghost] {s.ghost_player.ign}"
+    return "Unknown"
+
+
+# ───────────────────────── ghost-claim hints for the PUBLIC ladders ─────────────────────────
+# A ghost row in the public ladder has no team_id / player_id (those are NULL for a ghost), so the
+# public client needs the ghost's OWN id to target the user-facing claim-request endpoints:
+#   POST /rankings/ghost-teams/<uuid>/request-claim/     (team ladder)
+#   POST /rankings/ghost-players/<int>/request-claim/    (player ladder)
+# These two helpers expose that id PLUS the ghost's claim_status so the FE can hide the "Claim"
+# button once a ghost is already pending/claimed. They read off the (select_related) ghost relation,
+# so no extra query: the views already select_related("ghost_team") / ("ghost_player"). Real rows
+# return (None, None) and the FE simply ignores the keys (it only acts on is_ghost rows).
+# Consumed by: app/(user)/rankings/page.tsx → ClaimGhostDialog (lib/rankings.ts TeamRow/PlayerRow).
+def _ghost_team_claim(s):
+    """(ghost_team_id:str|None, claim_status:str|None) for a team score row, both None if real."""
+    if getattr(s, "ghost_team_id", None):
+        return str(s.ghost_team_id), s.ghost_team.claim_status
+    return None, None
+
+
+def _ghost_player_claim(s):
+    """(ghost_player_id:int|None, claim_status:str|None) for a player score row, both None if real."""
+    if getattr(s, "ghost_player_id", None):
+        return s.ghost_player_id, s.ghost_player.claim_status
+    return None, None
+
+
 def team_monthly(s):
+    gid, gstatus = _ghost_team_claim(s)
     return {
         "rank": s.rank,
         "team_id": s.team_id,
         "team_name": _team_name(s),
         "is_ghost": bool(getattr(s, "ghost_team_id", None)),
+        # ghost-claim hints (NULL for real rows): let the FE target request-claim + hide the
+        # button once not unclaimed. See _ghost_team_claim above.
+        "ghost_team_id": gid,
+        "claim_status": gstatus,
         "total_score": round(s.total_score, 2),
         "tournament_pts": round(s.tournament_pts, 2),
         "scrim_pts": round(s.scrim_pts, 2),
@@ -49,11 +89,15 @@ def team_monthly(s):
 
 
 def team_quarterly(s):
+    gid, gstatus = _ghost_team_claim(s)
     return {
         "rank": s.rank,
         "team_id": s.team_id,
         "team_name": _team_name(s),
         "is_ghost": bool(getattr(s, "ghost_team_id", None)),
+        # ghost-claim hints (NULL for real rows): see _ghost_team_claim above.
+        "ghost_team_id": gid,
+        "claim_status": gstatus,
         "total_score": round(s.total_score, 2),
         "tournament_pts": round(s.tournament_pts, 2),
         "scrim_pts": round(s.scrim_pts, 2),
@@ -81,10 +125,16 @@ def team_quarterly(s):
 
 
 def player_monthly(s):
+    gpid, gstatus = _ghost_player_claim(s)
     return {
         "rank": s.rank,
         "player_id": s.player_id,
-        "username": s.player.username,
+        "username": _player_name(s),
+        "is_ghost": bool(getattr(s, "ghost_player_id", None)),
+        # ghost-claim hints (NULL for real rows): let the FE target request-claim + hide the
+        # button once not unclaimed. See _ghost_player_claim above.
+        "ghost_player_id": gpid,
+        "claim_status": gstatus,
         "total_score": round(s.total_score, 2),
         "kill_pts": round(s.kill_pts, 2),
         "placement_pts": round(s.placement_pts, 2),
@@ -100,10 +150,15 @@ def player_monthly(s):
 
 
 def player_quarterly(s):
+    gpid, gstatus = _ghost_player_claim(s)
     return {
         "rank": s.rank,
         "player_id": s.player_id,
-        "username": s.player.username,
+        "username": _player_name(s),
+        "is_ghost": bool(getattr(s, "ghost_player_id", None)),
+        # ghost-claim hints (NULL for real rows): see _ghost_player_claim above.
+        "ghost_player_id": gpid,
+        "claim_status": gstatus,
         "total_score": round(s.total_score, 2),
         "prize_money_pts": round(s.prize_money_pts, 2),
         "tier": s.tier_assigned,

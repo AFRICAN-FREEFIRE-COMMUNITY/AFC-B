@@ -47,6 +47,111 @@ def get_registered_players(match, event, event_type: str) -> list:
     return players
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# P2: platform-wide candidate pools + a team-name matcher (the standalone-leaderboard
+# OCR assist). Unlike get_registered_players / match_name (event flow, roster-gated),
+# these match against EVERY team / user on the platform, because a standalone leaderboard
+# has no event roster to gate against. Consumed by afc_leaderboard.views.ocr_extract:
+#   - team-format LB  -> all_platform_teams() + match_team_name()
+#   - solo-format LB  -> all_platform_players() + match_name() (reused as-is)
+# match_name (above) is reused unchanged for the solo flow.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def all_platform_players(limit=None) -> list:
+    """Every registered user as a match candidate (NO roster gate), shaped like
+    get_registered_players' rows so match_name can consume the list unchanged.
+
+    Format: [{"user_id", "username", "team_id": None, "team_name": None}]. team_id/team_name are
+    always None here: a standalone solo leaderboard carries no team context (a real-user solo
+    participant resolves by user_id alone). `limit` caps the pool (paginate huge member bases).
+    Read by afc_leaderboard.views.ocr_extract for the solo flow."""
+    from afc_auth.models import User
+
+    qs = User.objects.all().order_by("user_id").values("user_id", "username")
+    if limit is not None:
+        qs = qs[:limit]
+    return [
+        {"user_id": u["user_id"], "username": u["username"], "team_id": None, "team_name": None}
+        for u in qs
+    ]
+
+
+def all_platform_teams() -> list:
+    """Every real Team as a match candidate for the standalone team flow.
+
+    Format: [{"team_id", "team_name", "team_tag"}]. Read by afc_leaderboard.views.ocr_extract
+    (team format) and fed to match_team_name below. No roster gate: a standalone leaderboard can
+    feature any team on the platform."""
+    from afc_team.models import Team
+
+    return [
+        {"team_id": t.team_id, "team_name": t.team_name, "team_tag": t.team_tag}
+        for t in Team.objects.all().order_by("team_id")
+    ]
+
+
+def match_team_name(raw_name: str, teams: list) -> dict:
+    """The team-format mirror of match_name: fuzzy-match a raw OCR-read team name against the
+    platform team pool (from all_platform_teams), returning the best match + top-3 candidates.
+
+    Scoring: rapidfuzz WRatio (same scorer/cutoff/limit as match_name) over BOTH the team_name
+    and the team_tag of each team; a team's score is the better of its name-score and tag-score,
+    so a screenshot showing only the short tag ("ALP") still resolves. Cutoff 40, top-3.
+
+    Returns {row_id, raw_name, matched_team_id, matched_team_name, confidence,
+             top_candidates:[{team_id, team_name, confidence}]}. No match -> matched_team_id None,
+             matched_team_name None, confidence 0.0, top_candidates []. Consumed by ocr_extract;
+             the FE review table renders top_candidates as the per-row dropdown."""
+    row_id = str(uuid.uuid4())
+
+    empty = {
+        "row_id":            row_id,
+        "raw_name":          raw_name,
+        "matched_team_id":   None,
+        "matched_team_name": None,
+        "confidence":        0.0,
+        "top_candidates":    [],
+    }
+    if not teams:
+        return empty
+
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        return empty
+
+    # Score every team by the better of its name-score and tag-score, then keep the top-3 above
+    # the cutoff. We score in Python (not process.extract) because each team has TWO strings
+    # (name + tag) to compare and we want the max of the two as that team's confidence.
+    scored = []
+    for t in teams:
+        name_score = fuzz.WRatio(raw_name, t["team_name"]) if t.get("team_name") else 0.0
+        tag_score = fuzz.WRatio(raw_name, t["team_tag"]) if t.get("team_tag") else 0.0
+        score = max(name_score, tag_score)
+        if score >= 40:  # same cutoff as match_name's score_cutoff
+            scored.append((score, t))
+
+    if not scored:
+        return empty
+
+    scored.sort(key=lambda s: s[0], reverse=True)
+    top_candidates = [
+        {"team_id": t["team_id"], "team_name": t["team_name"], "confidence": round(score / 100, 3)}
+        for score, t in scored[:3]
+    ]
+
+    best = top_candidates[0]
+    return {
+        "row_id":            row_id,
+        "raw_name":          raw_name,
+        "matched_team_id":   best["team_id"],
+        "matched_team_name": best["team_name"],
+        "confidence":        best["confidence"],
+        "top_candidates":    top_candidates,
+    }
+
+
 def match_name(raw_name: str, registered: list) -> dict:
     """
     1. Check OCRNameAlias for an exact match (confidence = 1.0).

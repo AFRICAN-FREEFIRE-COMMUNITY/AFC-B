@@ -15,46 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type):
-    """LOCAL-FIRST OCR extraction with Gemini fallback (the self-hosted OCR student, P3).
+    """Thin delegate to the shared OCR extraction service (afc_ocr.services.extract.extract_rows).
 
-    Returns (raw_output: dict, engine: str). This is the ONE place the upload paths get their
-    extraction, so the local-vs-Gemini routing lives in a single auditable spot. Flow:
-      1. If local-first is enabled and the local engine is available, run the student
-         (services/local_ocr) and ask the confidence gate (services/ocr_confidence) whether
-         to trust it.
-      2. gate == "local"  -> use the student's output, ZERO Gemini calls (the cost win).
-      3. otherwise         -> escalate to Gemini (the teacher), exactly as before.
-    Graceful degradation (mirrors the old 503 handling): if the local engine errors or is
-    absent we go to Gemini; if Gemini is disabled/unavailable we serve the student's
-    best-effort draft so the admin can still review (never a hard fail when SOME engine ran).
-    `engine` is returned + persisted (raw_output["_engine"]) so the FE "which engine" badge
-    and the training corpus (teacher_model) know the source. raw_output keeps Gemini's exact
-    shape {"placements": [...]} so the draft build / match_name / commit path are untouched.
+    The local-first-then-Gemini routing body was lifted into services/extract.py (P2) so the
+    standalone-leaderboard OCR endpoints can reuse the EXACT same extraction without the event
+    commit machinery. This wrapper preserves the event upload paths' call signature + behavior
+    1:1 (default prompt_kind => the unchanged event prompt). Returns (raw_output, engine).
+    Called by upload_ocr_session + ocr_from_stored_image below.
     """
-    from django.conf import settings
-    from .services import local_ocr, ocr_confidence
-
-    gemini_enabled = getattr(settings, "OCR_GEMINI_FALLBACK", True) and bool(getattr(settings, "GEMINI_API_KEY", None))
-
-    student_json, conf, decision = None, None, "gemini"
-    if getattr(settings, "OCR_LOCAL_FIRST", True) and local_ocr.is_available():
-        try:
-            student_json, conf = local_ocr.get_engine().run(image_bytes, mime_type, aliases, team_notes, event_type)
-            decision = ocr_confidence.gate(student_json, conf)["decision"]
-        except Exception:
-            logger.exception("local OCR student failed; escalating to Gemini")
-            student_json, decision = None, "gemini"
-
-    if decision == "local" and student_json is not None:
-        return student_json, f"local_student_{(conf or {}).get('model_version', 'v0')}"
-
-    if gemini_enabled:
-        return call_gemini(image_bytes, mime_type, aliases, team_notes), "gemini-2.5-pro"
-
-    if student_json is not None:  # Gemini off/unavailable: best-effort local draft for review
-        return student_json, f"local_best_effort_{(conf or {}).get('model_version', 'v0')}"
-
-    raise RuntimeError("No OCR engine available (local unavailable and Gemini disabled).")
+    from .services.extract import extract_rows
+    return extract_rows(image_bytes, mime_type, event_type, aliases=aliases, team_notes=team_notes)
 
 
 def _auth(request):

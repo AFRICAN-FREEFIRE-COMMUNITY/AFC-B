@@ -13,6 +13,7 @@ imports it directly to prove that.
 """
 
 import unittest
+from pathlib import Path
 
 from afc_rankings.scoring import (
     PlayerScrimInput,
@@ -46,18 +47,31 @@ class TestNoDjangoImport(unittest.TestCase):
     """The engine must be pure — no django / ORM / celery imported anywhere."""
 
     def test_no_forbidden_imports(self):
+        # Probe in a FRESH subprocess: importing the engine must not pull in django/celery/requests.
+        # The previous in-process check inspected this interpreter's sys.modules, which the test
+        # RUNNER contaminates (Django + pytest load django.* before this test runs), so it reported a
+        # false positive when run alongside the full suite. A child interpreter that imports ONLY the
+        # engine is the faithful test of the engine's own import graph — and the assertion it makes is
+        # strictly stronger (it would catch a real django import the in-process version could miss).
+        import subprocess
         import sys
 
-        import afc_rankings.scoring as pkg  # noqa: F401
-        from afc_rankings.scoring import constants, engine  # noqa: F401
-
-        forbidden = ("django", "celery", "requests")
-        for name in list(sys.modules):
-            for bad in forbidden:
-                self.assertFalse(
-                    name == bad or name.startswith(bad + "."),
-                    msg=f"forbidden module loaded by engine import: {name}",
-                )
+        probe = (
+            "import sys\n"
+            "from afc_rankings.scoring import constants, engine\n"
+            "forbidden = ('django', 'celery', 'requests')\n"
+            "bad = [m for m in sys.modules if m in forbidden or "
+            "any(m.startswith(f + '.') for f in forbidden)]\n"
+            "print('|'.join(bad))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            cwd=str(Path(__file__).resolve().parents[2]),  # the backend/ dir (so the package imports)
+        )
+        self.assertEqual(result.returncode, 0, msg=f"engine import failed: {result.stderr}")
+        loaded = [m for m in result.stdout.strip().split("|") if m]
+        self.assertEqual(loaded, [], msg=f"forbidden modules loaded by engine import: {loaded}")
 
 
 class TestCompressKills(unittest.TestCase):

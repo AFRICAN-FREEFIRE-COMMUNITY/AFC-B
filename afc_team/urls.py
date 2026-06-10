@@ -43,4 +43,7 @@ urlpatterns = [
     path('admin-get-team-event-history/', admin_get_team_event_history, name='admin_get_team_event_history'),
     path('admin-change-team-tier/', admin_change_team_tier, name='admin_change_team_tier'),
     path('admin-transfer-team-ownership/', admin_transfer_team_ownership, name='admin_transfer_team_ownership'),
+    # Team typeahead for <TeamSearchSelect/> (Standalone Leaderboards wizard). Mirrors
+    # auth/search-users/. Any logged-in user; q>=2; returns {results:[{team_id,team_name,team_tag,country}], total_count}.
+    path('search-teams/', search_teams, name='search_teams'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

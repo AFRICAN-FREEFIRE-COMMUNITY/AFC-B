@@ -107,8 +107,14 @@ urlpatterns = [
     # append ONE ghost player to an existing (unclaimed) ghost team — used by the admin Players page.
     path("ghost-teams/<uuid:ghost_team_id>/players/", admin_ghost.ghost_player_create,
          name="rankings_ghost_player_create"),
+    # user-facing initiate step: a real team owner/captain/manager requests to claim this ghost team.
+    path("ghost-teams/<uuid:ghost_team_id>/request-claim/", admin_ghost.ghost_team_request_claim,
+         name="rankings_ghost_team_request_claim"),
+    # admin review: approve (re-attributes history) / reject (a pending request) / revoke (an approved claim).
     path("ghost-teams/<uuid:ghost_team_id>/approve-claim/", admin_ghost.ghost_approve_claim,
          name="rankings_ghost_approve_claim"),
+    path("ghost-teams/<uuid:ghost_team_id>/reject-claim/", admin_ghost.ghost_reject_claim,
+         name="rankings_ghost_reject_claim"),
     path("ghost-teams/<uuid:ghost_team_id>/revoke-claim/", admin_ghost.ghost_revoke_claim,
          name="rankings_ghost_revoke_claim"),
     # flat ghost-player surface — the ghost team is OPTIONAL here (a standalone / "parked" IGN).
@@ -122,6 +128,14 @@ urlpatterns = [
          _route(GET=admin_ghost.ghost_player_detail, PATCH=admin_ghost.ghost_player_update,
                 DELETE=admin_ghost.ghost_player_delete),
          name="rankings_ghost_player_detail"),
+    # ghost-player claim lifecycle (mirrors the ghost-team routes): user-facing self-request, then the
+    # admin approve (re-attributes the ghost's solo history onto the user) / reject (a pending request).
+    path("ghost-players/<int:player_id>/request-claim/", admin_ghost.ghost_player_request_claim,
+         name="rankings_ghost_player_request_claim"),
+    path("ghost-players/<int:player_id>/approve-claim/", admin_ghost.ghost_player_approve_claim,
+         name="rankings_ghost_player_approve_claim"),
+    path("ghost-players/<int:player_id>/reject-claim/", admin_ghost.ghost_player_reject_claim,
+         name="rankings_ghost_player_reject_claim"),
 
     # ───────────────────────── Phase 2 — Scoring Config (versioned) ─────────────────────────
     # scoring-config/defaults/ is listed before the collection so it never shadows; literal
