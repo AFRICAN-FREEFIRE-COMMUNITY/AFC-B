@@ -39,6 +39,13 @@ class User(AbstractUser):
     discord_avatar = models.URLField(null=True, blank=True)
     discord_connected = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    # First-time WELCOME tour flag. False until the user finishes/skips/closes the animated
+    # newcomer welcome tour, then flipped True so it never auto-opens again.
+    #   - Read by  : afc_auth.views.get_user_profile (returned in the logged-in payload the
+    #                frontend AuthContext fetches), so the client knows whether to auto-show.
+    #   - Written by: afc_auth.views.mark_welcome_seen (POST /auth/mark-welcome-seen/), called
+    #                 best-effort by frontend app/(user)/_components/WelcomeTour.tsx on finish.
+    has_seen_welcome = models.BooleanField(default=False)
 
     USERNAME_FIELD = "username"  # Set in_game_name as username
     REQUIRED_FIELDS = ["email", "full_name"]

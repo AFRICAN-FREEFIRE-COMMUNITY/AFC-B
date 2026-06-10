@@ -1736,6 +1736,10 @@ def get_user_profile(request):
         "roles": list(UserRoles.objects.filter(user=user).values_list("role__role_name", flat=True)),
         "is_banned": BannedPlayer.objects.filter(banned_player=user, is_active=True).exists(),
         "is_vendor": is_vendor,
+        # First-time WELCOME tour flag. The frontend AuthContext maps this onto User.has_seen_welcome,
+        # and WelcomeTour.tsx auto-shows the animated newcomer tour only while this is False. Flipped
+        # True by POST /auth/mark-welcome-seen/ (mark_welcome_seen) when the user finishes/skips it.
+        "has_seen_welcome": user.has_seen_welcome,
         "discord_id": user.discord_id if hasattr(user, "discord_id") else None,
         "discord_username": user.discord_username if hasattr(user, "discord_username") else None,
 
@@ -1765,6 +1769,54 @@ def get_user_profile(request):
         }
     }, status=status.HTTP_200_OK)
 
+
+@api_view(["POST"])
+def mark_welcome_seen(request):
+    """
+    Mark the current user's first-time WELCOME tour as seen.
+
+    PURPOSE
+        Persists that the logged-in user has finished/skipped/closed the animated newcomer
+        welcome tour, so it never auto-opens again on future sessions/devices.
+
+    AUTH
+        Bearer SessionToken in the Authorization header (same validate_token pattern as
+        get_user_profile and the other afc_auth endpoints). No body required.
+
+    REQUEST  : POST /auth/mark-welcome-seen/   (empty body)
+    RESPONSE : 200 {"status": "ok", "has_seen_welcome": true}
+               400 if the Authorization header is missing/malformed
+               401 if the session token is invalid/expired
+
+    FRONTEND CONSUMER
+        app/(user)/_components/WelcomeTour.tsx calls this (best-effort) when the tour is
+        finished, skipped, or dismissed by a logged-in user. The complementary read is
+        get_user_profile, which returns has_seen_welcome so the client knows whether to show it.
+        Idempotent: calling it again on an already-seen user is a harmless no-op 200.
+    """
+    # ---------------- AUTH (mirrors get_user_profile) ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    token = session_token.split(" ")[1]
+    user = validate_token(token)
+    if not user:
+        return Response({"message": "Invalid or expired session token."},
+                        status=status.HTTP_401_UNAUTHORIZED)
+
+    # ---------------- FLIP THE FLAG (idempotent) ----------------
+    # Only write when it actually changes, so a repeat call costs no DB write.
+    if not user.has_seen_welcome:
+        user.has_seen_welcome = True
+        user.save(update_fields=["has_seen_welcome"])
+
+    return Response({"status": "ok", "has_seen_welcome": True}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
