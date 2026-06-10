@@ -1149,6 +1149,242 @@ def create_event(request):
     }, status=201)
 
 
+# ── EVENT DUPLICATION (feature "event-duplicate", 2026-06-10) ──────────────────────────
+@api_view(["POST"])
+def duplicate_event(request, event_id):
+    """Clone an existing event's CONFIG + stage/group/round-robin STRUCTURE into a fresh draft.
+
+    PURPOSE
+        Let an organizer (or an AFC admin) spin up a new tournament from a previous one's
+        setup without re-entering every field. The clone copies the event's configuration and
+        its stage -> group -> round-robin-base-group skeleton, but starts EMPTY: no results,
+        no registrations, no teams, no matches. Mirrors how create_event builds the same tree
+        (same field set, same Point-Rush second-pass target resolution, same slug de-dupe).
+
+    REQUEST
+        POST events/<int:event_id>/duplicate-event/
+        Path param: event_id = the SOURCE event to clone. No body required.
+        Auth header: Authorization: Bearer <session token>.
+
+    RESPONSE
+        201 {"message", "event_id", "slug", "event_name"} -> the NEW draft event.
+        400 missing/invalid token. 401 expired token. 403 no permission. 404 source not found.
+
+    AUTH / PERMISSION
+        Bearer SessionToken (validate_token). The actor may duplicate the source event if they
+        are an AFC event admin (_is_event_admin) OR the event belongs to an organization and
+        the actor has can_create_events on THAT org (org_can). An organizer therefore can only
+        clone events owned by an org they may create events for; native AFC events
+        (organization=None) are admin-only. Same gate shape as create_event's create path.
+
+    CLONES (config + structure only)
+        • Event: every config field is copied; identity + lifecycle are RESET — new event_id,
+          fresh unique slug (base "-copy" then "-2", "-3"... like create_event), creator=actor,
+          is_draft=True, is_public=False, event_status="upcoming", rankings_verified=False,
+          partner_published=False. organization is KEPT. event_name gets a " (Copy)" suffix.
+          Media (event_banner / uploaded_rules) reference the SAME stored file path (the file is
+          not re-uploaded); this matches create_event's default of just storing the path.
+        • Stages: config only (names, dates, format, qualifying counts, prizepool, the 4
+          scoring-mode scalars). Point-Rush carry-over targets are re-pointed at the NEW stages
+          in a SECOND pass (old stage -> new stage, matched by submit/index order), exactly like
+          create_event resolves point_rush_target_index.
+        • StageGroups: config only (names, dates/times, qualifying, match_count, match_maps,
+          prizepool). NO leaderboard/match rows are created (unlike create_event, which seeds an
+          empty leaderboard + matches — a clone starts with nothing on the results side).
+        • RoundRobinGroup: base-group skeleton (label, order) is cloned WITHOUT its teams, and
+          game-day lobby groups are skipped (they reference TournamentTeam rows we never copy).
+
+    DOES NOT CLONE
+        RegisteredCompetitors, TournamentTeam / TournamentTeamMember, Match and all match stats
+        (Tournament/SoloPlayer/Team), Leaderboard, EventRegistrationPayment, EventInviteToken,
+        SponsorEvent, StreamChannel, EventPageView, SocialShare. The source event is untouched.
+
+    FRONTEND CONSUMER
+        The "Duplicate" row/card action on the organizer events list
+        (app/(organizer)/organizer/events/page.tsx) and the admin events list
+        (app/(a)/a/events/page.tsx), via lib/api/events.duplicateEvent(eventId). On success the
+        FE toasts and routes to the new event's edit page (using the returned event_id/slug).
+    """
+    # ---------------- AUTH ----------------
+    # Same bearer-token shape as create_event / edit_event (no DRF auth classes are wired).
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    token = session_token.split(" ")[1]
+    user = validate_token(token)
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # ---------------- LOAD SOURCE ----------------
+    source = Event.objects.filter(event_id=event_id).first()
+    if not source:
+        return Response({"message": "Event not found."}, status=404)
+
+    # ── permission gate (org-aware) ──
+    # AFC event admins may duplicate ANY event. Otherwise the event must belong to an org the
+    # actor may create events for (org_can also lets owners + platform admins through). Native
+    # AFC events (organization=None) for a non-admin fall through to 403. Mirrors the create
+    # path's gate so "who can clone" == "who could have created it under this org".
+    is_admin_actor = _is_event_admin(user)
+    if not is_admin_actor:
+        if source.organization_id is None or not org_can(user, "can_create_events", source.organization):
+            return Response(
+                {"message": "You do not have permission to duplicate this event."}, status=403
+            )
+
+    # ---------------- DEEP COPY ----------------
+    # One transaction so a partially-built clone can never be left behind (same guarantee as
+    # create_event). Nothing in here touches the network (no Discord/Stripe/email), so a clone
+    # is a pure DB operation.
+    with transaction.atomic():
+        # ── 1) Clone the Event row: copy every CONFIG field, RESET identity + lifecycle ──
+        # Field list mirrors create_event's Event.objects.create(...) so the two stay in lockstep
+        # (any new config field added to create_event should be added here too).
+        new_event = Event.objects.create(
+            registration_type=source.registration_type,
+            registration_fee=source.registration_fee,
+            registration_fee_currency=source.registration_fee_currency,
+            competition_type=source.competition_type,
+            participant_type=source.participant_type,
+            event_type=source.event_type,
+            max_teams_or_players=source.max_teams_or_players,
+            # " (Copy)" makes the clone obvious in the events list; trimmed to the field's
+            # 40-char max so a long source name can't overflow event_name.
+            event_name=(f"{source.event_name} (Copy)")[:40],
+            event_mode=source.event_mode,
+            start_date=source.start_date,
+            end_date=source.end_date,
+            registration_open_date=source.registration_open_date,
+            registration_end_date=source.registration_end_date,
+            prizepool=source.prizepool,
+            prizepool_cash_value=source.prizepool_cash_value,
+            prize_distribution=source.prize_distribution,
+            event_rules=source.event_rules,
+            # Lifecycle RESET: a clone is always a fresh upcoming draft.
+            event_status="upcoming",
+            registration_link=source.registration_link,
+            tournament_tier=source.tournament_tier,
+            prize_currency=source.prize_currency,
+            usd_to_ngn_rate=source.usd_to_ngn_rate,
+            prizepool_ngn_value=source.prizepool_ngn_value,
+            # Media: reference the SAME stored file path (don't re-upload the file). create_event
+            # defaults these from request.FILES; here we carry the existing file reference.
+            event_banner=source.event_banner,
+            number_of_stages=source.number_of_stages,
+            uploaded_rules=source.uploaded_rules,
+            creator=user,                       # the actor owns the clone
+            organization=source.organization,   # KEEP the owning org (null = native AFC event)
+            is_draft=True,                      # always a draft
+            is_public=False,                    # private until the owner publishes
+            rankings_verified=False,            # reset the rankings gate
+            partner_published=False,            # reset the partner-API gate
+            registration_restriction=source.registration_restriction,
+            restriction_mode=source.restriction_mode,
+            restricted_countries=source.restricted_countries,
+            is_sponsored=source.is_sponsored,
+            sponsor_name=source.sponsor_name,
+            sponsor_field_label=source.sponsor_field_label,
+            sponsor_requirement_description=source.sponsor_requirement_description,
+            is_waitlist_enabled=source.is_waitlist_enabled,
+            waitlist_capacity=source.waitlist_capacity,
+            waitlist_discord_role_id=source.waitlist_discord_role_id,
+            event_start_time=source.event_start_time,
+            event_end_time=source.event_end_time,
+            registration_start_time=source.registration_start_time,
+            registration_end_time=source.registration_end_time,
+        )
+
+        # ── 2) Clone each Stage (config only) ──
+        # Track the source stage -> new stage mapping so the Point-Rush SECOND PASS can re-point
+        # carry-over targets at the NEW stages (a target stage may not exist yet on the first
+        # pass), exactly how create_event uses created_stages + point_rush_target_index.
+        old_stages = list(source.stages.order_by("stage_id"))
+        old_to_new_stage = {}
+        for old_stage in old_stages:
+            new_stage = Stages.objects.create(
+                event=new_event,
+                stage_name=old_stage.stage_name,
+                start_date=old_stage.start_date,
+                end_date=old_stage.end_date,
+                number_of_groups=old_stage.number_of_groups,
+                stage_format=old_stage.stage_format,
+                teams_qualifying_from_stage=old_stage.teams_qualifying_from_stage,
+                stage_discord_role_id=old_stage.stage_discord_role_id,
+                # Stage status resets with the event — a cloned stage hasn't run.
+                stage_status="upcoming",
+                prizepool=old_stage.prizepool,
+                prizepool_cash_value=old_stage.prizepool_cash_value,
+                prize_distribution=old_stage.prize_distribution,
+                is_finals_stage=old_stage.is_finals_stage,
+                # Scoring-mode scalars copy directly; point_rush_target_stage is resolved below.
+                champion_point_enabled=old_stage.champion_point_enabled,
+                champion_point_threshold=old_stage.champion_point_threshold,
+                point_rush_enabled=old_stage.point_rush_enabled,
+                point_rush_reward=old_stage.point_rush_reward,
+            )
+            old_to_new_stage[old_stage.stage_id] = new_stage
+
+            # ── 2a) Clone the StageGroups under this stage (config only, NO leaderboard/matches) ──
+            for old_group in old_stage.groups.order_by("group_id"):
+                # Skip round-robin game-day LOBBY rows: they carry game_day + source_groups that
+                # point at TournamentTeam-backed base groups we don't copy. Only the plain
+                # config groups are cloned here; round-robin base groups are handled in 2b.
+                if old_group.game_day is not None:
+                    continue
+                StageGroups.objects.create(
+                    stage=new_stage,
+                    group_name=old_group.group_name,
+                    playing_date=old_group.playing_date,
+                    playing_time=old_group.playing_time,
+                    teams_qualifying=old_group.teams_qualifying,
+                    group_discord_role_id=old_group.group_discord_role_id,
+                    match_count=old_group.match_count,
+                    match_maps=old_group.match_maps,
+                    prizepool=old_group.prizepool,
+                    prizepool_cash_value=old_group.prizepool_cash_value,
+                    prize_distribution=old_group.prize_distribution,
+                )
+
+            # ── 2b) Clone the round-robin BASE-GROUP skeleton (label + order) WITHOUT teams ──
+            # RoundRobinGroup.teams is a M2M of TournamentTeam rows (never copied), so we clone
+            # only the empty A/B/C structure. Game-day lobbies are intentionally NOT recreated
+            # (they merge teams) — the owner regenerates the schedule after re-seeding teams.
+            for old_rr in old_stage.round_robin_groups.order_by("order"):
+                RoundRobinGroup.objects.create(
+                    stage=new_stage,
+                    label=old_rr.label,
+                    order=old_rr.order,
+                )
+
+        # ── 3) SECOND PASS: re-point Point-Rush carry-over targets at the NEW stages ──
+        # Same idea as create_event's second pass, but keyed on the source stage's existing
+        # target rather than a submitted index. on_delete=SET_NULL means a missing mapping
+        # just nulls the link instead of pointing back at the source event.
+        for old_stage in old_stages:
+            if old_stage.point_rush_enabled and old_stage.point_rush_target_stage_id:
+                new_src = old_to_new_stage.get(old_stage.stage_id)
+                new_tgt = old_to_new_stage.get(old_stage.point_rush_target_stage_id)
+                if new_src and new_tgt:
+                    new_src.point_rush_target_stage = new_tgt
+                    new_src.save(update_fields=["point_rush_target_stage"])
+
+        # Audit trail, matching create_event (AdminHistory row + a human audit summary).
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="duplicate_event",
+            description=f"Duplicated event {source.event_name} (ID: {source.event_id}) "
+                        f"into {new_event.event_name} (ID: {new_event.event_id})",
+        )
+        set_audit(request, f"Duplicated the event {source.event_name} into {new_event.event_name}")
+
+    return Response({
+        "message": "Event duplicated successfully.",
+        "event_id": new_event.event_id,
+        "slug": new_event.slug,
+        "event_name": new_event.event_name,
+    }, status=201)
+
 
 # @api_view(["POST"])
 # def create_event(request):
@@ -5010,11 +5246,69 @@ def register_for_event(request):
     return Response({"message": "Invalid participant type."}, status=400)
 
 def check_and_activate_team(tournament_team):
+    # Re-derive the TEAM-level approval state from its members' statuses.
+    #
+    # WHY (bug "sponsor-edit-roster", 2026-06-10): this used to ONLY move the team
+    # FORWARD (pending -> active when every member is "active"). It had no reverse
+    # direction, so once a sponsored team was approved and a player was later swapped
+    # in/out (or a kept player's sponsor id changed -> that member reset to "pending"),
+    # the team stayed stale "active" even though the live roster no longer matched what
+    # the sponsor approved. We now make this function BIDIRECTIONAL and call it at the
+    # end of edit_roster so the team status always tracks the members:
+    #
+    #   all members "active"        -> team "active",  RegisteredCompetitors "registered"
+    #   any member NOT "active"     -> team "pending",  RegisteredCompetitors un-registered
+    #
+    # Callers:
+    #   - confirm_player (~L5595): after flipping a member to "active". The all-active
+    #     branch below is byte-for-byte the old forward behavior (team active + RC
+    #     registered + activation email + Discord role celery task), so confirm_player's
+    #     observable behavior is unchanged.
+    #   - edit_roster (~end of function): after the roster member writes, to reopen the
+    #     team for sponsor re-review whenever the edit left any member non-active.
+    #
+    # Data it reads/writes: TournamentTeamMember.status (the source of truth),
+    # TournamentTeam.status, and the (event, team) RegisteredCompetitors row that
+    # register_for_event creates with status "registered" for a sponsored team event.
 
     total = tournament_team.members.count()
     confirmed = tournament_team.members.filter(status="active").count()
 
+    # ---------------- REVERSE DIRECTION: not fully approved -> reopen ----------------
+    # If ANY member is not "active" (pending after a swap / a reset sponsor id, or
+    # rejected), the team is no longer fully approved. Drop it back to "pending" and
+    # un-register its RegisteredCompetitors row so the team reads as "awaiting sponsor
+    # review" everywhere, instead of silently keeping a stale "active"/"registered".
+    # We mirror register_for_event's sponsored baseline: TournamentTeam is created
+    # "pending" (views.py ~L5179) while its RC row is "registered". The cleanest
+    # un-registered value here is the RegisteredCompetitors model default "pending"
+    # (RegisteredCompetitors.STATUS_CHOICES), which is what register/the model uses for
+    # a not-yet-confirmed competitor. (total == 0 should not happen for a real roster,
+    # but if it did we treat an empty team as not-active too.)
+    if total == 0 or total != confirmed:
+        if tournament_team.status != "pending":
+            tournament_team.status = "pending"
+            tournament_team.save(update_fields=["status"])
+
+        # Only touch rows currently "registered" so we never clobber an explicit
+        # disqualified/withdrawn/left state an admin may have set.
+        RegisteredCompetitors.objects.filter(
+            event=tournament_team.event,
+            team=tournament_team.team,
+            status="registered",
+        ).update(status="pending")
+        return
+
     if total == confirmed:
+
+        # Was the team ALREADY active before this call? If so this is a no-op refresh
+        # (e.g. edit_roster re-derived state after an all-active no-op edit) and we must
+        # NOT re-send the "fully registered" email or re-queue Discord roles every time
+        # the captain saves an unchanged roster. confirm_player always reaches here while
+        # the team is still "pending" (the member it just flipped is what completes the
+        # set), so for confirm_player was_already_active is False and the email/Discord
+        # side effects fire exactly as before. (bug "sponsor-edit-roster", 2026-06-10)
+        was_already_active = tournament_team.status == "active"
 
         # ---------------- ACTIVATE TEAM ----------------
         tournament_team.status = "active"
@@ -5024,6 +5318,11 @@ def check_and_activate_team(tournament_team):
             event=tournament_team.event,
             team=tournament_team.team
         ).update(status="registered")
+
+        # Idempotent no-op refresh: team + RC are already in the approved state, so stop
+        # here without re-notifying anyone.
+        if was_already_active:
+            return
 
 
         # ---------------- SEND AN EMAIL TO THE TEAM OWNER NOTIFYING THEM -----------------
@@ -17523,18 +17822,37 @@ def edit_roster(request):
     event = get_object_or_404(Event, event_id=event_id)
     team = get_object_or_404(Team, team_id=team_id)
 
+    # ---------------- STAFF (MANAGER) OVERRIDE FLAG ----------------
+    # Feature "staff-edit-roster-after-close" (2026-06-10): AFC staff must be able to
+    # CORRECT a team's roster even after registration closes (e.g. a team registered the
+    # wrong player and the captain can no longer self-serve once the window shut). A
+    # "manager" is an AFC event admin OR an organizer with can_manage_registrations on
+    # the event's owning org. This is the SAME org-aware gate already used by
+    # disqualify_team / confirm_player / reject_player in this file (~L15898), reused here
+    # so registration-management authority is consistent across the roster state machine.
+    # The override only relaxes the registration-window and captain/owner guards below;
+    # it deliberately does NOT bypass the match-start lock, and the sponsor re-approval
+    # re-derivation (the "sponsor-edit-roster" bug fix) still runs, so a manager's
+    # post-close swap still reopens the team for sponsor review.
+    is_manager = _is_event_admin(user) or org_can_event(user, "can_manage_registrations", event)
+
     # ---------------- REGISTRATION WINDOW ----------------
-    if date.today() > event.registration_end_date:
+    # Managers may edit after close (staff correction); a normal captain/owner cannot.
+    if date.today() > event.registration_end_date and not is_manager:
         return Response({"message": "Registration closed. Cannot edit roster."}, status=403)
 
     # ---------------- MATCH START CHECK ----------------
+    # NOT bypassed for managers: editing a roster after any match has results would orphan
+    # the match stats, so this lock applies to everyone, staff included.
     if Match.objects.filter(group__stage__event=event, result_inputted=True).exists():
         return Response({
             "message": "Roster cannot be edited after matches have started."
         }, status=403)
 
     # ---------------- PERMISSION ----------------
-    if not _user_is_team_captain_or_owner(user, team):
+    # A manager who is NOT on the team can still edit it (staff correction); otherwise the
+    # editor must be the team's captain/owner.
+    if not (_user_is_team_captain_or_owner(user, team) or is_manager):
         return Response({"message": "Only captain/owner can edit roster."}, status=403)
 
     tt = TournamentTeam.objects.filter(event=event, team=team).first()
@@ -17632,15 +17950,17 @@ def edit_roster(request):
     with transaction.atomic():
 
         # ---------------- REMOVE PLAYERS ----------------
+        # BUG FIX ("sponsor-edit-roster", 2026-06-10): this block used to 403 when a
+        # removed player was "active"/"approved" ("Cannot remove confirmed player ...").
+        # Because the whole edit is one transaction.atomic(), that 403 rolled back the
+        # ENTIRE edit, so the team's NEW roster never saved and the OLD approved roster
+        # (and the sponsor dashboard reading it) stayed stale. Owner decision is
+        # "allow + re-approve changes": removing an approved player is now allowed; the
+        # team is reopened for sponsor re-review afterwards (see check_and_activate_team
+        # call at the end of this transaction).
         for member in existing_members:
 
             if member.user_id in removed_ids:
-
-                if member.status in ["active", "approved"]:
-                    return Response({
-                        "message": f"Cannot remove confirmed player {member.user.username}"
-                    }, status=403)
-
                 member.delete()
 
         # ---------------- UPDATE EXISTING PLAYERS ----------------
@@ -17654,18 +17974,20 @@ def edit_roster(request):
 
                 if sponsor_uid != member.user_id_from_sponsor:
 
-                    # ACTIVE players cannot change sponsor ID
-                    if member.status == "active":
-                        return Response({
-                            "message": f"Cannot change sponsor ID for confirmed player {member.user.username}"
-                        }, status=403)
-
+                    # BUG FIX ("sponsor-edit-roster", 2026-06-10): a kept player whose
+                    # sponsor id CHANGED used to 403 if "active" ("Cannot change sponsor
+                    # ID for confirmed player ..."), again rolling back the whole edit.
+                    # Per the "allow + re-approve" decision we now ALLOW the change for
+                    # any status and reset THAT member to "pending": the new sponsor id
+                    # was never approved, so it must be re-reviewed. (A kept player whose
+                    # sponsor id is UNCHANGED never enters this branch and keeps its
+                    # status, so an already-active player stays active.)
                     member.user_id_from_sponsor = sponsor_uid
 
-                    # rejected → pending
-                    if member.status == "rejected":
-                        member.status = "pending"
-                        # member.reason = None
+                    # The changed id needs sponsor re-approval -> back to "pending"
+                    # (covers active -> pending and rejected -> pending alike).
+                    member.status = "pending"
+                    # member.reason = None
 
                     member.save(update_fields=["user_id_from_sponsor", "status"])
 
@@ -17692,6 +18014,23 @@ def edit_roster(request):
             TournamentTeamMember.objects.bulk_create(new_rows)
         tt.country = team_country
         tt.save(update_fields=["country"])
+
+        # ---------------- RE-DERIVE TEAM APPROVAL STATE ----------------
+        # BUG FIX ("sponsor-edit-roster", 2026-06-10): after the member writes above the
+        # team's status could be STALE. If the edit added/swapped a player (new member
+        # "pending") or changed a kept player's sponsor id (that member reset to
+        # "pending"), an already-approved team must NOT silently remain "active". We
+        # re-derive the team state from the live member statuses via the now-bidirectional
+        # check_and_activate_team:
+        #   - any member not "active" -> team "pending" + RegisteredCompetitors un-registered
+        #     (reopens the team for sponsor re-review; the sponsor dashboard, which reads
+        #     these live TournamentTeamMember rows, then shows the NEW roster).
+        #   - all members still "active" (e.g. an unrelated no-op edit) -> team stays
+        #     "active" + RC "registered" (idempotent refresh, no duplicate emails).
+        # For a NON-sponsored event new members are created "active", so a non-sponsored
+        # team that was active stays active. Done inside the transaction so the team
+        # status and the roster commit atomically.
+        check_and_activate_team(tt)
 
     return Response({
         "message": "Roster updated successfully.",

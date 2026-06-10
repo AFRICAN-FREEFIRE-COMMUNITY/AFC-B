@@ -20,6 +20,12 @@ urlpatterns = [
     # path('admin-login/', admin_login, name='admin_login'),
     path('create-event/', create_event, name='create_event'),
     path('edit-event/', edit_event, name='edit_event'),
+    # Event duplication (feature "event-duplicate", 2026-06-10): clone an event's config +
+    # stage/group structure into a fresh draft (NO results/registrations/teams/matches).
+    # event_id in the path = the SOURCE event. Auth = AFC event admin OR org can_create_events
+    # on the event's org. Consumed by the organizer + admin events lists' "Duplicate" action
+    # (lib events.duplicateEvent). Full URL: events/<event_id>/duplicate-event/.
+    path('<int:event_id>/duplicate-event/', duplicate_event, name='duplicate_event'),
 
     # ── Paid-event registration payments (Stripe) ──
     path('init-registration-payment/', init_registration_payment, name='init_registration_payment'),
