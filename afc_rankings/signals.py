@@ -13,8 +13,12 @@ from django.dispatch import receiver
 from afc_tournament_and_scrims.models import (
     TournamentTeamMatchStats, TournamentPlayerMatchStats, TournamentTeam, EventPrizePayout,
 )
+# P3 standalone-leaderboard senders. signals.py is imported from apps.ready() AFTER every app's
+# models have loaded, so importing afc_leaderboard.models here is safe (no load-order cycle).
+from afc_leaderboard.models import ParticipantMatchResult, StandaloneLeaderboard
 from .models import Season
 from . import tasks
+from . import standalone
 from .aggregation import _match_day
 
 
@@ -122,3 +126,33 @@ def on_prize_payout(sender, instance, **kwargs):
             tasks.enqueue_team(team_id, (day or season.start_date).replace(day=1), season.season_id)
 
     transaction.on_commit(fire)
+
+
+# ───────────────────────── P3 standalone-leaderboard receivers ─────────────────────────
+# These mirror the event receivers above but key off the standalone-leaderboard tables. Each calls
+# standalone.recompute_for_leaderboard on commit, which enqueues a recompute for every participant
+# (real team -> enqueue_team, ghost team -> enqueue_ghost_team, real user -> enqueue_player; ghost
+# players skipped). recompute_for_leaderboard ALWAYS enqueues, so toggling counts_toward_rankings
+# off / un-publishing also fires a recompute that drops the (now non-counting) contribution.
+@receiver(post_save, sender=ParticipantMatchResult)
+def on_standalone_result_save(sender, instance, **kwargs):
+    """A per-map result was added/edited on a standalone LB -> recompute its participants. Resolve
+    the LB via result.match.leaderboard. Runs on commit so the recompute reads the saved row."""
+    lb = instance.match.leaderboard
+    transaction.on_commit(lambda: standalone.recompute_for_leaderboard(lb))
+
+
+@receiver(post_delete, sender=ParticipantMatchResult)
+def on_standalone_result_delete(sender, instance, **kwargs):
+    """A result was removed from a standalone LB -> recompute its participants so the dropped result
+    no longer scores. (instance.match is still readable on a post_delete signal.)"""
+    lb = instance.match.leaderboard
+    transaction.on_commit(lambda: standalone.recompute_for_leaderboard(lb))
+
+
+@receiver(post_save, sender=StandaloneLeaderboard)
+def on_standalone_leaderboard_save(sender, instance, **kwargs):
+    """The leaderboard header changed (publish / un-publish / toggle counts_toward_rankings / tier /
+    played_on) -> recompute ALL of its participants. Covers every state transition that changes what
+    the aggregation counts for this LB."""
+    transaction.on_commit(lambda: standalone.recompute_for_leaderboard(instance))

@@ -81,8 +81,10 @@ def admin_teams_quarterly(request):
     season = V._resolve_season(request)
     if not season:
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False}, "season": None})
-    qs = (TeamQuarterlyScore.objects.filter(season=season, team__isnull=False)
-          .select_related("team").order_by("rank"))
+    # Ghost teams are ranked + tiered alongside real teams now, so the admin draft must show them
+    # too (drop team__isnull=False; select_related both sides for the serializer's _team_name).
+    qs = (TeamQuarterlyScore.objects.filter(season=season)
+          .select_related("team", "ghost_team").order_by("rank"))
     items, meta = S.paginate(request, qs)
     return Response({"results": [S.team_quarterly(x) for x in items], "pagination": meta,
                      "season": S.season(season)})
@@ -98,7 +100,10 @@ def admin_players_quarterly(request):
     season = V._resolve_season(request)
     if not season:
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False}, "season": None})
-    qs = (PlayerQuarterlyScore.objects.filter(season=season).select_related("player").order_by("rank"))
+    # Ghost players are ranked + tiered alongside real players now (select_related both sides for
+    # the serializer's _player_name).
+    qs = (PlayerQuarterlyScore.objects.filter(season=season)
+          .select_related("player", "ghost_player").order_by("rank"))
     items, meta = S.paginate(request, qs)
     return Response({"results": [S.player_quarterly(x) for x in items], "pagination": meta,
                      "season": S.season(season)})

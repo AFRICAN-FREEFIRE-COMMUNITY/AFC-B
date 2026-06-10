@@ -207,6 +207,16 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
         ))
         win_count += 1 if won else 0
         kill_total += raw_kills
+
+    # P3: a published, counts_toward_rankings standalone leaderboard contributes one TournamentInput
+    # per real-team participant (canonical placement table, same as events), so a standalone result
+    # scores through the identical engine path here. Lazy import avoids a load-order cycle
+    # (afc_leaderboard.models imports afc_rankings.models). Fold the standalone kills into kill_total
+    # too so the §5.4 total_kills tiebreaker stays honest.
+    from . import standalone
+    sa_inputs = standalone.standalone_team_inputs(team, start, end)
+    tournaments += sa_inputs
+    kill_total += sum(t.raw_kills for t in sa_inputs)
     return tournaments, scrim_rows, win_count, kill_total
 
 
@@ -310,6 +320,15 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
         mvp_total += b["mvp"]
         finals_total += b["finals"]
         kill_total += kills
+
+    # P3: a published, counts_toward_rankings SOLO standalone leaderboard contributes one
+    # PlayerTournamentInput per real-user participant (kills + participation only, never raw
+    # placement — symmetric with the event player path above). Lazy import avoids the load-order
+    # cycle; fold the standalone personal_kills into kill_total for the §6.4 tiebreaker.
+    from . import standalone
+    sa_inputs = standalone.standalone_player_inputs(player, start, end)
+    tournaments += sa_inputs
+    kill_total += sum(t.personal_kills for t in sa_inputs)
     return tournaments, scrim_rows, mvp_total, finals_total, kill_total
 
 

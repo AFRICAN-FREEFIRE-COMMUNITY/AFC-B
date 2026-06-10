@@ -59,8 +59,13 @@ from rest_framework.response import Response
 
 # Reuse the shared auth/audit foundation (admin_views.py) — never re-implemented locally.
 from .admin_views import _auth, _require_reason, _audit
+# validate_token is the house Bearer-token -> User resolver (afc_auth.views). The user-facing
+# request-claim endpoints below use it directly (a normal logged-in user, NOT the admin gate).
+from afc_auth.views import validate_token
 from .models import GhostTeam, GhostPlayer
 from .serializers import paginate
+# the re-attribution service (the core of claim approval) + its conflict exception / pre-checks.
+from . import claims
 
 
 # ───────────────────────── local serializers (manual-dict, like serializers.py) ─────────────────────────
@@ -88,6 +93,18 @@ def serialize_ghost_player(p, team_name=...):
         # null-safe: read the FK id without a DB hit; None means standalone (no team).
         "ghost_team_id": str(p.ghost_team_id) if p.ghost_team_id else None,
         "ghost_team_name": team_name,
+        # claim lifecycle (ghost-claim-process-design.md §7) — mirrors serialize_ghost's claim block,
+        # but claimed_by / claim_requested_by / claim_approved_by are User ids (a player claims itself).
+        # Consumed by the admin pending-claim queue (ghost_players_list?claim_status=pending) and the
+        # FE claim dialog (to hide the Claim action on an already-pending/claimed ghost).
+        "claim_status": p.claim_status,
+        "claimed_by": p.claimed_by_id,                       # afc_auth.User id (or None)
+        "claim_requested_by": p.claim_requested_by_id,       # User id (or None)
+        "claim_requested_at": p.claim_requested_at.isoformat() if p.claim_requested_at else None,
+        "claimed_at": p.claimed_at.isoformat() if p.claimed_at else None,
+        "claim_approved_by": p.claim_approved_by_id,         # User id (or None)
+        "claim_revoked_at": p.claim_revoked_at.isoformat() if p.claim_revoked_at else None,
+        "claim_note": p.claim_note,
     }
 
 
@@ -162,6 +179,52 @@ def _clean_players(raw):
             )
         cleaned.append({"ign": ign})
     return cleaned, None
+
+
+# ───────────────────────── user-facing auth + team-role gate (claim REQUESTS) ─────────────────────────
+# The claim-REQUEST endpoints below are USER actions (a real player/team owner initiates a claim), NOT
+# admin actions, so they use the normal Bearer-token user gate instead of admin_views._auth. The
+# approve/reject endpoints stay on _auth (admin-only).
+def _auth_user(request):
+    """Resolve the Bearer SessionToken to any logged-in User (no role gate).
+
+    Returns ``(user, None)`` on success or ``(None, Response)`` on a missing/bad header (400) or an
+    invalid/expired token (401). Same shape + idiom as afc_leaderboard.views._auth_user, so the
+    request endpoints keep the auth/reason short-circuit pattern the rest of this module uses.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."},
+                              status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(auth.split(" ", 1)[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."},
+                              status=status.HTTP_401_UNAUTHORIZED)
+    return user, None
+
+
+# Roster management roles allowed to claim a ghost team ON BEHALF of a real team. Mirrors the house
+# team-management gate used elsewhere (afc_player_market.views._is_trial_chat_participant and friends:
+# team.team_owner == user OR a TeamMembers row with a management role). "manager" + "team_captain"
+# are the design's owner/captain/manager set (the model's MANAGEMENT_ROLE_CHOICES names).
+_TEAM_CLAIM_ROLES = ("team_captain", "manager")
+
+
+def _user_can_act_for_team(user, team):
+    """True if ``user`` may act for ``team`` (owner / captain / manager), reusing the house gate.
+
+    The check mirrors afc_player_market.views (e.g. ``_is_trial_chat_participant``): the team owner FK,
+    the team captain FK, OR a TeamMembers roster row whose management_role is captain/manager. Read by
+    ghost_team_request_claim to 403 a requester who does not run the team they are claiming for.
+    """
+    from afc_team.models import TeamMembers
+    if team.team_owner_id == user.pk:
+        return True
+    if team.team_captain_id == user.pk:
+        return True
+    return TeamMembers.objects.filter(
+        team=team, member=user, management_role__in=_TEAM_CLAIM_ROLES,
+    ).exists()
 
 
 # ───────────────────────── LIST + DETAIL (read-only) ─────────────────────────
@@ -435,8 +498,13 @@ def ghost_players_list(request):
     Read-only (skips the reason + audit steps, per the admin_views.py contract).
 
     Query filters:
-      ?unattached=true        only standalone players (ghost_team IS NULL)
-      ?ghost_team_id=<uuid>   only players on that one ghost team
+      ?unattached=true                                  only standalone players (ghost_team IS NULL)
+      ?ghost_team_id=<uuid>                             only players on that one ghost team
+      ?claim_status=unclaimed|pending|claimed|revoked   exact match on claim_status
+
+    The ``claim_status`` filter drives the admin PENDING-CLAIM queue: the FE fetches
+    ``ghost-players/?claim_status=pending`` (and ``ghost-teams/?claim_status=pending``) to build one
+    combined queue of ghost claims awaiting review.
 
     Sort: ``-id`` (creation order) — for standalone rows ``slot`` is always 1, so it is not a
     meaningful sort key; newest-first by id is the predictable order across both kinds.
@@ -459,6 +527,18 @@ def ghost_players_list(request):
     ghost_team_id = (request.GET.get("ghost_team_id") or "").strip()
     if ghost_team_id:
         qs = qs.filter(ghost_team_id=ghost_team_id)
+
+    # ?claim_status=<value> → the admin pending-claim queue (mirrors ghost_list's claim_status filter,
+    # same valid-value guard so a typo'd filter 400s instead of silently returning everything).
+    claim_status = (request.GET.get("claim_status") or "").strip()
+    if claim_status:
+        valid = {c[0] for c in GhostPlayer.CLAIM_STATUS}
+        if claim_status not in valid:
+            return Response(
+                {"message": f"Invalid claim_status. Expected one of: {', '.join(sorted(valid))}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        qs = qs.filter(claim_status=claim_status)
 
     # -id = creation order; slot isn't meaningful for standalone rows (always 1).
     qs = qs.order_by("-id")
@@ -699,14 +779,22 @@ def ghost_delete(request, ghost_team_id):
 # ───────────────────────── CLAIM LIFECYCLE ─────────────────────────
 @api_view(["POST"])
 def ghost_approve_claim(request, ghost_team_id):
-    """POST ghost-teams/<uuid>/approve-claim/ — mark the ghost as claimed.
+    """POST ghost-teams/<uuid>/approve-claim/ — approve a PENDING team claim + re-attribute history.
 
-    Sets claim_status='claimed', claimed_at=now, claim_approved_by=acting admin.
-    Audit: object_type="ghost_claim", action="approve".
+    Request: body { reason (>=10 chars) }. Auth: head_admin | metrics_admin (_auth).
+    FE consumer: the admin claim queue's Approve button (a section under admin rankings listing
+    ghost-teams/?claim_status=pending).
 
-    NOTE: approving a claim should retroactively re-attribute the ghost's historical results
-    to the claiming team and recalc every affected month/season. That cross-period recalc is
-    deliberately NOT done here (see module docstring) — the coordinator owns it.
+    Precondition: the ghost must be ``pending`` with a ``claimed_by`` (the requested team, set by
+    ghost_team_request_claim). Otherwise there is nothing to approve -> 400.
+
+    The re-attribution (the core): claims.reattribute_ghost_team re-points every standalone
+    LeaderboardParticipant from this ghost onto the requested team, deletes the ghost's score rows,
+    and recomputes the real team for every affected month + season so it inherits the ghost's points,
+    rank, and tier. If the real team is already a participant alongside the ghost in some leaderboard,
+    the service raises claims.ClaimConflict and we 400 with its message (nothing is committed — the
+    raise rolls back the whole transaction). On success we flip claim_status='claimed', stamp
+    claimed_at + claim_approved_by, and audit ghost_claim/approve with the service summary in `after`.
     """
     user, err = _auth(request)
     if err:
@@ -718,27 +806,314 @@ def ghost_approve_claim(request, ghost_team_id):
     if err:
         return err
 
-    if ghost.claim_status == "claimed":
+    # there must be a PENDING claim with a target team to approve (set by the request endpoint).
+    if ghost.claim_status != "pending" or not ghost.claimed_by_id:
         return Response(
-            {"message": "Ghost team is already claimed."},
+            {"message": "No pending claim to approve."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     with transaction.atomic():
         before = serialize_ghost(ghost)
+        # RE-ATTRIBUTE first (it has its own conflict guard). A ClaimConflict aborts the whole
+        # transaction (the atomic block rolls back), so nothing is half-applied.
+        try:
+            summary = claims.reattribute_ghost_team(ghost, ghost.claimed_by, user)
+        except claims.ClaimConflict as conflict:
+            return Response({"message": str(conflict)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # only after a clean re-attribution: mark the ghost claimed.
         ghost.claim_status = "claimed"
         ghost.claimed_at = timezone.now()
         ghost.claim_approved_by = user
         ghost.save(update_fields=["claim_status", "claimed_at", "claim_approved_by"])
         ghost = GhostTeam.objects.prefetch_related("players").get(pk=ghost.pk)
         after = serialize_ghost(ghost)
+        # put the re-attribution summary (counts of moved participants + affected periods) in the
+        # audit `after` so the log explains what the approval actually moved.
+        after["reattribution"] = summary
         _audit(
             user, "ghost_claim", "approve", reason,
             object_ref=ghost.ghost_team_id, before=before, after=after,
         )
-        # TODO(recalc): retroactive recalc on claim handled by coordinator
-        # (re-attribute the ghost's historical results to ghost.claimed_by and recalc every
-        #  affected month + season). NOT a single enqueue_team() call — do not implement here.
+
+    return Response(after)
+
+
+# ───────────────────────── CLAIM REQUEST (user-facing — the initiate step) ─────────────────────────
+@api_view(["POST"])
+def ghost_team_request_claim(request, ghost_team_id):
+    """POST ghost-teams/<uuid>/request-claim/ — a real team OWNER/CAPTAIN/MANAGER requests a claim.
+
+    Request body:
+      team_id   (required) — the real afc_team.Team the requester wants to map this ghost onto
+      evidence  (optional) — free-text the admin reads when reviewing (stored in claim_note)
+
+    Auth: a normal logged-in user (Bearer SessionToken via _auth_user) — this is a USER action, NOT
+    an admin action, so it is NOT gated by _auth. The requester MUST run team_id (owner/captain/manager
+    via _user_can_act_for_team) or 403.
+
+    Guards (the request can only enter review if it could plausibly be approved):
+      - the ghost must be ``unclaimed`` (one pending claim per ghost) else 400,
+      - the conflict pre-check (claims.conflict_for_team_claim): if team_id already shares a
+        leaderboard with the ghost, the claim could never be approved -> 400 up front.
+
+    On success: claim_status='pending', claim_requested_by=user, claim_requested_at=now,
+    claimed_by=team (the target, confirmed on approve), claim_note=evidence. Returns the serialized
+    ghost. FE consumer: the "Claim" action on a ghost row in the public rankings ladders.
+    No admin audit row (this is a user request, not an admin write); the admin approve/reject is audited.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    ghost, err = _get_ghost_or_404(ghost_team_id)
+    if err:
+        return err
+
+    # resolve + authorize the target team.
+    from afc_team.models import Team
+    team_id = request.data.get("team_id")
+    if not team_id:
+        return Response({"message": "team_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    team = Team.objects.filter(pk=team_id).first()
+    if not team:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not _user_can_act_for_team(user, team):
+        return Response(
+            {"message": "You must be the owner, captain, or a manager of this team to claim for it."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # one pending claim per ghost — only an unclaimed ghost can be requested.
+    if ghost.claim_status != "unclaimed":
+        return Response(
+            {"message": f"This ghost team already has a claim ({ghost.claim_status}); "
+                        "it cannot be requested again."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # conflict pre-check (no mutation): a request that could never be approved is rejected now.
+    conflict_lb = claims.conflict_for_team_claim(ghost, team)
+    if conflict_lb:
+        return Response(
+            {"message": f"Cannot claim: your team is already a participant alongside this ghost in "
+                        f"leaderboard '{conflict_lb}'. An admin must resolve the duplicate first."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    evidence = (request.data.get("evidence") or "").strip()
+    with transaction.atomic():
+        ghost.claim_status = "pending"
+        ghost.claim_requested_by = user
+        ghost.claim_requested_at = timezone.now()
+        ghost.claimed_by = team            # the target, confirmed (or cleared) on approve/reject
+        ghost.claim_note = evidence
+        ghost.save(update_fields=[
+            "claim_status", "claim_requested_by", "claim_requested_at", "claimed_by", "claim_note",
+        ])
+        ghost = GhostTeam.objects.prefetch_related("players").get(pk=ghost.pk)
+
+    return Response(serialize_ghost(ghost), status=status.HTTP_200_OK)
+
+
+# ───────────────────────── REJECT a pending TEAM claim (admin) ─────────────────────────
+@api_view(["POST"])
+def ghost_reject_claim(request, ghost_team_id):
+    """POST ghost-teams/<uuid>/reject-claim/ — reject a PENDING team claim (no re-attribution).
+
+    Request: body { reason (>=10 chars) }. Auth: head_admin | metrics_admin (_auth). FE consumer: the
+    admin claim queue's Reject button.
+
+    Distinct from revoke-claim: REJECT is for a request that has not yet been approved (pending ->
+    back to unclaimed); REVOKE undoes an already-APPROVED claim. Requires claim_status=='pending' else
+    400. Resets to 'unclaimed', clears the request fields (claim_requested_by / claimed_by /
+    claim_requested_at), stamps claim_revoked_at=now, and audits ghost_claim/reject. The ghost is
+    immediately re-claimable.
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    reason, err = _require_reason(request)
+    if err:
+        return err
+    ghost, err = _get_ghost_or_404(ghost_team_id)
+    if err:
+        return err
+
+    if ghost.claim_status != "pending":
+        return Response(
+            {"message": "No pending claim to reject."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        before = serialize_ghost(ghost)
+        ghost.claim_status = "unclaimed"
+        ghost.claim_requested_by = None
+        ghost.claimed_by = None
+        ghost.claim_requested_at = None
+        ghost.claim_revoked_at = timezone.now()
+        ghost.save(update_fields=[
+            "claim_status", "claim_requested_by", "claimed_by", "claim_requested_at", "claim_revoked_at",
+        ])
+        ghost = GhostTeam.objects.prefetch_related("players").get(pk=ghost.pk)
+        after = serialize_ghost(ghost)
+        _audit(
+            user, "ghost_claim", "reject", reason,
+            object_ref=ghost.ghost_team_id, before=before, after=after,
+        )
+
+    return Response(after)
+
+
+# ───────────────────────── PLAYER claim lifecycle (request / approve / reject) ─────────────────────────
+@api_view(["POST"])
+def ghost_player_request_claim(request, player_id):
+    """POST ghost-players/<int:player_id>/request-claim/ — a real user claims this IGN as THEMSELVES.
+
+    Request body:
+      evidence  (optional) — free-text the admin reads when reviewing (stored in claim_note)
+
+    Auth: a normal logged-in user (Bearer SessionToken via _auth_user). Unlike the team request,
+    there is no role gate: a player claims their OWN account (claimed_by = the requester).
+
+    Guards: the ghost must be ``unclaimed`` (one pending claim per ghost) else 400; the conflict
+    pre-check (claims.conflict_for_player_claim) 400s if the requester already shares a solo
+    leaderboard with the ghost. On success: claim_status='pending', claim_requested_by=user,
+    claimed_by=user, claim_requested_at=now, claim_note=evidence. Returns the serialized ghost player.
+    FE consumer: the "This is me" claim action on a ghost player row in the public player ladder.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    player, err = _get_player_or_404(player_id)
+    if err:
+        return err
+
+    if player.claim_status != "unclaimed":
+        return Response(
+            {"message": f"This ghost player already has a claim ({player.claim_status}); "
+                        "it cannot be requested again."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # conflict pre-check (no mutation): the requester already shares a solo LB with the ghost.
+    conflict_lb = claims.conflict_for_player_claim(player, user)
+    if conflict_lb:
+        return Response(
+            {"message": f"Cannot claim: you are already a participant alongside this ghost in "
+                        f"leaderboard '{conflict_lb}'. An admin must resolve the duplicate first."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    evidence = (request.data.get("evidence") or "").strip()
+    with transaction.atomic():
+        player.claim_status = "pending"
+        player.claim_requested_by = user
+        player.claimed_by = user           # a self-claim: requester == target
+        player.claim_requested_at = timezone.now()
+        player.claim_note = evidence
+        player.save(update_fields=[
+            "claim_status", "claim_requested_by", "claimed_by", "claim_requested_at", "claim_note",
+        ])
+        player = GhostPlayer.objects.select_related("ghost_team").get(pk=player.pk)
+
+    return Response(serialize_ghost_player(player), status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def ghost_player_approve_claim(request, player_id):
+    """POST ghost-players/<int:player_id>/approve-claim/ — approve a PENDING player claim + re-attribute.
+
+    Request: body { reason (>=10 chars) }. Auth: head_admin | metrics_admin (_auth). FE consumer: the
+    admin claim queue's Approve button (combined teams + players queue).
+
+    Mirror of ghost_approve_claim for the solo side. Precondition: claim_status=='pending' with a
+    ``claimed_by`` (the requesting user) else 400. claims.reattribute_ghost_player re-points the ghost's
+    standalone solo LeaderboardParticipant rows onto the user, deletes the ghost's player score rows,
+    and recomputes the user for every affected month + season. ClaimConflict -> 400 (nothing committed).
+    On success: claim_status='claimed', claimed_at + claim_approved_by stamped, audit ghost_claim/approve
+    with the service summary in `after`.
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    reason, err = _require_reason(request)
+    if err:
+        return err
+    player, err = _get_player_or_404(player_id)
+    if err:
+        return err
+
+    if player.claim_status != "pending" or not player.claimed_by_id:
+        return Response(
+            {"message": "No pending claim to approve."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        before = serialize_ghost_player(player)
+        try:
+            summary = claims.reattribute_ghost_player(player, player.claimed_by, user)
+        except claims.ClaimConflict as conflict:
+            return Response({"message": str(conflict)}, status=status.HTTP_400_BAD_REQUEST)
+
+        player.claim_status = "claimed"
+        player.claimed_at = timezone.now()
+        player.claim_approved_by = user
+        player.save(update_fields=["claim_status", "claimed_at", "claim_approved_by"])
+        player = GhostPlayer.objects.select_related("ghost_team").get(pk=player.pk)
+        after = serialize_ghost_player(player)
+        after["reattribution"] = summary
+        _audit(
+            user, "ghost_claim", "approve", reason,
+            object_ref=str(player.id), before=before, after=after,
+        )
+
+    return Response(after)
+
+
+@api_view(["POST"])
+def ghost_player_reject_claim(request, player_id):
+    """POST ghost-players/<int:player_id>/reject-claim/ — reject a PENDING player claim.
+
+    Request: body { reason (>=10 chars) }. Auth: head_admin | metrics_admin (_auth). FE consumer: the
+    admin claim queue's Reject button. Mirror of ghost_reject_claim for the solo side: requires
+    claim_status=='pending' else 400, resets to 'unclaimed', clears the request fields, stamps
+    claim_revoked_at=now, audits ghost_claim/reject.
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    reason, err = _require_reason(request)
+    if err:
+        return err
+    player, err = _get_player_or_404(player_id)
+    if err:
+        return err
+
+    if player.claim_status != "pending":
+        return Response(
+            {"message": "No pending claim to reject."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    with transaction.atomic():
+        before = serialize_ghost_player(player)
+        player.claim_status = "unclaimed"
+        player.claim_requested_by = None
+        player.claimed_by = None
+        player.claim_requested_at = None
+        player.claim_revoked_at = timezone.now()
+        player.save(update_fields=[
+            "claim_status", "claim_requested_by", "claimed_by", "claim_requested_at", "claim_revoked_at",
+        ])
+        player = GhostPlayer.objects.select_related("ghost_team").get(pk=player.pk)
+        after = serialize_ghost_player(player)
+        _audit(
+            user, "ghost_claim", "reject", reason,
+            object_ref=str(player.id), before=before, after=after,
+        )
 
     return Response(after)
 

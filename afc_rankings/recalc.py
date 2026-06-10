@@ -18,6 +18,7 @@ Participation floors:
 import datetime
 
 from django.db.models import F
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from afc_team.models import Team
@@ -109,9 +110,14 @@ def recalc_team_quarterly(team_id, season_id):
 
 
 def rerank_team_month(month: datetime.date):
+    # Ghost teams now rank INTERLEAVED with real teams (the team__isnull=False filter is gone), so a
+    # ghost team that outscores a real team takes the higher rank. The final name tiebreak coalesces
+    # team__team_name (real) with ghost_team__team_name (ghost) so a ghost row sorts without a null
+    # crash. Called by recalc_team_monthly + standalone.recalc_ghost_team_monthly.
     qs = list(
-        TeamMonthlyScore.objects.filter(month=month, team__isnull=False)
-        .order_by("-total_score", "-tournament_wins", "-total_kills", "-tournaments_played", "team__team_name")
+        TeamMonthlyScore.objects.filter(month=month)
+        .annotate(_name=Coalesce("team__team_name", "ghost_team__team_name"))
+        .order_by("-total_score", "-tournament_wins", "-total_kills", "-tournaments_played", "_name")
     )
     for i, s in enumerate(qs, 1):
         s.rank = i
@@ -123,10 +129,14 @@ def rerank_team_quarter(season):
     # Rank by the EFFECTIVE score (total minus any manual point deduction, §16) so a
     # partial penalty actually moves a team down the table — not just the displayed score.
     # A ban-zeroed team already has total_score 0, so it naturally sinks to the bottom.
+    # Ghost teams are interleaved with real teams here too (no team__isnull=False filter). The name
+    # tiebreak coalesces real + ghost names. Called by recalc_team_quarterly +
+    # standalone.recalc_ghost_team_quarterly.
     qs = list(
-        TeamQuarterlyScore.objects.filter(season=season, team__isnull=False)
-        .annotate(effective=F("total_score") - F("points_deducted"))
-        .order_by("-effective", "-tournament_wins", "-total_kills", "team__team_name")
+        TeamQuarterlyScore.objects.filter(season=season)
+        .annotate(effective=F("total_score") - F("points_deducted"),
+                  _name=Coalesce("team__team_name", "ghost_team__team_name"))
+        .order_by("-effective", "-tournament_wins", "-total_kills", "_name")
     )
     for i, s in enumerate(qs, 1):
         s.rank = i
@@ -193,9 +203,14 @@ def recalc_player_quarterly(player_id, season_id):
 
 
 def rerank_player_month(month: datetime.date):
+    # Ghost players are interleaved with real players (the table already has no entity filter, ghost
+    # rows simply appear once written). The name tiebreak coalesces player__username (real) with
+    # ghost_player__ign (ghost) so a ghost row sorts without a null crash. Called by
+    # recalc_player_monthly + standalone.recalc_ghost_player_monthly.
     qs = list(
         PlayerMonthlyScore.objects.filter(month=month)
-        .order_by("-total_score", "-total_kills", "-mvp_count", "-finals_appearances", "player__username")
+        .annotate(_name=Coalesce("player__username", "ghost_player__ign"))
+        .order_by("-total_score", "-total_kills", "-mvp_count", "-finals_appearances", "_name")
     )
     for i, s in enumerate(qs, 1):
         s.rank = i
@@ -204,9 +219,12 @@ def rerank_player_month(month: datetime.date):
 
 
 def rerank_player_quarter(season):
+    # Ghost players interleaved with real players; name tiebreak coalesces real + ghost names. Called
+    # by recalc_player_quarterly + standalone.recalc_ghost_player_quarterly.
     qs = list(
         PlayerQuarterlyScore.objects.filter(season=season)
-        .order_by("-total_score", "player__username")
+        .annotate(_name=Coalesce("player__username", "ghost_player__ign"))
+        .order_by("-total_score", "_name")
     )
     for i, s in enumerate(qs, 1):
         s.rank = i
@@ -302,18 +320,27 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False):
     def _evaluate():
         # 1) Teams — tier from effective score (total minus deduction) + §7.4 floor.
         #    Zeroed / overridden rows keep their existing tier (preserved, not recomputed).
+        #    GHOST teams are tiered here too (the team__isnull=False filter is gone): a ghost has no
+        #    sticky-ban/override state, so it always hits the assign_tier branch. It is NEVER added to
+        #    team_tier_by_id (that map drives real-player inheritance, and a ghost team has no players
+        #    inheriting from it), so ghost tiering cannot alter any real player's inherited tier.
         team_rows = list(
-            TeamQuarterlyScore.objects.filter(season=season, team__isnull=False).select_related("team")
+            TeamQuarterlyScore.objects.filter(season=season).select_related("team", "ghost_team")
         )
         team_tier_by_id = {}     # team_id -> would-be tier (used for player inheritance, incl. dry run)
         team_writes = []
         for t in team_rows:
             if t.is_zeroed or t.tier_overridden:
-                team_tier_by_id[t.team_id] = t.tier_assigned  # preserve the locked decision
+                if t.team_id is not None:  # only real teams feed player inheritance
+                    team_tier_by_id[t.team_id] = t.tier_assigned  # preserve the locked decision
                 continue
             new_tier = engine.assign_tier(t.total_score - t.points_deducted, t.meets_participation_floor)
-            team_tier_by_id[t.team_id] = new_tier
-            team_changes.append({"team_id": t.team_id, "name": t.team.team_name,
+            if t.team_id is not None:  # ghosts have no inheriting players -> stay out of the map
+                team_tier_by_id[t.team_id] = new_tier
+            # change-record name: real team name, else the ghost team name (guarded so a ghost row
+            # does not dereference a null team).
+            name = t.team.team_name if t.team_id else t.ghost_team.team_name
+            team_changes.append({"team_id": t.team_id, "name": name,
                                  "old_tier": t.tier_assigned, "new_tier": new_tier})
             t.tier_assigned = new_tier
             t.tier_assigned_at = now
@@ -323,16 +350,25 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False):
 
         # 2) Players — inherit team tier (§8.1) when attached, else individual tier (§9.2).
         #    Zeroed players are preserved. team_at_evaluation locks the inheritance source.
-        player_rows = list(PlayerQuarterlyScore.objects.filter(season=season).select_related("player"))
+        #    GHOST players are tiered here too (the table has no entity filter). A ghost player has no
+        #    roster, so _player_team_at_eval is NOT called for it (guarded by p.player_id) -> it is
+        #    always unattached -> takes its individual tier (source "individual"), team_at_evaluation
+        #    None. This cannot touch any real player's inheritance (each row is independent).
+        player_rows = list(
+            PlayerQuarterlyScore.objects.filter(season=season).select_related("player", "ghost_player")
+        )
         player_writes = []
         for p in player_rows:
             if p.is_zeroed:
                 continue
-            team = _player_team_at_eval(p.player, season)
+            # a ghost player has no player FK -> never look up a roster; treat as unattached.
+            team = _player_team_at_eval(p.player, season) if p.player_id else None
             is_attached = team is not None
             team_tier = team_tier_by_id.get(team.team_id, TIER_ENTRY) if is_attached else None
             new_tier, source = engine.player_tier(is_attached, team_tier, p.total_score, p.meets_participation_floor)
-            player_changes.append({"player_id": p.player_id, "name": p.player.username,
+            # change-record name: real username, else the ghost in-game name (guarded for nulls).
+            name = p.player.username if p.player_id else p.ghost_player.ign
+            player_changes.append({"player_id": p.player_id, "name": name,
                                    "old_tier": p.tier_assigned, "new_tier": new_tier, "source": source})
             p.tier_assigned = new_tier
             p.tier_source = source

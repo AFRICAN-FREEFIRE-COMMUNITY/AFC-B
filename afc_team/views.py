@@ -2303,3 +2303,52 @@ def admin_transfer_team_ownership(request):
     )
 
     return Response({"message": f"{player.username} has been added to {team.team_name} as {management_role}."}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+def search_teams(request):
+    """
+    GET /team/search-teams/?q=<text>&limit=10 - typeahead lookup of EXISTING teams.
+
+    Powers the reusable <TeamSearchSelect/> typeahead (frontend components/ui/team-search-select.tsx),
+    the team-format counterpart of <UserSearchSelect/>. It is consumed by the Standalone Leaderboards
+    wizard (Participants step) wherever a human picks an existing team to add as a participant.
+    Mirrors afc_auth.views.search_users: Bearer SessionToken auth, q >= 2 chars (so it can never dump
+    the whole table), icontains match, limit capped at 25 (default 10).
+
+    Auth: any logged-in user (Bearer SessionToken).
+    Match: team_name icontains q (and team_tag icontains q, since the tag is the short handle).
+    Response 200: { results: [ {team_id, team_name, team_tag, country} ], total_count }.
+    q < 2 chars -> { results: [], total_count: 0 }.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=status.HTTP_400_BAD_REQUEST)
+    requester = validate_token(auth.split(" ", 1)[1])
+    if not requester:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    q = request.GET.get("q", "").strip()
+    if len(q) < 2:
+        # Require at least 2 characters so the endpoint never returns the whole team table.
+        return Response({"results": [], "total_count": 0}, status=status.HTTP_200_OK)
+
+    try:
+        limit = min(max(int(request.GET.get("limit", 10)), 1), 25)
+    except (TypeError, ValueError):
+        limit = 10
+
+    # Match by team_name (the full name) OR team_tag (the short handle), case-insensitive.
+    qs = Team.objects.filter(Q(team_name__icontains=q) | Q(team_tag__icontains=q)).order_by("team_name")
+    total = qs.count()
+
+    results = [
+        {
+            "team_id": t.team_id,
+            "team_name": t.team_name,
+            "team_tag": t.team_tag,
+            "country": t.country,
+        }
+        for t in qs[:limit]
+    ]
+    return Response({"results": results, "total_count": total}, status=status.HTTP_200_OK)
