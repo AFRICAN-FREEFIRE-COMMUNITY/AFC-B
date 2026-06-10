@@ -2162,7 +2162,29 @@ def search_users(request):
     if is_admin:
         cond |= Q(email__icontains=q)
 
-    qs = User.objects.filter(cond).order_by("username")
+    # Punctuation-insensitive widening so "ve" finds the user "v-e" and "j.doe" finds "jdoe": strip the
+    # common separators (-, _, ., space, ...) from both the columns (normalized_column) and the query
+    # (separator_stripped) and OR the result onto the existing icontains conditions. Mirrors
+    # afc_team.search_teams and frontend lib/search.ts; this only ever ADDS matches.
+    from utils.search_utils import normalized_column, separator_stripped
+
+    norm_q = separator_stripped(q)
+    qs = User.objects.annotate(
+        _norm_username=normalized_column("username"),
+        _norm_full_name=normalized_column("full_name"),
+        _norm_uid=normalized_column("uid"),
+    )
+    if norm_q:
+        cond |= (
+            Q(_norm_username__icontains=norm_q)
+            | Q(_norm_full_name__icontains=norm_q)
+            | Q(_norm_uid__icontains=norm_q)
+        )
+        if is_admin:
+            # Email is matched (and returned) for admin callers only, same as the icontains clause above.
+            qs = qs.annotate(_norm_email=normalized_column("email"))
+            cond |= Q(_norm_email__icontains=norm_q)
+    qs = qs.filter(cond).order_by("username")
     total = qs.count()
 
     results = []

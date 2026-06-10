@@ -236,11 +236,23 @@ def admin_list_organizations(request):
     if status_filter:
         qs = qs.filter(status=status_filter)
 
-    # Optional fuzzy search across name OR slug.
+    # Optional fuzzy search across name OR slug. Punctuation-insensitive (so "vent" finds "V-ENT"):
+    # we OR a separator-stripped normalized match onto the plain icontains, via utils.search_utils.
+    # Mirrors afc_team.search_teams + frontend lib/search.ts; this only ever widens results. (Deep
+    # stylized-font folding stays client-side, where the full list is loaded.)
     search = request.GET.get("search")
     if search:
         from django.db.models import Q
-        qs = qs.filter(Q(name__icontains=search) | Q(slug__icontains=search))
+        from utils.search_utils import normalized_column, separator_stripped
+        cond = Q(name__icontains=search) | Q(slug__icontains=search)
+        norm_q = separator_stripped(search)
+        qs = qs.annotate(
+            _norm_name=normalized_column("name"),
+            _norm_slug=normalized_column("slug"),
+        )
+        if norm_q:
+            cond |= Q(_norm_name__icontains=norm_q) | Q(_norm_slug__icontains=norm_q)
+        qs = qs.filter(cond)
 
     # Paginate and serialize.
     page, total_count, has_more = _paginate(request, qs)

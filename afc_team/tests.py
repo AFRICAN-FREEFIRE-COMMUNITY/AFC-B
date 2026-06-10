@@ -67,6 +67,16 @@ class SearchTeamsTests(TestCase):
         self.assertEqual(len(body["results"]), 1)   # page size honored
         self.assertEqual(body["total_count"], 2)    # but total reflects all matches
 
+    def test_punctuation_insensitive_match(self):
+        # The reported bug: a team literally named "V-E" must surface for the query "ve" (and "v-e",
+        # "v e"). Powered by utils.search_utils.normalized_column / separator_stripped. This is a pure
+        # WIDENING — the plain-icontains matches above still pass unchanged.
+        ve = Team.objects.create(team_name="V-E", team_tag="VEX", country="NG",
+                                 join_settings="open", team_owner=self.user, team_creator=self.user)
+        for q in ("ve", "v-e", "v e"):
+            ids = {r["team_id"] for r in self._get(q=q, tok=self.tok).json()["results"]}
+            self.assertIn(ve.team_id, ids, f"query {q!r} should find the team named 'V-E'")
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Roster-lock rules (afc_team.views)
