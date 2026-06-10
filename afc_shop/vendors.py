@@ -123,6 +123,13 @@ def _serialize_vendor_product(request, product):
         "approval_status": product.approval_status,
         "submitted_at": product.submitted_at,
         "approved_at": product.approved_at,
+        # BUGFIX (2026-06-10): the admin requests view returned approved_at (WHEN) but
+        # never approved_by (WHO), so an approved product surfaced no approver. Mirror the
+        # exact shape views.view_all_products already uses (views.py ~L292) so the admin
+        # approvals table can show who signed it off. None for products never approved
+        # (or first-party stock approved without an admin acting). The querysets feeding
+        # this serialiser select_related("approved_by") to keep it a single query.
+        "approved_by": product.approved_by.username if product.approved_by_id else None,
         "rejection_reason": product.rejection_reason,
         "vendor_id": product.vendor_id,
         "vendor_name": product.vendor.display_name if product.vendor_id else None,
@@ -368,27 +375,62 @@ def admin_assign_product_vendor(request):
 @api_view(["GET"])
 def admin_list_pending_products(request):
     """
-    The product approval queue: products a vendor has SUBMITTED for review.
+    The product approval queue: vendor products filtered by approval state.
 
-    Purpose:  The admin shop "Product approvals" surface lists everything awaiting a
-              decision (approval_status == "submitted").
+    Purpose:  The admin shop "Product approvals" surface. By default it lists everything
+              awaiting a decision (approval_status == "submitted"), but BUGFIX (2026-06-10)
+              it now accepts an optional ?status= so the same surface can also show what
+              was already APPROVED (with approved_by/approved_at) or REJECTED (with
+              rejection_reason). Previously, once a product was approved it disappeared
+              from this view entirely, so an admin had no way to see it was accepted or
+              by whom.
     Auth:     require_admin.
-    Response: 200 { count, products: [ {id,name,approval_status,vendor_id,
-              vendor_name,submitted_at,variants,media,...} ] }.
-    Consumed by: the admin shop "Product approvals" surface.
+    Query:    ?status= one of:
+                submitted  -- DEFAULT (back-compat): the pending queue only
+                approved   -- products an admin has approved (carry approved_by/approved_at)
+                rejected   -- products an admin has rejected (carry rejection_reason)
+                all        -- every vendor-relevant state, no approval_status filter
+              An unrecognised value falls back to "submitted" so a typo can never widen
+              the result set unexpectedly.
+    Response: 200 { count, status, products: [ {id,name,approval_status,vendor_id,
+              vendor_name,submitted_at,approved_by,approved_at,rejection_reason,
+              variants,media,...} ] }.
+    Consumed by: the admin shop "Product approvals" surface (app/(a)/a/shop/approvals),
+              whose Pending / Approved / Rejected tabs pass ?status= to this endpoint.
     """
     admin, err = require_admin(request)
     if err:
         return err
 
+    # Resolve the requested filter. Default + any unknown value -> "submitted" (the
+    # original behaviour), so existing callers that pass no param are unaffected.
+    VALID_STATUSES = {"submitted", "approved", "rejected", "all"}
+    status_param = (request.query_params.get("status") or "submitted").strip().lower()
+    if status_param not in VALID_STATUSES:
+        status_param = "submitted"
+
+    # Order so the most relevant rows sit on top per view: pending by submission time,
+    # decided sets by most-recently-touched first.
+    if status_param == "submitted":
+        ordering = ("submitted_at", "-created_at")
+    else:
+        ordering = ("-updated_at", "-created_at")
+
     qs = (
-        Product.objects.filter(approval_status="submitted")
-        .select_related("category", "vendor")
+        Product.objects
+        # select_related approved_by too: _serialize_vendor_product now reads the
+        # approver username, so pull it in the same query to avoid an N+1 when listing
+        # approved products.
+        .select_related("category", "vendor", "approved_by")
         .prefetch_related("variants", "media")
-        .order_by("submitted_at", "-created_at")
+        .order_by(*ordering)
     )
+    # "all" = no approval_status filter; any other value filters to that exact state.
+    if status_param != "all":
+        qs = qs.filter(approval_status=status_param)
+
     data = [_serialize_vendor_product(request, p) for p in qs]
-    return Response({"count": len(data), "products": data}, status=200)
+    return Response({"count": len(data), "status": status_param, "products": data}, status=200)
 
 
 @api_view(["POST"])
@@ -517,7 +559,10 @@ def vendor_my_products(request):
 
     qs = (
         Product.objects.filter(vendor=vendor)
-        .select_related("category", "vendor")
+        # select_related approved_by as well: _serialize_vendor_product reads the approver
+        # username, so an approved product in the vendor's own list resolves it without an
+        # extra query (N+1 guard).
+        .select_related("category", "vendor", "approved_by")
         .prefetch_related("variants", "media")
         .order_by("-created_at")
     )
