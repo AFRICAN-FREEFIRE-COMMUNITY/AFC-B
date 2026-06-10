@@ -25,6 +25,9 @@ urlpatterns = [
     path('change-password/', change_password, name='change_password'),
     path('edit-profile/', edit_profile, name='edit_profile'),
     path('get-user-profile/', get_user_profile, name='get_user_profile'),
+    # Flip the current user's first-time WELCOME tour flag to seen. Bearer-auth POST.
+    # Consumed by frontend app/(user)/_components/WelcomeTour.tsx on finish/skip/close.
+    path('mark-welcome-seen/', mark_welcome_seen, name='mark_welcome_seen'),
     path('contact-us/', contact_us, name='contact_us'),
     path('create-news/', create_news, name='create_news'),
     path('edit-news/', edit_news, name='edit_news'),

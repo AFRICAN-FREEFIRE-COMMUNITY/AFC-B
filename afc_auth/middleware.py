@@ -142,7 +142,15 @@ def _client_ip(request):
 
 def _redact(value):
     """Recursively replace sensitive values with '***', preserving the shape so the log stays
-    readable. Applied to URL kwargs + query params before they go into AuditLog.metadata."""
+    readable. Applied to URL kwargs + query params before they go into AuditLog.metadata.
+
+    Also coerces non-JSON-native scalars (UUID / datetime / date / Decimal) to strings so the row
+    can be stored: AuditLog.metadata is a JSONField, and URL kwargs from typed path converters carry
+    e.g. a UUID (the ``<uuid:ghost_team_id>`` rankings routes) that json.dumps cannot encode. Without
+    this, AuditLog.objects.create would raise mid-INSERT (silently swallowed in prod, but it poisons
+    the surrounding transaction in tests). Keeping the coercion HERE means every metadata path
+    (kwargs / query / body) is JSON-safe in one place.
+    """
     if isinstance(value, dict):
         return {
             k: ("***" if any(s in str(k).lower() for s in _SENSITIVE) else _redact(v))
@@ -150,7 +158,11 @@ def _redact(value):
         }
     if isinstance(value, (list, tuple)):
         return [_redact(v) for v in value]
-    return value
+    # JSON-native scalars pass through unchanged; everything else (UUID, datetime, date, Decimal, ...)
+    # is stringified so the JSONField can store it.
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    return str(value)
 
 
 class AuditLogMiddleware:
