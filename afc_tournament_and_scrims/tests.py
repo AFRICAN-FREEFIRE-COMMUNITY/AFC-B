@@ -803,3 +803,141 @@ class SponsorEditRosterReapprovalTests(TestCase):
         self.assertFalse(
             TournamentTeamMember.objects.filter(tournament_team=self.tt, user=self.pE).exists()
         )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Ban enforcement on TEAM event registration (register_for_event, duo/squad path).
+#
+# Ban rule (afc_auth.BannedPlayer): a player is currently banned when an is_active=True row
+# exists AND ban_end_date is still in the FUTURE. Team-level bans are read via Team.is_banned.
+# register_for_event blocks a TEAM registration when:
+#   - the team is banned (Team.is_banned)                  -> "Your team is banned ..."
+#   - the registering/acting user is banned                -> "You are banned ..."
+#   - ANY roster member being registered is banned          -> "A player in your roster is
+#                                                              banned: <username>."
+# (The SOLO path already had its own inline BannedPlayer check and is NOT touched here.)
+#
+# A clean team + clean roster on a PUBLIC, FREE squad event with an open registration window
+# and a single (discord-role-less) stage registers successfully (201), proving the ban guard
+# does not block legitimate registrations. Country defaults align (all "Nigeria") so the
+# country-restriction check passes. No network is hit: with stage_discord_role_id=None the
+# Discord/celery branches are skipped.
+# ──────────────────────────────────────────────────────────────────────────────
+from afc_auth.models import BannedPlayer
+from .models import Stages
+
+
+class TeamRegistrationBanTests(TestCase):
+    """register_for_event (duo/squad) must reject a banned team, a banned registrant, or a
+    roster containing a banned player, and allow a clean team + roster through."""
+
+    def _token_for(self, user):
+        st = SessionToken.objects.create(
+            user=user,
+            token=f"tok-{user.username}-{uuid.uuid4().hex}",
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        return st.token
+
+    def _auth(self, user):
+        return {"HTTP_AUTHORIZATION": f"Bearer {self._token_for(user)}"}
+
+    def setUp(self):
+        today = date.today()
+        self.admin = User.objects.create_user(
+            username="ban_admin", email="banadmin@example.com", password="x", role="admin"
+        )
+        # Team owner (registers the team) + three more members for a valid squad roster (4-6).
+        self.owner = User.objects.create_user(
+            username="ban_owner", email="banowner@example.com", password="x",
+            role="player", country="Nigeria",
+        )
+        self.m2 = User.objects.create_user(username="ban_m2", email="m2@example.com", password="x", country="Nigeria")
+        self.m3 = User.objects.create_user(username="ban_m3", email="m3@example.com", password="x", country="Nigeria")
+        self.m4 = User.objects.create_user(username="ban_m4", email="m4@example.com", password="x", country="Nigeria")
+
+        # Public, free, non-sponsored squad event with an OPEN registration window.
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=16, event_name="Ban Cup", event_mode="virtual",
+            start_date=today + timedelta(days=3), end_date=today + timedelta(days=5),
+            registration_open_date=today - timedelta(days=1),
+            registration_end_date=today + timedelta(days=2),
+            prizepool="$500", event_rules="No cheating", event_status="upcoming",
+            registration_link="https://example.com/reg", number_of_stages=1,
+            creator=self.admin, is_public=True, is_sponsored=False,
+        )
+        # One stage with NO discord role -> the clean-registration path skips Discord/celery,
+        # so the success test never touches the network.
+        Stages.objects.create(
+            event=self.event, stage_name="Group Stage", start_date=today,
+            end_date=today + timedelta(days=1), number_of_groups=1,
+            stage_format="br - normal", teams_qualifying_from_stage=1,
+            stage_discord_role_id=None,
+        )
+
+        self.team = Team.objects.create(
+            team_name="Ban Reg Team", join_settings="open", team_creator=self.owner,
+            team_owner=self.owner, team_captain=self.owner, country="Nigeria",
+        )
+        for u in (self.owner, self.m2, self.m3, self.m4):
+            TeamMembers.objects.create(team=self.team, member=u, management_role="member")
+
+        self.roster_ids = [self.owner.user_id, self.m2.user_id, self.m3.user_id, self.m4.user_id]
+
+    def _ban(self, user, *, active=True, days_remaining=30):
+        return BannedPlayer.objects.create(
+            banned_player=user, ban_duration=days_remaining,
+            ban_end_date=timezone.now() + timedelta(days=days_remaining),
+            is_active=active, reason="test ban",
+        )
+
+    def _register(self, actor=None):
+        return self.client.post(
+            "/events/register-for-event/",
+            data={
+                "event_id": self.event.event_id,
+                "team_id": self.team.team_id,
+                "roster_member_ids": self.roster_ids,
+            },
+            content_type="application/json",
+            **self._auth(actor or self.owner),
+        )
+
+    def test_banned_team_cannot_register(self):
+        self.team.is_banned = True
+        self.team.save(update_fields=["is_banned"])
+        res = self._register()
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertIn("team is banned", res.json()["message"].lower())
+        self.assertFalse(TournamentTeam.objects.filter(event=self.event, team=self.team).exists())
+
+    def test_banned_registrant_cannot_register(self):
+        self._ban(self.owner)
+        res = self._register()
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertIn("you are banned", res.json()["message"].lower())
+        self.assertFalse(TournamentTeam.objects.filter(event=self.event, team=self.team).exists())
+
+    def test_roster_with_banned_member_cannot_register(self):
+        # A roster member (not the registrant) is banned -> 403 naming that member.
+        self._ban(self.m3)
+        res = self._register()
+        self.assertEqual(res.status_code, 403, res.content)
+        msg = res.json()["message"]
+        self.assertIn("roster is banned", msg.lower())
+        self.assertIn(self.m3.username, msg)  # names WHO to drop
+        self.assertFalse(TournamentTeam.objects.filter(event=self.event, team=self.team).exists())
+
+    def test_clean_team_and_roster_proceeds_past_ban_check(self):
+        # No bans anywhere -> registration succeeds (201), proving the guard is not overbroad.
+        res = self._register()
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertTrue(TournamentTeam.objects.filter(event=self.event, team=self.team).exists())
+
+    def test_expired_ban_does_not_block_registration(self):
+        # An is_active row whose ban_end_date is in the PAST is expired -> must NOT block.
+        self._ban(self.m2, days_remaining=-1)
+        res = self._register()
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertTrue(TournamentTeam.objects.filter(event=self.event, team=self.team).exists())
