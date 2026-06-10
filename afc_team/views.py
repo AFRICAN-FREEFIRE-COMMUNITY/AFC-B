@@ -2441,7 +2441,21 @@ def search_teams(request):
         limit = 10
 
     # Match by team_name (the full name) OR team_tag (the short handle), case-insensitive.
-    qs = Team.objects.filter(Q(team_name__icontains=q) | Q(team_tag__icontains=q)).order_by("team_name")
+    # ALSO match punctuation-insensitively so "ve" finds the team literally named "V-E": we strip the
+    # common separators (-, _, ., space, ...) from both the column (normalized_column) and the query
+    # (separator_stripped) and compare. OR-ing keeps every existing icontains match intact (this only
+    # widens results). Shared with the in-browser filters via frontend/lib/search.ts.
+    from utils.search_utils import normalized_column, separator_stripped
+
+    cond = Q(team_name__icontains=q) | Q(team_tag__icontains=q)
+    norm_q = separator_stripped(q)
+    qs = Team.objects.annotate(
+        _norm_team_name=normalized_column("team_name"),
+        _norm_team_tag=normalized_column("team_tag"),
+    )
+    if norm_q:
+        cond |= Q(_norm_team_name__icontains=norm_q) | Q(_norm_team_tag__icontains=norm_q)
+    qs = qs.filter(cond).order_by("team_name")
     total = qs.count()
 
     results = [
