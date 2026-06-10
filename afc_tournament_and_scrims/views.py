@@ -4922,10 +4922,18 @@ def register_for_event(request):
         # captain/owner check
         if not _user_is_team_captain_or_owner(user, team):
             return Response({"message": "Only captain/vice-captain/team owner can register the team."}, status=403)
-        
-        # Check if the team is banned
+
+        # ── ban guard (afc_auth.BannedPlayer + Team.is_banned) ──
+        # A team event registration is blocked if the team is banned (TeamBan -> Team.is_banned)
+        # or the acting/registering user is banned. Ban rule: a player is currently banned when an
+        # is_active=True BannedPlayer row exists AND its ban_end_date is still in the future
+        # (mirrors afc_team.views._is_player_banned; replicated inline here to avoid a cross-app
+        # import in this hot path). The per-roster-member check runs later, once roster_users is
+        # resolved. The SOLO path above has its own inline BannedPlayer check.
         if team.is_banned:
-            return Response({"message": "Your team is banned from registering for this event."}, status=403)
+            return Response({"message": "Your team is banned and cannot register for events."}, status=403)
+        if BannedPlayer.objects.filter(banned_player=user, is_active=True, ban_end_date__gt=timezone.now()).exists():
+            return Response({"message": "You are banned and cannot register for events."}, status=403)
 
         # Ensure requester is in team
         if not TeamMembers.objects.filter(team=team, member=user).exists():
@@ -5020,6 +5028,44 @@ def register_for_event(request):
         if missing_ids:
             return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids}, status=400)
 
+        # ── ban guard: per-roster-member (afc_auth.BannedPlayer) ──
+        # No banned player may be entered onto a tournament roster. Now that the roster users are
+        # resolved, reject the registration if ANY of them is currently banned (is_active=True AND
+        # ban_end_date still in the future, same rule as the team/user check above). The first
+        # banned member is named so the captain knows who to drop. One grouped query over the
+        # whole roster (no per-member N+1).
+        banned_roster_member = (
+            BannedPlayer.objects.filter(
+                banned_player_id__in=roster_member_ids,
+                is_active=True,
+                ban_end_date__gt=timezone.now(),
+            )
+            .select_related("banned_player")
+            .first()
+        )
+        if banned_roster_member:
+            return Response(
+                {"message": f"A player in your roster is banned: {banned_roster_member.banned_player.username}."},
+                status=403,
+            )
+
+        # ── organizer blacklist guard (afc_organizers.OrganizerBlacklist) ──
+        # An organizer can blacklist a team for a duration; while it is active the team AND the
+        # players who were on it at blacklist time cannot register for THAT organizer's events,
+        # even after a snapshotted player leaves the team and joins another (the blacklist
+        # follows the player). Only relevant for events that have an owning Organization (native
+        # AFC events have event.organization_id=None and are never blacklisted). We call the
+        # single helper organizer_blacklist_block(org, team, roster_user_ids); it returns a 403
+        # message (team-level OR any blacklisted player) or None. Lazy import to avoid an
+        # afc_organizers <-> afc_tournament_and_scrims import cycle on this hot path. Spec:
+        # WEBSITE/tasks/organizer-blacklist-design.md.
+        if event.organization_id:
+            from afc_organizers.blacklist import organizer_blacklist_block
+            blacklist_message = organizer_blacklist_block(
+                event.organization, team, roster_member_ids
+            )
+            if blacklist_message:
+                return Response({"message": blacklist_message}, status=403)
 
         # check team country and then check the restrictions
         team_country = determine_team_country(roster_users, user)
