@@ -284,7 +284,11 @@ class NewsViews(models.Model):
 
 class AdminHistory(models.Model):
     action_id = models.AutoField(primary_key=True)
-    admin_user = models.ForeignKey(User, on_delete=models.CASCADE)
+    # admin_user is nullable to match the production schema (the prod column has long been
+    # nullable). Aligning the model avoids makemigrations trying to alter the column to
+    # non-nullable on prod (which prompts for a one-off default). Making a field nullable
+    # never needs a default, so prod migrations stay prompt-free.
+    admin_user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     action = models.CharField(max_length=50)  # e.g., "banned_player", "edited_news"
     description = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
