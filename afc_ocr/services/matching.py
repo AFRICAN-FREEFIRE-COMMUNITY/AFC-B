@@ -91,6 +91,31 @@ def all_platform_teams() -> list:
     ]
 
 
+def derive_team_tag(player_names: list) -> str:
+    """Best-effort TEAM TAG from a placement's player names (owner 2026-06-11: "these team tags can help
+    when searching for teams through the tags on the players names").
+
+    Free Fire players almost always prefix their team tag onto their IGN (e.g. "AE.John", "AE乂Mike",
+    "ᴀᴇMike"). When the team-name read is blank or weak, the tag shared across a placement's players is a
+    strong second signal for which team it is. We take the leading ALPHANUMERIC run of each player name
+    and return the longest common prefix when it is a plausible tag (2-5 chars) shared by >=2 players,
+    else "". Consumed by afc_leaderboard.ocr.build_team_ocr_rows, which matches the derived tag against
+    each team's team_tag via match_team_name (whose scorer already compares the tag).
+    """
+    import os
+    import re
+
+    leads = []
+    for n in player_names or []:
+        m = re.match(r"\s*([A-Za-z0-9]{1,8})", n or "")
+        if m:
+            leads.append(m.group(1))
+    if len(leads) < 2:
+        return ""
+    prefix = re.sub(r"[^A-Za-z0-9]", "", os.path.commonprefix(leads))
+    return prefix if 2 <= len(prefix) <= 5 else ""
+
+
 def match_team_name(raw_name: str, teams: list) -> dict:
     """The team-format mirror of match_name: fuzzy-match a raw OCR-read team name against the
     platform team pool (from all_platform_teams), returning the best match + top-3 candidates.
@@ -121,15 +146,19 @@ def match_team_name(raw_name: str, teams: list) -> dict:
     except ImportError:
         return empty
 
-    # Score every team by the better of its name-score and tag-score, then keep the top-3 above
-    # the cutoff. We score in Python (not process.extract) because each team has TWO strings
-    # (name + tag) to compare and we want the max of the two as that team's confidence.
+    # Score every team by the better of its name-score and tag-score, then keep the top-5 above the
+    # cutoff. We score in Python (not process.extract) because each team has TWO strings (name + tag)
+    # to compare and we want the max of the two as that team's confidence. Cutoff 30 + top-5 (owner
+    # 2026-06-11: "if there are similar names on the platform, it lists them") — a deliberately LOOSE
+    # net so the admin always sees the closest names to pick from, even on a rough read. The best
+    # match still drives auto-resolve via the confidence ladder on the FE; the extra candidates are
+    # just there to pick.
     scored = []
     for t in teams:
         name_score = fuzz.WRatio(raw_name, t["team_name"]) if t.get("team_name") else 0.0
         tag_score = fuzz.WRatio(raw_name, t["team_tag"]) if t.get("team_tag") else 0.0
         score = max(name_score, tag_score)
-        if score >= 40:  # same cutoff as match_name's score_cutoff
+        if score >= 30:
             scored.append((score, t))
 
     if not scored:
@@ -138,7 +167,7 @@ def match_team_name(raw_name: str, teams: list) -> dict:
     scored.sort(key=lambda s: s[0], reverse=True)
     top_candidates = [
         {"team_id": t["team_id"], "team_name": t["team_name"], "confidence": round(score / 100, 3)}
-        for score, t in scored[:3]
+        for score, t in scored[:5]
     ]
 
     best = top_candidates[0]

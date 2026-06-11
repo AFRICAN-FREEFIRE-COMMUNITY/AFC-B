@@ -27,6 +27,8 @@ MODELS
     LeaderboardMatch       — one "map" played in the leaderboard.
     ParticipantMatchResult — one participant's result in one map, with computed point columns.
 """
+import uuid
+
 from django.db import models
 from django.conf import settings
 
@@ -232,3 +234,92 @@ class ParticipantMatchResult(models.Model):
 
     def __str__(self):
         return f"R(p={self.participant_id}, m={self.match_id}) = {self.total_points}"
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# OCR BATCH (Phase 2.6) — async, multi-image screenshot reading
+#
+# WHY THESE TWO MODELS EXIST
+#   Reading a Free Fire result screenshot via Gemini takes ~12-26s. Doing it inside the HTTP request
+#   (the old synchronous ocr_extract) exceeds the production request timeout (~30s gunicorn), so the
+#   read died mid-flight and the admin saw "Could not read that screenshot" even though the engine was
+#   working. The fix: BACKGROUND the read. The admin uploads one or more screenshots PER MAP, the server
+#   persists them as a LeaderboardOcrJob (one job == one map) with status=pending, and a Celery task
+#   (afc_leaderboard.tasks.process_leaderboard_ocr_job) reads every image, MERGES their placements into
+#   that map's standings, matches names against the whole platform, and stores the review rows here.
+#   The FE polls the job, the admin corrects the rows, then applies (one map + participants + results).
+#
+#   A batch = several jobs for one leaderboard. "Run all" enqueues every pending job so the maps process
+#   in PARALLEL across Celery workers (the owner's "run them one by one or as a group simultaneously").
+#
+# HOW IT CONNECTS
+#   - Producer of rows/status: afc_leaderboard.ocr.process_job (called by the Celery task), which reuses
+#     afc_ocr.services.extract.extract_rows (the same local-first + Gemini-teacher engine the event flow
+#     uses) and the platform-wide matchers.
+#   - REST surface the FE (OcrBatchDialog) drives: afc_leaderboard.views.ocr_job_* (create/run/run-all/
+#     list/apply/delete). Apply reuses _resolve_or_create_participant + _save_one_result (shared with the
+#     manual add_participant / save_match_results paths) so there is no duplicate ghost/scoring logic.
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+class LeaderboardOcrJob(models.Model):
+    """One MAP's background OCR job inside a multi-image batch. Holds 1+ screenshots (LeaderboardOcrImage),
+    processed off-request by Celery into review rows the admin corrects then applies. One job == one map."""
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),        # created, awaiting / queued for processing
+        ("processing", "Processing"),  # the Celery task is reading its images
+        ("done", "Done"),              # rows ready for admin review
+        ("failed", "Failed"),          # read failed (see `error`); can be re-run
+        ("applied", "Applied"),        # rows applied -> a map (applied_match) was created
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    leaderboard = models.ForeignKey(
+        StandaloneLeaderboard, on_delete=models.CASCADE, related_name="ocr_jobs",
+    )
+    # Optional free-text map name the admin typed for this map (mirrors LeaderboardMatch.match_map).
+    map_label = models.CharField(max_length=120, blank=True, default="")
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="pending")
+    # The merged + platform-matched review rows (same shape the old ocr_extract returned), null until
+    # the job is done. The FE renders these in the editable review table.
+    rows = models.JSONField(null=True, blank=True)
+    # Which engine produced the read ("gemini-2.5-flash", "local_student_vN", ...) — for the FE badge
+    # + the training corpus. Blank until processed.
+    engine = models.CharField(max_length=64, blank=True, default="")
+    error = models.TextField(blank=True, default="")
+    # The map created when this job's rows were applied. SET_NULL so deleting the map never blocks the
+    # job row; lets the FE show "applied as Map N" and guards against a double-apply.
+    applied_match = models.ForeignKey(
+        LeaderboardMatch, null=True, blank=True, on_delete=models.SET_NULL, related_name="ocr_jobs",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="leaderboard_ocr_jobs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"OcrJob {self.id} ({self.status}) @ lb {self.leaderboard_id}"
+
+
+class LeaderboardOcrImage(models.Model):
+    """One screenshot belonging to a LeaderboardOcrJob. A single map can need several screens (e.g. the
+    standings split across two images, or a top/bottom half); process_job reads each and merges them."""
+
+    id = models.AutoField(primary_key=True)
+    job = models.ForeignKey(LeaderboardOcrJob, on_delete=models.CASCADE, related_name="images")
+    image = models.ImageField(upload_to="leaderboard_ocr/")
+    order = models.PositiveSmallIntegerField(default=0)
+    # The raw per-image extraction ({"placements":[...]}) kept for debugging + as training material the
+    # student-model learning loop can mine (Gemini is the teacher; see afc_ocr learning loop).
+    raw_output = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return f"OcrImage {self.id} (job {self.job_id}, #{self.order})"

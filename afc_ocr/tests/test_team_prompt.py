@@ -61,3 +61,48 @@ class CallGeminiParserTests(TestCase):
         with mock.patch.object(gemini.requests, "post", return_value=self._mock_response(payload)):
             out = gemini.call_gemini(b"x", "image/png", [], [], prompt_kind="team_standings")
         self.assertNotIn("team_name", out["placements"][0])
+
+
+@override_settings(GEMINI_API_KEY="super-secret-key")
+class CallGeminiErrorSanitizationTests(TestCase):
+    """An HTTP error from Gemini must NEVER surface the request URL: requests puts the full URL
+    (incl. ?key=<GEMINI_API_KEY>) in the HTTPError message, and that string is persisted on OCR
+    job rows (afc_leaderboard.ocr.process_job -> job.error) and rendered in the review dialog.
+    call_gemini must re-raise a key-free RuntimeError carrying only the status + Gemini's own
+    error detail (found live 2026-06-11: a 400 leaked the key into the organizer's UI)."""
+
+    def _error_response(self, status_code=400, detail="Invalid image data."):
+        import requests as _requests
+        resp = mock.Mock()
+        url_with_key = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-2.5-flash:generateContent?key=super-secret-key"
+        )
+        resp.status_code = status_code
+        resp.raise_for_status.side_effect = _requests.HTTPError(
+            f"{status_code} Client Error: Bad Request for url: {url_with_key}"
+        )
+        resp.json.return_value = {"error": {"message": detail}}
+        return resp
+
+    def test_http_error_message_is_key_free(self):
+        with mock.patch.object(gemini.requests, "post", return_value=self._error_response()):
+            with self.assertRaises(RuntimeError) as ctx:
+                gemini.call_gemini(b"x", "image/png", [], [])
+        msg = str(ctx.exception)
+        self.assertNotIn("super-secret-key", msg)
+        self.assertNotIn("key=", msg)
+        self.assertIn("HTTP 400", msg)
+        # Gemini's own (key-free) detail is kept so the admin still sees WHY it failed.
+        self.assertIn("Invalid image data.", msg)
+
+    def test_http_error_without_json_body_still_key_free(self):
+        # A non-JSON error body (e.g. an HTML 502 page) must not break the sanitizer.
+        resp = self._error_response(status_code=502)
+        resp.json.side_effect = ValueError("not json")
+        with mock.patch.object(gemini.requests, "post", return_value=resp):
+            with self.assertRaises(RuntimeError) as ctx:
+                gemini.call_gemini(b"x", "image/png", [], [])
+        msg = str(ctx.exception)
+        self.assertNotIn("super-secret-key", msg)
+        self.assertIn("HTTP 502", msg)

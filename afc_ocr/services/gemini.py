@@ -4,11 +4,22 @@ import json
 import requests
 from django.conf import settings
 
-GEMINI_MODEL = "gemini-2.5-pro"
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta"
-    f"/models/{GEMINI_MODEL}:generateContent?key={{api_key}}"
+# Default Gemini model id + the label other modules import (training_capture / tasks teacher_model).
+# The EFFECTIVE model is settings.GEMINI_MODEL (env GEMINI_MODEL), resolved at call time by
+# effective_model() so ops can switch Flash<->Pro without a code change. Flash is the default because
+# the synchronous request was timing out on the slower Pro model (see settings.GEMINI_MODEL note).
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_URL_TMPL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 )
+
+
+def effective_model() -> str:
+    """The model id actually used per call: settings.GEMINI_MODEL when set, else the GEMINI_MODEL
+    default. Read by call_gemini (URL) and by extract.extract_rows (the returned engine label, so the
+    FE 'which engine' badge + the training corpus record the real model)."""
+    from django.conf import settings
+    return getattr(settings, "GEMINI_MODEL", None) or GEMINI_MODEL
 
 
 def build_prompt(aliases: list, team_notes: list, prompt_kind=None) -> str:
@@ -103,7 +114,7 @@ def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: l
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not configured in settings.")
 
-    url = GEMINI_URL.format(api_key=api_key)
+    url = GEMINI_URL_TMPL.format(model=effective_model(), api_key=api_key)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     payload = {
@@ -122,7 +133,23 @@ def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: l
     }
 
     resp = requests.post(url, json=payload, timeout=90)
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError:
+        # NEVER let the raw HTTPError propagate: requests embeds the full request URL in the
+        # message, and ours carries ?key=<GEMINI_API_KEY>. That message gets persisted on OCR
+        # job rows (afc_leaderboard.ocr.process_job stores str(exc) into job.error) and is then
+        # rendered verbatim in the admin/organizer review dialog, so a raw raise would leak the
+        # key into the UI. Re-raise a key-free message, keeping Gemini's own error detail.
+        detail = ""
+        try:
+            detail = ((resp.json().get("error") or {}).get("message") or "")[:300]
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Gemini request failed with HTTP {resp.status_code}"
+            + (f": {detail}" if detail else "")
+        ) from None
 
     text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 

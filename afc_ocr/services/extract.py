@@ -27,7 +27,7 @@ HOW IT CONNECTS
 """
 import logging
 
-from .gemini import call_gemini
+from .gemini import call_gemini, effective_model
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,9 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
         return student_json, f"local_student_{(conf or {}).get('model_version', 'v0')}"
 
     if gemini_enabled:
-        return call_gemini(image_bytes, mime_type, aliases, team_notes, prompt_kind=prompt_kind), "gemini-2.5-pro"
+        # Label the engine with the ACTUAL model used (settings.GEMINI_MODEL, default flash), not a
+        # hardcoded "pro" — so the FE badge + the training corpus record the real teacher model.
+        return call_gemini(image_bytes, mime_type, aliases, team_notes, prompt_kind=prompt_kind), effective_model()
 
     if student_json is not None:  # Gemini off/unavailable: best-effort local draft for review
         return student_json, f"local_best_effort_{(conf or {}).get('model_version', 'v0')}"
