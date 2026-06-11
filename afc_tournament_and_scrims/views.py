@@ -130,10 +130,27 @@ def update_event_and_stage_statuses():
 #     return Response({"message": "Leaderboard created successfully", "leaderboard_id": leaderboard.leaderboard_id}, status=status.HTTP_201_CREATED)
 
 
+# ── public event visibility (owner rule 2026-06-11) ──────────────────────────────────────────────
+# An event is publicly visible only when it is published (is_draft=False) AND its owning organization
+# is not hidden. A SUSPENDED or DELETED organization must vanish from every public surface, INCLUDING
+# its events (the owner: "when they suspend an organization it should no longer show publicly, same for
+# their events"). AFC-native events (organization IS NULL) are always allowed. Applied to every public
+# event LIST + DETAIL endpoint below; admin/stats surfaces intentionally do NOT use it (admins still see
+# everything). The org public page + the organizer directory already enforce the same rule on their side.
+_ACTIVE_ORG_EVENT = Q(organization__isnull=True) | Q(organization__status="active")
+
+
+def _org_hidden(event):
+    """True when this event's owning org is suspended/deleted (so a public detail view must 404).
+    AFC-native events (no org) are never hidden by this."""
+    return bool(event.organization_id) and event.organization.status != "active"
+
+
 @api_view(["GET"])
 def get_all_events(request):
     # select_related("organization") avoids an N+1 when we read each event's org name/slug.
-    events = Event.objects.filter(is_draft=False).select_related("organization")
+    # _ACTIVE_ORG_EVENT hides events whose org was suspended/deleted (keeps AFC + active-org events).
+    events = Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT).select_related("organization")
     # optional org filter: when present, scope the list to one organization's events.
     organization_id = request.GET.get("organization_id")
     if organization_id:
@@ -173,7 +190,7 @@ def get_all_events_paginated(request):
     offset = int(request.GET.get("offset", 0))
 
     # select_related("organization") avoids an N+1 when we read each event's org name/slug.
-    events = Event.objects.filter(is_draft=False).select_related("organization").order_by("-start_date")
+    events = Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT).select_related("organization").order_by("-start_date")
     # optional org filter: when present, scope the list to one organization's events.
     organization_id = request.GET.get("organization_id")
     if organization_id:
@@ -214,7 +231,7 @@ def get_all_events_paginated(request):
 
 @api_view(["GET"])
 def get_all_tournaments_and_scrims(request):
-    events = Event.objects.filter(is_draft=False)
+    events = Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT)  # hide suspended-org events
     event_list = []
     for event in events:
         event_list.append({
@@ -231,7 +248,7 @@ def get_all_tournaments_and_scrims_paginated(request):
     limit = int(request.GET.get("limit", 10))
     offset = int(request.GET.get("offset", 0))
 
-    events = Event.objects.filter(is_draft=False).order_by("-start_date")
+    events = Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT).order_by("-start_date")  # hide suspended-org events
     total = events.count()
 
     paginated = events[offset: offset + limit]
@@ -256,8 +273,8 @@ def get_all_tournaments_and_scrims_paginated(request):
 
 @api_view(["GET"])
 def get_all_tournaments_and_scrims_separated(request):
-    tournaments = Event.objects.filter(competition_type="tournament", is_draft=False)
-    scrims = Event.objects.filter(competition_type="scrim", is_draft=False)
+    tournaments = Event.objects.filter(competition_type="tournament", is_draft=False).filter(_ACTIVE_ORG_EVENT)
+    scrims = Event.objects.filter(competition_type="scrim", is_draft=False).filter(_ACTIVE_ORG_EVENT)
 
     tournament_list = []
     for event in tournaments:
@@ -288,8 +305,8 @@ def get_all_tournaments_and_scrims_separated_paginated(request):
     limit = int(request.GET.get("limit", 10))
     offset = int(request.GET.get("offset", 0))
 
-    tournaments = Event.objects.filter(competition_type="tournament", is_draft=False).order_by("-start_date")
-    scrims = Event.objects.filter(competition_type="scrim", is_draft=False).order_by("-start_date")
+    tournaments = Event.objects.filter(competition_type="tournament", is_draft=False).filter(_ACTIVE_ORG_EVENT).order_by("-start_date")
+    scrims = Event.objects.filter(competition_type="scrim", is_draft=False).filter(_ACTIVE_ORG_EVENT).order_by("-start_date")
 
     total_tournaments = tournaments.count()
     total_scrims = scrims.count()
@@ -3383,6 +3400,12 @@ def get_event_details(request):
         Event.objects.select_related("organization"), slug=slug
     )
 
+    # Owner rule 2026-06-11: a suspended/deleted organization's events must not show publicly. Hide them
+    # here (404) for everyone except an AFC admin (who manages via the admin surface and may still need
+    # to preview). AFC-native events (no org) are unaffected. Mirrors _ACTIVE_ORG_EVENT on the lists.
+    if _org_hidden(event) and not (user and _is_event_admin(user)):
+        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
     # -------- IS REGISTERED CHECK --------
     is_registered = False
     if user:
@@ -4248,7 +4271,12 @@ def get_event_details_not_logged_in(request):
     if not slug:
         return Response({"message": "slug is required."}, status=400)
 
-    event = get_object_or_404(Event, slug=slug)
+    event = get_object_or_404(Event.objects.select_related("organization"), slug=slug)
+
+    # Owner rule 2026-06-11: a suspended/deleted org's events must not show publicly. This is the
+    # logged-out public detail endpoint, so a hidden org always 404s here. AFC-native events unaffected.
+    if _org_hidden(event):
+        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor").all()
 

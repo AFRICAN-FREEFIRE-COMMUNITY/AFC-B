@@ -169,9 +169,11 @@ def get_organizations_directory(request):
             ),
             best_tier=Min("events__tournament_tier", filter=published),
         )
-        # Only orgs that actually have something to show in the directory.
-        .filter(pub_event_count__gt=0)
-        # Most-active orgs first; name breaks ties so the order is stable.
+        # Owner change 2026-06-11: list EVERY active org, even ones with no published event yet, so a
+        # freshly created organization is discoverable in the directory immediately (previously gated on
+        # pub_event_count > 0, which hid brand-new orgs). Suspended/deleted orgs are still excluded by the
+        # status="active" filter above. Event-rich orgs still sort first; the 0-event newcomers sort last
+        # (alphabetically) so the directory still leads with the most active organizers.
         .order_by("-pub_event_count", "name")
     )
 
