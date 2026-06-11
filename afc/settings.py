@@ -76,6 +76,11 @@ INSTALLED_APPS = [
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Which Gemini model the OCR teacher calls. Flash is ~2x faster than Pro (≈12s vs ≈26s on a FF
+# result screen) and reads the standings just as well, so it is the default — the synchronous prod
+# request was timing out on Pro. Env-overridable (set GEMINI_MODEL=gemini-2.5-pro to trade speed for
+# a touch more accuracy). Read at call time by afc_ocr.services.gemini.call_gemini.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

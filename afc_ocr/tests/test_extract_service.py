@@ -23,10 +23,12 @@ from afc_ocr import views as ocr_views
 _RAW = {"match_type": "team", "placements": [{"placement": 1, "players": [{"name": "Foo", "kills": 3}]}]}
 
 
-@override_settings(OCR_LOCAL_FIRST=False, OCR_GEMINI_FALLBACK=True, GEMINI_API_KEY="test-key")
+@override_settings(OCR_LOCAL_FIRST=False, OCR_GEMINI_FALLBACK=True, GEMINI_API_KEY="test-key",
+                   GEMINI_MODEL="gemini-2.5-flash")
 class ExtractRowsTests(TestCase):
     """extract.extract_rows is the single extraction entry point. With local-first OFF and a key
-    present it must go straight to Gemini and return (raw_output, "gemini-2.5-pro")."""
+    present it must go straight to Gemini and label the engine with the ACTUAL model used
+    (settings.GEMINI_MODEL — pinned to flash here so the assertion doesn't drift with env)."""
 
     def test_routes_to_gemini_when_local_first_off(self):
         # Mock the Gemini call inside the extract module (where it is imported) so no HTTP fires.
@@ -37,7 +39,7 @@ class ExtractRowsTests(TestCase):
             )
         mocked.assert_called_once()
         self.assertEqual(raw, _RAW)
-        self.assertEqual(engine, "gemini-2.5-pro")
+        self.assertEqual(engine, "gemini-2.5-flash")
 
     def test_no_engine_available_raises(self):
         # Local-first off AND Gemini disabled => no engine ran => RuntimeError (the old 503 path).

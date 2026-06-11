@@ -41,6 +41,7 @@ ENDPOINTS (mounted at leaderboards/standalone/… via afc/urls.py → afc_leader
 import datetime
 import uuid
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from rest_framework.decorators import api_view
@@ -71,9 +72,19 @@ from .models import (
     LeaderboardParticipant,
     LeaderboardMatch,
     ParticipantMatchResult,
+    LeaderboardOcrJob,
+    LeaderboardOcrImage,
 )
 from .permissions import can_manage_standalone_lb, can_set_rankings_flag
 from .standings import standalone_standings
+# Row builders live in afc_leaderboard.ocr (the testable OCR-engine layer) so the batch worker and the
+# legacy single-shot endpoint share one row shape. Aliased to the original private names so ocr_extract
+# below is unchanged. process_leaderboard_ocr_job is the Celery task the batch endpoints enqueue.
+from .ocr import (
+    build_team_ocr_rows as _build_team_ocr_rows,
+    build_solo_ocr_rows as _build_solo_ocr_rows,
+)
+from .tasks import process_leaderboard_ocr_job
 
 
 # ── pagination (afc_partner_api envelope) ────────────────────────────────────────────────────
@@ -991,73 +1002,6 @@ def save_match_results(request, mid):
 # extract.extract_rows is the SAME local-first-then-Gemini router the event flow uses (lifted into
 # afc_ocr.services.extract so both surfaces share it). The event OCR flow is untouched.
 # ════════════════════════════════════════════════════════════════════════════════════════════
-def _build_team_ocr_rows(raw_output, teams):
-    """Turn the extractor's raw {placements:[...]} into review rows for a TEAM leaderboard.
-
-    For each placement we read the team_name (the team_standings prompt asks Gemini for it) and
-    match it against the platform team pool via afc_ocr.matching.match_team_name. kills is the
-    placement-level summed team kills when present, else the sum of the placement's players' kills
-    (a tolerant fallback when Gemini omitted the placement total). Returns the team-shaped rows:
-      {row_id, raw_name, placement, kills, matched_team_id, matched_name, confidence,
-       top_candidates, is_unmatched}.
-    Called only by ocr_extract (team format).
-    """
-    rows = []
-    for entry in raw_output.get("placements", []):
-        placement = int(entry.get("placement", 0) or 0)
-        raw_name = (entry.get("team_name") or "").strip()
-        # Prefer the placement-level team kills; fall back to summing the players' kills.
-        if entry.get("kills") is not None:
-            kills = int(entry.get("kills") or 0)
-        else:
-            kills = sum(int(p.get("kills", 0) or 0) for p in entry.get("players", []))
-
-        m = match_team_name(raw_name, teams)
-        rows.append({
-            "row_id": m["row_id"],
-            "raw_name": raw_name,
-            "placement": placement,
-            "kills": kills,
-            "matched_team_id": m["matched_team_id"],
-            "matched_name": m["matched_team_name"],
-            "confidence": m["confidence"],
-            "top_candidates": m["top_candidates"],
-            "is_unmatched": m["matched_team_id"] is None,
-        })
-    return rows
-
-
-def _build_solo_ocr_rows(raw_output, players):
-    """Turn the extractor's raw {placements:[...]} into review rows for a SOLO leaderboard.
-
-    Each placement holds one (or more) player rows; we match each read player name against the
-    platform user pool via afc_ocr.matching.match_name (reused as-is from the event flow). Returns
-    the user-shaped rows:
-      {row_id, raw_name, placement, kills, matched_user_id, matched_name, confidence,
-       top_candidates, is_unmatched}.
-    Called only by ocr_extract (solo format).
-    """
-    rows = []
-    for entry in raw_output.get("placements", []):
-        placement = int(entry.get("placement", 0) or 0)
-        for player in entry.get("players", []):
-            raw_name = (player.get("name") or "").strip()
-            kills = int(player.get("kills", 0) or 0)
-            m = match_name(raw_name, players)
-            rows.append({
-                "row_id": m["row_id"],
-                "raw_name": raw_name,
-                "placement": placement,
-                "kills": kills,
-                "matched_user_id": m["matched_user_id"],
-                "matched_name": m["matched_username"],
-                "confidence": m["confidence"],
-                "top_candidates": m["top_candidates"],
-                "is_unmatched": m["matched_user_id"] is None,
-            })
-    return rows
-
-
 @api_view(["POST"])
 def ocr_extract(request, lb_id):
     """
@@ -1189,35 +1133,53 @@ def ocr_apply(request, lb_id):
         return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
 
     data = request.data or {}
-    rows = data.get("rows")
-    if not isinstance(rows, list) or not rows:
-        return Response({"message": "rows must be a non-empty list."}, status=400)
-
-    # Validate every row carries a resolution dict BEFORE the transaction (cheap fail-fast).
-    for row in rows:
-        if not isinstance(row, dict) or not isinstance(row.get("resolution"), dict):
-            return Response({"message": "each row must include a resolution object."}, status=400)
-
-    created_participants = []
     try:
-        with transaction.atomic():
-            # One apply = one new map. Auto-number it after the current max (mirrors add_match).
-            last = lb.matches.order_by("-match_number").first()
-            next_number = (last.match_number + 1) if last else 1
-            match = LeaderboardMatch.objects.create(
-                leaderboard=lb,
-                match_number=next_number,
-                match_map=(data.get("match_map") or None),
-            )
-
-            # Resolve each row's participant (reusing existing ones / creating ghosts) and score it.
-            for row in rows:
-                participant = _resolve_or_create_participant(lb, row["resolution"], user)
-                created_participants.append(participant)
-                _save_one_result(match, participant, row, lb)
+        match, unique_participants = _apply_ocr_rows(lb, data.get("rows"), data.get("match_map"), user)
     except _ParticipantResolutionError as e:
         # A bad resolution rolls the whole apply back (no orphan match/results) and returns a clean 4xx.
         return Response({"message": e.message}, status=e.status)
+
+    return Response({
+        "match": _serialize_match(match),
+        "participants": [_serialize_participant(p) for p in unique_participants],
+        "standings": standalone_standings(lb),
+    })
+
+
+def _apply_ocr_rows(lb, rows, match_map, user):
+    """Shared apply: turn reviewed OCR rows into ONE new map + its participants + scored results, atomically.
+
+    The single source of truth for "apply reviewed OCR rows", used by BOTH the legacy single-shot ocr_apply
+    and the batch ocr_job_apply (Phase 2.6) so the resolve+score logic lives in one place. Each row is
+    {placement, kills, [damage/assists/bonus/penalty/played], resolution:{kind,...}}. Resolves every row's
+    participant via _resolve_or_create_participant (real get-or-create / ghost creation, shared with
+    add_participant), creates one LeaderboardMatch (auto-numbered), and scores each result via
+    _save_one_result (shared with save_match_results). Returns (match, [unique participants]). Raises
+    _ParticipantResolutionError (rolls the whole apply back) on empty rows or any row that cannot resolve,
+    so the caller returns a clean 4xx and never leaves a partial map behind.
+    """
+    if not isinstance(rows, list) or not rows:
+        raise _ParticipantResolutionError("rows must be a non-empty list.")
+    # Validate every row carries a resolution dict BEFORE the transaction (cheap fail-fast).
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("resolution"), dict):
+            raise _ParticipantResolutionError("each row must include a resolution object.")
+
+    created_participants = []
+    with transaction.atomic():
+        # One apply = one new map. Auto-number it after the current max (mirrors add_match).
+        last = lb.matches.order_by("-match_number").first()
+        next_number = (last.match_number + 1) if last else 1
+        match = LeaderboardMatch.objects.create(
+            leaderboard=lb,
+            match_number=next_number,
+            match_map=(match_map or None),
+        )
+        # Resolve each row's participant (reusing existing ones / creating ghosts) and score it.
+        for row in rows:
+            participant = _resolve_or_create_participant(lb, row["resolution"], user)
+            created_participants.append(participant)
+            _save_one_result(match, participant, row, lb)
 
     # De-dupe participants for the response (a re-applied real entity could appear once per row).
     seen = set()
@@ -1226,9 +1188,221 @@ def ocr_apply(request, lb_id):
         if p.id not in seen:
             seen.add(p.id)
             unique_participants.append(p)
+    return match, unique_participants
 
+
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# Task 2.6 — OCR BATCH (async, multi-image)
+#
+# Lets an admin upload SEVERAL maps, each with ONE OR MORE screenshots, and read them in the
+# background so the synchronous request can never time out (the old ocr_extract died on prod's ~30s
+# request cap because a Gemini read takes 12-26s). Flow:
+#   POST jobs/            -> ocr_job_create: persist one map's screenshots as a pending LeaderboardOcrJob.
+#   POST jobs/<id>/run/   -> ocr_job_run: enqueue that map's Celery read.
+#   POST run-all/         -> ocr_run_all: enqueue EVERY pending/failed map (parallel "run as a group").
+#   GET  jobs/            -> ocr_job_list: poll status + the merged review rows once done.
+#   POST jobs/<id>/apply/ -> ocr_job_apply: turn the reviewed rows into a map (reuses _apply_ocr_rows).
+#   DELETE jobs/<id>/     -> ocr_job_delete: discard a map's job + its screenshots.
+# The heavy read/merge/match work is in afc_leaderboard.ocr.process_job (run by the Celery task); these
+# views only persist, enqueue, serialize, and apply. can_manage_standalone_lb gates every endpoint.
+# ════════════════════════════════════════════════════════════════════════════════════════════
+def _serialize_job(job, image_count=None):
+    """One OCR-job row for the FE poll. `rows` is the merged review table (null until the job is done);
+    image_count is passed in by the list endpoint (prefetched) or counted here for a single job."""
+    return {
+        "id": str(job.id),
+        "map_label": job.map_label,
+        "status": job.status,
+        "engine": job.engine,
+        "error": job.error,
+        "image_count": image_count if image_count is not None else job.images.count(),
+        "applied_match_id": job.applied_match_id,
+        # Only meaningful once status == "done"; the FE renders these in the editable review table.
+        "rows": job.rows,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+    }
+
+
+def _get_job_or_404(lb, job_id):
+    """Fetch a LeaderboardOcrJob scoped to `lb` (so a caller can't poke another leaderboard's job), or
+    return (None, Response 404). A malformed UUID raises on the query, so catch broadly and 404."""
+    try:
+        return LeaderboardOcrJob.objects.get(id=job_id, leaderboard=lb), None
+    except (LeaderboardOcrJob.DoesNotExist, ValueError, ValidationError):
+        return None, Response({"message": "OCR job not found."}, status=404)
+
+
+@api_view(["POST"])
+def ocr_job_create(request, lb_id):
+    """
+    POST leaderboards/standalone/<id>/ocr/jobs/  — create ONE map's OCR job from 1+ uploaded screenshots.
+
+    Auth: Bearer SessionToken + can_manage_standalone_lb. Does NOT start the read (call run/ or run-all/).
+    Request (multipart/form-data): images (1+ files, field name "images"), map_label (optional str).
+    Response 201: { "job": <job dict, status="pending"> }.
+    Errors: 404 leaderboard not found; 403 non-manager; 400 no images attached.
+    Consumed by: the FE OcrBatchDialog (one job per map card).
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    lb, nf = _get_lb_or_404(lb_id)
+    if nf:
+        return nf
+    if not can_manage_standalone_lb(user, lb):
+        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+
+    files = request.FILES.getlist("images")
+    if not files:
+        return Response({"message": "Attach at least one screenshot for this map."}, status=400)
+
+    map_label = (request.data.get("map_label") or "").strip()[:120]
+    job = LeaderboardOcrJob.objects.create(leaderboard=lb, map_label=map_label, created_by=user)
+    for i, f in enumerate(files):
+        LeaderboardOcrImage.objects.create(job=job, image=f, order=i)
+    return Response({"job": _serialize_job(job, image_count=len(files))}, status=201)
+
+
+@api_view(["POST"])
+def ocr_job_run(request, lb_id, job_id):
+    """
+    POST leaderboards/standalone/<id>/ocr/jobs/<job_id>/run/  — enqueue ONE map's background read.
+
+    Auth: Bearer SessionToken + can_manage_standalone_lb. Resets the job to pending + clears any prior
+    error, then dispatches the Celery task (process_leaderboard_ocr_job). Idempotent-ish: a job already
+    processing is left alone. Response 200: { "job": <job dict> }.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    lb, nf = _get_lb_or_404(lb_id)
+    if nf:
+        return nf
+    if not can_manage_standalone_lb(user, lb):
+        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+    job, jnf = _get_job_or_404(lb, job_id)
+    if jnf:
+        return jnf
+    if job.status == "processing":
+        return Response({"job": _serialize_job(job)})  # already running; let the FE keep polling
+    job.status = "pending"
+    job.error = ""
+    job.save(update_fields=["status", "error", "updated_at"])
+    process_leaderboard_ocr_job.delay(str(job.id))
+    return Response({"job": _serialize_job(job)})
+
+
+@api_view(["POST"])
+def ocr_run_all(request, lb_id):
+    """
+    POST leaderboards/standalone/<id>/ocr/run-all/  — enqueue EVERY not-yet-read map at once.
+
+    Auth: Bearer SessionToken + can_manage_standalone_lb. Enqueues all jobs in pending/failed state so a
+    whole batch processes in parallel across Celery workers (the owner's "run them as a group
+    simultaneously"). Already-done/applied/processing jobs are skipped. Response 200:
+    { "jobs": [<every job dict>], "queued": <count enqueued> }.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    lb, nf = _get_lb_or_404(lb_id)
+    if nf:
+        return nf
+    if not can_manage_standalone_lb(user, lb):
+        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+
+    to_run = list(lb.ocr_jobs.filter(status__in=["pending", "failed"]))
+    for j in to_run:
+        j.status = "pending"
+        j.error = ""
+        j.save(update_fields=["status", "error", "updated_at"])
+        process_leaderboard_ocr_job.delay(str(j.id))
+    jobs = lb.ocr_jobs.prefetch_related("images").all()
+    return Response({"jobs": [_serialize_job(j, image_count=j.images.count()) for j in jobs], "queued": len(to_run)})
+
+
+@api_view(["GET"])
+def ocr_job_list(request, lb_id):
+    """
+    GET leaderboards/standalone/<id>/ocr/jobs/  — list this leaderboard's OCR jobs (the poll endpoint).
+
+    Auth: Bearer SessionToken + can_manage_standalone_lb (OCR drafts are manager-only). Returns every job
+    with its status + merged review rows (rows are null until done). The FE polls this until each job is
+    done/failed. Response 200: { "jobs": [<job dict>] }.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    lb, nf = _get_lb_or_404(lb_id)
+    if nf:
+        return nf
+    if not can_manage_standalone_lb(user, lb):
+        return Response({"message": "You do not have permission to view this leaderboard."}, status=403)
+    jobs = lb.ocr_jobs.prefetch_related("images").all()
+    return Response({"jobs": [_serialize_job(j, image_count=j.images.count()) for j in jobs]})
+
+
+@api_view(["POST"])
+def ocr_job_apply(request, lb_id, job_id):
+    """
+    POST leaderboards/standalone/<id>/ocr/jobs/<job_id>/apply/  — apply ONE map's reviewed rows.
+
+    Auth: Bearer SessionToken + can_manage_standalone_lb. Takes the admin-corrected rows (apply-shape:
+    each row carries a `resolution`) and creates one map + participants + scored results via the shared
+    _apply_ocr_rows helper, then marks the job applied + links the created map. Request body:
+    { "rows": [<apply rows>], "match_map"?: str }. Response 200:
+    { "match": <match dict>, "participants": [<participant dict>], "standings": [...] }.
+    Errors: 404 leaderboard/job not found; 403 non-manager; 400 empty/invalid rows or an unresolvable row.
+    Consumed by: the FE OcrBatchDialog "Apply" (per map) / "Apply all" (loops this per done map).
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    lb, nf = _get_lb_or_404(lb_id)
+    if nf:
+        return nf
+    if not can_manage_standalone_lb(user, lb):
+        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+    job, jnf = _get_job_or_404(lb, job_id)
+    if jnf:
+        return jnf
+
+    data = request.data or {}
+    # match_map: explicit override, else the map label the admin typed on the job.
+    match_map = data.get("match_map") or job.map_label or None
+    try:
+        match, unique_participants = _apply_ocr_rows(lb, data.get("rows"), match_map, user)
+    except _ParticipantResolutionError as e:
+        return Response({"message": e.message}, status=e.status)
+
+    job.status = "applied"
+    job.applied_match = match
+    job.save(update_fields=["status", "applied_match", "updated_at"])
     return Response({
         "match": _serialize_match(match),
         "participants": [_serialize_participant(p) for p in unique_participants],
         "standings": standalone_standings(lb),
     })
+
+
+@api_view(["DELETE"])
+def ocr_job_delete(request, lb_id, job_id):
+    """
+    DELETE leaderboards/standalone/<id>/ocr/jobs/<job_id>/  — discard a map's OCR job + its screenshots.
+
+    Auth: Bearer SessionToken + can_manage_standalone_lb. Cascades the job's LeaderboardOcrImage rows. The
+    created map (if already applied) is NOT deleted — only the OCR job. Response 200: { "message": ... }.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    lb, nf = _get_lb_or_404(lb_id)
+    if nf:
+        return nf
+    if not can_manage_standalone_lb(user, lb):
+        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+    job, jnf = _get_job_or_404(lb, job_id)
+    if jnf:
+        return jnf
+    job.delete()
+    return Response({"message": "OCR job removed."})

@@ -34,7 +34,19 @@ urlpatterns = [
     # ── matches ──
     path("standalone/<int:lb_id>/matches/", views.add_match, name="standalone_add_match"),  # POST
 
-    # ── OCR assist (Phase 2) ── extract a screenshot into a draft, then apply the reviewed rows ──
+    # ── OCR assist (Phase 2, legacy single-shot) ── extract a screenshot, then apply the reviewed rows ──
+    # Kept for backward compatibility; the FE now uses the async batch endpoints below (the single-shot
+    # extract is synchronous and could time out on prod). Declared BEFORE the batch jobs/ routes is fine —
+    # "ocr/" and "ocr/apply/" are exact, they never collide with "ocr/jobs/…".
     path("standalone/<int:lb_id>/ocr/", views.ocr_extract, name="standalone_ocr_extract"),  # POST (multipart)
     path("standalone/<int:lb_id>/ocr/apply/", views.ocr_apply, name="standalone_ocr_apply"),  # POST
+
+    # ── OCR BATCH (Phase 2.6, async multi-image) ── upload many maps × many images, read in the background ──
+    # run-all/ is declared BEFORE jobs/<job_id>/ so "run-all" is never parsed as a job id.
+    path("standalone/<int:lb_id>/ocr/jobs/", views.ocr_job_list, name="standalone_ocr_job_list"),       # GET (poll)
+    path("standalone/<int:lb_id>/ocr/jobs/create/", views.ocr_job_create, name="standalone_ocr_job_create"),  # POST (multipart)
+    path("standalone/<int:lb_id>/ocr/run-all/", views.ocr_run_all, name="standalone_ocr_run_all"),      # POST
+    path("standalone/<int:lb_id>/ocr/jobs/<uuid:job_id>/run/", views.ocr_job_run, name="standalone_ocr_job_run"),    # POST
+    path("standalone/<int:lb_id>/ocr/jobs/<uuid:job_id>/apply/", views.ocr_job_apply, name="standalone_ocr_job_apply"),  # POST
+    path("standalone/<int:lb_id>/ocr/jobs/<uuid:job_id>/", views.ocr_job_delete, name="standalone_ocr_job_delete"),  # DELETE
 ]
