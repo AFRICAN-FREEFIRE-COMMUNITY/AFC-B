@@ -383,3 +383,54 @@ class EditTeamBanTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.team.refresh_from_db()
         self.assertEqual(self.team.join_settings, "open")  # updated
+
+
+class EditTeamTagTests(TestCase):
+    """edit_team must let the team owner set / change / clear team_tag, normalising it
+    (strip + uppercase, max 5 chars, letters+digits only). The tag also feeds team search
+    (search_teams) and OCR name matching, so the normalisation matters beyond this endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.owner, self.owner_tok = _make_user("ett_owner")
+        self.team = Team.objects.create(
+            team_name="Tag Edit FC", team_tag="OLD", country="NG", join_settings="open",
+            team_owner=self.owner, team_creator=self.owner,
+        )
+        TeamMembers.objects.create(team=self.team, member=self.owner, management_role="team_captain")
+
+    def _edit(self, **data):
+        payload = {"team_id": self.team.team_id, **data}
+        return self.client.post("/team/edit-team/", payload,
+                                HTTP_AUTHORIZATION=f"Bearer {self.owner_tok}")
+
+    def test_set_tag_is_uppercased_and_trimmed(self):
+        res = self._edit(team_tag=" afc ")
+        self.assertEqual(res.status_code, 200)
+        self.team.refresh_from_db()
+        self.assertEqual(self.team.team_tag, "AFC")  # stripped + uppercased
+
+    def test_empty_tag_clears_it(self):
+        res = self._edit(team_tag="")
+        self.assertEqual(res.status_code, 200)
+        self.team.refresh_from_db()
+        self.assertIsNone(self.team.team_tag)  # "" -> NULL
+
+    def test_omitting_tag_leaves_it_unchanged(self):
+        # team_tag key absent -> existing tag must survive an otherwise-valid edit.
+        res = self._edit(join_settings="by_request")
+        self.assertEqual(res.status_code, 200)
+        self.team.refresh_from_db()
+        self.assertEqual(self.team.team_tag, "OLD")  # untouched
+
+    def test_too_long_tag_is_rejected(self):
+        res = self._edit(team_tag="TOOLONG")
+        self.assertEqual(res.status_code, 400)
+        self.team.refresh_from_db()
+        self.assertEqual(self.team.team_tag, "OLD")  # unchanged on 400
+
+    def test_symbol_tag_is_rejected(self):
+        res = self._edit(team_tag="A B")
+        self.assertEqual(res.status_code, 400)
+        self.team.refresh_from_db()
+        self.assertEqual(self.team.team_tag, "OLD")  # unchanged on 400

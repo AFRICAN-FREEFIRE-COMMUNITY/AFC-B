@@ -45,6 +45,53 @@ def _is_player_banned(user):
     ).first()
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Team-tag helper (shared by create_team and edit_team)
+#
+# team_tag (Team.team_tag, CharField(max_length=5, null=True)) is the short team handle
+# (e.g. "AFC"). It is OPTIONAL. The same tag also powers two other surfaces:
+#   1. team search  -> search_teams (GET /team/search-teams/) matches q against team_tag.
+#   2. OCR matching  -> the leaderboard OCR pipeline matches the short tag printed on a
+#      player's name against this field, so keeping it clean (letters/digits, upper-cased)
+#      matters beyond the profile page.
+# Normalisation: strip whitespace, upper-case, cap at 5 chars. Empty string -> None so the
+# owner can clear the tag. Validation: letters and digits only (no spaces / symbols), which
+# is what both search and OCR expect.
+#
+# Returns a 2-tuple: (normalised_value_or_None, error_message_or_None). Callers check the
+# error first and return a 400 with it; otherwise they assign the value onto the team.
+# ──────────────────────────────────────────────────────────────────────────
+# Sentinel used by edit_team to distinguish "team_tag key omitted" (leave the existing tag
+# alone) from "team_tag sent as empty string" (owner wants to clear the tag). A plain None
+# can't carry that distinction because the form may legitimately send an empty value.
+_TAG_UNSET = object()
+
+
+def _normalize_team_tag(raw):
+    # Treat a missing key (None) as "no change requested" by the caller; only the caller
+    # knows whether absence means "leave as-is" (edit) or "stays null" (create), so we just
+    # report None back unchanged here.
+    if raw is None:
+        return None, None
+
+    # Strip surrounding whitespace and upper-case so "afc " becomes "AFC".
+    tag = str(raw).strip().upper()
+
+    # Empty after stripping -> caller wants the tag cleared (stored as NULL).
+    if tag == "":
+        return "", None
+
+    # Length cap mirrors the model's max_length=5.
+    if len(tag) > 5:
+        return None, "Team tag must be at most 5 characters."
+
+    # Letters and digits only: spaces or symbols break search + OCR matching.
+    if not tag.isalnum():
+        return None, "Team tag can only contain letters and digits (no spaces or symbols)."
+
+    return tag, None
+
+
 @api_view(["POST"])
 def create_team(request):
     # Retrieve session token
@@ -76,6 +123,9 @@ def create_team(request):
     team_description = request.data.get("team_description", "We Love Playing Free Fire")
     country = user.country
     join_settings = request.data.get("join_settings", "by_request")
+    # OPTIONAL short team handle (e.g. "AFC"). Normalised + validated by _normalize_team_tag.
+    # Also feeds team search (search_teams) and the OCR name-matching pipeline.
+    team_tag = request.data.get("team_tag")
     list_of_players_to_invite = request.data.getlist("list_of_players_to_invite", [])
     team_social_media_links = request.data.get("team_social_media_links", [])
     if team_social_media_links:
@@ -95,6 +145,13 @@ def create_team(request):
     if len(team_description) > 200:
         return Response({"message": "Team Description should not be more than 200 Characters."}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Normalise + validate the optional team tag. Empty string -> stored as NULL.
+    normalized_tag, tag_error = _normalize_team_tag(team_tag)
+    if tag_error:
+        return Response({"message": tag_error}, status=status.HTTP_400_BAD_REQUEST)
+    # "" means "no tag"; anything else is the cleaned tag. None (key absent) also -> NULL on create.
+    team_tag_value = normalized_tag if normalized_tag else None
+
     # Create the team
     team = Team.objects.create(
         team_name=team_name,
@@ -102,6 +159,7 @@ def create_team(request):
         team_creator=user,
         team_owner=user,
         team_description=team_description,
+        team_tag=team_tag_value,
         country=country,
         join_settings=join_settings
     )
@@ -141,6 +199,7 @@ def create_team(request):
         "message": "Team created successfully.",
         "team_id": team.team_id,
         "team_name": team.team_name,
+        "team_tag": team.team_tag,
         "team_owner": team.team_owner.username,
         "invited_players": invited_players
     }, status=status.HTTP_201_CREATED)
@@ -828,6 +887,9 @@ def edit_team(request):
     team_name = request.data.get("team_name")
     team_logo = request.FILES.get("team_logo")
     join_settings = request.data.get("join_settings")
+    # OPTIONAL short team handle. Default to a sentinel (object()) so we can tell "key omitted"
+    # (leave the tag untouched) apart from "key sent empty" (owner is clearing the tag).
+    team_tag = request.data.get("team_tag", _TAG_UNSET)
     social_media_links = request.data.get("social_media_links", [])  # Expecting a list of dicts [{'platform': 'Twitter', 'link': 'https://twitter.com/...'}]
     if social_media_links:
         social_media_links = json.loads(social_media_links)
@@ -869,6 +931,16 @@ def edit_team(request):
     if join_settings in ["open", "by_request"]:
         team.join_settings = join_settings
 
+    # Update the optional team tag only when the client actually sent the key. An empty value
+    # clears it (stored as NULL); a non-empty value is normalised + validated. The tag also
+    # feeds team search (search_teams) and the OCR name-matching pipeline, so it is kept clean.
+    if team_tag is not _TAG_UNSET:
+        normalized_tag, tag_error = _normalize_team_tag(team_tag)
+        if tag_error:
+            return Response({"message": tag_error}, status=status.HTTP_400_BAD_REQUEST)
+        # "" -> clear the tag (NULL); otherwise store the cleaned, upper-cased handle.
+        team.team_tag = normalized_tag if normalized_tag else None
+
     team.save()
 
     # Log report if team name was changed
@@ -892,7 +964,9 @@ def edit_team(request):
             if platform and link:
                 TeamSocialMediaLinks.objects.create(team=team, platform=platform, link=link)
 
-    return Response({"message": "Team details updated successfully."}, status=status.HTTP_200_OK)
+    # Return team_tag in the response so the frontend edit form can re-sync the saved value
+    # (the create response already includes it; this keeps the two endpoints consistent).
+    return Response({"message": "Team details updated successfully.", "team_tag": team.team_tag}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])
