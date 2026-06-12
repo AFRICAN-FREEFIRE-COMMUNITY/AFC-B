@@ -64,7 +64,7 @@ from afc_tournament_and_scrims.scoring import (
 # candidate pool to the whole platform (a standalone leaderboard has no event roster).
 from afc_ocr.services import extract
 from afc_ocr.services.matching import (
-    all_platform_players, all_platform_teams, match_team_name, match_name,
+    all_platform_players, all_platform_teams_with_ghosts, match_team_name, match_name,
 )
 
 from .models import (
@@ -574,7 +574,8 @@ def _resolve_or_create_participant(lb, resolution, actor):
         {"kind": "real",          "id": <team_id|user_id>}
         {"kind": "ghost_new",     "name": str, "country"?: str, "players"?: [ign,...]}  # team
         {"kind": "ghost_new",     "ign": str (or "name": str)}                          # solo
-        {"kind": "ghost_existing","id": <ghost_team_id uuid | ghost_player_id int>}
+        {"kind": "ghost_existing","id": <ghost_team_id uuid | ghost_player_id int>,
+                                  "players"?: [ign,...]}  # team: APPEND missing roster slots
 
     Behavior per kind (mirrors the original add_participant logic exactly):
         real           -> get-or-create: if the real entity is already a participant of THIS lb,
@@ -582,7 +583,10 @@ def _resolve_or_create_participant(lb, resolution, actor):
         ghost_new      -> create the ghost (GhostTeam/GhostPlayer, provenance stamped to `actor` for
                           teams) + the participant.
         ghost_existing -> reuse the platform ghost; if already a participant of this lb, REUSE the
-                          existing participant row.
+                          existing participant row. For TEAM ghosts an optional players list APPENDS
+                          GhostPlayer slots the ghost does not have yet (owner 2026-06-12: "add those
+                          players to a newly created team or old ghost team") - existing slots are
+                          never altered, dedupe is case-insensitive on ign.
     Returns the LeaderboardParticipant. Raises _ParticipantResolutionError (rolls back) on any
     invalid input. Reads: afc_team.Team, afc_auth.User, afc_rankings.GhostTeam/GhostPlayer.
     """
@@ -627,10 +631,16 @@ def _resolve_or_create_participant(lb, resolution, actor):
                 created_by=actor,
             )
             # Optional roster IGNs -> GhostPlayer slots attached to the new ghost team.
-            for idx, ign in enumerate(resolution.get("players") or [], start=1):
+            # Dedupe case-insensitively so the same OCR-read name twice never doubles a slot.
+            seen_igns = set()
+            slot = 0
+            for ign in resolution.get("players") or []:
                 ign = (ign or "").strip()
-                if ign:
-                    GhostPlayer.objects.create(ghost_team=ghost, ign=ign, slot=idx)
+                if not ign or ign.lower() in seen_igns:
+                    continue
+                seen_igns.add(ign.lower())
+                slot += 1
+                GhostPlayer.objects.create(ghost_team=ghost, ign=ign, slot=slot)
             return LeaderboardParticipant.objects.create(leaderboard=lb, ghost_team=ghost)
         ign = (resolution.get("ign") or resolution.get("name") or "").strip()
         if not ign:
@@ -652,6 +662,22 @@ def _resolve_or_create_participant(lb, resolution, actor):
             raise _ParticipantResolutionError("Ghost team not found.")
         except Exception:
             raise _ParticipantResolutionError("Invalid ghost_team_id.")
+        # Optional players: APPEND roster slots this ghost team does not have yet (the OCR review
+        # lets the admin attach the read/approved players to an EXISTING ghost team, not only a new
+        # one). Existing slots stay untouched; dedupe is case-insensitive on ign.
+        incoming = [(p or "").strip() for p in (resolution.get("players") or [])]
+        incoming = [p for p in incoming if p]
+        if incoming:
+            existing_igns = {
+                (g.ign or "").lower() for g in GhostPlayer.objects.filter(ghost_team=ghost)
+            }
+            next_slot = GhostPlayer.objects.filter(ghost_team=ghost).count()
+            for ign in incoming:
+                if ign.lower() in existing_igns:
+                    continue
+                existing_igns.add(ign.lower())
+                next_slot += 1
+                GhostPlayer.objects.create(ghost_team=ghost, ign=ign, slot=next_slot)
         existing = LeaderboardParticipant.objects.filter(leaderboard=lb, ghost_team=ghost).first()
         return existing or LeaderboardParticipant.objects.create(leaderboard=lb, ghost_team=ghost)
     gpid = resolution.get("id")
@@ -1037,7 +1063,7 @@ def ocr_extract(request, lb_id):
     HOW IT CONNECTS
         - extract.extract_rows (afc_ocr.services.extract) does the local-first-then-Gemini read;
           team format passes prompt_kind="team_standings" so Gemini also reads a team_name.
-        - all_platform_teams + match_team_name (team) / all_platform_players + match_name (solo)
+        - all_platform_teams_with_ghosts + match_team_name (team) / all_platform_players + match_name (solo)
           build the candidate matches.
         - Consumed by the FE OcrUploadDialog (frontend) which posts the file and renders `rows`;
           the corrected rows are then sent to ocr_apply.
@@ -1072,7 +1098,11 @@ def ocr_extract(request, lb_id):
         return Response({"message": f"OCR extraction failed: {exc}"}, status=503)
 
     if is_team:
-        rows = _build_team_ocr_rows(raw_output, all_platform_teams())
+        # Same pools as the batch worker: teams INCLUDING ghosts (resolve to an existing ghost
+        # instead of duplicating it) + per-player platform matches for the review table.
+        rows = _build_team_ocr_rows(
+            raw_output, all_platform_teams_with_ghosts(), players_pool=all_platform_players(),
+        )
     else:
         rows = _build_solo_ocr_rows(raw_output, all_platform_players())
 

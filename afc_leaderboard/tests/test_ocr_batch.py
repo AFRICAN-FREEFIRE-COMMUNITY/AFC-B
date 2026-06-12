@@ -73,6 +73,7 @@ class ProcessJobTests(TestCase):
             creator=self.admin,
         )
         make_team("Alpha", self.admin)  # so "Alpha" matches a real team in the platform pool
+        make_user("a1")  # so the read player "a1" pre-matches in players_detail
 
     @patch("afc_ocr.services.extract.extract_rows", return_value=(_FAKE_TEAM_READ, "gemini-2.5-flash"))
     def test_process_two_images_merges_and_matches(self, mock_extract):
@@ -94,6 +95,14 @@ class ProcessJobTests(TestCase):
         self.assertIsNotNone(alpha_row["matched_team_id"])
         # The player names the OCR read are surfaced per row (owner: "display the full name it sees").
         self.assertEqual(alpha_row["players_read"], ["a1"])
+        # Per-player platform matching (owner 2026-06-12): each read player carries kills + a match
+        # against the platform user pool. "a1" exists as a real user (setUp) so it pre-matches.
+        detail = alpha_row["players_detail"]
+        self.assertEqual(len(detail), 1)
+        self.assertEqual(detail[0]["name"], "a1")
+        self.assertEqual(detail[0]["kills"], 5)
+        self.assertEqual(detail[0]["matched_username"], "a1")
+        self.assertFalse(detail[0]["is_unmatched"])
 
     @patch("afc_ocr.services.extract.extract_rows", side_effect=RuntimeError("gemini down"))
     def test_failure_marks_job_failed_not_raises(self, _mock):
@@ -143,6 +152,69 @@ class ProcessJobTests(TestCase):
             self.assertEqual(img.raw_output["placements"][0]["team_name"], f"img{i}")
             self.assertIn("_elapsed_ms", img.raw_output)
         self.assertEqual([r["raw_name"] for r in job.rows], ["img0", "img1", "img2"])
+
+
+class GhostExistingPlayersAppendTests(TestCase):
+    """ghost_existing resolutions may carry a players list: missing GhostPlayer slots are APPENDED to
+    the existing ghost team (owner 2026-06-12: attach the OCR-read players to an old ghost team too),
+    existing slots are untouched, dedupe is case-insensitive."""
+
+    def setUp(self):
+        self.admin, _ = make_afc_admin()
+        self.lb = StandaloneLeaderboard.objects.create(
+            name="TeamLB2", format="team", placement_points={"1": 12}, kill_point=1.0,
+            creator=self.admin,
+        )
+
+    def test_appends_missing_slots_only(self):
+        from afc_rankings.models import GhostTeam, GhostPlayer
+        from afc_leaderboard.views import _resolve_or_create_participant
+
+        ghost = GhostTeam.objects.create(team_name="Old Ghost", country="", created_by=self.admin)
+        GhostPlayer.objects.create(ghost_team=ghost, ign="Keeper", slot=1)
+
+        _resolve_or_create_participant(
+            self.lb,
+            {"kind": "ghost_existing", "id": str(ghost.ghost_team_id),
+             "players": ["KEEPER", "NewGuy", "newguy", "", "Second"]},
+            self.admin,
+        )
+
+        igns = sorted(
+            GhostPlayer.objects.filter(ghost_team=ghost).values_list("ign", flat=True)
+        )
+        # "KEEPER"/"newguy" dropped as case-insensitive dupes, "" dropped; only 2 appended.
+        self.assertEqual(igns, ["Keeper", "NewGuy", "Second"])
+
+    def test_existing_ghost_team_appears_in_candidates(self):
+        """A ghost team created earlier surfaces as a match SUGGESTION on the next read (carrying
+        ghost_team_id + is_ghost) but never auto-resolves matched_team_id - ghosts are explicit picks."""
+        from afc_rankings.models import GhostTeam
+        from afc_ocr.services.matching import all_platform_teams_with_ghosts, match_team_name
+
+        GhostTeam.objects.create(team_name="Phantom Crew", country="", created_by=self.admin)
+        pool = all_platform_teams_with_ghosts()
+        m = match_team_name("Phantom Crew", pool)
+
+        ghost_cand = next(c for c in m["top_candidates"] if c.get("is_ghost"))
+        self.assertEqual(ghost_cand["team_name"], "Phantom Crew")
+        self.assertTrue(ghost_cand["ghost_team_id"])
+        # The exact-name ghost scored best, yet auto-resolve stays on the best REAL team (or None).
+        self.assertNotEqual(m["matched_team_name"], "Phantom Crew")
+
+    def test_ghost_new_dedupes_players(self):
+        from afc_rankings.models import GhostPlayer
+        from afc_leaderboard.views import _resolve_or_create_participant
+
+        participant = _resolve_or_create_participant(
+            self.lb,
+            {"kind": "ghost_new", "name": "Fresh Ghost", "players": ["One", "ONE", "Two"]},
+            self.admin,
+        )
+        igns = sorted(
+            GhostPlayer.objects.filter(ghost_team=participant.ghost_team).values_list("ign", flat=True)
+        )
+        self.assertEqual(igns, ["One", "Two"])
 
 
 @override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)

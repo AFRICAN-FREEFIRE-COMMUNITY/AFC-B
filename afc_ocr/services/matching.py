@@ -1,3 +1,4 @@
+import re
 import uuid
 from collections import Counter
 
@@ -116,6 +117,31 @@ def derive_team_tag(player_names: list) -> str:
     return prefix if 2 <= len(prefix) <= 5 else ""
 
 
+def all_platform_teams_with_ghosts() -> list:
+    """The team pool for the STANDALONE OCR flows: every real Team PLUS every GhostTeam.
+
+    Ghost teams join the pool (owner 2026-06-12: attach read players "to a newly created team or old
+    ghost team") so a team that was ghost-created on an earlier map/leaderboard surfaces as a match
+    SUGGESTION on the next read instead of the admin re-creating a duplicate ghost. Ghost entries are
+    shaped like real ones but with team_id=None and a ghost_team_id (str uuid) + is_ghost=True, which
+    match_team_name passes through into candidates so the FE can offer "<name> (ghost)" and resolve
+    it as kind=ghost_existing. Read by afc_leaderboard.ocr.process_job + views.ocr_extract."""
+    from afc_rankings.models import GhostTeam
+
+    pool = all_platform_teams()
+    pool.extend(
+        {
+            "team_id": None,
+            "ghost_team_id": str(g["ghost_team_id"]),
+            "team_name": g["team_name"],
+            "team_tag": None,
+            "is_ghost": True,
+        }
+        for g in GhostTeam.objects.all().values("ghost_team_id", "team_name")
+    )
+    return pool
+
+
 def match_team_name(raw_name: str, teams: list) -> dict:
     """The team-format mirror of match_name: fuzzy-match a raw OCR-read team name against the
     platform team pool (from all_platform_teams), returning the best match + top-3 candidates.
@@ -127,7 +153,12 @@ def match_team_name(raw_name: str, teams: list) -> dict:
     Returns {row_id, raw_name, matched_team_id, matched_team_name, confidence,
              top_candidates:[{team_id, team_name, confidence}]}. No match -> matched_team_id None,
              matched_team_name None, confidence 0.0, top_candidates []. Consumed by ocr_extract;
-             the FE review table renders top_candidates as the per-row dropdown."""
+             the FE review table renders top_candidates as the per-row dropdown.
+
+    GHOST entries (from all_platform_teams_with_ghosts) carry ghost_team_id/is_ghost; those keys are
+    passed through into their candidate dicts, but matched_team_id/matched_team_name (the FE
+    auto-resolve) only ever come from the best REAL team - a ghost is always an explicit admin pick,
+    never an automatic resolution."""
     row_id = str(uuid.uuid4())
 
     empty = {
@@ -165,18 +196,28 @@ def match_team_name(raw_name: str, teams: list) -> dict:
         return empty
 
     scored.sort(key=lambda s: s[0], reverse=True)
-    top_candidates = [
-        {"team_id": t["team_id"], "team_name": t["team_name"], "confidence": round(score / 100, 3)}
-        for score, t in scored[:5]
-    ]
+    top_candidates = []
+    for score, t in scored[:5]:
+        cand = {
+            "team_id": t["team_id"],
+            "team_name": t["team_name"],
+            "confidence": round(score / 100, 3),
+        }
+        # Ghost passthrough (see docstring): keep the ghost identity on the candidate so the FE can
+        # offer it as a kind=ghost_existing pick.
+        if t.get("is_ghost"):
+            cand["ghost_team_id"] = t.get("ghost_team_id")
+            cand["is_ghost"] = True
+        top_candidates.append(cand)
 
-    best = top_candidates[0]
+    # Auto-resolve from the best REAL candidate only; ghosts are explicit picks, never automatic.
+    best_real = next((c for c in top_candidates if not c.get("is_ghost")), None)
     return {
         "row_id":            row_id,
         "raw_name":          raw_name,
-        "matched_team_id":   best["team_id"],
-        "matched_team_name": best["team_name"],
-        "confidence":        best["confidence"],
+        "matched_team_id":   best_real["team_id"] if best_real else None,
+        "matched_team_name": best_real["team_name"] if best_real else None,
+        "confidence":        best_real["confidence"] if best_real else 0.0,
         "top_candidates":    top_candidates,
     }
 
@@ -185,7 +226,14 @@ def match_name(raw_name: str, registered: list) -> dict:
     """
     1. Check OCRNameAlias for an exact match (confidence = 1.0).
     2. Fall back to rapidfuzz against registered usernames.
-    3. Return top 3 candidates plus the best match row.
+    3. Return top 5 candidates plus the best match row.
+
+    The fuzzy pass scores the read name BOTH as-is AND with a leading team-tag prefix stripped
+    ("SYN.ARDNT DS" also scores as "ARDNT DS"), keeping each username's best score. FF screenshots
+    prefix IGNs with the team tag, which buried close matches below the cutoff (owner 2026-06-12:
+    "it should have had this ARENDT player as part of the options for that ARDNT"). Cutoff 30 +
+    top-5 mirrors match_team_name's deliberately LOOSE candidate net - the candidates exist to be
+    PICKED from; only the best one drives any auto-resolve.
     """
     from afc_ocr.models import OCRNameAlias
 
@@ -211,17 +259,42 @@ def match_name(raw_name: str, registered: list) -> dict:
             "top_candidates":    [],
         }
 
-    # Step 2: rapidfuzz
+    # Step 2: rapidfuzz - score the raw read AND a tag-stripped variant, keep each username's best.
     try:
         from rapidfuzz import process, fuzz
 
         usernames = [p["username"] for p in registered]
-        results = process.extract(
-            raw_name, usernames,
-            scorer=fuzz.WRatio,
-            limit=3,
-            score_cutoff=40,
-        )
+        # Tag-stripped query variants. FF screenshots wrap the IGN in a short team tag, leading
+        # ("SYN.ARDNT DS") or trailing ("NOXY CVS"), and which side is the tag is AMBIGUOUS: lead-
+        # stripping "NOXY CVS" wrongly yields the bare tag "CVS", which substring-scores ~90 against
+        # every same-tag TEAMMATE ("PUNKY CVS") - the owner's exact bug report. So we score the MAX
+        # across the raw read plus every strip variant, but a stripped variant only qualifies when it
+        # is >= 5 chars: tags are 1-5 chars, so a short remainder IS the tag, not the IGN. The raw
+        # read alone scores same-tag teammates ~70, safely under the FE's 0.75 auto-pick gate, while
+        # a genuine core ("AKAZA" vs "I AKAZA", "ARDNT" vs "ARENDT") boosts the true match high.
+        _lead = re.compile(r"^[^\s.]{1,6}[.\s]+")
+        _trail = re.compile(r"[.\s]+[^\s.]{1,6}$")
+        variants = {raw_name}
+        for v in (
+            _lead.sub("", raw_name),
+            _trail.sub("", raw_name),
+            _trail.sub("", _lead.sub("", raw_name)),
+            _lead.sub("", _trail.sub("", raw_name)),
+        ):
+            v = v.strip()
+            if v and v.lower() != raw_name.lower() and len(v) >= 5:
+                variants.add(v)
+        best_scores = {}
+        for q in variants:
+            for username, score, _ in process.extract(
+                q, usernames, scorer=fuzz.WRatio, limit=8, score_cutoff=30,
+            ):
+                if score > best_scores.get(username, 0):
+                    best_scores[username] = score
+        results = [
+            (username, score, None)
+            for username, score in sorted(best_scores.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        ]
     except ImportError:
         results = []
 

@@ -30,22 +30,30 @@ from concurrent.futures import ThreadPoolExecutor
 
 from afc_ocr.services import extract
 from afc_ocr.services.matching import (
-    all_platform_players, all_platform_teams, match_team_name, match_name, derive_team_tag,
+    all_platform_players, all_platform_teams_with_ghosts, match_team_name, match_name,
+    derive_team_tag,
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ── row builders (one review row per competitor) ─────────────────────────────────────────────────
-def build_team_ocr_rows(raw_output, teams):
+def build_team_ocr_rows(raw_output, teams, players_pool=None):
     """Turn the extractor's raw {placements:[...]} into review rows for a TEAM leaderboard.
 
     For each placement we read the team_name (the team_standings prompt asks Gemini for it) and match it
     against the platform team pool via afc_ocr.matching.match_team_name. kills is the placement-level
     summed team kills when present, else the sum of the placement's players' kills (tolerant fallback
     when Gemini omitted the placement total). Returns the team-shaped rows:
-      {row_id, raw_name, placement, kills, matched_team_id, matched_name, confidence, top_candidates,
-       is_unmatched}.
+      {row_id, raw_name, players_read, players_detail, placement, kills, matched_team_id, matched_name,
+       confidence, top_candidates, is_unmatched}.
+
+    players_pool (optional): the platform user pool from afc_ocr.matching.all_platform_players. When
+    given, EACH read player is also matched against it (owner 2026-06-12: "like it brings out
+    suggestions for teams it should also try to find matches for the players") and the row carries
+    players_detail = [{name, kills, matched_user_id, matched_username, confidence, top_candidates,
+    is_unmatched}] for the FE per-player approve/search/ghost controls (OcrReviewTable). When None
+    (older callers), only the plain players_read name list is produced, exactly as before.
     """
     rows = []
     for entry in raw_output.get("placements", []):
@@ -59,6 +67,24 @@ def build_team_ocr_rows(raw_output, teams):
             for p in entry.get("players", [])
             if (p.get("name") or "").strip()
         ]
+        # Per-player platform matching (the FE shows each player's kills + match suggestions and lets
+        # the admin approve/correct each one, mirroring the team-level candidate flow).
+        players_detail = []
+        if players_pool is not None:
+            for p in entry.get("players", []):
+                pname = (p.get("name") or "").strip()
+                if not pname:
+                    continue
+                pm = match_name(pname, players_pool)
+                players_detail.append({
+                    "name": pname,
+                    "kills": int(p.get("kills", 0) or 0),
+                    "matched_user_id": pm["matched_user_id"],
+                    "matched_username": pm["matched_username"],
+                    "confidence": pm["confidence"],
+                    "top_candidates": pm["top_candidates"],
+                    "is_unmatched": pm["matched_user_id"] is None,
+                })
         if entry.get("kills") is not None:
             kills = int(entry.get("kills") or 0)
         else:
@@ -75,6 +101,7 @@ def build_team_ocr_rows(raw_output, teams):
             # never blank), else nothing (the FE shows "team name not read" + the players it saw).
             "raw_name": raw_name or derived_tag,
             "players_read": players_read,
+            "players_detail": players_detail,
             "placement": placement,
             "kills": kills,
             "matched_team_id": m["matched_team_id"],
@@ -219,7 +246,14 @@ def process_job(job):
 
         merged = merge_placements(placement_lists, is_team)
         if is_team:
-            rows = build_team_ocr_rows({"placements": merged}, all_platform_teams())
+            # Team pool INCLUDES ghost teams (suggest the ghost an earlier map created instead of
+            # duplicating it); players_pool ALSO matches each read player against the platform user
+            # pool so the review table can suggest per-player matches (see build_team_ocr_rows).
+            rows = build_team_ocr_rows(
+                {"placements": merged},
+                all_platform_teams_with_ghosts(),
+                players_pool=all_platform_players(),
+            )
         else:
             rows = build_solo_ocr_rows({"placements": merged}, all_platform_players())
 
