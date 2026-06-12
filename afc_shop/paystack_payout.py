@@ -113,13 +113,31 @@ def _paystack(method, path, json_body=None):
             json=json_body,
             timeout=30,
         )
+    except Exception as e:  # network / DNS / timeout -> caller surfaces a clean error
+        logger.warning("_paystack: request to %s failed before a response: %s", path, e)
+        return False, {"message": f"Could not reach Paystack ({e.__class__.__name__}). Try again shortly."}
+
+    # Parse the body SEPARATELY from the network call. Paystack (or an edge proxy in
+    # front of it) can return an EMPTY body or an HTML error page on 5xx/blocked
+    # requests - r.json() then raises "Expecting value: line 1 column 1 (char 0)",
+    # which used to surface raw to the vendor (owner bug report 2026-06-12) and hid
+    # the HTTP status + real body from the logs. Now the status + a body snippet are
+    # logged so prod can tell a bad key (401) from an outage (5xx) at a glance.
+    try:
         body = r.json()
-        # Paystack signals success with HTTP 200 + {"status": true, "data": ...}. Treat
-        # anything else (4xx/5xx, or status=false) as a failure the caller can surface.
-        ok = r.status_code == 200 and bool(body.get("status"))
-        return ok, body
-    except Exception as e:  # network / Paystack down -> caller surfaces a clean error
-        return False, {"message": f"Paystack request failed: {e}"}
+    except ValueError:
+        snippet = (r.text or "")[:300]
+        logger.warning(
+            "_paystack: non-JSON response from %s (HTTP %s): %r", path, r.status_code, snippet,
+        )
+        return False, {
+            "message": f"Paystack returned an unexpected response (HTTP {r.status_code}). Try again shortly.",
+        }
+
+    # Paystack signals success with HTTP 200 + {"status": true, "data": ...}. Treat
+    # anything else (4xx/5xx, or status=false) as a failure the caller can surface.
+    ok = r.status_code == 200 and bool(body.get("status"))
+    return ok, body
 
 
 def _amount_kobo(amount):
