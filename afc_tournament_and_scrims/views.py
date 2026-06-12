@@ -16845,14 +16845,28 @@ def reconcile_stage_roles(stage_id):
                 skipped += 1
                 continue
 
-            DiscordRoleAssignment.objects.get_or_create(
+            # Duplicate-tolerant upsert (bug "failed to start", 2026-06-12): the table has no
+            # unique constraint on this tuple and the register/seed paths bulk_create rows, so
+            # DUPLICATES exist in real data. get_or_create's get() raised
+            # MultipleObjectsReturned (3 rows) and 500'd the whole event start. filter().first()
+            # treats any existing row (whatever its status) as "already tracked"; only a truly
+            # missing assignment creates a new pending row.
+            existing_row = DiscordRoleAssignment.objects.filter(
                 user=user,
                 discord_id=user.discord_id,
                 role_id=stage.stage_discord_role_id,
                 stage=stage,
                 group=None,
-                defaults={"status": "pending"}
-            )
+            ).first()
+            if existing_row is None:
+                DiscordRoleAssignment.objects.create(
+                    user=user,
+                    discord_id=user.discord_id,
+                    role_id=stage.stage_discord_role_id,
+                    stage=stage,
+                    group=None,
+                    status="pending",
+                )
 
             created += 1
 
@@ -16948,14 +16962,25 @@ def reconcile_group_roles_for_stage(stage):
                     skipped += 1
                     continue
 
-                DiscordRoleAssignment.objects.get_or_create(
+                # Duplicate-tolerant upsert (same bug + fix as reconcile_stage_roles above):
+                # duplicate assignment rows exist in real data and get_or_create's get()
+                # raises MultipleObjectsReturned on them, 500ing the group reconcile.
+                existing_row = DiscordRoleAssignment.objects.filter(
                     user=user,
                     discord_id=user.discord_id,
                     role_id=group.group_discord_role_id,
                     stage=stage,
                     group=group,
-                    defaults={"status": "pending"}
-                )
+                ).first()
+                if existing_row is None:
+                    DiscordRoleAssignment.objects.create(
+                        user=user,
+                        discord_id=user.discord_id,
+                        role_id=group.group_discord_role_id,
+                        stage=stage,
+                        group=group,
+                        status="pending",
+                    )
 
                 created += 1
 
