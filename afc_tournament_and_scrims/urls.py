@@ -11,6 +11,16 @@ from .event_payments import (
     admin_release_payment,
     admin_refund_payment,
 )
+# Event linking / qualification chains (feature "event-linking" P1, owner-approved 2026-06-12):
+# per-stage top-N qualification into other events. Own module, same isolation rationale as
+# event_payments. Spec: WEBSITE/tasks/event-linking-design.md.
+from .event_links import (
+    create_link,
+    list_links,
+    cancel_link,
+    fire_link_view,
+    decide,
+)
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -26,6 +36,13 @@ urlpatterns = [
     # on the event's org. Consumed by the organizer + admin events lists' "Duplicate" action
     # (lib events.duplicateEvent). Full URL: events/<event_id>/duplicate-event/.
     path('<int:event_id>/duplicate-event/', duplicate_event, name='duplicate_event'),
+
+    # ── Event linking / qualification chains ── (events/<id>/links/... + events/links/<id>/...)
+    path('<int:event_id>/links/create/', create_link, name='create_event_link'),      # POST
+    path('<int:event_id>/links/', list_links, name='list_event_links'),               # GET
+    path('links/<int:link_id>/fire/', fire_link_view, name='fire_event_link'),        # POST
+    path('links/<int:link_id>/decide/', decide, name='decide_event_link'),            # POST
+    path('links/<int:link_id>/', cancel_link, name='cancel_event_link'),              # DELETE
 
     # ── Paid-event registration payments (Stripe) ──
     path('init-registration-payment/', init_registration_payment, name='init_registration_payment'),

@@ -18957,6 +18957,16 @@ def complete_event(request):
     event.event_status = "completed"
     event.save(update_fields=["event_status"])
 
+    # ── Event linking (feature "event-linking" P1): completing a source event FIRES any of its
+    # still-active qualification links (the safety net behind the manual Fire button) - the top
+    # N of each linked stage flow into their target events. Best-effort: a linking hiccup must
+    # never block the completion itself. Lazy import avoids a module-load cycle.
+    try:
+        from .event_links import fire_links_for_event
+        fire_links_for_event(event, user)
+    except Exception:
+        pass
+
     count = _notify_all_registered(
         event,
         title=f"Tournament Complete: {event.event_name}",

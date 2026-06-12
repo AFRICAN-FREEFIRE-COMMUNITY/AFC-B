@@ -532,6 +532,113 @@ class SoloPlayerMatchStats(models.Model):
     class Meta:
         unique_together = ("match", "competitor")
 
+
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# EVENT LINKING / QUALIFICATION CHAINS (owner-approved design 2026-06-12,
+# spec: WEBSITE/tasks/event-linking-design.md v2 + feedback round 1)
+#
+# An EventLink declares "the top N of SOURCE STAGE qualify into TARGET EVENT" - per STAGE, not
+# per event, so one event can feed different targets from different stages (top 6 of Semis ->
+# event A, top 2 of Finals -> event B). When the stage's standings settle, EventQualification
+# rows are created (and auto-promoted into the target via the same rows register_for_event
+# writes) - see afc_tournament_and_scrims.event_links for the endpoints + the promote logic.
+# Everything (allow/reject/decline/replace) is UNDOable, and standings edited after a link
+# fires surface as a diff + an in-app notification to the link's creator.
+# ════════════════════════════════════════════════════════════════════════════════════════════
+class EventLink(models.Model):
+    """One per-stage qualification rule: top `qualify_count` of `source_stage` flow into
+    `target_event`. Admins link any events; organizers only events of orgs they manage
+    (both ends) - enforced in event_links.py, not here."""
+    ROSTER_MODE_CHOICES = [
+        ("copy", "Copy finishing roster"),
+        ("captain_repick", "Captain re-picks"),
+    ]
+    STATUS_CHOICES = [
+        ("active", "Active"),        # waiting on the stage's standings
+        ("fired", "Fired"),          # qualifications created
+        ("cancelled", "Cancelled"),
+    ]
+
+    id = models.AutoField(primary_key=True)
+    source_event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="outbound_links")
+    source_stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="qualification_links")
+    target_event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="inbound_links")
+    qualify_count = models.PositiveIntegerField(default=2)
+    # False = qualifications land "pending" and an admin presses Promote per row.
+    auto_promote = models.BooleanField(default=True)
+    # Owner decision: the admin chooses per link whether the finishing roster is copied as-is
+    # or the captain must confirm/edit it via the existing Edit Registration flow.
+    roster_mode = models.CharField(max_length=20, choices=ROSTER_MODE_CHOICES, default="copy")
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="active")
+    # Snapshot of the stage's top-N at fire time ([{placement, team_id|user_id, name}]) so a
+    # LATER standings edit can be diffed against what the link acted on (the "standings
+    # edited" banner + the creator notification).
+    fired_snapshot = models.JSONField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+        related_name="event_links_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_stage", "target_event"], name="uniq_stage_target_link",
+            ),
+        ]
+
+    def __str__(self):
+        return f"top {self.qualify_count} of stage {self.source_stage_id} -> event {self.target_event_id}"
+
+
+class EventQualification(models.Model):
+    """One competitor's flow-through record on a fired link. `placement` is their finishing
+    spot in the source stage; status walks pending -> promoted (registered in the target) or
+    declined -> replaced. Every decision is UNDOable: prev_status/prev_note hold the state to
+    restore, and undoing a promotion withdraws the registration it created."""
+    STATUS_CHOICES = [
+        ("pending", "Pending"),      # awaiting promote/allow (auto_promote off, window closed, or gate failed)
+        ("promoted", "Promoted"),    # registered in the target
+        ("declined", "Declined"),    # captain/admin declined; awaiting replacement choice
+        ("replaced", "Replaced"),    # a replacement team was promoted in their place
+        ("rejected", "Rejected"),    # admin rejected a window-bypassed pending row
+    ]
+
+    id = models.AutoField(primary_key=True)
+    link = models.ForeignKey(EventLink, on_delete=models.CASCADE, related_name="qualifications")
+    placement = models.PositiveIntegerField()
+    # Squad links carry team; solo links carry user. The replacement flow may swap `team` for
+    # the admin-picked replacement (the original is named in `note`).
+    team = models.ForeignKey("afc_team.Team", on_delete=models.CASCADE, null=True, blank=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="pending")
+    note = models.CharField(max_length=255, blank=True)
+    # What the promotion created in the target (withdrawn again on undo). Squad: the
+    # TournamentTeam; solo: the RegisteredCompetitors row.
+    promoted_tournament_team = models.ForeignKey(
+        TournamentTeam, on_delete=models.SET_NULL, null=True, blank=True, related_name="qualification_source",
+    )
+    promoted_competitor = models.ForeignKey(
+        RegisteredCompetitors, on_delete=models.SET_NULL, null=True, blank=True, related_name="qualification_source",
+    )
+    # One-step undo: the state before the last decision.
+    prev_status = models.CharField(max_length=12, blank=True)
+    prev_note = models.CharField(max_length=255, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="qualification_decisions",
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["link", "placement"], name="uniq_link_placement"),
+        ]
+
+    def __str__(self):
+        return f"#{self.placement} of link {self.link_id}: {self.status}"
+
 # # TournamentTeamMatchStats
 # played = models.BooleanField(default=True)
 
