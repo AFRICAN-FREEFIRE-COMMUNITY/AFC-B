@@ -217,6 +217,14 @@ class ParticipantMatchResult(models.Model):
     kills = models.PositiveIntegerField(default=0)
     damage = models.PositiveIntegerField(default=0)        # team format
     assists = models.PositiveIntegerField(default=0)       # team format
+    # Per-player kill breakdown for a TEAM participant (owner 2026-06-12: manual entry shows the
+    # roster and takes kills per player, "just like the manual input for the main leaderboard").
+    # Shape: [{"name": str, "user_id": int|null, "kills": int}, ...]. When present, `kills` above
+    # is the SERVER-computed sum of these (see views._save_one_result, mirroring the event flow's
+    # enter_team_match_result_manual). Null for solo rows / rows entered without a breakdown.
+    # JSON (not a child table) because standings never aggregate per player; this exists so the
+    # breakdown is editable on reload and auditable.
+    player_kills = models.JSONField(null=True, blank=True)
     bonus_points = models.IntegerField(default=0)
     penalty_points = models.IntegerField(default=0)
     # ── computed columns (set on save from scoring.*) ──
