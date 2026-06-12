@@ -31,6 +31,13 @@ from django.db.models.functions import Lower, Replace
 # so we strip this explicit set on both sides instead.)
 SQL_SEPARATORS = ["-", "_", ".", " ", "'", "/", "&", ",", "(", ")", "[", "]"]
 
+# LEET/LOOK-ALIKE DIGITS folded into the letters they imitate, on BOTH the column and the query
+# (owner 2026-06-12: searching "SHEDOO" could not find the user "SHED005" - the OCR read letter Os
+# where the real name uses zeros). Folding both sides keeps matching consistent: a fully numeric
+# query still matches the same numeric name because the two fold identically. 2/6/9 stay digits
+# (no convincing letter form). Mirrors LEET_DIGITS in frontend/lib/search.ts.
+LEET_DIGITS = {"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b"}
+
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 # CONFUSABLES: stylized letterforms NFKD does NOT fold, mapped to plain letters. Mirror of the same
@@ -83,16 +90,18 @@ def normalize_search_text(value):
         return ""
     decomposed = unicodedata.normalize("NFKD", _fold_confusables(str(value)))
     no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
-    return _NON_ALNUM.sub("", no_accents.lower())
+    collapsed = _NON_ALNUM.sub("", no_accents.lower())
+    # Fold look-alike digits last (see LEET_DIGITS): "shed005" -> "shedoos", same as "shedoo s".
+    return "".join(LEET_DIGITS.get(c, c) for c in collapsed)
 
 
 def separator_stripped(value):
-    """Strip the SQL_SEPARATORS set (and lower-case) from a query string, for comparison against
-    normalized_column(). Returns "" for falsy input. "V-E" -> "ve"."""
+    """Strip the SQL_SEPARATORS set, fold LEET_DIGITS, and lower-case a query string, for comparison
+    against normalized_column(). Returns "" for falsy input. "V-E" -> "ve"; "SHED005" -> "shedoos"."""
     out = str(value or "").lower()
     for sep in SQL_SEPARATORS:
         out = out.replace(sep, "")
-    return out
+    return "".join(LEET_DIGITS.get(c, c) for c in out)
 
 
 def normalized_column(field_name):
@@ -106,4 +115,8 @@ def normalized_column(field_name):
     expr = Lower(field_name)
     for sep in SQL_SEPARATORS:
         expr = Replace(expr, Value(sep), Value(""))
+    # Fold LEET_DIGITS in SQL too, so the DB-side haystack matches the folded query: REPLACE chains
+    # are cheap and this keeps server typeaheads consistent with normalize_search_text / the FE.
+    for digit, letter in LEET_DIGITS.items():
+        expr = Replace(expr, Value(digit), Value(letter))
     return expr
