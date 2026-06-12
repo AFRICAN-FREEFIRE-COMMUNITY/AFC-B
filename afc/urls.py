@@ -32,6 +32,11 @@ urlpatterns = [
     path("events/", include('afc_ocr.urls')),
     path("rankings/", include('afc_rankings.urls')),
     path("organizers/", include('afc_organizers.urls')),
+    # Sponsor-system redesign P1 (afc_sponsors): sponsor ENTITIES + admin-assigned members +
+    # the member-scoped sponsor portal (a ydpay member sees only ydpay). Spec:
+    # WEBSITE/tasks/sponsors-redesign-design.md; replaces the user-keyed SponsorEvent dashboard
+    # over P2's cutover.
+    path("sponsors/", include('afc_sponsors.urls')),
     # Standalone Leaderboards (afc_leaderboard, Phase 1). Event-less leaderboards an AFC admin or
     # organizer creates with real-or-ghost participants + per-map results. Routes live under
     # leaderboards/standalone/… (distinct from the event-tied tournament-leaderboard/ prefix above).

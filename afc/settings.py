@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     'afc_rankings',
     'afc_organizers',
     'afc_partner_api',
+    'afc_sponsors',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
