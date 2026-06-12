@@ -65,13 +65,60 @@ class CreatePostExpiryCapTests(TestCase):
         self.url = reverse("create_recruitment_post")
         self.today = timezone.now().date()
 
-    def _post(self, expiry_date):
+    def _post(self, expiry_date, **extra):
+        # mobile_device is COMPULSORY on player posts (owner 2026-06-12); include it by
+        # default so these expiry-cap tests keep exercising only the expiry rule.
+        body = {
+            "post_type": "PLAYER_AVAILABLE",
+            "post_expiry_date": _ymd(expiry_date),
+            "mobile_device": "iPhone 13",
+        }
+        body.update(extra)
         return self.client.post(
             self.url,
-            data={"post_type": "PLAYER_AVAILABLE", "post_expiry_date": _ymd(expiry_date)},
+            data=body,
             content_type="application/json",
             HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
+
+    def test_missing_mobile_device_is_rejected(self):
+        # The compulsory-device rule itself: a player post without it never persists.
+        resp = self._post(add_one_month(self.today), mobile_device="")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("mobile_device", resp.json()["message"])
+        self.assertEqual(RecruitmentPost.objects.count(), 0)
+
+    def test_mobile_device_persists_on_create(self):
+        self._post(add_one_month(self.today))
+        post = RecruitmentPost.objects.get()
+        self.assertEqual(post.mobile_device, "iPhone 13")
+
+    def test_video_url_youtube_persists(self):
+        # Optional gameplay link: a YouTube URL passes the allowlist and persists.
+        self._post(add_one_month(self.today), video_url="https://youtu.be/dQw4w9WgXcQ")
+        self.assertEqual(RecruitmentPost.objects.get().video_url, "https://youtu.be/dQw4w9WgXcQ")
+
+    def test_video_url_scheme_defaulted(self):
+        # A missing scheme is tolerated ("youtube.com/..." -> https://).
+        self._post(add_one_month(self.today), video_url="www.tiktok.com/@p/video/123456")
+        self.assertEqual(
+            RecruitmentPost.objects.get().video_url, "https://www.tiktok.com/@p/video/123456",
+        )
+
+    def test_video_url_instagram_persists(self):
+        # Instagram reels are accepted too (owner 2026-06-12).
+        self._post(add_one_month(self.today), video_url="https://www.instagram.com/reel/Cabc123XYZ/")
+        self.assertEqual(
+            RecruitmentPost.objects.get().video_url, "https://www.instagram.com/reel/Cabc123XYZ/",
+        )
+
+    def test_video_url_unknown_host_rejected(self):
+        # Anything off the platform allowlist is rejected, nothing persists; the error NAMES the
+        # accepted platforms (owner: "tell them the platform links we are accepting").
+        resp = self._post(add_one_month(self.today), video_url="https://evil.example.com/clip.mp4")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("YouTube, TikTok or Instagram", resp.json()["message"])
+        self.assertEqual(RecruitmentPost.objects.count(), 0)
 
     def test_expiry_two_months_out_is_rejected(self):
         # today + ~2 months (one month past the cap) → 400.
