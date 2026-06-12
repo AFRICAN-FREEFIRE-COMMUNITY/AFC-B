@@ -104,6 +104,46 @@ class ProcessJobTests(TestCase):
         self.assertEqual(job.status, "failed")
         self.assertIn("gemini down", job.error)
 
+    def test_images_read_concurrently_and_in_order(self):
+        """The per-image extractions overlap in threads (the 5-10 min sequential-batch fix) and the
+        stored raw_output / merge order still follows image order, not thread completion order.
+
+        Each mocked extract sleeps 0.25s; 3 images sequentially would be >=0.75s, so a wall time
+        under 0.6s proves the reads overlapped. The first image's read finishes LAST (longest
+        sleep) to catch any completion-order regression in how outputs are zipped back to images.
+        """
+        import time as _time
+
+        sleeps = {b"img0": 0.5, b"img1": 0.25, b"img2": 0.25}  # img0 slowest -> completes last
+
+        def _slow_extract(image_bytes, *_args, **_kwargs):
+            _time.sleep(sleeps[image_bytes])
+            label = image_bytes.decode()  # "img0" / "img1" / "img2"
+            return (
+                {"placements": [{"placement": int(label[-1]) + 1, "team_name": label, "kills": 1}]},
+                "gemini-2.5-flash",
+            )
+
+        job = LeaderboardOcrJob.objects.create(leaderboard=self.lb, created_by=self.admin)
+        for i in range(3):
+            img = SimpleUploadedFile(f"s{i}.jpg", f"img{i}".encode(), content_type="image/jpeg")
+            LeaderboardOcrImage.objects.create(job=job, image=img, order=i)
+
+        with patch("afc_ocr.services.extract.extract_rows", side_effect=_slow_extract):
+            started = _time.monotonic()
+            process_job(job)
+            elapsed = _time.monotonic() - started
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, "done")
+        # Sequential would be >= 1.0s (0.5 + 0.25 + 0.25); concurrent ~= the slowest single read.
+        self.assertLess(elapsed, 0.9, f"reads did not overlap (took {elapsed:.2f}s)")
+        # Order preserved: image N stored image N's read (incl. the per-image timing stamp).
+        for i, img in enumerate(job.images.order_by("order")):
+            self.assertEqual(img.raw_output["placements"][0]["team_name"], f"img{i}")
+            self.assertIn("_elapsed_ms", img.raw_output)
+        self.assertEqual([r["raw_name"] for r in job.rows], ["img0", "img1", "img2"])
+
 
 @override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
 class OcrJobEndpointTests(TestCase):

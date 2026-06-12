@@ -26,10 +26,19 @@ HOW IT CONNECTS
       build / match_name / commit path are untouched.
 """
 import logging
+import threading
 
 from .gemini import call_gemini, effective_model
 
 logger = logging.getLogger(__name__)
+
+# Serializes local-student inference across threads. The batch OCR worker
+# (afc_leaderboard.ocr.process_job) reads a map's several screenshots CONCURRENTLY —
+# the win is overlapping the Gemini HTTP calls — but the student is one shared
+# process-wide engine (local_ocr._ENGINE, lazily built) doing CPU-bound ONNX work,
+# so concurrent .run() would race the lazy build and thrash the CPU for no speedup.
+# One lock here covers every caller; single-image callers never contend on it.
+_STUDENT_LOCK = threading.Lock()
 
 
 def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=None, prompt_kind=None):
@@ -62,7 +71,10 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
     student_json, conf, decision = None, None, "gemini"
     if getattr(settings, "OCR_LOCAL_FIRST", True) and local_ocr.is_available():
         try:
-            student_json, conf = local_ocr.get_engine().run(image_bytes, mime_type, aliases, team_notes, event_type)
+            # Lock: see _STUDENT_LOCK above — the student is a shared CPU-bound engine, so
+            # concurrent batch threads take turns here while their Gemini calls overlap freely.
+            with _STUDENT_LOCK:
+                student_json, conf = local_ocr.get_engine().run(image_bytes, mime_type, aliases, team_notes, event_type)
             decision = ocr_confidence.gate(student_json, conf)["decision"]
         except Exception:
             logger.exception("local OCR student failed; escalating to Gemini")
