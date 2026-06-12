@@ -371,6 +371,17 @@ def _as_list(val):
     return v if isinstance(v, list) else []
 
 
+def _as_bool(val):
+    """Coerce a form/JSON boolean: real bools pass through, strings accept the usual
+    truthy spellings ("1"/"true"/"yes", any case). Missing/None/anything else -> False.
+    Used by the event media-criteria toggles (require_team_logo / require_esport_images)."""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes")
+    return False
+
+
 def _validate_scoring_modes(stages_data):
     """Validate the per-stage scoring-mode config (Champion-Point / Point-Rush) for a
     create/edit payload. `stages_data` is the submit-ordered list of stage dicts; the
@@ -1041,6 +1052,11 @@ def create_event(request):
             event_end_time=request.data.get("event_end_time") or None,
             registration_start_time=request.data.get("registration_start_time") or None,
             registration_end_time=request.data.get("registration_end_time") or None,
+
+            # ── Media registration criteria (owner 2026-06-12) ── booleans arrive as
+            # "true"/"1"/bool from the wizard toggles; enforced in register_for_event.
+            require_team_logo=_as_bool(request.data.get("require_team_logo")),
+            require_esport_images=_as_bool(request.data.get("require_esport_images")),
         )
 
         # change sponsor_usernames to a list
@@ -2292,6 +2308,13 @@ def edit_event(request):
             is_waitlist_enabled = is_waitlist_enabled.lower() in ("1", "true", "yes")
         event.is_waitlist_enabled = is_waitlist_enabled
 
+    # ── Media registration criteria (owner 2026-06-12) ── editable like the other toggles;
+    # enforcement lives in register_for_event so changing them only affects FUTURE registrations.
+    if "require_team_logo" in request.data:
+        event.require_team_logo = _as_bool(request.data.get("require_team_logo"))
+    if "require_esport_images" in request.data:
+        event.require_esport_images = _as_bool(request.data.get("require_esport_images"))
+
     if "waitlist_capacity" in request.data:
         try:
             event.waitlist_capacity = int(request.data.get("waitlist_capacity"))
@@ -3507,6 +3530,9 @@ def get_event_details(request):
         # ("is_waitlist enabled") so the frontend could never read them — fixed to
         # clean snake_case keys the EventDetails interface can consume.
         "is_waitlist_enabled": event.is_waitlist_enabled,
+        # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
+        "require_team_logo": event.require_team_logo,
+        "require_esport_images": event.require_esport_images,
         "waitlist_capacity": event.waitlist_capacity,
         "waitlist_discord_role_id": event.waitlist_discord_role_id,
         # K: registration/event window times ("HH:MM"). The frontend already combines
@@ -4340,6 +4366,9 @@ def get_event_details_not_logged_in(request):
         "event_end_time": event.event_end_time,
         # M: waitlist flags + capacity snapshot for the logged-out register CTA.
         "is_waitlist_enabled": event.is_waitlist_enabled,
+        # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
+        "require_team_logo": event.require_team_logo,
+        "require_esport_images": event.require_esport_images,
         "waitlist_capacity": event.waitlist_capacity,
         "registered_count": active_registered,
         "is_full": active_registered >= event.max_teams_or_players,
@@ -4792,6 +4821,21 @@ def register_for_event(request):
         if BannedPlayer.objects.filter(banned_player=user, is_active=True).exists():
             return Response({"message": "You are banned from registering for this event."}, status=403)
 
+        # ── ESPORT-IMAGE CRITERIA (owner 2026-06-12) ──
+        # When the event creator required esport images, a solo player cannot register until
+        # their UserProfile.esports_pic is uploaded (replace-only asset; see
+        # afc_auth.views.upload_esport_image). code lets the FE deep-link to the profile editor.
+        if event.require_esport_images:
+            from afc_auth.models import UserProfile
+            has_esport_image = UserProfile.objects.filter(
+                user=user, esports_pic__isnull=False
+            ).exclude(esports_pic="").exists()
+            if not has_esport_image:
+                return Response({
+                    "message": "This event requires an esport image. Upload yours on your profile before registering.",
+                    "code": "esport_image_required",
+                }, status=403)
+
         
         if is_public == False:
             # ── private-event invite gate (SOLO) ──
@@ -4963,6 +5007,15 @@ def register_for_event(request):
         if BannedPlayer.objects.filter(banned_player=user, is_active=True, ban_end_date__gt=timezone.now()).exists():
             return Response({"message": "You are banned and cannot register for events."}, status=403)
 
+        # ── TEAM-LOGO CRITERIA (owner 2026-06-12) ──
+        # When the event creator required team logos, a team cannot register until its logo is
+        # uploaded. code lets the FE deep-link the captain to the team edit page.
+        if event.require_team_logo and not team.team_logo:
+            return Response({
+                "message": "This event requires a team logo. Upload your team's logo before registering.",
+                "code": "team_logo_required",
+            }, status=403)
+
         # Ensure requester is in team
         if not TeamMembers.objects.filter(team=team, member=user).exists():
             return Response({"message": "You are not a member of this team."}, status=403)
@@ -5014,6 +5067,31 @@ def register_for_event(request):
         )
         if not set(roster_member_ids).issubset(team_member_ids):
             return Response({"message": "One or more roster players are not members of this team."}, status=400)
+
+        # ── ESPORT-IMAGE CRITERIA (owner 2026-06-12) ──
+        # When required, EVERY roster member must have their esport image uploaded
+        # (UserProfile.esports_pic). The error NAMES the missing players so the captain knows
+        # exactly who must upload before retrying.
+        if event.require_esport_images:
+            from afc_auth.models import UserProfile
+            with_image = set(
+                UserProfile.objects.filter(
+                    user_id__in=roster_member_ids, esports_pic__isnull=False
+                ).exclude(esports_pic="").values_list("user_id", flat=True)
+            )
+            missing_ids = [uid for uid in roster_member_ids if uid not in with_image]
+            if missing_ids:
+                missing_names = list(
+                    User.objects.filter(user_id__in=missing_ids).values_list("username", flat=True)
+                )
+                return Response({
+                    "message": (
+                        "This event requires every rostered player to have an esport image. "
+                        f"Missing: {', '.join(missing_names)}."
+                    ),
+                    "code": "esport_image_required",
+                    "missing_players": missing_names,
+                }, status=403)
 
         # Prevent players being in two rosters for the same event.
         # Fetch the conflicting roster rows WITH the player + the team they are
@@ -8490,6 +8568,9 @@ def get_event_details_for_admin(request):
             ],
             # M: fixed key names (were emitted with stray spaces, unreadable by clients).
             "is_waitlist_enabled": event.is_waitlist_enabled,
+        # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
+        "require_team_logo": event.require_team_logo,
+        "require_esport_images": event.require_esport_images,
             "waitlist_capacity": event.waitlist_capacity,
             "waitlist_discord_role_id": event.waitlist_discord_role_id,
             # K: event start/end times so the admin analytics view can show them.
@@ -19274,3 +19355,132 @@ def verify_event(request):
     }, status=200)
 
     return Response({"message": "Image deleted successfully."})
+
+# ??????????????????????????????????????????????????????????????????????????????
+#  ESPORT MEDIA EXPORT (owner 2026-06-12)
+#  Admins AND organizers can download team logos + player esport images as a ZIP:
+#  either an arbitrary SET of teams/players, or everything REGISTERED for an event.
+# ??????????????????????????????????????????????????????????????????????????????
+@api_view(["POST"])
+def download_esport_media(request):
+    """
+    POST events/download-esport-media/  - bundle team logos + player esport images into a ZIP.
+
+    PURPOSE
+        Owner 2026-06-12: "a way for admins to download the logos or esport images of any team &
+        player or set of teams & players", plus the same scoped to everything registered for one
+        event - for BOTH admins and organizers (who use the esport images in event graphics).
+
+    AUTH
+        Bearer SessionToken. Allowed: AFC event admins (_is_event_admin) OR any user holding the
+        platform `organizer` role (org members - the role every active OrganizationMember gets).
+
+    REQUEST (JSON; at least one selector required)
+        { "team_ids": [int, ...],      # logos of these teams
+          "player_ids": [int, ...],    # esport images of these users
+          "event_id": int }            # OR: every registered team's logo + every rostered/solo
+                                       #     player's esport image for this event
+    RESPONSE
+        200 application/zip attachment:
+            team_logos/<team_name>.<ext>, esport_images/<username>.<ext>, manifest.txt
+            (the manifest lists what was included and who had NO uploaded asset - missing assets
+            are skipped, never an error, so one logo-less team cannot block the export)
+        400 no selector / unknown event; 401/403 auth.
+
+    HOW IT CONNECTS
+        - Reads Team.team_logo (afc_team) + UserProfile.esports_pic (afc_auth, uploaded via
+          /auth/upload-esport-image/, replace-only).
+        - Event scope walks RegisteredCompetitors (teams + solo users) and TournamentTeamMember
+          (the event rosters) - the same tables registration writes.
+        - Consumed by the admin Teams & Players page + the admin/organizer event pages
+          ("Download media" buttons).
+    """
+    import io
+    import os
+    import re as _re
+    import zipfile
+
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    # Admins always pass; otherwise the platform organizer role (held by org members).
+    is_organizer = UserRoles.objects.filter(user=user, role__role_name="organizer").exists()
+    if not _is_event_admin(user) and not is_organizer:
+        return Response({"message": "Only admins and organizers can download esport media."}, status=403)
+
+    team_ids = request.data.get("team_ids") or []
+    player_ids = request.data.get("player_ids") or []
+    event_id = request.data.get("event_id")
+
+    if not team_ids and not player_ids and not event_id:
+        return Response({"message": "Provide team_ids, player_ids, or event_id."}, status=400)
+
+    zip_label = "esport-media"
+    if event_id:
+        event = Event.objects.filter(event_id=event_id).first()
+        if not event:
+            return Response({"message": "Event not found."}, status=400)
+        zip_label = event.event_name or f"event-{event_id}"
+        regs = RegisteredCompetitors.objects.filter(event=event).select_related("team", "user")
+        team_ids = list({r.team_id for r in regs if r.team_id})
+        # Players = solo registrants + every rostered member of the event's tournament teams.
+        solo_ids = [r.user_id for r in regs if r.user_id]
+        roster_ids = list(
+            TournamentTeamMember.objects.filter(tournament_team__event=event)
+            .values_list("user_id", flat=True)
+        )
+        player_ids = list({*solo_ids, *roster_ids})
+
+    def _safe(name, fallback):
+        cleaned = _re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "").strip()).strip("_")
+        return cleaned or str(fallback)
+
+    included, missing = [], []
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for team in Team.objects.filter(team_id__in=team_ids):
+            if team.team_logo:
+                try:
+                    ext = os.path.splitext(team.team_logo.name)[1] or ".png"
+                    zf.writestr(f"team_logos/{_safe(team.team_name, team.team_id)}{ext}", team.team_logo.read())
+                    included.append(f"team logo: {team.team_name}")
+                    continue
+                except Exception:
+                    pass  # unreadable file on disk -> treat as missing, never block the export
+            missing.append(f"team logo MISSING: {team.team_name}")
+
+        from afc_auth.models import UserProfile
+        profiles = {
+            p.user_id: p
+            for p in UserProfile.objects.filter(user_id__in=player_ids).select_related("user")
+        }
+        for u in User.objects.filter(user_id__in=player_ids):
+            profile = profiles.get(u.user_id)
+            if profile and profile.esports_pic:
+                try:
+                    ext = os.path.splitext(profile.esports_pic.name)[1] or ".png"
+                    # Filename = IGN_UID (owner 2026-06-12): the in-game name plus the Free Fire UID, so
+                    # graphics teams can match files to game accounts without opening the platform.
+                    zf.writestr(
+                        f"esport_images/{_safe(u.username, u.user_id)}_{_safe(u.uid, u.user_id)}{ext}",
+                        profile.esports_pic.read(),
+                    )
+                    included.append(f"esport image: {u.username}")
+                    continue
+                except Exception:
+                    pass
+            missing.append(f"esport image MISSING: {u.username}")
+
+        manifest = ["AFC esport media export", f"included: {len(included)}", ""]
+        manifest += included + [""] + (["Not uploaded yet:"] + missing if missing else [])
+        zf.writestr("manifest.txt", "\n".join(manifest))
+
+    from django.http import HttpResponse
+    response = HttpResponse(buffer.getvalue(), content_type="application/zip")
+    safe_label = _re.sub(r"[^A-Za-z0-9._-]+", "-", zip_label).strip("-") or "esport-media"
+    response["Content-Disposition"] = f'attachment; filename="{safe_label}-media.zip"'
+    return response

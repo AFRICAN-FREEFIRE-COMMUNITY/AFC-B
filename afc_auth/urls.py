@@ -31,6 +31,9 @@ urlpatterns = [
     # Flip ONE dashboard's one-time intro callout to seen ({"dashboard": "sponsor"|...}).
     # Bearer-auth POST. Consumed by app/(user)/_components/DashboardIntroCoachmark.tsx on dismiss.
     path('mark-dashboard-intro-seen/', mark_dashboard_intro_seen, name='mark_dashboard_intro_seen'),
+    # Upload/REPLACE the current user's esport image (multipart `esport_image`; replace-only, no
+    # delete). Consumed by the profile-edit "Esport Image" section.
+    path('upload-esport-image/', upload_esport_image, name='upload_esport_image'),
     path('contact-us/', contact_us, name='contact_us'),
     path('create-news/', create_news, name='create_news'),
     path('edit-news/', edit_news, name='edit_news'),

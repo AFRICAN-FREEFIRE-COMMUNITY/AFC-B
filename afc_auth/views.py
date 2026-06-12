@@ -1627,11 +1627,15 @@ def get_user_profile(request):
         return Response({"message": "Invalid or expired session token."},
                         status=status.HTTP_401_UNAUTHORIZED)
 
-    # ---------------- PROFILE PIC ----------------
+    # ---------------- PROFILE PIC + ESPORT IMAGE ----------------
     profile_pic_url = None
+    esport_image_url = None
     try:
         profile = UserProfile.objects.get(user=user)
         profile_pic_url = request.build_absolute_uri(profile.profile_pic.url) if profile.profile_pic else None
+        # The SEPARATE esport image (UserProfile.esports_pic): organizers use it for event
+        # graphics; the profile-edit UI shows it + the replace flow (upload_esport_image).
+        esport_image_url = request.build_absolute_uri(profile.esports_pic.url) if profile.esports_pic else None
     except UserProfile.DoesNotExist:
         pass
 
@@ -1733,6 +1737,8 @@ def get_user_profile(request):
         "team": user.team.team_name if getattr(user, "team", None) else None,
         "role": user.role,
         "profile_pic": profile_pic_url,
+        # The separate esport image (see upload_esport_image): null until the player uploads one.
+        "esport_image_url": esport_image_url,
         "roles": list(UserRoles.objects.filter(user=user).values_list("role__role_name", flat=True)),
         "is_banned": BannedPlayer.objects.filter(banned_player=user, is_active=True).exists(),
         "is_vendor": is_vendor,
@@ -1884,6 +1890,62 @@ def mark_dashboard_intro_seen(request):
         user.save(update_fields=["seen_dashboard_intros"])
 
     return Response({"status": "ok", "seen_dashboard_intros": seen}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def upload_esport_image(request):
+    """
+    Upload (or REPLACE) the current user's ESPORT IMAGE - UserProfile.esports_pic.
+
+    PURPOSE
+        The esport image is a SEPARATE asset from the profile picture (owner 2026-06-12):
+        organizers use it as the player's image in event graphics, and event creators can
+        REQUIRE it before a player may register for an event. The field has existed on
+        UserProfile since 0001 but had no upload path; this is it.
+
+    RULES (owner)
+        - Replace-only: an esport image can NEVER be removed, only replaced - this endpoint
+          requires a file and no delete path exists.
+        - The player must upload THEIR OWN picture, looking like an esport image (bust shot,
+          no branded shirts). The frontend shows the ban warning; uploading someone else's
+          picture or a non-esport picture can get the player AND their team banned.
+
+    AUTH     : Bearer SessionToken (same validate_token pattern as edit_profile).
+    REQUEST  : POST /auth/upload-esport-image/  multipart, field `esport_image` (required).
+    RESPONSE : 200 {"status": "ok", "esport_image_url": <absolute url>}
+               400 missing file / missing or malformed Authorization header
+               401 invalid/expired session token
+
+    FRONTEND CONSUMER
+        app/(user)/profile/edit/page.tsx ("Esport Image" section: preview + replace button +
+        the ban warning). The complementary read is get_user_profile's esport_image_url.
+    """
+    # ---------------- AUTH (mirrors edit_profile) ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."},
+                        status=status.HTTP_401_UNAUTHORIZED)
+
+    esport_image = request.FILES.get("esport_image")
+    if not esport_image:
+        return Response({"message": "esport_image file is required."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    profile, _created = UserProfile.objects.get_or_create(user=user)
+    profile.esports_pic = esport_image  # replace-only: the old file reference is overwritten
+    profile.save()
+
+    return Response({
+        "status": "ok",
+        "esport_image_url": request.build_absolute_uri(profile.esports_pic.url),
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])

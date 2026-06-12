@@ -149,6 +149,9 @@ urlpatterns = [
     # per-group broadcast composer (AFC official + organizer). See broadcast_to_group.
     path("broadcast-to-group/", broadcast_to_group, name="broadcast_to_group"),
     path("export-participants/", export_participants, name="export_participants"),
+    # ZIP of team logos + player esport images (sets of teams/players, or everything registered
+    # for an event). Admins + organizers. Consumed by the "Download media" buttons.
+    path("download-esport-media/", download_esport_media, name="download_esport_media"),
     # organizers: toggle Event.rankings_verified (platform org admins only).
     path("verify-event/", verify_event, name="verify_event"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
