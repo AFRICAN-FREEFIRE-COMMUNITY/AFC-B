@@ -88,17 +88,25 @@ class PaystackNonJsonGuardTests(TestCase):
         self.assertIn("Could not reach Paystack", resp.json().get("detail", ""))
 
     def test_happy_path_saves_recipient(self):
-        # Resolve (GET) and transferrecipient (POST) both succeed -> bank persisted.
+        # Resolve (GET, 200) and transferrecipient (POST) both succeed -> bank persisted.
+        # REGRESSION (owner bug 2026-06-12 #2): Paystack returns HTTP 201 Created for
+        # POST /transferrecipient; the old ==200 success check turned the success into
+        # "Could not save your bank... (Transfer recipient created successfully)". The
+        # recipient response here is deliberately 201.
         resolve_ok = _FakeResponse(
             status_code=200,
             json_data={"status": True, "data": {"account_name": "PAY VENDOR", "account_number": "0123456789"}},
         )
-        recipient_ok = _FakeResponse(
-            status_code=200,
-            json_data={"status": True, "data": {"recipient_code": "RCP_test123"}},
+        recipient_created = _FakeResponse(
+            status_code=201,
+            json_data={
+                "status": True,
+                "message": "Transfer recipient created successfully",
+                "data": {"recipient_code": "RCP_test123"},
+            },
         )
         with mock.patch("afc_shop.paystack_payout.requests.get", return_value=resolve_ok), \
-             mock.patch("afc_shop.paystack_payout.requests.post", return_value=recipient_ok):
+             mock.patch("afc_shop.paystack_payout.requests.post", return_value=recipient_created):
             resp = self._save_bank()
         self.assertEqual(resp.status_code, 200)
         self.vendor.refresh_from_db()
