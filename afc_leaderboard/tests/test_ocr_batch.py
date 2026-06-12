@@ -154,6 +154,69 @@ class ProcessJobTests(TestCase):
         self.assertEqual([r["raw_name"] for r in job.rows], ["img0", "img1", "img2"])
 
 
+_MATCH_LOG = """\
+TeamName: Alpha  Rank: 1  KillScore: 7  RankScore: 12  TotalScore: 19
+NAME: a1  ID: 90001  KILL: 5
+NAME: a2  ID: 90002  KILL: 2
+TeamName: Mystery  Rank: 2  KillScore: 3  RankScore: 9  TotalScore: 12
+NAME: stranger  ID: 99999  KILL: 3
+"""
+
+
+class ResultsFileTests(TestCase):
+    """The "upload result file" option: POST /standalone/<id>/results-file/ parses the game's
+    match-log export into the SAME review-row shape the OCR flow returns. Players with a known
+    UID resolve exactly (confidence 1.0); unknown UIDs fall back to the fuzzy name match."""
+
+    def setUp(self):
+        self.admin, self.token = make_afc_admin("fileadmin")
+        self.lb = StandaloneLeaderboard.objects.create(
+            name="FileLB", format="team", placement_points={"1": 12, "2": 9}, kill_point=1.0,
+            creator=self.admin,
+        )
+        make_team("Alpha", self.admin)
+        a1, _ = make_user("a1")
+        a1.uid = "90001"
+        a1.save(update_fields=["uid"])
+
+    def _post(self, content=_MATCH_LOG, lb=None):
+        f = SimpleUploadedFile("log.txt", content.encode(), content_type="text/plain")
+        return Client().post(
+            f"/leaderboards/standalone/{(lb or self.lb).id}/results-file/",
+            {"file": f},
+            **bearer(self.token),
+        )
+
+    def test_parses_into_review_rows_with_uid_matches(self):
+        res = self._post()
+        self.assertEqual(res.status_code, 200)
+        rows = res.json()["rows"]
+        self.assertEqual([r["placement"] for r in rows], [1, 2])
+
+        alpha = rows[0]
+        self.assertEqual(alpha["raw_name"], "Alpha")
+        self.assertEqual(alpha["kills"], 7)                      # the file's KillScore
+        self.assertFalse(alpha["is_unmatched"])                  # real team "Alpha" matched
+        # UID 90001 resolves a1 exactly at confidence 1.0; UID 90002 is unknown -> fuzzy fallback.
+        d = {p["name"]: p for p in alpha["players_detail"]}
+        self.assertEqual(d["a1"]["matched_username"], "a1")
+        self.assertEqual(d["a1"]["confidence"], 1.0)
+        self.assertEqual(d["a1"]["kills"], 5)
+        self.assertIn("a2", d)
+
+    def test_solo_leaderboard_rejected(self):
+        solo = StandaloneLeaderboard.objects.create(
+            name="SoloLB", format="solo", placement_points={"1": 12}, kill_point=1.0,
+            creator=self.admin,
+        )
+        res = self._post(lb=solo)
+        self.assertEqual(res.status_code, 400)
+
+    def test_unparseable_file_400(self):
+        res = self._post(content="definitely not a match log")
+        self.assertEqual(res.status_code, 400)
+
+
 class GhostExistingPlayersAppendTests(TestCase):
     """ghost_existing resolutions may carry a players list: missing GhostPlayer slots are APPENDED to
     the existing ghost team (owner 2026-06-12: attach the OCR-read players to an old ghost team too),

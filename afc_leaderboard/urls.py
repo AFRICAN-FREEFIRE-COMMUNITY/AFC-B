@@ -34,6 +34,10 @@ urlpatterns = [
     # ── matches ──
     path("standalone/<int:lb_id>/matches/", views.add_match, name="standalone_add_match"),  # POST
 
+    # ── result FILE upload ── parse the game's match-log export into the same review rows; the FE
+    # applies the reviewed rows through the ocr/apply/ endpoint below (one apply pipeline).
+    path("standalone/<int:lb_id>/results-file/", views.results_file_extract, name="standalone_results_file"),  # POST (multipart)
+
     # ── OCR assist (Phase 2, legacy single-shot) ── extract a screenshot, then apply the reviewed rows ──
     # Kept for backward compatibility; the FE now uses the async batch endpoints below (the single-shot
     # extract is synchronous and could time out on prod). Declared BEFORE the batch jobs/ routes is fine —

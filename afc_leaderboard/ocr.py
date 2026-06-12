@@ -142,6 +142,79 @@ def build_solo_ocr_rows(raw_output, players):
     return rows
 
 
+# ── match-log file rows (the "upload result file" option) ────────────────────────────────────────
+def build_rows_from_match_log(parsed_teams, teams, players_pool):
+    """Turn utils.match_log.parse_team_match_log output into the SAME review rows the OCR flows
+    produce, so the FE reuses one review table + one apply pipeline for screenshots AND files.
+
+    The file format carries each player's UID, so players match the platform EXACTLY by User.uid
+    (confidence 1.0) and only fall back to the fuzzy match_name when the UID is unknown. Team
+    matching is identical to the OCR path (match_team_name over the real+ghost pool). Consumed by
+    afc_leaderboard.views.results_file_extract; row shape documented on build_team_ocr_rows."""
+    from afc_auth.models import User
+
+    # One query resolves every UID in the file to a platform user.
+    all_uids = [p["uid"] for t in parsed_teams for p in t.get("players", []) if p.get("uid")]
+    uid_to_user = {
+        u["uid"]: u
+        for u in User.objects.filter(uid__in=all_uids).values("uid", "user_id", "username")
+    }
+
+    rows = []
+    for entry in parsed_teams:
+        players_read = [p["name"] for p in entry.get("players", []) if p.get("name")]
+        players_detail = []
+        for p in entry.get("players", []):
+            pname = (p.get("name") or "").strip()
+            if not pname:
+                continue
+            hit = uid_to_user.get(p.get("uid"))
+            if hit:
+                # UID hit: exact identity, no fuzzying needed.
+                players_detail.append({
+                    "name": pname,
+                    "kills": int(p.get("kills", 0) or 0),
+                    "matched_user_id": hit["user_id"],
+                    "matched_username": hit["username"],
+                    "confidence": 1.0,
+                    "top_candidates": [
+                        {"user_id": hit["user_id"], "username": hit["username"], "confidence": 1.0}
+                    ],
+                    "is_unmatched": False,
+                })
+                continue
+            pm = match_name(pname, players_pool)
+            players_detail.append({
+                "name": pname,
+                "kills": int(p.get("kills", 0) or 0),
+                "matched_user_id": pm["matched_user_id"],
+                "matched_username": pm["matched_username"],
+                "confidence": pm["confidence"],
+                "top_candidates": pm["top_candidates"],
+                "is_unmatched": pm["matched_user_id"] is None,
+            })
+
+        raw_name = (entry.get("team_name") or "").strip()
+        derived_tag = derive_team_tag(players_read) if not raw_name else ""
+        m = match_team_name(raw_name or derived_tag, teams)
+        rows.append({
+            "row_id": m["row_id"],
+            "raw_name": raw_name or derived_tag,
+            "players_read": players_read,
+            "players_detail": players_detail,
+            "placement": int(entry.get("placement", 0) or 0),
+            # The file states the team's KillScore directly; fall back to the players' sum.
+            "kills": int(entry.get("team_kills") or 0)
+            or sum(int(p.get("kills", 0) or 0) for p in entry.get("players", [])),
+            "matched_team_id": m["matched_team_id"],
+            "matched_name": m["matched_team_name"],
+            "confidence": m["confidence"],
+            "top_candidates": m["top_candidates"],
+            "is_unmatched": m["matched_team_id"] is None,
+        })
+    return rows
+
+
 # ── multi-image merge ─────────────────────────────────────────────────────────────────────────────
 def _norm(s):
     """Loose key for dedupe: lowercased, alphanumerics only (so 'V-ENT' and 'vent' collide)."""
