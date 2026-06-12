@@ -1740,6 +1740,11 @@ def get_user_profile(request):
         # and WelcomeTour.tsx auto-shows the animated newcomer tour only while this is False. Flipped
         # True by POST /auth/mark-welcome-seen/ (mark_welcome_seen) when the user finishes/skips it.
         "has_seen_welcome": user.has_seen_welcome,
+        # One-time dashboard intro callouts: {"sponsor": true, ...} once each is dismissed. The
+        # frontend DashboardIntroCoachmark shows a "here is where your new dashboard lives" callout
+        # for any accessible dashboard whose key is missing, then flips it via
+        # POST /auth/mark-dashboard-intro-seen/.
+        "seen_dashboard_intros": user.seen_dashboard_intros or {},
         "discord_id": user.discord_id if hasattr(user, "discord_id") else None,
         "discord_username": user.discord_username if hasattr(user, "discord_username") else None,
 
@@ -1817,6 +1822,68 @@ def mark_welcome_seen(request):
         user.save(update_fields=["has_seen_welcome"])
 
     return Response({"status": "ok", "has_seen_welcome": True}, status=status.HTTP_200_OK)
+
+
+# The dashboards a one-time intro callout exists for; mirrors the frontend DASHBOARDS list in
+# app/(user)/_components/DashboardIntroCoachmark.tsx.
+_DASHBOARD_INTRO_KEYS = {"admin", "sponsor", "organizer", "vendor"}
+
+
+@api_view(["POST"])
+def mark_dashboard_intro_seen(request):
+    """
+    Mark ONE dashboard's one-time intro callout as seen for the current user.
+
+    PURPOSE
+        When a user is granted access to a role dashboard (admin / sponsor / organizer / vendor),
+        their next login shows a one-time callout pointing at the nav menu where that dashboard
+        lives (owner 2026-06-12: not a navigate-now popup, and only the first time after access).
+        Dismissing it calls this endpoint so it never shows again for that dashboard, on any device.
+
+    AUTH
+        Bearer SessionToken (same validate_token pattern as mark_welcome_seen).
+
+    REQUEST  : POST /auth/mark-dashboard-intro-seen/   {"dashboard": "admin"|"sponsor"|"organizer"|"vendor"}
+    RESPONSE : 200 {"status": "ok", "seen_dashboard_intros": {...}}
+               400 missing/unknown dashboard key, or missing/malformed Authorization header
+               401 invalid/expired session token
+
+    FRONTEND CONSUMER
+        app/(user)/_components/DashboardIntroCoachmark.tsx (mounted in the user Header) calls this
+        when the callout is dismissed. The complementary read is get_user_profile's
+        seen_dashboard_intros. Idempotent: re-marking an already-seen dashboard is a no-op 200.
+    """
+    # ---------------- AUTH (mirrors mark_welcome_seen) ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    token = session_token.split(" ")[1]
+    user = validate_token(token)
+    if not user:
+        return Response({"message": "Invalid or expired session token."},
+                        status=status.HTTP_401_UNAUTHORIZED)
+
+    dashboard = (request.data.get("dashboard") or "").strip().lower()
+    if dashboard not in _DASHBOARD_INTRO_KEYS:
+        return Response(
+            {"message": f"dashboard must be one of: {', '.join(sorted(_DASHBOARD_INTRO_KEYS))}."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ---------------- FLIP THE KEY (idempotent) ----------------
+    seen = dict(user.seen_dashboard_intros or {})
+    if not seen.get(dashboard):
+        seen[dashboard] = True
+        user.seen_dashboard_intros = seen
+        user.save(update_fields=["seen_dashboard_intros"])
+
+    return Response({"status": "ok", "seen_dashboard_intros": seen}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])

@@ -28,6 +28,9 @@ urlpatterns = [
     # Flip the current user's first-time WELCOME tour flag to seen. Bearer-auth POST.
     # Consumed by frontend app/(user)/_components/WelcomeTour.tsx on finish/skip/close.
     path('mark-welcome-seen/', mark_welcome_seen, name='mark_welcome_seen'),
+    # Flip ONE dashboard's one-time intro callout to seen ({"dashboard": "sponsor"|...}).
+    # Bearer-auth POST. Consumed by app/(user)/_components/DashboardIntroCoachmark.tsx on dismiss.
+    path('mark-dashboard-intro-seen/', mark_dashboard_intro_seen, name='mark_dashboard_intro_seen'),
     path('contact-us/', contact_us, name='contact_us'),
     path('create-news/', create_news, name='create_news'),
     path('edit-news/', edit_news, name='edit_news'),
