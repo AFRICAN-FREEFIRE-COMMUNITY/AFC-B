@@ -138,6 +138,18 @@ class Event(models.Model):
     registration_fee = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     registration_fee_currency = models.CharField(max_length=3, default="USD")
 
+    # ── Media registration criteria (owner 2026-06-12) ─────────────────────────────────────
+    # Event creators (admins or organizers) can REQUIRE media before registration:
+    #   require_team_logo     -> a TEAM registration is blocked until Team.team_logo is uploaded.
+    #   require_esport_images -> every registering player (solo user, or each roster member of a
+    #                            team registration) must have their ESPORT IMAGE uploaded
+    #                            (afc_auth.UserProfile.esports_pic, replace-only - see
+    #                            afc_auth.views.upload_esport_image).
+    # Set in create_event / edit_event, shown as toggles on both event wizards, enforced in
+    # register_for_event, and surfaced on the public event page so players know before trying.
+    require_team_logo = models.BooleanField(default=False)
+    require_esport_images = models.BooleanField(default=False)
+
 
 
     def save(self, *args, **kwargs):
