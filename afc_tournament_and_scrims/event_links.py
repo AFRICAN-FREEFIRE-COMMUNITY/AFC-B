@@ -1,0 +1,673 @@
+"""
+afc_tournament_and_scrims.event_links — EVENT LINKING / QUALIFICATION CHAINS (P1).
+
+PURPOSE (owner-approved design 2026-06-12, spec: WEBSITE/tasks/event-linking-design.md v2 +
+feedback round 1; mockup: frontend/public/_event_linking_preview.html)
+    Per-STAGE qualification rules: "the top N of SOURCE STAGE qualify into TARGET EVENT"
+    (top 6 of Semis -> event A, top 2 of Finals -> event B; 10 country qualifiers -> one
+    Grand Finals). When a link FIRES, the stage's consolidated standings are read, the top N
+    become EventQualification rows, and (auto_promote) each is registered into the target
+    through the SAME rows register_for_event writes. Every decision is UNDOable; standings
+    edited after a fire are DIFFED against the fire-time snapshot and the link creator is
+    notified in-app.
+
+HOW IT CONNECTS
+    - Models: EventLink / EventQualification (models.py) + the registration rows
+      (TournamentTeam / TournamentTeamMember / RegisteredCompetitors).
+    - Standings: round_robin.cumulative_standings(stage) for TEAM stages (the same ordered
+      effective_total table the stage leaderboards render); a SoloPlayerMatchStats twin below
+      for solo events.
+    - Fire triggers: the manual fire endpoint (admin presses once standings are final) AND
+      views.complete_event, which best-effort fires any still-active links of the event.
+    - Permissions: AFC event admins link anything; organizers only events whose org they can
+      edit on BOTH ends (org_can_event "can_edit_events").
+    - Consumed by: frontend lib/eventLinks.ts -> the "Linked events" card on the admin event
+      page and the organizer event page.
+
+ENDPOINTS (mounted under events/ via afc_tournament_and_scrims/urls.py)
+    POST   events/<event_id>/links/create/      create_link
+    GET    events/<event_id>/links/             list_links      (outbound + inbound + diffs)
+    DELETE events/links/<link_id>/              cancel_link
+    POST   events/links/<link_id>/fire/         fire_link
+    POST   events/links/<link_id>/decide/       decide          (allow|reject|decline|
+                                                                 replace_next|replace_team|undo)
+"""
+from django.db import transaction
+from django.utils import timezone
+
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+from afc_auth.models import Notifications, User
+from afc_auth.views import validate_token
+from afc_organizers.permissions import org_can_event
+from afc_team.models import Team, TeamMembers
+
+from . import round_robin
+from .models import (
+    Event, EventLink, EventQualification, RegisteredCompetitors, SoloPlayerMatchStats,
+    Stages, TournamentTeam, TournamentTeamMember,
+)
+
+
+# ── auth helpers ─────────────────────────────────────────────────────────────────────────────
+def _auth_user(request):
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+    return user, None
+
+
+def _is_event_admin(user):
+    """AFC event admin (base role admin, or head_admin/event_admin granular). Local copy of the
+    views.py helper to avoid importing the 19k-line module at load time."""
+    if user.role == "admin":
+        return True
+    return user.userroles.filter(role__role_name__in=("head_admin", "super_admin", "event_admin")).exists()
+
+
+def _can_manage_link_events(user, source_event, target_event):
+    """Admins link ANY events; organizers only events whose org they can edit on BOTH ends
+    (owner: 'admins can link any events, organizers only their own')."""
+    if _is_event_admin(user):
+        return True
+    return org_can_event(user, "can_edit_events", source_event) and org_can_event(
+        user, "can_edit_events", target_event,
+    )
+
+
+def _can_manage_link(user, link):
+    return _can_manage_link_events(user, link.source_event, link.target_event)
+
+
+# ── standings: ordered top rows of a stage ───────────────────────────────────────────────────
+def _stage_top_rows(stage, participant_type):
+    """The stage's consolidated standings, ordered, as
+    [{"team_id"|"user_id": int, "name": str}] (best first).
+
+    TEAM stages reuse round_robin.cumulative_standings (the SAME effective_total table the
+    stage leaderboards render; tournament_team_id is resolved back to the platform team).
+    SOLO stages aggregate SoloPlayerMatchStats with the identical points formula."""
+    if participant_type == "solo":
+        from django.db.models import Case, Count, F, IntegerField, Sum, Value, When
+        from django.db.models.functions import Coalesce
+
+        rows = (
+            SoloPlayerMatchStats.objects.filter(match__group__stage=stage)
+            .values("competitor__user_id", name=F("competitor__user__username"))
+            .annotate(
+                effective_total=(
+                    Coalesce(Sum("placement_points"), 0)
+                    + Coalesce(Sum("kill_points"), 0)
+                    + Coalesce(Sum("bonus_points"), 0)
+                    - Coalesce(Sum("penalty_points"), 0)
+                ),
+                total_booyah=Coalesce(Sum(
+                    Case(When(placement=1, then=Value(1)), default=Value(0), output_field=IntegerField()),
+                ), 0),
+                total_kills=Coalesce(Sum("kills"), 0),
+            )
+            .order_by("-effective_total", "-total_booyah", "-total_kills", "name")
+        )
+        return [{"user_id": r["competitor__user_id"], "name": r["name"]} for r in rows]
+
+    out = []
+    for r in round_robin.cumulative_standings(stage):
+        tt = TournamentTeam.objects.select_related("team").filter(
+            tournament_team_id=r["tournament_team_id"],
+        ).first()
+        if tt and tt.team_id:
+            out.append({"team_id": tt.team_id, "name": r["team_name"]})
+    return out
+
+
+# ── promotion: register a qualification into the target event ───────────────────────────────
+def _registration_gates(link, qual):
+    """The target's registration CRITERIA still apply to qualified entries (window bypass
+    does NOT bypass gates, owner decision). Returns a human reason string, or None when clear."""
+    target = link.target_event
+    if qual.team_id:
+        team = qual.team
+        if target.require_team_logo and not team.team_logo:
+            return "target requires a team logo"
+        if target.require_esport_images:
+            from afc_auth.models import UserProfile
+
+            member_ids = list(TeamMembers.objects.filter(team=team).values_list("member_id", flat=True))
+            with_img = set(
+                UserProfile.objects.filter(user_id__in=member_ids, esports_pic__isnull=False)
+                .exclude(esports_pic="").values_list("user_id", flat=True)
+            )
+            missing = [m for m in member_ids if m not in with_img]
+            if missing:
+                return "target requires esport images for every rostered player"
+    else:
+        if target.require_esport_images:
+            from afc_auth.models import UserProfile
+
+            ok = UserProfile.objects.filter(user=qual.user, esports_pic__isnull=False).exclude(
+                esports_pic="",
+            ).exists()
+            if not ok:
+                return "target requires an esport image"
+    return None
+
+
+def _window_closed(event):
+    today = timezone.localdate()
+    return bool(event.registration_end_date and event.registration_end_date < today)
+
+
+def _promote(qual, actor, bypass_window=False):
+    """Register the qualification into the target. Returns (ok, reason). Pending reasons:
+    duplicate handled as success; closed window (unless an admin Allow bypasses it) and
+    failing gates hold the row pending."""
+    link = qual.link
+    target = link.target_event
+
+    gate = _registration_gates(link, qual)
+    if gate:
+        return False, gate
+    if not bypass_window and _window_closed(target):
+        return False, "registration window closed: allow or reject"
+
+    with transaction.atomic():
+        if qual.team_id:
+            # Already in the target (registered directly or via another qualifier): point at
+            # the existing registration, never duplicate.
+            if RegisteredCompetitors.objects.filter(event=target, team=qual.team).exists():
+                qual.status = "promoted"
+                qual.note = "already registered in the target"
+                qual.save(update_fields=["status", "note"])
+                return True, None
+
+            RegisteredCompetitors.objects.create(event=target, team=qual.team, status="registered")
+            tt = TournamentTeam.objects.create(
+                event=target, team=qual.team, status="active",
+                registered_by=actor or link.created_by, country=qual.team.country,
+            )
+            # Roster: copy the SOURCE event's finishing roster when it exists, else the team's
+            # current members. roster_mode=captain_repick copies too, then tells the captain to
+            # confirm/edit via the existing Edit Registration flow before roster lock.
+            src_member_ids = list(
+                TournamentTeamMember.objects.filter(
+                    tournament_team__event=link.source_event, tournament_team__team=qual.team,
+                ).values_list("user_id", flat=True)
+            ) or list(TeamMembers.objects.filter(team=qual.team).values_list("member_id", flat=True))
+            TournamentTeamMember.objects.bulk_create([
+                TournamentTeamMember(tournament_team=tt, user_id=uid, event=target, status="active")
+                for uid in dict.fromkeys(src_member_ids)
+            ], batch_size=200)
+            qual.promoted_tournament_team = tt
+
+            # Notify the captain: qualified (+ the re-pick ask when the link demands it).
+            captain = TeamMembers.objects.filter(
+                team=qual.team, management_role="team_captain",
+            ).select_related("member").first()
+            notify_user = captain.member if captain else (qual.team.team_owner if qual.team.team_owner_id else None)
+            if notify_user:
+                extra = (
+                    " Review and confirm your roster via Edit Registration before the roster locks."
+                    if link.roster_mode == "captain_repick" else ""
+                )
+                Notifications.objects.create(
+                    user=notify_user,
+                    notification_type="qualification",
+                    title=f"Qualified for {target.event_name}",
+                    message=(
+                        f"{qual.team.team_name} finished #{qual.placement} in "
+                        f"{link.source_stage.stage_name} of {link.source_event.event_name} and has "
+                        f"been entered into {target.event_name}.{extra} You can decline the slot "
+                        "from the event page."
+                    ),
+                    related_event=target,
+                )
+        else:
+            if RegisteredCompetitors.objects.filter(event=target, user=qual.user).exists():
+                qual.status = "promoted"
+                qual.note = "already registered in the target"
+                qual.save(update_fields=["status", "note"])
+                return True, None
+            qual.promoted_competitor = RegisteredCompetitors.objects.create(
+                event=target, user=qual.user, status="registered",
+            )
+            Notifications.objects.create(
+                user=qual.user,
+                notification_type="qualification",
+                title=f"Qualified for {target.event_name}",
+                message=(
+                    f"You finished #{qual.placement} in {link.source_stage.stage_name} of "
+                    f"{link.source_event.event_name} and have been entered into {target.event_name}."
+                ),
+                related_event=target,
+            )
+
+        qual.status = "promoted"
+        qual.note = "roster copied" if qual.team_id else "registered"
+        qual.decided_by = actor
+        qual.decided_at = timezone.now()
+        qual.save()
+    return True, None
+
+
+def _withdraw_promotion(qual):
+    """Delete the registration rows a promotion created (used by undo / reject-after-allow).
+    Only rows TRACKED on the qualification are touched - a pre-existing registration
+    ('already registered in the target') is never deleted."""
+    if qual.promoted_tournament_team_id:
+        tt = qual.promoted_tournament_team
+        TournamentTeamMember.objects.filter(tournament_team=tt).delete()
+        RegisteredCompetitors.objects.filter(event=qual.link.target_event, team=tt.team).delete()
+        tt.delete()
+        qual.promoted_tournament_team = None
+    if qual.promoted_competitor_id:
+        qual.promoted_competitor.delete()
+        qual.promoted_competitor = None
+
+
+def fire_link(link, actor=None):
+    """Read the source stage's standings, create the top-N qualifications, auto-promote when
+    the link says so, snapshot the top-N for later edit-diffs. Idempotent: an already-fired
+    link only APPENDS qualifications for placements it does not have yet (a re-fire after a
+    standings edit goes through the diff/apply flow instead)."""
+    rows = _stage_top_rows(link.source_stage, link.source_event.participant_type)
+    top = rows[: link.qualify_count]
+    if not top:
+        return [], "The stage has no standings yet."
+
+    created = []
+    for i, row in enumerate(top, start=1):
+        qual, was_created = EventQualification.objects.get_or_create(
+            link=link, placement=i,
+            defaults={"team_id": row.get("team_id"), "user_id": row.get("user_id")},
+        )
+        if was_created:
+            created.append(qual)
+            if link.auto_promote:
+                ok, reason = _promote(qual, actor)
+                if not ok:
+                    qual.status = "pending"
+                    qual.note = reason
+                    qual.save(update_fields=["status", "note"])
+
+    link.status = "fired"
+    link.fired_snapshot = {"top": top, "change_notified": False}
+    link.save(update_fields=["status", "fired_snapshot"])
+    return created, None
+
+
+def fire_links_for_event(event, actor=None):
+    """Best-effort: fire every still-active link of `event` (called from complete_event so a
+    completed source pushes its qualifiers out even if nobody pressed Fire). Never raises."""
+    fired = 0
+    for link in EventLink.objects.filter(source_event=event, status="active"):
+        try:
+            created, err = fire_link(link, actor)
+            if not err:
+                fired += 1
+        except Exception:
+            continue
+    return fired
+
+
+# ── serialization ────────────────────────────────────────────────────────────────────────────
+def _serialize_qual(q):
+    return {
+        "id": q.id,
+        "placement": q.placement,
+        "team_id": q.team_id,
+        "user_id": q.user_id,
+        "name": (q.team.team_name if q.team_id else (q.user.username if q.user_id else "?")),
+        "status": q.status,
+        "note": q.note,
+        "can_undo": bool(q.prev_status),
+    }
+
+
+def _link_diff(link):
+    """Diff the CURRENT stage top-N against the fire-time snapshot. Non-empty = the source
+    standings were edited after the link fired (the 'standings edited' banner)."""
+    if link.status != "fired" or not link.fired_snapshot:
+        return []
+    current = _stage_top_rows(link.source_stage, link.source_event.participant_type)[: link.qualify_count]
+    old = link.fired_snapshot.get("top") or []
+    diff = []
+    for i in range(max(len(current), len(old))):
+        new_row = current[i] if i < len(current) else None
+        old_row = old[i] if i < len(old) else None
+        if (new_row or {}).get("team_id") != (old_row or {}).get("team_id") or \
+           (new_row or {}).get("user_id") != (old_row or {}).get("user_id"):
+            diff.append({
+                "placement": i + 1,
+                "was": (old_row or {}).get("name"),
+                "now": (new_row or {}).get("name"),
+                "now_team_id": (new_row or {}).get("team_id"),
+                "now_user_id": (new_row or {}).get("user_id"),
+            })
+    return diff
+
+
+def _serialize_link(link, with_quals=True, check_diff=False, requester=None):
+    out = {
+        "id": link.id,
+        "source_event_id": link.source_event_id,
+        "source_event_name": link.source_event.event_name,
+        "source_stage_id": link.source_stage_id,
+        "source_stage_name": link.source_stage.stage_name,
+        "target_event_id": link.target_event_id,
+        "target_event_name": link.target_event.event_name,
+        "qualify_count": link.qualify_count,
+        "auto_promote": link.auto_promote,
+        "roster_mode": link.roster_mode,
+        "status": link.status,
+        "created_by": link.created_by.username if link.created_by_id else None,
+    }
+    if with_quals:
+        out["qualifications"] = [
+            _serialize_qual(q) for q in link.qualifications.select_related("team", "user").order_by("placement")
+        ]
+    if check_diff:
+        diff = _link_diff(link)
+        out["standings_changed"] = bool(diff)
+        out["diff"] = diff
+        # Notify the link creator ONCE per drift (the in-app "standings edited" ping the
+        # owner asked for). The flag rides inside fired_snapshot so no extra column.
+        if diff and link.created_by_id and not (link.fired_snapshot or {}).get("change_notified"):
+            Notifications.objects.create(
+                user=link.created_by,
+                notification_type="link_standings_changed",
+                title="Linked-event standings changed",
+                message=(
+                    f"The {link.source_stage.stage_name} standings of {link.source_event.event_name} "
+                    f"changed after your qualification link into {link.target_event.event_name} fired. "
+                    "Review the difference on the event page."
+                ),
+                related_event=link.target_event,
+            )
+            link.fired_snapshot["change_notified"] = True
+            link.save(update_fields=["fired_snapshot"])
+    return out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ENDPOINTS
+# ═════════════════════════════════════════════════════════════════════════════
+@api_view(["POST"])
+def create_link(request, event_id):
+    """POST events/<event_id>/links/create/
+    body: {source_stage_id, target_event_id, qualify_count?, auto_promote?, roster_mode?}
+
+    Create a per-stage qualification link from THIS event's stage into a target event.
+    Validation: stage belongs to this event; no self-link; participant types match; no cycles
+    (walking the link graph from the target back must never reach this event); unique per
+    (stage, target). Auth: AFC event admin, or organizer with can_edit_events on BOTH events.
+    Consumed by: the Linked events card's create dialog."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    try:
+        source_event = Event.objects.get(event_id=event_id)
+    except Event.DoesNotExist:
+        return Response({"message": "Event not found."}, status=404)
+    try:
+        # Stages' PK is stage_id, so look up by pk (an `id=` lookup would FieldError).
+        stage = Stages.objects.get(pk=request.data.get("source_stage_id"), event=source_event)
+    except (Stages.DoesNotExist, ValueError, TypeError):
+        return Response({"message": "That stage does not belong to this event."}, status=404)
+    try:
+        target = Event.objects.get(event_id=request.data.get("target_event_id"))
+    except Event.DoesNotExist:
+        return Response({"message": "Target event not found."}, status=404)
+
+    if target.event_id == source_event.event_id:
+        return Response({"message": "An event cannot qualify into itself."}, status=400)
+    if target.participant_type != source_event.participant_type:
+        return Response({"message": "Source and target must have the same participant type."}, status=400)
+    if not _can_manage_link_events(user, source_event, target):
+        return Response({"message": "You do not have permission to link these events."}, status=403)
+
+    # Cycle guard: from the target, walk outbound links; reaching the source event = cycle.
+    seen, frontier = set(), {target.event_id}
+    while frontier:
+        nxt = set(
+            EventLink.objects.filter(source_event_id__in=frontier)
+            .exclude(status="cancelled")
+            .values_list("target_event_id", flat=True)
+        )
+        if source_event.event_id in nxt:
+            return Response({"message": "That link would create a qualification cycle."}, status=400)
+        seen |= frontier
+        frontier = nxt - seen
+
+    try:
+        qualify_count = max(1, int(request.data.get("qualify_count", 2)))
+    except (TypeError, ValueError):
+        qualify_count = 2
+    roster_mode = request.data.get("roster_mode") or "copy"
+    if roster_mode not in ("copy", "captain_repick"):
+        return Response({"message": "roster_mode must be copy or captain_repick."}, status=400)
+
+    if EventLink.objects.filter(source_stage=stage, target_event=target).exclude(status="cancelled").exists():
+        return Response({"message": "That stage is already linked to that event."}, status=400)
+
+    link = EventLink.objects.create(
+        source_event=source_event,
+        source_stage=stage,
+        target_event=target,
+        qualify_count=qualify_count,
+        auto_promote=bool(request.data.get("auto_promote", True)),
+        roster_mode=roster_mode,
+        created_by=user,
+    )
+    return Response({"message": "Link created.", "link": _serialize_link(link)}, status=201)
+
+
+@api_view(["GET"])
+def list_links(request, event_id):
+    """GET events/<event_id>/links/  — the event's OUTBOUND links (with qualifications + the
+    standings-edited diff check) and INBOUND links (who feeds this event). Auth: any manager
+    of this event (admin / org can_edit_events)."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    try:
+        event = Event.objects.get(event_id=event_id)
+    except Event.DoesNotExist:
+        return Response({"message": "Event not found."}, status=404)
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response({"message": "You do not have permission to view this event's links."}, status=403)
+
+    outbound = [
+        _serialize_link(l, check_diff=True)
+        for l in EventLink.objects.filter(source_event=event).exclude(status="cancelled")
+        .select_related("source_event", "source_stage", "target_event", "created_by")
+    ]
+    inbound = [
+        _serialize_link(l)
+        for l in EventLink.objects.filter(target_event=event).exclude(status="cancelled")
+        .select_related("source_event", "source_stage", "target_event", "created_by")
+    ]
+    return Response({"outbound": outbound, "inbound": inbound})
+
+
+@api_view(["DELETE"])
+def cancel_link(request, link_id):
+    """DELETE events/links/<link_id>/ — cancel a link. Promoted registrations stay (cancelling
+    the rule never un-registers teams)."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    try:
+        link = EventLink.objects.select_related("source_event", "target_event").get(id=link_id)
+    except EventLink.DoesNotExist:
+        return Response({"message": "Link not found."}, status=404)
+    if not _can_manage_link(user, link):
+        return Response({"message": "You do not have permission to manage this link."}, status=403)
+    link.status = "cancelled"
+    link.save(update_fields=["status"])
+    return Response({"message": "Link cancelled."})
+
+
+@api_view(["POST"])
+def fire_link_view(request, link_id):
+    """POST events/links/<link_id>/fire/ — read the stage standings now and create/promote the
+    top-N qualifications (the manual trigger once standings are final; complete_event also
+    fires unfired links automatically)."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    try:
+        link = EventLink.objects.select_related("source_event", "source_stage", "target_event").get(id=link_id)
+    except EventLink.DoesNotExist:
+        return Response({"message": "Link not found."}, status=404)
+    if not _can_manage_link(user, link):
+        return Response({"message": "You do not have permission to manage this link."}, status=403)
+
+    created, fire_err = fire_link(link, user)
+    if fire_err:
+        return Response({"message": fire_err}, status=400)
+    return Response({"message": f"Link fired: {len(created)} qualification(s).",
+                     "link": _serialize_link(link)})
+
+
+@api_view(["POST"])
+def decide(request, link_id):
+    """POST events/links/<link_id>/decide/  body: {qualification_id, action, team_id?}
+
+    The whole decision surface of the qualification table:
+      allow         promote a pending row, bypassing a closed registration window
+      reject        reject a pending row (it never enters the target)
+      decline       give up the slot (captain self-decline hits this too)
+      replace_next  promote the stage's next-placed competitor in a declined row's place
+      replace_team  promote a SPECIFIC team (body.team_id) in a declined row's place
+      undo          one-step revert of the last decision (withdraws a created registration)
+    Every action snapshots prev_status/prev_note first, so undo always works. Captains may
+    ONLY decline their own team's row; managers can do everything."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    try:
+        link = EventLink.objects.select_related("source_event", "source_stage", "target_event").get(id=link_id)
+    except EventLink.DoesNotExist:
+        return Response({"message": "Link not found."}, status=404)
+    try:
+        qual = EventQualification.objects.select_related("team", "user").get(
+            id=request.data.get("qualification_id"), link=link,
+        )
+    except EventQualification.DoesNotExist:
+        return Response({"message": "Qualification not found."}, status=404)
+
+    action = request.data.get("action")
+    is_manager = _can_manage_link(user, link)
+    # Captain self-decline: a captain/owner of the qualified team may decline THEIR OWN slot.
+    is_own_captain = bool(
+        qual.team_id and TeamMembers.objects.filter(
+            team=qual.team, member=user, management_role__in=("team_captain", "vice_captain"),
+        ).exists()
+    ) or (qual.team_id and qual.team.team_owner_id == user.user_id) or (qual.user_id == user.user_id)
+    if not is_manager and not (action == "decline" and is_own_captain):
+        return Response({"message": "You do not have permission to manage this link."}, status=403)
+
+    def snapshot():
+        qual.prev_status = qual.status
+        qual.prev_note = qual.note
+
+    if action == "allow":
+        if qual.status != "pending":
+            return Response({"message": "Only a pending qualification can be allowed."}, status=400)
+        snapshot()
+        ok, reason = _promote(qual, user, bypass_window=True)
+        if not ok:
+            return Response({"message": f"Cannot promote: {reason}."}, status=400)
+        qual.prev_status, qual.prev_note = "pending", qual.prev_note
+        qual.save(update_fields=["prev_status", "prev_note"])
+
+    elif action == "reject":
+        if qual.status != "pending":
+            return Response({"message": "Only a pending qualification can be rejected."}, status=400)
+        snapshot()
+        qual.status = "rejected"
+        qual.note = "rejected by admin"
+        qual.decided_by, qual.decided_at = user, timezone.now()
+        qual.save()
+
+    elif action == "decline":
+        if qual.status not in ("promoted", "pending"):
+            return Response({"message": "Only a promoted or pending qualification can decline."}, status=400)
+        snapshot()
+        _withdraw_promotion(qual)
+        qual.status = "declined"
+        qual.note = "captain declined the slot" if not is_manager else "declined by admin"
+        qual.decided_by, qual.decided_at = user, timezone.now()
+        qual.save()
+
+    elif action in ("replace_next", "replace_team"):
+        if qual.status != "declined":
+            return Response({"message": "Replace a slot after it has been declined."}, status=400)
+        if action == "replace_next":
+            # Next in line: the first standings row not already used by ANY of this link's
+            # qualifications (so #N+1, then #N+2 if they were used as a replacement before).
+            rows = _stage_top_rows(link.source_stage, link.source_event.participant_type)
+            used_teams = set(link.qualifications.exclude(team__isnull=True).values_list("team_id", flat=True))
+            used_users = set(link.qualifications.exclude(user__isnull=True).values_list("user_id", flat=True))
+            replacement = next(
+                (r for r in rows
+                 if (r.get("team_id") and r["team_id"] not in used_teams)
+                 or (r.get("user_id") and r["user_id"] not in used_users)),
+                None,
+            )
+            if not replacement:
+                return Response({"message": "No next-in-line competitor is available."}, status=400)
+            new_team_id, new_user_id = replacement.get("team_id"), replacement.get("user_id")
+            label = replacement["name"]
+        else:
+            try:
+                team = Team.objects.get(team_id=request.data.get("team_id"))
+            except Team.DoesNotExist:
+                return Response({"message": "Replacement team not found."}, status=404)
+            new_team_id, new_user_id, label = team.team_id, None, team.team_name
+
+        snapshot()
+        old_name = qual.team.team_name if qual.team_id else (qual.user.username if qual.user_id else "?")
+        qual.team_id, qual.user_id = new_team_id, new_user_id
+        ok, reason = _promote(qual, user, bypass_window=True)
+        if not ok:
+            qual.status = "pending"
+            qual.note = f"replacement {label}: {reason}"
+            qual.save()
+        else:
+            qual.status = "replaced"
+            qual.note = f"{old_name} replaced by {label}"
+            qual.decided_by, qual.decided_at = user, timezone.now()
+            qual.save()
+
+    elif action == "undo":
+        if not qual.prev_status:
+            return Response({"message": "Nothing to undo."}, status=400)
+        _withdraw_promotion(qual)
+        restored = qual.prev_status
+        qual.status, qual.note = restored, (qual.prev_note + " (decision undone)").strip()
+        qual.prev_status, qual.prev_note = "", ""
+        qual.decided_by, qual.decided_at = user, timezone.now()
+        qual.save()
+        # Undoing a decline of a PROMOTED row must restore the actual registration too - the
+        # decline withdrew it, and a "promoted" status with no registration rows would lie to
+        # both the table and the target event. Re-promote (admin undo bypasses the window,
+        # same as Allow); the competitor gets a fresh "Qualified" notification, which is the
+        # right signal after a mistaken decline.
+        if restored == "promoted" and not (qual.promoted_tournament_team_id or qual.promoted_competitor_id):
+            ok, reason = _promote(qual, user, bypass_window=True)
+            if ok:
+                qual.note = (qual.note + " (decision undone)").strip()
+                qual.save(update_fields=["note"])
+            else:
+                qual.status, qual.note = "pending", f"undo could not re-register: {reason}"
+                qual.save(update_fields=["status", "note"])
+
+    else:
+        return Response({"message": "Unknown action."}, status=400)
+
+    return Response({"message": "Done.", "qualification": _serialize_qual(qual)})
