@@ -101,3 +101,79 @@ class EventSponsorship(models.Model):
 
     def __str__(self):
         return f"{self.sponsor_id} sponsors event {self.event_id}"
+
+
+class SponsorEngagementSubmission(models.Model):
+    """ONE registrant's answer to ONE engagement entry of ONE sponsorship (P3/P4 of the spec).
+
+    payload shape depends on the engagement type (validated server-side in
+    afc_sponsors.engagements before the row is written):
+        collect_id      {"value": "ydpay-123"}
+        follow_social   {"profile_link": "https://instagram.com/me"}        (per platform entry)
+        create_account  {"username": "my-app-username"}
+        join_group      whatsapp: {"phone": "8012345678", "country_code": "+234"}
+                        discord:  {"discord_username": "me#1234"}
+
+    APPROVAL (P4): when the sponsorship has requires_approval=True every submission lands
+    "pending"; a SponsorMember (or sponsor-admin) decides it. Rejection REQUIRES a reason,
+    notifies the player (email + in-app) with a re-input prompt; the player resubmits via
+    afc_sponsors.engagements.resubmit_submission and the row returns to "pending".
+    prev_status/prev_reason give every decision a one-step UNDO (mirrors the event-links
+    qualification undo idiom). When approval is off the row is born "not_required".
+
+    HOW IT CONNECTS
+        - Created by afc_tournament_and_scrims.views.register_for_event via
+          afc_sponsors.engagements.create_submissions_for_registration.
+        - Read by the sponsor portal (engagements.sponsorship_submissions) and decided via
+          engagements.decide_submission; the player resubmits via engagements.resubmit_submission.
+        - Registration activation: when ALL approval-requiring submissions of a registrant are
+          approved, engagements._sync_registration_state flips the registration active
+          (solo RegisteredCompetitors / team member row + check_and_activate_team)."""
+    STATUS_CHOICES = [
+        ("not_required", "Not required"),
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+
+    id = models.AutoField(primary_key=True)
+    sponsorship = models.ForeignKey(
+        EventSponsorship, on_delete=models.CASCADE, related_name="submissions",
+    )
+    # Denormalized for fast per-event reads (the portal lists submissions per event).
+    event = models.ForeignKey(
+        "afc_tournament_and_scrims.Event", on_delete=models.CASCADE,
+        related_name="sponsor_submissions",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sponsor_submissions",
+    )
+    # Which entry in sponsorship.engagements this answers (list index at submit time).
+    engagement_index = models.PositiveSmallIntegerField()
+    payload = models.JSONField(default=dict, blank=True)
+
+    approval_status = models.CharField(max_length=14, choices=STATUS_CHOICES, default="not_required")
+    # Rejection reason (mandatory on reject; rides in the player's email + in-app notification).
+    reason = models.TextField(blank=True, default="")
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="sponsor_submission_decisions",
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+    # One-step undo snapshot (same contract as EventQualification.prev_status).
+    prev_status = models.CharField(max_length=14, blank=True, default="")
+    prev_reason = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sponsorship", "user", "engagement_index"],
+                name="uniq_sponsorship_user_engagement",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Submission(sp={self.sponsorship_id} u={self.user_id} e={self.engagement_index} {self.approval_status})"

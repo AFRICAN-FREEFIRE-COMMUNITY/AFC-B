@@ -392,10 +392,15 @@ def admin_list_vendor_payouts(request):
 
     Auth:     require_admin.
     Query:    vendor_id (filter to one vendor), status (owed|released|paid).
-    Response: 200 { count, payouts: [ {id,vendor_id,vendor_name,order_id,amount,
-                    platform_fee,status,stripe_transfer_id,paid_at,created_at} ],
+    Response: 200 { count, currency, payouts: [ {id,vendor_id,vendor_name,provider,
+                    order_id,amount,platform_fee,status,stripe_transfer_id,paid_at,
+                    created_at} ],
                     summary: { owed_count, owed_amount, paid_count, paid_amount } }.
-    Consumed by: the admin shop "Vendor payouts" surface.
+              `provider` is the row's payout rail (Vendor.payout_provider:
+              "paystack" | "stripe"); `currency` is SHOP_CURRENCY (every payout
+              settles in the buyer's charge currency).
+    Consumed by: the admin shop payouts ledger (app/(a)/a/shop/payouts/page.tsx via
+                 lib/marketplaceAdmin.ts::listPayouts).
     """
     admin, err = require_admin(request)
     if err:
@@ -414,6 +419,11 @@ def admin_list_vendor_payouts(request):
         "id": p.id,
         "vendor_id": p.vendor_id,
         "vendor_name": p.vendor.display_name,
+        # Which payout rail settles this row (Vendor.payout_provider: "paystack" |
+        # "stripe"). Added for the admin payouts ledger page so each row can badge
+        # its rail and the Release (Stripe) / Retry (Paystack) actions can target
+        # only the rows that belong to them.
+        "provider": p.vendor.payout_provider,
         "order_id": p.order_id,
         "amount": str(p.amount),
         "platform_fee": str(p.platform_fee),
@@ -432,7 +442,12 @@ def admin_list_vendor_payouts(request):
         "paid_count": paid.count(),
         "paid_amount": str(sum((p.amount for p in paid), Decimal("0.00"))),
     }
-    return Response({"count": len(data), "payouts": data, "summary": summary}, status=200)
+    # `currency` rides along once (not per row): every payout settles in the single
+    # shop charge currency (SHOP_CURRENCY), so the ledger page can label amounts.
+    return Response(
+        {"count": len(data), "currency": SHOP_CURRENCY, "payouts": data, "summary": summary},
+        status=200,
+    )
 
 
 @api_view(["POST"])

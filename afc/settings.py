@@ -328,6 +328,13 @@ KAPSO_WHATSAPP_CONFIG_ID = os.getenv("KAPSO_WHATSAPP_CONFIG_ID")
 #     equal the template's actual language in WhatsApp Manager. Default "en_US"; override via env.
 KAPSO_TEMPLATE_NAME = os.getenv("KAPSO_TEMPLATE_NAME", "vendor_new_order")
 KAPSO_TEMPLATE_LANG = os.getenv("KAPSO_TEMPLATE_LANG", "en_US")
+# OPTIONAL shared secret for verifying INBOUND webhook calls (afc_shop/whatsapp_webhook.py).
+# When set, every POST to /shop/whatsapp/webhook/ must carry an "X-Webhook-Signature" header
+# equal to the HMAC-SHA256 hex digest of the raw request body keyed with this secret; a
+# mismatch is rejected with 403. When unset (the default, e.g. local dev), the webhook
+# accepts unsigned POSTs exactly as before, so this is backward compatible. Set it on prod
+# together with the matching secret on the Kapso/proxy side.
+KAPSO_WEBHOOK_SECRET = os.getenv("KAPSO_WEBHOOK_SECRET")
 
 # Shop checkout currency. Both shop payment paths (Paystack + Stripe, see
 # afc_shop/stripe_checkout.py) charge in this currency, and Stripe Connect vendor

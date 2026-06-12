@@ -38,6 +38,15 @@ SECURITY (best-effort, per the brief): we resolve the order's vendor and only ac
 the SENDER's WhatsApp number matches that vendor's whatsapp_number. A mismatch is
 logged and ignored so a stranger messaging our number cannot drive someone's order.
 
+SECURITY (optional HMAC, 2026-06-12 hardening): when settings.KAPSO_WEBHOOK_SECRET is
+set (env var KAPSO_WEBHOOK_SECRET, defined next to the other KAPSO_* settings in
+afc/settings.py), every POST must carry an "X-Webhook-Signature" header equal to the
+HMAC-SHA256 HEX digest of the RAW request body keyed with that secret. The compare is
+constant-time (hmac.compare_digest) and a mismatch/missing header is rejected with
+403 BEFORE any parsing. When the setting is empty/absent the check is skipped and
+behaviour is unchanged (backward compatible; mirrors the permissive no-secret stance
+of WHATSAPP_WEBHOOK_VERIFY_TOKEN on the GET handshake). See _verify_signature below.
+
 ROBUSTNESS: the POST handler ALWAYS returns 200 fast and NEVER 500s (a 500 makes
 Meta/Kapso retry-storm the webhook). Every parse/transition is wrapped; failures are
 logged and skipped.
@@ -49,11 +58,14 @@ HOW IT CONNECTS
   - MODELS: Order (the target), Vendor (sender match), FulfillmentEvidence (inbound
     media stored as proof of shipment).
   - ROUTE: afc_shop/urls.py -> path "whatsapp/webhook/" (GET verify + POST inbound).
-  - CONFIG: settings.KAPSO_* (for the media download) + an optional
+  - CONFIG: settings.KAPSO_* (for the media download), an optional
     settings.WHATSAPP_WEBHOOK_VERIFY_TOKEN (the handshake token; if unset we accept
-    the handshake, matching the permissive stance of the Stripe webhook with no secret).
+    the handshake, matching the permissive stance of the Stripe webhook with no secret),
+    and an optional settings.KAPSO_WEBHOOK_SECRET (the POST HMAC secret above).
 """
 
+import hashlib
+import hmac
 import json
 import logging
 
@@ -119,6 +131,45 @@ def _verify_handshake(request):
                         status=200, content_type="text/plain")
 
     return Response({"message": "Missing handshake parameters."}, status=400)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST: optional HMAC signature verification (2026-06-12 hardening)
+# ─────────────────────────────────────────────────────────────────────────────
+def _verify_signature(request):
+    """Verify the inbound POST against settings.KAPSO_WEBHOOK_SECRET, if configured.
+
+    Contract (documented in the file header + afc/settings.py): the sender computes
+    HMAC-SHA256 over the RAW request body with the shared secret and sends the HEX
+    digest in the "X-Webhook-Signature" header. We recompute it and compare with
+    hmac.compare_digest (constant-time, so the comparison itself leaks no timing
+    signal an attacker could use to forge a signature byte by byte).
+
+    Returns True when the request may proceed:
+      - secret NOT configured -> True (backward compatible: unsigned webhooks keep
+        working exactly as before; local dev / Kapso setups without the secret).
+      - secret configured + header matches -> True.
+      - secret configured + header missing or wrong -> False (caller rejects 403).
+
+    IMPORTANT ordering note: this reads request.body BEFORE anyone touches
+    request.data. Accessing the raw body first makes Django cache it, so DRF's later
+    JSON parse in whatsapp_webhook still works; the reverse order would raise
+    RawPostDataException. whatsapp_webhook calls this at the very top of the POST
+    branch to preserve that ordering."""
+    secret = getattr(settings, "KAPSO_WEBHOOK_SECRET", None)
+    if not secret:
+        return True  # no secret configured: behaviour unchanged (accept unsigned)
+
+    provided = (request.headers.get("X-Webhook-Signature") or "").strip()
+    expected = hmac.new(secret.encode(), request.body, hashlib.sha256).hexdigest()
+    if provided and hmac.compare_digest(expected, provided):
+        return True
+
+    # Forged / unsigned call while a secret is configured: log (no body contents, no
+    # secret material) and let the caller reject it with 403.
+    logger.warning("whatsapp inbound: rejected POST with %s signature.",
+                   "a mismatching" if provided else "no")
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -291,15 +342,24 @@ def whatsapp_webhook(request):
 
     Auth: none (a public webhook; Meta/Kapso is the caller). Inbound actions are gated
     by the best-effort sender-number == order-vendor check, not a session. The GET is
-    gated by the optional WHATSAPP_WEBHOOK_VERIFY_TOKEN.
+    gated by the optional WHATSAPP_WEBHOOK_VERIFY_TOKEN; the POST is gated by the
+    optional KAPSO_WEBHOOK_SECRET HMAC check (_verify_signature above): a bad or
+    missing signature while the secret is configured is rejected with 403.
 
-    ALWAYS returns 200 on POST (never 500) so Meta/Kapso does not retry-storm us; every
-    message is processed defensively and a failure is logged + skipped.
+    ALWAYS returns 200 on a SIGNATURE-VALID POST (never 500) so Meta/Kapso does not
+    retry-storm us; every message is processed defensively and a failure is logged +
+    skipped. (The 403 on a forged signature is fine: that caller is not Kapso, and a
+    retry of a forged request should keep failing.)
 
     Consumed by: Kapso/Meta (configured webhook URL). Pairs with afc_shop/fulfilment.py
     notify_vendor (the outbound buttons whose taps arrive here)."""
     if request.method == "GET":
         return _verify_handshake(request)
+
+    # ── POST: verify the HMAC signature FIRST (reads the raw body before request.data
+    # is touched; see the ordering note on _verify_signature), then parse, never 500 ──
+    if not _verify_signature(request):
+        return Response({"message": "Invalid webhook signature."}, status=403)
 
     # ── POST: parse the envelope, never 500 ──
     try:

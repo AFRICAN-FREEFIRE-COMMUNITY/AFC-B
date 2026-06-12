@@ -4956,6 +4956,35 @@ def register_for_event(request):
                 user=user,
                 status="registered"
             )
+
+            # ── SPONSOR ENGAGEMENTS (sponsor redesign P3/P4, SOLO) ──
+            # Entity sponsorships (afc_sponsors.EventSponsorship) carry engagement asks the
+            # registrant answers in the body's `sponsorships` list:
+            #   [{sponsorship_id, submissions: [{engagement_index, payload}]}]
+            # Validation + writes live in afc_sponsors.engagements (one source of truth with
+            # the wizard's config validation). On any problem we roll the whole registration
+            # back (atomic). When a sponsorship requires approval the registration parks
+            # "pending" until the sponsor approves it (decide flow in that module).
+            sponsorship_entries = _maybe_json_list(request.data.get("sponsorships"))
+            from afc_sponsors.engagements import create_submissions_for_registration
+            solo_payloads = {user.user_id: []}
+            for sp_entry in (sponsorship_entries or []):
+                for sub in (sp_entry.get("submissions") or []):
+                    solo_payloads[user.user_id].append({
+                        "sponsorship_id": sp_entry.get("sponsorship_id"),
+                        "engagement_index": sub.get("engagement_index"),
+                        "payload": sub.get("payload") or {},
+                    })
+            sponsor_error, needs_sponsor_approval = create_submissions_for_registration(
+                event, solo_payloads, user,
+            )
+            if sponsor_error:
+                transaction.set_rollback(True)
+                return Response({"message": sponsor_error, "code": "sponsor_submission_invalid"}, status=400)
+            if needs_sponsor_approval:
+                competitor.status = "pending"
+                competitor.save(update_fields=["status"])
+
             # Mark the token used — but ONLY for single-use tokens. A SHARED token
             # (is_shared=True) is the reusable FCFS link and must stay open for the next
             # registrant; the capacity check above is what eventually closes it.
@@ -4978,8 +5007,13 @@ def register_for_event(request):
         
 
         return Response({
-            "message": "Successfully registered (solo). Discord role queued.",
-            "registration_id": competitor.id
+            "message": (
+                "Registered. Your registration is pending sponsor approval."
+                if needs_sponsor_approval
+                else "Successfully registered (solo). Discord role queued."
+            ),
+            "registration_id": competitor.id,
+            "pending_sponsor_approval": needs_sponsor_approval,
         }, status=201)
 
     # -------------------------
@@ -5356,6 +5390,53 @@ def register_for_event(request):
                 )
 
             TournamentTeamMember.objects.bulk_create(member_rows, batch_size=200)
+
+            # ── SPONSOR ENGAGEMENTS (sponsor redesign P3/P4, TEAM) ──
+            # Per-player engagement answers ride the body's `sponsorships` list:
+            #   [{sponsorship_id, submissions_by_user: {"<uid>": [{engagement_index, payload}]}}]
+            # The captain fills per-rostered-player values (spec section 4). EVERY rostered
+            # player must answer every engagement; the helper enforces it (we seed every
+            # roster uid so a wholly-omitted player is caught too). On any problem the whole
+            # registration rolls back. When approval is required the team parks "pending"
+            # exactly like the legacy is_sponsored flow (check_and_activate_team reuses it).
+            sponsorship_entries = _maybe_json_list(request.data.get("sponsorships"))
+            from afc_sponsors.engagements import create_submissions_for_registration
+            team_payloads = {uid: [] for uid in roster_member_ids}
+            for sp_entry in (sponsorship_entries or []):
+                by_user = sp_entry.get("submissions_by_user") or {}
+                for uid_str, subs in by_user.items():
+                    try:
+                        uid = int(uid_str)
+                    except (TypeError, ValueError):
+                        transaction.set_rollback(True)
+                        return Response({"message": "Bad sponsorships payload."}, status=400)
+                    if uid not in roster_users_by_id:
+                        transaction.set_rollback(True)
+                        return Response({"message": "Sponsor submission for a non-rostered player."}, status=400)
+                    for sub in (subs or []):
+                        team_payloads[uid].append({
+                            "sponsorship_id": sp_entry.get("sponsorship_id"),
+                            "engagement_index": sub.get("engagement_index"),
+                            "payload": sub.get("payload") or {},
+                        })
+            sponsor_error, needs_sponsor_approval = create_submissions_for_registration(
+                event, team_payloads, user,
+            )
+            if sponsor_error:
+                transaction.set_rollback(True)
+                return Response({"message": sponsor_error, "code": "sponsor_submission_invalid"}, status=400)
+            if needs_sponsor_approval:
+                # Park the whole team for sponsor review: members "pending" + team "pending"
+                # + the RC row un-registered, mirroring the legacy is_sponsored baseline so
+                # check_and_activate_team's forward direction activates everything once the
+                # sponsor approves every member's submissions.
+                TournamentTeamMember.objects.filter(tournament_team=tt).update(status="pending")
+                if tt.status != "pending":
+                    tt.status = "pending"
+                    tt.save(update_fields=["status"])
+                RegisteredCompetitors.objects.filter(
+                    event=event, team=team, status="registered",
+                ).update(status="pending")
 
             # Mark the token used — but ONLY for single-use tokens. A SHARED token
             # (is_shared=True) is the reusable FCFS link and must stay open for the next

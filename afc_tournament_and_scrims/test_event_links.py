@@ -234,6 +234,68 @@ class FireAndPromoteTests(EventLinkBase):
         # Someone else's slot: forbidden.
         self.assertEqual(self._decide(link_id, bravo["id"], "decline", tok=cap_tok).status_code, 403)
 
+    def test_capacity_warning_and_chain(self):
+        # Tiny target: capacity 2, 0 registered, qualify 2 -> no warning (2 fits exactly...
+        # warning triggers only when registered + qualify EXCEEDS cap, so drop cap to 1).
+        self.target.max_teams_or_players = 1
+        self.target.save(update_fields=["max_teams_or_players"])
+        self._create_link()
+        resp = self.client.get(f"/events/{self.source.event_id}/links/", **bearer(self.admin_tok))
+        out = resp.json()["outbound"][0]
+        self.assertTrue(out["capacity_warning"])
+        self.assertEqual(out["target_capacity"], 1)
+        # Chain map: nodes carry both events, the edge carries the stage name.
+        chain = self.client.get(
+            f"/events/{self.source.event_id}/links/chain/", **bearer(self.admin_tok),
+        ).json()
+        self.assertEqual(len(chain["nodes"]), 2)
+        self.assertEqual(chain["edges"][0]["source_stage_name"], "Grand Finals")
+        self.assertTrue(any(n["is_focus"] for n in chain["nodes"]))
+
+    def test_import_competitors_merges_and_skips_duplicates(self):
+        # Two source events, each with registered teams; one team overlaps. The merge enters
+        # every confirmed team once and reports the duplicate as skipped.
+        src2 = _event(self.admin, "Dynasty Cup Ghana")
+        for name in ["Alpha", "Delta"]:
+            team = self.teams.get(name)
+            if team is None:
+                owner, _ = _user(f"owner_{name.lower()}2")
+                team = Team.objects.create(
+                    team_name=name, team_owner=owner, team_creator=owner,
+                    join_settings="open", country="GH",
+                )
+                TeamMembers.objects.create(team=team, member=owner, management_role="team_captain")
+                self.teams[name] = team
+            RegisteredCompetitors.objects.create(event=src2, team=team, status="registered")
+        # The base fixture's source event has TournamentTeam rows but no RC rows; give it
+        # RC rows for its three teams so it reads as a confirmed field.
+        for name in ["Alpha", "Bravo", "Charlie"]:
+            RegisteredCompetitors.objects.get_or_create(
+                event=self.source, team=self.teams[name], defaults={"status": "registered"},
+            )
+
+        resp = self.client.post(
+            f"/events/{self.target.event_id}/import-competitors/",
+            data=json.dumps({"source_event_ids": [self.source.event_id, src2.event_id]}),
+            content_type="application/json", **bearer(self.admin_tok),
+        )
+        self.assertEqual(resp.status_code, 200, resp.json())
+        report = {r["source_event_name"]: r for r in resp.json()["report"]}
+        self.assertEqual(report["Dynasty Cup Nigeria"]["imported"], 3)       # Alpha Bravo Charlie
+        self.assertEqual(report["Dynasty Cup Ghana"]["imported"], 1)         # Delta
+        self.assertEqual(report["Dynasty Cup Ghana"]["skipped_duplicates"], 1)  # Alpha again
+        self.assertEqual(RegisteredCompetitors.objects.filter(event=self.target).count(), 4)
+        # Rosters copied from the source event's finishing roster where it existed.
+        tt_alpha = TournamentTeam.objects.get(event=self.target, team=self.teams["Alpha"])
+        self.assertEqual(TournamentTeamMember.objects.filter(tournament_team=tt_alpha).count(), 1)
+        # Stranger cannot merge.
+        denied = self.client.post(
+            f"/events/{self.target.event_id}/import-competitors/",
+            data=json.dumps({"source_event_ids": [self.source.event_id]}),
+            content_type="application/json", **bearer(self.stranger_tok),
+        )
+        self.assertEqual(denied.status_code, 403)
+
     def test_standings_edit_diff_and_creator_notification(self):
         link_id = self._create_link().json()["link"]["id"]
         self._fire(link_id)
