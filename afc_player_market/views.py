@@ -22,7 +22,7 @@ from afc_auth.views import send_email, validate_token
 # Market-ban enforcement guard (feature "J-market-reporting"). Returns the active
 # MarketBan blocking a user from acting on the market, or None. Used to block a banned
 # poster (or a member of a banned team) before any post/apply/invite row is created.
-# _is_market_moderator (same module) gates the admin-only surfaces — reused here to let
+# _is_market_moderator (same module) gates the admin-only surfaces â€” reused here to let
 # AFC staff READ any trial chat (feature "K-admin-chat-read").
 from .views_moderation import _active_market_ban, _is_market_moderator
 from afc_tournament_and_scrims.models import TournamentPlayerMatchStats, TournamentTeamMatchStats
@@ -31,20 +31,20 @@ from afc_tournament_and_scrims.models import TournamentPlayerMatchStats, Tournam
 TRANSFER_WINDOW_STATUS = "OPEN"  # This can be dynamically set based on date or admin input
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# §J  Player-market posting + tryout rules (feature "J-market-rules")
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Â§J  Player-market posting + tryout rules (feature "J-market-rules")
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # These two caps are surfaced to players on the user-facing market page
 # (frontend/app/(user)/player-markets/page.tsx) via InfoTip rules copy, and are
 # enforced here on the backend so the rules can't be bypassed by hitting the API
 # directly.
 #
-# MAX_ACTIVE_POSTS — a user may have at most ONE active recruitment post at a time
+# MAX_ACTIVE_POSTS â€” a user may have at most ONE active recruitment post at a time
 #   (any type: a player-availability post OR a team-recruitment post). "Active" means
 #   is_active=True AND post_expiry_date >= today. Enforced in create_recruitment_post
 #   below. Close or let the current post expire before creating a new one.
 #
-# MAX_ACTIVE_TRIALS — a player may be in at most TWO active tryouts (trials) at once.
+# MAX_ACTIVE_TRIALS â€” a player may be in at most TWO active tryouts (trials) at once.
 #   "Active" means a RecruitmentApplication in status TRIAL_ONGOING. Enforced in BOTH
 #   places a player enters a trial: when a team INVITES an applicant (handle the team's
 #   "INVITE" action) and when a player ACCEPTS a direct trial invite. Both checks read
@@ -53,9 +53,9 @@ MAX_ACTIVE_POSTS = 1
 MAX_ACTIVE_TRIALS = 2
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# §L  One-month expiry cap (feature "L-market-expiry-cap", 2026-06-10)
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Â§L  One-month expiry cap (feature "L-market-expiry-cap", 2026-06-10)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # A recruitment post (TEAM_RECRUITMENT or PLAYER_AVAILABLE) may live AT MOST one
 # calendar month before it auto-closes. There is NO new DB field and NO celery job:
 # RecruitmentPost.is_active is already a @property (post_expiry_date >= today), so a
@@ -64,11 +64,11 @@ MAX_ACTIVE_TRIALS = 2
 # auto-close can never be pushed past a month.
 #
 # Enforced in BOTH write paths so the API can't be bypassed:
-#   • create_recruitment_post: caps relative to TODAY (a brand-new post may last up to
+#   â€¢ create_recruitment_post: caps relative to TODAY (a brand-new post may last up to
 #     one month from its creation day).
-#   • edit_recruitment_post: caps relative to the post's OWN created_at, so editing
+#   â€¢ edit_recruitment_post: caps relative to the post's OWN created_at, so editing
 #     can't be used to extend a post past one month of total life.
-# Existing far-future rows (2027, December, …) are pulled back in line by the one-off
+# Existing far-future rows (2027, December, â€¦) are pulled back in line by the one-off
 # backfill command afc_player_market/management/commands/clamp_post_expiries.py.
 #
 # Surfaced to users on frontend/app/(user)/player-markets/page.tsx: both date inputs
@@ -79,25 +79,25 @@ def add_one_month(d):
     length. Used to cap a recruitment post's expiry: a post may last at most one month.
 
     Day-clamp examples (no external dependency, pure calendar arithmetic):
-      • 2026-01-15 → 2026-02-15
-      • 2026-01-31 → 2026-02-28  (Feb has no 31st; clamp to the last day)
-      • 2026-12-10 → 2027-01-10  (December rolls the year forward)
+      â€¢ 2026-01-15 â†’ 2026-02-15
+      â€¢ 2026-01-31 â†’ 2026-02-28  (Feb has no 31st; clamp to the last day)
+      â€¢ 2026-12-10 â†’ 2027-01-10  (December rolls the year forward)
     """
     y = d.year + (1 if d.month == 12 else 0)
     m = 1 if d.month == 12 else d.month + 1
     return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1]))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# §K  Country restriction (feature "K-country-gate", 2026-06-08)
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Â§K  Country restriction (feature "K-country-gate", 2026-06-08)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # A recruitment post can target a set of countries (RecruitmentPost.countries M2M).
 # When that set is non-empty, only actors LOCATED in one of those countries may act:
-#   • apply_to_team          — the APPLYING PLAYER must be located in the team post's countries
-#   • invite_player_to_trial — the RECRUITER must be located in the player post's countries
+#   â€¢ apply_to_team          â€” the APPLYING PLAYER must be located in the team post's countries
+#   â€¢ invite_player_to_trial â€” the RECRUITER must be located in the player post's countries
 #
 # "Located" = the actor's most-recent login country (LoginHistory.country, an ISO-2 code
-# captured per login — the freshest location signal we have, chosen by the project owner),
+# captured per login â€” the freshest location signal we have, chosen by the project owner),
 # falling back to User.country (the signup-IP country, also a code). We compare against the
 # post's Country rows by CODE first, then NAME (case-insensitive), because this codebase
 # holds three country representations that don't always align: User/LoginHistory store
@@ -106,8 +106,8 @@ def add_one_month(d):
 #
 # Fail policy: ENFORCE when we can locate the actor (block when their country isn't in the
 # set). If the actor has NO location signal at all (no login history AND empty User.country
-# — rare, since signup captures it) we ALLOW, to avoid false-blocking a legit user. An empty
-# post.countries means "open to everyone" → always allow.
+# â€” rare, since signup captures it) we ALLOW, to avoid false-blocking a legit user. An empty
+# post.countries means "open to everyone" â†’ always allow.
 #
 # Connects to: apply_to_team + invite_player_to_trial (callers below); LoginHistory/User in
 # afc_auth (location source); RecruitmentPost.countries (the target set, set in
@@ -152,14 +152,14 @@ def _actor_country_code(user):
 
 def _country_gate(user, post):
     """Return an error Response if `user` is NOT allowed to act on `post` by country, else
-    None. Open post (no target countries) or un-locatable actor → allowed (see fail policy
-    in the §K header)."""
+    None. Open post (no target countries) or un-locatable actor â†’ allowed (see fail policy
+    in the Â§K header)."""
     target = list(post.countries.all())
     if not target:
         return None  # post is open to everyone
     actor = _actor_country_code(user)
     if not actor:
-        return None  # cannot determine the actor's location — do not false-block
+        return None  # cannot determine the actor's location â€” do not false-block
     actor = actor.upper()
     allowed = {c.code.upper() for c in target if c.code} | {c.name.upper() for c in target if c.name}
     if actor in allowed:
@@ -174,6 +174,47 @@ def _country_gate(user, post):
     )
 
 
+# Allowed gameplay-video hosts (owner 2026-06-12: video by LINK, not upload). A strict host
+# allowlist - not a format check - so a post can never carry a link that the FE would try to embed
+# from an arbitrary site. Mirrors ALLOWED_HOSTS in frontend lib/videoEmbed.ts - keep the two in
+# sync, and when adding a platform also update _VIDEO_PLATFORMS_LABEL below + the FE helper text.
+_VIDEO_HOSTS = {
+    "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be",
+    "tiktok.com", "www.tiktok.com", "vm.tiktok.com",
+    "instagram.com", "www.instagram.com", "m.instagram.com", "instagr.am",
+}
+
+# Human-readable platform list for error messages (owner 2026-06-12: "tell them the platform
+# links we are accepting"). The FE shows the same list in the form helper text.
+_VIDEO_PLATFORMS_LABEL = "YouTube, TikTok or Instagram"
+
+
+def _validate_video_url(raw):
+    """Normalize + allowlist-check an optional gameplay video link.
+
+    Returns (normalized_url, None) on success - "" stays "" (the field is optional) - or
+    (None, error_message) when the value is present but not an http(s) link on an accepted
+    platform (see _VIDEO_HOSTS). Used by create_recruitment_post + edit_recruitment_post
+    (player posts only)."""
+    from urllib.parse import urlparse
+
+    url = (raw or "").strip()
+    if not url:
+        return "", None
+    # Tolerate a missing scheme ("youtube.com/watch?v=..."): default to https.
+    if not url.lower().startswith(("http://", "https://")):
+        url = f"https://{url}"
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host not in _VIDEO_HOSTS:
+        return None, f"video_url must be a {_VIDEO_PLATFORMS_LABEL} link."
+    if len(url) > 300:
+        return None, "video_url is too long (max 300 characters)."
+    return url, None
+
+
 @api_view(["POST"])
 def create_recruitment_post(request):
 
@@ -186,9 +227,9 @@ def create_recruitment_post(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
-    # ── MARKET-BAN GUARD (feature "J-market-reporting") ──
+    # â”€â”€ MARKET-BAN GUARD (feature "J-market-reporting") â”€â”€
     # A banned player (or a member of a banned team) cannot create a market post.
-    # Reporting is NOT gated by this — only the create/apply/invite actions are.
+    # Reporting is NOT gated by this â€” only the create/apply/invite actions are.
     market_ban = _active_market_ban(user)
     if market_ban:
         return Response(
@@ -196,12 +237,12 @@ def create_recruitment_post(request):
             status=403,
         )
 
-    # ── ONE-ACTIVE-POST RULE (feature "J-market-rules", J1) ──
+    # â”€â”€ ONE-ACTIVE-POST RULE (feature "J-market-rules", J1) â”€â”€
     # A user may have at most MAX_ACTIVE_POSTS (=1) active recruitment post at a time,
     # counting BOTH a player-availability post and a team-recruitment post.
     #
     # "Active" == NOT expired. NOTE: RecruitmentPost.is_active is a model @property
-    # (post_expiry_date >= today), NOT a queryable DB field — a `.filter(is_active=True)`
+    # (post_expiry_date >= today), NOT a queryable DB field â€” a `.filter(is_active=True)`
     # raises FieldError. So "active" is enforced purely as post_expiry_date >= today,
     # which is exactly what that property means. An expired post no longer counts, so the
     # user can post again once their old one lapses.
@@ -241,7 +282,7 @@ def create_recruitment_post(request):
         if not post_type or not expiry:
             return Response({"message": "post_type and post_expiry_date are required"}, status=400)
 
-        # ── ONE-MONTH EXPIRY CAP (feature "L-market-expiry-cap") ──
+        # â”€â”€ ONE-MONTH EXPIRY CAP (feature "L-market-expiry-cap") â”€â”€
         # Parse the user-set expiry, then bound it: a post may last AT MOST one calendar
         # month before it auto-closes (RecruitmentPost.is_active = post_expiry_date >=
         # today). For a brand-new post the window is measured from TODAY, so the expiry
@@ -259,7 +300,7 @@ def create_recruitment_post(request):
         if expiry_date > add_one_month(today):
             return Response({"message": "Post expiry must be within 1 month from today."}, status=400)
 
-        # 🌍 Get country
+        # ðŸŒ Get country
         country = None
         if country_code:
             country = Country.objects.filter(code=country_code).first()
@@ -281,6 +322,21 @@ def create_recruitment_post(request):
         # ---------------- PLAYER POST ----------------
         if post_type == "PLAYER_AVAILABLE":
             post.player = user
+            # COMPULSORY (owner 2026-06-12): the mobile device the player currently plays on.
+            # Recruiters factor device performance into trial decisions, so a player post
+            # without it is rejected outright. Shown on the post card + detail dialog.
+            mobile_device = (data.get("mobile_device") or "").strip()
+            if not mobile_device:
+                return Response(
+                    {"message": "mobile_device is required: tell teams the phone you currently play on."},
+                    status=400,
+                )
+            post.mobile_device = mobile_device[:80]  # column cap; UI enforces the same limit
+            # OPTIONAL gameplay video link, allowlist-validated (YouTube/TikTok only).
+            video_url, video_err = _validate_video_url(data.get("video_url"))
+            if video_err:
+                return Response({"message": video_err}, status=400)
+            post.video_url = video_url
             # Coalesce optional text fields to "" : these columns are NOT NULL with no
             # default, so a missing value (None) would raise IntegrityError on save.
             post.primary_role = data.get("primary_role") or ""
@@ -292,7 +348,7 @@ def create_recruitment_post(request):
             # Target countries (the restriction set). The FE country picker sends a list of
             # country NAMES under "country_codes" (legacy key name); older callers used
             # "country_names"/codes. _resolve_countries matches either by name OR ISO-2 code,
-            # so the selection actually persists (previously dropped — FE key never matched
+            # so the selection actually persists (previously dropped â€” FE key never matched
             # the BE key, leaving the M2M empty). This M2M drives the country gate
             # (_country_gate) and the FE "Open to" display. Mirror the first into the legacy
             # single `country` FK so existing readers keep working.
@@ -320,7 +376,7 @@ def create_recruitment_post(request):
             post.recruitment_criteria = data.get("recruitment_criteria") or ""
             post.save()  # single INSERT
 
-            # Target countries — same tolerant resolution as the player branch (see comment
+            # Target countries â€” same tolerant resolution as the player branch (see comment
             # above). Drives the country gate + FE "Open to" display for team posts.
             target = _resolve_countries(
                 data.get("countries") or data.get("country_names") or data.get("country_codes")
@@ -355,7 +411,7 @@ def get_recruitment_posts(request):
             "id": post.id,
             "post_type": post.post_type,
             "country": post.country.name if post.country else None,
-            # Target countries (restriction set) so the FE can show "Open to: …" on every
+            # Target countries (restriction set) so the FE can show "Open to: â€¦" on every
             # surface that lists posts. Same shape as the other list endpoints.
             "countries": list(post.countries.values("name", "code")),
             "expiry": post.post_expiry_date,
@@ -366,6 +422,10 @@ def get_recruitment_posts(request):
             "primary_role": post.primary_role,
             "secondary_role": post.secondary_role,
             "availability_type": post.availability_type,
+            # The phone the player currently plays on (compulsory on player posts).
+            "mobile_device": post.mobile_device,
+            # Optional gameplay video link (YouTube/TikTok, allowlist-validated).
+            "video_url": post.video_url,
 
             # Team fields
             "team": post.team.team_name if post.team else None,
@@ -414,14 +474,18 @@ def view_all_player_availability_post(request):
             "id": post.id,
             "player": post.player.username if post.player else None,
             "country": post.country.name if post.country else None,
-            # Target countries (the restriction set). Returned so the FE can show "Open to: …"
-            # on the post card/dialog — previously omitted here, so the main market UI never
+            # Target countries (the restriction set). Returned so the FE can show "Open to: â€¦"
+            # on the post card/dialog â€” previously omitted here, so the main market UI never
             # displayed the restriction. Same shape as view_all_team_recruitment_post.
             "countries": list(post.countries.values("name", "code")),
             "primary_role": post.primary_role,
             "secondary_role": post.secondary_role,
             "availability_type": post.availability_type,
             "additional_info": post.additional_info,
+            # The phone the player currently plays on (compulsory on player posts).
+            "mobile_device": post.mobile_device,
+            # Optional gameplay video link (YouTube/TikTok, allowlist-validated).
+            "video_url": post.video_url,
             "expiry": post.post_expiry_date,
         })
 
@@ -440,7 +504,7 @@ def apply_to_team(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
-    # ── MARKET-BAN GUARD (feature "J-market-reporting") ──
+    # â”€â”€ MARKET-BAN GUARD (feature "J-market-reporting") â”€â”€
     # A banned player (or a member of a banned team) cannot apply to a team.
     market_ban = _active_market_ban(user)
     if market_ban:
@@ -449,10 +513,10 @@ def apply_to_team(request):
             status=403,
         )
 
-    # ── INPUT GUARD ──
+    # â”€â”€ INPUT GUARD â”€â”€
     # post_id is required. On an empty/blank body request.data.get returns None, and
     # RecruitmentPost.objects.get(id=None) raises RecruitmentPost.DoesNotExist (a
-    # malformed/non-numeric id raises ValueError) — both previously bubbled up as an
+    # malformed/non-numeric id raises ValueError) â€” both previously bubbled up as an
     # unhandled 500. Validate the field first (missing -> 400), then guard the lookup
     # (not found / bad id -> 404) so bad input returns a clean 4xx instead.
     post_id = request.data.get("post_id")
@@ -471,9 +535,9 @@ def apply_to_team(request):
     if post.post_type != "TEAM_RECRUITMENT":
         return Response({"message": "Invalid post"}, status=400)
 
-    # ── COUNTRY GATE (feature "K-country-gate") ──
+    # â”€â”€ COUNTRY GATE (feature "K-country-gate") â”€â”€
     # If the team's post targets specific countries, only players LOCATED in one of those
-    # countries (by most-recent login country) may apply. See §K helper for the policy.
+    # countries (by most-recent login country) may apply. See Â§K helper for the policy.
     country_block = _country_gate(user, post)
     if country_block:
         return country_block
@@ -607,10 +671,10 @@ def update_application_status(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session."}, status=401)
-    # ── INPUT GUARD ──
+    # â”€â”€ INPUT GUARD â”€â”€
     # application_id is required. On an empty/blank body request.data.get returns None,
     # and RecruitmentApplication.objects.get(id=None) raises DoesNotExist (a malformed
-    # id raises ValueError) — both previously bubbled up as an unhandled 500. Validate
+    # id raises ValueError) â€” both previously bubbled up as an unhandled 500. Validate
     # first (missing -> 400), then guard the lookup (not found / bad id -> 404).
     application_id = request.data.get("application_id")
     if not application_id:
@@ -737,7 +801,7 @@ def update_application_status(request):
     elif action == "INVITE":
         player = application.player
 
-        # ── MAX-2-CONCURRENT-TRYOUTS RULE (feature "J-market-rules", J2) ──
+        # â”€â”€ MAX-2-CONCURRENT-TRYOUTS RULE (feature "J-market-rules", J2) â”€â”€
         # A player may be in at most MAX_ACTIVE_TRIALS (=2) active tryouts at once.
         # "Active" = a RecruitmentApplication in status TRIAL_ONGOING. This is the
         # TEAM-side gate: a team inviting an applicant into a trial. The player-side
@@ -875,7 +939,7 @@ def update_application_status(request):
         coach_emails = list(application.team.memberships.filter(management_role="coach").values_list("member__email", flat=True))
         recipient_emails = set(filter(None, [team_owner_email, team_captain_email] + manager_emails + coach_emails))
 
-        team_email_subject = f"Trial Started — {player.username} has been added!"
+        team_email_subject = f"Trial Started â€” {player.username} has been added!"
         team_email_body = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -977,10 +1041,10 @@ def get_player_contact(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
-    # ── INPUT GUARD ──
+    # â”€â”€ INPUT GUARD â”€â”€
     # application_id is required. On an empty/blank body request.data.get returns None,
     # and RecruitmentApplication.objects.get(id=None) raises DoesNotExist (a malformed
-    # id raises ValueError) — both previously bubbled up as an unhandled 500. Validate
+    # id raises ValueError) â€” both previously bubbled up as an unhandled 500. Validate
     # first (missing -> 400), then guard the lookup (not found / bad id -> 404).
     application_id = request.data.get("application_id")
     if not application_id:
@@ -1044,10 +1108,10 @@ def finalize_trial(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session."}, status=401)
-    # ── INPUT GUARD ──
+    # â”€â”€ INPUT GUARD â”€â”€
     # application_id is required. On an empty/blank body request.data.get returns None,
     # and RecruitmentApplication.objects.get(id=None) raises DoesNotExist (a malformed
-    # id raises ValueError) — both previously bubbled up as an unhandled 500. Validate
+    # id raises ValueError) â€” both previously bubbled up as an unhandled 500. Validate
     # first (missing -> 400), then guard the lookup (not found / bad id -> 404).
     application_id = request.data.get("application_id")
     if not application_id:
@@ -1066,7 +1130,7 @@ def finalize_trial(request):
     if action == "ACCEPT":
         application.status = "ACCEPTED"
 
-        # 🔥 Add player to team logic here
+        # ðŸ”¥ Add player to team logic here
 
     elif action == "REJECT":
         application.status = "REJECTED"
@@ -1266,7 +1330,7 @@ def get_trial_chat_messages(request):
     # AFC staff may READ any trial chat for oversight/moderation (feature "K-admin-chat-read",
     # disclosed in the Privacy Policy + Terms). The read gate allows the trial participants
     # (player / team owner / coach / manager) OR a market moderator. Staff get READ access
-    # only — send_trial_chat_message keeps the participant-only gate, so an admin cannot post
+    # only â€” send_trial_chat_message keeps the participant-only gate, so an admin cannot post
     # into someone's trial conversation, only observe it.
     if not (_is_trial_chat_participant(user, chat) or _is_market_moderator(user)):
         return Response({"message": "Unauthorized."}, status=403)
@@ -1417,9 +1481,9 @@ def view_my_applications(request):
 
     return Response(data, status=200)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DIRECT TRIAL INVITES  (Team → Player from a PLAYER_AVAILABLE post)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# DIRECT TRIAL INVITES  (Team â†’ Player from a PLAYER_AVAILABLE post)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def invite_player_to_trial(request):
@@ -1437,7 +1501,7 @@ def invite_player_to_trial(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
-    # ── MARKET-BAN GUARD (feature "J-market-reporting") ──
+    # â”€â”€ MARKET-BAN GUARD (feature "J-market-reporting") â”€â”€
     # A banned user (or a member of a banned team) cannot send a trial invite.
     market_ban = _active_market_ban(user)
     if market_ban:
@@ -1471,10 +1535,10 @@ def invite_player_to_trial(request):
     if not team:
         return Response({"message": "You must be a team owner, manager, or coach to send a trial invite."}, status=403)
 
-    # ── COUNTRY GATE (feature "K-country-gate") ──
+    # â”€â”€ COUNTRY GATE (feature "K-country-gate") â”€â”€
     # If the player's availability post targets specific countries (the countries they are
     # open to play for/from), only a recruiter LOCATED in one of those countries (by most-
-    # recent login country) may invite them. Mirrors apply_to_team's gate. See §K helper.
+    # recent login country) may invite them. Mirrors apply_to_team's gate. See Â§K helper.
     country_block = _country_gate(user, post)
     if country_block:
         return country_block
@@ -1606,7 +1670,7 @@ def view_my_trial_invites(request):
 def respond_to_direct_trial_invite(request):
     """
     Player accepts or declines a DirectTrialInvite.
-    ACCEPT:  player < 2 active trials, team < 4 active trials → creates RecruitmentApplication + TrialChat
+    ACCEPT:  player < 2 active trials, team < 4 active trials â†’ creates RecruitmentApplication + TrialChat
     DECLINE: marks invite rejected, notifies team
     """
     auth = request.headers.get("Authorization")
@@ -1646,7 +1710,7 @@ def respond_to_direct_trial_invite(request):
         return Response({"message": "Invite declined."}, status=200)
 
     elif action == "ACCEPT":
-        # ── MAX-2-CONCURRENT-TRYOUTS RULE (feature "J-market-rules", J2) ──
+        # â”€â”€ MAX-2-CONCURRENT-TRYOUTS RULE (feature "J-market-rules", J2) â”€â”€
         # Player-side gate: a player accepting a DIRECT trial invite. Same cap and same
         # wording as the team-side gate in handle_application_action so the rule is
         # consistent everywhere a player can enter a trial. See MAX_ACTIVE_TRIALS.
@@ -1843,7 +1907,7 @@ def view_application_details(request):
 
 @api_view(["GET"])
 def get_post_details(request):
-    """Public endpoint — no auth required."""
+    """Public endpoint â€” no auth required."""
     post_id = request.query_params.get("post_id")
     if not post_id:
         return Response({"message": "post_id is required."}, status=400)
@@ -1872,6 +1936,10 @@ def get_post_details(request):
         "secondary_role": post.secondary_role,
         "availability_type": post.availability_type,
         "additional_info": post.additional_info,
+        # The phone the player currently plays on (compulsory on player posts).
+        "mobile_device": post.mobile_device,
+        # Optional gameplay video link (YouTube/TikTok, allowlist-validated).
+        "video_url": post.video_url,
         "country": post.country.name if post.country else None,
         "countries": list(post.countries.values("name", "code")),
 
@@ -1916,6 +1984,10 @@ def get_posts_related_to_me(request):
             "secondary_role": post.secondary_role,
             "availability_type": post.availability_type,
             "additional_info": post.additional_info,
+            # The phone the player currently plays on (compulsory on player posts).
+            "mobile_device": post.mobile_device,
+            # Optional gameplay video link (YouTube/TikTok, allowlist-validated).
+            "video_url": post.video_url,
             "country": post.country.name if post.country else None,
             "countries": list(post.countries.values("name", "code")),
 
@@ -1962,7 +2034,7 @@ def edit_recruitment_post(request):
         except ValueError:
             return Response({"message": "Invalid date format. Use YYYY-MM-DD."}, status=400)
 
-        # ── ONE-MONTH EXPIRY CAP (feature "L-market-expiry-cap") ──
+        # â”€â”€ ONE-MONTH EXPIRY CAP (feature "L-market-expiry-cap") â”€â”€
         # An edit must not extend a post past one calendar month of TOTAL life, so the cap
         # is measured from the post's OWN start (created_at), NOT from today. Otherwise a
         # user could keep editing every day and roll the expiry forward indefinitely. We
@@ -1988,7 +2060,25 @@ def edit_recruitment_post(request):
             if field in data:
                 setattr(post, field, data[field])
 
-        # Target countries — tolerant to the FE key ("country_codes", holding names) and the
+        # mobile_device is COMPULSORY on player posts: an edit may change it but never clear it
+        # (same rule the create path enforces).
+        if "mobile_device" in data:
+            device = (data.get("mobile_device") or "").strip()
+            if not device:
+                return Response(
+                    {"message": "mobile_device cannot be empty: tell teams the phone you currently play on."},
+                    status=400,
+                )
+            post.mobile_device = device[:80]
+
+        # OPTIONAL gameplay video link: editable, clearable (send ""), allowlist-validated.
+        if "video_url" in data:
+            video_url, video_err = _validate_video_url(data.get("video_url"))
+            if video_err:
+                return Response({"message": video_err}, status=400)
+            post.video_url = video_url
+
+        # Target countries â€” tolerant to the FE key ("country_codes", holding names) and the
         # legacy "country_names"/codes. _resolve_countries matches by name OR code. Setting
         # only when a key is present lets an edit clear the restriction (empty list).
         if any(k in data for k in ("countries", "country_names", "country_codes")):
@@ -2002,7 +2092,7 @@ def edit_recruitment_post(request):
             if field in data:
                 setattr(post, field, data[field])
 
-        # Target countries — tolerant to the FE key ("country_codes", holding names) and the
+        # Target countries â€” tolerant to the FE key ("country_codes", holding names) and the
         # legacy "country_names"/codes. _resolve_countries matches by name OR code. Setting
         # only when a key is present lets an edit clear the restriction (empty list).
         if any(k in data for k in ("countries", "country_names", "country_codes")):

@@ -60,6 +60,17 @@ class RecruitmentPost(models.Model):
     secondary_role = models.CharField(max_length=50, blank=True, choices=ROLE_CHOICES)
     availability_type = models.CharField(max_length=20, choices=AVAILABILITY_TYPE_CHOICES, blank=True)
     additional_info = models.TextField(blank=True)
+    # The mobile device the player currently plays on (owner 2026-06-12: COMPULSORY on player
+    # posts and shown on the post - recruiters factor device performance into trials). Free text
+    # ("iPhone 13", "Infinix Note 30 Pro"...); blank-allowed at the DB level because TEAM posts
+    # have no device, but create_recruitment_post REJECTS a PLAYER_AVAILABLE post without one.
+    mobile_device = models.CharField(max_length=80, blank=True, default="")
+    # OPTIONAL gameplay video LINK (owner 2026-06-12: video by link, not upload - hosting our own
+    # video would crush storage/bandwidth on the single prod box; a YouTube/TikTok link captures
+    # the recruiting value at zero hosting cost). Validated against an ALLOWLIST of hosts in
+    # views._validate_video_url (never trust an arbitrary URL into an embed); the FE derives the
+    # actual embed iframe from the parsed host + video id (lib/videoEmbed.ts), never raw HTML.
+    video_url = models.URLField(max_length=300, blank=True, default="")
 
     # Applies to team posts
     team = models.ForeignKey('afc_team.Team', on_delete=models.CASCADE, null=True, blank=True)
