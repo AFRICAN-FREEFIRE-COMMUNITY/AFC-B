@@ -174,7 +174,11 @@ class FireAndPromoteTests(EventLinkBase):
             notification_type="qualification", related_event=self.target).exists())
 
     def test_closed_window_lands_pending_then_allow_bypasses(self):
-        self.target.registration_end_date = date.today() - timedelta(days=1)
+        # timezone.localdate(), NOT date.today(): _window_closed compares against
+        # localdate, and around midnight the two can disagree by a day (this test
+        # flaked exactly at a date rollover because of it).
+        from django.utils import timezone
+        self.target.registration_end_date = timezone.localdate() - timedelta(days=1)
         self.target.save(update_fields=["registration_end_date"])
         link_id = self._create_link().json()["link"]["id"]
         quals = self._fire(link_id).json()["link"]["qualifications"]

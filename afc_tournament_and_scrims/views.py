@@ -5303,19 +5303,20 @@ def register_for_event(request):
                 role_id = event.waitlist_discord_role_id
 
                 if role_id:
-                    DiscordRoleAssignment.objects.bulk_create(
-                        [
-                            DiscordRoleAssignment(
-                                user=u,
-                                discord_id=u.discord_id,
-                                role_id=role_id,
-                                status="pending"
-                            )
-                            for u in roster_users
-                        ],
-                        ignore_conflicts=True
-                    )
-                
+                    # Duplicate-safe queue (afc_auth.discord_roles): plain bulk_create
+                    # piled up duplicate rows (no unique constraint possible on MySQL),
+                    # which later 500'd the start-event reconcile.
+                    from afc_auth.discord_roles import queue_discord_role_assignments
+                    queue_discord_role_assignments([
+                        DiscordRoleAssignment(
+                            user=u,
+                            discord_id=u.discord_id,
+                            role_id=role_id,
+                            status="pending"
+                        )
+                        for u in roster_users
+                    ])
+
                 # ---------------- AUTO ASSIGN ROLES FOR NON-SPONSORED ----------------
                 if not event.is_sponsored:
 
@@ -5452,21 +5453,20 @@ def register_for_event(request):
             role_id_stage= Stages.objects.filter(event=event).first()
             role_id = role_id_stage.stage_discord_role_id
             if role_id:
-                DiscordRoleAssignment.objects.bulk_create(
-                    [
-                        DiscordRoleAssignment(
-                            user=u,
-                            discord_id=u.discord_id,
-                            role_id=role_id,
-                            stage=role_id_stage,
-                            group=None,
-                            status="pending"
-                        )
-                        for u in roster_users
-                    ],
-                    ignore_conflicts=True,
-                    batch_size=500
-                )
+                # Duplicate-safe queue (afc_auth.discord_roles): see the waitlist branch
+                # above; a re-registered roster must not insert twin assignment rows.
+                from afc_auth.discord_roles import queue_discord_role_assignments
+                queue_discord_role_assignments([
+                    DiscordRoleAssignment(
+                        user=u,
+                        discord_id=u.discord_id,
+                        role_id=role_id,
+                        stage=role_id_stage,
+                        group=None,
+                        status="pending"
+                    )
+                    for u in roster_users
+                ])
 
 
         return Response({
@@ -9523,11 +9523,13 @@ def seed_solo_players_to_stage(request):
                     status="pending",
                 ))
 
+        # Duplicate-safe queue (afc_auth.discord_roles): only truly-new tuples insert,
+        # so a re-seed never doubles rows. queued = what actually landed, keeping the
+        # progress total honest.
+        queued = 0
         if assignments:
-            DiscordRoleAssignment.objects.bulk_create(assignments, batch_size=1000, ignore_conflicts=True)
-
-    # ✅ progress total must match queued work
-    queued = len(assignments)
+            from afc_auth.discord_roles import queue_discord_role_assignments
+            queued = queue_discord_role_assignments(assignments, batch_size=1000)
 
     if queued > 0:
         progress = DiscordStageRoleAssignmentProgress.objects.create(
@@ -10160,8 +10162,12 @@ def seed_stage_competitors_to_groups(request):
 
     with transaction.atomic():
         StageGroupCompetitor.objects.bulk_create(sgc_rows, batch_size=500, ignore_conflicts=True)
+        # Duplicate-safe queue (afc_auth.discord_roles): a re-seed must not insert twin
+        # assignment rows (no unique constraint possible on MySQL across nullable cols).
+        queued_roles = 0
         if role_rows:
-            DiscordRoleAssignment.objects.bulk_create(role_rows, batch_size=500, ignore_conflicts=True)
+            from afc_auth.discord_roles import queue_discord_role_assignments
+            queued_roles = queue_discord_role_assignments(role_rows)
 
     if role_rows:
         assign_group_roles_from_db_task.delay(stage.stage_id)
@@ -10169,7 +10175,7 @@ def seed_stage_competitors_to_groups(request):
     return Response({
         "message": f"Seeded {len(sgc_rows)} competitors into {len(groups)} groups for stage '{stage.stage_name}'.",
         "seeded": len(sgc_rows),
-        "queued_role_assignments": len(role_rows),
+        "queued_role_assignments": queued_roles,
     }, status=200)
 
 
