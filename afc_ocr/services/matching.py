@@ -69,11 +69,24 @@ def all_platform_players(limit=None) -> list:
     Read by afc_leaderboard.views.ocr_extract for the solo flow."""
     from afc_auth.models import User
 
-    qs = User.objects.all().order_by("user_id").values("user_id", "username")
+    # Carry each user's CURRENT team (owner 2026-06-12: the review panel must show which team a
+    # suggested player is in, not just the username). There is no User.team FK - membership lives
+    # on afc_team.TeamMembers (member FK, unique_member_one_team constraint), so the reverse
+    # `teammembers` join yields AT MOST one row per user (LEFT JOIN: team fields NULL for free agents).
+    qs = (
+        User.objects.all()
+        .order_by("user_id")
+        .values("user_id", "username", "teammembers__team_id", "teammembers__team__team_name")
+    )
     if limit is not None:
         qs = qs[:limit]
     return [
-        {"user_id": u["user_id"], "username": u["username"], "team_id": None, "team_name": None}
+        {
+            "user_id": u["user_id"],
+            "username": u["username"],
+            "team_id": u["teammembers__team_id"],
+            "team_name": u["teammembers__team__team_name"],
+        }
         for u in qs
     ]
 
@@ -317,6 +330,9 @@ def match_name(raw_name: str, registered: list) -> dict:
             top_candidates.append({
                 "user_id":    player["user_id"],
                 "username":   username,
+                # The candidate's CURRENT platform team (owner 2026-06-12) so the reviewer can
+                # tell same-named players apart and sanity-check a match against the read team.
+                "team_name":  player.get("team_name"),
                 "confidence": round(score / 100, 3),
             })
 

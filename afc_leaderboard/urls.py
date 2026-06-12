@@ -18,6 +18,12 @@ urlpatterns = [
     path("standalone/", views.list_leaderboards, name="standalone_list"),            # GET (paginated)
     path("standalone/create/", views.create_leaderboard, name="standalone_create"),  # POST
 
+    # ── ghost typeahead search ── literal paths, declared before <int:lb_id> by convention (an int
+    # pattern can never swallow them anyway). Mirrors /team/search-teams/ + /auth/search-users/ so
+    # the wizard pickers can ALSO surface existing ghosts (owner 2026-06-12).
+    path("standalone/search-ghost-teams/", views.search_ghost_teams, name="standalone_search_ghost_teams"),      # GET
+    path("standalone/search-ghost-players/", views.search_ghost_players, name="standalone_search_ghost_players"),  # GET
+
     # ── match-scoped routes (declared before <lb_id> to avoid pattern collision) ──
     path("standalone/matches/<int:mid>/", views.delete_match, name="standalone_delete_match"),            # DELETE
     path("standalone/matches/<int:mid>/results/", views.save_match_results, name="standalone_save_results"),  # POST
@@ -30,6 +36,9 @@ urlpatterns = [
     # ── participants ──
     path("standalone/<int:lb_id>/participants/", views.add_participant, name="standalone_add_participant"),  # POST
     path("standalone/<int:lb_id>/participants/<int:pid>/", views.remove_participant, name="standalone_remove_participant"),  # DELETE
+    # Roster for ONE participant (real team's members or ghost team's slots) - feeds the manual
+    # ResultsStep per-player kills panel (owner 2026-06-12).
+    path("standalone/<int:lb_id>/participants/<int:pid>/roster/", views.participant_roster, name="standalone_participant_roster"),  # GET
 
     # ── matches ──
     path("standalone/<int:lb_id>/matches/", views.add_match, name="standalone_add_match"),  # POST

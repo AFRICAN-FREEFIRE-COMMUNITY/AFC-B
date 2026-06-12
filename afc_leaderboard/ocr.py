@@ -81,6 +81,9 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
                     "kills": int(p.get("kills", 0) or 0),
                     "matched_user_id": pm["matched_user_id"],
                     "matched_username": pm["matched_username"],
+                    # The matched player's CURRENT platform team (owner 2026-06-12: show which
+                    # team each suggested player is in, not just the username).
+                    "matched_team_name": pm.get("matched_team_name"),
                     "confidence": pm["confidence"],
                     "top_candidates": pm["top_candidates"],
                     "is_unmatched": pm["matched_user_id"] is None,
@@ -153,11 +156,17 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
     afc_leaderboard.views.results_file_extract; row shape documented on build_team_ocr_rows."""
     from afc_auth.models import User
 
-    # One query resolves every UID in the file to a platform user.
+    # One query resolves every UID in the file to a platform user (incl. their current team,
+    # which the review panel shows next to each suggestion).
     all_uids = [p["uid"] for t in parsed_teams for p in t.get("players", []) if p.get("uid")]
+    # NOTE: there is no User.team FK - membership lives on afc_team.TeamMembers (member FK,
+    # unique_member_one_team), so the current team comes via the reverse `teammembers` join
+    # (LEFT JOIN: NULL for free agents, one row per user thanks to the unique constraint).
     uid_to_user = {
         u["uid"]: u
-        for u in User.objects.filter(uid__in=all_uids).values("uid", "user_id", "username")
+        for u in User.objects.filter(uid__in=all_uids).values(
+            "uid", "user_id", "username", "teammembers__team__team_name",
+        )
     }
 
     rows = []
@@ -176,9 +185,15 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
                     "kills": int(p.get("kills", 0) or 0),
                     "matched_user_id": hit["user_id"],
                     "matched_username": hit["username"],
+                    "matched_team_name": hit["teammembers__team__team_name"],
                     "confidence": 1.0,
                     "top_candidates": [
-                        {"user_id": hit["user_id"], "username": hit["username"], "confidence": 1.0}
+                        {
+                            "user_id": hit["user_id"],
+                            "username": hit["username"],
+                            "team_name": hit["teammembers__team__team_name"],
+                            "confidence": 1.0,
+                        }
                     ],
                     "is_unmatched": False,
                 })
@@ -189,6 +204,7 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
                 "kills": int(p.get("kills", 0) or 0),
                 "matched_user_id": pm["matched_user_id"],
                 "matched_username": pm["matched_username"],
+                "matched_team_name": pm.get("matched_team_name"),
                 "confidence": pm["confidence"],
                 "top_candidates": pm["top_candidates"],
                 "is_unmatched": pm["matched_user_id"] is None,

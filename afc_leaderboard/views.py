@@ -47,9 +47,11 @@ from django.db import transaction
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from django.db.models import Q
+
 from afc_auth.views import validate_token
 from afc_auth.models import User
-from afc_team.models import Team
+from afc_team.models import Team, TeamMembers
 from afc_organizers.models import Organization, OrganizationMember
 from afc_organizers.permissions import org_can
 from afc_rankings.models import GhostTeam, GhostPlayer
@@ -88,6 +90,9 @@ from .ocr import (
 from .tasks import process_leaderboard_ocr_job
 # Match-log file parser (the "upload result file" option) — shared format knowledge in utils.
 from utils.match_log import parse_team_match_log
+# Punctuation/leet-insensitive search (same util search-teams / search-users use), for the
+# ghost-team / ghost-player typeahead endpoints below.
+from utils.search_utils import normalized_column, separator_stripped
 
 
 # ── pagination (afc_partner_api envelope) ────────────────────────────────────────────────────
@@ -903,6 +908,32 @@ def _save_one_result(match, participant, row, lb):
     penalty = int(row.get("penalty", 0) or 0)
     played = bool(row.get("played", True))
 
+    # ── Per-player kill breakdown (team format, owner 2026-06-12) ──
+    # Optional row["players"] = [{"name": str, "user_id"?: int, "kills": int}, ...]. When given,
+    # the TEAM kills are the SUM of the player kills (server is the authority, exactly like the
+    # event flow's enter_team_match_result_manual sums played players), and the normalized
+    # breakdown is stored on the result row so reloading a map can re-show per-player inputs.
+    players_in = row.get("players")
+    player_kills = None
+    if isinstance(players_in, list) and players_in:
+        player_kills = []
+        for p in players_in:
+            if not isinstance(p, dict):
+                continue
+            name = str(p.get("name") or "").strip()
+            if not name:
+                continue
+            uid_val = p.get("user_id")
+            player_kills.append({
+                "name": name,
+                "user_id": int(uid_val) if uid_val is not None else None,
+                "kills": int(p.get("kills", 0) or 0),
+            })
+        if player_kills:
+            kills = sum(p["kills"] for p in player_kills)
+        else:
+            player_kills = None
+
     # Normalize the placement table (int->int) the SAME way the events surface does, per call. (Cheap;
     # keeps the helper self-contained so either caller can invoke it without pre-normalizing.)
     placement_points = normalize_placement_points(lb.placement_points)
@@ -940,6 +971,9 @@ def _save_one_result(match, participant, row, lb):
             "kills": kills,
             "damage": damage,
             "assists": assists,
+            # Stored breakdown (or None when the row was entered as a plain team total). Re-saving
+            # without a breakdown clears the stale one - the row is replaced wholesale on upsert.
+            "player_kills": player_kills,
             "bonus_points": bonus,
             "penalty_points": penalty,
             "placement_points": pts["placement_points"],
@@ -1016,6 +1050,152 @@ def save_match_results(request, mid):
             saved.append(_save_one_result(match, valid_participants[pid], row, lb))
 
     return Response({"saved": len(saved), "results": saved})
+
+
+@api_view(["GET"])
+def participant_roster(request, lb_id, pid):
+    """
+    GET leaderboards/standalone/<lb_id>/participants/<pid>/roster/  — the participant's player list.
+
+    Auth: Bearer SessionToken + can_manage_standalone_lb.
+    Purpose (owner 2026-06-12): the manual ResultsStep shows each selected TEAM's players with a
+    kills input per player ("just like the manual input for the main leaderboard"). REAL teams read
+    afc_team.TeamMembers; GHOST teams read their afc_rankings.GhostPlayer slots (ordered). Solo
+    participants have no roster (empty list, the FE hides the panel).
+    Response 200: { "players": [ {"name": str, "user_id": int|null}, ... ] }
+        user_id is set for real-team members (so saved breakdowns can link back to platform users)
+        and null for ghost roster names.
+    Errors: 404 leaderboard/participant not found; 403 non-manager.
+    Consumed by: ResultsStep.tsx (fetched lazily per team participant, cached in state).
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    try:
+        lb = StandaloneLeaderboard.objects.get(id=lb_id)
+    except StandaloneLeaderboard.DoesNotExist:
+        return Response({"message": "Leaderboard not found."}, status=404)
+    if not can_manage_standalone_lb(user, lb):
+        return Response({"message": "You do not have permission to view this leaderboard's rosters."}, status=403)
+    try:
+        participant = LeaderboardParticipant.objects.get(id=pid, leaderboard=lb)
+    except LeaderboardParticipant.DoesNotExist:
+        return Response({"message": "Participant not found."}, status=404)
+
+    players = []
+    if participant.team_id:
+        # Real team roster: every TeamMembers row, username as the display name.
+        players = [
+            {"name": m["member__username"], "user_id": m["member_id"]}
+            for m in TeamMembers.objects.filter(team_id=participant.team_id)
+            .order_by("join_date")
+            .values("member_id", "member__username")
+        ]
+    elif participant.ghost_team_id:
+        # Ghost team roster: the GhostPlayer slots, in slot order. No platform user behind them.
+        players = [
+            {"name": gp.ign, "user_id": None}
+            for gp in GhostPlayer.objects.filter(ghost_team_id=participant.ghost_team_id).order_by("slot")
+        ]
+    # solo kinds (user / ghost_player): no roster - the FE only asks for team participants.
+
+    return Response({"players": players})
+
+
+# ── Ghost typeahead search (owner 2026-06-12: "let ghost teams and players be searchable") ──────
+# The /rankings/ghost-teams/ list is head_admin-gated, so organizers building a standalone
+# leaderboard could not DISCOVER existing ghosts - they could only create duplicates or wait for an
+# OCR suggestion. These two endpoints mirror the search-teams / search-users idiom (Bearer auth,
+# q>=2, limit<=25, punctuation/leet-insensitive via utils.search_utils) over the ghost models.
+# Consumed by: components/ui/team-search-select.tsx + user-search-select.tsx when their opt-in
+# `includeGhosts` prop is set (the standalone wizard pickers). A picked ghost is added to the
+# leaderboard via the existing add_participant kind="ghost_existing" contract.
+
+@api_view(["GET"])
+def search_ghost_teams(request):
+    """
+    GET leaderboards/standalone/search-ghost-teams/?q=<text>&limit=10  — ghost-team typeahead.
+
+    Auth: Bearer SessionToken (any authenticated user - ghost names/countries are not sensitive,
+    same openness as /team/search-teams/).
+    Query: q (min 2 chars), limit (1..25, default 10). Matches team_name (icontains OR the
+    normalized punctuation/leet-stripped form, widening only).
+    Response 200: { "results": [ {"ghost_team_id": str(uuid), "team_name": str, "country": str,
+                                  "players_count": int} ], "total_count": int }
+    Consumed by: TeamSearchSelect (includeGhosts) on the standalone wizard.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    q = (request.GET.get("q") or "").strip()
+    if len(q) < 2:
+        return Response({"results": [], "total_count": 0})
+    try:
+        limit = max(1, min(int(request.GET.get("limit", 10)), 25))
+    except (TypeError, ValueError):
+        limit = 10
+
+    # Same widen-only condition shape as /team/search-teams/: plain icontains OR the
+    # punctuation/leet-normalized comparison (only when the stripped query is non-empty).
+    cond = Q(team_name__icontains=q)
+    stripped = separator_stripped(q)
+    qs = GhostTeam.objects.filter(is_active=True).annotate(_norm_name=normalized_column("team_name"))
+    if stripped:
+        cond |= Q(_norm_name__icontains=stripped)
+    qs = qs.filter(cond).order_by("team_name")
+    total = qs.count()
+    results = []
+    for gt in qs[:limit]:
+        results.append({
+            "ghost_team_id": str(gt.ghost_team_id),
+            "team_name": gt.team_name,
+            "country": gt.country,
+            "players_count": gt.players.count(),
+        })
+    return Response({"results": results, "total_count": total})
+
+
+@api_view(["GET"])
+def search_ghost_players(request):
+    """
+    GET leaderboards/standalone/search-ghost-players/?q=<text>&limit=10  — ghost-player typeahead.
+
+    Auth: Bearer SessionToken (any authenticated user).
+    Query: q (min 2 chars), limit (1..25, default 10). Matches ign (icontains OR the normalized
+    punctuation/leet-stripped form).
+    Response 200: { "results": [ {"ghost_player_id": int, "ign": str,
+                                  "ghost_team_id": str(uuid)|null, "ghost_team_name": str|null} ],
+                    "total_count": int }
+    Consumed by: UserSearchSelect (includeGhosts) on the standalone wizard (solo format), so an
+    existing ghost player is reused (kind="ghost_existing") instead of duplicated.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    q = (request.GET.get("q") or "").strip()
+    if len(q) < 2:
+        return Response({"results": [], "total_count": 0})
+    try:
+        limit = max(1, min(int(request.GET.get("limit", 10)), 25))
+    except (TypeError, ValueError):
+        limit = 10
+
+    cond = Q(ign__icontains=q)
+    stripped = separator_stripped(q)
+    qs = GhostPlayer.objects.select_related("ghost_team").annotate(_norm_ign=normalized_column("ign"))
+    if stripped:
+        cond |= Q(_norm_ign__icontains=stripped)
+    qs = qs.filter(cond).order_by("ign")
+    total = qs.count()
+    results = []
+    for gp in qs[:limit]:
+        results.append({
+            "ghost_player_id": gp.id,
+            "ign": gp.ign,
+            "ghost_team_id": str(gp.ghost_team_id) if gp.ghost_team_id else None,
+            "ghost_team_name": gp.ghost_team.team_name if gp.ghost_team_id else None,
+        })
+    return Response({"results": results, "total_count": total})
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════
