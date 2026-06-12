@@ -47,6 +47,17 @@ class User(AbstractUser):
     #                 best-effort by frontend app/(user)/_components/WelcomeTour.tsx on finish.
     has_seen_welcome = models.BooleanField(default=False)
 
+    # One-time DASHBOARD intro coach marks (owner 2026-06-12): when a user is GRANTED access to a
+    # role dashboard (admin / sponsor / organizer / vendor), their next login shows a one-time
+    # callout pointing at the nav menu where that dashboard lives - NOT a navigate-now popup.
+    # Keys are dashboard ids ("admin"|"sponsor"|"organizer"|"vendor") -> True once dismissed.
+    # A dict (not a single boolean) so granting a SECOND dashboard later re-triggers the callout
+    # for just that new dashboard.
+    #   - Read by  : afc_auth.views.get_user_profile (frontend AuthContext maps it onto the user;
+    #                app/(user)/_components/DashboardIntroCoachmark.tsx decides what to show).
+    #   - Written by: afc_auth.views.mark_dashboard_intro_seen (POST /auth/mark-dashboard-intro-seen/).
+    seen_dashboard_intros = models.JSONField(default=dict, blank=True)
+
     USERNAME_FIELD = "username"  # Set in_game_name as username
     REQUIRED_FIELDS = ["email", "full_name"]
 
