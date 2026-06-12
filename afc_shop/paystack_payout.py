@@ -134,9 +134,12 @@ def _paystack(method, path, json_body=None):
             "message": f"Paystack returned an unexpected response (HTTP {r.status_code}). Try again shortly.",
         }
 
-    # Paystack signals success with HTTP 200 + {"status": true, "data": ...}. Treat
-    # anything else (4xx/5xx, or status=false) as a failure the caller can surface.
-    ok = r.status_code == 200 and bool(body.get("status"))
+    # Paystack signals success with HTTP 2xx + {"status": true, "data": ...}. 2xx, NOT just
+    # 200: POST /transferrecipient returns 201 Created, which the old ==200 check treated as
+    # a failure - the recipient was created on Paystack but the vendor saw
+    # "Could not save your bank... (Transfer recipient created successfully)" (owner bug
+    # report 2026-06-12). Anything non-2xx or status=false is a failure the caller surfaces.
+    ok = 200 <= r.status_code < 300 and bool(body.get("status"))
     return ok, body
 
 
