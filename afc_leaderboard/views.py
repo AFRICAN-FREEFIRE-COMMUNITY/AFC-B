@@ -83,8 +83,11 @@ from .standings import standalone_standings
 from .ocr import (
     build_team_ocr_rows as _build_team_ocr_rows,
     build_solo_ocr_rows as _build_solo_ocr_rows,
+    build_rows_from_match_log as _build_rows_from_match_log,
 )
 from .tasks import process_leaderboard_ocr_job
+# Match-log file parser (the "upload result file" option) — shared format knowledge in utils.
+from utils.match_log import parse_team_match_log
 
 
 # ── pagination (afc_partner_api envelope) ────────────────────────────────────────────────────
@@ -1108,6 +1111,69 @@ def ocr_extract(request, lb_id):
 
     # draft_id is a stateless correlation id for the FE only (we never persist an OCRSession here —
     # the standalone flow has no Match to bind one to). The FE echoes it back on apply for tracing.
+    return Response({"draft_id": str(uuid.uuid4()), "format": lb.format, "rows": rows})
+
+
+@api_view(["POST"])
+def results_file_extract(request, lb_id):
+    """
+    POST leaderboards/standalone/<id>/results-file/  — parse a match-log RESULT FILE into review rows.
+
+    PURPOSE
+        The "upload result file" option (owner 2026-06-12: every upload option the event flow has
+        must exist on standalone leaderboards too). Parses the in-game TEAM match-log text export
+        (the same file events accept on events/upload-team-match-result/) and returns the SAME
+        stateless review-row draft ocr_extract returns, so the FE reuses one review table and the
+        one ocr_apply pipeline for screenshots AND files. Nothing is persisted here.
+        Unlike OCR, the file carries each player's UID, so players resolve EXACTLY by User.uid
+        (confidence 1.0); unknown UIDs fall back to the fuzzy name match.
+    AUTH
+        Bearer SessionToken + can_manage_standalone_lb(user, lb) (same gate as ocr_extract).
+    REQUEST (multipart/form-data)
+        file (text export from the game)   — required. TEAM leaderboards only (the file format is
+        team-shaped; solo leaderboards keep manual + OCR).
+    RESPONSE 200
+        { "draft_id": "<uuid>", "format": "team", "rows": [<same team row shape as ocr_extract,
+          including players_detail with per-player kills + matches>] }
+    ERRORS
+        404 leaderboard not found; 403 non-manager; 400 missing file / solo leaderboard / nothing
+        parsed from the file.
+    HOW IT CONNECTS
+        - utils.match_log.parse_team_match_log owns the file format (regexes mirror the event flow).
+        - afc_leaderboard.ocr.build_rows_from_match_log builds the rows (UID-exact players, team
+          matching over all_platform_teams_with_ghosts like the OCR path).
+        - Consumed by the FE ResultFileDialog (frontend) inside the standalone wizard; the reviewed
+          rows are applied via the existing POST .../ocr/apply/.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+    lb, nf = _get_lb_or_404(lb_id)
+    if nf:
+        return nf
+    if not can_manage_standalone_lb(user, lb):
+        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+    if lb.format != "team":
+        return Response(
+            {"message": "Result-file upload is for TEAM leaderboards. Use manual entry or OCR for solo."},
+            status=400,
+        )
+
+    uploaded = request.FILES.get("file")
+    if not uploaded:
+        return Response({"message": "file is required."}, status=400)
+
+    text = uploaded.read().decode("utf-8", errors="ignore")
+    parsed = parse_team_match_log(text)
+    if not parsed:
+        return Response(
+            {"message": "No team data could be parsed from this file. Is it the game's match-log export?"},
+            status=400,
+        )
+
+    rows = _build_rows_from_match_log(
+        parsed, all_platform_teams_with_ghosts(), all_platform_players(),
+    )
     return Response({"draft_id": str(uuid.uuid4()), "format": lb.format, "rows": rows})
 
 
