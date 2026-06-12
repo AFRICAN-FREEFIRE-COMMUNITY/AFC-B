@@ -724,3 +724,103 @@ class EventRegistrationPayment(models.Model):
     def __str__(self):
         return f"EventRegistrationPayment({self.event_id} {self.user_id} {self.amount}{self.currency} {self.status})"
 
+
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# CLASH-SQUAD HEAD-TO-HEAD BRACKET (bracket sub-project C; D bridge lives in head_to_head.py)
+#
+# Until now every "cs - ..." stage_format was DECORATIVE: all results flowed through the
+# BR-shaped TournamentTeamMatchStats (placement + kills) and no head-to-head model existed.
+# HeadToHeadMatch is the first real H2H primitive: ONE row = one Clash Squad set between two
+# TournamentTeam rows, with explicit advancement wiring (next_match / loser_next_match), so a
+# knockout / double-elimination / league bracket is just a linked set of these rows.
+#
+# HOW IT CONNECTS
+#   - Generated + advanced by afc_tournament_and_scrims/head_to_head.py
+#     (generate_bracket / report_result / standings / write_placement_stats).
+#   - Served by afc_tournament_and_scrims/head_to_head_views.py:
+#       POST events/stages/<stage_id>/bracket/generate/   (admin/organizer)
+#       GET  events/stages/<stage_id>/bracket/            (public bracket tree + standings)
+#       POST events/h2h-matches/<match_id>/result/        (admin/organizer)
+#   - Feeds the EXISTING leaderboard + afc_rankings pipelines indirectly: when a bracket
+#     completes, head_to_head.write_placement_stats() writes one synthetic
+#     TournamentTeamMatchStats row per team (placement only, 0 kills) into a synthetic Match
+#     (match_number=0) so nothing downstream has to learn about this model.
+#   - Hangs off the same Stages row the rest of the engine uses; a stage either runs BR
+#     lobbies (StageGroups/Match) or an H2H bracket (these rows). The two coexist only via
+#     the synthetic results match above.
+# ════════════════════════════════════════════════════════════════════════════════════════════
+class HeadToHeadMatch(models.Model):
+    """One head-to-head Clash Squad match inside a bracket stage.
+
+    score_a / score_b are ROUND WINS within the CS set (e.g. 4-2), not kills. winner is
+    denormalized for cheap reads. Advancement is explicit: when this match completes, the
+    winner is copied into next_match's slot (next_match_slot) and, in double elimination,
+    the loser is copied into loser_next_match's slot. A match with one team and a slot that
+    can never fill (no feeder left) is a BYE: auto-completed at generation/report time with
+    winner = the present team and score 0-0 (see head_to_head._resolve_byes)."""
+
+    BRACKET_CHOICES = [
+        ("winners", "Winners bracket"),   # single-elim rounds, double-elim upper bracket,
+                                          # AND the grand final (round = winners rounds + 1)
+        ("losers", "Losers bracket"),     # double elimination lower bracket
+        ("league", "League / round robin"),  # every-pair-once formats; no advancement links
+    ]
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("live", "Live"),
+        ("completed", "Completed"),
+    ]
+    SLOT_CHOICES = [("a", "Slot A"), ("b", "Slot B")]
+
+    h2h_match_id = models.AutoField(primary_key=True)
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="h2h_matches")
+    # 1 = first round of its bracket side. In double elimination the grand final lives in
+    # bracket="winners" at round (winners rounds + 1) - convention documented in head_to_head.py.
+    round_number = models.PositiveIntegerField(default=1)
+    bracket = models.CharField(max_length=10, choices=BRACKET_CHOICES, default="winners")
+    # Slot index of this match WITHIN its (bracket, round): 0, 1, 2... drives the pairing
+    # math (match p of round r feeds match p//2 of round r+1) and the FE's vertical order.
+    position = models.PositiveIntegerField(default=0)
+
+    # The two competitors. Null = slot not yet filled (waiting on a feeder match) or a bye.
+    # SET_NULL so withdrawing/deleting a TournamentTeam vacates the slot instead of tearing
+    # the bracket tree down.
+    team_a = models.ForeignKey(TournamentTeam, null=True, blank=True, on_delete=models.SET_NULL,
+                               related_name="h2h_matches_as_a")
+    team_b = models.ForeignKey(TournamentTeam, null=True, blank=True, on_delete=models.SET_NULL,
+                               related_name="h2h_matches_as_b")
+    score_a = models.PositiveIntegerField(default=0)  # round wins for team_a in the CS set
+    score_b = models.PositiveIntegerField(default=0)  # round wins for team_b
+    winner = models.ForeignKey(TournamentTeam, null=True, blank=True, on_delete=models.SET_NULL,
+                               related_name="h2h_match_wins")
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="pending")
+
+    # ── advancement wiring (set once at generation, then read-only) ──
+    # Winner advances into next_match at next_match_slot ("a" -> team_a, "b" -> team_b).
+    next_match = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name="feeder_matches")
+    next_match_slot = models.CharField(max_length=1, choices=SLOT_CHOICES, null=True, blank=True)
+    # Double elimination only: the loser drops into the losers bracket here.
+    loser_next_match = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL,
+                                         related_name="loser_feeder_matches")
+    loser_next_match_slot = models.CharField(max_length=1, choices=SLOT_CHOICES, null=True, blank=True)
+
+    # Optional schedule the admin can fill in later (parallels StageGroups.playing_date/time).
+    scheduled_date = models.DateField(null=True, blank=True)
+    scheduled_time = models.TimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        # Stable tree order for any reader; the views additionally group by bracket side.
+        ordering = ["round_number", "position", "h2h_match_id"]
+        indexes = [
+            models.Index(fields=["stage", "bracket", "round_number"]),
+        ]
+
+    def __str__(self):
+        a = self.team_a.team.team_name if self.team_a else "?"
+        b = self.team_b.team.team_name if self.team_b else "?"
+        return f"H2H {self.bracket} R{self.round_number}.{self.position}: {a} vs {b} ({self.status})"
+

@@ -7,11 +7,27 @@ shapes and which FE surface consumes each endpoint.
 """
 from django.urls import path
 
-from . import views
+from . import views, engagements
 
 urlpatterns = [
     # ── portal (member-scoped) ──
     path("mine/", views.my_sponsors, name="sponsors_mine"),  # GET
+
+    # ── P2/P3/P4 engagement config + submissions + approval (see engagements.py header) ──
+    # Literal prefixes (for-event/, submissions/, my-submissions/) before <int:sponsor_id>.
+    path("for-event/<int:event_id>/", engagements.sponsorships_for_event,
+         name="sponsors_for_event"),                                                   # GET (public)
+    path("submissions/<int:submission_id>/decide/", engagements.decide_submission,
+         name="sponsors_decide_submission"),                                           # POST
+    path("submissions/<int:submission_id>/resubmit/", engagements.resubmit_submission,
+         name="sponsors_resubmit_submission"),                                         # POST
+    path("my-submissions/<int:event_id>/", engagements.my_event_submissions,
+         name="sponsors_my_event_submissions"),                                        # GET
+    path("<int:sponsor_id>/events/<int:event_id>/configure/", engagements.configure_sponsorship,
+         name="sponsors_configure_sponsorship"),                                       # PATCH
+    path("<int:sponsor_id>/events/<int:event_id>/engagement-submissions/",
+         engagements.sponsorship_submissions,
+         name="sponsors_engagement_submissions"),                                      # GET (+?csv=1)
 
     # ── admin collection ──
     path("create/", views.create_sponsor, name="sponsors_create"),  # POST

@@ -32,7 +32,7 @@ ENDPOINTS (mounted under events/ via afc_tournament_and_scrims/urls.py)
     POST   events/links/<link_id>/decide/       decide          (allow|reject|decline|
                                                                  replace_next|replace_team|undo)
 """
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 
 from rest_framework.decorators import api_view
@@ -365,6 +365,18 @@ def _serialize_link(link, with_quals=True, check_diff=False, requester=None):
         "status": link.status,
         "created_by": link.created_by.username if link.created_by_id else None,
     }
+    # ── capacity heads-up (linking P2) ──
+    # Warn BEFORE a fire would push the target past its cap: registered+approved competitors
+    # already in the target plus this link's qualify_count vs max_teams_or_players. Promotion
+    # itself never blocks on capacity (the admin Allow path can still overrule); this is the
+    # advisory the card renders as a gold "target nearly full" badge.
+    cap = link.target_event.max_teams_or_players or 0
+    taken = RegisteredCompetitors.objects.filter(
+        event=link.target_event, status__in=("registered", "approved"),
+    ).count()
+    out["target_capacity"] = cap
+    out["target_registered"] = taken
+    out["capacity_warning"] = bool(cap) and link.status == "active" and (taken + link.qualify_count) > cap
     if with_quals:
         out["qualifications"] = [
             _serialize_qual(q) for q in link.qualifications.select_related("team", "user").order_by("placement")
@@ -491,6 +503,224 @@ def list_links(request, event_id):
         .select_related("source_event", "source_stage", "target_event", "created_by")
     ]
     return Response({"outbound": outbound, "inbound": inbound})
+
+
+@api_view(["GET"])
+def public_inbound_links(request, event_id):
+    """GET events/<event_id>/links/public/  — PUBLIC provenance read (linking P2): the FIRED
+    inbound links of an event with the names of who qualified through each. Powers the
+    "Qualified field" banner on the public tournament page (components/qualified-from-banner
+    .tsx); only promoted/replaced names are shown (pending/declined slots stay private).
+    No auth: this is the public face of an already-public registration list."""
+    rows = []
+    for link in (
+        EventLink.objects.filter(target_event_id=event_id, status="fired")
+        .select_related("source_event", "source_stage")
+    ):
+        names = [
+            (q.team.team_name if q.team_id else (q.user.username if q.user_id else None))
+            for q in link.qualifications.filter(status__in=("promoted", "replaced"))
+            .select_related("team", "user").order_by("placement")
+        ]
+        rows.append({
+            "source_event_name": link.source_event.event_name,
+            "source_event_id": link.source_event_id,
+            "source_stage_name": link.source_stage.stage_name,
+            "qualify_count": link.qualify_count,
+            "qualifiers": [n for n in names if n],
+        })
+    return Response({"results": rows})
+
+
+@api_view(["GET"])
+def link_chain(request, event_id):
+    """GET events/<event_id>/links/chain/  — the WHOLE qualification graph this event belongs
+    to (linking P3, the chain map). BFS both directions over non-cancelled links from this
+    event; returns {nodes: [{event_id, event_name, event_status, is_focus}],
+    edges: [{link_id, source_event_id, source_stage_name, target_event_id, qualify_count,
+    status}]} for the frontend's cascade visualization (components/event-link-chain.tsx).
+    Auth: same gate as list_links (event manager)."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    try:
+        event = Event.objects.get(event_id=event_id)
+    except Event.DoesNotExist:
+        return Response({"message": "Event not found."}, status=404)
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response({"message": "You do not have permission to view this event's links."}, status=403)
+
+    # Collect every event reachable through links in EITHER direction (the full season
+    # cascade, not just direct neighbours). Bounded walk: each loop only follows edges that
+    # touch the frontier, and seen-set growth terminates it.
+    seen, frontier = set(), {event.event_id}
+    edges_qs = []
+    while frontier:
+        batch = list(
+            EventLink.objects.exclude(status="cancelled")
+            .filter(
+                models.Q(source_event_id__in=frontier) | models.Q(target_event_id__in=frontier)
+            )
+            .select_related("source_stage")
+        )
+        seen |= frontier
+        nxt = set()
+        for l in batch:
+            edges_qs.append(l)
+            nxt.add(l.source_event_id)
+            nxt.add(l.target_event_id)
+        frontier = nxt - seen
+
+    # De-dupe edges (an edge is collected once per touched endpoint).
+    edges, seen_edge_ids = [], set()
+    for l in edges_qs:
+        if l.id in seen_edge_ids:
+            continue
+        seen_edge_ids.add(l.id)
+        edges.append({
+            "link_id": l.id,
+            "source_event_id": l.source_event_id,
+            "source_stage_name": l.source_stage.stage_name,
+            "target_event_id": l.target_event_id,
+            "qualify_count": l.qualify_count,
+            "status": l.status,
+        })
+
+    nodes = [
+        {
+            "event_id": e.event_id,
+            "event_name": e.event_name,
+            "event_status": e.event_status,
+            "is_focus": e.event_id == event.event_id,
+        }
+        for e in Event.objects.filter(event_id__in=seen)
+    ]
+    return Response({"nodes": nodes, "edges": edges})
+
+
+@api_view(["POST"])
+def import_competitors(request, event_id):
+    """POST events/<event_id>/import-competitors/  body: {source_event_ids: [int, ...]}
+
+    EVENT MERGE (owner ask 2026-06-12): bulk-enter every confirmed competitor of the source
+    events into THIS event, e.g. combine the Dynasty Cup Mozambique / Ghana / Tanzania fields
+    into one continental event. Unlike a qualification link (top-N of a stage, fires when
+    standings settle) this is an IMMEDIATE copy of the whole confirmed field.
+
+    Rules
+      - Every source must share the target's participant type; the target itself is excluded.
+      - Confirmed = the source's RegisteredCompetitors rows with status registered/approved.
+      - Duplicates are SKIPPED, never doubled (a team/player already in the target stays as
+        is); per-source imported/skipped counts come back so the admin sees exactly what moved.
+      - Team rosters copy the SOURCE event's finishing roster (TournamentTeamMember) when it
+        exists, else the team's current members - the same rule _promote uses.
+      - Captains/players get a "entered into <target>" notification.
+      - Capacity is ADVISORY here (the response flags overflow); the admin chose the merge.
+    Auth: AFC event admin, or organizer with can_edit_events on the target AND every source.
+    Consumed by: the "Import from events" dialog on the Linked events card."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    try:
+        target = Event.objects.get(event_id=event_id)
+    except Event.DoesNotExist:
+        return Response({"message": "Event not found."}, status=404)
+
+    raw_ids = request.data.get("source_event_ids") or []
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return Response({"message": "source_event_ids is required."}, status=400)
+    sources = list(Event.objects.filter(event_id__in=raw_ids))
+    if len(sources) != len(set(raw_ids)):
+        return Response({"message": "One or more source events were not found."}, status=404)
+
+    for src in sources:
+        if src.event_id == target.event_id:
+            return Response({"message": "An event cannot import from itself."}, status=400)
+        if src.participant_type != target.participant_type:
+            return Response({"message": f"{src.event_name} has a different participant type."}, status=400)
+        if not _can_manage_link_events(user, src, target):
+            return Response({"message": f"You do not have permission to merge {src.event_name}."}, status=403)
+
+    report = []
+    with transaction.atomic():
+        for src in sources:
+            imported, skipped = 0, 0
+            confirmed = (
+                RegisteredCompetitors.objects.filter(
+                    event=src, status__in=("registered", "approved"),
+                ).select_related("team", "user")
+            )
+            for rc in confirmed:
+                if rc.team_id:
+                    # ── team merge (mirrors _promote's team interior) ──
+                    if RegisteredCompetitors.objects.filter(event=target, team=rc.team).exists():
+                        skipped += 1
+                        continue
+                    RegisteredCompetitors.objects.create(event=target, team=rc.team, status="registered")
+                    tt = TournamentTeam.objects.create(
+                        event=target, team=rc.team, status="active",
+                        registered_by=user, country=rc.team.country,
+                    )
+                    src_member_ids = list(
+                        TournamentTeamMember.objects.filter(
+                            tournament_team__event=src, tournament_team__team=rc.team,
+                        ).values_list("user_id", flat=True)
+                    ) or list(TeamMembers.objects.filter(team=rc.team).values_list("member_id", flat=True))
+                    TournamentTeamMember.objects.bulk_create([
+                        TournamentTeamMember(tournament_team=tt, user_id=uid, event=target, status="active")
+                        for uid in dict.fromkeys(src_member_ids)
+                    ], batch_size=200)
+                    captain = TeamMembers.objects.filter(
+                        team=rc.team, management_role="team_captain",
+                    ).select_related("member").first()
+                    notify_user = captain.member if captain else (
+                        rc.team.team_owner if rc.team.team_owner_id else None)
+                    if notify_user:
+                        Notifications.objects.create(
+                            user=notify_user,
+                            notification_type="qualification",
+                            title=f"Entered into {target.event_name}",
+                            message=(
+                                f"{rc.team.team_name} has been entered into {target.event_name} "
+                                f"(merged from {src.event_name})."
+                            ),
+                            related_event=target,
+                        )
+                    imported += 1
+                elif rc.user_id:
+                    # ── solo merge ──
+                    if RegisteredCompetitors.objects.filter(event=target, user=rc.user).exists():
+                        skipped += 1
+                        continue
+                    RegisteredCompetitors.objects.create(event=target, user=rc.user, status="registered")
+                    Notifications.objects.create(
+                        user=rc.user,
+                        notification_type="qualification",
+                        title=f"Entered into {target.event_name}",
+                        message=(
+                            f"You have been entered into {target.event_name} "
+                            f"(merged from {src.event_name})."
+                        ),
+                        related_event=target,
+                    )
+                    imported += 1
+            report.append({
+                "source_event_id": src.event_id,
+                "source_event_name": src.event_name,
+                "imported": imported,
+                "skipped_duplicates": skipped,
+            })
+
+    total_now = RegisteredCompetitors.objects.filter(
+        event=target, status__in=("registered", "approved"),
+    ).count()
+    return Response({
+        "message": "Merge complete.",
+        "report": report,
+        "target_registered": total_now,
+        "target_capacity": target.max_teams_or_players,
+        "over_capacity": bool(target.max_teams_or_players) and total_now > target.max_teams_or_players,
+    })
 
 
 @api_view(["DELETE"])

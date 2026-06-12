@@ -17,9 +17,21 @@ from .event_payments import (
 from .event_links import (
     create_link,
     list_links,
+    link_chain,
+    public_inbound_links,
+    import_competitors,
     cancel_link,
     fire_link_view,
     decide,
+)
+# Clash-Squad head-to-head brackets (bracket sub-project C): generate / read / report-result
+# for knockout, double-elimination and league CS stages. Engine in head_to_head.py; the
+# completed-bracket placements feed the existing leaderboard + rankings pipelines via the
+# sub-project D bridge (head_to_head.write_placement_stats).
+from .head_to_head_views import (
+    generate_h2h_bracket,
+    get_h2h_bracket,
+    report_h2h_match_result,
 )
 from django.conf import settings
 from django.conf.urls.static import static
@@ -40,9 +52,21 @@ urlpatterns = [
     # ── Event linking / qualification chains ── (events/<id>/links/... + events/links/<id>/...)
     path('<int:event_id>/links/create/', create_link, name='create_event_link'),      # POST
     path('<int:event_id>/links/', list_links, name='list_event_links'),               # GET
+    path('<int:event_id>/links/chain/', link_chain, name='event_link_chain'),         # GET (P3 chain map)
+    path('<int:event_id>/links/public/', public_inbound_links, name='public_inbound_links'),  # GET (public provenance)
+    # Event MERGE (owner 2026-06-12): bulk-enter every confirmed competitor of N same-type
+    # source events into this one (e.g. the Dynasty Cup country events into one finals).
+    path('<int:event_id>/import-competitors/', import_competitors, name='import_event_competitors'),  # POST
     path('links/<int:link_id>/fire/', fire_link_view, name='fire_event_link'),        # POST
     path('links/<int:link_id>/decide/', decide, name='decide_event_link'),            # POST
     path('links/<int:link_id>/', cancel_link, name='cancel_event_link'),              # DELETE
+
+    # ── Clash-Squad head-to-head brackets (sub-project C) ──
+    # Generate (admin/organizer, seed-ordered team_ids), public bracket read, and per-match
+    # result entry. Full URLs: events/stages/<id>/bracket/... + events/h2h-matches/<id>/result/.
+    path('stages/<int:stage_id>/bracket/generate/', generate_h2h_bracket, name='generate_h2h_bracket'),  # POST
+    path('stages/<int:stage_id>/bracket/', get_h2h_bracket, name='get_h2h_bracket'),                     # GET (public)
+    path('h2h-matches/<int:match_id>/result/', report_h2h_match_result, name='report_h2h_match_result'), # POST
 
     # ── Paid-event registration payments (Stripe) ──
     path('init-registration-payment/', init_registration_payment, name='init_registration_payment'),

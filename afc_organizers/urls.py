@@ -14,7 +14,7 @@ from django.urls import path
 
 from . import (
     views_admin, views_organizer, views_public, views_design,
-    views_reviews, views_reports, views_blacklist,
+    views_reviews, views_reports, views_blacklist, views_blacklist_lookup,
 )
 
 urlpatterns = [
@@ -104,6 +104,18 @@ urlpatterns = [
          name="organizers_blacklist_lift"),
     path("blacklists/<int:blacklist_id>/request-lift/", views_blacklist.request_lift,
          name="organizers_blacklist_request_lift"),
+
+    # ───────────────────────── Blacklist VISIBILITY (owner ask 2026-06-12) ─────────────────────────
+    # Cross-org transparency on top of the blacklist feature (views_blacklist_lookup.py):
+    #   - blacklist-lookup/   : ANY active org member (or platform admin) looks up one team or
+    #     one player: how many times blacklisted, by which orgs, when - over an optional date
+    #     window. Organizers never see reasons (owner privacy rule); platform admins do.
+    #   - admin/blacklists/   : platform-admin-only dashboard feed of EVERY blacklist row
+    #     (reasons included) with search/status/date filters + stat-card aggregates.
+    path("blacklist-lookup/", views_blacklist_lookup.blacklist_lookup,
+         name="organizers_blacklist_lookup"),
+    path("admin/blacklists/", views_blacklist_lookup.admin_list_blacklists,
+         name="organizers_admin_blacklists"),
 
     # ───────────────────────── Public org page (unauthenticated) ─────────────────────────
     path("get-organization-public/<slug:slug>/", views_public.get_organization_public,
