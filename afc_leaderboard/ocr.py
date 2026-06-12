@@ -25,6 +25,8 @@ HOW IT CONNECTS
 """
 import logging
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from afc_ocr.services import extract
 from afc_ocr.services.matching import (
@@ -179,17 +181,37 @@ def process_job(job):
         if not images:
             raise RuntimeError("No screenshots were attached to this map.")
 
-        placement_lists = []
-        engine = ""
-        for img in images:
+        # ── read the images CONCURRENTLY ──
+        # A map's screenshots used to be read one after another, so a 3-screenshot map paid
+        # 3 full extractions in series (each = local-student attempt + a ~10-25s Gemini HTTP
+        # call) and a batch took the owner 5-10 minutes on prod. The extraction is I/O-bound
+        # on Gemini, so we overlap the reads in threads; the shared local student stays
+        # serialized behind extract._STUDENT_LOCK. The threads touch NO Django ORM (file
+        # read + HTTP only) — all DB writes happen back on this thread, in image order, so
+        # merge_placements sees the same ordering the sequential loop produced. One image
+        # failing raises out of ex.map and fails the whole job, exactly as before.
+        def _read_one(img):
             data = img.image.read()           # FieldFile.read() opens lazily
             try:
                 img.image.close()
             except Exception:
                 pass
+            started = time.monotonic()
             raw, eng = extract.extract_rows(
                 data, _guess_mime(img.image.name), event_type, prompt_kind=prompt_kind,
             )
+            # Per-image wall time, persisted in raw_output so prod slowness is diagnosable
+            # from the DB ("which engine, how long, per screenshot") without box access.
+            if isinstance(raw, dict):
+                raw.setdefault("_elapsed_ms", int((time.monotonic() - started) * 1000))
+            return raw, eng
+
+        with ThreadPoolExecutor(max_workers=min(4, len(images))) as ex:
+            outputs = list(ex.map(_read_one, images))  # ex.map preserves image order
+
+        placement_lists = []
+        engine = ""
+        for img, (raw, eng) in zip(images, outputs):
             img.raw_output = raw
             img.save(update_fields=["raw_output"])
             placement_lists.append(raw.get("placements", []) or [])
