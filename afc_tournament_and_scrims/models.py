@@ -220,6 +220,9 @@ class Stages(models.Model):
     STAGE_STATUS_CHOICES = [
         ("upcoming", "Upcoming"),
         ("ongoing", "Ongoing"),
+        # "paused" (owner 2026-06-13): a started stage an admin/organizer has paused. Set via
+        # set_stage_status from the event Actions tab; toggles back to "ongoing" on resume.
+        ("paused", "Paused"),
         ("completed", "Completed")
     ]
 
