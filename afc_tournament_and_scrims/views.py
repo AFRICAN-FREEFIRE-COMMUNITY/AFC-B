@@ -517,6 +517,17 @@ def _materialise_round_robin_lobby(stage, event, user, lobby_spec, source_groups
     match_maps = list(lobby_spec.get("match_maps") or ["bermuda"])
     match_count = int(lobby_spec.get("match_count") or 0)
 
+    # Per-meeting date/time (owner 2026-06-13): the manual schedule lets the admin set when
+    # each group meeting runs. Honour lobby_spec["playing_date"]/["playing_time"] when present
+    # (parse strings like "2026-06-20" / "19:00"); fall back to the stage-level defaults the
+    # auto-generated schedule uses (it carries no per-lobby date/time).
+    raw_date = lobby_spec.get("playing_date")
+    raw_time = lobby_spec.get("playing_time")
+    lobby_date = parse_date(raw_date) if isinstance(raw_date, str) and raw_date else (raw_date or default_date)
+    lobby_time = (
+        parse_time(raw_time) if isinstance(raw_time, str) and raw_time else (raw_time or default_time)
+    )
+
     # Default lobby name encodes the day + the merged group labels (e.g. "Day 1: A+B"),
     # unless the caller passed an explicit name (manual game-day mode may).
     group_name = lobby_spec.get("group_name") or (
@@ -526,8 +537,8 @@ def _materialise_round_robin_lobby(stage, event, user, lobby_spec, source_groups
     lobby = StageGroups.objects.create(
         stage=stage,
         group_name=group_name,
-        playing_date=default_date,
-        playing_time=default_time,
+        playing_date=lobby_date,
+        playing_time=lobby_time,
         teams_qualifying=int(lobby_spec.get("teams_qualifying", stage.teams_qualifying_from_stage)),
         match_count=match_count,
         match_maps=match_maps,
@@ -704,9 +715,12 @@ def _edit_round_robin_stage(stage, event, user, stage_data):
         for gd in stage_data.get("game_days", []):
             if gd.get("game_day") in played_days:
                 continue
+            # FE sends source_group_indices; accept the legacy *_indexes spelling too so
+            # both work (the mismatch previously dropped every manual lobby silently).
+            source_indices = gd.get("source_group_indices", gd.get("source_group_indexes", []))
             sources = [
                 created_groups[i]
-                for i in gd.get("source_group_indexes", [])
+                for i in source_indices
                 if isinstance(i, int) and 0 <= i < len(created_groups)
             ]
             if not sources:
@@ -753,9 +767,11 @@ def _build_round_robin_stage(stage, event, user, stage_data):
     else:
         # Manual game-day list: each lobby names its source base groups by index.
         for gd in stage_data.get("game_days", []):
+            # FE sends source_group_indices; accept the legacy *_indexes spelling too.
+            source_indices = gd.get("source_group_indices", gd.get("source_group_indexes", []))
             sources = [
                 created_groups[i]
-                for i in gd.get("source_group_indexes", [])
+                for i in source_indices
                 if isinstance(i, int) and 0 <= i < len(created_groups)
             ]
             if not sources:
