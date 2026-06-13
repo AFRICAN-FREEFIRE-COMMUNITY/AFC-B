@@ -314,8 +314,7 @@ def list_partners(request):
 # GET detail and PATCH edit share ONE route (the spec maps both to /<slug>/), so a
 # single @api_view(["GET", "PATCH"]) dispatcher routes by verb (DRF 405s anything
 # else). It delegates to _get_partner / _edit_partner below so each job stays its own
-# readable function. (Mirrors the verb-routed single route idiom used in
-# afc_organizers/views_design.design_requests.)
+# readable function. (Uses the verb-routed single-route idiom: one @api_view, branch on method.)
 @api_view(["GET", "PATCH"])
 def partner_detail(request, slug):
     if request.method == "PATCH":
