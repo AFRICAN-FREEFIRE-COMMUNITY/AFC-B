@@ -28,7 +28,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from afc_organizers.models import Organization, OrgLeaderboardDesign
-from afc_organizers.permissions import org_can, is_platform_org_admin
+from afc_organizers.permissions import org_can
 
 from .views_design import _authenticate, _member_or_403
 
@@ -43,7 +43,9 @@ def _resolve_library(request, raw_org_id):
     user = request._afc_user
     if raw_org_id in (None, "", "null"):
         return None, (user.role == "admin"), None
-    org = Organization.objects.filter(id=raw_org_id).first()
+    # Organization's PK field is `organization_id` (not `id`), so resolve by `pk` to stay
+    # correct regardless of the field name (filter(id=...) raises FieldError on this model).
+    org = Organization.objects.filter(pk=raw_org_id).first()
     if not org:
         return None, False, Response({"message": "Organization not found."}, status=404)
     return org, org_can(user, "can_submit_designs", org), None
@@ -117,11 +119,15 @@ def designs_collection(request):
         org, can_write, err = _resolve_library(request, request.query_params.get("organization_id"))
         if err:
             return err
-        # Read floor: an org member (or AFC admin) for org libraries; AFC admin for the native one.
+        # Read floor: an org member OR any AFC admin for org libraries; AFC admin for the native one.
+        # We use user.role == "admin" (not the stricter is_platform_org_admin) so the gate MATCHES
+        # can_manage_standalone_lb (afc_leaderboard.permissions), which is what decides whether the
+        # leaderboard's "Export graphic" button even shows. Otherwise an AFC admin who can manage an
+        # org-owned leaderboard could open the export picker but fail to load that org's designs (403).
         if org is None:
             if user.role != "admin":
                 return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
-        elif not is_platform_org_admin(user) and not _member_or_403(user, org):
+        elif user.role != "admin" and not _member_or_403(user, org):
             return Response({"message": "You do not have access to this organization."},
                             status=status.HTTP_403_FORBIDDEN)
         rows = [_serialize_design(d) for d in _library_qs(org)]
