@@ -85,6 +85,14 @@ urlpatterns = [
     # A per-org (or AFC-native) library of branded leaderboard backgrounds. Organizers/admins
     # upload designs; the leaderboard export picker renders standings onto the chosen one. See
     # views_leaderboard_design + afc_leaderboard.graphic. by-id route before the collection.
+    # Positioned-logo sub-routes (declared BEFORE the by-id design route's bare form is fine —
+    # they are more specific paths). A design carries 0..N logos at x_pct/y_pct + size.
+    path("leaderboard-designs/by-id/<int:design_id>/logos/<int:logo_id>/",
+         views_leaderboard_design.design_logo_item,
+         name="organizers_leaderboard_design_logo_item"),  # PATCH (move/resize) / DELETE
+    path("leaderboard-designs/by-id/<int:design_id>/logos/",
+         views_leaderboard_design.design_logos,
+         name="organizers_leaderboard_design_logos"),       # POST (add, multipart)
     path("leaderboard-designs/by-id/<int:design_id>/", views_leaderboard_design.design_item,
          name="organizers_leaderboard_design_item"),       # PATCH / DELETE
     path("leaderboard-designs/", views_leaderboard_design.designs_collection,

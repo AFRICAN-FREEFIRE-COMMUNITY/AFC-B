@@ -27,7 +27,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-from afc_organizers.models import Organization, OrgLeaderboardDesign
+from afc_organizers.models import Organization, OrgLeaderboardDesign, OrgLeaderboardDesignLogo
 from afc_organizers.permissions import org_can
 
 from .views_design import _authenticate, _member_or_403
@@ -51,20 +51,62 @@ def _resolve_library(request, raw_org_id):
     return org, org_can(user, "can_submit_designs", org), None
 
 
-def _serialize_design(d):
+def _abs_url(request, field):
+    """Absolute media URL for an ImageField (or None). The frontend lives on a DIFFERENT origin than
+    the API (FE :3001 / api :8000 in dev; separate domains in prod), so a relative /media/ URL would
+    not resolve in an <img>. We return an absolute URL via build_absolute_uri, matching the org
+    logo/banner serialization in views_admin.py. request may be None (renderer uses .path, not URLs)."""
+    if not field:
+        return None
+    if request is not None:
+        return request.build_absolute_uri(field.url)
+    return field.url
+
+
+def _serialize_logo(logo, request=None):
+    """One positioned logo: its (absolute) media URL + centre position (percent) + size band."""
+    return {
+        "id": logo.id,
+        "image": _abs_url(request, logo.image),
+        "x_pct": logo.x_pct,
+        "y_pct": logo.y_pct,
+        "size": logo.size,
+    }
+
+
+def _serialize_design(d, request=None):
     return {
         "id": d.id,
         "name": d.name,
-        "background_instagram": d.background_instagram.url if d.background_instagram else None,
-        "background_youtube": d.background_youtube.url if d.background_youtube else None,
+        "background_instagram": _abs_url(request, d.background_instagram),
+        "background_youtube": _abs_url(request, d.background_youtube),
         "text_color": d.text_color,
         "accent_color": d.accent_color,
         "show_title": d.show_title,
         "show_subtitle": d.show_subtitle,
         "max_rows": d.max_rows,
         "is_default": d.is_default,
+        # The positioned logos drawn on this design (drag-canvas editor reads x_pct/y_pct/size).
+        "logos": [_serialize_logo(l, request) for l in d.logos.all()],
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
+
+
+def _can_write_design(user, design):
+    """Whether `user` may mutate `design` (and its logos): AFC admin for the AFC-native library
+    (no org), else org_can(can_submit_designs) on the owning org. Shared by design_item + the
+    logo sub-endpoints so the gate is identical everywhere."""
+    if design.organization_id is None:
+        return user.role == "admin"
+    return org_can(user, "can_submit_designs", design.organization)
+
+
+def _clamp_pct(value, fallback):
+    """Parse a 0..100 percent (logo centre position); fall back on anything malformed."""
+    try:
+        return max(0.0, min(100.0, float(value)))
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _apply_fields(d, data):
@@ -97,10 +139,11 @@ def _unset_other_defaults(org, keep_id):
 
 
 def _library_qs(org):
-    """The design queryset for a library: an org's designs, or the AFC-native (org=null) set."""
-    if org is None:
-        return OrgLeaderboardDesign.objects.filter(organization__isnull=True)
-    return OrgLeaderboardDesign.objects.filter(organization=org)
+    """The design queryset for a library: an org's designs, or the AFC-native (org=null) set.
+    Prefetches `logos` so _serialize_design does not N+1 over each design's positioned logos."""
+    base = (OrgLeaderboardDesign.objects.filter(organization__isnull=True)
+            if org is None else OrgLeaderboardDesign.objects.filter(organization=org))
+    return base.prefetch_related("logos")
 
 
 @api_view(["GET", "POST"])
@@ -130,7 +173,7 @@ def designs_collection(request):
         elif user.role != "admin" and not _member_or_403(user, org):
             return Response({"message": "You do not have access to this organization."},
                             status=status.HTTP_403_FORBIDDEN)
-        rows = [_serialize_design(d) for d in _library_qs(org)]
+        rows = [_serialize_design(d, request) for d in _library_qs(org)]
         return Response({"results": rows, "total_count": len(rows)})
 
     # POST = create
@@ -157,7 +200,7 @@ def designs_collection(request):
     d.save()
     if d.is_default:
         _unset_other_defaults(org, d.id)
-    return Response({"design": _serialize_design(d)}, status=status.HTTP_201_CREATED)
+    return Response({"design": _serialize_design(d, request)}, status=status.HTTP_201_CREATED)
 
 
 @api_view(["PATCH", "DELETE"])
@@ -168,18 +211,29 @@ def design_item(request, design_id):
     if err:
         return err
     try:
-        d = OrgLeaderboardDesign.objects.select_related("organization").get(id=design_id)
+        d = (OrgLeaderboardDesign.objects.select_related("organization")
+             .prefetch_related("logos").get(id=design_id))
     except OrgLeaderboardDesign.DoesNotExist:
         return Response({"message": "Design not found."}, status=status.HTTP_404_NOT_FOUND)
-    # AFC-native design (no org) -> AFC staff admin; org design -> org_can(can_submit_designs).
-    can_write = (user.role == "admin") if d.organization_id is None else org_can(
-        user, "can_submit_designs", d.organization)
-    if not can_write:
+    if not _can_write_design(user, d):
         return Response({"message": "You do not have permission to manage this design."},
                         status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "DELETE":
+        was_default = d.is_default
+        org = d.organization
         d.delete()
+        # Keep the "one default per library" invariant the create path establishes: if we removed
+        # the default, promote the first remaining design (ordering is ["-is_default", "name"]) so
+        # the export picker still has a deliberate default to pre-select.
+        if was_default:
+            qs = (OrgLeaderboardDesign.objects.filter(organization__isnull=True)
+                  if org is None else OrgLeaderboardDesign.objects.filter(organization=org))
+            if not qs.filter(is_default=True).exists():
+                nxt = qs.first()
+                if nxt:
+                    nxt.is_default = True
+                    nxt.save(update_fields=["is_default"])
         return Response({"message": "Design deleted."})
 
     # PATCH
@@ -193,4 +247,81 @@ def design_item(request, design_id):
     d.save()
     if d.is_default:
         _unset_other_defaults(d.organization, d.id)
-    return Response({"design": _serialize_design(d)})
+    return Response({"design": _serialize_design(d, request)})
+
+
+# ───────────────────────── Logo sub-endpoints (positioned logos on a design) ─────────────────────────
+# A design carries 0..N logos, each at a centre position (x_pct/y_pct, 0..100) + a size band.
+# The drag-canvas editor (LeaderboardDesignsManager) adds/moves/removes them through these.
+SIZE_VALUES = {"small", "medium", "large"}
+
+
+def _get_design_for_write(user, design_id):
+    """Resolve a design + gate the caller for writes. Returns (design, error_response).
+    Used by both logo endpoints so the 404/403 handling is identical."""
+    try:
+        d = OrgLeaderboardDesign.objects.select_related("organization").get(id=design_id)
+    except OrgLeaderboardDesign.DoesNotExist:
+        return None, Response({"message": "Design not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not _can_write_design(user, d):
+        return None, Response({"message": "You do not have permission to manage this design."},
+                              status=status.HTTP_403_FORBIDDEN)
+    return d, None
+
+
+@api_view(["POST"])
+def design_logos(request, design_id):
+    """POST organizers/leaderboard-designs/by-id/<design_id>/logos/ — add a logo to a design.
+
+    Multipart body: image (required file) + x_pct + y_pct (0..100 centre position) + size
+    (small|medium|large). Returns {logo}. Gated like the design itself (can_submit_designs / AFC
+    admin). Consumed by the LeaderboardDesignsManager editor when a staged logo is saved."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+    image = request.FILES.get("image")
+    if not image:
+        return Response({"message": "A logo image is required."}, status=status.HTTP_400_BAD_REQUEST)
+    size = (request.data.get("size") or "medium").lower()
+    logo = OrgLeaderboardDesignLogo.objects.create(
+        design=d,
+        image=image,
+        x_pct=_clamp_pct(request.data.get("x_pct"), 10.0),
+        y_pct=_clamp_pct(request.data.get("y_pct"), 10.0),
+        size=size if size in SIZE_VALUES else "medium",
+    )
+    return Response({"logo": _serialize_logo(logo, request)}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["PATCH", "DELETE"])
+def design_logo_item(request, design_id, logo_id):
+    """PATCH organizers/leaderboard-designs/by-id/<design_id>/logos/<logo_id>/ — reposition/resize
+    (x_pct, y_pct, size). DELETE — remove the logo. Gated like the parent design."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+    logo = OrgLeaderboardDesignLogo.objects.filter(design=d, id=logo_id).first()
+    if not logo:
+        return Response({"message": "Logo not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == "DELETE":
+        logo.delete()
+        return Response({"message": "Logo removed."})
+
+    # PATCH — only the fields present are changed (drag updates x/y; the dropdown updates size).
+    if "x_pct" in request.data:
+        logo.x_pct = _clamp_pct(request.data.get("x_pct"), logo.x_pct)
+    if "y_pct" in request.data:
+        logo.y_pct = _clamp_pct(request.data.get("y_pct"), logo.y_pct)
+    if "size" in request.data:
+        size = (request.data.get("size") or "").lower()
+        if size in SIZE_VALUES:
+            logo.size = size
+    logo.save()
+    return Response({"logo": _serialize_logo(logo, request)})
