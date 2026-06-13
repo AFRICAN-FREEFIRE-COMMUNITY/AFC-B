@@ -74,10 +74,89 @@ class AuditMiddlewareTests(TestCase):
         self.assertEqual(row.summary, "Deleted a shop product #7")
 
     def test_summary_falls_back_to_humanized_slug(self):
-        """Unmapped slugs become a readable label, never a raw method/path."""
+        """Unmapped slugs become a readable sentence (verb heuristic), never a raw method/path."""
         resolver = SimpleNamespace(url_name="edit_solo_match_result", view_name="x", kwargs={})
         self._run("post", "/events/edit-solo/", token="tok_admin", resolver=resolver)
-        self.assertEqual(AuditLog.objects.first().summary, "Edit solo match result")
+        self.assertEqual(AuditLog.objects.first().summary, "Updated solo match result")
+
+    # ── Explanatory summaries (owner ask 2026-06-13: name the action AND its object) ─────────────
+    # These exercise the _ACTION_SENTENCES templates + the verb-heuristic generic fallback in
+    # afc_auth.middleware - the sentences shown in the "What happened" column on /a/history.
+
+    def test_admin_detail_read_names_the_event(self):
+        """POST-as-read admin endpoints must say WHAT was viewed, not echo the action key."""
+        resolver = SimpleNamespace(url_name="get_event_details_for_admin", view_name="x", kwargs={})
+        self._run("post", "/events/get-event-details-for-admin/", token="tok_admin",
+                  resolver=resolver, json_body={"slug": "dynasty-cup-mozambique"})
+        self.assertEqual(AuditLog.objects.first().summary,
+                         "Viewed admin details of the event dynasty-cup-mozambique")
+
+    def test_import_competitors_counts_sources(self):
+        """import-competitors says how many source events were merged into which target."""
+        resolver = SimpleNamespace(url_name="import_event_competitors", view_name="x",
+                                   kwargs={"event_id": 163})
+        self._run("post", "/events/163/import-competitors/", token="tok_admin", resolver=resolver,
+                  json_body={"source_event_ids": [4, 8, 15]})
+        self.assertEqual(AuditLog.objects.first().summary,
+                         "Merged competitors from 3 events into event #163")
+
+    def test_link_decision_uses_the_submitted_action(self):
+        """events/links/<id>/decide/ verbs follow body.action (allow/reject/decline/...)."""
+        resolver = SimpleNamespace(url_name="decide_event_link", view_name="x",
+                                   kwargs={"link_id": 5})
+        self._run("post", "/events/links/5/decide/", token="tok_admin", resolver=resolver,
+                  json_body={"qualification_id": 12, "action": "allow"})
+        self.assertEqual(AuditLog.objects.first().summary,
+                         "Allowed a qualifying team into the target event (qualification link #5)")
+
+    def test_sponsor_submission_decision(self):
+        """sponsors/submissions/<id>/decide/ verbs follow body.action (approve/reject/...)."""
+        resolver = SimpleNamespace(url_name="sponsors_decide_submission", view_name="x",
+                                   kwargs={"submission_id": 12})
+        self._run("post", "/sponsors/submissions/12/decide/", token="tok_admin", resolver=resolver,
+                  json_body={"action": "reject", "reason": "Screenshot is blurry"})
+        self.assertEqual(AuditLog.objects.first().summary,
+                         "Rejected sponsor engagement submission #12")
+
+    def test_blacklist_create_with_duration(self):
+        """organizers/blacklists/ POST names the team and the duration."""
+        resolver = SimpleNamespace(url_name="organizers_blacklists", view_name="x", kwargs={})
+        self._run("post", "/organizers/blacklists/", token="tok_admin", resolver=resolver,
+                  json_body={"team_id": 12, "duration_days": 30, "reason": "no-show"})
+        self.assertEqual(AuditLog.objects.first().summary, "Blacklisted team #12 for 30 days")
+
+    def test_payout_release_scopes_to_vendor(self):
+        """shop/admin/payouts/release/ narrows the sentence to the submitted scope."""
+        resolver = SimpleNamespace(url_name="admin_release_owed_payouts", view_name="x", kwargs={})
+        self._run("post", "/shop/admin/payouts/release/", token="tok_admin", resolver=resolver,
+                  json_body={"vendor_id": 3})
+        self.assertEqual(AuditLog.objects.first().summary,
+                         "Released all owed payouts for vendor #3")
+
+    def test_h2h_result_includes_score(self):
+        """events/h2h-matches/<id>/result/ shows the reported score."""
+        resolver = SimpleNamespace(url_name="report_h2h_match_result", view_name="x",
+                                   kwargs={"match_id": 7})
+        self._run("post", "/events/h2h-matches/7/result/", token="tok_admin", resolver=resolver,
+                  json_body={"score_a": 2, "score_b": 1})
+        self.assertEqual(AuditLog.objects.first().summary,
+                         "Reported the result of head-to-head match #7 (2 - 1)")
+
+    def test_generic_fallback_verb_and_identifier(self):
+        """Unmapped FUTURE endpoints still read as a sentence: verb heuristic (get_ -> Viewed) +
+        the most identifying submitted field, never a raw action key."""
+        resolver = SimpleNamespace(url_name="get_player_market_listing", view_name="x", kwargs={})
+        self._run("post", "/market/get-player-market-listing/", token="tok_admin",
+                  resolver=resolver, json_body={"username": "NOXY"})
+        self.assertEqual(AuditLog.objects.first().summary,
+                         'Viewed player market listing "NOXY"')
+
+    def test_generic_fallback_delete_verb_with_kwarg(self):
+        """remove_ -> Deleted; with no name field the URL kwarg becomes the identifier."""
+        resolver = SimpleNamespace(url_name="remove_stage_competitor", view_name="x",
+                                   kwargs={"competitor_id": 9})
+        self._run("delete", "/events/stage-competitors/9/", token="tok_admin", resolver=resolver)
+        self.assertEqual(AuditLog.objects.first().summary, "Deleted stage competitor #9")
 
     def test_view_supplied_summary_overrides_generic(self):
         """When a view calls set_audit() the middleware records THAT specific summary (entity name +

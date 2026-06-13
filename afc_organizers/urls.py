@@ -116,6 +116,11 @@ urlpatterns = [
          name="organizers_blacklist_lookup"),
     path("admin/blacklists/", views_blacklist_lookup.admin_list_blacklists,
          name="organizers_admin_blacklists"),
+    #   - admin/blacklist-counts/ : platform-admin-only BULK counts ({"<id>": {total, active}})
+    #     for a page of team_ids OR user_ids - one call decorates the "Blacklists" column on
+    #     the admin Teams & Players tables (owner ask 2026-06-13) instead of one lookup per row.
+    path("admin/blacklist-counts/", views_blacklist_lookup.admin_blacklist_counts,
+         name="organizers_admin_blacklist_counts"),
 
     # ───────────────────────── Public org page (unauthenticated) ─────────────────────────
     path("get-organization-public/<slug:slug>/", views_public.get_organization_public,

@@ -445,14 +445,23 @@ def _notify_rejection(submission, reason, final=False):
         user=player, notification_type="sponsor_rejection",
         title=title, message=body, related_event=event,
     )
-    try:
-        inner = f"""
+    # Email rides a DAEMON THREAD: send_email connects to SMTP synchronously and a slow or
+    # unreachable server would otherwise hold the sponsor's decide request hostage (observed
+    # 84s on a timing-out SMTP in the 2026-06-13 walk). Best-effort either way; the in-app
+    # notification above is the guaranteed channel.
+    import threading
+
+    def _send():
+        try:
+            inner = f"""
 <tr><td style="padding:0 32px 8px;color:#e8efe9;font-size:18px;font-weight:bold;">{title}</td></tr>
 <tr><td style="padding:0 32px 16px;color:#9fb3a6;font-size:14px;line-height:1.6;">{body}</td></tr>
 """
-        send_email(player.email, title, _email_shell(inner, accent="gold"))
-    except Exception:
-        pass  # email is best-effort; the in-app notification is the guaranteed channel
+            send_email(player.email, title, _email_shell(inner, accent="gold"))
+        except Exception:
+            pass
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 @api_view(["POST"])
