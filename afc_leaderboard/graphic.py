@@ -137,41 +137,56 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
     # ── standings zone ──
     zone_top = max(int(H * 0.24), y_header + int(H * 0.02))
     zone_bottom = int(H * 0.95)
+    zone_h = zone_bottom - zone_top
     shown = standings[: max(1, max_rows)]
-    n = max(1, len(shown))
-    row_h = (zone_bottom - zone_top) / n
-    row_font = _font(max(14, int(row_h * 0.45)))
+    display_n = max(1, len(shown))
+    # Row height fills the zone, but is CAPPED so a handful of rows don't balloon into giant
+    # text (a 3-row board must not stretch each row to a third of the canvas, which would blow
+    # the font up past the column widths and collide name/pts/kills). The cap keeps the font
+    # readable and the columns clear regardless of row count; with few rows the board simply
+    # top-aligns and leaves clean space below.
+    max_row_h = int(H * 0.075)
+    row_h = min(max_row_h, zone_h / display_n)
+    row_font = _font(max(16, int(row_h * 0.42)))
 
-    # Column x positions (rank | name | pts | kills), right side reserved for the numbers.
+    # Column geometry (rank | name | pts | kills). pts + kills are RIGHT-aligned inside reserved
+    # right-hand columns, so a wide number can never overrun the name or spill past the canvas.
     rank_x = pad
-    name_x = pad + int(W * 0.10)
-    kills_x = W - pad
-    pts_x = W - pad - int(W * 0.16)
+    name_x = pad + int(W * 0.09)
+    kills_right = W - pad                     # kills right edge
+    pts_right = kills_right - int(W * 0.15)   # pts right edge (reserves the kills column)
+    name_right = pts_right - int(W * 0.20)    # name clip edge (reserves the pts column + a gap,
+                                              # wide enough for a 4-digit "1999 pts" total)
+    max_name_w = name_right - name_x
 
     for i, row in enumerate(shown):
         y = zone_top + int(i * row_h)
-        cy = y + int(row_h * 0.22)
+        # Vertically center the text within the (capped) row band.
+        cy = y + int(row_h * 0.28)
         rank = row.get("rank", i + 1)
         name = (row.get("participant", {}) or {}).get("name") or "-"
         pts = row.get("total_points", 0)
         kills = row.get("kills", 0)
         # subtle alternating row band
         if i % 2 == 0:
-            band = Image.new("RGBA", (W, int(row_h)), (255, 255, 255, 16))
+            band = Image.new("RGBA", (W, max(1, int(row_h))), (255, 255, 255, 16))
             base.paste(band, (0, y), band)
             draw = ImageDraw.Draw(base)
+        # rank (accent), left
         draw.text((rank_x, cy), f"#{rank}", font=row_font, fill=accent_rgb)
-        # clip an over-long name to keep it off the numbers
-        max_name_w = pts_x - name_x - 12
+        # name, clipped to its column so it never reaches the numbers
         nm = name
         while nm and _text_w(draw, nm, row_font) > max_name_w:
             nm = nm[:-1]
-        if nm != name:
+        if nm != name and nm:
             nm = nm[:-1] + "…"
         draw.text((name_x, cy), nm, font=row_font, fill=text_rgb)
-        draw.text((pts_x, cy), f"{pts} pts", font=row_font, fill=text_rgb)
+        # pts, right-aligned at pts_right
+        ptxt = f"{pts} pts"
+        draw.text((pts_right - _text_w(draw, ptxt, row_font), cy), ptxt, font=row_font, fill=text_rgb)
+        # kills, right-aligned at kills_right (muted)
         ktxt = f"{kills} K"
-        draw.text((kills_x - _text_w(draw, ktxt, row_font), cy), ktxt, font=row_font, fill=muted_rgb)
+        draw.text((kills_right - _text_w(draw, ktxt, row_font), cy), ktxt, font=row_font, fill=muted_rgb)
 
     buf = io.BytesIO()
     base.save(buf, format="PNG")
