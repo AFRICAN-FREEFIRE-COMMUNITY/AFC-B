@@ -558,6 +558,86 @@ def delete_leaderboard(request, lb_id):
     return Response({"message": "Leaderboard deleted."})
 
 
+@api_view(["GET"])
+def leaderboard_graphic(request, lb_id):
+    """GET leaderboards/standalone/<id>/graphic/?design_id=&size=&title=&subtitle=
+
+    Render the live standings onto a branded design as a downloadable PNG (owner 2026-06-13).
+    size = instagram (1080x1350) | youtube (1920x1080). design_id picks a design from the
+    leaderboard's LIBRARY: its org's designs, or the AFC-native library (organization=null)
+    when the leaderboard is AFC-owned. Omitted design_id falls back to the library default,
+    then to a plain dark AFC background. title defaults to the leaderboard name; subtitle is
+    free text the user types (the tournament stage/group played). Manager-gated, so both AFC
+    admins and the owning organizer can export.
+    Consumed by: the export picker on the standalone leaderboard view page."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    lb, nf = _get_lb_or_404(lb_id)
+    if nf:
+        return nf
+    if not can_manage_standalone_lb(user, lb):
+        return Response(
+            {"message": "You do not have permission to export this leaderboard."}, status=403)
+
+    size = (request.GET.get("size") or "instagram").lower()
+    if size not in ("instagram", "youtube"):
+        size = "instagram"
+
+    # Resolve the design from the leaderboard's library (org-scoped, or AFC-native org=null).
+    from afc_organizers.models import OrgLeaderboardDesign
+    if lb.organization_id is None:
+        lib = OrgLeaderboardDesign.objects.filter(organization__isnull=True)
+    else:
+        lib = OrgLeaderboardDesign.objects.filter(organization_id=lb.organization_id)
+    design = None
+    design_id = request.GET.get("design_id")
+    if design_id:
+        design = lib.filter(id=design_id).first()
+    if design is None:
+        design = lib.filter(is_default=True).first() or lib.first()
+
+    # Background (for the requested size) + org logo filesystem paths; None -> renderer defaults.
+    bg_path = None
+    if design:
+        field = design.background_instagram if size == "instagram" else design.background_youtube
+        if field:
+            try:
+                bg_path = field.path
+            except Exception:
+                bg_path = None
+    logo_path = None
+    if lb.organization_id and getattr(lb.organization, "logo", None):
+        try:
+            logo_path = lb.organization.logo.path
+        except Exception:
+            logo_path = None
+
+    title = (request.GET.get("title") or lb.name or "").strip()
+    subtitle = (request.GET.get("subtitle") or "").strip()
+
+    from .graphic import render_leaderboard_graphic
+    png = render_leaderboard_graphic(
+        standalone_standings(lb),
+        size=size,
+        background_path=bg_path,
+        logo_path=logo_path,
+        title=title,
+        subtitle=subtitle,
+        text_color=(design.text_color if design else "#FFFFFF"),
+        accent_color=(design.accent_color if design else "#34d27b"),
+        max_rows=(design.max_rows if design else 16),
+        show_title=(design.show_title if design else True),
+        show_subtitle=(design.show_subtitle if design else True),
+    )
+
+    from django.http import HttpResponse
+    resp = HttpResponse(png, content_type="image/png")
+    safe = (lb.name or "leaderboard").replace('"', "").replace("\n", " ")
+    resp["Content-Disposition"] = f'attachment; filename="{safe}-{size}.png"'
+    return resp
+
+
 # ════════════════════════════════════════════════════════════════════════════════════════════
 # Task 5 — Participants
 # ════════════════════════════════════════════════════════════════════════════════════════════

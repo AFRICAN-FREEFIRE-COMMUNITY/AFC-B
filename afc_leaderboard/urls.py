@@ -32,6 +32,8 @@ urlpatterns = [
     path("standalone/<int:lb_id>/", views.leaderboard_detail, name="standalone_detail"),     # GET
     path("standalone/<int:lb_id>/edit/", views.edit_leaderboard, name="standalone_edit"),    # PATCH
     path("standalone/<int:lb_id>/delete/", views.delete_leaderboard, name="standalone_delete"),  # DELETE
+    # Export the standings onto a branded design as a PNG (?design_id=&size=&title=&subtitle=).
+    path("standalone/<int:lb_id>/graphic/", views.leaderboard_graphic, name="standalone_graphic"),  # GET
 
     # ── participants ──
     path("standalone/<int:lb_id>/participants/", views.add_participant, name="standalone_add_participant"),  # POST
