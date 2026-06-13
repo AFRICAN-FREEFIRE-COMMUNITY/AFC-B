@@ -194,6 +194,8 @@ urlpatterns = [
     path("broadcast-announcement/", broadcast_announcement, name="broadcast_announcement"),
     # per-group broadcast composer (AFC official + organizer). See broadcast_to_group.
     path("broadcast-to-group/", broadcast_to_group, name="broadcast_to_group"),
+    # Pause / resume a started stage (Actions tab Start -> Pause/Resume). See set_stage_status.
+    path("set-stage-status/", set_stage_status, name="set_stage_status"),
     path("export-participants/", export_participants, name="export_participants"),
     # ZIP of team logos + player esport images (sets of teams/players, or everything registered
     # for an event). Admins + organizers. Consumed by the "Download media" buttons.

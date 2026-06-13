@@ -19350,6 +19350,57 @@ def broadcast_to_group(request):
     )
 
 
+@api_view(["POST"])
+def set_stage_status(request):
+    """POST /events/set-stage-status/  body: { event_id, stage_id, status }
+
+    Pause / resume a started stage (owner 2026-06-13). After "Start" seeds a stage to
+    ongoing, the Actions tab shows a Pause button; this flips Stages.stage_status between
+    "ongoing" and "paused" so the started tournament can be paused and resumed. Only those
+    two transitions are allowed here (upcoming->ongoing is the Start/seed flow; completed is
+    the Complete flow). Auth: AFC event admin OR an organizer who can edit this event."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.data.get("event_id")
+    stage_id = request.data.get("stage_id")
+    status_val = (request.data.get("status") or "").strip().lower()
+    if not event_id or not stage_id:
+        return Response({"message": "event_id and stage_id are required."}, status=400)
+    if status_val not in ("ongoing", "paused"):
+        return Response({"message": "status must be 'ongoing' or 'paused'."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response({"message": "You do not have permission to change this stage."}, status=403)
+
+    # Only pause/resume a STARTED stage. A stage that never started (upcoming) or has finished
+    # (completed) cannot be paused/resumed - the Start and Complete flows own those.
+    if stage.stage_status not in ("ongoing", "paused"):
+        return Response(
+            {"message": "Only a started stage can be paused or resumed."}, status=400)
+
+    stage.stage_status = status_val
+    stage.save(update_fields=["stage_status"])
+
+    set_audit(
+        request,
+        f"{'Paused' if status_val == 'paused' else 'Resumed'} stage "
+        f"{stage.stage_name} of {event.event_name}",
+    )
+    return Response(
+        {"message": f"Stage {'paused' if status_val == 'paused' else 'resumed'}.",
+         "stage_status": stage.stage_status},
+        status=200,
+    )
+
+
 # ── export_participants renderers ──
 # This endpoint takes its OWN `?format=csv|xlsx` business parameter. DRF, however,
 # reserves the `format` query param for content-negotiation (format suffixes): if
