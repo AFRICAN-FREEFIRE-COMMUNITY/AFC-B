@@ -15,6 +15,7 @@ from django.urls import path
 from . import (
     views_admin, views_organizer, views_public, views_design,
     views_reviews, views_reports, views_blacklist, views_blacklist_lookup,
+    views_leaderboard_design,
 )
 
 urlpatterns = [
@@ -79,6 +80,15 @@ urlpatterns = [
     path("report-organization/<slug:slug>/", views_reports.report_organization, name="organizers_report"),
     path("admin/reports/", views_reports.admin_list_reports, name="organizers_admin_reports"),
     path("admin/reports/<int:report_id>/", views_reports.admin_update_report, name="organizers_admin_report_detail"),
+
+    # ───────────────────────── Leaderboard design library (feature 2026-06-13) ─────────────────────────
+    # A per-org (or AFC-native) library of branded leaderboard backgrounds. Organizers/admins
+    # upload designs; the leaderboard export picker renders standings onto the chosen one. See
+    # views_leaderboard_design + afc_leaderboard.graphic. by-id route before the collection.
+    path("leaderboard-designs/by-id/<int:design_id>/", views_leaderboard_design.design_item,
+         name="organizers_leaderboard_design_item"),       # PATCH / DELETE
+    path("leaderboard-designs/", views_leaderboard_design.designs_collection,
+         name="organizers_leaderboard_designs"),           # GET (?organization_id=) / POST
 
     # ───────────────────────── Organizer blacklist (feature "organizer-blacklist") ─────────────────────────
     # An organizer blacklists a team for a duration; the team AND its snapshotted players (even

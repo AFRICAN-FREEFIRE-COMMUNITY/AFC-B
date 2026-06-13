@@ -143,6 +143,55 @@ class LeaderboardDesignRequest(models.Model):
         return f"DesignRequest({self.organization_id}: {self.title} [{self.status}])"
 
 
+class OrgLeaderboardDesign(models.Model):
+    """A self-serve leaderboard GRAPHIC template an organizer uploads (owner 2026-06-13).
+
+    Unlike LeaderboardDesignRequest (human-in-the-loop, AFC builds it), this is automatic: the
+    organizer uploads a branded background per output size, and the renderer
+    (afc_leaderboard.graphic.render_leaderboard_graphic) composites the live standings + the
+    title/subtitle + the org logo onto it. An org keeps a LIBRARY of these designs; when
+    exporting a leaderboard the user picks WHICH design and WHICH size to download.
+
+    background_instagram = the portrait/square IG canvas (rendered at 1080x1350).
+    background_youtube    = the landscape YT canvas (rendered at 1920x1080).
+    Either may be blank - that size then renders on a plain dark AFC default background.
+    show_title/show_subtitle gate the tournament-name + stage/group lines the user types at
+    export time. max_rows caps how many standings rows are drawn. is_default marks the design
+    pre-selected in the export picker."""
+
+    # null organization = an AFC-NATIVE design (platform-wide library managed by AFC admins),
+    # used for AFC's own (org-less) standalone leaderboards. A set organization scopes the
+    # design to that organizer (owner 2026-06-13: admins get this too, not only organizers).
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="leaderboard_designs",
+        null=True, blank=True,
+    )
+    name = models.CharField(max_length=80)
+    background_instagram = models.ImageField(
+        upload_to="org_leaderboard_designs/", null=True, blank=True)
+    background_youtube = models.ImageField(
+        upload_to="org_leaderboard_designs/", null=True, blank=True)
+    # Hex colours the renderer draws the standings text + accents in.
+    text_color = models.CharField(max_length=9, default="#FFFFFF")
+    accent_color = models.CharField(max_length=9, default="#34d27b")
+    show_title = models.BooleanField(default=True)
+    show_subtitle = models.BooleanField(default=True)
+    max_rows = models.PositiveSmallIntegerField(default=16)
+    is_default = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="leaderboard_designs_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_default", "name"]
+
+    def __str__(self):
+        return f"OrgLeaderboardDesign({self.organization_id}: {self.name})"
+
+
 # ════════ Phase 4 — reports, ratings & comments ════════
 
 
