@@ -22,6 +22,9 @@ CANVAS = {
 DEFAULT_BG = (10, 14, 12)        # dark AFC base when no background is uploaded for a size
 DEFAULT_ACCENT = "#34d27b"
 DEFAULT_TEXT = "#FFFFFF"
+# A positioned logo's longest edge, as a fraction of canvas HEIGHT, per size band. Lets a big org
+# logo and small sponsor logos coexist on one design.
+LOGO_SIZE_FRAC = {"small": 0.07, "medium": 0.11, "large": 0.16}
 
 
 def _font(size):
@@ -74,8 +77,33 @@ def _text_w(draw, text, font):
     return box[2] - box[0]
 
 
+def _clip_text(draw, text, font, max_w):
+    """Truncate `text` with an ellipsis so it fits within max_w at `font` (mirrors the standings
+    name-column clip). Returns the text unchanged when it already fits."""
+    if _text_w(draw, text, font) <= max_w:
+        return text
+    s = text
+    while s and _text_w(draw, s + "…", font) > max_w:
+        s = s[:-1]
+    return (s + "…") if s else text
+
+
+def _fit_font(draw, text, base_size, max_w):
+    """A font for `text` that fits within max_w: shrink from base_size down to a floor (45% of base).
+    The caller still clips with _clip_text if even the floor overflows, so a very long title both
+    shrinks AND ellipsis-truncates instead of overrunning the canvas."""
+    floor = max(14, int(base_size * 0.45))
+    size = base_size
+    while size > floor:
+        f = _font(size)
+        if _text_w(draw, text, f) <= max_w:
+            return f
+        size -= 2
+    return _font(floor)
+
+
 def render_leaderboard_graphic(standings, *, size="instagram", background_path=None,
-                               logo_path=None, title="", subtitle="",
+                               logo_path=None, logos=None, title="", subtitle="",
                                text_color=DEFAULT_TEXT, accent_color=DEFAULT_ACCENT,
                                max_rows=16, show_title=True, show_subtitle=True):
     """Composite `standings` (the standalone_standings list) onto a branded canvas and return
@@ -84,7 +112,12 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
     size            : "instagram" (1080x1350) or "youtube" (1920x1080).
     background_path : a filesystem path to the org design's background for this size, or None
                       -> a plain dark AFC background.
-    logo_path       : org logo path, drawn top-left; or None.
+    logos           : the design's positioned logos, a list of
+                      {"path": <fs path>, "x_pct": 0..100, "y_pct": 0..100, "size": s|m|l}.
+                      Each is drawn CENTRED at (x_pct% of W, y_pct% of H) and scaled per size band.
+                      Drawn on TOP so the user's placement is honoured (WYSIWYG with the editor).
+    logo_path       : org logo path, drawn top-left as a FALLBACK only when `logos` is empty (so an
+                      unconfigured design still carries branding); or None.
     title           : the tournament / leaderboard name (drawn when show_title).
     subtitle        : stage / group played, typed at export (drawn when show_subtitle).
     """
@@ -112,9 +145,12 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
     draw = ImageDraw.Draw(base)
     pad = int(W * 0.06)
 
-    # ── org logo (top-left) ──
+    # ── org logo (top-left) ── FALLBACK only: when the design configures its own positioned
+    # logos (drawn on top, at the end) we do NOT also draw the org logo here. An unconfigured
+    # design still shows the org logo top-left so it carries branding by default.
+    has_custom_logos = bool(logos)
     y_header = pad
-    if logo_path:
+    if logo_path and not has_custom_logos:
         try:
             logo = Image.open(logo_path).convert("RGBA")
             lsize = int(H * 0.10)
@@ -123,15 +159,21 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
         except Exception:
             pass
 
-    # ── title + subtitle (top, offset right of the logo) ──
-    title_x = pad + (int(H * 0.10) + pad // 2 if logo_path else 0)
+    # ── title + subtitle (top) ── offset right of the FALLBACK org logo only; with custom logos
+    # the title sits at the left pad (the user places logos freely and owns any overlap).
+    title_x = pad + (int(H * 0.10) + pad // 2 if (logo_path and not has_custom_logos) else 0)
+    # The text must not overrun the canvas: shrink the font to fit the available width, then clip
+    # with an ellipsis as a last resort (the standings names already do this; titles must too, since
+    # the title defaults to the user-controlled leaderboard name).
+    text_max_w = W - title_x - pad
     if show_title and title:
-        tf = _font(int(H * 0.05))
-        draw.text((title_x, pad), title, font=tf, fill=text_rgb)
+        tf = _fit_font(draw, title, int(H * 0.05), text_max_w)
+        draw.text((title_x, pad), _clip_text(draw, title, tf, text_max_w), font=tf, fill=text_rgb)
         y_header = pad + int(H * 0.05) + 8
     if show_subtitle and subtitle:
-        sf = _font(int(H * 0.028))
-        draw.text((title_x, y_header), subtitle, font=sf, fill=accent_rgb)
+        sf = _fit_font(draw, subtitle, int(H * 0.028), text_max_w)
+        draw.text((title_x, y_header), _clip_text(draw, subtitle, sf, text_max_w),
+                  font=sf, fill=accent_rgb)
         y_header += int(H * 0.028) + 8
 
     # ── standings zone ──
@@ -187,6 +229,23 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
         # kills, right-aligned at kills_right (muted)
         ktxt = f"{kills} K"
         draw.text((kills_right - _text_w(draw, ktxt, row_font), cy), ktxt, font=row_font, fill=muted_rgb)
+
+    # ── positioned logos (drawn ON TOP, after standings) ── each centred at (x_pct% of W,
+    # y_pct% of H) and scaled so its longest edge is LOGO_SIZE_FRAC[size] of the canvas height.
+    for spec in (logos or []):
+        try:
+            limg = Image.open(spec["path"]).convert("RGBA")
+        except Exception:
+            continue
+        frac = LOGO_SIZE_FRAC.get((spec.get("size") or "medium"), LOGO_SIZE_FRAC["medium"])
+        edge = max(1, int(H * frac))
+        limg.thumbnail((edge, edge), Image.LANCZOS)
+        cx = int((spec.get("x_pct", 10.0) / 100.0) * W)
+        cy = int((spec.get("y_pct", 10.0) / 100.0) * H)
+        # paste centred on (cx, cy); clamp the top-left so the logo stays on-canvas.
+        px = max(0, min(W - limg.width, cx - limg.width // 2))
+        py = max(0, min(H - limg.height, cy - limg.height // 2))
+        base.paste(limg, (px, py), limg)
 
     buf = io.BytesIO()
     base.save(buf, format="PNG")

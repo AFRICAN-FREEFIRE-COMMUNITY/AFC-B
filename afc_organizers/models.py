@@ -192,6 +192,39 @@ class OrgLeaderboardDesign(models.Model):
         return f"OrgLeaderboardDesign({self.organization_id}: {self.name})"
 
 
+class OrgLeaderboardDesignLogo(models.Model):
+    """One positioned logo on an OrgLeaderboardDesign (owner 2026-06-13: organizers/admins can add
+    MULTIPLE logos to a design and decide WHERE each sits).
+
+    Position is stored as a PERCENT of the canvas (x_pct/y_pct, 0..100), anchored at the logo's
+    CENTRE, so the same placement maps to BOTH output sizes (portrait IG + landscape YT) without
+    re-positioning per size. `size` (small/medium/large) scales the logo as a fraction of canvas
+    height in the renderer (afc_leaderboard.graphic). Drawn by render_leaderboard_graphic; when a
+    design has NO logos the renderer falls back to the org logo top-left (sensible default).
+
+    Managed via the logo sub-endpoints on afc_organizers.views_leaderboard_design
+    (POST .../by-id/<design_id>/logos/, PATCH/DELETE .../logos/<logo_id>/), consumed by the
+    LeaderboardDesignsManager drag-canvas editor on the frontend."""
+
+    SIZE_CHOICES = [("small", "Small"), ("medium", "Medium"), ("large", "Large")]
+
+    design = models.ForeignKey(
+        OrgLeaderboardDesign, on_delete=models.CASCADE, related_name="logos")
+    image = models.ImageField(upload_to="org_leaderboard_logos/")
+    # Centre position as a percent of the canvas (0..100). Aspect-independent so one value pair
+    # works for both the IG and YT renders.
+    x_pct = models.FloatField(default=10.0)
+    y_pct = models.FloatField(default=10.0)
+    size = models.CharField(max_length=6, choices=SIZE_CHOICES, default="medium")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"OrgLeaderboardDesignLogo(design={self.design_id}, {self.x_pct},{self.y_pct})"
+
+
 # ════════ Phase 4 — reports, ratings & comments ════════
 
 

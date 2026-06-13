@@ -592,8 +592,11 @@ def leaderboard_graphic(request, lb_id):
         lib = OrgLeaderboardDesign.objects.filter(organization_id=lb.organization_id)
     design = None
     design_id = request.GET.get("design_id")
-    if design_id:
-        design = lib.filter(id=design_id).first()
+    # Validate before filtering: id is an integer PK, so a non-numeric ?design_id=abc would raise a
+    # ValueError (500) instead of falling back. Coerce defensively and let a bad/missing id drop to
+    # the library default below.
+    if design_id and str(design_id).isdigit():
+        design = lib.filter(id=int(design_id)).first()
     if design is None:
         design = lib.filter(is_default=True).first() or lib.first()
 
@@ -613,6 +616,22 @@ def leaderboard_graphic(request, lb_id):
         except Exception:
             logo_path = None
 
+    # The design's positioned logos (centre x_pct/y_pct + size). Each resolves to a filesystem
+    # path the renderer composites on top; logos with an unreadable file are skipped. When the
+    # design has no logos this list is empty and the renderer falls back to the org logo top-left.
+    logo_specs = []
+    if design:
+        for logo in design.logos.all():
+            if not logo.image:
+                continue
+            try:
+                path = logo.image.path
+            except Exception:
+                continue
+            logo_specs.append({
+                "path": path, "x_pct": logo.x_pct, "y_pct": logo.y_pct, "size": logo.size,
+            })
+
     title = (request.GET.get("title") or lb.name or "").strip()
     subtitle = (request.GET.get("subtitle") or "").strip()
 
@@ -622,6 +641,7 @@ def leaderboard_graphic(request, lb_id):
         size=size,
         background_path=bg_path,
         logo_path=logo_path,
+        logos=logo_specs,
         title=title,
         subtitle=subtitle,
         text_color=(design.text_color if design else "#FFFFFF"),
