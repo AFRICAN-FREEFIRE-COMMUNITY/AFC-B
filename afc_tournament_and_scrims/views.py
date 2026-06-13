@@ -19003,6 +19003,26 @@ def _get_event_action_user(request):
     return user, None
 
 
+def _all_registered_users(event):
+    """Deduped list of Users actively registered in an event (solo competitors or active
+    team members). Recipient source for the multi-channel event-wide broadcast."""
+    users = {}
+    if event.participant_type == "solo":
+        for rc in RegisteredCompetitors.objects.select_related("user").filter(
+            event=event, status__in=["registered", "approved"]
+        ):
+            if rc.user and rc.user_id not in users:
+                users[rc.user_id] = rc.user
+    else:
+        for tt in TournamentTeam.objects.filter(event=event, status="active"):
+            for member in TournamentTeamMember.objects.select_related("user").filter(
+                tournament_team=tt, status__in=["active", "approved"]
+            ):
+                if member.user and member.user_id not in users:
+                    users[member.user_id] = member.user
+    return list(users.values())
+
+
 def _notify_all_registered(event, title, message):
     """Create in-app Notifications for every active registered competitor."""
     notified = set()
@@ -19125,21 +19145,39 @@ def broadcast_announcement(request):
     event_id = request.data.get("event_id")
     title = request.data.get("title", "").strip()
     message = request.data.get("message", "").strip()
+    # Channel choice (owner 2026-06-13): app push, email, or both (default both). Email goes
+    # in the fixed branded design via deliver_broadcast.
+    delivery = (request.data.get("delivery") or "both").strip().lower()
 
     if not event_id or not title or not message:
         return Response({"message": "event_id, title, and message are required."}, status=400)
+    if delivery not in ("push", "email", "both"):
+        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
-    count = _notify_all_registered(event, title=title, message=message)
+    recipients = _all_registered_users(event)
+    from afc_auth.views import deliver_broadcast
+    pushed, emailed = deliver_broadcast(
+        recipients, title, message, delivery=delivery,
+        notification_type="event_broadcast", related_event=event,
+    )
+    count = len(recipients)
 
     AdminHistory.objects.create(
         admin_user=user,
         action="broadcast_announcement",
-        description=f"Broadcast announcement to event {event.event_name} (ID: {event.event_id}): {title}",
+        description=(
+            f"Broadcast announcement ({delivery}) to event {event.event_name} "
+            f"(ID: {event.event_id}): {title} [{pushed} pushed, {emailed} emailed]"
+        ),
     )
 
-    return Response({"message": f"Announcement sent to {count} users.", "recipients": count}, status=200)
+    return Response(
+        {"message": f"Announcement sent to {count} users.", "recipients": count,
+         "pushed": pushed, "emailed": emailed},
+        status=200,
+    )
 
 
 # ── per-GROUP broadcast (AFC official + organizer) ─────────────────────────────
@@ -19262,6 +19300,12 @@ def broadcast_to_group(request):
         if not message:
             return Response({"message": "A message is required."}, status=400)
 
+    # Channel choice (owner 2026-06-13): app push, email, or both (default both). Email goes
+    # in the fixed branded design via deliver_broadcast.
+    delivery = (request.data.get("delivery") or "both").strip().lower()
+    if delivery not in ("push", "email", "both"):
+        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=400)
+
     recipients = _group_recipient_users(event, group)
     if not recipients:
         return Response(
@@ -19269,25 +19313,21 @@ def broadcast_to_group(request):
             status=400,
         )
 
-    # ONE Notification per recipient (deduped), tagged group_broadcast + linked to the
-    # event so it threads under the event in the user's notifications.
-    Notifications.objects.bulk_create([
-        Notifications(
-            user=u,
-            title=title or None,
-            message=message,
-            related_event=event,
-            notification_type="group_broadcast",
-        )
-        for u in recipients
-    ])
+    # Deduped delivery over the chosen channel(s): one in-app Notification per recipient
+    # (tagged group_broadcast + linked to the event) and/or the fixed branded email.
+    from afc_auth.views import deliver_broadcast
+    pushed, emailed = deliver_broadcast(
+        recipients, title, message, delivery=delivery,
+        notification_type="group_broadcast", related_event=event,
+    )
 
     AdminHistory.objects.create(
         admin_user=user,
         action="broadcast_to_group",
         description=(
-            f"Group broadcast ({mode}) to {group.stage.stage_name} > {group.group_name} "
-            f"in {event.event_name} (ID: {event.event_id}): {len(recipients)} recipients"
+            f"Group broadcast ({mode}, {delivery}) to {group.stage.stage_name} > {group.group_name} "
+            f"in {event.event_name} (ID: {event.event_id}): {len(recipients)} recipients "
+            f"[{pushed} pushed, {emailed} emailed]"
         ),
     )
 

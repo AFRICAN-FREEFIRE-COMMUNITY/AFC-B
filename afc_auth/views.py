@@ -348,6 +348,79 @@ def email_password_changed(username, when_text):
     return _email_shell(inner, "green")
 
 
+# ── Broadcast delivery (owner 2026-06-13) ──────────────────────────────────────────────────────
+# Every "broadcast" surface on the site (event-wide announcement, per-group message, and the
+# single player/team message) lets the sender pick a CHANNEL: in-app push, email, or both. When
+# email is chosen the message goes out in ONE FIXED branded design (the shared _email_shell, same
+# as every transactional AFC email), so a broadcast email always looks the same. These helpers are
+# the single place that delivery happens, so all three endpoints stay consistent.
+def broadcast_message_email_html(title, message):
+    """The FIXED branded HTML for any broadcast email. Title becomes the heading + subject; the
+    message body keeps the sender's line breaks (converted to <br>). Wrapped in the standard
+    green AFC shell so every broadcast email is visually identical."""
+    safe_title = (title or "African Free Fire Community").strip()
+    # Escape nothing fancy here (admins are trusted authors); just turn newlines into <br> so a
+    # multi-line message reads correctly in the email.
+    body_html = (message or "").replace("\r\n", "\n").replace("\n", "<br>")
+    inner = f"""
+  <tr><td style="padding:38px 44px 8px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{safe_title}</div>
+  </td></tr>
+  <tr><td style="padding:6px 44px 34px;">
+    <div style="font-size:15px;line-height:1.7;color:#cdd6cf;">{body_html}</div>
+  </td></tr>"""
+    return _email_shell(inner, "green")
+
+
+def deliver_broadcast(recipients, title, message, *, delivery="both",
+                      notification_type="admin_message", related_event=None):
+    """Send a broadcast to `recipients` (an iterable of Users) over the chosen channel(s).
+
+    delivery: "push" | "email" | "both". Returns (pushed, emailed) counts.
+      - push  -> one in-app Notifications row per recipient (bulk).
+      - email -> the FIXED branded broadcast email (broadcast_message_email_html), sent on a
+        DAEMON THREAD: SMTP is slow and a large broadcast (hundreds of players) would otherwise
+        hold the HTTP request open for minutes. Best-effort per address.
+    Used by afc_auth.admin_send_message and afc_tournament_and_scrims broadcast endpoints."""
+    recipients = [r for r in recipients if r]
+    want_push = delivery in ("push", "both")
+    want_email = delivery in ("email", "both")
+
+    pushed = 0
+    if want_push:
+        Notifications.objects.bulk_create([
+            Notifications(
+                user=r,
+                title=title or None,
+                message=message,
+                notification_type=notification_type,
+                related_event=related_event,
+            )
+            for r in recipients
+        ])
+        pushed = len(recipients)
+
+    emailed = 0
+    if want_email:
+        addresses = [r.email for r in recipients if getattr(r, "email", None)]
+        emailed = len(addresses)
+        if addresses:
+            html = broadcast_message_email_html(title, message)
+            subject = (title or "").strip() or "A message from African Free Fire Community"
+
+            def _send():
+                for addr in addresses:
+                    try:
+                        send_email(addr, subject, html)
+                    except Exception:
+                        pass  # one bad address never blocks the rest; push is the sure channel
+
+            import threading
+            threading.Thread(target=_send, daemon=True).start()
+
+    return pushed, emailed
+
+
 # def send_email(to_address, subject, html_body):
 #     # Gmail SMTP server credentials
 #     # smtp_server = 'smtp.gmail.com'
@@ -3970,31 +4043,12 @@ def admin_send_message(request):
             return Response({"message": "This team has no members to message."}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── deliver ──
-    pushed = 0
-    emailed = 0
-    # Push: one in-app Notification row per recipient (bulk for the team case).
-    if want_push:
-        Notifications.objects.bulk_create([
-            Notifications(
-                user=r,
-                title=title or None,
-                message=message,
-                notification_type="admin_message",
-            )
-            for r in recipients
-        ])
-        pushed = len(recipients)
-    # Email: best-effort per recipient. send_email() already validates the address
-    # and returns False on failure, so one bad address never blocks the rest.
-    if want_email:
-        subject = title or "A message from African Free Fire Community"
-        html_body = (
-            f"<p>{message}</p>"
-            "<p style='color:#888;font-size:12px'>Sent by the AFC admin team.</p>"
-        )
-        for r in recipients:
-            if r.email and send_email(r.email, subject, html_body):
-                emailed += 1
+    # Shared multi-channel delivery: in-app push and/or the FIXED branded broadcast email
+    # (deliver_broadcast). Replaces the old inline unbranded "<p>{message}</p>" email so every
+    # admin message looks like the rest of AFC's mail, and email no longer blocks the request.
+    pushed, emailed = deliver_broadcast(
+        recipients, title, message, delivery=delivery, notification_type="admin_message",
+    )
 
     set_audit(request, f"Sent a {delivery} message to the {target_type} {target_label}")
     AdminHistory.objects.create(
