@@ -645,49 +645,77 @@ def import_competitors(request, event_id):
     with transaction.atomic():
         for src in sources:
             imported, skipped = 0, 0
+
+            # ── source field, TEAM events ──
+            # TournamentTeam is the AUTHORITATIVE team-registration row (capacity checks and
+            # the whole engine count it); RegisteredCompetitors per-team rows are inconsistent
+            # in real data (bug found on the live Dynasty Cup merge 2026-06-13: Tanzania had 8
+            # active TournamentTeams and ZERO RC rows, so an RC-only read imported nothing;
+            # even Mozambique had 7 TT vs 5 RC). Take the UNION of both shapes, deduped by
+            # team, excluding withdrawn/disqualified/left and waitlisted entries.
+            confirmed_teams = {}
+            for tt_src in (
+                TournamentTeam.objects.filter(event=src, is_waitlisted=False)
+                .exclude(status__in=("withdrawn", "disqualified", "left"))
+                .select_related("team")
+            ):
+                confirmed_teams[tt_src.team_id] = tt_src.team
+            for rc in (
+                RegisteredCompetitors.objects.filter(
+                    event=src, status__in=("registered", "approved"), team__isnull=False,
+                ).select_related("team")
+            ):
+                confirmed_teams.setdefault(rc.team_id, rc.team)
+
+            for team in confirmed_teams.values():
+                # ── team merge (mirrors _promote's team interior) ──
+                # Duplicate guard checks BOTH shapes in the target for the same reason.
+                if (
+                    RegisteredCompetitors.objects.filter(event=target, team=team).exists()
+                    or TournamentTeam.objects.filter(event=target, team=team).exists()
+                ):
+                    skipped += 1
+                    continue
+                RegisteredCompetitors.objects.create(event=target, team=team, status="registered")
+                tt = TournamentTeam.objects.create(
+                    event=target, team=team, status="active",
+                    registered_by=user, country=team.country,
+                )
+                src_member_ids = list(
+                    TournamentTeamMember.objects.filter(
+                        tournament_team__event=src, tournament_team__team=team,
+                    ).values_list("user_id", flat=True)
+                ) or list(TeamMembers.objects.filter(team=team).values_list("member_id", flat=True))
+                TournamentTeamMember.objects.bulk_create([
+                    TournamentTeamMember(tournament_team=tt, user_id=uid, event=target, status="active")
+                    for uid in dict.fromkeys(src_member_ids)
+                ], batch_size=200)
+                captain = TeamMembers.objects.filter(
+                    team=team, management_role="team_captain",
+                ).select_related("member").first()
+                notify_user = captain.member if captain else (
+                    team.team_owner if team.team_owner_id else None)
+                if notify_user:
+                    Notifications.objects.create(
+                        user=notify_user,
+                        notification_type="qualification",
+                        title=f"Entered into {target.event_name}",
+                        message=(
+                            f"{team.team_name} has been entered into {target.event_name} "
+                            f"(merged from {src.event_name})."
+                        ),
+                        related_event=target,
+                    )
+                imported += 1
+
+            # ── source field, SOLO events (RC rows are authoritative for solo) ──
             confirmed = (
                 RegisteredCompetitors.objects.filter(
-                    event=src, status__in=("registered", "approved"),
-                ).select_related("team", "user")
+                    event=src, status__in=("registered", "approved"), user__isnull=False,
+                ).select_related("user")
             )
             for rc in confirmed:
-                if rc.team_id:
-                    # ── team merge (mirrors _promote's team interior) ──
-                    if RegisteredCompetitors.objects.filter(event=target, team=rc.team).exists():
-                        skipped += 1
-                        continue
-                    RegisteredCompetitors.objects.create(event=target, team=rc.team, status="registered")
-                    tt = TournamentTeam.objects.create(
-                        event=target, team=rc.team, status="active",
-                        registered_by=user, country=rc.team.country,
-                    )
-                    src_member_ids = list(
-                        TournamentTeamMember.objects.filter(
-                            tournament_team__event=src, tournament_team__team=rc.team,
-                        ).values_list("user_id", flat=True)
-                    ) or list(TeamMembers.objects.filter(team=rc.team).values_list("member_id", flat=True))
-                    TournamentTeamMember.objects.bulk_create([
-                        TournamentTeamMember(tournament_team=tt, user_id=uid, event=target, status="active")
-                        for uid in dict.fromkeys(src_member_ids)
-                    ], batch_size=200)
-                    captain = TeamMembers.objects.filter(
-                        team=rc.team, management_role="team_captain",
-                    ).select_related("member").first()
-                    notify_user = captain.member if captain else (
-                        rc.team.team_owner if rc.team.team_owner_id else None)
-                    if notify_user:
-                        Notifications.objects.create(
-                            user=notify_user,
-                            notification_type="qualification",
-                            title=f"Entered into {target.event_name}",
-                            message=(
-                                f"{rc.team.team_name} has been entered into {target.event_name} "
-                                f"(merged from {src.event_name})."
-                            ),
-                            related_event=target,
-                        )
-                    imported += 1
-                elif rc.user_id:
+                if rc.user_id:
                     # ── solo merge ──
                     if RegisteredCompetitors.objects.filter(event=target, user=rc.user).exists():
                         skipped += 1

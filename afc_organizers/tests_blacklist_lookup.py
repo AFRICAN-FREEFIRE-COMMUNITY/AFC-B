@@ -352,3 +352,76 @@ class AdminBlacklistDashboardApiTests(BlacklistLookupTestBase):
         # ...and the stat-card aggregates follow the same window.
         self.assertEqual(body["aggregates"]["total"], 1)
         self.assertEqual(body["aggregates"]["active"], 1)
+
+
+class AdminBlacklistCountsApiTests(BlacklistLookupTestBase):
+    """GET organizers/admin/blacklist-counts/ - the BULK per-row counts behind the
+    "Blacklists" column on the admin Teams & Players tables (owner ask 2026-06-13).
+    Semantics must mirror blacklist_lookup's total_count / active_count exactly."""
+
+    def _counts(self, user, **query):
+        return self.client.get(
+            reverse("organizers_admin_blacklist_counts"), query, **self._auth(user)
+        )
+
+    # ── §8 platform-admin only: organizers and plain players are 403'd ─────────
+    def test_counts_admin_only(self):
+        # An org OWNER is still not AFC staff -> 403 (this is admin table decoration).
+        resp = self._counts(self.owner_a, team_ids=str(self.team.team_id))
+        self.assertEqual(resp.status_code, 403, resp.content)
+        resp = self._counts(self.plain_player, team_ids=str(self.team.team_id))
+        self.assertEqual(resp.status_code, 403, resp.content)
+        # The platform admin gets through.
+        resp = self._counts(self.afc_admin, team_ids=str(self.team.team_id))
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    # ── §9 TEAM counts: blacklist rows per team, zeros for never-blacklisted ───
+    def test_team_counts_bulk(self):
+        # A second team with NO blacklist history must come back as explicit zeros.
+        other_team = Team.objects.create(
+            team_name="Team Beta", join_settings="open",
+            team_creator=self.owner_b, team_owner=self.owner_b, country="Ghana",
+        )
+        resp = self._counts(
+            self.afc_admin, team_ids=f"{self.team.team_id},{other_team.team_id}"
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        counts = resp.json()["counts"]
+        # Team Alpha: 2 blacklists ever, only the current one blocking (the old row's
+        # status is still "active" but it lapsed - live expiry, same as the lookup).
+        self.assertEqual(counts[str(self.team.team_id)], {"total": 2, "active": 1})
+        self.assertEqual(counts[str(other_team.team_id)], {"total": 0, "active": 0})
+
+    # ── §10 PLAYER counts: snapshot rows; an individually-lifted player is not
+    #        active; a never-snapshotted user is zeros ───────────────────────────
+    def test_player_counts_respect_individual_lift(self):
+        # Retire player_a's row under the CURRENT blacklist (their lift was approved).
+        OrganizerBlacklistPlayer.objects.filter(
+            blacklist=self.bl_current, user=self.player_a
+        ).update(is_active=False)
+
+        resp = self._counts(
+            self.afc_admin,
+            user_ids=f"{self.player_a.user_id},{self.player_b.user_id},{self.plain_player.user_id}",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        counts = resp.json()["counts"]
+        # player_a: snapshotted under both, but nothing blocks them right now.
+        self.assertEqual(counts[str(self.player_a.user_id)], {"total": 2, "active": 0})
+        # player_b: snapshotted under both, the current blacklist still blocks.
+        self.assertEqual(counts[str(self.player_b.user_id)], {"total": 2, "active": 1})
+        # Never snapshotted -> explicit zeros (no missing key).
+        self.assertEqual(counts[str(self.plain_player.user_id)], {"total": 0, "active": 0})
+
+    # ── §11 param validation: exactly one list, integers only ──────────────────
+    def test_counts_param_validation(self):
+        # Neither list -> 400.
+        self.assertEqual(self._counts(self.afc_admin).status_code, 400)
+        # Both lists -> 400.
+        self.assertEqual(
+            self._counts(self.afc_admin, team_ids="1", user_ids="2").status_code, 400
+        )
+        # A malformed token -> 400 (caller bug, surfaced - not silently skipped).
+        self.assertEqual(
+            self._counts(self.afc_admin, team_ids="1,abc").status_code, 400
+        )

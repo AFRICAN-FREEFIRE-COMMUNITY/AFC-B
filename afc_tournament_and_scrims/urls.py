@@ -33,6 +33,11 @@ from .head_to_head_views import (
     get_h2h_bracket,
     report_h2h_match_result,
 )
+# Roster Discord verification (owner 2026-06-13): per-player connected/in-server
+# check consumed by the registration SPONSOR step's Discord join_group panel
+# (frontend SponsorEngagementForm). Own module, same isolation rationale as
+# event_payments / event_links.
+from .roster_discord import roster_discord_status
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -195,4 +200,8 @@ urlpatterns = [
     path("download-esport-media/", download_esport_media, name="download_esport_media"),
     # organizers: toggle Event.rankings_verified (platform org admins only).
     path("verify-event/", verify_event, name="verify_event"),
+    # Per-player Discord readiness for the sponsor join_group(discord) engagement:
+    # POST {user_ids:[...]} -> [{user_id, discord_connected, in_server, ...}].
+    # Any authenticated user. Full URL: events/roster-discord-status/.
+    path("roster-discord-status/", roster_discord_status, name="roster_discord_status"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

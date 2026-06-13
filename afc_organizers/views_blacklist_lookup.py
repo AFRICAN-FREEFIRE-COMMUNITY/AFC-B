@@ -491,3 +491,123 @@ def admin_list_blacklists(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# §3  GET admin/blacklist-counts/  - bulk per-row counts for the admin tables
+# ──────────────────────────────────────────────────────────────────────────────
+# Owner ask 2026-06-13: "add a blacklists tab and column under both teams & players
+# page." The COLUMN needs a count per visible table row; doing one blacklist_lookup
+# call per row would be N requests per page, so this endpoint answers a whole page
+# of ids in ONE call.
+@api_view(["GET"])
+def admin_blacklist_counts(request):
+    """Bulk blacklist counts for a set of teams OR a set of players - one call returns the
+    per-row numbers the admin Teams & Players tables render in their "Blacklists" column
+    ("N (M active)"), instead of one blacklist-lookup request per row.
+
+    Counting semantics deliberately mirror blacklist_lookup (§1) so the column and the
+    lookup can never disagree:
+      - TEAM   total  = OrganizerBlacklist rows naming the team (any status, all orgs);
+               active = of those, the ones blocking RIGHT NOW (status "active" AND
+                        end_date still in the future - live expiry, no sweep needed,
+                        same rule as is_currently_active()).
+      - PLAYER total  = the player's OrganizerBlacklistPlayer snapshot rows (the
+                        follows-the-player rule; unique_together (blacklist, user)
+                        guarantees one row per blacklist, so this equals the number of
+                        distinct blacklists that ever bound them - identical to the
+                        lookup's total_count);
+               active = snapshot rows that still block: their OWN row is_active (an
+                        individually-lifted player is not blocked) AND the parent
+                        blacklist is blocking right now (same live-expiry rule).
+
+    Auth:  Bearer; platform admins only (is_platform_org_admin - the same gate as the
+           dashboard feed above: this decorates admin tables, it is not organizer data).
+    Query: ?team_ids=1,2,3 OR ?user_ids=4,5,6 (exactly one, 400 otherwise; comma-separated
+           integers, max 200 per call - callers only ever send one table page).
+    Response: 200 { counts: { "<id>": { total, active } } } keyed by the REQUESTED id
+           (stringified - JSON object keys are strings). Ids with no blacklist history
+           come back as { total: 0, active: 0 } so the client needs no missing-key logic.
+    FE consumers: the "Blacklists" column on the admin Teams & Players tables
+    (app/(a)/a/_components/TeamsAdminContent.tsx + PlayersAdminContent.tsx, both through
+    the shared useBlacklistCounts hook, via organizersApi.adminBlacklistCounts).
+    """
+    user, err = _authenticate(request)
+    if err:
+        return err
+
+    # ── platform-admin gate (same rule as admin_list_blacklists above) ──
+    if not is_platform_org_admin(user):
+        return Response(
+            {"message": "You do not have permission to view blacklist counts."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ── target list: exactly one of team_ids / user_ids ──
+    raw_team_ids = request.GET.get("team_ids")
+    raw_user_ids = request.GET.get("user_ids")
+    if bool(raw_team_ids) == bool(raw_user_ids):  # both set or both missing
+        return Response(
+            {"message": "Provide exactly one of team_ids or user_ids."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Parse "1,2,3" -> [1, 2, 3]. A malformed token is a 400 (like the malformed window
+    # dates in §1), not a silent skip - the caller built the list from its own rows, so
+    # junk means a caller bug we want surfaced.
+    try:
+        ids = [int(tok) for tok in str(raw_team_ids or raw_user_ids).split(",") if tok.strip()]
+    except (TypeError, ValueError):
+        return Response(
+            {"message": "team_ids / user_ids must be a comma-separated list of integers."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not ids:
+        return Response(
+            {"message": "team_ids / user_ids must contain at least one id."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if len(ids) > 200:  # callers send one table page; anything bigger is a misuse
+        return Response(
+            {"message": "At most 200 ids per call."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    now = timezone.now()
+    # Seed every requested id with zeros so the response always covers the full request
+    # (ids never blacklisted simply stay at zero - no missing keys client-side).
+    counts = {str(i): {"total": 0, "active": 0} for i in ids}
+
+    if raw_team_ids:
+        # ── TEAM counts: one GROUP BY over the blacklist rows for the whole page ──
+        rows = (
+            OrganizerBlacklist.objects.filter(team_id__in=ids)
+            .values("team_id")
+            .annotate(
+                total=Count("id"),
+                active=Count("id", filter=Q(status="active", end_date__gt=now)),
+            )
+        )
+        for row in rows:
+            counts[str(row["team_id"])] = {"total": row["total"], "active": row["active"]}
+    else:
+        # ── PLAYER counts: one GROUP BY over the snapshot rows (follows-the-player) ──
+        rows = (
+            OrganizerBlacklistPlayer.objects.filter(user_id__in=ids)
+            .values("user_id")
+            .annotate(
+                total=Count("id"),
+                active=Count(
+                    "id",
+                    filter=Q(
+                        is_active=True,
+                        blacklist__status="active",
+                        blacklist__end_date__gt=now,
+                    ),
+                ),
+            )
+        )
+        for row in rows:
+            counts[str(row["user_id"])] = {"total": row["total"], "active": row["active"]}
+
+    return Response({"counts": counts}, status=status.HTTP_200_OK)
