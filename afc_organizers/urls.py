@@ -13,7 +13,7 @@
 from django.urls import path
 
 from . import (
-    views_admin, views_organizer, views_public, views_design,
+    views_admin, views_organizer, views_public,
     views_reviews, views_reports, views_blacklist, views_blacklist_lookup,
     views_leaderboard_design,
 )
@@ -51,17 +51,8 @@ urlpatterns = [
     path("remove-organization-member/<slug:slug>/<int:user_id>/", views_organizer.remove_organization_member,
          name="organizers_remove_member"),
 
-    # ───────────────────────── Leaderboard-design requests (Phase 3) ─────────────────────────
-    # Organizer surface (member-scoped): ONE path serves BOTH the POST submit and the GET
-    # list for an org — the @api_view(["POST","GET"]) method list routes by verb (405 for
-    # anything else), so a single route is enough and the URL matches the spec exactly.
-    path("design-requests/<slug:slug>/", views_design.design_requests,
-         name="organizers_design_requests"),
-    # AFC-staff oversight surface (platform-admin gated): triage queue + per-request resolve.
-    path("admin/design-requests/", views_design.admin_list_design_requests,
-         name="organizers_admin_list_design_requests"),
-    path("admin/design-requests/<int:request_id>/", views_design.admin_update_design_request,
-         name="organizers_admin_update_design_request"),
+    # (The "request a design" feature was removed 2026-06-13 in favour of the self-serve design
+    # library below; its routes + views_design.py module were deleted.)
 
     # ───────────────────────── Event ratings + comments (Phase 4) ─────────────────────────
     # Ratings are anonymous to organizers (only the aggregate is exposed); comments are
@@ -115,7 +106,7 @@ urlpatterns = [
     path("blacklists/lift-requests/<int:request_id>/decide/", views_blacklist.decide_lift_request,
          name="organizers_blacklist_decide_lift"),
     # ONE path, two verbs: POST creates a blacklist, GET lists the org's blacklists
-    # (the view branches on request.method, mirroring views_design.design_requests).
+    # (the view branches on request.method).
     path("blacklists/", views_blacklist.blacklists,
          name="organizers_blacklists"),
     path("blacklists/<int:blacklist_id>/lift/", views_blacklist.lift_blacklist,

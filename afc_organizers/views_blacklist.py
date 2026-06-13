@@ -313,7 +313,7 @@ def my_blacklists(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §1  blacklists/  - ONE route, two verbs (mirrors views_design.design_requests).
+# §1  blacklists/  - ONE route, two verbs (the view branches on request.method).
 # ──────────────────────────────────────────────────────────────────────────────
 # Per the spec the create + list surfaces share the path "blacklists/":
 #   POST blacklists/                      -> create a blacklist (+ snapshot the team)
