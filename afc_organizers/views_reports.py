@@ -43,6 +43,7 @@ from afc_auth.views import validate_token
 from afc_organizers.models import Organization, OrganizationReport
 from afc_organizers.permissions import org_can, org_can_event, is_platform_org_admin
 from afc_tournament_and_scrims.models import Event
+from afc.api_utils import authenticate as _authenticate
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -55,36 +56,6 @@ from afc_tournament_and_scrims.models import Event
 #   * (user, None)  → authenticated, proceed;
 #   * (None, resp)  → stop and return `resp` (400 missing header / 400 bad format /
 #                     401 invalid-or-expired token).
-def _authenticate(request):
-    session_token = request.headers.get("Authorization")
-
-    # 400 when the header is missing entirely — a malformed request, not yet an
-    # auth failure (matches afc_team/views.py wording/shape).
-    if not session_token:
-        return None, Response(
-            {"message": "Authorization header is required"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # 400 when the scheme is wrong — token format is the caller's mistake.
-    if not session_token.startswith("Bearer "):
-        return None, Response(
-            {"message": "Invalid token format"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # Strip the "Bearer " prefix and resolve the session → user.
-    session_token = session_token.split(" ")[1]
-    user = validate_token(session_token)
-
-    # 401 when the token does not resolve to a live session/user.
-    if not user:
-        return None, Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
-
-    return user, None
 
 
 # Small shared paginator. List endpoints accept ?limit (default 25, max 100) and

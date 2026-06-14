@@ -19,6 +19,14 @@ from .models import OrganizationMember
 PLATFORM_ADMIN_ROLES = ("head_admin", "organizer_admin")
 
 
+def member_or_403(user, org):
+    """Return the caller's ACTIVE OrganizationMember row for `org`, or None if they are not an
+    active member (the view turns None into a 403). Shared here (cleanup 2026-06-14) so the
+    org view modules that each had an identical private copy import the one definition."""
+    return OrganizationMember.objects.filter(
+        organization=org, user=user, status="active").first()
+
+
 def is_platform_org_admin(user) -> bool:
     """True for AFC staff who oversee organizations (full bypass of org-scope gates)."""
     return bool(user) and user.role == "admin" and \

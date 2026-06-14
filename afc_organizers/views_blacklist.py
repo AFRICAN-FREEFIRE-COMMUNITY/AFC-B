@@ -49,35 +49,12 @@ from afc_organizers.models import (
     BlacklistLiftRequest,
 )
 from afc_organizers.permissions import org_can
+from afc.api_utils import authenticate as _authenticate
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # §0  Shared helpers (DRY - identical handshake / paging / role checks across views)
 # ──────────────────────────────────────────────────────────────────────────────
-def _authenticate(request):
-    """Resolve the caller from the Authorization header exactly like the original hand: read the
-    raw header, require the "Bearer " scheme, strip it, hand the token to validate_token. Returns
-    (user, None) on success or (None, error_response) so each view can bail on the Response:
-    400 missing header / 400 bad format / 401 invalid-or-expired token."""
-    session_token = request.headers.get("Authorization")
-    if not session_token:
-        return None, Response(
-            {"message": "Authorization header is required"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if not session_token.startswith("Bearer "):
-        return None, Response(
-            {"message": "Invalid token format"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    session_token = session_token.split(" ")[1]
-    user = validate_token(session_token)
-    if not user:
-        return None, Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
-    return user, None
 
 
 def _paginate(request, queryset):
