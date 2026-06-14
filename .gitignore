@@ -59,3 +59,13 @@ media/ocr_training/
 afc_ocr/training/_work/
 afc_ocr/training/logs/
 *.log
+
+# Committed-by-mistake virtualenvs (Windows dev envs: Scripts/Lib layout; prod builds its own
+# from requirements.txt). Untracked 2026-06-14 - kept on local disk, removed from git tracking.
+venv/
+eb-env/
+
+# Local-only dev SQLite DB (prod runs MySQL) + committed test/match-result screenshots (~16MB).
+# Untracked 2026-06-14 - kept on disk so local ResultImage rows still resolve.
+db.sqlite3
+media/match_results/
