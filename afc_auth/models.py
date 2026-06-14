@@ -146,6 +146,12 @@ class LoginHistory(models.Model):
     city = models.CharField(max_length=50, null=True, blank=True)
     region = models.CharField(max_length=50, null=True, blank=True)
     timezone = models.CharField(max_length=50, null=True, blank=True)
+    # VPN/datacenter signal (owner ask 2026-06-14). `org` is the ipinfo "AS#### Provider" string;
+    # `is_vpn` is a HEURISTIC flag set when that org/ASN looks like a datacenter/hosting/VPN provider
+    # (consumer traffic comes from ISP ASNs, not datacenters). It is a SIGNAL for admin review (paired
+    # with the account-overlap view), never an auto-block. See afc_auth.views.looks_like_vpn.
+    org = models.CharField(max_length=120, null=True, blank=True)
+    is_vpn = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
 

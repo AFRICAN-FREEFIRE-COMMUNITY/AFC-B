@@ -136,6 +136,28 @@ def geo_for_ip(ip):
         pass
     return {}
 
+
+# Datacenter / hosting / commercial-VPN tokens. Consumer traffic comes from ISP ASNs; an `org`
+# (the ipinfo "AS#### Provider Name" string) containing one of these is almost always a VPN, proxy,
+# datacenter, scraper, or cloud relay - i.e. NOT a normal residential/mobile connection.
+_VPN_ORG_TOKENS = (
+    "vpn", "proxy", "hosting", "datacenter", "data center", "dedicated server", "colocation",
+    "cloud", "m247", "datacamp", "ovh", "leaseweb", "hetzner", "digitalocean", "vultr", "choopa",
+    "linode", "contabo", "g-core", "gcore", "packethub", "amazon", "aws", "google llc",
+    "microsoft", "azure", "oracle", "nordvpn", "expressvpn", "private internet", "cyberghost",
+    "mullvad", "surfshark", "tunnelbear", "protonvpn", "windscribe", "ipvanish", "zenlayer",
+)
+
+
+def looks_like_vpn(org):
+    """HEURISTIC: does this ipinfo `org`/ASN string look like a VPN/datacenter/hosting provider?
+    A free, imperfect signal (false-positives on cloud/CDN, misses residential-proxy VPNs) meant
+    for admin review, never an auto-block. Returns False for an empty/unknown org."""
+    if not org:
+        return False
+    o = str(org).lower()
+    return any(tok in o for tok in _VPN_ORG_TOKENS)
+
 def validate_token(token):
     try:
         session = SessionToken.objects.get(token=token)
@@ -589,10 +611,15 @@ def login(request):
                 "city": cached.city,
                 "region": cached.region,
                 "timezone": cached.timezone,
+                "org": cached.org,
                 "cached": True,  # tells the FE this is today's cached geo, not a fresh lookup
             }
+            org = cached.org
+            is_vpn = cached.is_vpn
         else:
             response = geo_for_ip(ip)  # fail-soft: {} if ipinfo is slow/down
+            org = response.get("org")
+            is_vpn = looks_like_vpn(org)  # heuristic datacenter/VPN flag (review signal, not a block)
 
         LoginHistory.objects.create(
             user=user,
@@ -601,7 +628,9 @@ def login(request):
             country=response.get("country"),
             city=response.get("city"),
             region=response.get("region"),
-            timezone=response.get("timezone")
+            timezone=response.get("timezone"),
+            org=org,
+            is_vpn=is_vpn,
         )
 
         # Return success response with the session token
@@ -3768,7 +3797,8 @@ def discord_callback(request):
 
 @api_view(["GET"])
 def get_all_login_history(request):
-    histories = LoginHistory.objects.all().order_by('-created_at')
+    # select_related('user') avoids an N+1 on history.user.username per row.
+    histories = LoginHistory.objects.select_related("user").all().order_by('-created_at')
     history_data = []
 
     for history in histories:
@@ -3781,6 +3811,8 @@ def get_all_login_history(request):
             "city": history.city,
             "continent": history.continent,
             "timezone": history.timezone,
+            "org": history.org,        # ipinfo "AS#### Provider" string
+            "is_vpn": history.is_vpn,  # heuristic datacenter/VPN flag (review signal)
             "timestamp": history.created_at
         })
 
@@ -3820,9 +3852,65 @@ def get_user_login_history(request):
             "region": history.region,
             "city": history.city,
             "continent": history.continent,
+            "org": history.org,
+            "is_vpn": history.is_vpn,
         })
 
     return Response({"login_history": history_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_account_overlap(request):
+    """ADMIN: surface IP addresses used by MORE THAN ONE distinct account - the core
+    account-sharing / multi-accounting signal (owner ask 2026-06-14). For each shared IP returns the
+    accounts that logged in from it, the (last seen) org, the VPN flag, and totals. This is a REVIEW
+    signal, never an auto-action: IP-sharing is noisy (households, mobile CGNAT, cafes, schools), so
+    a human triages, ideally alongside the VPN flag + device signals.
+
+    Auth: AFC admin only (role == 'admin'). Consumed by the admin Settings page "Account overlap"
+    section. Reads afc_auth.LoginHistory grouped by ip_address."""
+    user = validate_token((request.headers.get("Authorization") or "").replace("Bearer ", ""))
+    if not user:
+        return Response({"message": "Invalid or expired session token."},
+                        status=status.HTTP_401_UNAUTHORIZED)
+    if user.role != "admin":
+        return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
+
+    from django.db.models import Count
+    # IPs with >1 DISTINCT user (skip blanks). Cap to keep the response sane.
+    shared_ips = (LoginHistory.objects
+                  .exclude(ip_address__isnull=True).exclude(ip_address="")
+                  .values("ip_address")
+                  .annotate(user_count=Count("user", distinct=True),
+                            login_count=Count("id"))
+                  .filter(user_count__gt=1)
+                  .order_by("-user_count", "-login_count")[:200])
+
+    results = []
+    for row in shared_ips:
+        ip = row["ip_address"]
+        # the accounts seen on this IP (distinct), + the most recent org/vpn for context
+        rows = (LoginHistory.objects.filter(ip_address=ip)
+                .select_related("user").order_by("-created_at"))
+        accounts, seen = [], set()
+        org, is_vpn = None, False
+        for r in rows:
+            if r.org and org is None:
+                org = r.org
+            is_vpn = is_vpn or r.is_vpn
+            if r.user_id not in seen:
+                seen.add(r.user_id)
+                accounts.append({"username": r.user.username, "user_id": r.user_id})
+        results.append({
+            "ip_address": ip,
+            "account_count": row["user_count"],
+            "login_count": row["login_count"],
+            "org": org,
+            "is_vpn": is_vpn,
+            "accounts": accounts,
+        })
+
+    return Response({"overlap": results, "total": len(results)}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])
