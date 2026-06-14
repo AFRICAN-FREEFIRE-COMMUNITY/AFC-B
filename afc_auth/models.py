@@ -109,20 +109,33 @@ class SessionToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 
-    # Session lifetime. The frontend stores the auth_token cookie for 7 days, so the
-    # server-side token must match — otherwise the cookie lingers but every request
-    # 401s within the hour, which is exactly the "logged in but everything fails after
-    # ~15-60 min" behaviour. Keep these in sync (frontend COOKIE_OPTIONS expires: 7).
-    SESSION_LIFETIME = timedelta(days=7)
+    # Idle-timeout window: users are auto-logged-out after 3 HOURS OF INACTIVITY (owner
+    # 2026-06-14). It is a SLIDING window, not absolute-from-login: every authed request
+    # calls touch() to push expires_at forward, so an active user never gets logged out,
+    # but 3h with no request expires the session. The frontend slides the auth_token cookie
+    # the same way (AuthContext, on each successful API call). Keep these in sync.
+    SESSION_LIFETIME = timedelta(hours=3)
+    # Only persist a slide when it moves the expiry by more than this, so we do at most one
+    # DB write per ~5 min of activity instead of one per request.
+    TOUCH_THROTTLE = timedelta(minutes=5)
 
     def save(self, *args, **kwargs):
-        # Default the expiry to the full 7-day session window when not explicitly set.
+        # Default the expiry to the full session window (3h) when not explicitly set.
         if not self.expires_at:
             self.expires_at = timezone.now() + self.SESSION_LIFETIME
         super().save(*args, **kwargs)
 
     def is_expired(self):
         return timezone.now() > self.expires_at
+
+    def touch(self):
+        """Slide the idle window forward on activity. Called by validate_token after a token
+        validates. Throttled (TOUCH_THROTTLE) so a burst of requests writes the DB at most once
+        every ~5 minutes while still keeping an active session alive."""
+        new_exp = timezone.now() + self.SESSION_LIFETIME
+        if new_exp - self.expires_at > self.TOUCH_THROTTLE:
+            self.expires_at = new_exp
+            self.save(update_fields=["expires_at"])
 
     def __str__(self):
         return f"{self.user.username} - {self.token}"
