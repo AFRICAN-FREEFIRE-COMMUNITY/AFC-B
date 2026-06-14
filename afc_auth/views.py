@@ -163,6 +163,9 @@ def validate_token(token):
         session = SessionToken.objects.get(token=token)
         if session.is_expired():
             return None
+        # Idle timeout: slide the 3h window forward on each authed request (throttled to ~once
+        # per 5 min). An active user is never logged out; 3h of no requests expires the session.
+        session.touch()
         return session.user
     except SessionToken.DoesNotExist:
         return None
