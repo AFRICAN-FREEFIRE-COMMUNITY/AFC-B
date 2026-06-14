@@ -6,8 +6,6 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from afc_auth.views import validate_token
-from afc_leaderboard_calc import models
-from afc_leaderboard_calc.models import Match, MatchLeaderboard, Tournament
 from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats, EventPrizePayout
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
 from afc_auth.models import AdminHistory, BannedPlayer, Notifications, TeamBan, User, UserProfile, UserRoles
@@ -357,107 +355,6 @@ def review_invitation(request):
     except Exception as e:
         return Response({'message': 'An error occurred.', 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-
-@api_view(["POST"])
-def rank_teams_into_tiers(request):
-    # Retrieve session token
-    session_token = request.headers.get("Authorization")
-
-    if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
-
-    session_token = session_token.split(" ")[1]
-
-    # Identify the logged-in user using the session token
-    user = validate_token(session_token)
-    if not user:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
-
-    # Fetch all teams and calculate points
-    team_points = {}
-    all_tournaments = Tournament.objects.all()
-
-    for tournament in all_tournaments:
-        for match in Match.objects.filter(tournament=tournament):
-            for leaderboard_entry in MatchLeaderboard.objects.filter(match=match):
-                team = leaderboard_entry.team
-                points = team_points.get(team, 0)
-
-                # Tournament win points
-                if tournament.tournament_type == "tournament" and leaderboard_entry.position_in_match == 1:
-                    points += 10
-
-                # Calculate total kills in the tournament
-                total_kills = MatchLeaderboard.objects.filter(match__tournament=tournament, team=team).aggregate(total_kills=models.Sum('kills'))['total_kills'] or 0
-
-                # Kill points for tournaments
-                if tournament.tournament_type == "tournament":
-                    if 10 <= total_kills < 20:
-                        points += 1
-                    elif 20 <= total_kills < 40:
-                        points += 2
-                    elif 40 <= total_kills < 60:
-                        points += 3
-                    elif 60 <= total_kills < 80:
-                        points += 4
-                    elif 80 <= total_kills < 100:
-                        points += 5
-                    elif 100 <= total_kills < 120:
-                        points += 6
-                    elif 120 <= total_kills < 140:
-                        points += 7
-                    elif 140 <= total_kills < 170:
-                        points += 8
-                    elif 170 <= total_kills < 190:
-                        points += 9
-
-                # Kill points for scrims
-                elif tournament.tournament_type == "scrims":
-                    if 10 <= leaderboard_entry.kills < 20:
-                        points += 0.5
-                    elif 20 <= leaderboard_entry.kills < 40:
-                        points += 1
-                    elif 41 <= leaderboard_entry.kills < 60:
-                        points += 1.5
-                    elif 61 <= leaderboard_entry.kills < 80:
-                        points += 2
-                    elif 81 <= leaderboard_entry.kills <= 100:
-                        points += 3
-
-                # Placement points
-                if leaderboard_entry.position_in_match == 1:
-                    points += 3
-                elif leaderboard_entry.position_in_match == 2:
-                    points += 2
-                elif leaderboard_entry.position_in_match == 3:
-                    points += 1
-
-                team_points[team] = points
-
-    # Rank teams into tiers
-    team_tiers = []
-    for team, points in team_points.items():
-        if points >= 70:
-            tier = "Tier 1"
-        elif 50 <= points < 70:
-            tier = "Tier 2"
-        else:
-            tier = "Tier 3"
-
-        team_tiers.append({
-            "team_name": team.name,
-            "points": points,
-            "tier": tier
-        })
-
-    return Response({"team_tiers": team_tiers}, status=200)
-
 
 @api_view(["POST"])
 def disband_team(request):

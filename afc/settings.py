@@ -61,7 +61,6 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_celery_beat',
     'afc_auth',
-    'afc_leaderboard_calc',
     'afc_team',
     'afc_tournament_and_scrims',
     'afc_shop',

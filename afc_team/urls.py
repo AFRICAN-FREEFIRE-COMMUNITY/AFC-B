@@ -10,7 +10,6 @@ urlpatterns = [
     path('edit-team/', edit_team, name='edit_team'),
     path('invite-member/', invite_member, name='invite_member'),
     path('review-invitation/', review_invitation, name='review_invitation'),
-    path('rank-teams-into-tiers/', rank_teams_into_tiers, name='rank_team_into_tiers'),
     path('disband-team/', disband_team, name='disband_team'),
     path('transfer-ownership/', transfer_ownership, name='transfer_ownership'),
     path('send-join-request/', send_join_request, name='send_join_request'),
