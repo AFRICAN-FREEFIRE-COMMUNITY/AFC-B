@@ -16070,6 +16070,36 @@ PLAYER_RE = re.compile(
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
 def upload_team_match_result(request):
+    """
+    Upload a TEAM match-log / 3D room file and attribute kills BY in-game UID.
+
+    Request (multipart/form-data):
+      match_id  : the Match to score (must belong to a TEAM event group)
+      file      : the game's match-log text export (TeamName:/NAME:/ID:/KILL: blocks)
+      file_type : (ignored) cosmetic hint from the FE; the same parser runs regardless
+
+    Auth: Bearer token. AFC event admins always pass; org members holding
+    can_upload_results on the event's owning org may upload for that org's events.
+
+    Behaviour: each parsed player is matched to a registered roster member of THIS event
+    purely by User.uid (string-exact). Matched kills are written to
+    TournamentPlayerMatchStats and the team total to TournamentTeamMatchStats. A UID in the
+    file that is NOT on the block's site roster is FLAGGED (never silently dropped) so the
+    admin/organizer can reconcile it — this is the fix for "kills not attributed to the
+    appropriate person": the old code matched by UID correctly but `continue`d (dropped) on
+    any miss, so subs / typo'd UIDs / players whose UID is unset just vanished with no notice.
+
+    Response (200) consumed by frontend FileUploadStep.tsx (event leaderboard editors):
+      message, match_id, parsed_teams, saved_teams, saved_players
+      missing_teams   : team blocks where no player UID matched any roster member
+      attributed      : [{team_name, site_team_name, username, uid, kills}] credited players
+      unknown_uids    : [{team_name, site_team_name, tournament_team_id, uid, name, kills,
+                          reason, [other_team_name]}] flagged players.
+                        reason in: not_on_roster | belongs_to_other_team | team_not_on_site |
+                                   duplicate_in_file | no_team_stats
+      roster_no_uid   : [{tournament_team_id, user_id, username}] rostered players with no UID set
+      unmatched_count : len(unknown_uids), convenience for the FE toast
+    """
 
     # -------- AUTH --------
     auth = request.headers.get("Authorization")
@@ -16144,11 +16174,18 @@ def upload_team_match_result(request):
     if not parsed_teams:
         return Response({"message": "No team data parsed."}, status=400)
 
-    # -------- MAP USERS --------
+    # -------- MAP USERS (by in-game UID, scoped to THIS event's roster) --------
+    # Players are matched to registered roster members purely by Free Fire UID (User.uid).
+    # The file carries each player's uid + kills; we resolve uid -> TournamentTeamMember for
+    # THIS event only. A uid in the file that is NOT on the event roster is "unknown" (a sub
+    # who played in-game but was never registered, a typo, or a player on another team) and is
+    # FLAGGED for the admin/organizer below — never silently dropped (the old bug).
+    from collections import defaultdict
+
     all_uids = [p["uid"] for t in parsed_teams for p in t["players"]]
 
     members = TournamentTeamMember.objects.select_related(
-        "tournament_team", "user"
+        "tournament_team", "tournament_team__team", "user"
     ).filter(
         tournament_team__event=event,
         user__uid__in=all_uids
@@ -16156,9 +16193,27 @@ def upload_team_match_result(request):
 
     uid_to_member = {m.user.uid: m for m in members}
 
+    # Full event roster (incl. members who never set a UID) so we can tell an "unknown UID"
+    # apart from a "registered player who has no UID set" — the latter can never UID-match and
+    # is the usual reason a known player shows 0 kills (surfaced separately as roster_no_uid).
+    roster_by_team = defaultdict(list)  # tournament_team_id -> [{user_id, username, uid}]
+    for m in TournamentTeamMember.objects.select_related("tournament_team", "user").filter(
+        tournament_team__event=event
+    ):
+        roster_by_team[m.tournament_team_id].append({
+            "user_id": m.user_id,
+            "username": m.user.username,
+            "uid": m.user.uid,
+        })
+
     team_stats_to_create = []
     player_stats_to_create = []
     missing_teams = []
+    # Result feedback surfaced to the FE (FileUploadStep.tsx) so the admin can confirm
+    # attributions and resolve flagged players. See the response contract at the bottom.
+    attributed = []        # credited players: {team_name, site_team_name, username, uid, kills}
+    unknown_players = []   # file UIDs that could NOT be credited, each with a reason
+    seen_uids = set()      # a uid is credited at most once per match (de-dupe malformed files)
 
     with transaction.atomic():
 
@@ -16174,12 +16229,16 @@ def upload_team_match_result(request):
 
             team_obj = None
 
-            # Find team via first valid member
+            # Resolve the block's site team via the first player whose UID is on a roster.
             for p in players:
                 member = uid_to_member.get(p["uid"])
                 if member:
                     team_obj = member.tournament_team
                     break
+
+            # Stash the resolved team so the per-player loop below can both attribute to it
+            # AND report unknown players under the correct site team.
+            team_data["_team_obj"] = team_obj
 
             if not team_obj:
                 missing_teams.append(team_data["team_name"])
@@ -16189,6 +16248,8 @@ def upload_team_match_result(request):
 
             # Shared team formula. This log-upload path carries no assists/damage/bonus/penalty,
             # so they pass through as 0 (placement + kills only) — same result as the old inline calc.
+            # total_kills includes any unknown-UID players in the block, so the TEAM score stays
+            # correct (matches in-game); only per-player attribution flags the unknown ones below.
             pts = scoring_lib.compute_team_points(
                 placement_points=placement_points, kill_point=kill_point,
                 points_per_assist=0, points_per_1000_damage=0,
@@ -16210,37 +16271,122 @@ def upload_team_match_result(request):
                 )
             )
 
-        created_team_stats = TournamentTeamMatchStats.objects.bulk_create(
+        TournamentTeamMatchStats.objects.bulk_create(
             team_stats_to_create,
             batch_size=200
         )
 
-        # Build safe FK map using IDs
+        # Build the tournament_team_id -> team_stats_id map by RE-FETCHING from the DB.
+        # bulk_create does NOT populate AutoField PKs on MySQL, so the objects it returns have
+        # team_stats_id = None. Reading them back guarantees real PKs; without this every player
+        # stat fell through the `no_team_stats` guard and NOTHING was attributed (the core bug
+        # behind "kills not attributed to the appropriate person").
+        created_team_stats = list(
+            TournamentTeamMatchStats.objects.filter(match=match)
+        )
         ts_map = {
             ts.tournament_team_id: ts.team_stats_id
             for ts in created_team_stats
         }
 
-        # -------- CREATE PLAYER STATS --------
+        # -------- CREATE PLAYER STATS (UID-exact attribution + flag unknowns) --------
         for team_data in parsed_teams:
+            team_obj = team_data.get("_team_obj")
+            block_team_name = team_data["team_name"]
+
+            # Whole block's team not found on the site: report EACH UID (not just the team)
+            # so the admin sees exactly who/what went unattributed.
+            if not team_obj:
+                for p in team_data["players"]:
+                    unknown_players.append({
+                        "team_name": block_team_name,
+                        "site_team_name": None,
+                        "tournament_team_id": None,
+                        "uid": p["uid"],
+                        "name": p["name"],
+                        "kills": p["kills"],
+                        "reason": "team_not_on_site",
+                    })
+                continue
+
+            site_team_name = team_obj.team.team_name
+            block_tt_id = team_obj.tournament_team_id
+
             for p in team_data["players"]:
-                member = uid_to_member.get(p["uid"])
+                uid = p["uid"]
+                member = uid_to_member.get(uid)
+
+                # 1) UID not on ANY roster for this event -> played in-game, not on the site.
                 if not member:
+                    unknown_players.append({
+                        "team_name": block_team_name,
+                        "site_team_name": site_team_name,
+                        "tournament_team_id": block_tt_id,
+                        "uid": uid,
+                        "name": p["name"],
+                        "kills": p["kills"],
+                        "reason": "not_on_roster",
+                    })
+                    continue
+
+                # 2) UID belongs to a DIFFERENT team's roster in this event -> don't mis-credit.
+                if member.tournament_team_id != block_tt_id:
+                    unknown_players.append({
+                        "team_name": block_team_name,
+                        "site_team_name": site_team_name,
+                        "tournament_team_id": block_tt_id,
+                        "uid": uid,
+                        "name": p["name"],
+                        "kills": p["kills"],
+                        "reason": "belongs_to_other_team",
+                        "other_team_name": member.tournament_team.team.team_name,
+                    })
+                    continue
+
+                # 3) Same UID twice in the file -> malformed; credit once, flag the dupe.
+                if uid in seen_uids:
+                    unknown_players.append({
+                        "team_name": block_team_name,
+                        "site_team_name": site_team_name,
+                        "tournament_team_id": block_tt_id,
+                        "uid": uid,
+                        "name": p["name"],
+                        "kills": p["kills"],
+                        "reason": "duplicate_in_file",
+                    })
                     continue
 
                 ts_id = ts_map.get(member.tournament_team_id)
                 if not ts_id:
+                    # team_obj resolved but no team-stats row (shouldn't happen) -> flag, don't drop.
+                    unknown_players.append({
+                        "team_name": block_team_name,
+                        "site_team_name": site_team_name,
+                        "tournament_team_id": block_tt_id,
+                        "uid": uid,
+                        "name": p["name"],
+                        "kills": p["kills"],
+                        "reason": "no_team_stats",
+                    })
                     continue
 
+                seen_uids.add(uid)
                 player_stats_to_create.append(
                     TournamentPlayerMatchStats(
-                        team_stats_id=ts_id,  # 🔥 SAFE FIX
+                        team_stats_id=ts_id,
                         player_id=member.user_id,
                         kills=p["kills"],
                         damage=0,
                         assists=0,
                     )
                 )
+                attributed.append({
+                    "team_name": block_team_name,
+                    "site_team_name": site_team_name,
+                    "username": member.user.username,
+                    "uid": uid,
+                    "kills": p["kills"],
+                })
 
         TournamentPlayerMatchStats.objects.bulk_create(
             player_stats_to_create,
@@ -16250,13 +16396,35 @@ def upload_team_match_result(request):
         match.result_inputted = True
         match.save(update_fields=["result_inputted"])
 
+    # Registered players on the teams that appeared in the file but who have NO in-game UID set:
+    # they can never be UID-matched, which is the usual reason a known player shows 0 kills.
+    # Surfaced so the admin can add their UID on the profile and re-upload (no silent zero).
+    roster_no_uid = []
+    appeared_team_ids = {
+        td["_team_obj"].tournament_team_id
+        for td in parsed_teams
+        if td.get("_team_obj")
+    }
+    for tt_id in appeared_team_ids:
+        for mem in roster_by_team.get(tt_id, []):
+            if not (mem["uid"] or "").strip():
+                roster_no_uid.append({
+                    "tournament_team_id": tt_id,
+                    "user_id": mem["user_id"],
+                    "username": mem["username"],
+                })
+
     return Response({
         "message": "Team match results uploaded successfully.",
         "match_id": match.match_id,
         "parsed_teams": len(parsed_teams),
         "saved_teams": len(created_team_stats),
         "saved_players": len(player_stats_to_create),
-        "missing_teams": missing_teams[:20]
+        "missing_teams": missing_teams[:20],          # team blocks where NO player UID matched
+        "attributed": attributed,                      # per-player kills credited (admin confirmation)
+        "unknown_uids": unknown_players,               # file UIDs that could not be credited (+ reason)
+        "roster_no_uid": roster_no_uid,                # rostered players with no UID set (cannot match)
+        "unmatched_count": len(unknown_players),       # convenience count for the FE toast
     }, status=200)
 
 
