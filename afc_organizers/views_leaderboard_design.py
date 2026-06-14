@@ -28,40 +28,12 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-# validate_token imported from the auth *views* module, matching the rest of the codebase's handshake.
-from afc_auth.views import validate_token
 from afc_organizers.models import (
     Organization, OrganizationMember, OrgLeaderboardDesign, OrgLeaderboardDesignLogo,
 )
 from afc_organizers.permissions import org_can
-
-
-# ── Shared auth helpers ──────────────────────────────────────────────────────
-# Inlined here when the design-request module (views_design.py) was removed (owner 2026-06-13:
-# the "request a design" feature was retired in favour of the self-serve design library). This
-# module is now their only consumer. The handshake mirrors every other afc_organizers view.
-def _authenticate(request):
-    """Standard Bearer + validate_token handshake. Returns (user, error_response): exactly one is
-    non-None. 400 missing/bad header, 401 unresolved token."""
-    session_token = request.headers.get("Authorization")
-    if not session_token:
-        return None, Response({"message": "Authorization header is required"},
-                              status=status.HTTP_400_BAD_REQUEST)
-    if not session_token.startswith("Bearer "):
-        return None, Response({"message": "Invalid token format"},
-                              status=status.HTTP_400_BAD_REQUEST)
-    user = validate_token(session_token.split(" ")[1])
-    if not user:
-        return None, Response({"message": "Invalid or expired session token."},
-                              status=status.HTTP_401_UNAUTHORIZED)
-    return user, None
-
-
-def _member_or_403(user, org):
-    """Return the caller's ACTIVE OrganizationMember row for `org`, or None if not an active
-    member (the view turns None into a 403)."""
-    return OrganizationMember.objects.filter(
-        organization=org, user=user, status="active").first()
+from afc.api_utils import authenticate as _authenticate
+from afc_organizers.permissions import member_or_403 as _member_or_403
 
 
 def _resolve_library(request, raw_org_id):

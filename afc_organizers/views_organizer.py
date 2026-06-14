@@ -38,18 +38,12 @@ from afc_auth.views import validate_token
 from afc_organizers.models import Organization, OrganizationMember, PERMISSION_FIELDS
 from afc_organizers.permissions import org_can
 from afc_auth.models import User, Roles, UserRoles
+from .permissions import member_or_403 as _member_or_403
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # §0  Shared helpers (DRY — used by several views below)
 # ──────────────────────────────────────────────────────────────────────────────
-def _member_or_403(user, org):
-    """Return the caller's ACTIVE OrganizationMember row for `org`, or None if they
-    are not an active member. Views translate the None into a 403 — membership is the
-    floor for every member-scoped endpoint, so we resolve it in exactly one place."""
-    return OrganizationMember.objects.filter(
-        organization=org, user=user, status="active"
-    ).first()
 
 
 def _effective_permissions(member):
