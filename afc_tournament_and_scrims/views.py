@@ -11,7 +11,6 @@ from rest_framework import status
 from django.utils.dateparse import parse_date
 
 from afc_auth.views import assign_discord_role, check_discord_membership, check_discord_membership_v3, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
-# from afc_leaderboard_calc.models import Match, MatchLeaderboard
 from afc_team.models import Team, TeamMembers
 # Single source of truth for the per-match point formula (see scoring.py). Imported
 # as `scoring_lib` (not bare `scoring`) on purpose: several result-entry views already
