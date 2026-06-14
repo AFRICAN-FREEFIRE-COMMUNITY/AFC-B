@@ -573,34 +573,6 @@ def edit_nominee(request):
 
 
 
-@api_view(['POST'])
-def confirm_user_vote_status(request):
-    # --- Authenticate user ---
-    session_token = request.headers.get("Authorization")
-    if not session_token or not session_token.startswith("Bearer "):
-        return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
-
-    session_token = session_token.split(" ")[1]
-    # Prevents FieldError 500: resolve the bearer token via the SessionToken table
-    # instead of the non-existent User.session_token field. validate_token returns
-    # None on an invalid/expired token, which we surface as a clean 401.
-    user = validate_token(session_token)
-    if not user:
-        return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
-
-    section_id = request.data.get("section_id")
-    if not section_id:
-        return Response({"error": "Section ID is required"}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        section = Section.objects.get(id=section_id)
-    except Section.DoesNotExist:
-        return Response({"error": "Section not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    has_voted = Vote.objects.filter(user=user, section=section).exists()
-    return Response({"has_voted": has_voted}, status=status.HTTP_200_OK)
-
-
 @api_view(['GET'])
 def get_total_votes_per_nominee_per_category(request):
     votes_data = Vote.objects.values('category__name', 'nominee__name').annotate(vote_count=Count('id')).order_by('category__name', '-vote_count')

@@ -3008,35 +3008,6 @@ def get_audit_log(request):
     }, status=status.HTTP_200_OK)
 
 
-@api_view(["POST"])
-def search_admin_users(request):
-    # Retrieve session token
-    session_token = request.headers.get("Authorization")
-
-    if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
-
-    session_token = session_token.split(" ")[1]
-
-    # Identify the logged-in user using the session token
-    admin_user = validate_token(session_token)
-    if not admin_user:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
-    
-    if admin_user.role != "admin":
-        return Response({"message": "You do not have permission to search users."}, status=status.HTTP_403_FORBIDDEN)
-
-    query = request.data.get("query", "")
-    if not query:
-        return Response({"message": "Search query is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-
 @api_view(["GET"])
 def get_total_number_of_users(request):
     total_users = User.objects.count()
