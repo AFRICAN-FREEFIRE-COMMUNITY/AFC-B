@@ -66,6 +66,8 @@ urlpatterns = [
     path("is-discord-account-connected/", is_discord_account_connected, name="is_discord_account_connected"),
     path("get-all-login-history/", get_all_login_history, name="get_all_login_history"),
     path("get-user-login-history/", get_user_login_history, name="get_user_login_history"),
+    # Account-overlap (multi-account / account-sharing review signal): IPs used by >1 account.
+    path("get-account-overlap/", get_account_overlap, name="get_account_overlap"),
     path("get-notifications/", get_notifications, name="get_notifications"),
     path("send-notification/", send_notification, name="send_notification"),
     path("send-notification-to-multiple-users/", send_notification_to_multiple_users, name="send_notification_to_multiple_users"),
