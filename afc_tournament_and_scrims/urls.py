@@ -38,6 +38,7 @@ from .head_to_head_views import (
 # (frontend SponsorEngagementForm). Own module, same isolation rationale as
 # event_payments / event_links.
 from .roster_discord import roster_discord_status
+from .views_event_graphic import event_stage_graphic
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -45,6 +46,10 @@ from django.conf.urls.static import static
 urlpatterns = [
     # path("admin/", admin.site.urls),
     # path('admin-login/', admin_login, name='admin_login'),
+    # Render an event STAGE's standings onto a leaderboard design -> PNG (owner 2026-06-14).
+    # Mounted under events/ -> GET events/<event_id>/stages/<stage_id>/graphic/.
+    path('<int:event_id>/stages/<int:stage_id>/graphic/', event_stage_graphic,
+         name='event_stage_graphic'),
     path('create-event/', create_event, name='create_event'),
     path('edit-event/', edit_event, name='edit_event'),
     # Event duplication (feature "event-duplicate", 2026-06-10): clone an event's config +
