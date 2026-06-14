@@ -4029,6 +4029,19 @@ def get_event_details_not_logged_in(request):
         "registration_link": event.registration_link,
         "tournament_tier": event.tournament_tier,
         "event_banner_url": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
+        # Organizing org (may be null for AFC-native events). Exposed so the public
+        # tournament page can (a) build the link-embed / OG image fallback chain
+        # event banner -> ORG LOGO -> AFC default (owner 2026-06-14), and (b) fill the
+        # SportsEvent JSON-LD `organizer` (the FE already reads organization_name/slug
+        # here, previously always null). Consumed by the frontend
+        # app/(user)/tournaments/[slug]/page.tsx generateMetadata + Page.
+        "organization_name": event.organization.name if event.organization else None,
+        "organization_slug": event.organization.slug if event.organization else None,
+        "organization_logo": (
+            request.build_absolute_uri(event.organization.logo.url)
+            if (event.organization and event.organization.logo)
+            else None
+        ),
         "uploaded_rules_url": request.build_absolute_uri(event.uploaded_rules.url) if event.uploaded_rules else None,
         "number_of_stages": event.number_of_stages,
         "created_at": event.created_at,
