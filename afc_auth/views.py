@@ -65,7 +65,6 @@ from rest_framework import status
 from django.db import transaction
 from django.db import IntegrityError  # backstop for the username/email unique-constraint race in signup()
 from django.db.models import Q  # OR-query for the unverified-takeover lookup in signup()
-from utils.ipinfo_lookup import lookup_ip
 
 import re
 
@@ -116,6 +115,26 @@ def get_client_ip(request):
     else:
         ip = request.META.get("REMOTE_ADDR")
     return ip
+
+
+def geo_for_ip(ip):
+    """Best-effort geo lookup for `ip` via the ipinfo.io API. FAIL-SOFT: it never raises and uses a
+    short timeout, so a slow/unreachable ipinfo can never hang or 500 a login/signup - it just
+    returns {} and the caller stores nulls. Returns the ipinfo json
+    (country/city/region/timezone/org/...) or {} on any error.
+
+    Cost note: this is a billed external call (ipinfo.io free tier is capped per month). login()
+    therefore caches the result per user PER DAY (see below) so we make at most ONE call per user
+    per day instead of one per login."""
+    if not ip:
+        return {}
+    try:
+        resp = requests.get(f"https://ipinfo.io/{ip}/json", timeout=3)
+        if resp.ok:
+            return resp.json() or {}
+    except Exception:
+        pass
+    return {}
 
 def validate_token(token):
     try:
@@ -552,10 +571,28 @@ def login(request):
         user.save()
 
         ip = get_client_ip(request)
-        response = requests.get(f"https://ipinfo.io/{ip}/json")
-        response = response.json()
 
-        
+        # ── Geo lookup: at most ONCE per user per day ──────────────────────────────────
+        # The ipinfo.io call is billed + adds latency, and it used to fire on EVERY login. Instead,
+        # reuse the geo from this user's FIRST LoginHistory row TODAY (created_at date == today) and
+        # only hit ipinfo on the day's first login (or if that row had no country). The real
+        # per-login IP + user-agent are still recorded every time; only the (paid) geo lookup is
+        # de-duplicated. (owner ask 2026-06-14: log the IP/geo once on the first login of the day.)
+        today = timezone.localdate()
+        cached = (LoginHistory.objects
+                  .filter(user=user, created_at__date=today)
+                  .exclude(country__isnull=True).exclude(country="")
+                  .order_by("created_at").first())
+        if cached:
+            response = {
+                "country": cached.country,
+                "city": cached.city,
+                "region": cached.region,
+                "timezone": cached.timezone,
+                "cached": True,  # tells the FE this is today's cached geo, not a fresh lookup
+            }
+        else:
+            response = geo_for_ip(ip)  # fail-soft: {} if ipinfo is slow/down
 
         LoginHistory.objects.create(
             user=user,
@@ -569,7 +606,7 @@ def login(request):
 
         # Return success response with the session token
         return Response({
-            'message': 'Login successful', 
+            'message': 'Login successful',
             'session_token': session_token,
             'user': {
                 'id': user.user_id,
@@ -594,8 +631,9 @@ def signup(request):
     full_name = request.data.get("full_name")
 
     ip = get_client_ip(request)
-    response = requests.get(f"https://ipinfo.io/{ip}/json")
-    response = response.json()
+    # Fail-soft geo lookup (signup is one-time per user, so no daily cache; the short timeout just
+    # prevents a slow/down ipinfo from hanging signup).
+    response = geo_for_ip(ip)
     country=response.get("country")
 
     try:
