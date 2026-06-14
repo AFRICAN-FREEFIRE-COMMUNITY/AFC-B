@@ -84,10 +84,29 @@ urlpatterns = [
     path("leaderboard-designs/by-id/<int:design_id>/logos/",
          views_leaderboard_design.design_logos,
          name="organizers_leaderboard_design_logos"),       # POST (add, multipart)
+    # Connected-column FIELDS (placed data columns) — owner 2026-06-14. by-id form, specific first.
+    path("leaderboard-designs/by-id/<int:design_id>/fields/<int:field_id>/",
+         views_leaderboard_design.design_field_item,
+         name="organizers_leaderboard_design_field_item"),  # PATCH (move/restyle) / DELETE
+    path("leaderboard-designs/by-id/<int:design_id>/fields/",
+         views_leaderboard_design.design_fields,
+         name="organizers_leaderboard_design_fields"),      # POST (add a connected column)
+    # Freeform TEXT elements.
+    path("leaderboard-designs/by-id/<int:design_id>/texts/<int:text_id>/",
+         views_leaderboard_design.design_text_item,
+         name="organizers_leaderboard_design_text_item"),   # PATCH / DELETE
+    path("leaderboard-designs/by-id/<int:design_id>/texts/",
+         views_leaderboard_design.design_texts,
+         name="organizers_leaderboard_design_texts"),       # POST (add freeform text)
     path("leaderboard-designs/by-id/<int:design_id>/", views_leaderboard_design.design_item,
          name="organizers_leaderboard_design_item"),       # PATCH / DELETE
     path("leaderboard-designs/", views_leaderboard_design.designs_collection,
          name="organizers_leaderboard_designs"),           # GET (?organization_id=) / POST
+    # Uploaded FONT library (TTF/OTF), org-scoped or AFC-native.
+    path("leaderboard-fonts/by-id/<int:font_id>/", views_leaderboard_design.font_item,
+         name="organizers_leaderboard_font_item"),         # DELETE
+    path("leaderboard-fonts/", views_leaderboard_design.fonts_collection,
+         name="organizers_leaderboard_fonts"),             # GET (?organization_id=) / POST (upload)
 
     # ───────────────────────── Organizer blacklist (feature "organizer-blacklist") ─────────────────────────
     # An organizer blacklists a team for a duration; the team AND its snapshotted players (even

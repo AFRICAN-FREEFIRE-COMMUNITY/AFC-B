@@ -98,6 +98,13 @@ def _aggregate_team_standings(stats_qs):
                     output_field=IntegerField(),
                 )
             ), 0),
+            # Point columns surfaced SEPARATELY so a leaderboard-design graphic can place a
+            # placement-points (PP) and a kill-points (KP) column independently of the total
+            # (owner 2026-06-14). effective_total stays the authoritative score below.
+            placement_sum=Coalesce(Sum("placement_points"), 0),
+            kill_sum=Coalesce(Sum("kill_points"), 0),
+            bonus_sum=Coalesce(Sum("bonus_points"), 0),
+            penalty_sum=Coalesce(Sum("penalty_points"), 0),
             effective_total=(
                 Coalesce(Sum("placement_points"), 0)
                 + Coalesce(Sum("kill_points"), 0)

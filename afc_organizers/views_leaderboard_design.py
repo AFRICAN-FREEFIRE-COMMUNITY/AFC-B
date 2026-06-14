@@ -24,16 +24,23 @@ ENDPOINTS (mounted under organizers/ via afc_organizers/urls.py)
 
 Consumed by: the organizer + admin "Leaderboard designs" page + the leaderboard export picker.
 """
+import json
+
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
 from afc_organizers.models import (
     Organization, OrganizationMember, OrgLeaderboardDesign, OrgLeaderboardDesignLogo,
+    OrgLeaderboardDesignField, OrgLeaderboardDesignText, OrgLeaderboardDesignFont,
 )
 from afc_organizers.permissions import org_can
 from afc.api_utils import authenticate as _authenticate
 from afc_organizers.permissions import member_or_403 as _member_or_403
+
+# Allowed values for placed fields (mirror the model choices so the API rejects junk early).
+FIELD_TYPES = {c[0] for c in OrgLeaderboardDesignField.FIELD_CHOICES}
+ALIGN_VALUES = {"left", "center", "right"}
 
 
 def _resolve_library(request, raw_org_id):
@@ -77,6 +84,45 @@ def _serialize_logo(logo, request=None):
     }
 
 
+def _serialize_font(f, request=None):
+    """An uploaded font library item: its (absolute) file URL + name."""
+    return {
+        "id": f.id,
+        "name": f.name,
+        "file": _abs_url(request, f.file),
+    }
+
+
+def _serialize_field(f, request=None):
+    """One placed/connected column: which stat it binds to + its position/style overrides."""
+    return {
+        "id": f.id,
+        "field_type": f.field_type,
+        "column_group": f.column_group,
+        "x_pct": f.x_pct,
+        "align": f.align,
+        "font_id": f.font_id,
+        "font_size_pct": f.font_size_pct,
+        "color": f.color,
+        "order": f.order,
+    }
+
+
+def _serialize_text(t, request=None):
+    """One freeform text element: content + position + style overrides."""
+    return {
+        "id": t.id,
+        "text": t.text,
+        "x_pct": t.x_pct,
+        "y_pct": t.y_pct,
+        "align": t.align,
+        "font_id": t.font_id,
+        "font_size_pct": t.font_size_pct,
+        "color": t.color,
+        "order": t.order,
+    }
+
+
 def _serialize_design(d, request=None):
     return {
         "id": d.id,
@@ -89,9 +135,53 @@ def _serialize_design(d, request=None):
         "show_subtitle": d.show_subtitle,
         "max_rows": d.max_rows,
         "is_default": d.is_default,
+        # Row tiling for each column group (the field-layout path). [] => legacy auto-table.
+        "column_groups": d.column_groups or [],
         # The positioned logos drawn on this design (drag-canvas editor reads x_pct/y_pct/size).
         "logos": [_serialize_logo(l, request) for l in d.logos.all()],
+        # The placed/connected data columns + freeform text elements (owner 2026-06-14).
+        "fields": [_serialize_field(f, request) for f in d.fields.all()],
+        "texts": [_serialize_text(t, request) for t in d.texts.all()],
         "created_at": d.created_at.isoformat() if d.created_at else None,
+    }
+
+
+def build_field_layout(design):
+    """Convert a design's placed fields + freeform texts + column groups into the `field_layout`
+    dict the renderer (afc_leaderboard.graphic.render_leaderboard_graphic) consumes, resolving each
+    element's font FK to a filesystem PATH. Returns None when the design has no fields placed, so
+    the renderer falls back to its legacy auto-table. Imported by the standalone + event graphic
+    endpoints; pass the result (plus the matching `rows`) to render_leaderboard_graphic."""
+    fields = list(design.fields.all())
+    if not fields:
+        return None
+
+    def _font_path(elem):
+        try:
+            return elem.font.file.path if (elem.font_id and elem.font and elem.font.file) else None
+        except Exception:
+            return None
+
+    return {
+        "column_groups": design.column_groups or [],
+        "fields": [{
+            "field_type": f.field_type,
+            "column_group": f.column_group,
+            "x_pct": f.x_pct,
+            "align": f.align,
+            "font_path": _font_path(f),
+            "font_size_pct": f.font_size_pct,
+            "color": f.color,
+        } for f in fields],
+        "texts": [{
+            "text": t.text,
+            "x_pct": t.x_pct,
+            "y_pct": t.y_pct,
+            "align": t.align,
+            "font_path": _font_path(t),
+            "font_size_pct": t.font_size_pct,
+            "color": t.color,
+        } for t in design.texts.all()],
     }
 
 
@@ -131,6 +221,17 @@ def _apply_fields(d, data):
             d.max_rows = max(1, min(50, int(data.get("max_rows"))))
         except (TypeError, ValueError):
             pass
+    # Column-group row tiling (field-layout path). Arrives as a JSON string over multipart or a
+    # list over JSON. A malformed value is ignored (keeps the existing groups).
+    if "column_groups" in data:
+        raw = data.get("column_groups")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = None
+        if isinstance(raw, list):
+            d.column_groups = raw
 
 
 def _unset_other_defaults(org, keep_id):
@@ -146,7 +247,7 @@ def _library_qs(org):
     Prefetches `logos` so _serialize_design does not N+1 over each design's positioned logos."""
     base = (OrgLeaderboardDesign.objects.filter(organization__isnull=True)
             if org is None else OrgLeaderboardDesign.objects.filter(organization=org))
-    return base.prefetch_related("logos")
+    return base.prefetch_related("logos", "fields", "texts")
 
 
 @api_view(["GET", "POST"])
@@ -215,7 +316,7 @@ def design_item(request, design_id):
         return err
     try:
         d = (OrgLeaderboardDesign.objects.select_related("organization")
-             .prefetch_related("logos").get(id=design_id))
+             .prefetch_related("logos", "fields", "texts").get(id=design_id))
     except OrgLeaderboardDesign.DoesNotExist:
         return Response({"message": "Design not found."}, status=status.HTTP_404_NOT_FOUND)
     if not _can_write_design(user, d):
@@ -328,3 +429,222 @@ def design_logo_item(request, design_id, logo_id):
             logo.size = size
     logo.save()
     return Response({"logo": _serialize_logo(logo, request)})
+
+
+# ───────────── Connected-column FIELDS (placed data columns on a design) ─────────────
+# Each field binds to a real standings stat and is drawn at x_pct for every row of its column
+# group. The connected-columns palette + drag canvas in LeaderboardDesignsManager manage these.
+
+def _resolve_font_for(design, font_id):
+    """Resolve a font id to a font that belongs to the SAME library as `design` (same org, or both
+    AFC-native). Returns the font, or None (clear / not found / wrong library). Keeps a design from
+    referencing another org's font."""
+    if font_id in (None, "", "null", 0, "0"):
+        return None
+    f = OrgLeaderboardDesignFont.objects.filter(id=font_id).first()
+    if f and f.organization_id == design.organization_id:
+        return f
+    return None
+
+
+def _apply_field_attrs(f, data, design):
+    """Copy editable field attributes from request data (used by create + patch). field_type is set
+    by the caller on create only (it is the binding and never changes after)."""
+    if "column_group" in data:
+        try:
+            f.column_group = max(0, int(data.get("column_group")))
+        except (TypeError, ValueError):
+            pass
+    if "x_pct" in data:
+        f.x_pct = _clamp_pct(data.get("x_pct"), f.x_pct)
+    if "align" in data:
+        a = (data.get("align") or "").lower()
+        if a in ALIGN_VALUES:
+            f.align = a
+    if "font_id" in data:
+        f.font = _resolve_font_for(design, data.get("font_id"))
+    if "font_size_pct" in data:
+        raw = data.get("font_size_pct")
+        try:
+            f.font_size_pct = float(raw) if raw not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            f.font_size_pct = None
+    if "color" in data:
+        f.color = (data.get("color") or "").strip()
+    if "order" in data:
+        try:
+            f.order = max(0, int(data.get("order")))
+        except (TypeError, ValueError):
+            pass
+
+
+@api_view(["POST"])
+def design_fields(request, design_id):
+    """POST organizers/leaderboard-designs/by-id/<design_id>/fields/ — add a connected column.
+    Body: field_type (required, must be a known stat) + column_group + x_pct + align + font_id? +
+    font_size_pct? + color?. Returns {field}."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+    ft = (request.data.get("field_type") or "").strip()
+    if ft not in FIELD_TYPES:
+        return Response({"message": "Unknown field type."}, status=status.HTTP_400_BAD_REQUEST)
+    f = OrgLeaderboardDesignField(design=d, field_type=ft, x_pct=_clamp_pct(request.data.get("x_pct"), 10.0))
+    _apply_field_attrs(f, request.data, d)
+    f.save()
+    return Response({"field": _serialize_field(f, request)}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["PATCH", "DELETE"])
+def design_field_item(request, design_id, field_id):
+    """PATCH .../fields/<field_id>/ — reposition/restyle a column. DELETE — remove it."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+    f = OrgLeaderboardDesignField.objects.filter(design=d, id=field_id).first()
+    if not f:
+        return Response({"message": "Field not found."}, status=status.HTTP_404_NOT_FOUND)
+    if request.method == "DELETE":
+        f.delete()
+        return Response({"message": "Field removed."})
+    _apply_field_attrs(f, request.data, d)
+    f.save()
+    return Response({"field": _serialize_field(f, request)})
+
+
+# ───────────── Freeform TEXT elements ─────────────
+
+def _apply_text_attrs(t, data, design):
+    if "text" in data:
+        t.text = (data.get("text") or "")[:200]
+    if "x_pct" in data:
+        t.x_pct = _clamp_pct(data.get("x_pct"), t.x_pct)
+    if "y_pct" in data:
+        t.y_pct = _clamp_pct(data.get("y_pct"), t.y_pct)
+    if "align" in data:
+        a = (data.get("align") or "").lower()
+        if a in ALIGN_VALUES:
+            t.align = a
+    if "font_id" in data:
+        t.font = _resolve_font_for(design, data.get("font_id"))
+    if "font_size_pct" in data:
+        raw = data.get("font_size_pct")
+        try:
+            t.font_size_pct = float(raw) if raw not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            t.font_size_pct = None
+    if "color" in data:
+        t.color = (data.get("color") or "").strip() or "#FFFFFF"
+    if "order" in data:
+        try:
+            t.order = max(0, int(data.get("order")))
+        except (TypeError, ValueError):
+            pass
+
+
+@api_view(["POST"])
+def design_texts(request, design_id):
+    """POST .../by-id/<design_id>/texts/ — add a freeform text element. Body: text + x_pct + y_pct
+    + align + font_id? + font_size_pct? + color?."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+    t = OrgLeaderboardDesignText(design=d, text=(request.data.get("text") or "")[:200] or "Text")
+    _apply_text_attrs(t, request.data, d)
+    t.save()
+    return Response({"text": _serialize_text(t, request)}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["PATCH", "DELETE"])
+def design_text_item(request, design_id, text_id):
+    """PATCH .../texts/<text_id>/ — edit a freeform text. DELETE — remove it."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+    t = OrgLeaderboardDesignText.objects.filter(design=d, id=text_id).first()
+    if not t:
+        return Response({"message": "Text not found."}, status=status.HTTP_404_NOT_FOUND)
+    if request.method == "DELETE":
+        t.delete()
+        return Response({"message": "Text removed."})
+    _apply_text_attrs(t, request.data, d)
+    t.save()
+    return Response({"text": _serialize_text(t, request)})
+
+
+# ───────────── FONT library (uploaded TTF/OTF, org-scoped or AFC-native) ─────────────
+FONT_EXTS = (".ttf", ".otf")
+
+
+@api_view(["GET", "POST"])
+def fonts_collection(request):
+    """GET organizers/leaderboard-fonts/?organization_id=<id?> — list a font library.
+    POST — upload a font (multipart: file + name?). org id absent = AFC-native library. Read floor
+    = org member or AFC admin (mirrors designs); write = can_submit_designs / AFC admin."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    request._afc_user = user
+    if request.method == "GET":
+        org, can_write, err = _resolve_library(request, request.query_params.get("organization_id"))
+        if err:
+            return err
+        if org is None:
+            if user.role != "admin":
+                return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
+        elif user.role != "admin" and not _member_or_403(user, org):
+            return Response({"message": "You do not have access to this organization."},
+                            status=status.HTTP_403_FORBIDDEN)
+        qs = (OrgLeaderboardDesignFont.objects.filter(organization__isnull=True)
+              if org is None else OrgLeaderboardDesignFont.objects.filter(organization=org))
+        rows = [_serialize_font(f, request) for f in qs]
+        return Response({"results": rows, "total_count": len(rows)})
+
+    # POST = upload
+    org, can_write, err = _resolve_library(request, request.data.get("organization_id"))
+    if err:
+        return err
+    if not can_write:
+        return Response({"message": "You do not have permission to manage these fonts."},
+                        status=status.HTTP_403_FORBIDDEN)
+    upload = request.FILES.get("file")
+    if not upload:
+        return Response({"message": "A font file is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not upload.name.lower().endswith(FONT_EXTS):
+        return Response({"message": "Only .ttf or .otf font files are allowed."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    name = (request.data.get("name") or "").strip() or upload.name.rsplit(".", 1)[0][:80]
+    f = OrgLeaderboardDesignFont.objects.create(
+        organization=org, name=name, file=upload, created_by=user)
+    return Response({"font": _serialize_font(f, request)}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["DELETE"])
+def font_item(request, font_id):
+    """DELETE organizers/leaderboard-fonts/by-id/<font_id>/ — remove an uploaded font. Fields/texts
+    referencing it fall back to the default font (FK is SET_NULL). Gated like its library."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    f = OrgLeaderboardDesignFont.objects.select_related("organization").filter(id=font_id).first()
+    if not f:
+        return Response({"message": "Font not found."}, status=status.HTTP_404_NOT_FOUND)
+    can_write = (user.role == "admin") if f.organization_id is None else org_can(
+        user, "can_submit_designs", f.organization)
+    if not can_write:
+        return Response({"message": "You do not have permission to manage this font."},
+                        status=status.HTTP_403_FORBIDDEN)
+    f.delete()
+    return Response({"message": "Font removed."})

@@ -26,6 +26,35 @@ DEFAULT_TEXT = "#FFFFFF"
 # logo and small sponsor logos coexist on one design.
 LOGO_SIZE_FRAC = {"small": 0.07, "medium": 0.11, "large": 0.16}
 
+# Default sizes for the FIELD-LAYOUT path (owner 2026-06-14), as a fraction of canvas HEIGHT,
+# used when a field/text has no explicit font_size_pct. A field row (~3.6% of H) reads cleanly in
+# a standings box; freeform text defaults larger (~5%). Both are overridable per element.
+FIELD_SIZE_FRAC = 0.036
+TEXT_SIZE_FRAC = 0.05
+
+# Cache loaded truetype fonts by (path, size) so a 16-row x 6-field render does not re-open the
+# same .ttf 96 times.
+_FONT_CACHE = {}
+
+
+def _load_font(path, size):
+    """A truetype font from an uploaded font file at `size` px, cached. Falls back to the built-in
+    scalable font (_font) when no path is given or the file cannot be read (so a missing/broken
+    custom font never breaks a render)."""
+    size = max(8, int(size))
+    if not path:
+        return _font(size)
+    key = (path, size)
+    cached = _FONT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        f = ImageFont.truetype(path, size)
+    except Exception:
+        f = _font(size)
+    _FONT_CACHE[key] = f
+    return f
+
 
 def _font(size):
     """A scalable font at `size`. Pillow >= 10.1 ships a scalable DejaVu Sans through
@@ -102,10 +131,114 @@ def _fit_font(draw, text, base_size, max_w):
     return _font(floor)
 
 
+def _anchor_x(align):
+    """Map an alignment to a Pillow text anchor X char: left=l, center=m, right=r (paired with
+    'm' for vertical-middle => 'lm'/'mm'/'rm'). Lets a placed field/text be anchored at its x_pct."""
+    return {"left": "l", "right": "r"}.get(align, "m")
+
+
+def _elem_color(elem, default_rgb):
+    """A field/text's colour: its own hex when set, else the design default (already an rgb tuple)."""
+    raw = (elem.get("color") or "").strip()
+    return _hex(raw, "#FFFFFF") if raw else default_rgb
+
+
+def _elem_size_px(elem, H, frac):
+    """A field/text's pixel size: font_size_pct (% of canvas H) when set, else `frac` of H."""
+    pct = elem.get("font_size_pct")
+    try:
+        pct = float(pct)
+    except (TypeError, ValueError):
+        pct = frac * 100.0
+    return max(8, int(pct / 100.0 * H))
+
+
+def _paste_row_logo(base, path, cx, cy, H, edge_px):
+    """Paste a team logo centred at (cx, cy), longest edge `edge_px`. Silent no-op on a bad path."""
+    if not path:
+        return
+    try:
+        limg = Image.open(path).convert("RGBA")
+    except Exception:
+        return
+    limg.thumbnail((edge_px, edge_px), Image.LANCZOS)
+    base.paste(limg, (cx - limg.width // 2, cy - limg.height // 2), limg)
+
+
+def _render_fields(base, field_layout, rows, W, H, default_rgb):
+    """FIELD-LAYOUT path: tile the standings `rows` down per column group and draw each placed
+    field at its x_pct. `rows` is a list of dicts keyed by field_type (pos/team_name/team_logo/
+    booyah/placement_points/kill_points/total_points/rush_points/kills/matches/base_total/bonus/
+    penalty); team_logo carries a filesystem path. Y for row i of group g comes from the group's
+    row_start_pct + i*row_height_pct."""
+    draw = ImageDraw.Draw(base)
+    groups = field_layout.get("column_groups") or [
+        {"row_start_pct": 33.0, "row_height_pct": 7.0, "row_count": len(rows), "start_rank": 1}
+    ]
+    fields = field_layout.get("fields") or []
+    for gi, cg in enumerate(groups):
+        rs = float(cg.get("row_start_pct", 33.0))
+        rh = float(cg.get("row_height_pct", 7.0))
+        rc = int(cg.get("row_count", len(rows)) or 0)
+        start = int(cg.get("start_rank", 1) or 1)
+        gfields = [f for f in fields if int(f.get("column_group", 0) or 0) == gi]
+        for i in range(rc):
+            ridx = start - 1 + i
+            if ridx < 0 or ridx >= len(rows):
+                continue
+            r = rows[ridx]
+            y = int((rs + i * rh) / 100.0 * H)
+            for f in gfields:
+                x = int(float(f.get("x_pct", 10.0)) / 100.0 * W)
+                ft = f.get("field_type")
+                if ft == "team_logo":
+                    _paste_row_logo(base, r.get("team_logo"), x, y, H, _elem_size_px(f, H, 0.06))
+                    continue
+                val = r.get(ft)
+                if val is None or val == "":
+                    continue
+                font = _load_font(f.get("font_path"), _elem_size_px(f, H, FIELD_SIZE_FRAC))
+                draw.text((x, y), str(val), font=font, fill=_elem_color(f, default_rgb),
+                          anchor=_anchor_x(f.get("align", "center")) + "m")
+
+
+def _render_texts(base, texts, W, H, default_rgb):
+    """Draw each FREEFORM text element once at (x_pct, y_pct) with its own font/size/colour/align."""
+    draw = ImageDraw.Draw(base)
+    for t in (texts or []):
+        content = (t.get("text") or "").strip()
+        if not content:
+            continue
+        x = int(float(t.get("x_pct", 50.0)) / 100.0 * W)
+        y = int(float(t.get("y_pct", 15.0)) / 100.0 * H)
+        font = _load_font(t.get("font_path"), _elem_size_px(t, H, TEXT_SIZE_FRAC))
+        draw.text((x, y), content, font=font, fill=_elem_color(t, default_rgb),
+                  anchor=_anchor_x(t.get("align", "center")) + "m")
+
+
+def _paste_logos(base, logos, W, H):
+    """Paste positioned logos centred at (x_pct% W, y_pct% H), longest edge = LOGO_SIZE_FRAC[size]
+    of canvas height. Shared by the field-layout path (the legacy path keeps its own inline loop)."""
+    for spec in (logos or []):
+        try:
+            limg = Image.open(spec["path"]).convert("RGBA")
+        except Exception:
+            continue
+        frac = LOGO_SIZE_FRAC.get((spec.get("size") or "medium"), LOGO_SIZE_FRAC["medium"])
+        edge = max(1, int(H * frac))
+        limg.thumbnail((edge, edge), Image.LANCZOS)
+        cx = int((spec.get("x_pct", 10.0) / 100.0) * W)
+        cy = int((spec.get("y_pct", 10.0) / 100.0) * H)
+        px = max(0, min(W - limg.width, cx - limg.width // 2))
+        py = max(0, min(H - limg.height, cy - limg.height // 2))
+        base.paste(limg, (px, py), limg)
+
+
 def render_leaderboard_graphic(standings, *, size="instagram", background_path=None,
                                logo_path=None, logos=None, title="", subtitle="",
                                text_color=DEFAULT_TEXT, accent_color=DEFAULT_ACCENT,
-                               max_rows=16, show_title=True, show_subtitle=True):
+                               max_rows=16, show_title=True, show_subtitle=True,
+                               field_layout=None, rows=None):
     """Composite `standings` (the standalone_standings list) onto a branded canvas and return
     PNG bytes.
 
@@ -136,6 +269,20 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
             base = Image.new("RGB", canvas_size, DEFAULT_BG)
     else:
         base = Image.new("RGB", canvas_size, DEFAULT_BG)
+    # FIELD-LAYOUT path (owner 2026-06-14): when the design places its own data fields, the design
+    # IS the full graphic (e.g. the Dynasty board with its own headers/boxes). We do NOT apply the
+    # scrim or draw the built-in title/table; we just fill the placed fields + freeform texts +
+    # positioned logos, then return. The legacy auto-table path runs only when no fields are placed.
+    use_field_layout = bool(field_layout and field_layout.get("fields"))
+    if use_field_layout:
+        _render_fields(base, field_layout, rows or [], W, H, text_rgb)
+        _paste_logos(base, logos, W, H)            # positioned logos on top of the data
+        _render_texts(base, field_layout.get("texts") or [], W, H, text_rgb)  # freeform on very top
+        buf = io.BytesIO()
+        base.save(buf, format="PNG")
+        buf.seek(0)
+        return buf.getvalue()
+
     # A subtle dark scrim over the lower 2/3 keeps standings text legible on any background.
     scrim = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
     sd = ImageDraw.Draw(scrim)

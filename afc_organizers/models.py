@@ -177,6 +177,16 @@ class OrgLeaderboardDesign(models.Model):
     show_title = models.BooleanField(default=True)
     show_subtitle = models.BooleanField(default=True)
     max_rows = models.PositiveSmallIntegerField(default=16)
+    # ── Positionable-field layout (owner 2026-06-14) ──
+    # When a design places its OWN data fields (OrgLeaderboardDesignField below) the renderer
+    # uses a FIELD-LAYOUT path instead of the built-in 4-column table: it tiles standings rows
+    # down per COLUMN GROUP and draws each placed field at its x_pct. `column_groups` holds the
+    # row geometry for each group, e.g. the Dynasty board's two side-by-side 8-row columns:
+    #   [{"row_start_pct":33,"row_height_pct":6.85,"row_count":8,"start_rank":1},
+    #    {"row_start_pct":33,"row_height_pct":6.85,"row_count":8,"start_rank":9}]
+    # An EMPTY list (no fields placed) => the legacy auto-table render (backward compatible).
+    # A field's `column_group` indexes into this list. Consumed by afc_leaderboard.graphic.
+    column_groups = models.JSONField(default=list, blank=True)
     is_default = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
@@ -223,6 +233,110 @@ class OrgLeaderboardDesignLogo(models.Model):
 
     def __str__(self):
         return f"OrgLeaderboardDesignLogo(design={self.design_id}, {self.x_pct},{self.y_pct})"
+
+
+class OrgLeaderboardDesignFont(models.Model):
+    """An uploaded custom font (TTF/OTF) an org (or AFC) can use across its designs (owner
+    2026-06-14). A reusable LIBRARY item, like the design library: null organization = AFC-native.
+    A design's fields/texts reference a font by FK; null FK on a field/text means the renderer's
+    built-in font. The renderer (afc_leaderboard.graphic) loads the file via ImageFont.truetype.
+
+    Managed via the font sub-endpoints on afc_organizers.views_leaderboard_design
+    (GET/POST organizers/leaderboard-fonts/, DELETE .../by-id/<font_id>/); the FONT PICKER in the
+    LeaderboardDesignsManager editor consumes the list."""
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="leaderboard_fonts",
+        null=True, blank=True,
+    )
+    name = models.CharField(max_length=80)
+    # .ttf / .otf only (validated in the upload endpoint). Pillow reads either via truetype().
+    file = models.FileField(upload_to="org_leaderboard_fonts/")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="leaderboard_fonts_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"OrgLeaderboardDesignFont({self.organization_id}: {self.name})"
+
+
+class OrgLeaderboardDesignField(models.Model):
+    """One DESIGNER-PLACED data column on a design (owner 2026-06-14). Each field BINDS to a real
+    standings stat (`field_type`) and is drawn at `x_pct` for every row of its `column_group`
+    (the group supplies the row Y tiling via OrgLeaderboardDesign.column_groups). So the org/admin
+    decides exactly where POS / TEAM NAME / BOOYAH / placement / kill / total / rush / etc. sit on
+    the design. team_logo is special: the renderer pastes the team's logo image instead of text.
+
+    A design with >=1 field switches the renderer to its FIELD-LAYOUT path (the built-in table is
+    skipped). Managed via the field sub-endpoints (POST .../by-id/<design_id>/fields/,
+    PATCH/DELETE .../fields/<field_id>/); the connected-columns palette + drag canvas in
+    LeaderboardDesignsManager consumes them. Values come from the standings the export endpoint
+    builds (standalone or event group)."""
+    FIELD_CHOICES = [
+        ("pos", "Position"), ("team_name", "Team name"), ("team_logo", "Team logo"),
+        ("booyah", "Booyah"), ("placement_points", "Placement points"),
+        ("kill_points", "Kill points"), ("total_points", "Total points"),
+        ("rush_points", "Rush points"), ("kills", "Kills (raw)"), ("matches", "Matches played"),
+        ("base_total", "Base total (pre-rush)"), ("bonus", "Bonus"), ("penalty", "Penalty"),
+    ]
+    ALIGN_CHOICES = [("left", "Left"), ("center", "Center"), ("right", "Right")]
+
+    design = models.ForeignKey(
+        OrgLeaderboardDesign, on_delete=models.CASCADE, related_name="fields")
+    field_type = models.CharField(max_length=24, choices=FIELD_CHOICES)
+    # Index into design.column_groups (0 = first/left group, 1 = second/right group, ...).
+    column_group = models.PositiveSmallIntegerField(default=0)
+    # Centre X as a percent of canvas width (0..100). Y is supplied per-row by the column group.
+    x_pct = models.FloatField(default=10.0)
+    align = models.CharField(max_length=6, choices=ALIGN_CHOICES, default="center")
+    # Optional per-field overrides: a custom font, a size as a percent of canvas HEIGHT, and a hex
+    # colour. Null/blank => the renderer default (built-in font, default row size, design.text_color).
+    font = models.ForeignKey(
+        OrgLeaderboardDesignFont, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="used_by_fields",
+    )
+    font_size_pct = models.FloatField(null=True, blank=True)
+    color = models.CharField(max_length=9, blank=True, default="")
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["column_group", "order", "id"]
+
+    def __str__(self):
+        return f"OrgLeaderboardDesignField(design={self.design_id}, {self.field_type}@{self.x_pct})"
+
+
+class OrgLeaderboardDesignText(models.Model):
+    """A FREEFORM text element placed anywhere on a design (owner 2026-06-14): static copy (a
+    caption, a date, a hashtag) with its own position, font, size and colour. Unlike a field it
+    binds to NO stat and does not tile per row; it is drawn once at (x_pct, y_pct). Managed via the
+    text sub-endpoints (POST .../by-id/<design_id>/texts/, PATCH/DELETE .../texts/<text_id>/);
+    consumed by the editor's freeform-text tool + drawn by afc_leaderboard.graphic on top."""
+    ALIGN_CHOICES = [("left", "Left"), ("center", "Center"), ("right", "Right")]
+
+    design = models.ForeignKey(
+        OrgLeaderboardDesign, on_delete=models.CASCADE, related_name="texts")
+    text = models.CharField(max_length=200)
+    x_pct = models.FloatField(default=50.0)
+    y_pct = models.FloatField(default=15.0)
+    align = models.CharField(max_length=6, choices=ALIGN_CHOICES, default="center")
+    font = models.ForeignKey(
+        OrgLeaderboardDesignFont, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="used_by_texts",
+    )
+    font_size_pct = models.FloatField(null=True, blank=True)  # % of canvas height; null => ~3%
+    color = models.CharField(max_length=9, blank=True, default="#FFFFFF")
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return f"OrgLeaderboardDesignText(design={self.design_id}, {self.text[:20]!r})"
 
 
 # ════════ Phase 4 — reports, ratings & comments ════════

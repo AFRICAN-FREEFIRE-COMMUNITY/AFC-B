@@ -586,10 +586,12 @@ def leaderboard_graphic(request, lb_id):
 
     # Resolve the design from the leaderboard's library (org-scoped, or AFC-native org=null).
     from afc_organizers.models import OrgLeaderboardDesign
+    _pf = ("logos", "fields", "fields__font", "texts", "texts__font")
     if lb.organization_id is None:
-        lib = OrgLeaderboardDesign.objects.filter(organization__isnull=True)
+        lib = OrgLeaderboardDesign.objects.filter(organization__isnull=True).prefetch_related(*_pf)
     else:
-        lib = OrgLeaderboardDesign.objects.filter(organization_id=lb.organization_id)
+        lib = OrgLeaderboardDesign.objects.filter(
+            organization_id=lb.organization_id).prefetch_related(*_pf)
     design = None
     design_id = request.GET.get("design_id")
     # Validate before filtering: id is an integer PK, so a non-numeric ?design_id=abc would raise a
@@ -635,9 +637,23 @@ def leaderboard_graphic(request, lb_id):
     title = (request.GET.get("title") or lb.name or "").strip()
     subtitle = (request.GET.get("subtitle") or "").strip()
 
+    # Standings for both render paths: the legacy auto-table reads the standalone_standings list;
+    # the field-layout path (when the design places its own columns) reads per-row dicts keyed by
+    # field_type. A standalone leaderboard only tracks rank/name/total/kills, so booyah/PP/KP/rush
+    # columns (if placed) render empty here — those stats only exist on EVENT stage standings.
+    std = standalone_standings(lb)
+    rows = [{
+        "pos": i + 1,
+        "team_name": (r.get("participant", {}) or {}).get("name") or "-",
+        "total_points": r.get("total_points", 0),
+        "kills": r.get("kills", 0),
+    } for i, r in enumerate(std)]
+    from afc_organizers.views_leaderboard_design import build_field_layout
+    field_layout = build_field_layout(design) if design else None
+
     from .graphic import render_leaderboard_graphic
     png = render_leaderboard_graphic(
-        standalone_standings(lb),
+        std,
         size=size,
         background_path=bg_path,
         logo_path=logo_path,
@@ -649,6 +665,8 @@ def leaderboard_graphic(request, lb_id):
         max_rows=(design.max_rows if design else 16),
         show_title=(design.show_title if design else True),
         show_subtitle=(design.show_subtitle if design else True),
+        field_layout=field_layout,
+        rows=rows,
     )
 
     from django.http import HttpResponse
