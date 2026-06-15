@@ -3448,6 +3448,11 @@ def get_event_details(request):
         "end_date": event.end_date,
         "registration_open_date": event.registration_open_date,
         "registration_end_date": event.registration_end_date,
+        # Roster-edit window (owner 2026-06-15): the team-facing UI uses these to show whether
+        # captains may currently edit their roster (and until when). roster_edit_open auto-derives
+        # from roster_edit_until vs now (see Event.roster_edit_open / set_roster_edit_window).
+        "roster_edit_until": event.roster_edit_until,
+        "roster_edit_open": event.roster_edit_open,
         "prizepool": event.prizepool,
         "prize_distribution": event.prize_distribution,
         # Paid registration (feature "paid-events"): the event page decides free vs paid + fee.
@@ -4098,6 +4103,11 @@ def get_event_details_not_logged_in(request):
         "end_date": event.end_date,
         "registration_open_date": event.registration_open_date,
         "registration_end_date": event.registration_end_date,
+        # Roster-edit window (owner 2026-06-15): the team-facing UI uses these to show whether
+        # captains may currently edit their roster (and until when). roster_edit_open auto-derives
+        # from roster_edit_until vs now (see Event.roster_edit_open / set_roster_edit_window).
+        "roster_edit_until": event.roster_edit_until,
+        "roster_edit_open": event.roster_edit_open,
         "prizepool": event.prizepool,
         "prize_distribution": event.prize_distribution,
         # Paid registration (feature "paid-events"): the event page decides free vs paid + fee.
@@ -8082,6 +8092,11 @@ def get_event_details_for_admin(request):
         "overview": {
             "event_id": event.event_id,
             "event_name": event.event_name,
+            # Roster-edit window (owner 2026-06-15): drives the admin event-manage toggle in
+            # ActionsTab (current state + "open until"). roster_edit_open auto-derives from
+            # roster_edit_until vs now. Set via POST /events/roster-edit-window/.
+            "roster_edit_until": event.roster_edit_until,
+            "roster_edit_open": event.roster_edit_open,
             "total_registered": total_registered,
             "max_competitors": max_competitors,
             "registration_percentage": registration_percentage,
