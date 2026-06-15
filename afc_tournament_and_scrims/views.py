@@ -13776,6 +13776,25 @@ def enter_team_match_result_manual(request):
     if len(set(placements)) != len(placements):
         return Response({"message": "Placements must be unique among played teams."}, status=400)
 
+    # ---------------- PLAYED-PLAYER VALIDATION (must run BEFORE the destructive write) ----------------
+    # Squad rules cap a match at 4 PLAYED players per team. Validate here, ahead of the transaction:
+    # the block below deletes the match's existing stats first, and an early `return` inside
+    # transaction.atomic() does NOT roll back (atomic only rolls back on a raised exception). Returning
+    # a 400 from inside after the delete would COMMIT the delete and WIPE the saved results. Validating
+    # up front leaves a rejected re-entry's data untouched. (data-loss bug fix 2026-06-15)
+    for team_item in results_payload:
+        if not bool(team_item.get("played", True)):
+            continue
+        players = team_item.get("players") or []
+        if not isinstance(players, list):
+            players = []
+        played_players = [p for p in players if p.get("played", True)]
+        if len(played_players) > 4:
+            return Response(
+                {"message": f"Team {team_item.get('tournament_team_id')}: max 4 played players allowed."},
+                status=400,
+            )
+
     with transaction.atomic():
 
         # Safe re-entry
@@ -13802,13 +13821,8 @@ def enter_team_match_result_manual(request):
                 for p in players:
                     p["played"] = False
 
+            # Max-4-played already validated above (before the delete), so no early return here.
             played_players = [p for p in players if p.get("played", True)]
-
-            if len(played_players) > 4:
-                return Response(
-                    {"message": f"Team {tid}: max 4 played players allowed."},
-                    status=400
-                )
 
             total_kills = sum(int(p.get("kills") or 0) for p in played_players)
             total_damage = sum(int(p.get("damage") or 0) for p in played_players)
@@ -14461,6 +14475,27 @@ def edit_match_result(request):
     if len(set(placements)) != len(placements):
         return Response({"message": "Placements must be unique among played teams."}, status=400)
 
+    # ---------------- PLAYED-PLAYER VALIDATION (must run BEFORE the destructive write) ----------------
+    # Squad rules cap a match at 4 PLAYED players per team. This check MUST happen here, ahead of the
+    # transaction below, NOT inside it: the transaction deletes the match's existing stats first, and
+    # an early `return` inside transaction.atomic() does NOT roll back (atomic only rolls back when an
+    # exception propagates out of the block). Returning a 400 from inside after the delete would COMMIT
+    # the delete and WIPE the match's saved results - exactly the "everything cleared" data loss admins
+    # hit when a re-save was rejected. Validating up front leaves a rejected save's data untouched.
+    # (data-loss bug fix 2026-06-15)
+    for team_item in results_payload:
+        if not bool(team_item.get("played", True)):
+            continue  # a team marked not-played contributes no played players
+        players = team_item.get("players") or []
+        if not isinstance(players, list):
+            players = []
+        played_players = [p for p in players if p.get("played", True)]
+        if len(played_players) > 4:
+            return Response(
+                {"message": f"Team {team_item.get('tournament_team_id')}: max 4 played players allowed."},
+                status=400,
+            )
+
     # ---------------- TRANSACTION ----------------
     with transaction.atomic():
 
@@ -14491,13 +14526,9 @@ def edit_match_result(request):
                 for p in players:
                     p["played"] = False
 
+            # Max-4-played is already validated above (before the delete) so there is no early
+            # return in this transaction body — keeping the delete + recreate atomic and safe.
             played_players = [p for p in players if p.get("played", True)]
-
-            if len(played_players) > 4:
-                return Response(
-                    {"message": f"Team {tid}: max 4 played players allowed."},
-                    status=400
-                )
 
             total_kills = sum(int(p.get("kills") or 0) for p in played_players)
             total_damage = sum(int(p.get("damage") or 0) for p in played_players)
