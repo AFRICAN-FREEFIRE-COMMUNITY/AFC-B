@@ -3720,6 +3720,9 @@ def get_event_details(request):
             groups_payload.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
+                # Manual display order (reorder feature): echoed so the edit form re-submits it and a
+                # plain Save does NOT reset the dragged order back to auto-by-date. (bug fix 2026-06-15)
+                "group_order": group.group_order,
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,
@@ -3744,6 +3747,9 @@ def get_event_details(request):
         stages_payload.append({
             "stage_id": stage.stage_id,
             "stage_name": stage.stage_name,
+            # Manual display order (reorder feature): echoed so the edit form re-submits it and a
+            # plain Save does NOT reset the dragged order back to auto-by-date. (bug fix 2026-06-15)
+            "stage_order": stage.stage_order,
             "start_date": stage.start_date,
             "end_date": stage.end_date,
             "prizepool": stage.prizepool,
@@ -8029,6 +8035,10 @@ def get_event_details_for_admin(request):
             group_details.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
+                # Manual display order: the admin event-edit FORM loads stages/groups from THIS
+                # endpoint, so it must echo group_order or a plain Save resets the dragged order to
+                # auto-by-date. (stage-reorder revert bug fix 2026-06-15)
+                "group_order": group.group_order,
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,
@@ -8051,6 +8061,10 @@ def get_event_details_for_admin(request):
         stages_data.append({
             "stage_id": stage.stage_id,
             "stage_name": stage.stage_name,
+            # Manual display order: the admin event-edit FORM loads stages from THIS endpoint, so it
+            # must echo stage_order or a plain Save resets the dragged order to auto-by-date.
+            # (stage-reorder revert bug fix 2026-06-15)
+            "stage_order": stage.stage_order,
             "start_date": stage.start_date,
             "end_date": stage.end_date,
             "number_of_groups": stage.number_of_groups,
