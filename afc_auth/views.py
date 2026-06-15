@@ -1717,6 +1717,51 @@ def delete_news(request):
 
     return Response({"message": "News deleted successfully."}, status=status.HTTP_200_OK)
 
+
+def _has_active_event_registration(user) -> bool:
+    """
+    True when `user` is currently signed up for an event that has NOT finished yet
+    (event_status "upcoming" or "ongoing", and not a draft).
+
+    Used to LOCK the two identity fields — in-game name (User.username) and UID (User.uid) — on the
+    profile while a player is committed to a live event, so the link between the player and their
+    match results / leaderboard rows stays stable for the duration of the event. The lock RELEASES
+    once all their events are completed, so a player can still fix a typo between tournaments
+    (owner decision 2026-06-15: "while in an active event").
+
+    Both registration paths count:
+      - team registration: TournamentTeamMember -> TournamentTeam.event
+      - solo registration: RegisteredCompetitors.event
+    Cancelled-type statuses do NOT lock (a rejected/withdrawn/left/disqualified entry is not a live
+    commitment).
+
+    Consumers:
+      - edit_profile (POST /auth/edit-profile/): server-side write guard — rejects a change to
+        username/uid while this is True.
+      - get_user_profile (GET /auth/get-user-profile/): returns it as `identity_locked` so the
+        frontend profile-edit form (app/(user)/profile/edit/page.tsx) disables + explains the two
+        fields. AuthContext maps it onto User.identity_locked.
+    """
+    LIVE_STATUSES = ["upcoming", "ongoing"]
+
+    # Team path: a non-rejected membership whose team's event is still live.
+    if (TournamentTeamMember.objects
+            .filter(user=user,
+                    tournament_team__event__event_status__in=LIVE_STATUSES,
+                    tournament_team__event__is_draft=False)
+            .exclude(status="rejected")
+            .exists()):
+        return True
+
+    # Solo path: a still-participating registration in a live event.
+    return (RegisteredCompetitors.objects
+            .filter(user=user,
+                    event__event_status__in=LIVE_STATUSES,
+                    event__is_draft=False)
+            .exclude(status__in=["rejected", "withdrawn", "left", "disqualified"])
+            .exists())
+
+
 @api_view(["POST"])
 def edit_profile(request):
     # Retrieve session token
@@ -1748,6 +1793,23 @@ def edit_profile(request):
     # Validate required fields
     if not all([full_name, in_game_name, email]):
         return Response({"message": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # IDENTITY LOCK (owner 2026-06-15): a player committed to a LIVE event (upcoming/ongoing) cannot
+    # change their in-game name or UID — those identify them for match-result / leaderboard
+    # attribution while the event runs. Everything else (name, email, language, picture) stays
+    # editable. The lock releases once all their events are completed (see
+    # _has_active_event_registration). get_user_profile returns `identity_locked` so the frontend
+    # disables + explains these two inputs; this is the authoritative server-side enforcement.
+    if _has_active_event_registration(user):
+        new_ign = (in_game_name or "").strip()
+        cur_ign = (user.username or "").strip()
+        new_uid = (uid or "").strip()
+        cur_uid = (user.uid or "").strip()
+        if new_ign != cur_ign or new_uid != cur_uid:
+            return Response(
+                {"message": "You can't change your in-game name or UID while you're registered for an event. You'll be able to edit them again once your events are over."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     # Check for uniqueness conflicts
     if User.objects.exclude(pk=user.pk).filter(uid=uid).exists():
@@ -2002,6 +2064,11 @@ def get_user_profile(request):
         "in_game_name": user.username,
         "email": user.email,
         "uid": user.uid,
+        # IDENTITY LOCK (owner 2026-06-15): True while the player is signed up for a live event
+        # (upcoming/ongoing). The frontend profile-edit form disables + explains the in-game name
+        # and UID inputs when this is True; edit_profile enforces the same rule server-side. See
+        # _has_active_event_registration. Releases once all their events are completed.
+        "identity_locked": _has_active_event_registration(user),
         "team": user.team.team_name if getattr(user, "team", None) else None,
         "role": user.role,
         "profile_pic": profile_pic_url,
