@@ -3684,6 +3684,10 @@ def get_event_details(request):
                     .annotate(
                         matches_played=Count("match_id", distinct=True),
                         total_kills=Sum("kills"),
+                        # placement_sum: summed placement points, surfaced so the standings can show
+                        # the placement-points contribution as its own column, not just the combined
+                        # total (owner 2026-06-15). Public event-detail surface (TournamentStructure).
+                        placement_sum=Sum("placement_points"),
                         total_points=Sum("total_points"),
                     )
                     .order_by("-total_points", "-total_kills", "competitor__user__username")
@@ -3699,6 +3703,10 @@ def get_event_details(request):
                     .annotate(
                         matches_played=Count("match_id", distinct=True),
                         total_kills=Sum("kills"),
+                        # placement_sum: summed placement points, surfaced so the standings can show
+                        # the placement-points contribution as its own column, not just the combined
+                        # total (owner 2026-06-15). Public event-detail surface (TournamentStructure).
+                        placement_sum=Sum("placement_points"),
                         total_points=Sum("total_points"),
                     )
                     .order_by("-total_points", "-total_kills", "tournament_team__team__team_name")
@@ -4272,6 +4280,9 @@ def get_event_details_not_logged_in(request):
                            .annotate(
                                matches_played=Count("match_id", distinct=True),
                                total_kills=Sum("kills"),
+                               # placement_sum: summed placement points, surfaced as its own standings
+                               # column (owner 2026-06-15). Public event-detail surface.
+                               placement_sum=Sum("placement_points"),
                                total_points=Sum("total_points"),
                            )
                            .order_by("-total_points", "-total_kills", "competitor__user__username"))
@@ -4282,6 +4293,9 @@ def get_event_details_not_logged_in(request):
                            .annotate(
                                matches_played=Count("match_id", distinct=True),
                                total_kills=Sum("kills"),
+                               # placement_sum: summed placement points, surfaced as its own standings
+                               # column (owner 2026-06-15). Public event-detail surface.
+                               placement_sum=Sum("placement_points"),
                                total_points=Sum("total_points"),
                            )
                            .order_by("-total_points", "-total_kills", "tournament_team__team__team_name"))
