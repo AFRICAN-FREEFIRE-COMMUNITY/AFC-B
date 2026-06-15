@@ -21,6 +21,9 @@ from .models import AdminHistory, AuditLog, DiscordRoleAssignment, LoginHistory,
 # set_audit lets these admin views supply a SPECIFIC human audit summary (entity name + before/after)
 # that the AuditLogMiddleware records instead of its generic "Edited ... #id" fallback.
 from afc_auth.audit import set_audit
+# i18n Phase 0 (owner 2026-06-15): map the login geo country to a default language for first-time users.
+# Used in login() (auto-detect) and read alongside User.language in the auth payloads below.
+from afc_auth.language_utils import language_for_country
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -636,6 +639,21 @@ def login(request):
             is_vpn=is_vpn,
         )
 
+        # ── i18n Phase 0: auto-detect the user's language from their country on FIRST login only ──
+        # If the user has never had a language set (blank/None) and the geo lookup above resolved a
+        # country, default them to fr/pt for Francophone/Lusophone Africa (else en) via
+        # language_for_country (afc_auth.language_utils). This NEVER overrides a language the user has
+        # already chosen in their profile settings (edit_profile) - we only fill an empty value. The
+        # whole block is wrapped in try/except so a geo/normalization hiccup can never break login.
+        try:
+            detected_country = response.get("country")  # ISO code or full name (cached OR fresh geo)
+            if not user.language and detected_country:
+                user.language = language_for_country(detected_country)
+                user.save(update_fields=["language"])
+        except Exception:
+            # Best-effort only: language auto-detect must never block a successful login.
+            pass
+
         # Return success response with the session token
         return Response({
             'message': 'Login successful',
@@ -643,6 +661,9 @@ def login(request):
             'user': {
                 'id': user.user_id,
                 'username': user.username,
+                # Preferred language code ("en"/"fr"/"pt"), consumed by the frontend AuthContext so it
+                # can set the active locale (NEXT_LOCALE cookie) right after login. Coalesced to "en".
+                'language': user.language or "en",
             },
             "geo": response
         }, status=status.HTTP_200_OK)
@@ -1656,11 +1677,22 @@ def edit_profile(request):
     if User.objects.exclude(pk=user.pk).filter(username=in_game_name).exists():
         return Response({"message": "In-game name is already taken."}, status=status.HTTP_400_BAD_REQUEST)
 
+    # i18n Phase 0: the manual language override the user picks in the profile settings selector.
+    # The frontend posts "language" as one of "en"/"fr"/"pt". We validate against the model's
+    # LANGUAGE_CHOICES and IGNORE anything invalid or missing (keeping the user's current value), so a
+    # bad/absent value can never blank out or corrupt the field. Once saved, this explicit choice is
+    # what login()'s auto-detect respects (it only fills a blank language, never overrides this).
+    valid_languages = {code for code, _label in User.LANGUAGE_CHOICES}
+    language = request.data.get("language", user.language or "en")
+    if language not in valid_languages:
+        language = user.language or "en"  # invalid/unknown -> keep the current language
+
     # Update User fields
     user.full_name = full_name
     user.username = in_game_name
     user.email = email
     user.uid = uid
+    user.language = language
     user.save()
 
     # Update or create UserProfile
@@ -1675,6 +1707,8 @@ def edit_profile(request):
         "user_id": user.user_id,
         "full_name": user.full_name,
         "country": user.country,
+        # i18n Phase 0: echo back the saved language so the FE can confirm + sync its locale/cookie.
+        "language": user.language or "en",
         "in_game_name": user.username,
         "email": user.email,
         "uid": user.uid,
@@ -1874,6 +1908,10 @@ def get_user_profile(request):
         "user_id": user.user_id,
         "full_name": user.full_name,
         "country": user.country,
+        # i18n Phase 0: the user's preferred language ("en"/"fr"/"pt"). The frontend AuthContext maps
+        # this onto User.language to drive the active locale (UI strings, NEXT_LOCALE cookie, the
+        # Accept-Language header on API calls). Coalesced to "en" so the client always gets a value.
+        "language": user.language or "en",
         "in_game_name": user.username,
         "email": user.email,
         "uid": user.uid,

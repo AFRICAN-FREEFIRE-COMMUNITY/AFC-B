@@ -211,6 +211,15 @@ AUTHENTICATION_BACKENDS = [
 
 LANGUAGE_CODE = 'en-us'
 
+# i18n Phase 0 (owner 2026-06-15): the locales AFC supports. English (default), French, Portuguese.
+# These match afc_auth.models.User.LANGUAGE_CHOICES and the frontend i18n locales. Harmless on its
+# own (no catalogs wired yet); Phase 1+ uses it for Django's translation machinery if needed.
+LANGUAGES = [
+    ("en", "English"),
+    ("fr", "Français"),
+    ("pt", "Português"),
+]
+
 TIME_ZONE = 'UTC'
 
 USE_I18N = True

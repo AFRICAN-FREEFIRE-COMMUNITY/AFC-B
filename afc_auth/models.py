@@ -22,6 +22,23 @@ class User(AbstractUser):
         ("suspended", "Suspended")
     ]
 
+    # i18n Phase 0 (owner 2026-06-15): the user's preferred UI/email/content language.
+    # Locales: English (default), French, Portuguese. Stored as the 2-letter code so the
+    # frontend i18n layer and the backend localization (Phase 1+) can key off it directly.
+    #   - Written by: afc_auth.views.login (auto-detected from the geo country on FIRST login only,
+    #                 via afc_auth.language_utils.language_for_country - never overrides a value the
+    #                 user already chose) and afc_auth.views.edit_profile (the manual override the
+    #                 user picks in the profile settings language selector).
+    #   - Read by   : afc_auth.views.login response + get_user_profile (returned in the auth payload
+    #                 the frontend AuthContext maps onto User.language) so the FE can set the active
+    #                 locale (NEXT_LOCALE cookie) and send Accept-Language on API calls.
+    # blank=True + default "en" so existing rows and any code path that skips it resolve to English.
+    LANGUAGE_CHOICES = [
+        ("en", "English"),
+        ("fr", "Français"),
+        ("pt", "Português"),
+    ]
+
     user_id = models.AutoField(primary_key=True)
     username = models.CharField(max_length=40, unique=True)
     # in_game_name = models.CharField(max_length=12, unique=True)
@@ -32,6 +49,12 @@ class User(AbstractUser):
     # session_token = models.CharField(max_length=16)
     full_name = models.CharField(max_length=40)
     country = models.CharField(max_length=40, blank=True, default='')
+    # Preferred language code ("en"/"fr"/"pt"). See LANGUAGE_CHOICES above for the why + the readers/writers.
+    # Default is BLANK on purpose (not "en"): blank means "not yet chosen/detected", which is what the
+    # login() country auto-detect guard (`if not user.language`) keys off, so a first login from a
+    # Francophone/Lusophone country sets fr/pt. All readers coalesce blank -> "en" for display
+    # (user.language or "en"). An explicit pick in settings stores en/fr/pt and is never auto-overridden.
+    language = models.CharField(max_length=2, choices=LANGUAGE_CHOICES, default="", blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=False, default="active")
     last_login = models.DateTimeField(null=True)
     discord_id = models.CharField(max_length=50, null=True, blank=True, unique=True, db_index=True)
