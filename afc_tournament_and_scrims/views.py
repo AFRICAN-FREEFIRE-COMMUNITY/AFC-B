@@ -17274,6 +17274,79 @@ def edit_sponsor_details(request):
 #     }, status=200)
 
 @api_view(["POST"])
+def set_roster_edit_window(request):
+    """
+    POST /events/roster-edit-window/  (admin / organizer)
+
+    Open or close the TEAM roster-edit window for an event. Owner ask 2026-06-15: organizers/admins
+    can switch team roster-editing ON for a set period that AUTO-CLOSES, and the period must NOT pass
+    the event's end date.
+
+    Request body:
+      { "event_id": <id>, "until": "<ISO datetime>" }  -> OPEN the window until that instant.
+      { "event_id": <id>, "open": false }              -> CLOSE the window now (also: until null/"").
+    Response: { "roster_edit_until": <iso|null>, "roster_edit_open": <bool> }.
+
+    Auth: AFC event admins, OR organizers holding can_manage_registrations on the event's owning org
+    (the same manager gate edit_roster / disqualify_team use). Validation: `until` must be in the
+    FUTURE and no later than the event's end_date (end of that day) — the window can never outlive
+    the event. The window AUTO-CLOSES purely by time (Event.roster_edit_open compares now <= until),
+    so no scheduled job is needed.
+
+    Consumed by the admin event-manage toggle (app/(a)/a/events/...) and the organizer event-manage
+    toggle; the stored roster_edit_until is honoured by edit_roster (an extra allow-path past
+    registration close) and shown on the team-facing roster UI.
+    """
+    from django.utils.dateparse import parse_datetime
+    from datetime import datetime as _dt, time as _time
+
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+
+    # Same manager gate as edit_roster: AFC event admin, or org member with can_manage_registrations.
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage this event's roster window."}, status=403)
+
+    raw_until = request.data.get("until")
+    open_flag = request.data.get("open")
+
+    # CLOSE: explicit open=false, or an empty/null `until`.
+    if open_flag in (False, "false") or raw_until in (None, "", "null"):
+        event.roster_edit_until = None
+        event.save(update_fields=["roster_edit_until"])
+        return Response({"roster_edit_until": None, "roster_edit_open": False}, status=200)
+
+    # OPEN: parse + validate the closing instant.
+    until = parse_datetime(str(raw_until))
+    if not until:
+        return Response({"message": "Invalid 'until' datetime."}, status=400)
+    if timezone.is_naive(until):
+        until = timezone.make_aware(until, timezone.get_current_timezone())
+    if until <= timezone.now():
+        return Response({"message": "The roster-edit window must close at a time in the future."}, status=400)
+    # Cap at the event end (end_date treated as end of that day) — the window can't outlive the event.
+    end_of_event = timezone.make_aware(_dt.combine(event.end_date, _time.max), timezone.get_current_timezone())
+    if until > end_of_event:
+        return Response({"message": "The roster-edit window can't go past the event's end date."}, status=400)
+
+    event.roster_edit_until = until
+    event.save(update_fields=["roster_edit_until"])
+    return Response(
+        {"roster_edit_until": event.roster_edit_until, "roster_edit_open": event.roster_edit_open},
+        status=200,
+    )
+
+
+@api_view(["POST"])
 def edit_roster(request):
 
     # ---------------- AUTH ----------------
@@ -17315,8 +17388,12 @@ def edit_roster(request):
     is_manager = _is_event_admin(user) or org_can_event(user, "can_manage_registrations", event)
 
     # ---------------- REGISTRATION WINDOW ----------------
-    # Managers may edit after close (staff correction); a normal captain/owner cannot.
-    if date.today() > event.registration_end_date and not is_manager:
+    # Managers may edit after close (staff correction); a normal captain/owner cannot — UNLESS an
+    # organizer/admin has opened a roster-edit window (owner 2026-06-15). That window is a controlled
+    # ALLOW-path that lets captains self-edit past registration close until it AUTO-CLOSES at
+    # event.roster_edit_until (capped at the event end; see set_roster_edit_window). The match-start
+    # lock below still applies to everyone.
+    if date.today() > event.registration_end_date and not is_manager and not event.roster_edit_open:
         return Response({"message": "Registration closed. Cannot edit roster."}, status=403)
 
     # ---------------- MATCH START CHECK ----------------

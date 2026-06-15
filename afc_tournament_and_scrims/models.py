@@ -63,6 +63,15 @@ class Event(models.Model):
     end_date = models.DateField()
     registration_open_date = models.DateField()
     registration_end_date = models.DateField()
+    # Roster-edit window (owner 2026-06-15): organizers/admins can OPEN a time-boxed window that lets
+    # team captains edit their EVENT roster (typically AFTER registration closes — e.g. a fix-up
+    # period before the event). NULL or a PAST datetime = closed (normal registration-window rules
+    # apply). A FUTURE datetime = open until then, after which it AUTO-CLOSES (a pure time comparison,
+    # no cron). Capped server-side so it can never extend past end_date. Written by
+    # set_roster_edit_window (POST events/<id>/roster-edit-window/); read as an extra allow-path in
+    # edit_roster and surfaced in event-detail payloads as roster_edit_until + roster_edit_open for
+    # the organizer/admin toggle and the team-facing roster UI.
+    roster_edit_until = models.DateTimeField(null=True, blank=True)
     prizepool = models.CharField(max_length=40)
     prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     prize_distribution = models.JSONField(default=dict)
@@ -162,6 +171,15 @@ class Event(models.Model):
                 i += 1
             self.slug = slug
         super().save(*args, **kwargs)
+
+    @property
+    def roster_edit_open(self) -> bool:
+        """True while the organizer/admin's roster-edit window is currently open: a roster_edit_until
+        is set AND now is at/before it. Auto-closes once now passes it (no cron needed). Consumed by
+        edit_roster (extra allow-path past registration close) and the event-detail payloads
+        (the FE organizer/admin toggle + the team-facing roster UI)."""
+        from django.utils import timezone as _tz
+        return bool(self.roster_edit_until) and _tz.now() <= self.roster_edit_until
 
 
 class EventInviteToken(models.Model):
