@@ -217,6 +217,10 @@ urlpatterns = [
     path("get-sponsor-details/", get_sponsor_details, name="get_sponsor_details"),
     path("edit-sponsor-details/", edit_sponsor_details, name="edit_sponsor_details"),
     path("edit-roster/", edit_roster, name="edit_roster"),
+    # Roster-edit window toggle (owner 2026-06-15): organizer/admin opens/closes a time-boxed window
+    # that lets team captains edit their event roster past registration close (auto-closes, capped at
+    # event end). View: set_roster_edit_window. Consumed by the admin + organizer event-manage toggle.
+    path("roster-edit-window/", set_roster_edit_window, name="set_roster_edit_window"),
     # Admin / organizer single-player roster add (roster-rules, 2026-06-15). Additive sibling of
     # edit-roster/: appends ONE TournamentTeamMember. View: add_player_to_event_roster.
     path("add-player-to-event-roster/", add_player_to_event_roster, name="add_player_to_event_roster"),
