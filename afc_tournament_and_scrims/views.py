@@ -825,6 +825,15 @@ def _round_robin_stage_echo(stage):
             "group_id": lobby.group_id,
             "source_group_ids": list(
                 lobby.source_groups.values_list("group_id", flat=True)),
+            # Per-match-day config (owner 2026-06-15): echo the lobby's maps, match count, and the
+            # date/time it plays so the edit form rehydrates EXACTLY what was saved (instead of
+            # defaulting to 1 match / Bermuda / blank date). str() the date/time for clean JSON
+            # ("" when unset). These round-trip back through edit_event ->
+            # _materialise_round_robin_lobby, which already honours playing_date/playing_time.
+            "match_count": lobby.match_count,
+            "match_maps": lobby.match_maps or [],
+            "playing_date": str(lobby.playing_date) if lobby.playing_date else "",
+            "playing_time": str(lobby.playing_time) if lobby.playing_time else "",
         })
     game_days_echo = [
         {"game_day": day, "lobbies": lobby_list}
