@@ -427,6 +427,37 @@ class Notifications(models.Model):
     title = models.CharField(max_length=255, null=True, blank=True)
     related_invite = models.ForeignKey("afc_team.Invite", on_delete=models.CASCADE, null=True, blank=True)
 
+    # ── notification DEEP-LINKING (owner 2026-06-15) ───────────────────────────────────────────────
+    # An admin picks WHAT a notification points at when composing it; the user then gets a "Take me
+    # there" button that opens that exact frontend page. `target_type` says which kind of page,
+    # `target_id` carries the lookup value for that page:
+    #   event     -> Event slug (or id)      -> /tournaments/<slug-or-id>
+    #   news      -> News slug (or id)        -> /news/<slug-or-id>
+    #   team      -> team_id                  -> /teams/<id>
+    #   player    -> username                 -> /players/<username>
+    #   shop      -> (ignored)               -> /shop
+    #   organizer -> Organization slug (or id)-> /organizations/<slug-or-id>
+    #   custom    -> a full RELATIVE path     -> target_id used as-is (must start with "/")
+    #   none / "" -> no link (the "Take me there" button is hidden)
+    # The actual URL is NOT stored: it is built on read by afc_auth.notification_links.build_notification_link
+    # and returned as `link` by get_notifications, so a slug change reflects automatically.
+    # WRITTEN BY: afc_auth.send_notification / send_notification_to_multiple_users / admin_send_message
+    # and the tournament broadcast path (afc_auth.deliver_broadcast, called from
+    # afc_tournament_and_scrims.broadcast_announcement / broadcast_to_group).
+    # READ BY: afc_auth.get_notifications -> frontend notifications dropdown / page "Take me there" button.
+    TARGET_TYPE_CHOICES = [
+        ("event", "Tournament/Event"),
+        ("news", "News"),
+        ("team", "Team"),
+        ("player", "Player"),
+        ("shop", "Shop"),
+        ("organizer", "Organizer"),
+        ("custom", "Custom URL"),
+        ("none", "No link"),
+    ]
+    target_type = models.CharField(max_length=20, blank=True, default="", choices=TARGET_TYPE_CHOICES)
+    target_id = models.CharField(max_length=120, blank=True, default="")  # slug / id / username, or a relative URL for "custom"
+
     def mark_as_read(self):
         self.is_read = True
         self.save()

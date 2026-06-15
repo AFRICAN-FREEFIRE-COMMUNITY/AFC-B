@@ -18445,6 +18445,11 @@ def broadcast_announcement(request):
     # Channel choice (owner 2026-06-13): app push, email, or both (default both). Email goes
     # in the fixed branded design via deliver_broadcast.
     delivery = (request.data.get("delivery") or "both").strip().lower()
+    # DEEP-LINK target (owner 2026-06-15): optional. Left blank, deliver_broadcast auto-links to THIS
+    # event (target_type="event", target_id=event.slug) so the "Take me there" button opens the
+    # tournament page by default. Pass these to point the link elsewhere (e.g. news/shop/custom).
+    target_type = (request.data.get("target_type") or "").strip().lower()
+    target_id = (request.data.get("target_id") or "").strip()
 
     if not event_id or not title or not message:
         return Response({"message": "event_id, title, and message are required."}, status=400)
@@ -18458,6 +18463,7 @@ def broadcast_announcement(request):
     pushed, emailed = deliver_broadcast(
         recipients, title, message, delivery=delivery,
         notification_type="event_broadcast", related_event=event,
+        target_type=target_type, target_id=target_id,
     )
     count = len(recipients)
 
@@ -18610,12 +18616,18 @@ def broadcast_to_group(request):
             status=400,
         )
 
+    # DEEP-LINK target (owner 2026-06-15): optional. Left blank, deliver_broadcast auto-links to THIS
+    # event so the "Take me there" button opens the tournament page by default.
+    target_type = (request.data.get("target_type") or "").strip().lower()
+    target_id = (request.data.get("target_id") or "").strip()
+
     # Deduped delivery over the chosen channel(s): one in-app Notification per recipient
     # (tagged group_broadcast + linked to the event) and/or the fixed branded email.
     from afc_auth.views import deliver_broadcast
     pushed, emailed = deliver_broadcast(
         recipients, title, message, delivery=delivery,
         notification_type="group_broadcast", related_event=event,
+        target_type=target_type, target_id=target_id,
     )
 
     AdminHistory.objects.create(

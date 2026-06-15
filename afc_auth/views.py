@@ -444,7 +444,8 @@ def broadcast_message_email_html(title, message):
 
 
 def deliver_broadcast(recipients, title, message, *, delivery="both",
-                      notification_type="admin_message", related_event=None):
+                      notification_type="admin_message", related_event=None,
+                      target_type="", target_id=""):
     """Send a broadcast to `recipients` (an iterable of Users) over the chosen channel(s).
 
     delivery: "push" | "email" | "both". Returns (pushed, emailed) counts.
@@ -452,10 +453,24 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
       - email -> the FIXED branded broadcast email (broadcast_message_email_html), sent on a
         DAEMON THREAD: SMTP is slow and a large broadcast (hundreds of players) would otherwise
         hold the HTTP request open for minutes. Best-effort per address.
+
+    DEEP-LINKING (owner 2026-06-15): target_type/target_id stamp every pushed Notifications row so
+    the recipient's "Take me there" button can open the right page (see
+    afc_auth.notification_links.build_notification_link). When the caller passes no target but DOES
+    pass a related_event, we default to target_type="event" + target_id=<event.slug> so existing
+    event broadcasts auto-link to the tournament page with zero caller changes.
     Used by afc_auth.admin_send_message and afc_tournament_and_scrims broadcast endpoints."""
     recipients = [r for r in recipients if r]
     want_push = delivery in ("push", "both")
     want_email = delivery in ("email", "both")
+
+    # Auto-link existing event broadcasts: no explicit target + a related_event -> point at the event.
+    # Falls back to the numeric id if the event has no slug yet (build_notification_link handles either).
+    target_type = (target_type or "").strip().lower()
+    target_id = (target_id or "").strip()
+    if not target_type and related_event is not None:
+        target_type = "event"
+        target_id = related_event.slug or str(related_event.event_id)
 
     pushed = 0
     if want_push:
@@ -466,6 +481,8 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
                 message=message,
                 notification_type=notification_type,
                 related_event=related_event,
+                target_type=target_type,
+                target_id=target_id,
             )
             for r in recipients
         ])
@@ -4075,13 +4092,22 @@ def get_notifications(request):
     # have it. Consumed by the frontend notifications dropdown / page.
     from afc_auth.locale_middleware import get_locale
     from afc_auth.translation import localize_field
+    # DEEP-LINKING (owner 2026-06-15): build the relative "Take me there" URL per row from the stored
+    # (target_type, target_id). build_notification_link returns None when there is no link, in which
+    # case the FE hides the button. Returning target_type/target_id too lets the FE label the button
+    # or fall back if it ever wants to build the URL itself. See afc_auth/notification_links.py.
+    from afc_auth.notification_links import build_notification_link
     locale = get_locale(request)
 
     for notification in notifications:
         item = {
             "id": notification.notification_id,
             "is_read": notification.is_read,
-            "created_at": notification.created_at
+            "created_at": notification.created_at,
+            # deep-link fields: target_type/target_id are the stored intent; link is the built URL (or null).
+            "target_type": notification.target_type or "",
+            "target_id": notification.target_id or "",
+            "link": build_notification_link(notification.target_type, notification.target_id),
         }
         localize_field(item, "title", notification.title, locale)
         localize_field(item, "message", notification.message, locale)
@@ -4123,6 +4149,19 @@ def view_notification(request):
     return Response({"message": "Notification marked as read."}, status=status.HTTP_200_OK)
 
 
+# ── NOTIFICATION DEEP-LINKING: shared request parser (owner 2026-06-15) ──────────────────────────
+# Pulls the optional (target_type, target_id) deep-link pair off a send request body so the three
+# single/multi notification endpoints below stamp it identically. The admin notification-composer
+# sends these two keys; build_notification_link (afc_auth.notification_links) turns them into the
+# "Take me there" URL on read. Returns a normalised lower-cased (target_type, target_id) tuple;
+# blanks stay blank so existing callers (no target sent) behave exactly as before.
+def _parse_notification_target(request):
+    return (
+        (request.data.get("target_type") or "").strip().lower(),
+        (request.data.get("target_id") or "").strip(),
+    )
+
+
 @api_view(["POST"])
 def send_notification(request):
     session_token = request.headers.get("Authorization")
@@ -4139,12 +4178,14 @@ def send_notification(request):
             {"message": "Invalid or expired session token."},
             status=status.HTTP_401_UNAUTHORIZED
         )
-    
+
     if user.role != "admin":
         return Response({"message": "You do not have permission to send notifications."}, status=status.HTTP_403_FORBIDDEN)
 
     recipient_id = request.data.get("recipient_id")
     message = request.data.get("message")
+    # Optional deep-link target (FE composer); blank when not sent -> no "Take me there" link.
+    target_type, target_id = _parse_notification_target(request)
 
     if not recipient_id or not message:
         return Response({"message": "Recipient ID and message are required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -4156,7 +4197,9 @@ def send_notification(request):
 
     notification = Notifications.objects.create(
         user=recipient,
-        message=message
+        message=message,
+        target_type=target_type,
+        target_id=target_id,
     )
 
     AdminHistory.objects.create(
@@ -4190,6 +4233,8 @@ def send_notification_to_multiple_users(request):
 
     recipient_ids = request.data.get("recipient_ids", [])
     message = request.data.get("message")
+    # Optional deep-link target (FE composer); same pair stamped on every recipient's row.
+    target_type, target_id = _parse_notification_target(request)
 
     if not recipient_ids or not message:
         return Response({"message": "Recipient IDs and message are required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -4198,7 +4243,9 @@ def send_notification_to_multiple_users(request):
     for recipient in recipients:
         Notifications.objects.create(
             user=recipient,
-            message=message
+            message=message,
+            target_type=target_type,
+            target_id=target_id,
         )
 
     
@@ -4221,11 +4268,20 @@ def admin_send_message(request):
     member of a team without going through an event broadcast.
 
     Payload:
-      target_type : "player" | "team"
+      target_type : "player" | "team"        (the RECIPIENT selector, not the deep-link)
       target_id   : user_id (player) or team_id (team)
       title       : optional subject / notification title
       message     : required body text
       delivery    : "push" | "email" | "both"   (default "both")
+      link_target_type : optional deep-link kind for the "Take me there" button
+                         ("event"|"news"|"team"|"player"|"shop"|"organizer"|"custom"|"none"|"")
+      link_target_id   : optional deep-link value (slug/id/username, or a "/path" for custom)
+
+    NOTE on the key names: this endpoint already uses target_type/target_id to choose WHO receives the
+    message (player vs team), so the DEEP-LINK target rides on separate keys, link_target_type /
+    link_target_id, to avoid a collision. The other two notification endpoints (send_notification,
+    send_notification_to_multiple_users) take the deep-link on plain target_type/target_id because they
+    have no routing keys to clash with.
     """
     # ── auth (mirror the sibling notification endpoints) ──
     session_token = request.headers.get("Authorization")
@@ -4243,6 +4299,9 @@ def admin_send_message(request):
     title = (request.data.get("title") or "").strip()
     message = (request.data.get("message") or "").strip()
     delivery = (request.data.get("delivery") or "both").strip().lower()
+    # Deep-link target (separate keys, see docstring): blank -> no "Take me there" link.
+    link_target_type = (request.data.get("link_target_type") or "").strip().lower()
+    link_target_id = (request.data.get("link_target_id") or "").strip()
 
     if target_type not in ("player", "team"):
         return Response({"message": "target_type must be 'player' or 'team'."}, status=status.HTTP_400_BAD_REQUEST)
@@ -4287,6 +4346,7 @@ def admin_send_message(request):
     # admin message looks like the rest of AFC's mail, and email no longer blocks the request.
     pushed, emailed = deliver_broadcast(
         recipients, title, message, delivery=delivery, notification_type="admin_message",
+        target_type=link_target_type, target_id=link_target_id,
     )
 
     set_audit(request, f"Sent a {delivery} message to the {target_type} {target_label}")
