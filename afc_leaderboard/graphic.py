@@ -398,3 +398,57 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
     base.save(buf, format="PNG")
     buf.seek(0)
     return buf.getvalue()
+
+
+def render_design_all_pages(rows, pages_spec, size="instagram", *,
+                            logos=None, title="", subtitle="",
+                            text_color=DEFAULT_TEXT, accent_color=DEFAULT_ACCENT,
+                            max_rows=16, show_title=True, show_subtitle=True,
+                            logo_path=None):
+    """Render ALL pages of a multi-page design and return a list of PNG byte strings.
+
+    pages_spec : list of per-page dicts as returned by
+                 afc_organizers.views_leaderboard_design.build_pages_for_export:
+        [{"page_number": int, "background_instagram": ImageField|None,
+          "background_youtube": ImageField|None, "field_layout": dict|None}, ...]
+    rows       : standings list (same per-row-dict format as render_leaderboard_graphic's `rows`
+                 keyword). ALL rows are passed to every page; each page's field_layout column_groups
+                 control which slice of the rankings that page shows (via start_rank + row_count).
+    size       : "instagram" or "youtube" (all pages use the same size).
+    logos      : the design-level positioned logos (drawn on every page). Page-specific logos are
+                 not modelled yet; the design-level logos apply to all pages.
+    Returns    : list[bytes] ordered by the pages_spec order (page_number). Called by
+                 leaderboard_graphic + event_stage_graphic when ?page=all is requested, to build
+                 the ZIP of one PNG per page."""
+    result_pngs = []
+    for page_spec in pages_spec:
+        # Resolve the background filesystem PATH for the requested size from this page's ImageField.
+        bg_field = (
+            page_spec["background_youtube"] if size == "youtube"
+            else page_spec["background_instagram"]
+        )
+        bg_path = None
+        if bg_field:
+            try:
+                bg_path = bg_field.path
+            except Exception:
+                bg_path = None
+
+        png = render_leaderboard_graphic(
+            rows,               # full standings; column groups determine the per-page slice
+            size=size,
+            background_path=bg_path,
+            logo_path=logo_path,
+            logos=logos,
+            title=title,
+            subtitle=subtitle,
+            text_color=text_color,
+            accent_color=accent_color,
+            max_rows=max_rows,
+            show_title=show_title,
+            show_subtitle=show_subtitle,
+            field_layout=page_spec.get("field_layout"),
+            rows=rows,
+        )
+        result_pngs.append(png)
+    return result_pngs

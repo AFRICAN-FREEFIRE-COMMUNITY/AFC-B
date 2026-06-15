@@ -33,6 +33,7 @@ from rest_framework import status
 from afc_organizers.models import (
     Organization, OrganizationMember, OrgLeaderboardDesign, OrgLeaderboardDesignLogo,
     OrgLeaderboardDesignField, OrgLeaderboardDesignText, OrgLeaderboardDesignFont,
+    OrgLeaderboardDesignPage,   # multi-page support (owner 2026-06-14)
 )
 from afc_organizers.permissions import org_can
 from afc.api_utils import authenticate as _authenticate
@@ -94,7 +95,8 @@ def _serialize_font(f, request=None):
 
 
 def _serialize_field(f, request=None):
-    """One placed/connected column: which stat it binds to + its position/style overrides."""
+    """One placed/connected column: which stat it binds to + its position/style overrides.
+    page_id is null for legacy fields (page 1) or the id of the page they belong to."""
     return {
         "id": f.id,
         "field_type": f.field_type,
@@ -105,11 +107,13 @@ def _serialize_field(f, request=None):
         "font_size_pct": f.font_size_pct,
         "color": f.color,
         "order": f.order,
+        "page_id": f.page_id,  # null = legacy/page-1
     }
 
 
 def _serialize_text(t, request=None):
-    """One freeform text element: content + position + style overrides."""
+    """One freeform text element: content + position + style overrides.
+    page_id is null for legacy texts (page 1) or the id of the page they belong to."""
     return {
         "id": t.id,
         "text": t.text,
@@ -120,6 +124,21 @@ def _serialize_text(t, request=None):
         "font_size_pct": t.font_size_pct,
         "color": t.color,
         "order": t.order,
+        "page_id": t.page_id,  # null = legacy/page-1
+    }
+
+
+def _serialize_page(p, request=None):
+    """One design page: its page number, backgrounds (absolute URLs), and column groups.
+    Fields/texts on this page are NOT embedded here; they are returned in the top-level
+    fields/texts arrays on the design with a page_id discriminator.
+    Consumed by DesignFieldsEditor.tsx page tabs (frontend) via _serialize_design's pages array."""
+    return {
+        "id": p.id,
+        "page_number": p.page_number,
+        "background_instagram": _abs_url(request, p.background_instagram),
+        "background_youtube": _abs_url(request, p.background_youtube),
+        "column_groups": p.column_groups or [],
     }
 
 
@@ -137,9 +156,14 @@ def _serialize_design(d, request=None):
         "is_default": d.is_default,
         # Row tiling for each column group (the field-layout path). [] => legacy auto-table.
         "column_groups": d.column_groups or [],
+        # Multi-page support (owner 2026-06-14): ordered list of explicit page rows. An EMPTY list
+        # means a single-page (legacy) design (backward compatible). The editor only shows page tabs
+        # when this is non-empty; export returns a ZIP when len > 1.
+        "pages": [_serialize_page(p, request) for p in d.pages.all()],
         # The positioned logos drawn on this design (drag-canvas editor reads x_pct/y_pct/size).
         "logos": [_serialize_logo(l, request) for l in d.logos.all()],
         # The placed/connected data columns + freeform text elements (owner 2026-06-14).
+        # page_id discriminates which page each element belongs to (null = legacy/page-1).
         "fields": [_serialize_field(f, request) for f in d.fields.all()],
         "texts": [_serialize_text(t, request) for t in d.texts.all()],
         "created_at": d.created_at.isoformat() if d.created_at else None,
@@ -183,6 +207,80 @@ def build_field_layout(design):
             "color": t.color,
         } for t in design.texts.all()],
     }
+
+
+def build_pages_for_export(design):
+    """Return an ordered list of per-page render specs for the multi-page export path.
+
+    Each entry is a dict with:
+        page_number          : int (1-based)
+        background_instagram : ImageField or None (the IG background for this page)
+        background_youtube   : ImageField or None (the YT background for this page)
+        field_layout         : dict or None (the build_field_layout-shaped result for this page's
+                               fields, with font FKs already resolved to filesystem paths)
+
+    When the design has no OrgLeaderboardDesignPage rows (legacy single-page), this returns
+    a list with ONE entry built from the design-level backgrounds + the null-page fields/texts,
+    which is exactly what the existing single-PNG export does. The export endpoints call this to
+    decide single-PNG vs ZIP: len(pages_for_export) == 1 -> single PNG; else ZIP.
+
+    The `size` is NOT chosen here; callers pass the user-requested size separately to
+    render_design_all_pages, which picks background_instagram or background_youtube per entry.
+
+    Consumed by leaderboard_graphic (afc_leaderboard.views) and event_stage_graphic
+    (afc_tournament_and_scrims.views_event_graphic) when ?page=all is requested."""
+    pages_qs = list(design.pages.order_by("page_number"))
+
+    def _font_path(elem):
+        try:
+            return elem.font.file.path if (elem.font_id and elem.font and elem.font.file) else None
+        except Exception:
+            return None
+
+    if not pages_qs:
+        # Single-page (legacy) design: one entry using design-level data + null-page fields/texts.
+        fields = list(design.fields.filter(page__isnull=True))
+        field_layout = None
+        if fields:
+            field_layout = {
+                "column_groups": design.column_groups or [],
+                "fields": [{"field_type": f.field_type, "column_group": f.column_group,
+                             "x_pct": f.x_pct, "align": f.align, "font_path": _font_path(f),
+                             "font_size_pct": f.font_size_pct, "color": f.color} for f in fields],
+                "texts": [{"text": t.text, "x_pct": t.x_pct, "y_pct": t.y_pct, "align": t.align,
+                            "font_path": _font_path(t), "font_size_pct": t.font_size_pct,
+                            "color": t.color} for t in design.texts.filter(page__isnull=True)],
+            }
+        return [{
+            "page_number": 1,
+            "background_instagram": design.background_instagram,
+            "background_youtube": design.background_youtube,
+            "field_layout": field_layout,
+        }]
+
+    # Multi-page design: one entry per page, with that page's fields + texts.
+    result = []
+    for page in pages_qs:
+        fields = list(page.fields.all())  # related_name="fields" on the page FK
+        texts = list(page.texts.all())    # related_name="texts" on the page FK
+        field_layout = None
+        if fields:
+            field_layout = {
+                "column_groups": page.column_groups or [],
+                "fields": [{"field_type": f.field_type, "column_group": f.column_group,
+                             "x_pct": f.x_pct, "align": f.align, "font_path": _font_path(f),
+                             "font_size_pct": f.font_size_pct, "color": f.color} for f in fields],
+                "texts": [{"text": t.text, "x_pct": t.x_pct, "y_pct": t.y_pct, "align": t.align,
+                            "font_path": _font_path(t), "font_size_pct": t.font_size_pct,
+                            "color": t.color} for t in texts],
+            }
+        result.append({
+            "page_number": page.page_number,
+            "background_instagram": page.background_instagram,
+            "background_youtube": page.background_youtube,
+            "field_layout": field_layout,
+        })
+    return result
 
 
 def _can_write_design(user, design):
@@ -244,10 +342,11 @@ def _unset_other_defaults(org, keep_id):
 
 def _library_qs(org):
     """The design queryset for a library: an org's designs, or the AFC-native (org=null) set.
-    Prefetches `logos` so _serialize_design does not N+1 over each design's positioned logos."""
+    Prefetches logos, fields, texts, AND pages so _serialize_design does not N+1 over each
+    design's related rows (the pages array is read by the multi-page editor tabs)."""
     base = (OrgLeaderboardDesign.objects.filter(organization__isnull=True)
             if org is None else OrgLeaderboardDesign.objects.filter(organization=org))
-    return base.prefetch_related("logos", "fields", "texts")
+    return base.prefetch_related("logos", "fields", "texts", "pages")
 
 
 @api_view(["GET", "POST"])
@@ -316,7 +415,7 @@ def design_item(request, design_id):
         return err
     try:
         d = (OrgLeaderboardDesign.objects.select_related("organization")
-             .prefetch_related("logos", "fields", "texts").get(id=design_id))
+             .prefetch_related("logos", "fields", "texts", "pages").get(id=design_id))
     except OrgLeaderboardDesign.DoesNotExist:
         return Response({"message": "Design not found."}, status=status.HTTP_404_NOT_FOUND)
     if not _can_write_design(user, d):
@@ -362,9 +461,11 @@ SIZE_VALUES = {"small", "medium", "large"}
 
 def _get_design_for_write(user, design_id):
     """Resolve a design + gate the caller for writes. Returns (design, error_response).
-    Used by both logo endpoints so the 404/403 handling is identical."""
+    Used by the logo, field, text, AND page sub-endpoints so the 404/403 handling is identical.
+    Prefetches `pages` so the page endpoints can read d.pages without an extra query."""
     try:
-        d = OrgLeaderboardDesign.objects.select_related("organization").get(id=design_id)
+        d = (OrgLeaderboardDesign.objects.select_related("organization")
+             .prefetch_related("pages").get(id=design_id))
     except OrgLeaderboardDesign.DoesNotExist:
         return None, Response({"message": "Design not found."}, status=status.HTTP_404_NOT_FOUND)
     if not _can_write_design(user, d):
@@ -431,6 +532,125 @@ def design_logo_item(request, design_id, logo_id):
     return Response({"logo": _serialize_logo(logo, request)})
 
 
+# ───────────── MULTI-PAGE sub-endpoints (owner 2026-06-14) ─────────────
+# A design with >=1 OrgLeaderboardDesignPage rows is treated as multi-page; 0 rows = single-page
+# (backward compatible). A page has its own backgrounds + column_groups. Fields/texts created
+# after a page exists carry a page_id FK so they are scoped to that page on the canvas.
+# Mounted in afc_organizers/urls.py (.../by-id/<design_id>/pages/ + .../pages/<page_id>/);
+# consumed by the DesignFieldsEditor.tsx "Add page" tab action + the per-page background/groups save.
+
+
+def _next_page_number(design):
+    """The next page_number for a new page (max existing + 1, at least 2 since page 1 is implicit)."""
+    existing = list(design.pages.values_list("page_number", flat=True))
+    return max(existing, default=1) + 1
+
+
+@api_view(["POST"])
+def design_pages(request, design_id):
+    """POST organizers/leaderboard-designs/by-id/<design_id>/pages/ — create a new page.
+
+    Creates a new OrgLeaderboardDesignPage for the design. page_number auto-increments
+    (max existing + 1). Accepts multipart: background_instagram (file), background_youtube (file),
+    column_groups (JSON string). If this is the FIRST explicit page POST, page 1 is created
+    implicitly first (copying the design-level backgrounds and column_groups) so the
+    caller's newly created page becomes page 2, and the design-level data acts as page 1.
+
+    Response 201: {"page": <page dict>, "design": <updated design dict>}.
+    Consumed by: DesignFieldsEditor "Add page" tab action."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+
+    # If this is the very first page POST on this design, auto-create page 1 first, carrying
+    # over the design-level backgrounds + column_groups so no data is lost for the current layout.
+    if not d.pages.exists():
+        OrgLeaderboardDesignPage.objects.create(
+            design=d,
+            page_number=1,
+            background_instagram=d.background_instagram or None,
+            background_youtube=d.background_youtube or None,
+            column_groups=list(d.column_groups or []),
+        )
+
+    # Now create the new page (page 2, 3, ...).
+    new_page_num = _next_page_number(d)
+    # Parse column_groups from a JSON string if provided (multipart arrives as string).
+    raw_cg = request.data.get("column_groups")
+    cg = []
+    if raw_cg:
+        try:
+            parsed = json.loads(raw_cg) if isinstance(raw_cg, str) else raw_cg
+            if isinstance(parsed, list):
+                cg = parsed
+        except (TypeError, ValueError):
+            pass
+
+    page = OrgLeaderboardDesignPage(design=d, page_number=new_page_num, column_groups=cg)
+    if request.FILES.get("background_instagram"):
+        page.background_instagram = request.FILES["background_instagram"]
+    if request.FILES.get("background_youtube"):
+        page.background_youtube = request.FILES["background_youtube"]
+    page.save()
+
+    # Re-fetch design with all related to include updated pages in the response.
+    d_fresh = (OrgLeaderboardDesign.objects.select_related("organization")
+               .prefetch_related("logos", "fields", "texts", "pages").get(id=design_id))
+    return Response(
+        {"page": _serialize_page(page, request), "design": _serialize_design(d_fresh, request)},
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(["PATCH", "DELETE"])
+def design_page_item(request, design_id, page_id):
+    """PATCH/DELETE organizers/leaderboard-designs/by-id/<design_id>/pages/<page_id>/.
+
+    PATCH: update backgrounds (multipart) and/or column_groups (JSON string). Only keys present
+    are changed. Returns {"page": <updated page dict>}.
+    DELETE: remove the page (cascades its fields + texts). If the design has only 1 page row
+    left after deletion, that row is also removed (returning to single-page / design-level mode).
+    Returns {"message": "Page removed."}.
+    Response 403 if caller cannot write; 404 if page not found on this design."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+
+    page = OrgLeaderboardDesignPage.objects.filter(design=d, id=page_id).first()
+    if not page:
+        return Response({"message": "Page not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == "DELETE":
+        page.delete()
+        # Collapse back to single-page mode if only one page remains (no multi-page value).
+        remaining = d.pages.all()
+        if remaining.count() == 1:
+            remaining.first().delete()
+        return Response({"message": "Page removed."})
+
+    # PATCH: update only the keys present.
+    if request.FILES.get("background_instagram"):
+        page.background_instagram = request.FILES["background_instagram"]
+    if request.FILES.get("background_youtube"):
+        page.background_youtube = request.FILES["background_youtube"]
+    if "column_groups" in request.data:
+        raw_cg = request.data.get("column_groups")
+        try:
+            parsed = json.loads(raw_cg) if isinstance(raw_cg, str) else raw_cg
+            if isinstance(parsed, list):
+                page.column_groups = parsed
+        except (TypeError, ValueError):
+            pass
+    page.save()
+    return Response({"page": _serialize_page(page, request)})
+
+
 # ───────────── Connected-column FIELDS (placed data columns on a design) ─────────────
 # Each field binds to a real standings stat and is drawn at x_pct for every row of its column
 # group. The connected-columns palette + drag canvas in LeaderboardDesignsManager manage these.
@@ -494,6 +714,14 @@ def design_fields(request, design_id):
         return Response({"message": "Unknown field type."}, status=status.HTTP_400_BAD_REQUEST)
     f = OrgLeaderboardDesignField(design=d, field_type=ft, x_pct=_clamp_pct(request.data.get("x_pct"), 10.0))
     _apply_field_attrs(f, request.data, d)
+    # Optional page scoping (multi-page, owner 2026-06-14). page_id null = legacy / page-1 layout.
+    # When the editor's currentPageId is a real page, this binds the field to that page so the
+    # export ZIP slices it onto the right page (build_pages_for_export reads page.fields).
+    page_id = request.data.get("page_id")
+    if page_id not in (None, "", "null", "0", 0):
+        pg = OrgLeaderboardDesignPage.objects.filter(design=d, id=page_id).first()
+        if pg:
+            f.page = pg
     f.save()
     return Response({"field": _serialize_field(f, request)}, status=status.HTTP_201_CREATED)
 
@@ -560,6 +788,14 @@ def design_texts(request, design_id):
         return err
     t = OrgLeaderboardDesignText(design=d, text=(request.data.get("text") or "")[:200] or "Text")
     _apply_text_attrs(t, request.data, d)
+    # Optional page scoping (multi-page, owner 2026-06-14), mirroring design_fields. null page_id =
+    # legacy / page-1. Binds the freeform text to a page so build_pages_for_export draws it on the
+    # right page of the export ZIP (it reads page.texts) and DesignFieldsEditor.tsx filters by page.
+    page_id = request.data.get("page_id")
+    if page_id not in (None, "", "null", "0", 0):
+        pg = OrgLeaderboardDesignPage.objects.filter(design=d, id=page_id).first()
+        if pg:
+            t.page = pg
     t.save()
     return Response({"text": _serialize_text(t, request)}, status=status.HTTP_201_CREATED)
 

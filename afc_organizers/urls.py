@@ -98,6 +98,14 @@ urlpatterns = [
     path("leaderboard-designs/by-id/<int:design_id>/texts/",
          views_leaderboard_design.design_texts,
          name="organizers_leaderboard_design_texts"),       # POST (add freeform text)
+    # Multi-page sub-endpoints (owner 2026-06-14). Specific (with page_id) before the collection,
+    # and both before the bare by-id design route so the int converter never swallows them.
+    path("leaderboard-designs/by-id/<int:design_id>/pages/<int:page_id>/",
+         views_leaderboard_design.design_page_item,
+         name="organizers_leaderboard_design_page_item"),   # PATCH (update bg/groups) / DELETE
+    path("leaderboard-designs/by-id/<int:design_id>/pages/",
+         views_leaderboard_design.design_pages,
+         name="organizers_leaderboard_design_pages"),       # POST (create next page)
     path("leaderboard-designs/by-id/<int:design_id>/", views_leaderboard_design.design_item,
          name="organizers_leaderboard_design_item"),       # PATCH / DELETE
     path("leaderboard-designs/", views_leaderboard_design.designs_collection,

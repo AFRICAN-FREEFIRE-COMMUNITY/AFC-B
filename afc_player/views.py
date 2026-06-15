@@ -15,7 +15,12 @@ from afc_tournament_and_scrims.models import (
     TournamentPlayerMatchStats,
     TournamentTeamMatchStats,
     TournamentTeamMember,
-    Match
+    Match,
+    # PlayerWinning = a player's share of an event prize, written by
+    # afc_rankings.admin_prize.prize_create (_distribute_payout) when an admin/organizer
+    # records a team/solo prize. We read it back here to surface tournament winnings on
+    # the public player profile (feature "Prizepool auto-links to winners' history", 2026-06-15).
+    PlayerWinning,
 )
 
 # Shared player-stats aggregation (reused by the admin + public player endpoints).
@@ -109,6 +114,45 @@ def _can_view_player_stats(viewer, player):
         team_id=player_team_id, member=viewer
     ).exists()
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TOURNAMENT WINNINGS (per-player prize history)
+# ──────────────────────────────────────────────────────────────────────────────
+# These rows are PlayerWinning records written by afc_rankings.admin_prize.prize_create
+# (_distribute_payout) whenever an admin/organizer records a team/solo prize — the team
+# payout is split equally among the active roster and one PlayerWinning is saved per player.
+# We read them back here so each player's lifetime prize total + per-event winnings show on
+# their public profile (frontend PlayerClient.tsx "Earnings share" / Tournament Winnings card).
+# Gated behind the SAME stats_visible flag as the rest of the performance stats below.
+def _player_winnings(player):
+    """Return (total_earnings_ngn:str, tournament_winnings:list) for a player.
+
+    Reads PlayerWinning (written by admin_prize.prize_create) newest-first, with the event +
+    team prefetched so the listing is query-cheap. ``total_earnings_ngn`` is the Decimal sum as
+    a string (full NGN precision, no float rounding); each row carries event id/name, the share
+    amount as a string, the team name (or None for solo prizes), and the awarded date.
+    """
+    rows = (
+        PlayerWinning.objects.filter(player=player)
+        .select_related("event", "tournament_team__team")
+        .order_by("-created_at", "-id")
+    )
+    total = PlayerWinning.objects.filter(player=player).aggregate(s=Sum("amount"))["s"] or 0
+    winnings = [
+        {
+            "event_id": w.event_id,
+            "event_name": w.event.event_name if w.event_id else None,
+            "amount": str(w.amount),                       # NGN, this player's share
+            "tournament_team_name": (
+                w.tournament_team.team.team_name
+                if w.tournament_team_id and w.tournament_team.team_id
+                else None                                  # None for solo prizes
+            ),
+            "created_at": w.created_at.isoformat() if w.created_at else None,
+        }
+        for w in rows
+    ]
+    return str(total), winnings
 
 
 # Create your views here.
@@ -331,6 +375,9 @@ def get_public_player_stats(request):
     if stats_visible:
         # Full stat block (scalars + per_event + recent_matches), exactly as before.
         stats = compute_player_stats(player, include_breakdown=True)
+        # Per-player prize history (PlayerWinning rows written by admin_prize.prize_create).
+        # Gated behind the SAME visibility flag as the other performance stats.
+        total_earnings_ngn, tournament_winnings = _player_winnings(player)
         payload.update({
             # scalar aggregates
             "total_matches": stats["total_matches"],
@@ -349,6 +396,9 @@ def get_public_player_stats(request):
             # breakdown lists
             "per_event": stats["per_event"],
             "recent_matches": stats["recent_matches"],
+            # tournament prize winnings (lifetime total + per-event rows, newest first)
+            "total_earnings_ngn": total_earnings_ngn,
+            "tournament_winnings": tournament_winnings,
         })
     else:
         # PRIVATE: keep the same keys (back-compat for the frontend types) but ZERO
@@ -371,6 +421,10 @@ def get_public_player_stats(request):
             "tournament_booyah": 0,
             "per_event": [],
             "recent_matches": [],
+            # Prize winnings are private too: zero the total + empty the list for unauthorized
+            # viewers (same back-compat contract as the sensitive numbers above).
+            "total_earnings_ngn": "0",
+            "tournament_winnings": [],
         })
 
     return Response({"player": payload})

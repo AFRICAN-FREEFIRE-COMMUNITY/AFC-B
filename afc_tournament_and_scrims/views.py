@@ -12,6 +12,12 @@ from django.utils.dateparse import parse_date
 
 from afc_auth.views import assign_discord_role, check_discord_membership, check_discord_membership_v3, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
 from afc_team.models import Team, TeamMembers
+# STAFF_ROLES is the canonical "support-only" role set (coach / manager / analyst) defined
+# in afc_team.views. We import it (no cycle: afc_team.views imports only afc_tournament_and_scrims
+# MODELS, never these views) so the registration + admin-add-player paths in THIS file keep
+# staff off event rosters using the exact same definition as the team-roster rules. Consumed by
+# register_for_event and add_player_to_event_roster below.
+from afc_team.views import STAFF_ROLES
 # Single source of truth for the per-match point formula (see scoring.py). Imported
 # as `scoring_lib` (not bare `scoring`) on purpose: several result-entry views already
 # use a LOCAL variable named `scoring` for `match.scoring_settings`, which would shadow
@@ -1108,6 +1114,10 @@ def create_event(request):
                 champion_point_threshold=stage_data.get("champion_point_threshold") or None,
                 point_rush_enabled=bool(stage_data.get("point_rush_enabled", False)),
                 point_rush_reward=stage_data.get("point_rush_reward") or {},
+                # Manual display order (reorder feature, owner 2026-06-15): persist if the payload
+                # carries one, else 0. 0 means "auto-arrange by date" — we do NOT force submit-index
+                # ordering here, so new events default to the date sort until someone drags to reorder.
+                stage_order=int(stage_data.get("stage_order", 0) or 0),
             )
             created_stages.append(stage)
 
@@ -1130,7 +1140,10 @@ def create_event(request):
                     match_maps=group_data.get("match_maps", []),
                     prizepool=group_data.get("prizepool"),
                     prizepool_cash_value=group_data.get("prizepool_cash_value"),
-                    prize_distribution=group_data.get("prize_distribution", {})
+                    prize_distribution=group_data.get("prize_distribution", {}),
+                    # Manual display order (reorder feature, owner 2026-06-15): persist if present,
+                    # else 0 = "auto-arrange by date/time" (no forced submit-index ordering).
+                    group_order=int(group_data.get("group_order", 0) or 0),
                 )
 
                 # Auto-create a leaderboard for this group
@@ -2442,6 +2455,12 @@ def edit_event(request):
                     "champion_point_threshold": stage_data.get("champion_point_threshold") or None,
                     "point_rush_enabled": bool(stage_data.get("point_rush_enabled", False)),
                     "point_rush_reward": stage_data.get("point_rush_reward") or {},
+                    # Manual display order (reorder feature, owner 2026-06-15): persist from the
+                    # payload if present, else 0 = "auto-arrange by date". This means a normal event
+                    # edit that omits stage_order will RESET to auto-by-date; the dedicated
+                    # reorder_stages endpoint is what writes the 1-based manual order, and the FE
+                    # edit form echoes the saved stage_order back so a non-reorder save preserves it.
+                    "stage_order": int(stage_data.get("stage_order", 0) or 0),
                 }
 
                 if stage_id:
@@ -2450,7 +2469,19 @@ def edit_event(request):
                         defaults={**stage_defaults, "event": event},
                     )
                 else:
-                    stage = Stages.objects.create(event=event, **stage_defaults)
+                    # Idempotency net (owner 2026-06-15 duplication bug): delete_missing defaults to
+                    # FALSE, so a blind create() here DUPLICATES an existing stage whenever the FE
+                    # re-sends stages without their ids (sponsor/waitlist saves, or a group-count edit
+                    # that dropped the id). Match an existing stage by (event, stage_name) first and
+                    # update it; only create when no stage of that name exists. filter().first()
+                    # (not update_or_create) so pre-existing duplicates can't raise MultipleObjectsReturned.
+                    stage = Stages.objects.filter(event=event, stage_name=stage_defaults["stage_name"]).first()
+                    if stage:
+                        for _k, _v in stage_defaults.items():
+                            setattr(stage, _k, _v)
+                        stage.save()
+                    else:
+                        stage = Stages.objects.create(event=event, **stage_defaults)
 
                 kept_stage_ids.append(stage.stage_id)
                 upserted_stages.append(stage)
@@ -2479,6 +2510,10 @@ def edit_event(request):
                         # if prizepool_cash_value is provided, convert to float, otherwise set to None to avoid overwriting existing value
                         "prizepool_cash_value": float(group_data.get("prizepool_cash_value")) if group_data.get("prizepool_cash_value") else None,
                         "prize_distribution": group_data.get("prize_distribution", {}),
+                        # Manual display order (reorder feature, owner 2026-06-15): persist from the
+                        # payload if present, else 0 = "auto-arrange by date/time". reorder_groups
+                        # writes the 1-based manual order; the FE edit form echoes group_order back.
+                        "group_order": int(group_data.get("group_order", 0) or 0),
                     }
 
                     if group_id:
@@ -2487,7 +2522,17 @@ def edit_event(request):
                             defaults={**group_defaults, "stage": stage},
                         )
                     else:
-                        group = StageGroups.objects.create(stage=stage, **group_defaults)
+                        # Idempotency net (owner 2026-06-15 duplication bug): same reasoning as the
+                        # stage branch above. Match an existing group by (stage, group_name) and update
+                        # it instead of blindly creating a duplicate when the payload lacks group_id.
+                        group = StageGroups.objects.filter(stage=stage, group_name=group_defaults["group_name"]).first()
+                        if group:
+                            for _k, _v in group_defaults.items():
+                                setattr(group, _k, _v)
+                            group.stage = stage
+                            group.save()
+                        else:
+                            group = StageGroups.objects.create(stage=stage, **group_defaults)
 
                     kept_group_ids.append(group.group_id)
                     # ---- Sync Matches + Leaderboard ----
@@ -3537,12 +3582,16 @@ def get_event_details(request):
     # ============================================================
     stages_payload = []
 
-    stages = event.stages.all().order_by("start_date", "stage_id")
+    # Display order (reorder feature, owner 2026-06-15): stage_order is the saved manual order
+    # (1-based) and wins when set; stage_order=0 means "auto-arrange by date" so start_date is the
+    # tiebreak, stage_id last for stability. Mirrors Stages.Meta.ordering. Same rule for groups
+    # (group_order, then playing_date/time). Written by reorder_stages / reorder_groups below.
+    stages = event.stages.all().order_by("stage_order", "start_date", "stage_id")
 
     for stage in stages:
         groups_payload = []
 
-        groups = stage.groups.all().order_by("group_name", "group_id")
+        groups = stage.groups.all().order_by("group_order", "playing_date", "playing_time", "group_id")
 
         for group in groups:
             lb = Leaderboard.objects.filter(
@@ -4123,11 +4172,14 @@ def get_event_details_not_logged_in(request):
 
     # -------- stages / groups / leaderboards / matches (+ stats) --------
     stages_payload = []
-    stages = event.stages.all().order_by("start_date", "stage_id")
+    # Display order (reorder feature, owner 2026-06-15): saved manual order (stage_order, 1-based)
+    # wins; stage_order=0 falls back to auto-by-date. Same as get_event_details, the public mirror
+    # of this logged-in detail view.
+    stages = event.stages.all().order_by("stage_order", "start_date", "stage_id")
 
     for stage in stages:
         groups_payload = []
-        groups = stage.groups.all().order_by("group_name", "group_id")
+        groups = stage.groups.all().order_by("group_order", "playing_date", "playing_time", "group_id")
 
         for group in groups:
             lb = Leaderboard.objects.filter(event=event, stage=stage, group=group).first()
@@ -4802,6 +4854,30 @@ def register_for_event(request):
         )
         if not set(roster_member_ids).issubset(team_member_ids):
             return Response({"message": "One or more roster players are not members of this team."}, status=400)
+
+        # ── EXCLUDE STAFF FROM THE EVENT ROSTER (roster-rules, 2026-06-15) ──
+        # Coach / manager / analyst are support-only (STAFF_ROLES, imported from afc_team.views):
+        # they never play, so they must not appear on a tournament roster even though they belong
+        # to the team. Build the set of this team's staff member ids and reject the registration if
+        # any picked roster id is one of them. The error NAMES the staff so the captain knows who to
+        # drop. (The subset check above already guarantees every picked id belongs to this team.)
+        staff_ids = set(
+            TeamMembers.objects.filter(
+                team=team, management_role__in=STAFF_ROLES
+            ).values_list("member_id", flat=True)
+        )
+        picked_staff_ids = set(roster_member_ids) & staff_ids
+        if picked_staff_ids:
+            staff_names = list(
+                User.objects.filter(user_id__in=picked_staff_ids).values_list("username", flat=True)
+            )
+            return Response({
+                "message": (
+                    "Staff (coach, manager, or analyst) cannot be put on an event roster. "
+                    f"Remove: {', '.join(staff_names)}."
+                ),
+                "staff_user_ids": list(picked_staff_ids),
+            }, status=400)
 
         # ── ESPORT-IMAGE CRITERIA (owner 2026-06-12) ──
         # When required, EVERY roster member must have their esport image uploaded
@@ -7853,8 +7929,11 @@ def get_event_details_for_admin(request):
 
     # ---------------- STAGES DETAIL (FIXED + LEADERBOARD + SOLO SUPPORT) ----------------
     stages_data = []
-    for stage in event.stages.all().order_by("start_date", "stage_id"):
-        groups = stage.groups.all()
+    # Display order (reorder feature, owner 2026-06-15): saved manual order (stage_order/group_order,
+    # 1-based) wins; order=0 falls back to auto-by-date/time. Matches get_event_details so admins see
+    # the same sequence as the public/logged-in pages.
+    for stage in event.stages.all().order_by("stage_order", "start_date", "stage_id"):
+        groups = stage.groups.all().order_by("group_order", "playing_date", "playing_time", "group_id")
         group_details = []
 
         for group in groups:
@@ -11270,11 +11349,14 @@ def get_all_leaderboard_details_for_event(request):
         return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     stages_payload = []
-    stages = event.stages.all().order_by("stage_id")
+    # Display order (reorder feature, owner 2026-06-15): saved manual order (stage_order/group_order,
+    # 1-based) wins; order=0 falls back to auto-by-date/time. Same rule as get_event_details so the
+    # results editor lists stages/groups in the order organizers arranged them.
+    stages = event.stages.all().order_by("stage_order", "start_date", "stage_id")
 
     for stage in stages:
         groups_payload = []
-        groups = stage.groups.all().order_by("group_id")
+        groups = stage.groups.all().order_by("group_order", "playing_date", "playing_time", "group_id")
 
         for group in groups:
             leaderboard = Leaderboard.objects.filter(event=event, stage=stage, group=group).first()
@@ -11733,8 +11815,10 @@ def get_event_group_rosters(request):
         }
 
     stages_payload = []
-    # Order stages deterministically (creation order) so the FE renders Stage 1..N.
-    for stage in event.stages.all().order_by("stage_id"):
+    # Display order (reorder feature, owner 2026-06-15): saved manual order (stage_order, 1-based)
+    # wins so the FE renders the sequence organizers arranged; stage_order=0 falls back to
+    # auto-by-date. Matches get_event_details / the live event detail views.
+    for stage in event.stages.all().order_by("stage_order", "start_date", "stage_id"):
         groups_payload = []
 
         # ── ROUND-ROBIN branch ──
@@ -11778,7 +11862,9 @@ def get_event_group_rosters(request):
             continue  # RR stage fully handled; skip the StageGroups path below.
 
         # ── STANDARD branch (non-RR): groups are StageGroups rows ──
-        for group in stage.groups.all().order_by("group_id"):
+        # Display order: saved manual order (group_order, 1-based) wins; group_order=0 falls back
+        # to auto-by-date/time (reorder feature, owner 2026-06-15).
+        for group in stage.groups.all().order_by("group_order", "playing_date", "playing_time", "group_id"):
 
             if is_solo:
                 # ── SOLO sub-branch: competitors carry a `player` FK to
@@ -12341,17 +12427,19 @@ def advance_group_competitors_to_next_stage(request):
             "missing_results_matches_count": not_done,
         }, status=400)
 
-    # 2) Find next stage
-    if stage.start_date:
-        next_stage = (Stages.objects
-                      .filter(event=event, start_date__gt=stage.start_date)
-                      .order_by("start_date", "stage_id")
-                      .first())
-    else:
-        next_stage = (Stages.objects
-                      .filter(event=event, stage_id__gt=stage.stage_id)
-                      .order_by("stage_id")
-                      .first())
+    # 2) Find next stage — follow the CANONICAL display order so advancement honours a manual
+    #    reorder (owner 2026-06-15). order_by("stage_order", "start_date", "stage_id") is the same
+    #    ordering get_event_details + the standings builder use: manual stage_order wins, and when
+    #    orders are equal (all 0 = auto) it falls back to start_date then stage_id. The "next stage"
+    #    is simply the stage immediately AFTER the current one in that order.
+    ordered_stages = list(
+        Stages.objects.filter(event=event).order_by("stage_order", "start_date", "stage_id")
+    )
+    next_stage = None
+    for _i, _s in enumerate(ordered_stages):
+        if _s.stage_id == stage.stage_id:
+            next_stage = ordered_stages[_i + 1] if _i + 1 < len(ordered_stages) else None
+            break
 
     if not next_stage:
         return Response({"message": "No next stage found after this stage."}, status=400)
@@ -12535,18 +12623,18 @@ def advance_round_robin(request):
     if stage.stage_format != "br - round robin":
         return Response({"message": "Stage is not a Round-Robin stage."}, status=400)
 
-    # Find the next stage exactly the way the existing advance does (start_date first,
-    # falling back to stage_id ordering), so both paths agree on "the next stage".
-    if stage.start_date:
-        next_stage = (Stages.objects
-                      .filter(event=event, start_date__gt=stage.start_date)
-                      .order_by("start_date", "stage_id")
-                      .first())
-    else:
-        next_stage = (Stages.objects
-                      .filter(event=event, stage_id__gt=stage.stage_id)
-                      .order_by("stage_id")
-                      .first())
+    # Find the next stage the SAME way advance_group_competitors_to_next_stage does: the stage
+    # immediately after this one in the CANONICAL display order (manual stage_order wins, else
+    # start_date then stage_id), so advancement honours a manual reorder (owner 2026-06-15) and
+    # both advance paths agree on "the next stage".
+    ordered_stages = list(
+        Stages.objects.filter(event=event).order_by("stage_order", "start_date", "stage_id")
+    )
+    next_stage = None
+    for _i, _s in enumerate(ordered_stages):
+        if _s.stage_id == stage.stage_id:
+            next_stage = ordered_stages[_i + 1] if _i + 1 < len(ordered_stages) else None
+            break
 
     if not next_stage:
         return Response({"message": "No next stage found after this stage."}, status=400)
@@ -13130,6 +13218,71 @@ def delete_match(request):
         "renumbered": renumber,
         "force": force,
     }, status=200)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# REDO MAP (owner 2026-06-15): clear ONE map's results without deleting the Match.
+#
+# Difference from delete_match (above): delete_match removes the Match row entirely
+# (and renumbers the rest). clear_match_result KEEPS the Match — it only wipes the
+# entered stats so the admin can re-enter results for that single map. Used by the
+# "Redo this map" button on the admin leaderboard edit page.
+#
+# Connects to:
+#   - FE caller: app/(a)/a/leaderboards/[id]/edit/page.tsx (destructive "Redo map"
+#     button in the save footer) -> POST /events/clear-match-result/.
+#   - Data wiped: TournamentPlayerMatchStats (via team_stats__match) +
+#     TournamentTeamMatchStats (team events) + SoloPlayerMatchStats (solo events).
+#   - Match flags reset: result_inputted -> False, leaderboard/upload_method -> None,
+#     so the map repaints blank and the standings recompute without it.
+#   - Auth mirrors delete_match: AFC event admin OR org member with
+#     can_upload_results on the event's owning org (org_can_event).
+# ──────────────────────────────────────────────────────────────────────────────
+@api_view(["POST"])
+def clear_match_result(request):
+    """
+    Clear (reset to blank) the results of a SINGLE map (one Match row), leaving the Match
+    itself and all OTHER maps untouched.
+
+    Request:  { "match_id": int, "force": bool (optional) }
+    Auth:     Bearer; AFC event admin OR can_upload_results on the event's owning org.
+    Response: 200 {"message", "match_id"}.
+    """
+    # -------------- AUTH --------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    # -------------- INPUT --------------
+    match_id = request.data.get("match_id")
+    force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
+    match = get_object_or_404(Match, match_id=match_id)
+
+    # ── AUTH (event-scoped): same gate as delete_match — event derived via
+    #    match_id -> match.group.stage.event. Native (org=None) events stay admin-only.
+    _event = match.group.stage.event if match.group else None
+    if not _is_event_admin(admin) and not (_event and org_can_event(admin, "can_upload_results", _event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+
+    if not match.result_inputted and not force:
+        return Response({"message": "This map has no results to clear.", "match_id": match.match_id}, status=400)
+
+    with transaction.atomic():
+        # Run all three deletes unconditionally — each is a no-op for the wrong event type
+        # (team events have team/player stats, solo events have solo stats).
+        TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
+        TournamentTeamMatchStats.objects.filter(match=match).delete()
+        SoloPlayerMatchStats.objects.filter(match=match).delete()
+        match.result_inputted = False
+        match.leaderboard = None
+        match.upload_method = None
+        match.save(update_fields=["result_inputted", "leaderboard", "upload_method"])
+
+    return Response({"message": "Map results cleared. You can re-enter results for this map.",
+                     "match_id": match.match_id}, status=200)
 
 
 @api_view(["POST"])
@@ -17277,6 +17430,153 @@ def edit_roster(request):
     }, status=200)
 
 
+@api_view(["POST"])
+def add_player_to_event_roster(request):
+    """
+    Add ONE existing team member to a team's roster for an event (admin / organizer surface).
+
+    Unlike edit_roster (which REPLACES the whole roster via a diff of roster_member_ids), this
+    is an additive, single-player operation: it appends one TournamentTeamMember to the team's
+    roster for this event and leaves every other rostered player untouched. It exists so AFC
+    staff / organizers can patch a single missing player without re-sending the full roster.
+
+    Request (POST, JSON):
+        {
+          "event_id": int,                         # required
+          "tournament_team_id": int (optional),    # the TournamentTeam to add to
+          "team_id": int (optional),               # OR resolve the TournamentTeam via (event, team)
+          "user_id": int                           # required: the team member to add
+        }
+        Supply either tournament_team_id OR team_id (tournament_team_id wins if both are sent).
+
+    Response:
+        200 {"message", "tournament_team_id", "added_user_id", "roster_size"}
+        400 invalid input / staff role / not a team member / roster already at 6
+        401 invalid session
+        403 not authorised, or matches have started (roster locked)
+        404 event / team / user / roster not found
+        409 player already on this event roster (unique_together (tournament_team, user))
+
+    Auth:
+        Bearer token. Gate mirrors edit_roster's manager override: an AFC event admin
+        (_is_event_admin) OR an organizer holding can_manage_registrations on the event's owning
+        org (org_can_event). This is an admin-only add, so it does NOT accept the team captain.
+
+    Connects to:
+        - Reuses edit_roster's guards: match-start lock (no edits after results), same-team
+          membership, STAFF_ROLES exclusion, the 6-player ceiling on TournamentTeamMember, the
+          (tournament_team, user) uniqueness, and the final check_and_activate_team(tt) re-derive.
+        - Writes one TournamentTeamMember row (afc_tournament_and_scrims.models).
+        - FE surface: the admin "Add player" control (ManualMatchResultStep.tsx / the Player Stats
+          section of app/(a)/a/leaderboards/[id]/edit/page.tsx). URL: /events/add-player-to-event-roster/.
+    """
+    # ---------------- AUTH ----------------
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    # ---------------- INPUT ----------------
+    event_id = request.data.get("event_id")
+    tournament_team_id = request.data.get("tournament_team_id")
+    team_id = request.data.get("team_id")
+    add_user_id = request.data.get("user_id")
+
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    if not add_user_id:
+        return Response({"message": "user_id is required."}, status=400)
+    if not tournament_team_id and not team_id:
+        return Response({"message": "tournament_team_id or team_id is required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    # ---------------- PERMISSION (admin / organizer only) ----------------
+    # Same manager gate as edit_roster: AFC event admin OR an organizer with
+    # can_manage_registrations on the event's owning org. No captain self-serve here.
+    is_manager = _is_event_admin(user) or org_can_event(user, "can_manage_registrations", event)
+    if not is_manager:
+        return Response({"message": "You do not have permission to manage rosters for this event."}, status=403)
+
+    # ---------------- RESOLVE THE TOURNAMENT TEAM ----------------
+    # tournament_team_id wins when both are supplied; otherwise resolve by (event, team).
+    if tournament_team_id:
+        tt = TournamentTeam.objects.filter(event=event, tournament_team_id=tournament_team_id).first()
+    else:
+        team = get_object_or_404(Team, team_id=team_id)
+        tt = TournamentTeam.objects.filter(event=event, team=team).first()
+    if not tt:
+        return Response({"message": "Team is not registered for this event."}, status=404)
+
+    team = tt.team
+
+    # ---------------- MATCH START LOCK (not bypassed, even for staff) ----------------
+    # Same lock edit_roster enforces: editing a roster after any match has results would orphan
+    # the match stats, so the roster is frozen once results exist.
+    if Match.objects.filter(group__stage__event=event, result_inputted=True).exists():
+        return Response({"message": "Roster cannot be edited after matches have started."}, status=403)
+
+    # ---------------- VALIDATE THE PLAYER ----------------
+    add_user = User.objects.filter(user_id=add_user_id).first()
+    if not add_user:
+        return Response({"message": "User not found."}, status=404)
+
+    # Same-team membership: the player must belong to THIS team (mirrors edit_roster's subset
+    # check, scoped to the single added user).
+    membership = TeamMembers.objects.filter(team=team, member_id=add_user_id).first()
+    if not membership:
+        return Response({"message": "This player is not a member of the team."}, status=400)
+
+    # Exclude STAFF_ROLES: coach / manager / analyst are support-only and never rostered
+    # (same rule as register_for_event; STAFF_ROLES imported from afc_team.views).
+    if membership.management_role in STAFF_ROLES:
+        return Response({
+            "message": (
+                "Staff (coach, manager, or analyst) cannot be added to an event roster. "
+                "Only players can be rostered."
+            )
+        }, status=400)
+
+    # Already on this event roster? unique_together (tournament_team, user) would raise, so we
+    # answer with a clean 409 instead of a 500.
+    if TournamentTeamMember.objects.filter(tournament_team=tt, user=add_user).exists():
+        return Response({"message": "This player is already on the event roster."}, status=409)
+
+    # 6-player ceiling: do not exceed 6 TournamentTeamMember rows for this team in this event
+    # (the same squad ceiling register_for_event / edit_roster enforce).
+    MAX_EVENT_ROSTER = 6
+    if TournamentTeamMember.objects.filter(tournament_team=tt).count() >= MAX_EVENT_ROSTER:
+        return Response({
+            "message": f"This roster already has the maximum of {MAX_EVENT_ROSTER} players."
+        }, status=400)
+
+    # ---------------- ADD + RE-DERIVE TEAM STATE ----------------
+    # Mirror edit_roster's ADD block + its final check_and_activate_team re-derive, in one
+    # transaction so the member write and the team-status refresh commit atomically. A new member
+    # for a sponsored event is created "pending" (needs sponsor review); non-sponsored -> "active".
+    with transaction.atomic():
+        TournamentTeamMember.objects.create(
+            tournament_team=tt,
+            user=add_user,
+            event=event,
+            status="pending" if event.is_sponsored else "active",
+        )
+        # Reopens the team for sponsor re-review if the add left any member non-active;
+        # otherwise an idempotent refresh (see check_and_activate_team docstring).
+        check_and_activate_team(tt)
+
+    roster_size = TournamentTeamMember.objects.filter(tournament_team=tt).count()
+    return Response({
+        "message": f"{add_user.username} added to the event roster.",
+        "tournament_team_id": tt.tournament_team_id,
+        "added_user_id": add_user.user_id,
+        "roster_size": roster_size,
+    }, status=200)
+
+
 # @api_view(["POST"])
 # def edit_roster(request):
 #     # ---------------- AUTH ----------------
@@ -18667,3 +18967,167 @@ def download_esport_media(request):
     safe_label = _re.sub(r"[^A-Za-z0-9._-]+", "-", zip_label).strip("-") or "esport-media"
     response["Content-Disposition"] = f'attachment; filename="{safe_label}-media.zip"'
     return response
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# REORDER STAGES + GROUPS (manual drag-to-arrange, owner feature 2026-06-15)
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# DESIGN (owner rule): stages/groups are "automatically arranged based off the dates and times,
+# except when an organizer/admin specifically rearranges (and it warns them about the dates)."
+#   • Stages.stage_order / StageGroups.group_order default to 0 = "auto-arrange by date/time"
+#     (the date is the ordering tiebreak, see Stages.Meta.ordering / StageGroups.Meta.ordering and
+#     the display-ordering order_by calls in get_event_details et al.).
+#   • A manual reorder here writes DISTINCT 1-based orders, which OVERRIDE the date sort everywhere
+#     the structure is displayed.
+#   • Because a manual order can diverge from the schedule, each endpoint returns a `warning` string
+#     when the requested sequence differs from the chronological one, so the FE can toast the user.
+#
+# AUTH: AFC event admins (_is_event_admin) always pass; otherwise an organizer with
+# can_edit_events on the event's owning org (org_can_event). Native (org=None) AFC events are
+# admin-only (org_can_event handles that). Same gate shape as edit_event.
+#
+# CONSUMED BY: frontend app/(a)/a/events/[slug]/edit/_components/StagesGroupsTab.tsx, the drag
+# handles on each stage row POST /events/reorder-stages/, and on each group row POST
+# /events/reorder-groups/, then refetch via the tab's onRefresh (fetchEventDetails). The warning is
+# shown via a sonner info toast.
+
+def _reorder_auth(request):
+    """Resolve the Bearer-token user for the reorder endpoints, or return (None, error Response).
+    Mirrors the seed endpoints' inline auth shape (Authorization: Bearer <SessionToken>)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+    return user, None
+
+
+def _can_edit_event(user, event):
+    """Who may rearrange this event's structure: AFC event admins always; organizers holding
+    can_edit_events on the owning org. Native (org=None) events are admin-only (org_can_event)."""
+    return _is_event_admin(user) or org_can_event(user, "can_edit_events", event)
+
+
+@api_view(["POST"])
+def reorder_stages(request):
+    """Persist a MANUAL stage order for one event (drag-to-arrange).
+
+    REQUEST   POST events/reorder-stages/
+        Body: {"event_id": int, "stage_ids": [<stage_id>, ...]}  (the new top-to-bottom order)
+        Auth: Authorization: Bearer <SessionToken>.
+
+    RESPONSE  200 {"message", "warning": str|null, "updated": int}
+        warning is set when the requested order differs from the chronological order (stages
+        sorted by start_date) so the FE can tell the user "this order differs from the dates".
+        400 invalid token / bad body; 401 expired; 403 no permission; 404 event not found.
+
+    BEHAVIOUR
+        Each listed stage gets stage_order = index + 1 (1-based, distinct), which OVERRIDES the
+        default auto-by-date sort (stage_order=0). Only stages belonging to `event` are touched;
+        unknown / foreign ids are ignored. bulk_update keeps it to a single write.
+    """
+    user, err = _reorder_auth(request)
+    if err:
+        return err
+
+    event = get_object_or_404(Event, event_id=request.data.get("event_id"))
+    if not _can_edit_event(user, event):
+        return Response({"message": "You do not have permission to reorder stages for this event."}, status=403)
+
+    stage_ids = request.data.get("stage_ids") or []
+    if not isinstance(stage_ids, list) or not stage_ids:
+        return Response({"message": "stage_ids must be a non-empty list of stage ids."}, status=400)
+
+    # Only act on stages that actually belong to this event (ignore foreign / stale ids).
+    stages_by_id = {s.stage_id: s for s in event.stages.all()}
+    ordered = [stages_by_id[sid] for sid in stage_ids if sid in stages_by_id]
+    if not ordered:
+        return Response({"message": "None of the supplied stage ids belong to this event."}, status=400)
+
+    # Assign 1-based manual orders in the requested sequence; this overrides auto-by-date.
+    for index, stage in enumerate(ordered):
+        stage.stage_order = index + 1
+    Stages.objects.bulk_update(ordered, ["stage_order"])
+
+    # Warn if the manual order diverges from the schedule. Chronological order = the same stages
+    # sorted by start_date (None dates sort last, stable on stage_id), compare id sequences.
+    chronological = sorted(
+        ordered,
+        key=lambda s: (s.start_date is None, s.start_date or date.max, s.stage_id),
+    )
+    requested_seq = [s.stage_id for s in ordered]
+    chronological_seq = [s.stage_id for s in chronological]
+    warning = ("This order differs from the scheduled dates."
+               if requested_seq != chronological_seq else None)
+
+    return Response({
+        "message": "Stage order saved.",
+        "warning": warning,
+        "updated": len(ordered),
+    }, status=200)
+
+
+@api_view(["POST"])
+def reorder_groups(request):
+    """Persist a MANUAL group order within one stage (drag-to-arrange).
+
+    REQUEST   POST events/reorder-groups/
+        Body: {"stage_id": int, "group_ids": [<group_id>, ...]}  (the new top-to-bottom order)
+        Auth: Authorization: Bearer <SessionToken>.
+
+    RESPONSE  200 {"message", "warning": str|null, "updated": int}
+        warning is set when the requested order differs from the chronological order (groups
+        sorted by playing_date then playing_time) so the FE can warn the user about the dates.
+        400 invalid token / bad body; 401 expired; 403 no permission; 404 stage not found.
+
+    BEHAVIOUR
+        Each listed group gets group_order = index + 1 (1-based, distinct), which OVERRIDES the
+        default auto-by-date/time sort (group_order=0). Only groups belonging to `stage` are
+        touched. Permission is resolved via the group's stage.event (same gate as reorder_stages).
+    """
+    user, err = _reorder_auth(request)
+    if err:
+        return err
+
+    stage = get_object_or_404(Stages, stage_id=request.data.get("stage_id"))
+    event = stage.event
+    if not _can_edit_event(user, event):
+        return Response({"message": "You do not have permission to reorder groups for this event."}, status=403)
+
+    group_ids = request.data.get("group_ids") or []
+    if not isinstance(group_ids, list) or not group_ids:
+        return Response({"message": "group_ids must be a non-empty list of group ids."}, status=400)
+
+    # Only act on groups that actually belong to this stage (ignore foreign / stale ids).
+    groups_by_id = {g.group_id: g for g in stage.groups.all()}
+    ordered = [groups_by_id[gid] for gid in group_ids if gid in groups_by_id]
+    if not ordered:
+        return Response({"message": "None of the supplied group ids belong to this stage."}, status=400)
+
+    # Assign 1-based manual orders in the requested sequence; this overrides auto-by-date/time.
+    for index, group in enumerate(ordered):
+        group.group_order = index + 1
+    StageGroups.objects.bulk_update(ordered, ["group_order"])
+
+    # Warn if the manual order diverges from the schedule. Chronological order = the same groups
+    # sorted by playing_date then playing_time (None values sort last, stable on group_id).
+    from datetime import time as _time
+    chronological = sorted(
+        ordered,
+        key=lambda g: (
+            g.playing_date is None, g.playing_date or date.max,
+            g.playing_time is None, g.playing_time or _time.max,
+            g.group_id,
+        ),
+    )
+    requested_seq = [g.group_id for g in ordered]
+    chronological_seq = [g.group_id for g in chronological]
+    warning = ("This order differs from the scheduled dates."
+               if requested_seq != chronological_seq else None)
+
+    return Response({
+        "message": "Group order saved.",
+        "warning": warning,
+        "updated": len(ordered),
+    }, status=200)

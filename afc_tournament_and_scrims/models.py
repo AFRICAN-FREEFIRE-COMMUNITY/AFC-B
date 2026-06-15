@@ -260,6 +260,16 @@ class Stages(models.Model):
         related_name="point_rush_sources",  # target.point_rush_sources -> stages that feed it
     )
 
+    # Explicit display order (owner 2026-06-15 reorder feature). Default 0 = "auto by date":
+    # equal orders fall back to start_date then stage_id, so stages auto-sort chronologically
+    # until an admin/organizer manually reorders them (which sets distinct orders that win).
+    # Mirrors RoundRobinGroup.order. Set by create_event/edit_event (submit sequence) and by
+    # the reorder-stages endpoint. Consumed by get_event_details + the standings builder.
+    stage_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["stage_order", "start_date", "stage_id"]
+
 class StageGroups(models.Model):
     group_id = models.AutoField(primary_key=True)
     stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="groups")
@@ -282,6 +292,15 @@ class StageGroups(models.Model):
     # because it is declared after this class (forward reference).
     game_day = models.PositiveIntegerField(null=True, blank=True)
     source_groups = models.ManyToManyField("RoundRobinGroup", blank=True, related_name="lobbies")
+
+    # Explicit display order (owner 2026-06-15 reorder feature). Default 0 = "auto by date/time":
+    # equal orders fall back to playing_date, playing_time, then group_id. A manual reorder sets
+    # distinct orders that override the chronological sort. Set by create_event/edit_event and the
+    # reorder-groups endpoint; consumed by get_event_details + the standings builder.
+    group_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["group_order", "playing_date", "playing_time", "group_id"]
 
 
 # ---------------- Round-Robin Base Group ----------------
@@ -675,6 +694,39 @@ class EventPrizePayout(models.Model):
         indexes = [
             models.Index(fields=["event", "user"]),
             models.Index(fields=["event", "tournament_team"]),
+        ]
+
+
+class PlayerWinning(models.Model):
+    """Individual player's share of an event prize payout (owner 2026-06-15).
+
+    When an admin/organizer records a team prize (EventPrizePayout) for a winning TournamentTeam,
+    that payout is split among the team's ACTIVE members and one PlayerWinning row is written per
+    member, so the prize shows up in each player's OWN history/stats, not only the team's
+    total_earnings. Distribution happens in afc_rankings.admin_prize.prize_create (the single place
+    EventPrizePayout rows are created) and is re-derived (delete-then-recreate keyed on `payout`) if
+    the payout changes, so re-saving a prize never double-counts a player.
+
+    Connects to: EventPrizePayout (source, via `payout`), TournamentTeam (the winning team),
+    Event, and User (the player). Surfaced on the player profile through afc_player stats
+    (tournament_winnings) and consumed by the frontend players/[username] profile.
+    """
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="player_winnings")
+    tournament_team = models.ForeignKey(
+        TournamentTeam, null=True, blank=True, on_delete=models.CASCADE, related_name="player_winnings")
+    player = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="tournament_winnings")
+    # Source payout this share was derived from. Delete-then-recreate by payout keeps it idempotent.
+    payout = models.ForeignKey(
+        EventPrizePayout, null=True, blank=True, on_delete=models.CASCADE, related_name="player_winnings")
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)  # this player's share, NGN
+    share_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["event", "player"]),
+            models.Index(fields=["player", "created_at"]),
         ]
 
 
