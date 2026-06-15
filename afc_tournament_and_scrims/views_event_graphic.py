@@ -19,6 +19,9 @@ NOTE (rush): cumulative_standings is the raw whole-stage table; the per-lobby Po
 is NOT folded in here (matches round_robin's spec), so a placed RUSH column renders empty for a
 stage exported this way. Booyah/PP/KP/TP/kills/matches are all present.
 """
+import io
+import zipfile
+
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -27,8 +30,8 @@ from django.http import HttpResponse
 from afc.api_utils import authenticate as _authenticate
 from afc_organizers.permissions import org_can_event
 from afc_organizers.models import OrgLeaderboardDesign
-from afc_organizers.views_leaderboard_design import build_field_layout
-from afc_leaderboard.graphic import render_leaderboard_graphic
+from afc_organizers.views_leaderboard_design import build_field_layout, build_pages_for_export
+from afc_leaderboard.graphic import render_leaderboard_graphic, render_design_all_pages
 
 from afc_tournament_and_scrims.models import Event, Stages, TournamentTeam
 from afc_tournament_and_scrims import round_robin
@@ -145,6 +148,33 @@ def event_stage_graphic(request, event_id, stage_id):
     subtitle = request.query_params.get("subtitle")
     if subtitle is None:
         subtitle = stage.stage_name or ""
+
+    # ── Multi-page export (owner 2026-06-14) ── ?page=all returns a ZIP of one PNG per design page.
+    # Backward compatible: any other (or no) ?page value falls through to the single-PNG path below.
+    # Consumed by the FE EventStageExportGraphicDialog, which requests page=all when the design has
+    # >1 page. build_pages_for_export returns 1 entry for a single-page (legacy) design, N otherwise.
+    page_param = (request.query_params.get("page") or "").strip().lower()
+    want_all_pages = (page_param == "all") and design is not None
+
+    if want_all_pages:
+        pages_spec = build_pages_for_export(design)
+        if len(pages_spec) > 1:
+            pngs = render_design_all_pages(
+                rows, pages_spec, size=size,
+                logos=logos, title=title, subtitle=subtitle,
+                text_color=text_color, accent_color=accent_color,
+                max_rows=max_rows, show_title=show_title, show_subtitle=show_subtitle,
+            )
+            zip_buf = io.BytesIO()
+            safe_name = f"{event.event_name}-{stage.stage_name or 'stage'}".replace(" ", "_")
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for i, png in enumerate(pngs, start=1):
+                    zf.writestr(f"{safe_name}-{size}-page{i}.png", png)
+            zip_buf.seek(0)
+            resp = HttpResponse(zip_buf.read(), content_type="application/zip")
+            resp["Content-Disposition"] = f'attachment; filename="{safe_name}-{size}-all-pages.zip"'
+            return resp
+        # else: design is actually single-page; fall through to the single-PNG path below.
 
     png = render_leaderboard_graphic(
         legacy, size=size, background_path=bg, logos=logos, title=title, subtitle=subtitle,

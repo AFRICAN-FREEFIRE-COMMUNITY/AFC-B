@@ -19,6 +19,7 @@ from .event_links import (
     list_links,
     link_chain,
     public_inbound_links,
+    public_structure_links,
     import_competitors,
     cancel_link,
     fire_link_view,
@@ -38,6 +39,15 @@ from .head_to_head_views import (
 # (frontend SponsorEngagementForm). Own module, same isolation rationale as
 # event_payments / event_links.
 from .roster_discord import roster_discord_status
+# Seeding undo/redo + delete-and-reseed (owner 2026-06-15): admins AND organizers reorganise
+# competitor placement after the initial seed. Own module, same isolation rationale as
+# event_payments / event_links. Spec: WEBSITE/tasks/seeding-undo-redo-delete-reseed-plan.md.
+from .seeding_management import (
+    undo_seeding,
+    reseed_into_groups,
+    delete_group_managed,
+    delete_stage_managed,
+)
 from .views_event_graphic import event_stage_graphic
 from django.conf import settings
 from django.conf.urls.static import static
@@ -64,6 +74,10 @@ urlpatterns = [
     path('<int:event_id>/links/', list_links, name='list_event_links'),               # GET
     path('<int:event_id>/links/chain/', link_chain, name='event_link_chain'),         # GET (P3 chain map)
     path('<int:event_id>/links/public/', public_inbound_links, name='public_inbound_links'),  # GET (public provenance)
+    # Public, no-auth structure read (owner 2026-06-15): BOTH directions of an event's
+    # qualification links (inbound feeders + outbound destinations, with slugs) for the public
+    # tournament page's "Qualification Links" chips. See event_links.public_structure_links.
+    path('<int:event_id>/links/structure/', public_structure_links, name='public_structure_links'),  # GET (public structure)
     # Event MERGE (owner 2026-06-12): bulk-enter every confirmed competitor of N same-type
     # source events into this one (e.g. the Dynasty Cup country events into one finals).
     path('<int:event_id>/import-competitors/', import_competitors, name='import_event_competitors'),  # POST
@@ -145,6 +159,23 @@ urlpatterns = [
     path('edit-leaderboard/', edit_leaderboard, name='edit_leaderboard'),
     path('remove-non-nigeria-registered-competitors/', remove_non_nigeria_registered_competitors, name='remove_non_nigeria_registered_competitors'),
     path('delete-match/', delete_match, name='delete_match'),
+    # Redo map (owner 2026-06-15): wipe one map's results without deleting the Match.
+    # FE: app/(a)/a/leaderboards/[id]/edit/page.tsx "Redo this map" button.
+    path('clear-match-result/', clear_match_result, name='clear_match_result'),
+    # Seeding management (owner 2026-06-15): undo/redo group seeding + delete group/stage with a
+    # disposition choice (auto-redistribute / manual / delete-all). Admin + organizer (org-aware).
+    # FE: ActionsTab "Seeding management" section + organizer event groups page.
+    path('seeding/undo/', undo_seeding, name='seeding_undo'),
+    path('seeding/reseed/', reseed_into_groups, name='seeding_reseed'),
+    path('seeding/delete-group/', delete_group_managed, name='seeding_delete_group'),
+    path('seeding/delete-stage/', delete_stage_managed, name='seeding_delete_stage'),
+    # Reorder stages / groups (manual drag-to-arrange, owner 2026-06-15). Default order=0 means
+    # "auto-arrange by date/time"; these endpoints write 1-based orders that override the date sort
+    # (and return a `warning` when the manual order diverges from the schedule). Views
+    # reorder_stages / reorder_groups live in views.py (auto-imported via `from .views import *`).
+    # FE: app/(a)/a/events/[slug]/edit/_components/StagesGroupsTab.tsx drag handles.
+    path('reorder-stages/', reorder_stages, name='reorder_stages'),
+    path('reorder-groups/', reorder_groups, name='reorder_groups'),
     path('edit-match-details/', edit_match_details, name='edit_match_details'),
     # DEPRECATED / HIDDEN: manual leaderboard creation is no longer used. Leaderboards
     # are created AUTOMATICALLY for every group when an event's stages/groups/maps are
@@ -186,6 +217,9 @@ urlpatterns = [
     path("get-sponsor-details/", get_sponsor_details, name="get_sponsor_details"),
     path("edit-sponsor-details/", edit_sponsor_details, name="edit_sponsor_details"),
     path("edit-roster/", edit_roster, name="edit_roster"),
+    # Admin / organizer single-player roster add (roster-rules, 2026-06-15). Additive sibling of
+    # edit-roster/: appends ONE TournamentTeamMember. View: add_player_to_event_roster.
+    path("add-player-to-event-roster/", add_player_to_event_roster, name="add_player_to_event_roster"),
     path("get-roster-details/", get_roster_details, name="get_roster_details"),
     path("total-members-this-month/", total_members_this_month, name="total_members_this_month"),
     path("total-team-this-month/", total_teams_this_month, name="total_teams_this_month"),

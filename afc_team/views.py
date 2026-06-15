@@ -44,6 +44,46 @@ def _is_player_banned(user):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Roster role families + the 6-player cap (single source of truth)
+#
+# A member's role is the single `management_role` CharField on TeamMembers
+# (afc_team/models.py). Its choices MIX two families with very different rules:
+#   - PLAYING roles  (team_captain / vice_captain / member): these are the people who
+#     can be fielded; they count toward the 6-player cap and are the only members
+#     eligible to be put on a tournament roster.
+#   - STAFF roles    (coach / manager / analyst): support-only. They never play, never
+#     count toward the cap, and must never be picked for an event roster.
+# There is NO boolean on the model that distinguishes the two, so this split lives here
+# as the canonical constant pair. It was previously duplicated as locals inside
+# manage_team_roster; it is promoted to module scope so EVERY cap / eligibility check
+# (manage_team_roster, the invite-accept path) shares one definition.
+#
+# Consumed by:
+#   - manage_team_roster (POST /team/manage-roster/) — enforces the 6 PLAYING cap when a
+#     member is moved INTO a playing role.
+#   - respond_to_invite (POST /team/respond-to-invite/) — the invite-accept path that adds
+#     a new member; rejects a 7th playing member.
+#   - afc_tournament_and_scrims.register_for_event / add_player_to_event_roster import
+#     STAFF_ROLES from here to keep coach/manager/analyst off event rosters (single rule).
+# ──────────────────────────────────────────────────────────────────────────
+PLAYER_ROLES = {"team_captain", "vice_captain", "member"}   # PLAYING — count toward the 6 cap
+STAFF_ROLES = {"coach", "manager", "analyst"}               # MANAGEMENT — never play / never rostered
+MAX_PLAYERS = 6
+
+
+def _playing_member_count(team):
+    """Count of PLAYING-role members on a team (the basis for the 6-player cap).
+
+    Counts TeamMembers whose management_role is in PLAYER_ROLES (captain / vice / member).
+    Staff (coach / manager / analyst) are excluded because they never occupy a player slot.
+    This is the canonical cap basis (NOT in_game_role) per the roster-rules spec.
+    """
+    return TeamMembers.objects.filter(
+        team=team, management_role__in=PLAYER_ROLES
+    ).count()
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Team-tag helper (shared by create_team and edit_team)
 #
 # team_tag (Team.team_tag, CharField(max_length=5, null=True)) is the short team handle
@@ -1533,13 +1573,22 @@ def respond_invite(request, invite_id):
         if TeamMembers.objects.filter(team=invite.team).count() >= 8:
             return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Ensure there are not more than 6 players with member management role.
-        # Explain the rule so the inviter/joiner knows the fix is to use a staff role.
-        player_count = TeamMembers.objects.filter(team=invite.team, management_role='member').count()
-        if player_count > 6:
+        # Ensure the team is not already at the 6 PLAYING-member cap before adding another
+        # player. Two bugs were fixed here (roster-rules, 2026-06-15):
+        #   1. Off-by-one: the old guard used `> 6`, which let a 7th player slip in (the
+        #      check should reject when the team is ALREADY at the cap, i.e. `>= MAX_PLAYERS`,
+        #      because this request is about to add one more).
+        #   2. Wrong basis: the old count was `management_role='member'` only, so captains and
+        #      vice-captains did not count toward the 6. The cap is over ALL playing roles, so
+        #      we now use the shared _playing_member_count (management_role__in=PLAYER_ROLES).
+        # The cap applies ONLY when the incoming member is joining as a PLAYING role; a staff
+        # join (coach / manager / analyst) never takes a player slot, so it is exempt. The
+        # message explains the fix so the inviter/joiner knows to use a staff role instead.
+        incoming_role = invite.role_to_be_given_upon_acceptance
+        if incoming_role in PLAYER_ROLES and _playing_member_count(invite.team) >= MAX_PLAYERS:
             return Response({
                 'message': (
-                    'This team already has the maximum of 6 players. Anyone else must '
+                    f'This team already has the maximum of {MAX_PLAYERS} players. Anyone else must '
                     'join as staff (coach, manager, or analyst), which does not take a '
                     'player slot.'
                 )
@@ -1697,10 +1746,10 @@ def manage_team_roster(request):
             failures = []
 
             # ── Management-role change rules ──────────────────────────────────────
-            # Role families: PLAYER roles can hold an in-game slot + count toward the 6-player
-            # cap; STAFF roles (coach/manager/analyst) are support-only and cannot be fielded.
-            STAFF_ROLES = {"coach", "manager", "analyst"}
-            PLAYER_ROLES = {"team_captain", "vice_captain", "member"}
+            # Role families come from the module-scope PLAYER_ROLES / STAFF_ROLES constants
+            # defined at the top of this file (the canonical split): PLAYER roles can hold an
+            # in-game slot + count toward the 6-player cap; STAFF roles (coach/manager/analyst)
+            # are support-only and cannot be fielded.
             if new_m_role and new_m_role != tm.management_role:
                 # Crossing the player<->staff boundary is the abuse-prone move (parking an extra
                 # player as "staff" to dodge the 6-player cap, then swapping them back in), so it
@@ -1709,6 +1758,13 @@ def manage_team_roster(request):
                     (tm.management_role in PLAYER_ROLES and new_m_role in STAFF_ROLES)
                     or (tm.management_role in STAFF_ROLES and new_m_role in PLAYER_ROLES)
                 )
+                # 6-PLAYING cap (roster-rules, 2026-06-15): moving a member INTO a playing role
+                # is the action that can push a team past 6 players. Reject when the team is
+                # already at MAX_PLAYERS playing members and this member is not already one of
+                # them (a staff -> player promotion adds a player; a player -> player rename
+                # does not, so it is exempt). Basis = _playing_member_count (PLAYER_ROLES), the
+                # same cap basis used by the invite-accept path.
+                joining_play = new_m_role in PLAYER_ROLES and tm.management_role not in PLAYER_ROLES
                 if tm.member == user:
                     failures.append("You cannot change your own management role")
                 elif tm.member_id == team.team_owner_id:
@@ -1717,6 +1773,12 @@ def manage_team_roster(request):
                     failures.append("Invalid management_role")
                 elif crossing and not _transfer_window_open():
                     failures.append("Player/staff role changes are only allowed during the transfer window")
+                elif joining_play and _playing_member_count(team) >= MAX_PLAYERS:
+                    failures.append(
+                        f"A team can have at most {MAX_PLAYERS} players. To add this person as a "
+                        "player, free a slot first or keep them as staff (coach, manager, or "
+                        "analyst). Staff do not count toward the player limit."
+                    )
                 elif new_m_role in STAFF_ROLES and TeamMembers.objects.filter(
                     team=team, management_role=new_m_role
                 ).exclude(member_id=tm.member_id).exists():

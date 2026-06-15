@@ -264,6 +264,50 @@ class OrgLeaderboardDesignFont(models.Model):
         return f"OrgLeaderboardDesignFont({self.organization_id}: {self.name})"
 
 
+class OrgLeaderboardDesignPage(models.Model):
+    """One PAGE of an OrgLeaderboardDesign (owner 2026-06-14 multi-page).
+
+    A design with 0 Page rows is treated as a SINGLE-PAGE design (backward compatible):
+    the renderer reads backgrounds + column_groups directly from the design row.
+    When >=1 Page rows exist the editor tabs between them; export returns a ZIP of all pages.
+
+    Each page carries its OWN backgrounds (IG + YT) and column_groups geometry so different
+    pages (e.g. ranks 1-16 vs 17-32) can show different numbers of row slots and different
+    backgrounds. page_number is 1-based, unique per design (enforced by unique_together).
+
+    Fields/texts that belong to a page reference it via their nullable `page` FK
+    (OrgLeaderboardDesignField.page / OrgLeaderboardDesignText.page); null = legacy rows
+    that belong to page 1 (the design-level backgrounds/column_groups path).
+
+    Managed by the page sub-endpoints in afc_organizers.views_leaderboard_design
+    (POST .../by-id/<design_id>/pages/, PATCH/DELETE .../pages/<page_id>/).
+    Consumed by DesignFieldsEditor.tsx page tabs and the export endpoints
+    (leaderboard_graphic + event_stage_graphic, which return a ZIP when page=all).
+
+    NOTE: defined ABOVE OrgLeaderboardDesignField/Text so their `page` FK can reference this
+    class directly (Python name resolution at class-body evaluation time).
+    """
+
+    design = models.ForeignKey(
+        OrgLeaderboardDesign, on_delete=models.CASCADE, related_name="pages")
+    page_number = models.PositiveSmallIntegerField()  # 1-based; unique per design
+    background_instagram = models.ImageField(
+        upload_to="org_leaderboard_designs/", null=True, blank=True)
+    background_youtube = models.ImageField(
+        upload_to="org_leaderboard_designs/", null=True, blank=True)
+    # Same column_groups shape as OrgLeaderboardDesign.column_groups. Controls row tiling
+    # for THIS page's fields. Default [] = no field layout (legacy auto-table for this page).
+    column_groups = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["page_number"]
+        unique_together = ("design", "page_number")
+
+    def __str__(self):
+        return f"OrgLeaderboardDesignPage(design={self.design_id}, page={self.page_number})"
+
+
 class OrgLeaderboardDesignField(models.Model):
     """One DESIGNER-PLACED data column on a design (owner 2026-06-14). Each field BINDS to a real
     standings stat (`field_type`) and is drawn at `x_pct` for every row of its `column_group`
@@ -302,6 +346,14 @@ class OrgLeaderboardDesignField(models.Model):
     font_size_pct = models.FloatField(null=True, blank=True)
     color = models.CharField(max_length=9, blank=True, default="")
     order = models.PositiveSmallIntegerField(default=0)
+    # Multi-page support (owner 2026-06-14): null = legacy (belongs to page 1 / design-level layout).
+    # Non-null scopes this field to a specific page. Cascade: deleting a page removes its fields.
+    # Set by design_fields when the editor passes page_id; read by build_pages_for_export to slice
+    # each page's fields for the ZIP export, and by DesignFieldsEditor.tsx to filter the canvas.
+    page = models.ForeignKey(
+        OrgLeaderboardDesignPage, on_delete=models.CASCADE,
+        null=True, blank=True, related_name="fields",
+    )
 
     class Meta:
         ordering = ["column_group", "order", "id"]
@@ -331,6 +383,14 @@ class OrgLeaderboardDesignText(models.Model):
     font_size_pct = models.FloatField(null=True, blank=True)  # % of canvas height; null => ~3%
     color = models.CharField(max_length=9, blank=True, default="#FFFFFF")
     order = models.PositiveSmallIntegerField(default=0)
+    # Multi-page support (owner 2026-06-14): null = legacy (belongs to page 1 / design-level layout).
+    # Non-null scopes this text to a specific page. Cascade: deleting a page removes its texts.
+    # Set by design_texts when the editor passes page_id; read by build_pages_for_export to slice
+    # each page's texts for the ZIP export, and by DesignFieldsEditor.tsx to filter the canvas.
+    page = models.ForeignKey(
+        OrgLeaderboardDesignPage, on_delete=models.CASCADE,
+        null=True, blank=True, related_name="texts",
+    )
 
     class Meta:
         ordering = ["order", "id"]

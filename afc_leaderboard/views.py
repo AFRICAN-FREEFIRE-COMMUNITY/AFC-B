@@ -39,7 +39,9 @@ ENDPOINTS (mounted at leaderboards/standalone/… via afc/urls.py → afc_leader
     POST   leaderboards/standalone/matches/<mid>/results/ save_match_results        (bulk compute+store)
 """
 import datetime
+import io
 import uuid
+import zipfile
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -648,10 +650,45 @@ def leaderboard_graphic(request, lb_id):
         "total_points": r.get("total_points", 0),
         "kills": r.get("kills", 0),
     } for i, r in enumerate(std)]
-    from afc_organizers.views_leaderboard_design import build_field_layout
-    field_layout = build_field_layout(design) if design else None
+    from afc_organizers.views_leaderboard_design import build_field_layout, build_pages_for_export
+    from .graphic import render_leaderboard_graphic, render_design_all_pages
+    from django.http import HttpResponse
 
-    from .graphic import render_leaderboard_graphic
+    # ── Multi-page export (owner 2026-06-14) ── ?page=all returns a ZIP of one PNG per design page.
+    # Backward compatible: any other (or no) ?page value falls through to the single-PNG path below.
+    # Consumed by the FE ExportGraphicDialog, which requests page=all when the design has >1 page.
+    page_param = (request.GET.get("page") or "").strip().lower()
+    want_all_pages = (page_param == "all") and design is not None
+
+    if want_all_pages:
+        # build_pages_for_export returns 1 entry for a single-page (legacy) design, N for multi-page.
+        pages_spec = build_pages_for_export(design)
+        if len(pages_spec) <= 1:
+            # Single-page design even though page=all was asked: fall through to the single-PNG path.
+            want_all_pages = False
+        else:
+            pngs = render_design_all_pages(
+                rows, pages_spec, size=size,
+                logos=logo_specs, title=title, subtitle=subtitle,
+                text_color=(design.text_color if design else "#FFFFFF"),
+                accent_color=(design.accent_color if design else "#34d27b"),
+                max_rows=(design.max_rows if design else 16),
+                show_title=(design.show_title if design else True),
+                show_subtitle=(design.show_subtitle if design else True),
+                logo_path=logo_path,
+            )
+            zip_buf = io.BytesIO()
+            safe_name = (lb.name or "leaderboard").replace('"', "").replace("\n", " ")
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for i, png in enumerate(pngs, start=1):
+                    zf.writestr(f"{safe_name}-{size}-page{i}.png", png)
+            zip_buf.seek(0)
+            resp = HttpResponse(zip_buf.read(), content_type="application/zip")
+            resp["Content-Disposition"] = f'attachment; filename="{safe_name}-{size}-all-pages.zip"'
+            return resp
+
+    # ── Single-page PNG (default path, unchanged behaviour) ──
+    field_layout = build_field_layout(design) if design else None
     png = render_leaderboard_graphic(
         std,
         size=size,
@@ -669,7 +706,6 @@ def leaderboard_graphic(request, lb_id):
         rows=rows,
     )
 
-    from django.http import HttpResponse
     resp = HttpResponse(png, content_type="image/png")
     safe = (lb.name or "leaderboard").replace('"', "").replace("\n", " ")
     resp["Content-Disposition"] = f'attachment; filename="{safe}-{size}.png"'

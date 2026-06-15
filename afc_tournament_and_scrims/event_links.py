@@ -533,6 +533,61 @@ def public_inbound_links(request, event_id):
 
 
 @api_view(["GET"])
+def public_structure_links(request, event_id):
+    """GET events/<event_id>/links/structure/  — PUBLIC, NO AUTH. Both directions of an event's
+    qualification links so the public tournament page can render its place in the season:
+      inbound  = events that qualify INTO this event (this event is the LINK TARGET); each row
+                 names the SOURCE event (slug + name), the source stage, and how many qualify.
+      outbound = events THIS event qualifies INTO (this event is the LINK SOURCE); each row
+                 names the TARGET event (slug + name), this event's source stage, and the count.
+
+    Only non-cancelled links (status active|fired) are returned, so users see the structure even
+    before a link FIRES (a planned "top 6 of Semis qualify into the Finals" shows immediately).
+    Unlike public_inbound_links (which lists who qualified, fired only), this is structural: the
+    SHAPE of the chain, not the names of qualifiers. The `event_slug` on each row drives the chip
+    navigation to /tournaments/<slug>.
+
+    Mirrors list_links' source/target resolution exactly, plus the Event.slug field for routing.
+    Consumed by: frontend lib/eventLinks.ts publicStructure() -> the "Qualification Links" section
+    of app/(user)/tournaments/[slug]/_components/TournamentStructure.tsx."""
+    # ── inbound: this event is the TARGET; list each SOURCE event that feeds it ──
+    inbound = []
+    for link in (
+        EventLink.objects.filter(target_event_id=event_id)
+        .exclude(status="cancelled")
+        .select_related("source_event", "source_stage")
+    ):
+        inbound.append({
+            "link_id": link.id,
+            "event_id": link.source_event_id,            # the event to navigate to (the feeder)
+            "event_slug": link.source_event.slug,         # Event.slug -> /tournaments/<slug>
+            "event_name": link.source_event.event_name,
+            "stage_name": link.source_stage.stage_name,   # the source stage whose top-N qualify
+            "qualify_count": link.qualify_count,
+            "status": link.status,
+        })
+
+    # ── outbound: this event is the SOURCE; list each TARGET event it qualifies into ──
+    outbound = []
+    for link in (
+        EventLink.objects.filter(source_event_id=event_id)
+        .exclude(status="cancelled")
+        .select_related("target_event", "source_stage")
+    ):
+        outbound.append({
+            "link_id": link.id,
+            "event_id": link.target_event_id,            # the event to navigate to (the destination)
+            "event_slug": link.target_event.slug,         # Event.slug -> /tournaments/<slug>
+            "event_name": link.target_event.event_name,
+            "stage_name": link.source_stage.stage_name,   # THIS event's stage whose top-N qualify
+            "qualify_count": link.qualify_count,
+            "status": link.status,
+        })
+
+    return Response({"inbound": inbound, "outbound": outbound})
+
+
+@api_view(["GET"])
 def link_chain(request, event_id):
     """GET events/<event_id>/links/chain/  — the WHOLE qualification graph this event belongs
     to (linking P3, the chain map). BFS both directions over non-cancelled links from this

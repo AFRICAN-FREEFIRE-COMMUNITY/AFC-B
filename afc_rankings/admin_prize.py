@@ -60,7 +60,14 @@ from . import tasks
 from .serializers import paginate
 
 # The payout model lives in the tournaments app (see header MODEL MAPPING).
-from afc_tournament_and_scrims.models import EventPrizePayout, Event, TournamentTeam
+# PlayerWinning + TournamentTeamMember are also imported here so prize_create can split a
+# team payout into per-player history rows (feature "Prizepool auto-links to event winners'
+# history/stats", owner 2026-06-15). See _distribute_payout below and the PlayerWinning model
+# docstring; those rows are read back on the player profile via afc_player.views.get_public_player_stats.
+from afc_tournament_and_scrims.models import (
+    EventPrizePayout, Event, TournamentTeam, PlayerWinning, TournamentTeamMember,
+)
+from decimal import Decimal
 
 
 # Data-entry endpoints widen the default ranking-admin set to include event_admin,
@@ -133,6 +140,105 @@ def serialize_prize(p):
         "amount": str(p.amount),                                   # NGN, already converted
         "awarded_at": p.created_at.isoformat() if p.created_at else None,
     }
+
+
+# ───────────────────────── per-player prize distribution ─────────────────────────
+# Feature "Prizepool auto-links to event winners' history/stats" (owner 2026-06-15).
+#
+# WHAT THIS DOES
+#   A payout (EventPrizePayout) records what a WHOLE TEAM (or a solo player) was awarded for an
+#   event. On its own that only feeds the team's quarterly score + Team.total_earnings — it never
+#   lands on the individual players' profiles. This helper writes one PlayerWinning row PER winning
+#   player so the prize ALSO shows up in each player's OWN tournament-winnings history, which the
+#   public player profile reads back (afc_player.views.get_public_player_stats -> tournament_winnings).
+#
+# WHEN IT RUNS (baked-in decision)
+#   On payout CREATE — i.e. the moment an admin/organizer records the prize, NOT on event completion.
+#   It is called from prize_create below, inside that view's existing transaction.atomic() block, so
+#   the PlayerWinning rows commit together with the payout (and roll back together on any error).
+#
+# SPLIT RULE (baked-in decision)
+#   TEAM payout: split EQUALLY among the team's ACTIVE roster members
+#       (TournamentTeamMember.status == "active"); if the team has no active members we fall back to
+#       ALL of its members so the prize is never silently dropped. Each member gets
+#       amount / count (NGN, same currency as EventPrizePayout.amount + Team.total_earnings) and a
+#       share_percentage of round(100 / count, 2).
+#   SOLO payout (payout.user set, no team): the single player gets the FULL amount at 100%.
+#
+# IDEMPOTENCY
+#   Keyed on the source payout: we first DELETE every PlayerWinning whose payout is this one, then
+#   recreate. So re-running distribution for the same payout (e.g. an amount edit re-deriving shares)
+#   never double-counts a player. (prize_update currently edits amount only and does not re-split; the
+#   delete-then-recreate contract here means a future re-split call stays safe.)
+#
+# SAFETY
+#   Wrapped in try/except: a distribution hiccup (bad roster row, etc.) is swallowed so it can NEVER
+#   break the core payout save the admin asked for. The payout is the source of truth; PlayerWinning
+#   is a derived convenience surface and can be re-derived.
+def _distribute_payout(payout):
+    """Write per-player PlayerWinning rows from a saved EventPrizePayout (idempotent by payout).
+
+    Called by prize_create after the EventPrizePayout row is saved, inside the same transaction.
+    Team payout -> equal split across active roster; solo payout -> full amount to payout.user.
+    Connects: reads EventPrizePayout (source) + TournamentTeamMember (roster); writes PlayerWinning
+    (consumed by afc_player.views.get_public_player_stats -> player profile tournament_winnings).
+    """
+    try:
+        # Idempotent: clear any prior shares for THIS payout before recreating (no double-count).
+        PlayerWinning.objects.filter(payout=payout).delete()
+
+        amount = payout.amount or Decimal("0")
+
+        # ── TEAM payout: split equally among the winning team's roster ──
+        if payout.tournament_team_id:
+            # Prefer ACTIVE members; fall back to ALL members so the prize is never dropped if a
+            # team's statuses were never set to "active".
+            members = list(
+                TournamentTeamMember.objects.filter(
+                    tournament_team=payout.tournament_team, status="active"
+                ).select_related("user")
+            )
+            if not members:
+                members = list(
+                    TournamentTeamMember.objects.filter(
+                        tournament_team=payout.tournament_team
+                    ).select_related("user")
+                )
+            count = len(members)
+            if count == 0:
+                return  # nothing to split among — leave it to the team total only
+
+            # Equal split. Decimal keeps NGN precision; share_percentage is informational.
+            share = (amount / Decimal(count)).quantize(Decimal("0.01"))
+            share_pct = round(Decimal(100) / Decimal(count), 2)
+
+            PlayerWinning.objects.bulk_create([
+                PlayerWinning(
+                    event=payout.event,
+                    tournament_team=payout.tournament_team,
+                    player=m.user,
+                    payout=payout,
+                    amount=share,
+                    share_percentage=share_pct,
+                )
+                for m in members
+            ])
+            return
+
+        # ── SOLO payout: the single player gets the full amount (100%) ──
+        if payout.user_id:
+            PlayerWinning.objects.create(
+                event=payout.event,
+                tournament_team=None,
+                player=payout.user,
+                payout=payout,
+                amount=amount,
+                share_percentage=Decimal("100"),
+            )
+    except Exception:
+        # A distribution hiccup must NEVER break the payout save (the payout is the source of
+        # truth; PlayerWinning is a re-derivable convenience surface). Swallow + move on.
+        pass
 
 
 # ───────────────────────── LIST (read-only) ─────────────────────────
@@ -235,6 +341,12 @@ def prize_create(request):
             tournament_team=tt,
             amount=amount,
         )
+        # Auto-link the prize to the winning players' history: split this team payout equally
+        # across the team's active roster and write one PlayerWinning row per member, so the
+        # prize shows on each player's profile (read back by afc_player.get_public_player_stats).
+        # Idempotent (delete-then-recreate by payout) and failure-safe (never breaks the save).
+        # Runs inside this transaction so the shares commit/rollback with the payout.
+        _distribute_payout(payout)
         after = serialize_prize(payout)
         # §16 audit. season=active season so the log filters by the right quarter.
         _audit(
@@ -281,6 +393,10 @@ def prize_update(request, payout_id):
         before = serialize_prize(payout)
         payout.amount = amount
         payout.save(update_fields=["amount"])
+        # Re-derive each player's PlayerWinning share from the new amount (idempotent by payout:
+        # _distribute_payout deletes this payout's prior rows then recreates them). Keeps player
+        # history/stats accurate when an admin edits a prize, not only on first creation.
+        _distribute_payout(payout)
         after = serialize_prize(payout)
         _audit(
             user, "prize_money", "update", reason,

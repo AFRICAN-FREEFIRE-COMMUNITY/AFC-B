@@ -182,6 +182,39 @@
               ]
             },
             {
+              "name": "GET /auth/search-users/ - GET /auth/search-users/?q=<text>&limit=10 - typeahead lookup of EXISTING users.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/auth/search-users/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "search-users"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
               "name": "GET /auth/get-admin-history/ - get_admin_history",
               "request": {
                 "method": "GET",
@@ -199,6 +232,39 @@
                   "path": [
                     "auth",
                     "get-admin-history"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /auth/get-audit-log/ - GET /auth/get-audit-log/ - paginated, filterable read of the sitewide admin audit log.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/auth/get-audit-log/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "get-audit-log"
                   ]
                 }
               },
@@ -378,6 +444,39 @@
                   "path": [
                     "auth",
                     "get-all-login-history"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /auth/get-account-overlap/ - ADMIN: surface IP addresses used by MORE THAN ONE distinct account - the core",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/auth/get-account-overlap/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "get-account-overlap"
                   ]
                 }
               },
@@ -1072,6 +1171,259 @@
       ]
     },
     {
+      "name": "leaderboard",
+      "item": [
+        {
+          "name": "views",
+          "item": [
+            {
+              "name": "GET /leaderboards/standalone/ - GET leaderboards/standalone/  \u2014 list standalone leaderboards visible to the caller (paginated).",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/leaderboards/standalone/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "leaderboards",
+                    "standalone"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /leaderboards/standalone/search-ghost-teams/ - GET leaderboards/standalone/search-ghost-teams/?q=<text>&limit=10  \u2014 ghost-team typeahead.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/leaderboards/standalone/search-ghost-teams/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "leaderboards",
+                    "standalone",
+                    "search-ghost-teams"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /leaderboards/standalone/search-ghost-players/ - GET leaderboards/standalone/search-ghost-players/?q=<text>&limit=10  \u2014 ghost-player typeahead.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/leaderboards/standalone/search-ghost-players/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "leaderboards",
+                    "standalone",
+                    "search-ghost-players"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /leaderboards/standalone/1/ - GET leaderboards/standalone/<id>/  \u2014 full detail: header + participants + matches + computed standings.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/leaderboards/standalone/1/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "leaderboards",
+                    "standalone",
+                    "1"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /leaderboards/standalone/1/graphic/ - GET leaderboards/standalone/<id>/graphic/?design_id=&size=&title=&subtitle=",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/leaderboards/standalone/1/graphic/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "leaderboards",
+                    "standalone",
+                    "1",
+                    "graphic"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /leaderboards/standalone/1/participants/1/roster/ - GET leaderboards/standalone/<lb_id>/participants/<pid>/roster/  \u2014 the participant's player list.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/leaderboards/standalone/1/participants/1/roster/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "leaderboards",
+                    "standalone",
+                    "1",
+                    "participants",
+                    "1",
+                    "roster"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /leaderboards/standalone/1/ocr/jobs/ - GET leaderboards/standalone/<id>/ocr/jobs/  \u2014 list this leaderboard's OCR jobs (the poll endpoint).",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/leaderboards/standalone/1/ocr/jobs/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "leaderboards",
+                    "standalone",
+                    "1",
+                    "ocr",
+                    "jobs"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "ocr",
       "item": [
         {
@@ -1328,10 +1680,10 @@
           ]
         },
         {
-          "name": "views_design",
+          "name": "views_blacklist",
           "item": [
             {
-              "name": "GET /organizers/design-requests/sample-slug/ - Member-scoped leaderboard-design requests for one org (resolved by <slug>):",
+              "name": "GET /organizers/blacklists/mine/ - List the ACTIVE blacklists that affect the CALLING user, so a team or player can discover",
               "request": {
                 "method": "GET",
                 "header": [
@@ -1341,14 +1693,14 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/organizers/design-requests/sample-slug/",
+                  "raw": "{{base_url}}/organizers/blacklists/mine/",
                   "host": [
                     "{{base_url}}"
                   ],
                   "path": [
                     "organizers",
-                    "design-requests",
-                    "sample-slug"
+                    "blacklists",
+                    "mine"
                   ]
                 }
               },
@@ -1365,7 +1717,7 @@
               ]
             },
             {
-              "name": "GET /organizers/admin/design-requests/ - Oversight list of design requests across EVERY org. AFC-staff only",
+              "name": "GET /organizers/blacklists/lift-requests/ - List lift requests for an organization (across all its blacklists), newest first.",
               "request": {
                 "method": "GET",
                 "header": [
@@ -1375,14 +1727,224 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/organizers/admin/design-requests/",
+                  "raw": "{{base_url}}/organizers/blacklists/lift-requests/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "organizers",
+                    "blacklists",
+                    "lift-requests"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /organizers/blacklists/ - Verb dispatcher for blacklists/. POST -> create, GET -> list. See the helpers below for",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/organizers/blacklists/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "organizers",
+                    "blacklists"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "views_blacklist_lookup",
+          "item": [
+            {
+              "name": "GET /organizers/blacklist-lookup/ - Look up one team OR one player across EVERY organization's blacklists: whether they were",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/organizers/blacklist-lookup/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "organizers",
+                    "blacklist-lookup"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /organizers/admin/blacklists/ - The AFC admin dashboard feed: every OrganizerBlacklist row across all organizations,",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/organizers/admin/blacklists/",
                   "host": [
                     "{{base_url}}"
                   ],
                   "path": [
                     "organizers",
                     "admin",
-                    "design-requests"
+                    "blacklists"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /organizers/admin/blacklist-counts/ - Bulk blacklist counts for a set of teams OR a set of players - one call returns the",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/organizers/admin/blacklist-counts/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "organizers",
+                    "admin",
+                    "blacklist-counts"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "views_leaderboard_design",
+          "item": [
+            {
+              "name": "GET /organizers/leaderboard-designs/ - GET  organizers/leaderboard-designs/?organization_id=<id?>  \u2014 list a library.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/organizers/leaderboard-designs/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "organizers",
+                    "leaderboard-designs"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /organizers/leaderboard-fonts/ - GET organizers/leaderboard-fonts/?organization_id=<id?> \u2014 list a font library.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/organizers/leaderboard-fonts/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "organizers",
+                    "leaderboard-fonts"
                   ]
                 }
               },
@@ -2448,7 +3010,7 @@
               ]
             },
             {
-              "name": "GET /player-market/post-details/ - Public endpoint \u2014 no auth required.",
+              "name": "GET /player-market/post-details/ - Public endpoint \u00e2\u20ac\u201d no auth required.",
               "request": {
                 "method": "GET",
                 "header": [
@@ -3524,7 +4086,7 @@
               ]
             },
             {
-              "name": "GET /shop/admin/products/pending/ - The product approval queue: products a vendor has SUBMITTED for review.",
+              "name": "GET /shop/admin/products/pending/ - The product approval queue: vendor products filtered by approval state.",
               "request": {
                 "method": "GET",
                 "header": [
@@ -4268,6 +4830,293 @@
       ]
     },
     {
+      "name": "sponsors",
+      "item": [
+        {
+          "name": "engagements",
+          "item": [
+            {
+              "name": "GET /sponsors/for-event/1/ - GET sponsors/for-event/<event_id>/  \u2014 PUBLIC read of an event's sponsorships + their",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/sponsors/for-event/1/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "sponsors",
+                    "for-event",
+                    "1"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /sponsors/my-submissions/1/ - GET sponsors/my-submissions/<event_id>/  \u2014 the CALLER's own submissions for one event",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/sponsors/my-submissions/1/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "sponsors",
+                    "my-submissions",
+                    "1"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /sponsors/1/events/1/engagement-submissions/ - GET sponsors/<sponsor_id>/events/<event_id>/engagement-submissions/",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/sponsors/1/events/1/engagement-submissions/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "sponsors",
+                    "1",
+                    "events",
+                    "1",
+                    "engagement-submissions"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "views",
+          "item": [
+            {
+              "name": "GET /sponsors/mine/ - GET sponsors/mine/  \u2014 the ACTIVE sponsors the caller belongs to (drives the portal's",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/sponsors/mine/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "sponsors",
+                    "mine"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /sponsors/ - GET sponsors/?q=&limit=&offset=  \u2014 paginated sponsor list for the admin table.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/sponsors/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "sponsors"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /sponsors/1/ - GET sponsors/<id>/  \u2014 one sponsor incl. its active members.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/sponsors/1/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "sponsors",
+                    "1"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /sponsors/1/events/ - GET sponsors/<id>/events/  \u2014 the events attached to this sponsor, newest first, with the",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/sponsors/1/events/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "sponsors",
+                    "1",
+                    "events"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /sponsors/1/events/1/submissions/ - GET sponsors/<id>/events/<event_id>/submissions/[?csv=1]",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/sponsors/1/events/1/submissions/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "sponsors",
+                    "1",
+                    "events",
+                    "1",
+                    "submissions"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "team",
       "item": [
         {
@@ -4702,6 +5551,39 @@
                   }
                 }
               ]
+            },
+            {
+              "name": "GET /team/search-teams/ - GET /team/search-teams/?q=<text>&limit=10 - typeahead lookup of EXISTING teams.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/team/search-teams/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "team",
+                    "search-teams"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
             }
           ]
         }
@@ -4710,6 +5592,150 @@
     {
       "name": "tournament_and_scrims",
       "item": [
+        {
+          "name": "event_links",
+          "item": [
+            {
+              "name": "GET /events/1/links/ - GET events/<event_id>/links/  \u2014 the event's OUTBOUND links (with qualifications + the",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/events/1/links/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "events",
+                    "1",
+                    "links"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /events/1/links/chain/ - GET events/<event_id>/links/chain/  \u2014 the WHOLE qualification graph this event belongs",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/events/1/links/chain/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "events",
+                    "1",
+                    "links",
+                    "chain"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /events/1/links/public/ - GET events/<event_id>/links/public/  \u2014 PUBLIC provenance read (linking P2): the FIRED",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/events/1/links/public/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "events",
+                    "1",
+                    "links",
+                    "public"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /events/1/links/structure/ - GET events/<event_id>/links/structure/  \u2014 PUBLIC, NO AUTH. Both directions of an event's",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/events/1/links/structure/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "events",
+                    "1",
+                    "links",
+                    "structure"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
         {
           "name": "event_payments",
           "item": [
@@ -4732,6 +5758,46 @@
                     "events",
                     "admin",
                     "event-payments"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "head_to_head_views",
+          "item": [
+            {
+              "name": "GET /events/stages/1/bracket/ - GET events/stages/<stage_id>/bracket/ - the full bracket tree + standings.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/events/stages/1/bracket/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "events",
+                    "stages",
+                    "1",
+                    "bracket"
                   ]
                 }
               },
@@ -5595,6 +6661,47 @@
                   "path": [
                     "events",
                     "export-participants"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "views_event_graphic",
+          "item": [
+            {
+              "name": "GET /events/1/stages/1/graphic/ - Render `stage`'s cumulative standings onto a chosen design and return a PNG download.",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/events/1/stages/1/graphic/",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "events",
+                    "1",
+                    "stages",
+                    "1",
+                    "graphic"
                   ]
                 }
               },
