@@ -88,6 +88,11 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
+    # i18n Phase 1 (owner 2026-06-15): pin request.locale (en/fr/pt) from the Accept-Language header.
+    # Placed AFTER CommonMiddleware so it runs once the request line is in place; views/serializers
+    # read it via afc_auth.locale_middleware.get_locale(request) and feed it to the translation
+    # engine (afc_auth.translation.translate). Best-effort, never breaks a request. See locale_middleware.py.
+    'afc_auth.locale_middleware.LocaleMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     # Sitewide automatic admin audit log. Sits AFTER AuthenticationMiddleware so the request

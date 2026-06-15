@@ -469,5 +469,54 @@ class DiscordStageRoleAssignmentProgress(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
+class TranslationCache(models.Model):
+    """
+    i18n Phase 1 (owner 2026-06-15): persistent cache of machine translations.
+
+    WHY: the translation engine (afc_auth/translation.py) calls Gemini to translate UI strings and
+    content from English into French / Portuguese. Gemini calls cost money and are rate-limited, and
+    the same strings (button labels, news bodies, product names) get requested over and over. We
+    therefore cache every (source text, target language) result here so a repeat translation is a
+    single indexed DB read instead of a fresh API call. This is what makes the engine cheap enough
+    to run on every request.
+
+    How it connects end to end:
+      - Written/read by: afc_auth/translation.py -> translate() / translate_batch(). On a miss the
+                         engine calls Gemini, stores the result here, and returns it; on a hit it
+                         returns translated_text directly and NEVER touches the API.
+      - Keyed by      : source_hash = sha256(source_text + target_lang). Combining the target lang
+                        into the hash input (and ALSO into the unique_together) means the same English
+                        string cached for "fr" and for "pt" are two distinct rows that never collide.
+      - Consumed by   : any caller that localizes output - request handlers using
+                        afc_auth.locale_middleware.get_locale(request), the build-time catalog script,
+                        and bulk content localization (news, products) via translate_richtext().
+
+    Note: this stores ONLY public UI text and content (no PII, tokens, or secrets), in line with the
+    project rule against logging sensitive data.
+    """
+    # sha256 hex digest of (source_text + target_lang). 64 chars, indexed for fast lookups. We hash
+    # rather than store the raw source as the key because source bodies (e.g. a full news article)
+    # can be arbitrarily long and would not make a usable index key.
+    source_hash = models.CharField(max_length=64, db_index=True)
+
+    # 2-letter language codes ("en"/"fr"/"pt"), matching afc_auth.models.User.LANGUAGE_CHOICES.
+    source_lang = models.CharField(max_length=2)   # almost always "en" (our source of truth)
+    target_lang = models.CharField(max_length=2)   # the language we translated INTO
+
+    # The cached translation in target_lang. TextField because content bodies can be long.
+    translated_text = models.TextField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # One cached translation per (source string, target language). The hash already folds the
+        # target lang in, but we still scope uniqueness by target_lang explicitly so the constraint
+        # reads correctly and stays correct even if the hashing scheme ever changes.
+        unique_together = ("source_hash", "target_lang")
+
+    def __str__(self):
+        return f"{self.source_lang}->{self.target_lang} {self.source_hash[:12]}"
+
+
 
 

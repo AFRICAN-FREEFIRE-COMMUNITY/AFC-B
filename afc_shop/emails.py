@@ -190,16 +190,29 @@ def _recipient(order):
     return order.email or order.user.email
 
 
+def _order_language(order):
+    """The buyer's preferred locale for this order's emails ("en"/"fr"/"pt").
+
+    i18n (owner 2026-06-15): reads the buyer account's User.language and falls back to "en" when it
+    is blank/missing. send_email (afc_auth.views) uses it to localize the subject + body, so a French
+    or Portuguese buyer gets their order mail in their own language. Guarded so a missing user.language
+    can never break sending."""
+    try:
+        return (getattr(order.user, "language", "") or "en")
+    except Exception:
+        return "en"
+
+
 def send_order_received(order):
     """Send the order-received email for `order`. Called by notify_order_paid."""
-    return send_email(_recipient(order), "We received your order", order_received_email(order))
+    return send_email(_recipient(order), "We received your order", order_received_email(order), language=_order_language(order))
 
 
 def send_order_shipped(order):
     """Send the order-shipped email for `order`. Called by vendor_mark_shipped."""
-    return send_email(_recipient(order), "Your order is on the way", order_shipped_email(order))
+    return send_email(_recipient(order), "Your order is on the way", order_shipped_email(order), language=_order_language(order))
 
 
 def send_order_completed(order):
     """Send the order-completed email for `order`. Called by order_mark_completed."""
-    return send_email(_recipient(order), "Your order is complete", order_completed_email(order))
+    return send_email(_recipient(order), "Your order is complete", order_completed_email(order), language=_order_language(order))

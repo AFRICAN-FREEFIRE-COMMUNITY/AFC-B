@@ -563,11 +563,19 @@ def apply_to_team(request):
     total_number_of_applications = RecruitmentApplication.objects.filter(team=post.team).count()
 
     if total_number_of_applications % 5 == 0:
-        team_owner_email = post.team.team_owner.email
-        team_captain_email = post.team.team_captain.email if post.team.team_captain else None
-        manager_emails = list(post.team.memberships.filter(management_role="manager").values_list("member__email", flat=True))
-        coach_emails = list(post.team.memberships.filter(management_role="coach").values_list("member__email", flat=True))
-        recipient_emails = set([team_owner_email, team_captain_email] + manager_emails + coach_emails)
+        # i18n (owner 2026-06-15): collect the recipient USER objects (not bare emails) so each gets
+        # the milestone email in their OWN saved language. We pull (email, language) pairs from the
+        # owner, captain, and the manager/coach memberships, dedupe by email, then send per recipient.
+        recipient_users = [post.team.team_owner]
+        if post.team.team_captain:
+            recipient_users.append(post.team.team_captain)
+        recipient_users += [m.member for m in post.team.memberships.filter(management_role__in=["manager", "coach"]).select_related("member") if m.member]
+        # Dedupe by email, keeping the first (email, language) seen for each address.
+        recipient_targets = {}
+        for ru in recipient_users:
+            addr = getattr(ru, "email", None)
+            if addr and addr not in recipient_targets:
+                recipient_targets[addr] = (getattr(ru, "language", "") or "en")
 
         email_subject = "Your Player Market post is getting attention!"
         email_body = f"""
@@ -649,9 +657,8 @@ def apply_to_team(request):
 </body>
 </html>
 """
-        for email in recipient_emails:
-            if email:
-                send_email(email, email_subject, email_body)
+        for email, lang in recipient_targets.items():
+            send_email(email, email_subject, email_body, language=lang)
 
     return Response({"message": "Application submitted"}, status=201)
 
@@ -788,7 +795,8 @@ def update_application_status(request):
 </body>
 </html>
 """
-        send_email(application.player.email, email_subject, email_body)
+        # i18n: send in the player's saved language; send_email localizes subject + body (falls back to English).
+        send_email(application.player.email, email_subject, email_body, language=(getattr(application.player, "language", "") or "en"))
 
     elif action == "SHORTLIST":
         application.status = "SHORTLISTED"
@@ -924,7 +932,8 @@ def update_application_status(request):
 </body>
 </html>
 """
-        send_email(player.email, email_subject, player_email_body)
+        # i18n: localized to the player's saved language (send_email translates subject + body).
+        send_email(player.email, email_subject, player_email_body, language=(getattr(player, "language", "") or "en"))
 
         # Notify team staff
         Notifications.objects.create(
@@ -932,12 +941,18 @@ def update_application_status(request):
             message=f"{player.username} has been added to a trial. A trial chat has been created."
         )
 
-        # Email to team owner, manager, coach, captain
-        team_owner_email = application.team.team_owner.email
-        team_captain_email = application.team.team_captain.email if application.team.team_captain else None
-        manager_emails = list(application.team.memberships.filter(management_role="manager").values_list("member__email", flat=True))
-        coach_emails = list(application.team.memberships.filter(management_role="coach").values_list("member__email", flat=True))
-        recipient_emails = set(filter(None, [team_owner_email, team_captain_email] + manager_emails + coach_emails))
+        # Email to team owner, manager, coach, captain.
+        # i18n (owner 2026-06-15): collect recipient USERS so each staff member's email is localized
+        # to their own saved language. We dedupe by email into {email: language} pairs.
+        staff_users = [application.team.team_owner]
+        if application.team.team_captain:
+            staff_users.append(application.team.team_captain)
+        staff_users += [m.member for m in application.team.memberships.filter(management_role__in=["manager", "coach"]).select_related("member") if m.member]
+        recipient_targets = {}
+        for su in staff_users:
+            addr = getattr(su, "email", None)
+            if addr and addr not in recipient_targets:
+                recipient_targets[addr] = (getattr(su, "language", "") or "en")
 
         team_email_subject = f"Trial Started â€” {player.username} has been added!"
         team_email_body = f"""
@@ -1015,8 +1030,8 @@ def update_application_status(request):
 </body>
 </html>
 """
-        for email in recipient_emails:
-            send_email(email, team_email_subject, team_email_body)
+        for email, lang in recipient_targets.items():
+            send_email(email, team_email_subject, team_email_body, language=lang)
 
         application.save()
         return Response({"message": "Trial started.", "chat_id": chat.id}, status=200)
@@ -1601,7 +1616,8 @@ def invite_player_to_trial(request):
   </table>
 </body>
 </html>"""
-    send_email(player.email, email_subject, email_body)
+    # i18n: send the direct trial invite in the invited player's saved language.
+    send_email(player.email, email_subject, email_body, language=(getattr(player, "language", "") or "en"))
     return Response({"message": "Trial invite sent.", "invite_id": invite.id}, status=201)
 
 
@@ -1725,11 +1741,17 @@ def respond_to_direct_trial_invite(request):
         )
 
         team = invite.team
-        team_owner_email = team.team_owner.email
-        team_captain_email = team.team_captain.email if team.team_captain else None
-        manager_emails = list(team.memberships.filter(management_role="manager").values_list("member__email", flat=True))
-        coach_emails = list(team.memberships.filter(management_role="coach").values_list("member__email", flat=True))
-        recipient_emails = set(filter(None, [team_owner_email, team_captain_email] + manager_emails + coach_emails))
+        # i18n (owner 2026-06-15): collect recipient USERS so each staff member gets the email in
+        # their own saved language. Deduped by email into {email: language} pairs.
+        staff_users = [team.team_owner]
+        if team.team_captain:
+            staff_users.append(team.team_captain)
+        staff_users += [m.member for m in team.memberships.filter(management_role__in=["manager", "coach"]).select_related("member") if m.member]
+        recipient_targets = {}
+        for su in staff_users:
+            addr = getattr(su, "email", None)
+            if addr and addr not in recipient_targets:
+                recipient_targets[addr] = (getattr(su, "language", "") or "en")
 
         team_email_subject = f"{user.username} accepted your trial invite!"
         team_email_body = f"""<!DOCTYPE html>
@@ -1770,8 +1792,8 @@ def respond_to_direct_trial_invite(request):
   </table>
 </body>
 </html>"""
-        for email in recipient_emails:
-            send_email(email, team_email_subject, team_email_body)
+        for email, lang in recipient_targets.items():
+            send_email(email, team_email_subject, team_email_body, language=lang)
 
         return Response({"message": "Trial accepted.", "chat_id": chat.id}, status=200)
 
