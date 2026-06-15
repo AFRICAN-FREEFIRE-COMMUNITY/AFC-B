@@ -293,7 +293,11 @@ def notify_vendor(order, event="received"):
     <div style="font-size:21px;font-weight:700;color:#ffffff;">You have a new order</div>
     <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">Order #{order.id} is paid and ready to fulfil. Buyer: <span style="color:#e8efe9;font-weight:600;">{full_name}</span>. Open your fulfilment page on <a href="{SITE_URL}" style="color:#34d27b;text-decoration:none;">africanfreefirecommunity.com</a> to acknowledge it and set a ship date.</div>
   </td></tr>"""
-            send_email(vendor.contact_email, f"New AFC order #{order.id} to fulfil", _email_shell(inner, "green"))
+            # i18n (owner 2026-06-15): localize the vendor heads-up to the vendor account's saved
+            # language (Vendor.user -> afc_auth.User.language), falling back to English. send_email
+            # translates the subject + visible body text.
+            vendor_lang = (getattr(getattr(vendor, "user", None), "language", "") or "en")
+            send_email(vendor.contact_email, f"New AFC order #{order.id} to fulfil", _email_shell(inner, "green"), language=vendor_lang)
         except Exception as e:  # mail must never block the order
             logger.warning("notify_vendor email failed for order #%s: %s", order.id, e)
 

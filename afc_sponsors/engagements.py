@@ -451,13 +451,17 @@ def _notify_rejection(submission, reason, final=False):
     # notification above is the guaranteed channel.
     import threading
 
+    # i18n (owner 2026-06-15): localize to the player's saved language. send_email translates the
+    # subject + the visible body text to player.language ("en"/"fr"/"pt"), falling back to English.
+    player_lang = (getattr(player, "language", "") or "en")
+
     def _send():
         try:
             inner = f"""
 <tr><td style="padding:0 32px 8px;color:#e8efe9;font-size:18px;font-weight:bold;">{title}</td></tr>
 <tr><td style="padding:0 32px 16px;color:#9fb3a6;font-size:14px;line-height:1.6;">{body}</td></tr>
 """
-            send_email(player.email, title, _email_shell(inner, accent="gold"))
+            send_email(player.email, title, _email_shell(inner, accent="gold"), language=player_lang)
         except Exception:
             pass
 

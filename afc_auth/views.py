@@ -231,8 +231,20 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 
-def send_email(to_address, subject, html_body):
-    try: 
+def send_email(to_address, subject, html_body, language="en"):
+    """Send a branded HTML email over Office365 SMTP. THE single email chokepoint for the whole
+    backend: afc_auth account mail, afc_shop order mail, afc_sponsors / afc_tournament_and_scrims /
+    afc_player_market notifications, and the broadcast sender all go through here.
+
+    i18n (owner 2026-06-15): `language` is the recipient's preferred locale ("en"/"fr"/"pt"), passed
+    by every caller as `user.language or "en"`. When it is anything other than English we localize
+    BOTH the subject line and the visible text of the HTML body in place, via the failure-safe engine
+    in afc_auth.translation (translate() for the subject, translate_html() for the body - the latter
+    walks only the visible text nodes, leaving tags / inline CSS / links / verification codes intact).
+    Centralizing the translation here means callers only have to thread the language through; they do
+    NOT have to translate their own copy. Per the project failure-safe rule, any translation error
+    returns the ORIGINAL English text and never blocks the send."""
+    try:
         is_valid, message = is_valid_email(to_address)
         if not is_valid:
             print(f"Invalid email address: {to_address}. Error: {message}")
@@ -241,6 +253,18 @@ def send_email(to_address, subject, html_body):
         print(f"Error validating email address: {to_address}. Exception: {e}")
         return False
 
+    # ── Localize to the recipient's language (best-effort, never raises into the send) ───────────
+    # translate()/translate_html() are no-ops when language == "en" or blank, and fall back to the
+    # original English text on ANY engine error, so this is safe to run unconditionally.
+    try:
+        lang = (language or "en").lower()
+        if lang and lang != "en":
+            from afc_auth.translation import translate, translate_html
+            subject = translate(subject, target=lang)
+            html_body = translate_html(html_body, target=lang)
+    except Exception as e:
+        # Defensive backstop: translation must NEVER stop an email going out. Keep English on error.
+        print(f"Email localization skipped for {to_address} ({language}): {e}")
 
     smtp_server = 'smtp.office365.com'
     smtp_port = 587
@@ -449,16 +473,25 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
 
     emailed = 0
     if want_email:
-        addresses = [r.email for r in recipients if getattr(r, "email", None)]
-        emailed = len(addresses)
-        if addresses:
+        # i18n: localize PER RECIPIENT. Each user has their own User.language, so we send the address
+        # AND its language down to send_email, which localizes the subject + body to that locale (the
+        # TranslationCache makes the second+ recipient in a given language a free cache hit). We carry
+        # (address, language) pairs instead of bare addresses so the daemon thread has what it needs.
+        targets = [
+            (r.email, (getattr(r, "language", "") or "en"))
+            for r in recipients
+            if getattr(r, "email", None)
+        ]
+        emailed = len(targets)
+        if targets:
+            # Build the English body ONCE; send_email translates it per recipient (cache-backed).
             html = broadcast_message_email_html(title, message)
             subject = (title or "").strip() or "A message from African Free Fire Community"
 
             def _send():
-                for addr in addresses:
+                for addr, lang in targets:
                     try:
-                        send_email(addr, subject, html)
+                        send_email(addr, subject, html, language=lang)
                     except Exception:
                         pass  # one bad address never blocks the rest; push is the sure channel
 
@@ -806,11 +839,18 @@ def signup(request):
         verification_code = random.randint(100000, 999999)
         cache.set(f"verification_code_{user.user_id}", verification_code, timeout=600)
 
-        # Send verification email
+        # Send verification email.
+        # i18n: the account has no saved language yet (login geo-detect sets it later), so we infer
+        # the locale from the signup country (language_for_country -> en/fr/pt) and pass it to
+        # send_email, which localizes the subject + body. Defaults to "en" on any failure.
+        try:
+            signup_lang = language_for_country(country) or "en"
+        except Exception:
+            signup_lang = "en"
         subject = 'Verify your AFC account'
         message = email_verification_code(in_game_name, verification_code)
         try:
-            send_email(email, subject, message)
+            send_email(email, subject, message, language=signup_lang)
         except Exception as e:
             print(f"Error sending email: {e}")
             return Response({"error": "Failed to send verification email. Please try again later."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -866,8 +906,14 @@ def verify_code(request):
 
     # Welcome / account-created email. Best-effort: a mail failure must never block the
     # account from being verified, so we swallow any send error.
+    # i18n: prefer the user's saved language; it is usually still blank at verify time (login sets
+    # it from geo later), so fall back to inferring from the signup country, then English.
     try:
-        send_email(user.email, "Welcome to African Free Fire Community", email_welcome(user.username))
+        welcome_lang = user.language or language_for_country(user.country) or "en"
+    except Exception:
+        welcome_lang = "en"
+    try:
+        send_email(user.email, "Welcome to African Free Fire Community", email_welcome(user.username), language=welcome_lang)
     except Exception as e:
         print(f"Welcome email failed for {user.email}: {e}")
 
@@ -920,10 +966,14 @@ def resend_verification_code(request):
     # ⏳ Set cooldown (4 mins = 240 seconds)
     cache.set(cooldown_key, True, timeout=240)
 
-    # 📧 Send email
+    # 📧 Send email (localized to the user's saved language, falling back to signup country / English)
+    try:
+        resend_lang = user.language or language_for_country(user.country) or "en"
+    except Exception:
+        resend_lang = "en"
     subject = "Your new AFC verification code"
     message = email_verification_code(user.username, verification_code)
-    send_email(user.email, subject, message)
+    send_email(user.email, subject, message, language=resend_lang)
 
     return Response(
         {"message": "A new verification code has been sent to your email."},
@@ -1521,12 +1571,20 @@ def get_all_news(request):
             liked_ids = set(NewsLike.objects.filter(user=viewer).values_list("news_id", flat=True))
             disliked_ids = set(NewsDislike.objects.filter(user=viewer).values_list("news_id", flat=True))
 
+    # i18n TRANSLATE-ON-READ (owner 2026-06-15): localize the user-visible news fields to the
+    # caller's locale (request.locale, set by afc_auth.locale_middleware from Accept-Language).
+    # localize_field writes data[key] = translated, plus data[key+"_en"] + data["translated"]=True
+    # when a real translation happened, so the frontend can offer "Show original". All cache-first
+    # (translate()/translate_richtext() hit TranslationCache), and failure-safe (English on any error).
+    # Consumed by frontend/app/(user)/news/page.tsx and _components/LatestNews.tsx.
+    from afc_auth.locale_middleware import get_locale
+    from afc_auth.translation import localize_field
+    locale = get_locale(request)
+
     news_data = []
     for news in news_list:
-        news_data.append({
+        item = {
             "news_id": news.news_id,
-            "news_title": news.news_title,
-            "content": news.content,
             "category": news.category,
             "related_event": news.related_event.event_name if news.related_event else None,
             "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
@@ -1538,7 +1596,11 @@ def get_all_news(request):
             "dislikes": dislike_counts.get(news.news_id, 0),
             "is_liked_by_user": news.news_id in liked_ids,
             "is_disliked_by_user": news.news_id in disliked_ids,
-        })
+        }
+        # news_title is plain text; content is a Tiptap JSON document (richtext=True).
+        localize_field(item, "news_title", news.news_title, locale)
+        localize_field(item, "content", news.content, locale, richtext=True)
+        news_data.append(item)
 
     return Response({"news": news_data}, status=status.HTTP_200_OK)
 
@@ -1559,8 +1621,6 @@ def get_news_detail(request):
 
     news_data = {
         "news_id": news.news_id,
-        "news_title": news.news_title,
-        "content": news.content,
         "category": news.category,
         "related_event": news.related_event.event_name if news.related_event else None,
         "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
@@ -1569,6 +1629,16 @@ def get_news_detail(request):
         "updated_at": news.updated_at,
         "total_views": news_views
     }
+
+    # i18n TRANSLATE-ON-READ (owner 2026-06-15): same contract as get_all_news - localize the title
+    # (plain text) and content (Tiptap JSON) to the caller's locale, adding the *_en companions +
+    # translated=true flag so the detail page can offer "Show original". Cache-first + failure-safe.
+    # Consumed by frontend/app/(user)/news/[slug]/page.tsx.
+    from afc_auth.locale_middleware import get_locale
+    from afc_auth.translation import localize_field
+    locale = get_locale(request)
+    localize_field(news_data, "news_title", news.news_title, locale)
+    localize_field(news_data, "content", news.content, locale, richtext=True)
 
     # add to news views
     NewsViews.objects.create(
@@ -2175,10 +2245,14 @@ def send_verification_token(request):
     )
     email = user.email
 
-    # Send email
+    # Send email (localized to the user's saved language; falls back to country / English).
+    try:
+        reset_lang = user.language or language_for_country(user.country) or "en"
+    except Exception:
+        reset_lang = "en"
     subject = "Reset your AFC password"
     message = email_reset_token(token)
-    send_email(email, subject, message)
+    send_email(email, subject, message, language=reset_lang)
 
     return Response({"message": "Password reset token has been sent to your email."}, status=status.HTTP_200_OK)
 
@@ -2239,9 +2313,14 @@ def reset_password(request):
     reset_token.delete()  # remove token after successful password reset
 
     # Password-changed confirmation (best-effort; never block the reset on a mail error).
+    # i18n: localized to the user's saved language, falling back to country / English.
+    try:
+        changed_lang = user.language or language_for_country(user.country) or "en"
+    except Exception:
+        changed_lang = "en"
     try:
         when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
-        send_email(user.email, "Your AFC password was changed", email_password_changed(user.username, when))
+        send_email(user.email, "Your AFC password was changed", email_password_changed(user.username, when), language=changed_lang)
     except Exception as e:
         print(f"Password-changed email failed for {user.email}: {e}")
 
@@ -2284,10 +2363,14 @@ def resend_token(request):
         }
     )
 
-    # Resend email
+    # Resend email (localized to the user's saved language; falls back to country / English).
+    try:
+        resend_token_lang = user.language or language_for_country(user.country) or "en"
+    except Exception:
+        resend_token_lang = "en"
     subject = "Your new AFC password reset token"
     message = email_reset_token(token)
-    send_email(email, subject, message)
+    send_email(email, subject, message, language=resend_token_lang)
 
     return Response({"message": "A new password reset token has been sent to your email."}, status=status.HTTP_200_OK)
 
@@ -2308,9 +2391,14 @@ def change_password(request):
         user.save()  # BUGFIX: save() was missing, so the new password never persisted.
 
         # Password-changed confirmation (best-effort; never block the change on a mail error).
+        # i18n: localized to the user's saved language, falling back to country / English.
+        try:
+            chg_lang = user.language or language_for_country(user.country) or "en"
+        except Exception:
+            chg_lang = "en"
         try:
             when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
-            send_email(user.email, "Your AFC password was changed", email_password_changed(user.username, when))
+            send_email(user.email, "Your AFC password was changed", email_password_changed(user.username, when), language=chg_lang)
         except Exception as e:
             print(f"Password-changed email failed for {user.email}: {e}")
 
@@ -3978,13 +4066,26 @@ def get_notifications(request):
     notifications = Notifications.objects.filter(user=user).order_by('-created_at')
     notifications_data = []
 
+    # i18n TRANSLATE-ON-READ (owner 2026-06-15): notification rows are stored in English (broadcasts
+    # are localized PER RECIPIENT only at email send-time in deliver_broadcast/send_email; the in-app
+    # push row stays English). So we localize title + message HERE to the caller's locale. localize_field
+    # adds title_en / message_en + translated=true when a real translation happened, for the FE
+    # "Show original" toggle. Cache-first (TranslationCache) + failure-safe (English on any error).
+    # `title` is now also returned (it was stored but never serialized) so the FE + the _en companion
+    # have it. Consumed by the frontend notifications dropdown / page.
+    from afc_auth.locale_middleware import get_locale
+    from afc_auth.translation import localize_field
+    locale = get_locale(request)
+
     for notification in notifications:
-        notifications_data.append({
+        item = {
             "id": notification.notification_id,
-            "message": notification.message,
             "is_read": notification.is_read,
             "created_at": notification.created_at
-        })
+        }
+        localize_field(item, "title", notification.title, locale)
+        localize_field(item, "message", notification.message, locale)
+        notifications_data.append(item)
 
     return Response({"notifications": notifications_data}, status=status.HTTP_200_OK)
 

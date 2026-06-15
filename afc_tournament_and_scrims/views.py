@@ -152,11 +152,20 @@ def get_all_events(request):
     organization_id = request.GET.get("organization_id")
     if organization_id:
         events = events.filter(organization_id=organization_id)
+
+    # i18n TRANSLATE-ON-READ (owner 2026-06-15): localize the event name to the caller's locale
+    # (request.locale, set by afc_auth.locale_middleware from Accept-Language). The card list only
+    # exposes event_name (event_rules is on the detail endpoints), so that is the only translatable
+    # copy here. localize_field adds event_name_en + translated=true when a real translation happened
+    # so the FE can offer "Show original". Cache-first (TranslationCache) + failure-safe (English on error).
+    from afc_auth.locale_middleware import get_locale
+    from afc_auth.translation import localize_field
+    locale = get_locale(request)
+
     event_list = []
     for event in events:
-        event_list.append({
+        item = {
             "event_id": event.event_id,
-            "event_name": event.event_name,
             "event_banner": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
             "event_date": event.start_date,
             "event_status": event.event_status,
@@ -177,7 +186,9 @@ def get_all_events(request):
             "organization_name": event.organization.name if event.organization_id else None,
             "organization_slug": event.organization.slug if event.organization_id else None,
             "rankings_verified": event.rankings_verified,
-        })
+        }
+        localize_field(item, "event_name", event.event_name, locale)
+        event_list.append(item)
     return Response({"events": event_list}, status=status.HTTP_200_OK)
 
 
@@ -3491,6 +3502,18 @@ def get_event_details(request):
         "is_full": active_registered >= event.max_teams_or_players,
     }
 
+    # i18n TRANSLATE-ON-READ (owner 2026-06-15): localize the two user-visible event copy fields
+    # (name + rules, both plain CharText) to the caller's locale (request.locale, from
+    # afc_auth.locale_middleware via Accept-Language). localize_field overwrites event_data[key] with
+    # the translation and, when a real translation happened, also writes event_name_en / event_rules_en
+    # + sets translated=true so the event page can offer "Show original". Cache-first (TranslationCache)
+    # and failure-safe (English on any error). Consumed by frontend app/(user)/tournaments/[slug]/page.tsx.
+    from afc_auth.locale_middleware import get_locale
+    from afc_auth.translation import localize_field
+    _locale = get_locale(request)
+    localize_field(event_data, "event_name", event.event_name, _locale)
+    localize_field(event_data, "event_rules", event.event_rules, _locale)
+
     # ============================================================
     # REGISTERED COMPETITORS (SOLO ONLY)
     # ============================================================
@@ -4124,6 +4147,17 @@ def get_event_details_not_logged_in(request):
         "registered_count": active_registered,
         "is_full": active_registered >= event.max_teams_or_players,
     }
+
+    # i18n TRANSLATE-ON-READ (owner 2026-06-15): the public, logged-out mirror of get_event_details -
+    # localize the same two copy fields (event_name + event_rules) to the caller's locale
+    # (request.locale, from afc_auth.locale_middleware). localize_field adds the *_en companions +
+    # translated=true when translated, for the "Show original" toggle. Cache-first + failure-safe.
+    # Consumed by frontend app/(user)/tournaments/[slug]/page.tsx (logged-out path).
+    from afc_auth.locale_middleware import get_locale
+    from afc_auth.translation import localize_field
+    _locale = get_locale(request)
+    localize_field(event_data, "event_name", event.event_name, _locale)
+    localize_field(event_data, "event_rules", event.event_rules, _locale)
 
     # ✅ KEEP registered competitors section (as you requested)
     registered = []
@@ -5338,8 +5372,9 @@ def check_and_activate_team(tournament_team):
         event_name = tournament_team.event.event_name
         team_leader_username = tournament_team.team.team_owner.username
         email = tournament_team.team.team_owner.email
-
-        
+        # i18n (owner 2026-06-15): send this activation email in the team owner's saved language.
+        # send_email (afc_auth.views) localizes the subject + visible body text to this locale.
+        owner_lang = (getattr(tournament_team.team.team_owner, "language", "") or "en")
 
         subject = f'AFC Registration Update – Your Team {team_name} is now Fully Registered for {event_name}'
         message = f"""<!DOCTYPE html>
@@ -5440,7 +5475,7 @@ def check_and_activate_team(tournament_team):
 </body>
 </html>
 """
-        send_email(email, subject, message)
+        send_email(email, subject, message, language=owner_lang)
 
         # ---------------- PREPARE ROLE ASSIGNMENT ----------------
         stage = Stages.objects.filter(event=tournament_team.event).first()
@@ -5518,6 +5553,10 @@ def confirm_player(request):
     team_leader_username = member.tournament_team.team.team_owner.username
     team_name = member.tournament_team.team.team_name
     team_owner_email = member.tournament_team.team.team_owner.email
+    # i18n (owner 2026-06-15): each recipient gets the email in their OWN saved language. The player
+    # and the team owner can differ, so we capture both locales; send_email localizes per call.
+    player_lang = (getattr(member.user, "language", "") or "en")
+    owner_lang = (getattr(member.tournament_team.team.team_owner, "language", "") or "en")
 
     # =========================
     # 📧 EMAIL TO PLAYER
@@ -5578,7 +5617,7 @@ def confirm_player(request):
 """
 
     try:
-        send_email(email, subject, player_message)
+        send_email(email, subject, player_message, language=player_lang)
     except Exception as e:
         print(f"Player email failed: {e}")
 
@@ -5658,7 +5697,7 @@ def confirm_player(request):
 """
 
     try:
-        send_email(team_owner_email, subject, owner_message)
+        send_email(team_owner_email, subject, owner_message, language=owner_lang)
     except Exception as e:
         print(f"Owner email failed: {e}")
 
@@ -5783,6 +5822,10 @@ def reject_player(request):
     team_leader_username = member.tournament_team.team.team_owner.username
     team_name = member.tournament_team.team.team_name
     team_owner_email = member.tournament_team.team.team_owner.email
+    # i18n (owner 2026-06-15): localize each email to its recipient's saved language; the player and
+    # the team owner may differ, so capture both. send_email localizes subject + body per call.
+    player_lang = (getattr(member.user, "language", "") or "en")
+    owner_lang = (getattr(member.tournament_team.team.team_owner, "language", "") or "en")
 
     # =========================
     # 📧 EMAIL TO PLAYER
@@ -5859,7 +5902,7 @@ def reject_player(request):
 """
 
     try:
-        send_email(email, subject, player_message)
+        send_email(email, subject, player_message, language=player_lang)
     except Exception as e:
         print(f"Player rejection email failed: {e}")
 
@@ -5942,7 +5985,7 @@ def reject_player(request):
 """
 
     try:
-        send_email(team_owner_email, subject, owner_message)
+        send_email(team_owner_email, subject, owner_message, language=owner_lang)
     except Exception as e:
         print(f"Owner rejection email failed: {e}")
 
