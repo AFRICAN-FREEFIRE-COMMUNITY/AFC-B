@@ -133,6 +133,20 @@ def cumulative_standings(stage):
     return _aggregate_team_standings(qs)
 
 
+def group_standings(group):
+    """Whole-GROUP standings: every team summed across only THAT group's (lobby's) matches.
+
+    Same aggregate as `cumulative_standings`, but scoped to one StageGroups via
+    `match__group=group` — identical to the per-group "Overall Leaderboard" filter in
+    `get_all_leaderboard_details_for_event` (views.py). The graphic export uses this when a
+    group is selected so the exported image matches EXACTLY what the user sees on the page
+    (owner 2026-06-16: export showed the design background but no rows because the stage-wide
+    query missed the data the per-group page view was showing).
+    """
+    qs = TournamentTeamMatchStats.objects.filter(match__group=group)
+    return _aggregate_team_standings(qs)
+
+
 def day_standings(stage, game_day):
     """Single-game-day standings: teams summed across only that day's lobbies.
 
