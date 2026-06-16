@@ -169,6 +169,25 @@ def event_stage_graphic(request, event_id, stage_id):
     page_param = (request.query_params.get("page") or "").strip().lower()
     want_all_pages = (page_param == "all") and design is not None
 
+    # ?page=<N> (owner 2026-06-16): render ONLY page N of a multi-page design as a single PNG, so the
+    # FE can download each page as a SEPARATE image instead of one ZIP (owner prefers multiple images).
+    # ?page=all still returns the ZIP (kept for compatibility / fallback).
+    if design is not None and page_param.isdigit():
+        pages_spec = build_pages_for_export(design, size=size)
+        n = int(page_param)
+        if 1 <= n <= len(pages_spec):
+            pngs = render_design_all_pages(
+                rows, [pages_spec[n - 1]], size=size,
+                logos=logos, title=title, subtitle=subtitle,
+                text_color=text_color, accent_color=accent_color,
+                max_rows=max_rows, show_title=show_title, show_subtitle=show_subtitle,
+            )
+            resp = HttpResponse(pngs[0], content_type="image/png")
+            fname = f"{event.event_name}-{stage.stage_name or 'stage'}-{size}-page{n}.png".replace(" ", "_")
+            resp["Content-Disposition"] = f'attachment; filename="{fname}"'
+            return resp
+        # invalid page index -> fall through to the single-PNG path below.
+
     if want_all_pages:
         pages_spec = build_pages_for_export(design, size=size)
         if len(pages_spec) > 1:
