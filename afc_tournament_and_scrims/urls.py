@@ -234,6 +234,12 @@ urlpatterns = [
     path("delete-match-result-image/", delete_match_result_image, name="delete_match_result_image"),
     path("cancel-event/", cancel_event, name="cancel_event"),
     path("complete-event/", complete_event, name="complete_event"),
+    # Flagged-kill controls (owner 2026-06-16): list ringers + the event default, flip the event
+    # default, override one flagged player. Each mutation recomputes the event's team totals.
+    # Consumed by the FlaggedKillsPanel on the event leaderboard editor (admin + organizer).
+    path("flagged-kills/", get_event_flagged_kills, name="get_event_flagged_kills"),
+    path("flagged-kills/set/", set_event_flagged_kills, name="set_event_flagged_kills"),
+    path("flagged-kills/flag/", set_match_kill_flag, name="set_match_kill_flag"),
     path("broadcast-announcement/", broadcast_announcement, name="broadcast_announcement"),
     # per-group broadcast composer (AFC official + organizer). See broadcast_to_group.
     path("broadcast-to-group/", broadcast_to_group, name="broadcast_to_group"),

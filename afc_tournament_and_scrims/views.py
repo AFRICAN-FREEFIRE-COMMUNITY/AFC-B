@@ -16491,6 +16491,7 @@ def upload_team_match_result(request):
     # who played in-game but was never registered, a typo, or a player on another team) and is
     # FLAGGED for the admin/organizer below — never silently dropped (the old bug).
     from collections import defaultdict
+    from .models import MatchKillFlag  # ringer flags persisted below (owner 2026-06-16)
 
     all_uids = [p["uid"] for t in parsed_teams for p in t["players"]]
 
@@ -16527,9 +16528,11 @@ def upload_team_match_result(request):
 
     with transaction.atomic():
 
-        # Safe re-upload
+        # Safe re-upload (idempotent): clear this match's prior stats AND its ringer flags so the
+        # whole result is re-derived from the freshly uploaded file.
         TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
         TournamentTeamMatchStats.objects.filter(match=match).delete()
+        MatchKillFlag.objects.filter(match=match).delete()
 
         # -------- CREATE TEAM STATS --------
         for team_data in parsed_teams:
@@ -16554,12 +16557,40 @@ def upload_team_match_result(request):
                 missing_teams.append(team_data["team_name"])
                 continue
 
-            total_kills = sum(p["kills"] for p in players)
+            # Classify this block into ROSTERED players (count normally) vs FLAGGED ringers — a UID
+            # that played for this team but is NOT on its site roster (not_on_roster) or is
+            # registered on a DIFFERENT team (belongs_to_other_team). The team's stored kills =
+            # rostered kills + the flagged kills that currently COUNT (owner 2026-06-16). A fresh
+            # upload has no per-flag override yet, so flagged kills count iff the event default
+            # Event.count_flagged_kills is on (True by default = unchanged legacy behavior).
+            block_tt_id = team_obj.tournament_team_id
+            rostered_kills = 0
+            block_flags = []      # ringers: {uid, name, kills, reason, registered_user_id}
+            seen_block = set()    # de-dupe a uid repeated within this block (count once)
+            for p in players:
+                uid = p["uid"]
+                member = uid_to_member.get(uid)
+                if member and member.tournament_team_id == block_tt_id:
+                    if uid in seen_block:
+                        continue
+                    seen_block.add(uid)
+                    rostered_kills += p["kills"]
+                else:  # member is None (not_on_roster) OR on another team (belongs_to_other_team)
+                    if uid in seen_block:
+                        continue
+                    seen_block.add(uid)
+                    block_flags.append({
+                        "uid": uid, "name": p["name"], "kills": p["kills"],
+                        "reason": "not_on_roster" if member is None else "belongs_to_other_team",
+                        "registered_user_id": (member.user_id if member else None),
+                    })
+            team_data["_flags"] = block_flags
+            counted_flagged = sum(f["kills"] for f in block_flags) if event.count_flagged_kills else 0
+            total_kills = rostered_kills + counted_flagged
 
-            # Shared team formula. This log-upload path carries no assists/damage/bonus/penalty,
-            # so they pass through as 0 (placement + kills only) — same result as the old inline calc.
-            # total_kills includes any unknown-UID players in the block, so the TEAM score stays
-            # correct (matches in-game); only per-player attribution flags the unknown ones below.
+            # Shared team formula (placement + kills only on this log path; assists/damage/bonus/
+            # penalty are 0). total_kills now reflects rostered + counted-flagged so toggling
+            # count_flagged_kills (or a per-flag override) re-scores the team via the recompute.
             pts = scoring_lib.compute_team_points(
                 placement_points=placement_points, kill_point=kill_point,
                 points_per_assist=0, points_per_1000_damage=0,
@@ -16702,6 +16733,24 @@ def upload_team_match_result(request):
             player_stats_to_create,
             batch_size=500
         )
+
+        # Persist the flagged ringers (owner 2026-06-16) so the admin/organizer panel can list
+        # them and toggle whether each one's kills count. count_kills defaults to NULL = follow
+        # the event's count_flagged_kills. unique_together(match, team, uid) + ignore_conflicts
+        # guard against a UID repeated across blocks.
+        flag_rows = []
+        for team_data in parsed_teams:
+            tobj = team_data.get("_team_obj")
+            if not tobj:
+                continue
+            for f in team_data.get("_flags", []):
+                flag_rows.append(MatchKillFlag(
+                    match=match, tournament_team=tobj,
+                    uid=f["uid"], name=f["name"], kills=f["kills"],
+                    reason=f["reason"], registered_user_id=f["registered_user_id"],
+                ))
+        if flag_rows:
+            MatchKillFlag.objects.bulk_create(flag_rows, ignore_conflicts=True)
 
         match.result_inputted = True
         match.save(update_fields=["result_inputted"])
@@ -18686,6 +18735,175 @@ def complete_event(request):
         {"message": f"Event '{event.event_name}' has been marked as complete."},
         status=200,
     )
+
+
+# ── Flagged-kill controls (owner 2026-06-16) ─────────────────────────────────────────────────────
+# A "ringer" (a UID that played for a team it is NOT rostered on) is recorded as a MatchKillFlag by
+# upload_team_match_result. These endpoints let an admin OR an organizer (the same can_upload_results
+# gate that already governs result entry) (1) read an event's flagged players + the event-wide
+# default, (2) flip the event-wide count_flagged_kills default, and (3) override a single flagged
+# player's count_kills. Any change re-scores the affected team-match totals via
+# _recompute_team_kills_for_event, so the standings update without a re-upload.
+def _recompute_team_kills_for_event(event):
+    """Rebuild every team-match total in `event` from ROSTERED player kills + the flagged kills that
+    currently COUNT (MatchKillFlag.effective_count = per-flag override else event default). Saves
+    kills + kill_points + total_points back on each TournamentTeamMatchStats and returns the number
+    updated. Mirrors the file-upload team formula (placement + kills; assists/damage 0 on that path,
+    bonus/penalty preserved). Called after the toggle or a per-flag override changes."""
+    from collections import defaultdict
+    from django.db.models import Sum
+    from .models import MatchKillFlag
+
+    counted_by_key = defaultdict(int)   # (match_id, tournament_team_id) -> Σ counted flagged kills
+    for f in (MatchKillFlag.objects.filter(tournament_team__event=event)
+              .select_related("tournament_team__event")):
+        if f.effective_count:
+            counted_by_key[(f.match_id, f.tournament_team_id)] += f.kills
+
+    updated = 0
+    qs = (TournamentTeamMatchStats.objects
+          .filter(tournament_team__event=event)
+          .select_related("match"))
+    for ts in qs:
+        rostered = ts.player_stats.aggregate(s=Sum("kills"))["s"] or 0
+        flagged = counted_by_key.get((ts.match_id, ts.tournament_team_id), 0)
+        new_kills = rostered + flagged
+        scoring = ts.match.scoring_settings or {}
+        try:
+            placement_points = {int(k): int(v) for k, v in (scoring.get("placement_points") or {}).items()}
+        except Exception:
+            placement_points = {}
+        kill_point = float(scoring.get("kill_point", 1))
+        pts = scoring_lib.compute_team_points(
+            placement_points=placement_points, kill_point=kill_point,
+            points_per_assist=0, points_per_1000_damage=0,
+            placement=ts.placement, kills=new_kills, damage=ts.damage, assists=ts.assists,
+            bonus=ts.bonus_points or 0, penalty=ts.penalty_points or 0, played=ts.played,
+        )
+        ts.kills = new_kills
+        ts.kill_points = pts["kill_points"]
+        ts.total_points = pts["total_points"]
+        ts.save(update_fields=["kills", "kill_points", "total_points"])
+        updated += 1
+    return updated
+
+
+def _auth_event_results(request, event):
+    """Bearer auth + the event-scoped 'manage results' gate (AFC event admin OR org member holding
+    can_upload_results on the event's owning org; native events stay admin-only). Mirrors the gate
+    used by the result-save endpoints. Returns (user, None) or (None, error_response)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+        return None, Response({"message": "You do not have permission."}, status=403)
+    return admin, None
+
+
+def _as_bool(v, default=None):
+    """Coerce a request value to bool. Accepts python bool or the usual truthy strings; returns
+    `default` for None/'null'/'' (used so a per-flag override can be cleared back to NULL)."""
+    if isinstance(v, bool):
+        return v
+    if v in (None, "null", ""):
+        return default
+    return str(v).lower() in ("true", "1", "yes", "on")
+
+
+@api_view(["GET"])
+def get_event_flagged_kills(request):
+    """GET events/flagged-kills/?event_id= — the event-wide count_flagged_kills default + every
+    flagged ringer (uid, name, kills, reason, who they really are, whether it counts now). Auth:
+    AFC event admin OR org member with can_upload_results. Consumed by the flagged-players panel on
+    the event leaderboard editor (FlaggedKillsPanel)."""
+    event_id = request.query_params.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    admin, err = _auth_event_results(request, event)
+    if err:
+        return err
+    from .models import MatchKillFlag
+    flags = (MatchKillFlag.objects
+             .filter(tournament_team__event=event)
+             .select_related("tournament_team__team", "registered_user")
+             .order_by("tournament_team__team__team_name", "match_id", "uid"))
+    rows = [{
+        "flag_id": f.id,
+        "match_id": f.match_id,
+        "tournament_team_id": f.tournament_team_id,
+        "team_name": (f.tournament_team.team.team_name if f.tournament_team.team_id else None),
+        "uid": f.uid,
+        "name": f.name,
+        "kills": f.kills,
+        "reason": f.reason,
+        "registered_username": (f.registered_user.username if f.registered_user_id else None),
+        "count_kills": f.count_kills,            # null = follow the event default
+        "effective_count": f.effective_count,    # resolved: does this player's kills count right now?
+    } for f in flags]
+    return Response({
+        "event_id": event.event_id,
+        "count_flagged_kills": event.count_flagged_kills,
+        "flags": rows,
+        "flag_count": len(rows),
+    })
+
+
+@api_view(["PATCH"])
+def set_event_flagged_kills(request):
+    """PATCH events/flagged-kills/ — flip the event-wide count_flagged_kills default, then recompute
+    every team total so the standings reflect it. Body: {event_id, count_flagged_kills: bool}. Auth:
+    AFC event admin OR org member with can_upload_results."""
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    admin, err = _auth_event_results(request, event)
+    if err:
+        return err
+    val = _as_bool(request.data.get("count_flagged_kills"), default=None)
+    if val is None:
+        return Response({"message": "count_flagged_kills (bool) is required."}, status=400)
+    event.count_flagged_kills = val
+    event.save(update_fields=["count_flagged_kills"])
+    updated = _recompute_team_kills_for_event(event)
+    return Response({
+        "message": "Flagged-kill counting updated.",
+        "count_flagged_kills": event.count_flagged_kills,
+        "team_rows_recomputed": updated,
+    })
+
+
+@api_view(["PATCH"])
+def set_match_kill_flag(request):
+    """PATCH events/flagged-kills/flag/ — override ONE flagged player's count_kills (True=always
+    count, False=never, null=follow the event default), then recompute the event's team totals.
+    Body: {flag_id, count_kills: bool|null}. Auth: AFC event admin OR org member with
+    can_upload_results on the flag's event."""
+    flag_id = request.data.get("flag_id")
+    if not flag_id:
+        return Response({"message": "flag_id is required."}, status=400)
+    from .models import MatchKillFlag
+    flag = get_object_or_404(
+        MatchKillFlag.objects.select_related("tournament_team__event"), id=flag_id)
+    event = flag.tournament_team.event
+    admin, err = _auth_event_results(request, event)
+    if err:
+        return err
+    # count_kills may be explicitly null to clear the override back to "follow event default".
+    flag.count_kills = _as_bool(request.data.get("count_kills"), default=None)
+    flag.save(update_fields=["count_kills"])
+    updated = _recompute_team_kills_for_event(event)
+    return Response({
+        "message": "Flagged player updated.",
+        "flag_id": flag.id,
+        "count_kills": flag.count_kills,
+        "effective_count": flag.effective_count,
+        "team_rows_recomputed": updated,
+    })
 
 
 @api_view(["POST"])

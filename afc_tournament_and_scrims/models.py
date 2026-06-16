@@ -159,6 +159,17 @@ class Event(models.Model):
     require_team_logo = models.BooleanField(default=False)
     require_esport_images = models.BooleanField(default=False)
 
+    # ── Flagged-kill counting (owner 2026-06-16) ───────────────────────────────────────────
+    # The match-log FILE upload (upload_team_match_result) credits a team's TOTAL kills from the
+    # file, which includes any UID that played for the team but is NOT on its site roster (a
+    # "ringer": reason not_on_roster / belongs_to_other_team). Each such player is recorded as a
+    # MatchKillFlag. count_flagged_kills is the EVENT-WIDE default for whether those flagged kills
+    # count toward the team's score: True (default) keeps today's behavior (count everything);
+    # False drops every flagged player's kills from the team total. A per-flag override
+    # (MatchKillFlag.count_kills) can force a specific flagged player in/out regardless of this
+    # default. Set by admins + organizers (org_can_event); honored by _effective_team_kills, which
+    # recomputes the stored team totals on upload AND whenever the toggle/override changes.
+    count_flagged_kills = models.BooleanField(default=True)
 
 
     def save(self, *args, **kwargs):
@@ -503,6 +514,58 @@ class TournamentPlayerMatchStats(models.Model):
     assists = models.PositiveIntegerField(default=0)
     played = models.BooleanField(default=True)
 
+
+class MatchKillFlag(models.Model):
+    """A "ringer" found in a match-log FILE upload (owner 2026-06-16): a UID that played for a
+    team but is NOT on that team's site roster, so its kills are flagged for admin/organizer
+    review before they count toward the team's score.
+
+    Created by upload_team_match_result for every flagged player (reason `not_on_roster` =
+    UID on no roster for this event, or `belongs_to_other_team` = UID registered on a DIFFERENT
+    team). Re-derived on every (idempotent) re-upload of the match (old rows for the match are
+    cleared first). The team's stored TournamentTeamMatchStats.kills is computed as
+    rostered-player kills PLUS the kills of flagged players that currently count, where "counts"
+    = `count_kills` if set, else the event default `Event.count_flagged_kills`. Changing the
+    event toggle or a per-flag `count_kills` recomputes the affected team totals via
+    views._recompute_team_kills_for_event.
+
+    Consumed by: views.upload_team_match_result (create), the flagged-players admin/organizer
+    panel (list + per-player toggle), and the standings team-total recompute.
+    """
+    REASON_CHOICES = [
+        ("not_on_roster", "Played for this team but is on no roster for this event"),
+        ("belongs_to_other_team", "Played for this team but is registered on another team"),
+    ]
+    match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="kill_flags")
+    # The team the ringer's kills were credited TO in the file (the block they appeared in).
+    tournament_team = models.ForeignKey(TournamentTeam, on_delete=models.CASCADE,
+                                        related_name="kill_flags")
+    uid = models.CharField(max_length=64)          # Free Fire UID from the file
+    name = models.CharField(max_length=120, blank=True)   # in-game name from the file
+    kills = models.PositiveIntegerField(default=0)
+    reason = models.CharField(max_length=32, choices=REASON_CHOICES)
+    # If the UID belongs to a registered user on ANOTHER team (belongs_to_other_team), link them
+    # so the panel can show who they really are. Null for not_on_roster (no site user at all).
+    registered_user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                        on_delete=models.SET_NULL)
+    # Per-flag override: True = always count this player's kills, False = never, NULL = follow the
+    # event default (Event.count_flagged_kills). Admin/organizer sets it from the panel.
+    count_kills = models.BooleanField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # One flag row per (match, team, uid): a re-upload clears the match's rows first, and a
+        # ringer appears once per block, so this also guards against accidental duplicates.
+        unique_together = ("match", "tournament_team", "uid")
+
+    @property
+    def effective_count(self) -> bool:
+        """Whether this flagged player's kills currently count toward the team total: the per-flag
+        override if set, else the owning event's count_flagged_kills default."""
+        if self.count_kills is not None:
+            return self.count_kills
+        ev = self.tournament_team.event if self.tournament_team_id else None
+        return bool(ev.count_flagged_kills) if ev else True
 
 
 class EventPageView(models.Model):
