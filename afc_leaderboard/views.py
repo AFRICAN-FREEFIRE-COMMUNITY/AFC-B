@@ -660,6 +660,28 @@ def leaderboard_graphic(request, lb_id):
     page_param = (request.GET.get("page") or "").strip().lower()
     want_all_pages = (page_param == "all") and design is not None
 
+    # ?page=<N> (owner 2026-06-16): render ONLY page N as a single PNG so the FE downloads each page as
+    # a SEPARATE image instead of one ZIP (owner prefers multiple images). ?page=all still ZIPs.
+    if design is not None and page_param.isdigit():
+        pages_spec = build_pages_for_export(design, size=size)
+        n = int(page_param)
+        if 1 <= n <= len(pages_spec):
+            pngs = render_design_all_pages(
+                rows, [pages_spec[n - 1]], size=size,
+                logos=logo_specs, title=title, subtitle=subtitle,
+                text_color=(design.text_color if design else "#FFFFFF"),
+                accent_color=(design.accent_color if design else "#34d27b"),
+                max_rows=(design.max_rows if design else 16),
+                show_title=(design.show_title if design else True),
+                show_subtitle=(design.show_subtitle if design else True),
+                logo_path=logo_path,
+            )
+            safe_name = (lb.name or "leaderboard").replace('"', "").replace("\n", " ")
+            resp = HttpResponse(pngs[0], content_type="image/png")
+            resp["Content-Disposition"] = f'attachment; filename="{safe_name}-{size}-page{n}.png"'
+            return resp
+        # invalid page index -> fall through to the single-PNG path below.
+
     if want_all_pages:
         # build_pages_for_export returns 1 entry for a single-page (legacy) design, N for multi-page.
         pages_spec = build_pages_for_export(design, size=size)
