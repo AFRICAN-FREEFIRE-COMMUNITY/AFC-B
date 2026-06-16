@@ -42,6 +42,15 @@ app.conf.beat_schedule = {
         'schedule': crontab(minute=0, hour=3, day_of_week=1),   # Mondays 03:00
         'options': {'queue': 'ocr_ml'},
     },
+    # ── Auto-complete finished tournaments (owner 2026-06-16) ─────────────────
+    # The DATE half of event auto-complete: each day, mark any non-draft tournament whose
+    # end_date has passed as completed (the RESULTS half fires inline on result save via
+    # views.maybe_autocomplete_event). Runs on the default queue (a normal `celery -A afc worker`
+    # drains it; no dedicated worker needed). 01:00 server time, off-peak.
+    'close_finished_events_daily': {
+        'task': 'afc_tournament_and_scrims.tasks.close_finished_events',
+        'schedule': crontab(minute=0, hour=1),     # 01:00 every day
+    },
 }
 
 @app.task(bind=True)

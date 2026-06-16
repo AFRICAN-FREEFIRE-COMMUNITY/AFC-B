@@ -10865,6 +10865,12 @@ def upload_solo_match_result(request):
     match.result_inputted = True
     match.save()
 
+    # Auto-complete the event if this upload finished its final stage (owner 2026-06-16). Best-effort.
+    try:
+        maybe_autocomplete_event(event, admin)
+    except Exception:
+        pass
+
     return Response({
         "message": "Solo match results uploaded (scoring pulled from leaderboard).",
         "match_id": match.match_id,
@@ -13166,6 +13172,12 @@ def edit_solo_match_result(request):
         match.result_inputted = True
         match.save(update_fields=["result_inputted"])
 
+    # Auto-complete the event if this edit finished its final stage (owner 2026-06-16). Best-effort.
+    try:
+        maybe_autocomplete_event(event, admin)
+    except Exception:
+        pass
+
     return Response({"message": "Solo match result updated.", "match_id": match.match_id}, status=200)
 
 
@@ -13980,6 +13992,13 @@ def enter_team_match_result_manual(request):
 
         match.save(update_fields=["result_inputted", "leaderboard"])
 
+    # Auto-complete the event if this save finished its final stage (owner 2026-06-16). Best-effort:
+    # never let a completion/linking hiccup fail an already-committed result save.
+    try:
+        maybe_autocomplete_event(event, admin)
+    except Exception:
+        pass
+
     return Response({
         "message": "Match result saved (manual team entry).",
         "match_id": match.match_id,
@@ -14422,6 +14441,12 @@ def enter_solo_match_result_manual(request):
             match.leaderboard = lb
         match.save(update_fields=["result_inputted", "leaderboard"])
 
+    # Auto-complete the event if this save finished its final stage (owner 2026-06-16). Best-effort.
+    try:
+        maybe_autocomplete_event(event, admin)
+    except Exception:
+        pass
+
     return Response({
         "message": "Solo match result saved (manual entry).",
         "match_id": match.match_id,
@@ -14667,6 +14692,12 @@ def edit_match_result(request):
             match.leaderboard = lb
 
         match.save(update_fields=["result_inputted", "leaderboard"])
+
+    # Auto-complete the event if this edit finished its final stage (owner 2026-06-16). Best-effort.
+    try:
+        maybe_autocomplete_event(event, admin)
+    except Exception:
+        pass
 
     return Response({
         "message": "Match result updated successfully.",
@@ -16693,6 +16724,12 @@ def upload_team_match_result(request):
                     "username": mem["username"],
                 })
 
+    # Auto-complete the event if this upload finished its final stage (owner 2026-06-16). Best-effort.
+    try:
+        maybe_autocomplete_event(event, admin)
+    except Exception:
+        pass
+
     return Response({
         "message": "Team match results uploaded successfully.",
         "match_id": match.match_id,
@@ -18544,6 +18581,91 @@ def cancel_event(request):
     )
 
 
+# ── Event completion core (shared by manual complete + the two auto-complete paths) ──────────────
+# complete_event (manual endpoint, below), maybe_autocomplete_event (result-save hook), and
+# close_finished_events (the daily date-passed Celery sweep, in tasks.py) ALL route through
+# complete_event_core so completion behaves identically however it is triggered: status->completed,
+# fire still-active qualification links (event_links.fire_links_for_event), notify every registered
+# competitor, and write an AdminHistory row tagged with the trigger `source`. Owner 2026-06-16.
+def complete_event_core(event, by_user, *, source="manual"):
+    """Transition an event to completed + run the completion side effects. Idempotent: returns
+    True if it transitioned on this call, False if the event was already completed/cancelled.
+    Side effects are best-effort (a linking/notify hiccup never blocks the status change).
+    `by_user` may be None for the system/cron path (then no AdminHistory row is written)."""
+    if event.event_status in ("completed", "cancelled"):
+        return False
+    event.event_status = "completed"
+    event.save(update_fields=["event_status"])
+    # Fire any still-active qualification links (top-N of each linked stage flow to target events).
+    try:
+        from .event_links import fire_links_for_event
+        fire_links_for_event(event, by_user)
+    except Exception:
+        pass
+    # Notify everyone registered that the tournament has concluded.
+    try:
+        _notify_all_registered(
+            event,
+            title=f"Tournament Complete: {event.event_name}",
+            message=(
+                f"The tournament '{event.event_name}' has officially concluded. "
+                "Results are now locked. Thank you for participating!"
+            ),
+        )
+    except Exception:
+        pass
+    # Audit (manual + result-save paths carry a user; the cron sweep passes by_user=None).
+    if by_user is not None:
+        try:
+            AdminHistory.objects.create(
+                admin_user=by_user,
+                action="complete_event",
+                description=(f"Marked event {event.event_name} (ID: {event.event_id}) as "
+                             f"completed [{source}]"),
+            )
+        except Exception:
+            pass
+    return True
+
+
+def _final_stage_for_event(event):
+    """The event's LAST stage: an explicit finals stage if any is marked, else the highest
+    stage_order (ties broken by stage_id). None when the event has no stages. Used to decide
+    'the tournament is over' for auto-complete (only the final stage finishing matters)."""
+    stages = list(Stages.objects.filter(event=event))
+    if not stages:
+        return None
+    finals = [s for s in stages if getattr(s, "is_finals_stage", False)]
+    pool = finals or stages
+    return max(pool, key=lambda s: ((s.stage_order or 0), s.stage_id))
+
+
+def maybe_autocomplete_event(event, by_user):
+    """Auto-complete an event once its FINAL stage has every match's result entered (owner
+    2026-06-16: "once results of an event are inputted ... the event should be set complete").
+    Called best-effort at the end of each event result-save endpoint. 'Done' = the final stage
+    (finals, else highest stage_order) has >=1 match and ALL of them have result_inputted=True.
+    Scrims never auto-complete (no finals concept); drafts + already-finished events are skipped.
+    Returns True if it completed the event. Wrapped by callers in try/except so a hiccup never
+    blocks the result save. Mirrors close_finished_events (date sweep) + complete_event (manual);
+    all three go through complete_event_core."""
+    if event is None or getattr(event, "is_draft", False):
+        return False
+    if event.event_status in ("completed", "cancelled"):
+        return False
+    if getattr(event, "competition_type", None) == "scrims":
+        return False
+    stage = _final_stage_for_event(event)
+    if stage is None:
+        return False
+    matches = Match.objects.filter(group__stage=stage)
+    if matches.count() == 0:
+        return False
+    if matches.filter(result_inputted=False).exists():
+        return False  # at least one final-stage match still has no result
+    return complete_event_core(event, by_user, source="auto-results")
+
+
 @api_view(["POST"])
 def complete_event(request):
     user, err = _get_event_action_user(request)
@@ -18559,36 +18681,9 @@ def complete_event(request):
     if event.event_status in ["completed", "cancelled"]:
         return Response({"message": f"Event is already {event.event_status}."}, status=400)
 
-    event.event_status = "completed"
-    event.save(update_fields=["event_status"])
-
-    # ── Event linking (feature "event-linking" P1): completing a source event FIRES any of its
-    # still-active qualification links (the safety net behind the manual Fire button) - the top
-    # N of each linked stage flow into their target events. Best-effort: a linking hiccup must
-    # never block the completion itself. Lazy import avoids a module-load cycle.
-    try:
-        from .event_links import fire_links_for_event
-        fire_links_for_event(event, user)
-    except Exception:
-        pass
-
-    count = _notify_all_registered(
-        event,
-        title=f"Tournament Complete: {event.event_name}",
-        message=(
-            f"The tournament '{event.event_name}' has officially concluded. "
-            "Results are now locked. Thank you for participating!"
-        ),
-    )
-
-    AdminHistory.objects.create(
-        admin_user=user,
-        action="complete_event",
-        description=f"Marked event {event.event_name} (ID: {event.event_id}) as completed",
-    )
-
+    complete_event_core(event, user, source="manual")
     return Response(
-        {"message": f"Event '{event.event_name}' has been marked as complete.", "notifications_sent": count},
+        {"message": f"Event '{event.event_name}' has been marked as complete."},
         status=200,
     )
 
