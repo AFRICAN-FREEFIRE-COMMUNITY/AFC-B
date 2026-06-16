@@ -33,7 +33,7 @@ from afc_organizers.models import OrgLeaderboardDesign
 from afc_organizers.views_leaderboard_design import build_field_layout, build_pages_for_export
 from afc_leaderboard.graphic import render_leaderboard_graphic, render_design_all_pages
 
-from afc_tournament_and_scrims.models import Event, Stages, TournamentTeam
+from afc_tournament_and_scrims.models import Event, Stages, StageGroups, TournamentTeam
 from afc_tournament_and_scrims import round_robin
 from afc_tournament_and_scrims.event_links import _is_event_admin
 
@@ -85,7 +85,20 @@ def event_stage_graphic(request, event_id, stage_id):
     design = _resolve_event_design(event, request.query_params.get("design_id"))
     max_rows = design.max_rows if design else 16
 
-    standings = round_robin.cumulative_standings(stage)[: max(1, max_rows)]
+    # Standings source (owner 2026-06-16 fix): the event leaderboard PAGE shows a single GROUP's
+    # "Overall Leaderboard" (TTMS filtered by match__group=group). The export must mirror EXACTLY
+    # what the user sees, so when the FE passes the selected group_id we render THAT group's
+    # standings; otherwise we fall back to the whole-stage cumulative table (all groups). Without
+    # this, a multi-group stage (or a group whose stage differs from the requested stage_id) exported
+    # the design background with NO rows because the stage-wide query missed the per-group data.
+    group_id = request.query_params.get("group_id")
+    group = None
+    if group_id and str(group_id).isdigit():
+        group = StageGroups.objects.filter(group_id=int(group_id), stage=stage).first()
+    standings = (
+        round_robin.group_standings(group) if group
+        else round_robin.cumulative_standings(stage)
+    )[: max(1, max_rows)]
 
     # Team logos in bulk (tournament_team_id -> team_logo filesystem path).
     tt_ids = [r["tournament_team_id"] for r in standings]
