@@ -124,7 +124,7 @@ def event_stage_graphic(request, event_id, stage_id):
             "kills": r.get("total_kills", 0),
         })
 
-    field_layout = build_field_layout(design) if design else None
+    field_layout = build_field_layout(design, size=size) if design else None
 
     # Background for this size + positioned logos from the design.
     bg = None
@@ -157,7 +157,7 @@ def event_stage_graphic(request, event_id, stage_id):
     want_all_pages = (page_param == "all") and design is not None
 
     if want_all_pages:
-        pages_spec = build_pages_for_export(design)
+        pages_spec = build_pages_for_export(design, size=size)
         if len(pages_spec) > 1:
             pngs = render_design_all_pages(
                 rows, pages_spec, size=size,

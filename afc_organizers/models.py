@@ -186,7 +186,12 @@ class OrgLeaderboardDesign(models.Model):
     #    {"row_start_pct":33,"row_height_pct":6.85,"row_count":8,"start_rank":9}]
     # An EMPTY list (no fields placed) => the legacy auto-table render (backward compatible).
     # A field's `column_group` indexes into this list. Consumed by afc_leaderboard.graphic.
+    # `column_groups` is the INSTAGRAM (portrait) row geometry; `column_groups_youtube` is the
+    # SEPARATE landscape geometry (owner 2026-06-15: IG and YT have different aspect ratios, so rows/
+    # columns don't sit in the same place). EMPTY youtube => fall back to the instagram geometry, so
+    # existing single-layout designs keep rendering identically until a YT layout is authored.
     column_groups = models.JSONField(default=list, blank=True)
+    column_groups_youtube = models.JSONField(default=list, blank=True)
     is_default = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
@@ -296,8 +301,11 @@ class OrgLeaderboardDesignPage(models.Model):
     background_youtube = models.ImageField(
         upload_to="org_leaderboard_designs/", null=True, blank=True)
     # Same column_groups shape as OrgLeaderboardDesign.column_groups. Controls row tiling
-    # for THIS page's fields. Default [] = no field layout (legacy auto-table for this page).
+    # for THIS page's fields. column_groups = the INSTAGRAM geometry; column_groups_youtube = the
+    # SEPARATE landscape geometry (owner 2026-06-15: independent IG/YT layouts). EMPTY youtube =>
+    # fall back to the instagram geometry. Default [] = no field layout (legacy auto-table).
     column_groups = models.JSONField(default=list, blank=True)
+    column_groups_youtube = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -335,7 +343,11 @@ class OrgLeaderboardDesignField(models.Model):
     # Index into design.column_groups (0 = first/left group, 1 = second/right group, ...).
     column_group = models.PositiveSmallIntegerField(default=0)
     # Centre X as a percent of canvas width (0..100). Y is supplied per-row by the column group.
+    # `x_pct` is the INSTAGRAM (portrait) position; `x_pct_youtube` is the SEPARATE landscape
+    # position (owner 2026-06-15: IG/YT layouts are independent). NULL youtube => fall back to the
+    # instagram x_pct so existing designs are unchanged until a YT layout is authored.
     x_pct = models.FloatField(default=10.0)
+    x_pct_youtube = models.FloatField(null=True, blank=True)
     align = models.CharField(max_length=6, choices=ALIGN_CHOICES, default="center")
     # Optional per-field overrides: a custom font, a size as a percent of canvas HEIGHT, and a hex
     # colour. Null/blank => the renderer default (built-in font, default row size, design.text_color).
@@ -373,8 +385,13 @@ class OrgLeaderboardDesignText(models.Model):
     design = models.ForeignKey(
         OrgLeaderboardDesign, on_delete=models.CASCADE, related_name="texts")
     text = models.CharField(max_length=200)
+    # (x_pct, y_pct) is the INSTAGRAM position; (x_pct_youtube, y_pct_youtube) is the SEPARATE
+    # landscape position (owner 2026-06-15: independent IG/YT layouts). NULL youtube => fall back to
+    # the instagram position, so existing texts are unchanged until a YT layout is authored.
     x_pct = models.FloatField(default=50.0)
     y_pct = models.FloatField(default=15.0)
+    x_pct_youtube = models.FloatField(null=True, blank=True)
+    y_pct_youtube = models.FloatField(null=True, blank=True)
     align = models.CharField(max_length=6, choices=ALIGN_CHOICES, default="center")
     font = models.ForeignKey(
         OrgLeaderboardDesignFont, on_delete=models.SET_NULL, null=True, blank=True,
