@@ -607,15 +607,25 @@ def design_pages(request, design_id):
         return err
 
     # If this is the very first page POST on this design, auto-create page 1 first, carrying
-    # over the design-level backgrounds + column_groups so no data is lost for the current layout.
+    # over the design-level backgrounds + BOTH column-group layouts (IG + YT) so no data is lost
+    # for the current layout.
     if not d.pages.exists():
-        OrgLeaderboardDesignPage.objects.create(
+        page_one = OrgLeaderboardDesignPage.objects.create(
             design=d,
             page_number=1,
             background_instagram=d.background_instagram or None,
             background_youtube=d.background_youtube or None,
             column_groups=list(d.column_groups or []),
+            column_groups_youtube=list(d.column_groups_youtube or []),
         )
+        # Re-home the design's existing legacy (page_id=NULL) fields/texts onto the freshly
+        # materialised page 1. Without this they keep page_id=NULL while explicit pages now exist,
+        # so the editor (which filters fields/texts by page_id === currentPageId, and defaults the
+        # first tab to page 1's id) would render page 1 EMPTY and the org/admin would lose every
+        # column + text element the moment they add a second page. Consumed by DesignFieldsEditor's
+        # initial-load + page-switch effects; the frontend comment there anticipates this reassignment.
+        d.fields.filter(page__isnull=True).update(page=page_one)
+        d.texts.filter(page__isnull=True).update(page=page_one)
 
     # Now create the new page (page 2, 3, ...).
     new_page_num = _next_page_number(d)
