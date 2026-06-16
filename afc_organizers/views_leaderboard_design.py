@@ -102,6 +102,8 @@ def _serialize_field(f, request=None):
         "field_type": f.field_type,
         "column_group": f.column_group,
         "x_pct": f.x_pct,
+        # Independent YouTube X (owner 2026-06-15); null => the editor falls back to x_pct for YT.
+        "x_pct_youtube": f.x_pct_youtube,
         "align": f.align,
         "font_id": f.font_id,
         "font_size_pct": f.font_size_pct,
@@ -119,6 +121,9 @@ def _serialize_text(t, request=None):
         "text": t.text,
         "x_pct": t.x_pct,
         "y_pct": t.y_pct,
+        # Independent YouTube position (owner 2026-06-15); null => editor falls back to x_pct/y_pct.
+        "x_pct_youtube": t.x_pct_youtube,
+        "y_pct_youtube": t.y_pct_youtube,
         "align": t.align,
         "font_id": t.font_id,
         "font_size_pct": t.font_size_pct,
@@ -139,6 +144,8 @@ def _serialize_page(p, request=None):
         "background_instagram": _abs_url(request, p.background_instagram),
         "background_youtube": _abs_url(request, p.background_youtube),
         "column_groups": p.column_groups or [],
+        # Independent YouTube geometry (owner 2026-06-15); empty => editor falls back to column_groups.
+        "column_groups_youtube": p.column_groups_youtube or [],
     }
 
 
@@ -156,6 +163,8 @@ def _serialize_design(d, request=None):
         "is_default": d.is_default,
         # Row tiling for each column group (the field-layout path). [] => legacy auto-table.
         "column_groups": d.column_groups or [],
+        # Independent YouTube geometry (owner 2026-06-15); empty => editor falls back to column_groups.
+        "column_groups_youtube": d.column_groups_youtube or [],
         # Multi-page support (owner 2026-06-14): ordered list of explicit page rows. An EMPTY list
         # means a single-page (legacy) design (backward compatible). The editor only shows page tabs
         # when this is non-empty; export returns a ZIP when len > 1.
@@ -170,15 +179,22 @@ def _serialize_design(d, request=None):
     }
 
 
-def build_field_layout(design):
+def build_field_layout(design, size="instagram"):
     """Convert a design's placed fields + freeform texts + column groups into the `field_layout`
     dict the renderer (afc_leaderboard.graphic.render_leaderboard_graphic) consumes, resolving each
     element's font FK to a filesystem PATH. Returns None when the design has no fields placed, so
     the renderer falls back to its legacy auto-table. Imported by the standalone + event graphic
-    endpoints; pass the result (plus the matching `rows`) to render_leaderboard_graphic."""
+    endpoints; pass the result (plus the matching `rows`) to render_leaderboard_graphic.
+
+    `size` ("instagram"|"youtube") selects which independent layout to render (owner 2026-06-15: IG
+    and YT positions/geometry are stored separately). For YouTube we use the *_youtube columns,
+    FALLING BACK to the Instagram values whenever a YT value is unset (NULL field x / empty column
+    groups), so a design that only has an IG layout renders identically on both sizes."""
     fields = list(design.fields.all())
     if not fields:
         return None
+
+    yt = size == "youtube"
 
     def _font_path(elem):
         try:
@@ -186,12 +202,24 @@ def build_field_layout(design):
         except Exception:
             return None
 
+    def _fx(f):
+        return f.x_pct_youtube if (yt and f.x_pct_youtube is not None) else f.x_pct
+
+    def _tx(t):
+        return t.x_pct_youtube if (yt and t.x_pct_youtube is not None) else t.x_pct
+
+    def _ty(t):
+        return t.y_pct_youtube if (yt and t.y_pct_youtube is not None) else t.y_pct
+
+    groups = ((design.column_groups_youtube or design.column_groups) if yt
+              else design.column_groups) or []
+
     return {
-        "column_groups": design.column_groups or [],
+        "column_groups": groups,
         "fields": [{
             "field_type": f.field_type,
             "column_group": f.column_group,
-            "x_pct": f.x_pct,
+            "x_pct": _fx(f),
             "align": f.align,
             "font_path": _font_path(f),
             "font_size_pct": f.font_size_pct,
@@ -199,8 +227,8 @@ def build_field_layout(design):
         } for f in fields],
         "texts": [{
             "text": t.text,
-            "x_pct": t.x_pct,
-            "y_pct": t.y_pct,
+            "x_pct": _tx(t),
+            "y_pct": _ty(t),
             "align": t.align,
             "font_path": _font_path(t),
             "font_size_pct": t.font_size_pct,
@@ -209,8 +237,12 @@ def build_field_layout(design):
     }
 
 
-def build_pages_for_export(design):
+def build_pages_for_export(design, size="instagram"):
     """Return an ordered list of per-page render specs for the multi-page export path.
+
+    `size` ("instagram"|"youtube") selects which independent layout to bake into each page's
+    field_layout (owner 2026-06-15). YouTube uses the *_youtube positions/column-groups, falling
+    back to the Instagram values when a YT value is unset.
 
     Each entry is a dict with:
         page_number          : int (1-based)
@@ -230,6 +262,7 @@ def build_pages_for_export(design):
     Consumed by leaderboard_graphic (afc_leaderboard.views) and event_stage_graphic
     (afc_tournament_and_scrims.views_event_graphic) when ?page=all is requested."""
     pages_qs = list(design.pages.order_by("page_number"))
+    yt = size == "youtube"
 
     def _font_path(elem):
         try:
@@ -237,50 +270,53 @@ def build_pages_for_export(design):
         except Exception:
             return None
 
+    # Per-size pickers: YouTube uses *_youtube, falling back to the Instagram value when unset.
+    def _fx(f):
+        return f.x_pct_youtube if (yt and f.x_pct_youtube is not None) else f.x_pct
+
+    def _tx(t):
+        return t.x_pct_youtube if (yt and t.x_pct_youtube is not None) else t.x_pct
+
+    def _ty(t):
+        return t.y_pct_youtube if (yt and t.y_pct_youtube is not None) else t.y_pct
+
+    def _groups(obj):
+        return ((obj.column_groups_youtube or obj.column_groups) if yt
+                else obj.column_groups) or []
+
+    def _layout(source_obj, fields, texts):
+        if not fields:
+            return None
+        return {
+            "column_groups": _groups(source_obj),
+            "fields": [{"field_type": f.field_type, "column_group": f.column_group,
+                         "x_pct": _fx(f), "align": f.align, "font_path": _font_path(f),
+                         "font_size_pct": f.font_size_pct, "color": f.color} for f in fields],
+            "texts": [{"text": t.text, "x_pct": _tx(t), "y_pct": _ty(t), "align": t.align,
+                        "font_path": _font_path(t), "font_size_pct": t.font_size_pct,
+                        "color": t.color} for t in texts],
+        }
+
     if not pages_qs:
         # Single-page (legacy) design: one entry using design-level data + null-page fields/texts.
-        fields = list(design.fields.filter(page__isnull=True))
-        field_layout = None
-        if fields:
-            field_layout = {
-                "column_groups": design.column_groups or [],
-                "fields": [{"field_type": f.field_type, "column_group": f.column_group,
-                             "x_pct": f.x_pct, "align": f.align, "font_path": _font_path(f),
-                             "font_size_pct": f.font_size_pct, "color": f.color} for f in fields],
-                "texts": [{"text": t.text, "x_pct": t.x_pct, "y_pct": t.y_pct, "align": t.align,
-                            "font_path": _font_path(t), "font_size_pct": t.font_size_pct,
-                            "color": t.color} for t in design.texts.filter(page__isnull=True)],
-            }
         return [{
             "page_number": 1,
             "background_instagram": design.background_instagram,
             "background_youtube": design.background_youtube,
-            "field_layout": field_layout,
+            "field_layout": _layout(
+                design,
+                list(design.fields.filter(page__isnull=True)),
+                list(design.texts.filter(page__isnull=True)),
+            ),
         }]
 
     # Multi-page design: one entry per page, with that page's fields + texts.
-    result = []
-    for page in pages_qs:
-        fields = list(page.fields.all())  # related_name="fields" on the page FK
-        texts = list(page.texts.all())    # related_name="texts" on the page FK
-        field_layout = None
-        if fields:
-            field_layout = {
-                "column_groups": page.column_groups or [],
-                "fields": [{"field_type": f.field_type, "column_group": f.column_group,
-                             "x_pct": f.x_pct, "align": f.align, "font_path": _font_path(f),
-                             "font_size_pct": f.font_size_pct, "color": f.color} for f in fields],
-                "texts": [{"text": t.text, "x_pct": t.x_pct, "y_pct": t.y_pct, "align": t.align,
-                            "font_path": _font_path(t), "font_size_pct": t.font_size_pct,
-                            "color": t.color} for t in texts],
-            }
-        result.append({
-            "page_number": page.page_number,
-            "background_instagram": page.background_instagram,
-            "background_youtube": page.background_youtube,
-            "field_layout": field_layout,
-        })
-    return result
+    return [{
+        "page_number": page.page_number,
+        "background_instagram": page.background_instagram,
+        "background_youtube": page.background_youtube,
+        "field_layout": _layout(page, list(page.fields.all()), list(page.texts.all())),
+    } for page in pages_qs]
 
 
 def _can_write_design(user, design):
@@ -329,7 +365,12 @@ def _apply_fields(d, data):
             except (TypeError, ValueError):
                 raw = None
         if isinstance(raw, list):
-            d.column_groups = raw
+            # Per-size row geometry (owner 2026-06-15): editing the YouTube layout writes
+            # column_groups_youtube; otherwise the Instagram column_groups. Empty YT falls back to IG.
+            if (data.get("size") or "instagram").lower() == "youtube":
+                d.column_groups_youtube = raw
+            else:
+                d.column_groups = raw
 
 
 def _unset_other_defaults(org, keep_id):
@@ -644,7 +685,12 @@ def design_page_item(request, design_id, page_id):
         try:
             parsed = json.loads(raw_cg) if isinstance(raw_cg, str) else raw_cg
             if isinstance(parsed, list):
-                page.column_groups = parsed
+                # Per-size geometry (owner 2026-06-15): editing the YouTube layout writes
+                # column_groups_youtube; otherwise the Instagram column_groups.
+                if (request.data.get("size") or "instagram").lower() == "youtube":
+                    page.column_groups_youtube = parsed
+                else:
+                    page.column_groups = parsed
         except (TypeError, ValueError):
             pass
     page.save()
@@ -675,8 +721,17 @@ def _apply_field_attrs(f, data, design):
             f.column_group = max(0, int(data.get("column_group")))
         except (TypeError, ValueError):
             pass
+    # Per-size position (owner 2026-06-15): a drag while editing the YouTube layout sends
+    # size="youtube" and writes x_pct_youtube; otherwise it writes the Instagram x_pct. Create
+    # (no size) writes the IG x_pct; the YT value stays NULL and falls back to IG until edited.
     if "x_pct" in data:
-        f.x_pct = _clamp_pct(data.get("x_pct"), f.x_pct)
+        if (data.get("size") or "instagram").lower() == "youtube":
+            f.x_pct_youtube = _clamp_pct(
+                data.get("x_pct"),
+                f.x_pct_youtube if f.x_pct_youtube is not None else f.x_pct,
+            )
+        else:
+            f.x_pct = _clamp_pct(data.get("x_pct"), f.x_pct)
     if "align" in data:
         a = (data.get("align") or "").lower()
         if a in ALIGN_VALUES:
@@ -751,10 +806,23 @@ def design_field_item(request, design_id, field_id):
 def _apply_text_attrs(t, data, design):
     if "text" in data:
         t.text = (data.get("text") or "")[:200]
+    # Per-size position (owner 2026-06-15): editing the YouTube layout (size="youtube") writes the
+    # *_youtube position; otherwise the Instagram position. YT NULL falls back to IG until edited.
+    yt = (data.get("size") or "instagram").lower() == "youtube"
     if "x_pct" in data:
-        t.x_pct = _clamp_pct(data.get("x_pct"), t.x_pct)
+        if yt:
+            t.x_pct_youtube = _clamp_pct(
+                data.get("x_pct"), t.x_pct_youtube if t.x_pct_youtube is not None else t.x_pct,
+            )
+        else:
+            t.x_pct = _clamp_pct(data.get("x_pct"), t.x_pct)
     if "y_pct" in data:
-        t.y_pct = _clamp_pct(data.get("y_pct"), t.y_pct)
+        if yt:
+            t.y_pct_youtube = _clamp_pct(
+                data.get("y_pct"), t.y_pct_youtube if t.y_pct_youtube is not None else t.y_pct,
+            )
+        else:
+            t.y_pct = _clamp_pct(data.get("y_pct"), t.y_pct)
     if "align" in data:
         a = (data.get("align") or "").lower()
         if a in ALIGN_VALUES:

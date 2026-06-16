@@ -662,7 +662,7 @@ def leaderboard_graphic(request, lb_id):
 
     if want_all_pages:
         # build_pages_for_export returns 1 entry for a single-page (legacy) design, N for multi-page.
-        pages_spec = build_pages_for_export(design)
+        pages_spec = build_pages_for_export(design, size=size)
         if len(pages_spec) <= 1:
             # Single-page design even though page=all was asked: fall through to the single-PNG path.
             want_all_pages = False
@@ -688,7 +688,7 @@ def leaderboard_graphic(request, lb_id):
             return resp
 
     # ── Single-page PNG (default path, unchanged behaviour) ──
-    field_layout = build_field_layout(design) if design else None
+    field_layout = build_field_layout(design, size=size) if design else None
     png = render_leaderboard_graphic(
         std,
         size=size,
