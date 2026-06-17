@@ -126,6 +126,22 @@ class Event(models.Model):
     is_waitlist_enabled = models.BooleanField(default=False)
     waitlist_capacity = models.PositiveIntegerField(null=True, blank=True)
     waitlist_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
+    # ── Waitlist slot-assignment MODE (owner 2026-06-17) ──────────────────────────────────────────
+    # When a registered team/player no-shows, a waitlisted one takes the slot. This picks HOW the
+    # organizer decides who:
+    #   first_registered -> the earliest-registered waitlist entry is promoted (admin clicks "Promote next").
+    #   fcfs_room        -> all waitlist teams get the room ID/PASS (released on the user event page for
+    #                        fcfs_room events); they race into the in-game room, admin promotes whoever got in.
+    #   manual_admin     -> admin/organizer hand-picks which waitlist entry is promoted.
+    # AFC can't auto-detect attendance, so freeing a slot is always an admin/organizer action
+    # (mark-no-show) and promotion is admin-triggered. Shown on the user event page so waitlisted
+    # competitors know how slots are assigned. Default first_registered for backward compat.
+    WAITLIST_MODE_CHOICES = [
+        ("first_registered", "Earliest registered gets the slot"),
+        ("fcfs_room", "First to join the room gets the slot"),
+        ("manual_admin", "Organizer picks who gets the slot"),
+    ]
+    waitlist_mode = models.CharField(max_length=20, choices=WAITLIST_MODE_CHOICES, default="first_registered")
 
     event_start_time = models.TimeField(null=True, blank=True)
     event_end_time = models.TimeField(null=True, blank=True)
@@ -368,6 +384,10 @@ class RegisteredCompetitors(models.Model):
     registration_date = models.DateTimeField(auto_now_add=True)
     user_id_from_sponsor = models.CharField(max_length=100, null=True, blank=True)
     is_waitlisted = models.BooleanField(default=False)
+    # No-show (owner 2026-06-17 waitlist): an active competitor the organizer marked absent, freeing a
+    # slot a waitlisted competitor can take. Set via mark_no_show; excluded from active counts so the
+    # waitlist promotion has room. Cleared if the team turns up after all (undo).
+    is_no_show = models.BooleanField(default=False)
 
 
 # ---------------- Leaderboard ----------------
@@ -415,6 +435,12 @@ class Match(models.Model):
     room_id = models.CharField(max_length=50, null=True, blank=True)
     room_password = models.CharField(max_length=50, null=True, blank=True)
     room_name = models.CharField(max_length=100, null=True, blank=True)
+    # When room details were RELEASED to players (owner 2026-06-17). NULL = the admin/organizer has
+    # entered room id/name/password but not yet posted them; a timestamp = they were broadcast to the
+    # group (broadcast_to_group / broadcast_to_stage mode=room_details). get_event_details only shows
+    # room creds to the group's registered competitors AFTER this is set, so the room appears on the
+    # user-facing event page exactly when (and only when) the organizer posts it.
+    room_details_released_at = models.DateTimeField(null=True, blank=True)
     result_inputted = models.BooleanField(default=False)
     upload_method = models.CharField(max_length=30, null=True, blank=True)
     scoring_settings = models.JSONField(default=dict, blank=True)
@@ -448,6 +474,9 @@ class TournamentTeam(models.Model):
     registration_date = models.DateTimeField(auto_now_add=True)
     country = models.CharField(max_length=100, null=True, blank=True) # Store country at time of registration for historical accuracy
     is_waitlisted = models.BooleanField(default=False)
+    # No-show (owner 2026-06-17 waitlist): team-side mirror of RegisteredCompetitors.is_no_show — the
+    # organizer marked this active team absent, freeing a slot for a waitlisted team. See mark_no_show.
+    is_no_show = models.BooleanField(default=False)
     # rankings result markers — set by admin at result entry via afc_rankings.admin_results
     # (spec §4.4/§4.5/§5.1); consumed by afc_rankings.aggregation to award win/finals points.
     # result_finalized gates whether aggregation counts this event at all.

@@ -1,4 +1,5 @@
 import os
+import json
 
 from django.shortcuts import redirect, render
 from django.contrib.auth import authenticate
@@ -17,7 +18,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
-from .models import AdminHistory, AuditLog, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import AdminHistory, AuditLog, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SentBroadcast, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
 # set_audit lets these admin views supply a SPECIFIC human audit summary (entity name + before/after)
 # that the AuditLogMiddleware records instead of its generic "Edited ... #id" fallback.
 from afc_auth.audit import set_audit
@@ -445,7 +446,9 @@ def broadcast_message_email_html(title, message):
 
 def deliver_broadcast(recipients, title, message, *, delivery="both",
                       notification_type="admin_message", related_event=None,
-                      target_type="", target_id=""):
+                      target_type="", target_id="", targets=None,
+                      sender=None, scope="general", stage_id=None, stage_name="",
+                      group_id=None, group_name="", log=True):
     """Send a broadcast to `recipients` (an iterable of Users) over the chosen channel(s).
 
     delivery: "push" | "email" | "both". Returns (pushed, emailed) counts.
@@ -459,7 +462,16 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
     afc_auth.notification_links.build_notification_link). When the caller passes no target but DOES
     pass a related_event, we default to target_type="event" + target_id=<event.slug> so existing
     event broadcasts auto-link to the tournament page with zero caller changes.
-    Used by afc_auth.admin_send_message and afc_tournament_and_scrims broadcast endpoints."""
+
+    MULTI-TARGET (owner 2026-06-17): `targets` is an optional list of {target_type, target_id} dicts
+    (the link picker can now select several events). When given, every Notification carries the full
+    list in `targets` and the FIRST target backfills the legacy single target_type/target_id columns.
+
+    HISTORY (owner 2026-06-17): when `log` is True we write ONE SentBroadcast row recording sender,
+    scope, event/stage/group context, recipient_count and the targets, so the broadcast-history
+    surfaces can list every send. `sender`/`scope`/`stage_*`/`group_*` describe that context.
+
+    Used by afc_auth.admin_send_message / send_notification* and afc_tournament_and_scrims broadcast endpoints."""
     recipients = [r for r in recipients if r]
     want_push = delivery in ("push", "both")
     want_email = delivery in ("email", "both")
@@ -468,9 +480,26 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
     # Falls back to the numeric id if the event has no slug yet (build_notification_link handles either).
     target_type = (target_type or "").strip().lower()
     target_id = (target_id or "").strip()
-    if not target_type and related_event is not None:
+    if not target_type and not targets and related_event is not None:
         target_type = "event"
         target_id = related_event.slug or str(related_event.event_id)
+
+    # Normalise the deep-link target LIST. Prefer an explicit `targets`; otherwise fall back to the
+    # single (target_type, target_id) pair so existing single-link callers are unchanged. Drop blanks
+    # and "none"; "shop" is the one type that legitimately carries no id.
+    raw_targets = list(targets) if isinstance(targets, (list, tuple)) else None
+    if raw_targets is None and target_type and target_type != "none":
+        raw_targets = [{"target_type": target_type, "target_id": target_id}]
+    targets_list = []
+    for t in (raw_targets or []):
+        if not isinstance(t, dict):
+            continue
+        tt = (str(t.get("target_type") or "")).strip().lower()
+        ti = (str(t.get("target_id") or "")).strip()
+        if tt and tt != "none" and (ti or tt == "shop"):
+            targets_list.append({"target_type": tt, "target_id": ti})
+    # First target backfills the single-link columns (back-compat with old readers + single "Take me there").
+    first = targets_list[0] if targets_list else {"target_type": target_type, "target_id": target_id}
 
     pushed = 0
     if want_push:
@@ -481,8 +510,9 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
                 message=message,
                 notification_type=notification_type,
                 related_event=related_event,
-                target_type=target_type,
-                target_id=target_id,
+                target_type=first.get("target_type", ""),
+                target_id=first.get("target_id", ""),
+                targets=targets_list,
             )
             for r in recipients
         ])
@@ -514,6 +544,30 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
 
             import threading
             threading.Thread(target=_send, daemon=True).start()
+
+    # ── History log (owner 2026-06-17): one SentBroadcast row per send ──
+    # Best-effort: a logging failure must never break a delivery that already happened. Records who
+    # sent it, the scope + event/stage/group context, how many it reached, and the deep-link targets,
+    # so the admin/organizer broadcast-history surfaces can list every announcement + room push.
+    if log:
+        try:
+            SentBroadcast.objects.create(
+                sender=sender,
+                sender_username=getattr(sender, "username", "") or "",
+                scope=scope,
+                title=title or None,
+                message=message or "",
+                delivery=delivery if delivery in ("push", "email", "both") else "both",
+                recipient_count=len(recipients),
+                event=related_event,
+                stage_id=stage_id,
+                stage_name=stage_name or "",
+                group_id=group_id,
+                group_name=group_name or "",
+                targets=targets_list,
+            )
+        except Exception:
+            pass
 
     return pushed, emailed
 
@@ -4176,6 +4230,28 @@ def get_notifications(request):
             "target_id": notification.target_id or "",
             "link": build_notification_link(notification.target_type, notification.target_id),
         }
+        # MULTI deep-link (owner 2026-06-17): a broadcast may point at several entities (e.g. several
+        # events). Build one {link,target_type,target_id} per stored target so the FE can render a
+        # "View" per linked entity. Falls back to the single (target_type,target_id) for old rows that
+        # have no `targets`. `link` (above) stays = the first link for back-compat with old readers.
+        links = []
+        for t in (notification.targets or []):
+            if not isinstance(t, dict):
+                continue
+            built = build_notification_link(t.get("target_type"), t.get("target_id"))
+            if built:
+                links.append({
+                    "link": built,
+                    "target_type": (t.get("target_type") or ""),
+                    "target_id": (t.get("target_id") or ""),
+                })
+        if not links and item["link"]:
+            links.append({
+                "link": item["link"],
+                "target_type": item["target_type"],
+                "target_id": item["target_id"],
+            })
+        item["links"] = links
         localize_field(item, "title", notification.title, locale)
         localize_field(item, "message", notification.message, locale)
         notifications_data.append(item)
@@ -4227,6 +4303,34 @@ def _parse_notification_target(request):
         (request.data.get("target_type") or "").strip().lower(),
         (request.data.get("target_id") or "").strip(),
     )
+
+
+def _parse_notification_targets(request):
+    """Pull the MULTI deep-link target list off a send request (owner 2026-06-17 multi-event picker).
+
+    The composer may send `targets` as a JSON array of {target_type, target_id} (the multi-event
+    link picker). Accept a JSON string too (FormData). Falls back to the single (target_type,
+    target_id) pair so a one-target composer still works. Returns a normalised list (possibly empty);
+    deliver_broadcast does the final dedupe/blank-drop, so we keep this lenient."""
+    raw = request.data.get("targets")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            raw = None
+    out = []
+    if isinstance(raw, (list, tuple)):
+        for t in raw:
+            if isinstance(t, dict):
+                out.append({
+                    "target_type": (str(t.get("target_type") or "")).strip().lower(),
+                    "target_id": (str(t.get("target_id") or "")).strip(),
+                })
+    if not out:
+        tt, ti = _parse_notification_target(request)
+        if tt:
+            out = [{"target_type": tt, "target_id": ti}]
+    return out
 
 
 @api_view(["POST"])
@@ -4300,22 +4404,23 @@ def send_notification_to_multiple_users(request):
 
     recipient_ids = request.data.get("recipient_ids", [])
     message = request.data.get("message")
-    # Optional deep-link target (FE composer); same pair stamped on every recipient's row.
-    target_type, target_id = _parse_notification_target(request)
+    title = request.data.get("title") or None
+    # Optional deep-link targets (FE composer): the multi-event picker sends a `targets` array;
+    # falls back to the single pair. Same targets stamped on every recipient's row.
+    targets = _parse_notification_targets(request)
 
     if not recipient_ids or not message:
         return Response({"message": "Recipient IDs and message are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    recipients = User.objects.filter(user_id__in=recipient_ids)
-    for recipient in recipients:
-        Notifications.objects.create(
-            user=recipient,
-            message=message,
-            target_type=target_type,
-            target_id=target_id,
-        )
+    recipients = list(User.objects.filter(user_id__in=recipient_ids))
+    # Route through the shared chokepoint so this send is (a) multi-target capable and (b) recorded in
+    # SentBroadcast history (scope=general -> admin Settings > Notifications history). Push-only keeps
+    # the existing behaviour (this composer never emailed).
+    deliver_broadcast(
+        recipients, title, message, delivery="push", notification_type="admin_message",
+        targets=targets, sender=user, scope="general",
+    )
 
-    
     set_audit(request, f"Sent a notification to {len(recipients)} users")
     AdminHistory.objects.create(
         admin_user=user,
@@ -4407,13 +4512,31 @@ def admin_send_message(request):
         if not recipients:
             return Response({"message": "This team has no members to message."}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Multi deep-link targets (owner 2026-06-17): the composer may send a `link_targets` array
+    # (multi-event picker); else fall back to the single link_target_type/link_target_id pair below.
+    link_targets = request.data.get("link_targets")
+    if isinstance(link_targets, str):
+        try:
+            link_targets = json.loads(link_targets)
+        except (ValueError, TypeError):
+            link_targets = None
+    targets = None
+    if isinstance(link_targets, (list, tuple)):
+        targets = [
+            {"target_type": (str(t.get("target_type") or "")).strip().lower(),
+             "target_id": (str(t.get("target_id") or "")).strip()}
+            for t in link_targets if isinstance(t, dict)
+        ]
+
     # ── deliver ──
     # Shared multi-channel delivery: in-app push and/or the FIXED branded broadcast email
     # (deliver_broadcast). Replaces the old inline unbranded "<p>{message}</p>" email so every
     # admin message looks like the rest of AFC's mail, and email no longer blocks the request.
+    # scope="direct" + sender=user record this in SentBroadcast history (admin Settings > history).
     pushed, emailed = deliver_broadcast(
         recipients, title, message, delivery=delivery, notification_type="admin_message",
-        target_type=link_target_type, target_id=link_target_id,
+        target_type=link_target_type, target_id=link_target_id, targets=targets,
+        sender=user, scope="direct",
     )
 
     set_audit(request, f"Sent a {delivery} message to the {target_type} {target_label}")
@@ -4432,6 +4555,48 @@ def admin_send_message(request):
         "pushed": pushed,
         "emailed": emailed,
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+def get_general_broadcast_history(request):
+    """GET /auth/broadcast-history/?limit=&offset= — the admin Settings broadcast history.
+
+    Lists the GENERAL + DIRECT broadcasts (sent from admin Settings > Notifications, or as a direct
+    player/team message) — i.e. the ones NOT tied to an event. Event / stage / group / room-details
+    broadcasts have their own per-event history (afc_tournament_and_scrims.get_broadcast_history).
+    Admin only. Paginated (limit default 20, max 100) with has_more / next_offset / total_count.
+    Consumed by: frontend admin Settings > Notifications tab "Sent broadcasts" list.
+    Source rows: SentBroadcast written by deliver_broadcast (scope general/direct)."""
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    if user.role != "admin":
+        return Response({"message": "You do not have permission to view broadcast history."}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        limit = min(max(int(request.GET.get("limit", 20)), 1), 100)
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        offset = max(int(request.GET.get("offset", 0)), 0)
+    except (TypeError, ValueError):
+        offset = 0
+
+    qs = (SentBroadcast.objects
+          .filter(scope__in=["general", "direct"])
+          .select_related("event")
+          .order_by("-created_at"))
+    total = qs.count()
+    results = [b.to_history_dict() for b in qs[offset:offset + limit]]
+    return Response({
+        "results": results,
+        "total_count": total,
+        "has_more": offset + limit < total,
+        "next_offset": (offset + limit) if (offset + limit) < total else None,
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])

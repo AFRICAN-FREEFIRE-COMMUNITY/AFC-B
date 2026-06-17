@@ -27,7 +27,10 @@ from .models import TournamentTeamMatchStats
 
 # Default lobby map when the caller doesn't specify maps. BR lobbies always carry at
 # least one map; Bermuda is the standard Free Fire BR map used across the codebase.
-DEFAULT_MAPS = ["bermuda"]
+# Capitalised to match the FE AVAILABLE_MAPS labels ("Bermuda"…) so an auto-generated
+# schedule's maps line up with the meeting editor's map stepper (owner 2026-06-17: a
+# lowercase "bermuda" default rendered as 0 maps under the capitalized "Bermuda" stepper).
+DEFAULT_MAPS = ["Bermuda"]
 
 
 def round_robin_schedule(group_ids, games_per_day=1, maps=None):
@@ -47,6 +50,17 @@ def round_robin_schedule(group_ids, games_per_day=1, maps=None):
           {game_day, source_group_ids: [g1, g2], match_count, match_maps}
         Game-days are numbered 1..C(n, 2). Fewer than two groups → [] (nothing to merge).
     """
+    # One match per map (owner 2026-06-17): a meeting plays `games_per_day` matches, each on its
+    # OWN map, so `match_count` and `len(match_maps)` stay in lock-step. The FE meeting editor
+    # derives the match count from the maps list, so when these drifted (count=3 but a single
+    # ["bermuda"] map) a "3 matches per meeting" setting rendered — and re-saved — as 1, which is
+    # the "matches per meeting always changes" bug. We expand the supplied maps to exactly
+    # `games_per_day` entries, cycling them when fewer maps than matches are given
+    # (e.g. 3 matches over ["bermuda","kalahari"] → bermuda, kalahari, bermuda).
+    base_maps = list(maps) if maps else list(DEFAULT_MAPS)
+    count = max(int(games_per_day or 0), 0)
+    day_maps = [base_maps[i % len(base_maps)] for i in range(count)] if base_maps else []
+
     specs = []
     # `combinations(..., 2)` yields each unordered pair once; enumerate from 1 so
     # game_day is human-facing 1-based (Day 1, Day 2, …) to match the UI / lobby labels.
@@ -54,10 +68,11 @@ def round_robin_schedule(group_ids, games_per_day=1, maps=None):
         specs.append({
             "game_day": day,
             "source_group_ids": [g1, g2],
-            "match_count": games_per_day,
+            # count == len(match_maps): kept identical so the round-trip can't desync them.
+            "match_count": len(day_maps),
             # `list(...)` copies per spec: each lobby owns its own maps list so a later
             # edit to one lobby can't alias the caller's input or a sibling spec.
-            "match_maps": list(maps or DEFAULT_MAPS),
+            "match_maps": list(day_maps),
         })
     return specs
 
