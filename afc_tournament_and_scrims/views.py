@@ -13564,8 +13564,8 @@ def edit_match_details(request):
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
-    admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    user = validate_token(auth.split(" ")[1])
+    if not user:
         return Response({"message": "Unauthorized."}, status=403)
 
     match_id = request.data.get("match_id")
@@ -13576,6 +13576,16 @@ def edit_match_details(request):
     if not match_id:
         return Response({"message": "match_id is required."}, status=400)
     match = get_object_or_404(Match, match_id=match_id)
+
+    # AUTH (owner 2026-06-17): was admin-only, so an ORGANIZER editing room details silently 403'd
+    # and their entry never saved (looked like it "reverted to the default"). Allow AFC event admins
+    # OR an organizer who can edit / upload results for THIS event — parity with broadcast_to_group.
+    event = match.group.stage.event if (match.group and match.group.stage) else None
+    if not (_is_event_admin(user) or (event and (
+        org_can_event(user, "can_edit_events", event) or org_can_event(user, "can_upload_results", event)
+    ))):
+        return Response({"message": "You do not have permission to edit this match."}, status=403)
+
     updated_fields = []
     if room_name is not None:
         match.room_name = room_name
