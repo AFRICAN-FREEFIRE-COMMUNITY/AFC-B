@@ -245,6 +245,8 @@ urlpatterns = [
     path("broadcast-to-group/", broadcast_to_group, name="broadcast_to_group"),
     # per-stage broadcast (all groups in a stage) + per-event broadcast history + event typeahead. owner 2026-06-17.
     path("broadcast-to-stage/", broadcast_to_stage, name="broadcast_to_stage"),
+    # per-MAP (single match) room-details broadcast. owner 2026-06-18. See broadcast_match_room_details.
+    path("broadcast-match-room-details/", broadcast_match_room_details, name="broadcast_match_room_details"),
     path("broadcast-history/", get_broadcast_history, name="get_broadcast_history"),
     path("search/", search_events, name="search_events"),
     # Waitlist no-show + promotion (owner 2026-06-17). See mark_no_show / promote_from_waitlist / promote_next_waitlist.

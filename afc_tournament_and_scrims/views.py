@@ -19218,6 +19218,94 @@ def _group_room_details_text(event, group):
 
 
 @api_view(["POST"])
+def broadcast_match_room_details(request):
+    """POST /events/broadcast-match-room-details/  body: { match_id }  (owner 2026-06-18)
+    Broadcast ONE map's (one Match's) room details to the group's players — per-map send, vs
+    broadcast_to_group which sends the whole group's maps at once. Sets that match's
+    room_details_released_at so the room appears on the user event page for the group's competitors.
+    Gate: AFC event admin OR an organizer who can edit / upload results for the event.
+    Recipients: the group's registered competitors (deduped). Records a SentBroadcast (room_details).
+    Consumed by: EditMatchModal "Send to players" button (per match row, admin + organizer)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    match_id = request.data.get("match_id")
+    if not match_id:
+        return Response({"message": "match_id is required."}, status=400)
+    match = get_object_or_404(Match, match_id=match_id)
+    if not (match.group and match.group.stage):
+        return Response({"message": "This match is not linked to a group/stage."}, status=400)
+    group = match.group
+    event = group.stage.event
+
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)
+            or org_can_event(user, "can_upload_results", event)):
+        return Response({"message": "You do not have permission to send room details for this event."}, status=403)
+
+    if not (match.room_id or match.room_name or match.room_password):
+        return Response({"message": "No room details have been set for this map yet."}, status=400)
+
+    # One-map room message (mirrors _group_room_details_text but for a single match).
+    title = f"Match Room Details: {event.event_name}"
+    message = (
+        f"Room details for '{event.event_name}'\n"
+        f"Stage: {group.stage.stage_name}\n"
+        f"Group: {group.group_name}\n\n"
+        f"Match {match.match_number}"
+        f"{f' ({match.match_map})' if match.match_map else ''}:\n"
+        f"  Room ID: {match.room_id or '-'}\n"
+        f"  Room Name: {match.room_name or '-'}\n"
+        f"  Password: {match.room_password or '-'}"
+    )
+
+    delivery = (request.data.get("delivery") or "both").strip().lower()
+    if delivery not in ("push", "email", "both"):
+        delivery = "both"
+
+    recipients = _group_recipient_users(event, group)
+    if not recipients:
+        return Response({"message": "This group has no players to message yet.", "recipients": 0}, status=400)
+
+    # Release this map's room details to the user event page, then deliver to the group.
+    match.room_details_released_at = timezone.now()
+    match.save(update_fields=["room_details_released_at"])
+
+    from afc_auth.views import deliver_broadcast
+    pushed, emailed = deliver_broadcast(
+        recipients, title, message, delivery=delivery,
+        notification_type="group_broadcast", related_event=event,
+        sender=user, scope="room_details",
+        stage_id=group.stage_id, stage_name=group.stage.stage_name,
+        group_id=group.group_id, group_name=group.group_name,
+    )
+
+    AdminHistory.objects.create(
+        admin_user=user, action="broadcast_match_room_details",
+        description=(
+            f"Sent room details for match {match.match_number} "
+            f"({match.match_map or 'map'}) in {group.stage.stage_name} > {group.group_name}, "
+            f"{event.event_name} (ID: {event.event_id}): {len(recipients)} recipients "
+            f"[{pushed} pushed, {emailed} emailed]"
+        ),
+    )
+    set_audit(
+        request,
+        f"Sent room details for match {match.match_number} ({match.match_map or 'map'}) to "
+        f"{len(recipients)} players in {group.group_name} ({event.event_name})",
+        recipients=len(recipients),
+    )
+    return Response(
+        {"message": f"Room details sent to {len(recipients)} players for this map.",
+         "recipients": len(recipients), "pushed": pushed, "emailed": emailed},
+        status=200,
+    )
+
+
+@api_view(["POST"])
 def broadcast_to_group(request):
     """POST /events/broadcast-to-group/
     Body: { event_id, group_id, mode: 'custom'|'room_details', title?, message? }
