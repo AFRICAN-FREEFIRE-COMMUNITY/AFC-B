@@ -439,6 +439,25 @@ def _validate_scoring_modes(stages_data):
 ROUND_ROBIN_FORMAT = "br - round robin"
 
 
+def _rr_stage_data(stage_data):
+    """Normalise a stage dict so the round-robin config is readable at the TOP LEVEL.
+
+    The frontend event editor stores the whole round-robin setup in ONE nested object,
+    `stage_data["round_robin"]` (the form's RoundRobinConfig: round_robin_groups,
+    generate_schedule, games_per_day, game_days), and sends it verbatim. But every builder /
+    validator below reads those keys at the top level of `stage_data`. When they drift apart the
+    builder sees no base groups and the edit path then DELETES the whole round-robin stage —
+    owner 2026-06-17: "matches per meeting resets / add base group doesn't save / date doesn't
+    save" were all the same bug, because every save sent the config nested and the backend looked
+    for it flat. Merge the nested dict up (nested wins) so both the nested (current FE) and a flat
+    payload work. Returns `stage_data` unchanged when nothing is nested.
+    """
+    rr = stage_data.get("round_robin")
+    if isinstance(rr, dict):
+        return {**stage_data, **rr}
+    return stage_data
+
+
 def _validate_round_robin_groups(stages_data):
     """Validate the base-group team assignments in a create/edit payload (Task 4 landmine #3).
 
@@ -457,6 +476,7 @@ def _validate_round_robin_groups(stages_data):
     for stage_data in stages_data:
         if stage_data.get("stage_format") != ROUND_ROBIN_FORMAT:
             continue
+        stage_data = _rr_stage_data(stage_data)  # read the FE's nested round_robin config
         seen_team_ids = set()  # team ids already claimed by an earlier base group in this stage
         for grp_data in stage_data.get("round_robin_groups", []):
             for raw_id in grp_data.get("team_ids") or []:
@@ -521,7 +541,9 @@ def _materialise_round_robin_lobby(stage, event, user, lobby_spec, source_groups
     schedule has no per-lobby date, so we reuse the stage start as a sensible placeholder).
     """
     game_day = lobby_spec["game_day"]
-    match_maps = list(lobby_spec.get("match_maps") or ["bermuda"])
+    # "Bermuda" (capitalised) matches the FE map labels so an auto/manual lobby's maps render in
+    # the meeting editor's map stepper (owner 2026-06-17 case-mismatch fix).
+    match_maps = list(lobby_spec.get("match_maps") or ["Bermuda"])
     match_count = int(lobby_spec.get("match_count") or 0)
 
     # Per-meeting date/time (owner 2026-06-13): the manual schedule lets the admin set when
@@ -567,7 +589,7 @@ def _materialise_round_robin_lobby(stage, event, user, lobby_spec, source_groups
     )
 
     # Create exactly match_count matches, cycling the lobby's maps (mirrors create_event).
-    default_map = match_maps[0] if match_maps else "bermuda"
+    default_map = match_maps[0] if match_maps else "Bermuda"
     matches_to_create = [
         Match(
             leaderboard=leaderboard,
@@ -662,6 +684,9 @@ def _edit_round_robin_stage(stage, event, user, stage_data):
     """
     from . import round_robin  # local import: this file imports per-function throughout
 
+    # Read the FE's nested round_robin config at the top level (see _rr_stage_data).
+    stage_data = _rr_stage_data(stage_data)
+
     # Played lobbies are sacred — keep them and the base groups they reference.
     existing_lobbies = list(stage.groups.filter(game_day__isnull=False))
     played_lobbies = [lb for lb in existing_lobbies if _round_robin_lobby_is_played(lb)]
@@ -751,6 +776,9 @@ def _build_round_robin_stage(stage, event, user, stage_data):
     """
     from . import round_robin  # local import: this file imports per-function throughout
 
+    # Read the FE's nested round_robin config at the top level (see _rr_stage_data).
+    stage_data = _rr_stage_data(stage_data)
+
     created_groups = _build_round_robin_groups(stage, event, user, stage_data)
 
     # Reuse the stage's start date + a default lobby time for the generated lobbies (a
@@ -808,12 +836,16 @@ def _round_robin_stage_echo(stage):
     # member teams as both id (for seeding) and name (for display).
     groups_echo = []
     for grp in stage.round_robin_groups.all():
-        teams = list(grp.teams.values("tournament_team_id", "team__team_name"))
+        # team_ids are TEAM primary keys, NOT tournament_team ids (owner 2026-06-17 bug): the FE
+        # base-group team picker matches them against availableTeams (which carry Team PKs) and
+        # _resolve_round_robin_team_ids resolves them as Team PKs on save. Echoing tournament_team_id
+        # here left every checkbox unticked AND scrambled group membership on the next edit-save.
+        teams = list(grp.teams.values("team_id", "team__team_name"))
         groups_echo.append({
             "group_id": grp.group_id,
             "label": grp.label,
             "order": grp.order,
-            "team_ids": [t["tournament_team_id"] for t in teams],
+            "team_ids": [t["team_id"] for t in teams],
             "team_names": [t["team__team_name"] for t in teams],
         })
 
@@ -840,7 +872,23 @@ def _round_robin_stage_echo(stage):
         for day, lobby_list in sorted(days.items())
     ]
 
-    return {"round_robin_groups": groups_echo, "game_days": game_days_echo}
+    # Stage-level mode (owner 2026-06-17): echo `generate_schedule` + `games_per_day` so the FE
+    # editor rehydrates the toggle and the per-meeting match count from the SAVED stage instead of
+    # guessing from the first lobby (the old guess collapsed "matches per meeting" to 1). Once any
+    # lobby is materialised we surface the manual meeting list (generate_schedule=False) so the admin
+    # edits each match day directly; games_per_day mirrors a lobby's match_count (now == len(maps)).
+    has_lobbies = bool(game_days_echo)
+    first_match_count = 1
+    for day in game_days_echo:
+        if day["lobbies"]:
+            first_match_count = day["lobbies"][0].get("match_count") or 1
+            break
+    return {
+        "round_robin_groups": groups_echo,
+        "game_days": game_days_echo,
+        "generate_schedule": not has_lobbies,
+        "games_per_day": first_match_count,
+    }
 
 
 @api_view(["POST"])
@@ -1040,9 +1088,27 @@ def create_event(request):
             org.paid_terms_version = "2026-06-08"
             org.save(update_fields=["paid_terms_accepted_at", "paid_terms_accepted_by", "paid_terms_version"])
 
+    # ---------------- WAITLIST FIELDS (owner 2026-06-17) ----------------
+    # create_event previously VALIDATED waitlist input (block above) but never PERSISTED it, so an
+    # event created with the waitlist toggle on was silently saved with waitlist off until an edit.
+    # Compute clean values here and pass them into the create() below. waitlist_mode picks how a
+    # no-show's slot is filled (first_registered / fcfs_room / manual_admin); default first_registered.
+    _wl_enabled = _as_bool(request.data.get("is_waitlist_enabled"))
+    try:
+        _wl_capacity = int(request.data.get("waitlist_capacity")) if request.data.get("waitlist_capacity") else None
+    except (TypeError, ValueError):
+        _wl_capacity = None
+    _wl_mode = request.data.get("waitlist_mode") or "first_registered"
+    if _wl_mode not in dict(Event.WAITLIST_MODE_CHOICES):
+        _wl_mode = "first_registered"
+
     # ---------------- CREATE EVERYTHING ----------------
     with transaction.atomic():
         event = Event.objects.create(
+            is_waitlist_enabled=_wl_enabled,
+            waitlist_capacity=_wl_capacity,
+            waitlist_discord_role_id=request.data.get("waitlist_discord_role_id") or None,
+            waitlist_mode=_wl_mode,
             registration_type=registration_type,
             registration_fee=registration_fee,
             registration_fee_currency=registration_fee_currency,
@@ -2329,6 +2395,13 @@ def edit_event(request):
     if "waitlist_discord_role_id" in request.data:
         event.waitlist_discord_role_id = request.data.get("waitlist_discord_role_id")
 
+    # Waitlist slot-assignment mode (owner 2026-06-17): first_registered / fcfs_room / manual_admin.
+    # Ignore unknown values so a bad payload can't corrupt it.
+    if "waitlist_mode" in request.data:
+        _mode = request.data.get("waitlist_mode")
+        if _mode in dict(Event.WAITLIST_MODE_CHOICES):
+            event.waitlist_mode = _mode
+
 
     
     # ensure the evnt hasnt started if they wanna chnage the event type
@@ -2510,11 +2583,20 @@ def edit_event(request):
                 # from round_robin_groups, KEEPING lobbies that already have entered results.
                 # The returned lobby ids go into kept_group_ids so delete_missing below does
                 # not sweep the freshly-built lobbies (they carry no group_id in the payload).
-                if stage_data.get("stage_format") == ROUND_ROBIN_FORMAT:
+                _is_round_robin_stage = stage_data.get("stage_format") == ROUND_ROBIN_FORMAT
+                if _is_round_robin_stage:
                     kept_group_ids.extend(
                         _edit_round_robin_stage(stage, event, user, stage_data))
 
-                for group_data in stage_data.get("groups", []):
+                # CRITICAL (owner 2026-06-17): for a round-robin stage the game-day lobbies are owned
+                # entirely by _edit_round_robin_stage above. On EDIT the FE sends its tempGroups (the
+                # current lobby list) in `groups`, so running the normal group loop over it would
+                # re-create those lobbies as PLAIN groups (clearing game_day, orphaning the base
+                # groups) and corrupt the whole round-robin structure — that was the real cause of
+                # "matches per meeting resets / add base group doesn't save / date doesn't save":
+                # every RR edit-save wiped the stage. create_event avoids this only because the FE
+                # sends empty `groups` on create; edit must defend explicitly. So skip the loop here.
+                for group_data in ([] if _is_round_robin_stage else stage_data.get("groups", [])):
                     group_id = group_data.get("group_id")
 
                     group_defaults = {
@@ -3408,12 +3490,50 @@ def get_event_details(request):
                 user=user
             ).exists()
 
-    # -------- SLOT LEFT --------
-    # total_registered = RegisteredCompetitors(event=event).all()
-    # total_slots= event.max_teams_or_players
+    # -------- ROOM-DETAILS VISIBILITY CONTEXT (owner 2026-06-17) --------
+    # Room id/name/password must appear on the user-facing event page ONLY to the registered
+    # competitors of the group, and ONLY after the organizer POSTS them (broadcast room_details ->
+    # Match.room_details_released_at). Build the viewer's context once here so the per-match payload
+    # below can gate cheaply:
+    #   viewer_is_event_staff -> AFC event admin OR an organizer who can edit this event: sees all (to
+    #     verify what players will see). Everyone else is gated.
+    #   viewer_group_ids -> the StageGroups the viewer competes in (solo competitor or any team they're
+    #     a member of). A viewer only sees a group's room once it's released.
+    #   viewer_is_event_waitlisted -> for fcfs_room events, waitlisted competitors also get the room
+    #     (the whole point of "first to join the room") even though they're not slotted into a group.
+    viewer_is_event_staff = bool(user and (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)))
+    viewer_group_ids = set()
+    viewer_is_event_waitlisted = False
+    if user and not viewer_is_event_staff:
+        if event.participant_type == "solo":
+            viewer_group_ids = set(StageGroupCompetitor.objects.filter(
+                stage_group__stage__event=event,
+                player__user=user,
+            ).values_list("stage_group_id", flat=True))
+            viewer_is_event_waitlisted = RegisteredCompetitors.objects.filter(
+                event=event, user=user, is_waitlisted=True).exists()
+        else:
+            tt_ids = list(TournamentTeam.objects.filter(
+                event=event, members__user=user).values_list("tournament_team_id", flat=True))
+            viewer_group_ids = set(StageGroupCompetitor.objects.filter(
+                stage_group__stage__event=event,
+                tournament_team_id__in=tt_ids,
+            ).values_list("stage_group_id", flat=True))
+            viewer_is_event_waitlisted = TournamentTeam.objects.filter(
+                event=event, members__user=user, is_waitlisted=True).exists()
 
-    # slots_left = total_slots - total_registered
-
+    def _can_see_room(group_obj, match_obj):
+        """Whether THIS viewer may see THIS match's room creds (owner 2026-06-17)."""
+        if viewer_is_event_staff:
+            return True
+        if match_obj.room_details_released_at is None:
+            return False  # not posted yet -> nobody on the user side sees it
+        if group_obj.group_id in viewer_group_ids:
+            return True
+        # fcfs_room: every waitlisted competitor of the event can see the room to race in.
+        if event.waitlist_mode == "fcfs_room" and viewer_is_event_waitlisted:
+            return True
+        return False
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
 
@@ -3503,6 +3623,10 @@ def get_event_details(request):
         "require_esport_images": event.require_esport_images,
         "waitlist_capacity": event.waitlist_capacity,
         "waitlist_discord_role_id": event.waitlist_discord_role_id,
+        # Waitlist slot-assignment mode (owner 2026-06-17): shown on the user event page so waitlisted
+        # competitors know HOW slots are filled (earliest-registered / first-to-join-room / organizer
+        # picks), and read by the admin/organizer edit form's mode picker.
+        "waitlist_mode": event.waitlist_mode,
         # K: registration/event window times ("HH:MM"). The frontend already combines
         # these with the *_date fields to gate the Register button; they simply were
         # never serialized here, so the gate always fell back to date-only.
@@ -3595,23 +3719,48 @@ def get_event_details(request):
     event_data["tournament_teams"] = tournament_teams_list
 
 
-    # get waitlist competitors
+    # Waitlist roster (owner 2026-06-17). Two bugs fixed: (1) it filtered status="waitlist", a status
+    # that never exists (waitlisted rows are status="pending"/"registered" with is_waitlisted=True), so
+    # the list was always empty; now filters is_waitlisted=True. (2) it only handled solo; teams are now
+    # included. Ordered by registration_date so `position` (1-based) is the queue order the
+    # first_registered mode promotes by. Shown on the user event page (mode explainer + roster) and the
+    # admin/organizer WaitlistTab (with promote actions).
     waitlist = []
     if event.participant_type == "solo":
         waitlist_regs = (
             RegisteredCompetitors.objects
             .select_related("user")
-
-            .filter(event=event, status="waitlist")
+            .filter(event=event, is_waitlisted=True)
+            .order_by("registration_date")
         )
-        for reg in waitlist_regs:
+        for i, reg in enumerate(waitlist_regs, start=1):
             if reg.user:
                 waitlist.append({
                     "registered_competitor_id": reg.id,
                     "player_id": reg.user.user_id,
                     "username": reg.user.username,
-                    "status": reg.status
+                    "name": reg.user.username,
+                    "position": i,
+                    "registration_date": reg.registration_date,
+                    "status": reg.status,
                 })
+    else:
+        waitlist_teams = (
+            TournamentTeam.objects
+            .select_related("team")
+            .filter(event=event, is_waitlisted=True)
+            .order_by("registration_date")
+        )
+        for i, tt in enumerate(waitlist_teams, start=1):
+            waitlist.append({
+                "tournament_team_id": tt.tournament_team_id,
+                "team_id": tt.team_id,
+                "name": tt.team.team_name if tt.team_id else "",
+                "team_name": tt.team.team_name if tt.team_id else "",
+                "position": i,
+                "registration_date": tt.registration_date,
+                "status": tt.status,
+            })
     event_data["waitlist_competitors"] = waitlist
 
     # ============================================================
@@ -3678,14 +3827,21 @@ def get_event_details(request):
                         .order_by("-total_points", "-kills", "tournament_team__team__team_name")
                     )
 
+                # Gate room creds (owner 2026-06-17): only the group's registered competitors (and, for
+                # fcfs_room events, event-waitlisted competitors) see them, and only AFTER the organizer
+                # posts them (Match.room_details_released_at). Staff always see. room_details_released
+                # tells the FE the room exists but isn't out yet (show a "posted soon" hint).
+                _room_ok = _can_see_room(group, match)
+                _has_room = bool(match.room_id or match.room_name or match.room_password)
                 matches_payload.append({
                     "match_id": match.match_id,
                     "match_number": match.match_number,
                     "match_map": match.match_map,
                     "result_inputted": match.result_inputted,
-                    "room_id": match.room_id,
-                    "room_name": match.room_name,
-                    "room_password": match.room_password,
+                    "room_id": match.room_id if _room_ok else None,
+                    "room_name": match.room_name if _room_ok else None,
+                    "room_password": match.room_password if _room_ok else None,
+                    "room_details_released": (match.room_details_released_at is not None) and _has_room,
                     "stats": list(stats),
                 })
 
@@ -4173,6 +4329,9 @@ def get_event_details_not_logged_in(request):
         "event_end_time": event.event_end_time,
         # M: waitlist flags + capacity snapshot for the logged-out register CTA.
         "is_waitlist_enabled": event.is_waitlist_enabled,
+        # Waitlist slot-assignment mode (owner 2026-06-17): shown on the public event page so a
+        # would-be waitlist registrant sees how slots are filled before joining.
+        "waitlist_mode": event.waitlist_mode,
         # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
         "require_team_logo": event.require_team_logo,
         "require_esport_images": event.require_esport_images,
@@ -4286,14 +4445,19 @@ def get_event_details_not_logged_in(request):
                              )
                              .order_by("-total_points", "-kills", "tournament_team__team__team_name"))
 
+                # Anonymous viewer (not logged in) NEVER sees room creds (owner 2026-06-17): room
+                # details are for registered competitors only, after the organizer posts them. Always
+                # null here; only flag whether they exist + are released so the FE can hint to log in.
+                _has_room = bool(match.room_id or match.room_name or match.room_password)
                 matches_payload.append({
                     "match_id": match.match_id,
                     "match_number": match.match_number,
                     "match_map": match.match_map,
                     "result_inputted": match.result_inputted,
-                    "room_id": match.room_id,
-                    "room_name": match.room_name,
-                    "room_password": match.room_password,
+                    "room_id": None,
+                    "room_name": None,
+                    "room_password": None,
+                    "room_details_released": (match.room_details_released_at is not None) and _has_room,
                     "stats": list(stats),
                 })
 
@@ -8150,6 +8314,8 @@ def get_event_details_for_admin(request):
         "require_esport_images": event.require_esport_images,
             "waitlist_capacity": event.waitlist_capacity,
             "waitlist_discord_role_id": event.waitlist_discord_role_id,
+            # Waitlist slot-assignment mode (owner 2026-06-17): rehydrates the edit form's mode picker.
+            "waitlist_mode": event.waitlist_mode,
             # K: event start/end times so the admin analytics view can show them.
             "event_start_time": event.event_start_time,
             "event_end_time": event.event_end_time,
@@ -18908,9 +19074,16 @@ def set_match_kill_flag(request):
 
 @api_view(["POST"])
 def broadcast_announcement(request):
-    user, err = _get_event_action_user(request)
-    if err:
-        return err
+    # Auth: validate the token, then gate AFTER resolving the event so an ORGANIZER who can edit this
+    # event can broadcast event-wide too (owner 2026-06-17 organizer parity) — matching the per-group
+    # / per-stage gate. Previously this was AFC-staff-only (_get_event_action_user), so an organizer
+    # using the shared ActionsTab "Whole event" scope got a 403.
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
 
     event_id = request.data.get("event_id")
     title = request.data.get("title", "").strip()
@@ -18931,12 +19104,20 @@ def broadcast_announcement(request):
 
     event = get_object_or_404(Event, event_id=event_id)
 
+    # AFC event admin OR an organizer who can edit this event (native org=None events stay AFC-only).
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response({"message": "You do not have permission to broadcast to this event."}, status=403)
+
     recipients = _all_registered_users(event)
     from afc_auth.views import deliver_broadcast
+    # MULTI deep-link (owner 2026-06-17): the composer may send a `targets` array (multi-event picker);
+    # deliver_broadcast falls back to the single target_type/target_id pair (and to auto-event) when
+    # absent. sender + scope="event" record this in SentBroadcast for the event broadcast history.
     pushed, emailed = deliver_broadcast(
         recipients, title, message, delivery=delivery,
         notification_type="event_broadcast", related_event=event,
-        target_type=target_type, target_id=target_id,
+        target_type=target_type, target_id=target_id, targets=request.data.get("targets"),
+        sender=user, scope="event",
     )
     count = len(recipients)
 
@@ -19070,6 +19251,12 @@ def broadcast_to_group(request):
                 {"message": "No room details have been set for this group's maps yet."},
                 status=400,
             )
+        # RELEASE (owner 2026-06-17): posting room details to the group also flips them visible on the
+        # user-facing event page. Stamp room_details_released_at on this group's matches that carry
+        # room creds so get_event_details surfaces them to the group's registered competitors from now on.
+        Match.objects.filter(group=group).exclude(
+            room_id__isnull=True, room_name__isnull=True, room_password__isnull=True
+        ).update(room_details_released_at=timezone.now())
     else:
         title = (request.data.get("title") or "").strip()
         message = (request.data.get("message") or "").strip()
@@ -19096,11 +19283,16 @@ def broadcast_to_group(request):
 
     # Deduped delivery over the chosen channel(s): one in-app Notification per recipient
     # (tagged group_broadcast + linked to the event) and/or the fixed branded email.
+    # scope distinguishes a room-details push from a custom group message in the history; the
+    # group/stage context + sender are recorded on the SentBroadcast row (owner 2026-06-17).
     from afc_auth.views import deliver_broadcast
     pushed, emailed = deliver_broadcast(
         recipients, title, message, delivery=delivery,
         notification_type="group_broadcast", related_event=event,
-        target_type=target_type, target_id=target_id,
+        target_type=target_type, target_id=target_id, targets=request.data.get("targets"),
+        sender=user, scope=("room_details" if mode == "room_details" else "group"),
+        stage_id=group.stage_id, stage_name=group.stage.stage_name,
+        group_id=group.group_id, group_name=group.group_name,
     )
 
     AdminHistory.objects.create(
@@ -19130,6 +19322,340 @@ def broadcast_to_group(request):
          "recipients": len(recipients)},
         status=200,
     )
+
+
+@api_view(["POST"])
+def broadcast_to_stage(request):
+    """POST /events/broadcast-to-stage/ (owner 2026-06-17)
+    Body: { event_id, stage_id, mode:'custom'|'room_details', title?, message?, delivery, targets? }
+    Sends to EVERY competitor across ALL groups/lobbies of the stage, deduped to one Notification per
+    person. The stage-level sibling of broadcast_to_group: lets an admin/organizer reach a whole stage
+    at once instead of group-by-group.
+    Auth: AFC event admin OR an organizer who can edit this event.
+    Recipients: union of _group_recipient_users over every StageGroup in the stage.
+    Records a SentBroadcast (scope='stage') for the event broadcast history.
+    Consumed by: the broadcast composer's "Stage" scope (admin event page + organizer event page)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.data.get("event_id")
+    stage_id = request.data.get("stage_id")
+    if not event_id or not stage_id:
+        return Response({"message": "event_id and stage_id are required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+    stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+    # Same gate as broadcast_to_group: AFC event admin OR an organizer who can edit this event.
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response({"message": "You do not have permission to message this stage."}, status=403)
+
+    mode = (request.data.get("mode") or "custom").strip()
+    groups = list(stage.groups.all())
+
+    # Union the recipients across every group/lobby in the stage (dedupe by user).
+    seen = {}
+    for g in groups:
+        for u in _group_recipient_users(event, g):
+            if u and u.user_id not in seen:
+                seen[u.user_id] = u
+    recipients = list(seen.values())
+    if not recipients:
+        return Response({"message": "This stage has no players to message yet.", "recipients": 0}, status=400)
+
+    if mode == "room_details":
+        title = f"Match Room Details: {event.event_name}"
+        # Combine each group's room-details summary (skip groups with none set).
+        blocks = [t for t in (_group_room_details_text(event, g) for g in groups) if t]
+        if not blocks:
+            return Response({"message": "No room details have been set for this stage's groups yet."}, status=400)
+        message = "\n\n".join(blocks)
+        # RELEASE (owner 2026-06-17): same as broadcast_to_group, but across every group in the stage —
+        # stamp room_details_released_at so the user event page shows each group's room to its members.
+        Match.objects.filter(group__stage=stage).exclude(
+            room_id__isnull=True, room_name__isnull=True, room_password__isnull=True
+        ).update(room_details_released_at=timezone.now())
+    else:
+        title = (request.data.get("title") or "").strip()
+        message = (request.data.get("message") or "").strip()
+        if not message:
+            return Response({"message": "A message is required."}, status=400)
+
+    delivery = (request.data.get("delivery") or "both").strip().lower()
+    if delivery not in ("push", "email", "both"):
+        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=400)
+
+    target_type = (request.data.get("target_type") or "").strip().lower()
+    target_id = (request.data.get("target_id") or "").strip()
+
+    from afc_auth.views import deliver_broadcast
+    pushed, emailed = deliver_broadcast(
+        recipients, title, message, delivery=delivery,
+        notification_type="stage_broadcast", related_event=event,
+        target_type=target_type, target_id=target_id, targets=request.data.get("targets"),
+        sender=user, scope="stage", stage_id=stage.stage_id, stage_name=stage.stage_name,
+    )
+
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="broadcast_to_stage",
+        description=(
+            f"Stage broadcast ({mode}, {delivery}) to {stage.stage_name} in {event.event_name} "
+            f"(ID: {event.event_id}): {len(recipients)} recipients [{pushed} pushed, {emailed} emailed]"
+        ),
+    )
+    set_audit(
+        request,
+        f"Sent broadcast \"{title or 'Stage message'}\" to {len(recipients)} players in {stage.stage_name} ({event.event_name})",
+        recipients=len(recipients), message=message,
+    )
+
+    return Response(
+        {"message": f"Message sent to {len(recipients)} players in {stage.stage_name}.",
+         "recipients": len(recipients), "pushed": pushed, "emailed": emailed},
+        status=200,
+    )
+
+
+@api_view(["GET", "POST"])
+def get_broadcast_history(request):
+    """GET /events/broadcast-history/?event_id=&limit=&offset= (owner 2026-06-17)
+    Lists every broadcast SENT FOR AN EVENT (whole-event, stage, group, and room-details pushes) from
+    the SentBroadcast log, newest first, paginated. The per-event counterpart of the admin Settings
+    general history (afc_auth.get_general_broadcast_history).
+    Auth: AFC event admin OR an organizer who can edit this event (so organizers see their own event's
+    history). Each row: who/when/scope/recipient_count/message/stage+group context/targets.
+    Consumed by: the "Broadcast history" view on the admin event page + organizer event page."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.GET.get("event_id") or request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response({"message": "You do not have permission to view this event's broadcast history."}, status=403)
+
+    def _int(name, default):
+        try:
+            return int(request.GET.get(name, request.data.get(name, default)))
+        except (TypeError, ValueError):
+            return default
+    limit = min(max(_int("limit", 20), 1), 100)
+    offset = max(_int("offset", 0), 0)
+
+    from afc_auth.models import SentBroadcast
+    qs = SentBroadcast.objects.filter(event=event).select_related("event").order_by("-created_at")
+    total = qs.count()
+    results = [b.to_history_dict() for b in qs[offset:offset + limit]]
+    return Response({
+        "results": results,
+        "total_count": total,
+        "has_more": offset + limit < total,
+        "next_offset": (offset + limit) if (offset + limit) < total else None,
+    }, status=200)
+
+
+@api_view(["GET"])
+def search_events(request):
+    """GET /events/search/?q=&limit= (owner 2026-06-17)
+    Lightweight event typeahead for the broadcast link picker (NotificationTargetSelector multi-event
+    mode). Returns up to `limit` non-draft events whose name or slug matches `q` (id, name, slug only).
+    Auth: any authenticated user — events are public data (the tournaments page lists them), so this
+    exposes nothing new; it just powers search-and-select instead of typing a slug.
+    Consumed by: frontend NotificationTargetSelector event search-select."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    q = (request.GET.get("q") or "").strip()
+    try:
+        limit = min(max(int(request.GET.get("limit", 20)), 1), 50)
+    except (TypeError, ValueError):
+        limit = 20
+
+    qs = Event.objects.filter(is_draft=False)
+    if q:
+        qs = qs.filter(Q(event_name__icontains=q) | Q(slug__icontains=q))
+    qs = qs.order_by("-created_at")[:limit]
+    results = [{"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug} for e in qs]
+    return Response({"results": results}, status=200)
+
+
+# ── Waitlist no-show + promotion (owner 2026-06-17) ───────────────────────────────────────────────
+# A waitlisted team/player only plays if a registered one doesn't show. AFC can't auto-detect
+# attendance, so the organizer drives it: mark a registered competitor "no-show" (frees a slot), then
+# PROMOTE a waitlisted one into it. Promotion serves all 3 waitlist modes:
+#   first_registered -> promote-next picks the earliest-registered waitlist entry.
+#   manual_admin     -> promote (by id) the entry the organizer hand-picks.
+#   fcfs_room        -> room details are released to the waitlist (broadcast room_details); they race
+#                       in-game; the organizer then promotes whoever got in.
+# All three share: gate = AFC event admin OR an organizer who can edit this event.
+def _waitlist_gate(request):
+    """Shared auth + event resolve + permission gate for the waitlist-management endpoints.
+    Returns (user, event, None) on success or (None, None, error_response)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return None, None, Response({"message": "Invalid or expired session token."}, status=401)
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return None, None, Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return None, None, Response({"message": "You do not have permission to manage this event's waitlist."}, status=403)
+    return user, event, None
+
+
+def _notify_promoted(event, recipients, display_name):
+    """Tell a promoted competitor they're in (push + email, branded), linked to the event."""
+    recipients = [r for r in recipients if r]
+    if not recipients:
+        return
+    from afc_auth.views import deliver_broadcast
+    deliver_broadcast(
+        recipients,
+        f"You're in: {event.event_name}",
+        f"A slot opened up and you've been moved off the waitlist into {event.event_name}. "
+        f"Check the event page for your group and room details.",
+        delivery="both", notification_type="event_broadcast", related_event=event,
+        scope="event", log=False,  # promotion notices aren't broadcast-history rows
+    )
+
+
+@api_view(["POST"])
+def mark_no_show(request):
+    """POST /events/mark-no-show/  body: { event_id, competitor_id|tournament_team_id, value? }
+    Toggle is_no_show on an ACTIVE registration (frees/refills a slot for waitlist promotion). value
+    defaults true; pass false to undo. Gate: event admin OR organizer who can edit the event.
+    Consumed by: RegisteredTeamsTab per-row "Mark no-show" toggle (admin + organizer event pages)."""
+    user, event, err = _waitlist_gate(request)
+    if err:
+        return err
+    value = request.data.get("value", True)
+    if isinstance(value, str):
+        value = value.lower() in ("1", "true", "yes")
+
+    if event.participant_type == "solo":
+        cid = request.data.get("competitor_id")
+        if not cid:
+            return Response({"message": "competitor_id is required."}, status=400)
+        # The RegisteredTeamsTab row carries the USER id (player_id), like DisqualifyModal. Resolve by
+        # user first (the common case); fall back to the RegisteredCompetitors pk for other callers.
+        reg = (RegisteredCompetitors.objects.filter(event=event, user_id=cid, is_waitlisted=False).first()
+               or RegisteredCompetitors.objects.filter(id=cid, event=event).first())
+        if not reg:
+            return Response({"message": "Registered competitor not found."}, status=404)
+        reg.is_no_show = bool(value)
+        reg.save(update_fields=["is_no_show"])
+        name = reg.user.username if reg.user else f"competitor {cid}"
+    else:
+        ttid = request.data.get("tournament_team_id")
+        if not ttid:
+            return Response({"message": "tournament_team_id is required."}, status=400)
+        tt = get_object_or_404(TournamentTeam, tournament_team_id=ttid, event=event)
+        tt.is_no_show = bool(value)
+        tt.save(update_fields=["is_no_show"])
+        name = tt.team.team_name if tt.team_id else f"team {ttid}"
+
+    AdminHistory.objects.create(
+        admin_user=user, action="mark_no_show",
+        description=f"{'Marked' if value else 'Cleared'} no-show for {name} in {event.event_name} (ID: {event.event_id})",
+    )
+    set_audit(request, f"{'Marked' if value else 'Cleared'} no-show for {name} ({event.event_name})")
+    return Response({"message": f"{'Marked' if value else 'Cleared'} no-show for {name}.", "is_no_show": bool(value)}, status=200)
+
+
+def _promote_competitor(event, *, competitor_id=None, tournament_team_id=None):
+    """Promote ONE waitlisted competitor to active. Returns (display_name, recipients) or (None, [])."""
+    if event.participant_type == "solo":
+        reg = RegisteredCompetitors.objects.filter(
+            id=competitor_id, event=event, is_waitlisted=True).select_related("user").first()
+        if not reg:
+            return None, []
+        reg.is_waitlisted = False
+        reg.status = "registered"  # now counts as an active registration (status in [registered, approved])
+        reg.save(update_fields=["is_waitlisted", "status"])
+        return (reg.user.username if reg.user else "competitor"), [reg.user]
+    else:
+        tt = TournamentTeam.objects.filter(
+            tournament_team_id=tournament_team_id, event=event, is_waitlisted=True).select_related("team").first()
+        if not tt:
+            return None, []
+        tt.is_waitlisted = False
+        tt.save(update_fields=["is_waitlisted"])
+        members = [m.user for m in tt.members.select_related("user").all() if m.user]
+        return (tt.team.team_name if tt.team_id else "team"), members
+
+
+@api_view(["POST"])
+def promote_from_waitlist(request):
+    """POST /events/promote-from-waitlist/  body: { event_id, competitor_id|tournament_team_id }
+    Promote a SPECIFIC waitlisted competitor into an active slot (manual_admin mode + fcfs_room confirm).
+    Gate: event admin OR organizer who can edit the event. Notifies the promoted competitor.
+    Consumed by: WaitlistTab per-row "Promote" button."""
+    user, event, err = _waitlist_gate(request)
+    if err:
+        return err
+    name, recipients = _promote_competitor(
+        event,
+        competitor_id=request.data.get("competitor_id"),
+        tournament_team_id=request.data.get("tournament_team_id"),
+    )
+    if not name:
+        return Response({"message": "That waitlisted competitor was not found (already promoted?)."}, status=404)
+    _notify_promoted(event, recipients, name)
+    AdminHistory.objects.create(
+        admin_user=user, action="promote_from_waitlist",
+        description=f"Promoted {name} off the waitlist in {event.event_name} (ID: {event.event_id})",
+    )
+    set_audit(request, f"Promoted {name} off the waitlist ({event.event_name})")
+    return Response({"message": f"{name} promoted into the event."}, status=200)
+
+
+@api_view(["POST"])
+def promote_next_waitlist(request):
+    """POST /events/promote-next-waitlist/  body: { event_id }
+    Promote the EARLIEST-registered waitlisted competitor (first_registered mode convenience). Gate:
+    event admin OR organizer who can edit the event. Consumed by: WaitlistTab "Promote next" button."""
+    user, event, err = _waitlist_gate(request)
+    if err:
+        return err
+    if event.participant_type == "solo":
+        nxt = RegisteredCompetitors.objects.filter(
+            event=event, is_waitlisted=True).order_by("registration_date").first()
+        if not nxt:
+            return Response({"message": "The waitlist is empty."}, status=400)
+        name, recipients = _promote_competitor(event, competitor_id=nxt.id)
+    else:
+        nxt = TournamentTeam.objects.filter(
+            event=event, is_waitlisted=True).order_by("registration_date").first()
+        if not nxt:
+            return Response({"message": "The waitlist is empty."}, status=400)
+        name, recipients = _promote_competitor(event, tournament_team_id=nxt.tournament_team_id)
+    if not name:
+        return Response({"message": "Could not promote the next waitlist entry."}, status=400)
+    _notify_promoted(event, recipients, name)
+    AdminHistory.objects.create(
+        admin_user=user, action="promote_next_waitlist",
+        description=f"Auto-promoted next waitlist entry ({name}) in {event.event_name} (ID: {event.event_id})",
+    )
+    set_audit(request, f"Promoted next waitlist entry {name} ({event.event_name})")
+    return Response({"message": f"{name} promoted (earliest-registered on the waitlist)."}, status=200)
 
 
 @api_view(["POST"])

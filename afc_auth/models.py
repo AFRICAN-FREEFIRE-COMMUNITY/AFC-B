@@ -458,9 +458,96 @@ class Notifications(models.Model):
     target_type = models.CharField(max_length=20, blank=True, default="", choices=TARGET_TYPE_CHOICES)
     target_id = models.CharField(max_length=120, blank=True, default="")  # slug / id / username, or a relative URL for "custom"
 
+    # ── MULTI deep-link targets (owner 2026-06-17) ─────────────────────────────────────────────────
+    # A broadcast can now be tied to MORE THAN ONE entity (the link picker lets an admin search and
+    # select several events). Each entry mirrors the single target_type/target_id pair above:
+    #   [{"target_type": "event", "target_id": "dynasty-cup"}, {"target_type": "event", "target_id": "rush"}]
+    # target_type/target_id (above) keep holding the FIRST target for backward compatibility (old
+    # readers + the single-link "Take me there"); `targets` holds the full list. get_notifications
+    # turns it into a `links` array (one "View" per linked entity). Written by deliver_broadcast.
+    targets = models.JSONField(default=list, blank=True)
+
     def mark_as_read(self):
         self.is_read = True
         self.save()
+
+
+class SentBroadcast(models.Model):
+    """Audit/history record of ONE broadcast send (owner 2026-06-17).
+
+    The per-recipient `Notifications` rows can't answer "what was sent, when, by whom, to how many,
+    and to which group/stage/event" — there's no sender, no grouping key, no recipient snapshot. This
+    model is that history: deliver_broadcast writes exactly ONE row per send (it is the single delivery
+    chokepoint), so admins + organizers can review every announcement / room-details push.
+
+    Consumed by:
+      • afc_tournament_and_scrims.get_broadcast_history -> GET /events/broadcast-history/?event_id=
+        (admin event "Communication" view + organizer event leaderboard/communication view): event-scoped.
+      • afc_auth.get_general_broadcast_history -> GET /auth/broadcast-history/ (admin Settings >
+        Notifications tab): the general (scope general/direct) sends not tied to an event.
+    Written by: afc_auth.deliver_broadcast (every push/email broadcast funnels through it).
+    """
+    SCOPE_CHOICES = [
+        ("general", "General"),            # admin Settings broadcast to selected users
+        ("event", "Whole event"),          # all registered competitors of an event
+        ("stage", "Stage"),                # every group/lobby in a stage
+        ("group", "Group"),                # one group/lobby
+        ("room_details", "Room details"),  # room id/name/password push to a group
+        ("direct", "Direct message"),      # a single player or team
+    ]
+    DELIVERY_CHOICES = [("push", "App only"), ("email", "Email only"), ("both", "App + Email")]
+
+    id = models.AutoField(primary_key=True)
+    # Who sent it. SET_NULL + a username snapshot so the history survives a deleted admin account.
+    sender = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="sent_broadcasts")
+    sender_username = models.CharField(max_length=150, blank=True, default="")
+    scope = models.CharField(max_length=20, choices=SCOPE_CHOICES, default="general")
+    title = models.CharField(max_length=255, null=True, blank=True)
+    message = models.TextField(blank=True, default="")
+    delivery = models.CharField(max_length=10, choices=DELIVERY_CHOICES, default="both")
+    recipient_count = models.PositiveIntegerField(default=0)  # how many users this reached
+
+    # Where it went (nullable; only the relevant ones are set per scope). event is a real FK so the
+    # event-scoped history query is a simple filter; stage/group are id + name snapshots (no extra
+    # cross-app FKs) since they're only for display/filtering.
+    event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.SET_NULL, null=True, blank=True, related_name="sent_broadcasts")
+    stage_id = models.PositiveIntegerField(null=True, blank=True)
+    stage_name = models.CharField(max_length=120, blank=True, default="")
+    group_id = models.PositiveIntegerField(null=True, blank=True)
+    group_name = models.CharField(max_length=120, blank=True, default="")
+
+    # Snapshot of the deep-link targets the message carried (same shape as Notifications.targets).
+    targets = models.JSONField(default=list, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def to_history_dict(self):
+        """Plain dict for the broadcast-history API (shared by both history endpoints).
+
+        Pure data (no link building): the history surfaces show WHAT was sent, WHEN, BY WHOM, the
+        scope (human label), recipient count, the event/stage/group it targeted, and the deep-link
+        targets snapshot. `created_at` is the UTC instant; the FE renders it via <LocalTime>."""
+        return {
+            "id": self.id,
+            "scope": self.scope,
+            "scope_label": self.get_scope_display(),
+            "title": self.title or "",
+            "message": self.message or "",
+            "delivery": self.delivery,
+            "recipient_count": self.recipient_count,
+            "sender_username": self.sender_username or "",
+            "event_id": self.event_id,
+            "event_name": getattr(self.event, "event_name", "") if self.event_id else "",
+            "stage_id": self.stage_id,
+            "stage_name": self.stage_name or "",
+            "group_id": self.group_id,
+            "group_name": self.group_name or "",
+            "targets": self.targets or [],
+            "created_at": self.created_at,
+        }
 
     
 class DiscordRoleAssignment(models.Model):

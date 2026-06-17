@@ -72,6 +72,8 @@ urlpatterns = [
     path("send-notification/", send_notification, name="send_notification"),
     path("send-notification-to-multiple-users/", send_notification_to_multiple_users, name="send_notification_to_multiple_users"),
     path("admin-send-message/", admin_send_message, name="admin_send_message"),
+    # Admin Settings broadcast history (general + direct sends). owner 2026-06-17.
+    path("broadcast-history/", get_general_broadcast_history, name="get_general_broadcast_history"),
     path("view-notification/", view_notification, name="view_notification"),
     path('get-total-players-count/', get_total_players_count, name='get_total_players_count'),
     path('get-active-players-count/', get_active_players_count, name='get_active_players_count'),

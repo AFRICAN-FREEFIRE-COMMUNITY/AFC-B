@@ -243,6 +243,14 @@ urlpatterns = [
     path("broadcast-announcement/", broadcast_announcement, name="broadcast_announcement"),
     # per-group broadcast composer (AFC official + organizer). See broadcast_to_group.
     path("broadcast-to-group/", broadcast_to_group, name="broadcast_to_group"),
+    # per-stage broadcast (all groups in a stage) + per-event broadcast history + event typeahead. owner 2026-06-17.
+    path("broadcast-to-stage/", broadcast_to_stage, name="broadcast_to_stage"),
+    path("broadcast-history/", get_broadcast_history, name="get_broadcast_history"),
+    path("search/", search_events, name="search_events"),
+    # Waitlist no-show + promotion (owner 2026-06-17). See mark_no_show / promote_from_waitlist / promote_next_waitlist.
+    path("mark-no-show/", mark_no_show, name="mark_no_show"),
+    path("promote-from-waitlist/", promote_from_waitlist, name="promote_from_waitlist"),
+    path("promote-next-waitlist/", promote_next_waitlist, name="promote_next_waitlist"),
     # Pause / resume a started stage (Actions tab Start -> Pause/Resume). See set_stage_status.
     path("set-stage-status/", set_stage_status, name="set_stage_status"),
     path("export-participants/", export_participants, name="export_participants"),
