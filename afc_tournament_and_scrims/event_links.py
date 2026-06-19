@@ -129,30 +129,30 @@ def _registration_gates(link, qual):
     """The target's registration CRITERIA still apply to qualified entries (window bypass
     does NOT bypass gates, owner decision). Returns a human reason string, or None when clear."""
     target = link.target_event
+    # F3 (owner 2026-06-19): the per-player requirement checks (esports image / profile image /
+    # Free Fire UID) now go through the SAME shared helper register_for_event uses, so qualification
+    # promotions enforce the exact same gates. Lazy import avoids a views<->event_links cycle.
+    from .views import _missing_registration_assets
+    from afc_team.views import STAFF_ROLES  # coach/manager/analyst never play -> never on a roster
     if qual.team_id:
         team = qual.team
         if target.require_team_logo and not team.team_logo:
             return "target requires a team logo"
-        if target.require_esport_images:
-            from afc_auth.models import UserProfile
-
-            member_ids = list(TeamMembers.objects.filter(team=team).values_list("member_id", flat=True))
-            with_img = set(
-                UserProfile.objects.filter(user_id__in=member_ids, esports_pic__isnull=False)
-                .exclude(esports_pic="").values_list("user_id", flat=True)
-            )
-            missing = [m for m in member_ids if m not in with_img]
-            if missing:
-                return "target requires esport images for every rostered player"
+        # Mirror register_for_event (views.py ~5205): EXCLUDE staff before the per-player asset check.
+        # Staff are support-only and never appear on the event roster that _promote actually copies, so
+        # checking their assets here made the qualification gate STRICTER than registration — a single
+        # staffer missing a UID/image would falsely hold a qualifying team pending. (Adversarial-review
+        # fix, owner 2026-06-19.)
+        staff_ids = set(TeamMembers.objects.filter(
+            team=team, management_role__in=STAFF_ROLES,
+        ).values_list("member_id", flat=True))
+        member_ids = [m for m in TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
+                      if m not in staff_ids]
+        if _missing_registration_assets(member_ids, target):
+            return "target requires every rostered player to complete their profile (esports image / profile image / Free Fire UID)"
     else:
-        if target.require_esport_images:
-            from afc_auth.models import UserProfile
-
-            ok = UserProfile.objects.filter(user=qual.user, esports_pic__isnull=False).exclude(
-                esports_pic="",
-            ).exists()
-            if not ok:
-                return "target requires an esport image"
+        if qual.user_id and _missing_registration_assets([qual.user_id], target):
+            return "target requires you to complete your profile (esports image / profile image / Free Fire UID)"
     return None
 
 

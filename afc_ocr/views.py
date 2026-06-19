@@ -78,12 +78,15 @@ def _require_results_access(user, match):
 def upload_ocr_session(request):
     """
     POST /events/ocr-match-result/
-    Upload a match result screenshot, run Gemini, return draft session.
+    Upload ONE OR MORE result screenshots for a single map, OCR each, merge their placements,
+    and return one draft session for review. Consumed by MapSelectionStep.tsx (the per-match
+    "Upload Results" drawer) and ImageUploadStep.tsx.
 
     Form fields:
       match_id   (int)
       map_index  (int, 1-indexed)
-      screenshot (file: PNG / JPG / WEBP)
+      screenshot (file: PNG / JPG / WEBP) — repeatable; send the field once per screenshot when a
+                 map's standings are split across several shots. A single file still works.
     """
     user, err = _auth(request)
     if err:
@@ -93,11 +96,17 @@ def upload_ocr_session(request):
 
     match_id  = request.data.get("match_id")
     map_index = request.data.get("map_index")
-    screenshot = request.FILES.get("screenshot")
+    # Accept ONE OR MORE screenshots for this map under the same "screenshot" field. A single
+    # map's standings are often split across several screenshots (placements 1-6 on one screen,
+    # 7-12 on the next, or a top/bottom half), so the per-match upload now mirrors the batch
+    # worker (afc_leaderboard.ocr.process_job): read every image, then union their placements
+    # with merge_placements below. getlist() also returns a 1-element list for the legacy
+    # single-file callers (older clients / ImageUploadStep), so this stays backward compatible.
+    screenshots = request.FILES.getlist("screenshot")
 
-    if not match_id or not map_index or not screenshot:
+    if not match_id or not map_index or not screenshots:
         return Response(
-            {"message": "match_id, map_index, and screenshot are required."},
+            {"message": "match_id, map_index, and at least one screenshot are required."},
             status=400,
         )
 
@@ -126,35 +135,62 @@ def upload_ocr_session(request):
     registered = get_registered_players(match, event, event_type)
 
     # Call Gemini
-    image_bytes = screenshot.read()
-    mime_type   = screenshot.content_type or "image/jpeg"
+    # Read the bytes + persist each screenshot up front. We persist EVERY uploaded image as a
+    # MatchResultImage (the same model manual result uploads use, see afc_tournament_and_scrims
+    # .views) so the pixels survive to commit-time; the session links the FIRST one below
+    # (OCRSession.image is a single FK) which is what the OCR learning loop
+    # (capture_training_pair) currently re-reads. Persisting is best-effort: a storage failure
+    # must never block OCR, so we swallow it and keep the bytes we already read. We rewind each
+    # file (.seek(0)) before create() because .read() above consumed it (image= re-reads from 0).
+    payloads = []            # (image_bytes, mime_type) per screenshot, in upload order
+    first_result_image = None
+    for shot in screenshots:
+        data = shot.read()
+        mime = shot.content_type or "image/jpeg"
+        payloads.append((data, mime))
+        try:
+            shot.seek(0)
+            img = MatchResultImage.objects.create(
+                match=match,
+                image=shot,
+                uploaded_by=user,
+                note="OCR upload",
+            )
+            if first_result_image is None:
+                first_result_image = img
+        except Exception:
+            pass
 
-    # Persist the uploaded screenshot so it survives to commit-time. Previously these
-    # bytes were read, sent to Gemini, and then DISCARDED, which left the OCR learning
-    # loop with no pixels to learn from. We reuse the existing MatchResultImage model
-    # (the same one manual result uploads use, see afc_tournament_and_scrims.views)
-    # and stash it on the session so capture_training_pair can re-read the exact bytes
-    # at commit. We rewind the file first because we already consumed it with .read()
-    # above (image= re-reads the file object from the start). Best-effort: a storage
-    # failure here must not block OCR, so we swallow it and continue with image=None
-    # (capture simply skips later if no image was persisted).
-    result_image = None
-    try:
-        screenshot.seek(0)
-        result_image = MatchResultImage.objects.create(
-            match=match,
-            image=screenshot,
-            uploaded_by=user,
-            note="OCR upload",
-        )
-    except Exception:
-        result_image = None
+    # Extract each screenshot, then MERGE. We read the images CONCURRENTLY exactly like the batch
+    # worker (afc_leaderboard.ocr.process_job): extraction is I/O-bound on the Gemini fallback, so
+    # overlapping the calls keeps a multi-screenshot upload snappy, while the shared local student
+    # stays serialized behind afc_ocr.services.extract._STUDENT_LOCK. A single failing image raises
+    # out of ex.map and 503s the whole upload (same all-or-nothing the single-file path had).
+    # merge_placements unions every image's placements and drops exact duplicates, keyed by
+    # placement (placement is unique within one map, so overlapping top/bottom shots de-dupe
+    # cleanly); the admin reviews + corrects the merged rows in OCRReviewTable afterwards.
+    from concurrent.futures import ThreadPoolExecutor
+    from afc_leaderboard.ocr import merge_placements
+
+    def _read_one(payload):
+        data, mime = payload
+        return _extract_with_router(data, mime, aliases, team_notes, event_type)
 
     try:
-        raw_output, engine = _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type)
+        with ThreadPoolExecutor(max_workers=min(4, len(payloads))) as ex:
+            outputs = list(ex.map(_read_one, payloads))   # ex.map preserves upload order
     except Exception as exc:
         return Response({"message": f"OCR extraction failed: {exc}"}, status=503)
-    raw_output.setdefault("_engine", engine)  # persisted for the FE badge + training corpus
+
+    placement_lists = [(raw.get("placements", []) or []) for raw, _eng in outputs]
+    # Record the last non-empty engine for the FE "which engine" badge (mirrors process_job).
+    engine = next((eng for _raw, eng in reversed(outputs) if eng), "")
+    merged = merge_placements(placement_lists, is_team=(event_type == "team"))
+
+    # Canonical draft shape the rest of the flow expects: {"placements": [...]}. We store the
+    # MERGED placements (not any single image's), so the draft-row build / match_name / commit
+    # path below is byte-for-byte unchanged whether one or many screenshots were uploaded.
+    raw_output = {"placements": merged, "_engine": engine}
 
     # Build draft rows from the extracted output (same shape whether local student or Gemini)
     draft_rows = []
@@ -182,10 +218,12 @@ def upload_ocr_session(request):
         event_type=event_type,
         raw_output=raw_output,
         draft_rows=draft_rows,
-        # Link the persisted screenshot so commit_ocr_session -> capture_training_pair
-        # can re-read the exact pixels for the OCR learning loop. None if the save above
-        # failed (capture then skips this session, OCR is unaffected).
-        image=result_image,
+        # Link the FIRST persisted screenshot so commit_ocr_session -> capture_training_pair
+        # can re-read the exact pixels for the OCR learning loop. None if every save above
+        # failed (capture then skips this session, OCR is unaffected). When several screenshots
+        # were merged, only this first image feeds the single-image training capture today;
+        # all of them are still persisted as MatchResultImage rows for the record.
+        image=first_result_image,
     )
 
     return Response({

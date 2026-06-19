@@ -22,7 +22,7 @@ class Organization(models.Model):
     STATUS_CHOICES = [
         ("active", "Active"),
         ("suspended", "Suspended"),   # reversible freeze (org hidden, no actions)
-        ("deleted", "Deleted"),       # soft-delete; events are re-homed to AFC (FK SET_NULL)
+        ("deleted", "Deleted"),       # soft-delete; org + events kept intact, just hidden (status-filtered). Reversible via admin restore.
     ]
 
     organization_id = models.AutoField(primary_key=True)
@@ -54,6 +54,34 @@ class Organization(models.Model):
         related_name="accepted_org_paid_terms",
     )
     paid_terms_version = models.CharField(max_length=20, blank=True, default="")
+
+    # ── Soft-delete audit (F5, owner 2026-06-19) ──
+    # An owner (or AFC admin) can SOFT-delete an org: status="deleted" + these stamps. The clean
+    # soft-delete does NOT re-home events or remove members — the org + its events are simply HIDDEN
+    # (status-filtered) so an AFC admin can RESTORE everything intact. deleted_by is the actor.
+    # Event/results data is ALWAYS retained by AFC regardless (owner rule 2026-06-19).
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="deleted_organizations",
+    )
+
+    # ── Payout account (F6-P4, owner 2026-06-19) ──────────────────────────────────────────────
+    # Where AFC pays this org its share of paid-event registration revenue (after the AFC fee).
+    # Mirrors the marketplace Vendor payout fields. payout_provider picks the rail: "paystack"
+    # (African orgs — bank_code + account_number → a Paystack transfer recipient) or "stripe"
+    # (Stripe Connect account). The recipient/account ids are created lazily when the owner saves
+    # their bank details (organizers/<slug>/payout-account/). No money moves until an AFC admin
+    # releases a settled OrganizationEarning (see settle_event_payouts + the admin payouts page).
+    payout_provider = models.CharField(
+        max_length=12, choices=[("paystack", "Paystack"), ("stripe", "Stripe")],
+        blank=True, default="",
+    )
+    bank_code = models.CharField(max_length=20, blank=True, default="")
+    account_number = models.CharField(max_length=30, blank=True, default="")
+    account_name = models.CharField(max_length=120, blank=True, default="")
+    paystack_recipient_code = models.CharField(max_length=120, blank=True, default="")
+    stripe_account_id = models.CharField(max_length=120, blank=True, default="")
 
     def __str__(self):
         return f"{self.name} ({self.slug})"
@@ -607,3 +635,102 @@ class BlacklistLiftRequest(models.Model):
 
     def __str__(self):
         return f"LiftRequest(bl={self.blacklist_id} {self.scope} [{self.status}])"
+
+
+# ── Multi-org event co-ownership (F6, owner 2026-06-19) ────────────────────────────────────────
+class EventCoOrganizer(models.Model):
+    """An additional Organization invited to CO-ORGANIZE an Event.
+
+    `Event.organization` stays the PRIMARY/creator org; this table holds the EXTRA co-owning orgs.
+    Only the creator org's OWNER may invite (mutual consent — the invited org's owner must accept).
+    The granted can_* flags SCOPE what the co-owner may do on the event (they reuse the
+    OrganizationMember permission names). An empty table = today's single-org behaviour, so the
+    feature is fully backward-compatible.
+
+    READ BY:
+      - permissions.org_can_event: an event action is allowed if the user can do `perm` in the
+        primary org OR in any ACCEPTED co-owning org whose grant includes `perm`.
+      - org dashboards / metrics: a co-owned event counts for BOTH orgs (shared statistics).
+      - the public event page: "Organized by A & B".
+
+    payout_percent is reserved for the SEPARATE organizer-payout-split effort (not wired yet)."""
+    STATUS_CHOICES = [("pending", "Pending"), ("accepted", "Accepted"), ("declined", "Declined")]
+
+    event = models.ForeignKey(
+        "afc_tournament_and_scrims.Event", on_delete=models.CASCADE, related_name="co_organizers"
+    )
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="co_owned_events"
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="pending")
+
+    # Scoped grant — what THIS co-owner may do on the event (mirrors OrganizationMember can_*).
+    can_create_events = models.BooleanField(default=False)
+    can_edit_events = models.BooleanField(default=False)
+    can_upload_results = models.BooleanField(default=False)
+    can_manage_registrations = models.BooleanField(default=False)
+    can_submit_designs = models.BooleanField(default=False)
+    can_view_metrics = models.BooleanField(default=True)   # a co-owner can at least see metrics
+    can_view_reviews = models.BooleanField(default=False)
+    can_manage_members = models.BooleanField(default=False)
+
+    # Reserved for the organizer payout-split effort (separate project). Each accepted co-owner's
+    # share of the event's net registration revenue; the primary org keeps the remainder.
+    payout_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    responded_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("event", "organization")
+        indexes = [models.Index(fields=["event", "status"])]
+
+    def __str__(self):
+        return f"co-org {self.organization_id} on event {self.event_id} ({self.status})"
+
+
+# ── Organizer payout ledger (F6-P4, owner 2026-06-19) ──────────────────────────────────────────
+class OrganizationEarning(models.Model):
+    """One payout-ledger row: what an org is owed from ONE event's paid registration revenue.
+
+    Mirrors the marketplace afc_shop.VendorPayout. settle_event_payouts(event) computes, per owning
+    org (the PRIMARY org + each ACCEPTED co-owner by its EventCoOrganizer.payout_percent), that org's
+    GROSS share of the event's RELEASED registration revenue, deducts the AFC platform fee
+    (0% for the org's first 10 paid tournaments, then 2%), and upserts this row (idempotent on
+    organization+event+source). status: owed -> released (admin queued) -> paid (transfer done).
+
+    READ/WRITTEN BY: afc_organizers.payouts (settle_event_payouts on EventRegistrationPayment
+    release; admin list/release/pay endpoints; org self-serve earnings view). The actual bank
+    transfer reuses the org's payout_provider rail (Paystack recipient / Stripe Connect) and is an
+    explicit admin release — no money moves at settlement time."""
+    STATUS = [("owed", "Owed"), ("released", "Released"), ("paid", "Paid")]
+    SOURCE = [("registration_fee", "Registration fee")]
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="earnings")
+    event = models.ForeignKey(
+        "afc_tournament_and_scrims.Event", on_delete=models.CASCADE, related_name="org_earnings"
+    )
+    source = models.CharField(max_length=24, choices=SOURCE, default="registration_fee")
+    # gross_share = this org's slice of the event's released revenue (before the AFC fee).
+    gross_share = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    platform_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)  # AFC's cut on this share
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)        # net paid to the org
+    share_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)  # this org's % of gross
+    currency = models.CharField(max_length=3, default="USD")
+    status = models.CharField(max_length=12, choices=STATUS, default="owed")
+    transfer_ref = models.CharField(max_length=160, blank=True, default="")          # paystack/stripe transfer id
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ("organization", "event", "source")
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["organization", "status"]), models.Index(fields=["event"])]
+
+    def __str__(self):
+        return f"earning org {self.organization_id} event {self.event_id}: {self.amount} ({self.status})"

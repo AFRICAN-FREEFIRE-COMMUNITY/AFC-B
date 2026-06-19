@@ -97,7 +97,13 @@ def _excluded_event_ids(event_ids, *, team=None, player=None):
 def _unverified_org_event_ids(event_ids):
     """Organizer integrity gate: org-owned events whose results have NOT been verified by an
     AFC admin (Event.rankings_verified is False) do not count toward the official rankings.
-    Native AFC events (organization is null) are never returned here, so they always count."""
+    Native AFC events (organization is null) are never returned here, so they always count.
+
+    NOTE (F5, owner 2026-06-19): this gate intentionally does NOT exclude events whose org was later
+    SUSPENDED or soft-DELETED. F5 hides a dead org's events from the listings/detail/directory, but
+    the owner rule is that RESULTS are ALWAYS retained — a verified result that already counted keeps
+    counting in the rankings even after its org is removed. So the divergence from the _ACTIVE_ORG_EVENT
+    list filter is deliberate retention, not an oversight; do not add an org-status filter here."""
     from afc_tournament_and_scrims.models import Event
     return set(
         Event.objects.filter(

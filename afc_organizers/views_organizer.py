@@ -607,3 +607,100 @@ def remove_organization_member(request, slug, user_id):
         {"message": "Member removed from the organization."},
         status=status.HTTP_200_OK,
     )
+
+
+# ── Org lifecycle: leave / owner-suspend / owner-soft-delete (F5, owner 2026-06-19) ────────────
+def _org_lifecycle_auth(request, slug):
+    """Shared Bearer auth + org resolve for the lifecycle endpoints.
+    Returns (user, org, None) or (None, None, error_response)."""
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return None, None, Response({"message": "Authorization header is required"},
+                                    status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return None, None, Response({"message": "Invalid or expired session token."},
+                                    status=status.HTTP_401_UNAUTHORIZED)
+    org = Organization.objects.filter(slug=slug).first()
+    if not org:
+        return None, None, Response({"message": "Organization not found."},
+                                    status=status.HTTP_404_NOT_FOUND)
+    return user, org, None
+
+
+@api_view(["POST"])
+def leave_organization(request, slug):
+    """POST /organizers/leave-organization/<slug>/
+    A SUB-ORGANIZER removes THEMSELVES from the org (soft: status='removed'). The OWNER cannot
+    leave (they must transfer ownership or delete the org) -> 400. Consumed by the organizer
+    portal's "Leave organization" button (gated to non-owners)."""
+    user, org, err = _org_lifecycle_auth(request, slug)
+    if err:
+        return err
+    member = OrganizationMember.objects.filter(
+        organization=org, user=user, status="active").first()
+    if not member:
+        return Response({"message": "You are not a member of this organization."},
+                        status=status.HTTP_404_NOT_FOUND)
+    if member.role == "owner":
+        return Response(
+            {"message": "The owner cannot leave. Transfer ownership or delete the organization."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    member.status = "removed"
+    member.save(update_fields=["status"])
+    return Response({"message": "You have left the organization."}, status=status.HTTP_200_OK)
+
+
+def _is_org_owner_or_admin(user, org):
+    """True if the user is THIS org's owner OR an AFC platform admin (oversight bypass)."""
+    from .permissions import is_platform_org_admin
+    if is_platform_org_admin(user):
+        return True
+    m = OrganizationMember.objects.filter(
+        organization=org, user=user, status="active", role="owner").first()
+    return bool(m)
+
+
+@api_view(["POST"])
+def suspend_my_organization(request, slug):
+    """POST /organizers/<slug>/suspend/  body {suspend: bool}
+    The OWNER (or an AFC admin) freezes/unfreezes their own org (active <-> suspended). A suspended
+    org + its events drop off the public site (status-filtered). Refuses on a deleted org."""
+    user, org, err = _org_lifecycle_auth(request, slug)
+    if err:
+        return err
+    if not _is_org_owner_or_admin(user, org):
+        return Response({"message": "Only the organization owner can do this."},
+                        status=status.HTTP_403_FORBIDDEN)
+    if org.status == "deleted":
+        return Response({"message": "This organization is deleted. Ask an AFC admin to restore it first."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    suspend = request.data.get("suspend", True)
+    if isinstance(suspend, str):
+        suspend = suspend.lower() in ("1", "true", "yes")
+    org.status = "suspended" if suspend else "active"
+    org.save(update_fields=["status", "updated_at"])
+    return Response({"message": "Organization status updated.", "status": org.status},
+                    status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def delete_my_organization(request, slug):
+    """POST /organizers/<slug>/delete/
+    The OWNER (or an AFC admin) SOFT-deletes their own org. Clean delete: events + members stay
+    intact (just hidden via status filtering) so an AFC admin can restore it. Event/results data is
+    always retained. Consumed by the organizer portal danger zone."""
+    user, org, err = _org_lifecycle_auth(request, slug)
+    if err:
+        return err
+    if not _is_org_owner_or_admin(user, org):
+        return Response({"message": "Only the organization owner can do this."},
+                        status=status.HTTP_403_FORBIDDEN)
+    from django.utils import timezone
+    org.status = "deleted"
+    org.deleted_at = timezone.now()
+    org.deleted_by = user
+    org.save(update_fields=["status", "deleted_at", "deleted_by", "updated_at"])
+    return Response({"message": "Organization deleted. An AFC admin can restore it if needed."},
+                    status=status.HTTP_200_OK)

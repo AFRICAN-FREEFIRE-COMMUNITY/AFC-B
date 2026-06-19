@@ -426,3 +426,113 @@ def delete_stage_managed(request):
         "moved_to": (target_stage.stage_id if target_stage else None),
         "redistributed": redistributed,
     }, status=200)
+
+
+@api_view(["POST"])
+def move_team_between_groups(request):
+    """MOVE one team (or solo player) from one group to another WITHIN a stage (F2, owner 2026-06-19).
+
+    Backs the drag-and-drop "move a team card from Group A into Group B" in the Stages & Groups
+    editor. Standard stages only: delete the team's StageGroupCompetitor row in the source group and
+    create one in the target group (the unique_together(stage_group, tournament_team, player) keeps a
+    team in exactly one group per stage). Match rows are immutable, so the team's PAST results stay
+    linked to the OLD group's matches — if it already has entered results there, we require `force`
+    (warn-and-allow): those old-group stats remain in the old group's standings after the move.
+
+    Round-robin stages store teams on RoundRobinGroup.teams (M2M) + rebuild lobbies, NOT on
+    StageGroupCompetitor, so a DnD move there needs a different path — we fail SAFE with a clear
+    message rather than corrupt the lobby structure (use Reseed for RR for now).
+
+    Request:  {from_group_id, to_group_id, tournament_team_id? | player_id?, force?}
+    Response: 200 {message, from_group_id, to_group_id}; 409 {requires_force} when results exist;
+              400/403/404 on validation / permission / not-found.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+
+    _from_id = request.data.get("from_group_id")
+    _to_id = request.data.get("to_group_id")
+
+    # Round-robin fail-safe #1 — reject RR group ids BEFORE the StageGroups lookup. RoundRobinGroup
+    # and StageGroups both use independent AutoField PKs whose integer ranges OVERLAP, so an RR
+    # group_id sent by a stale/buggy client would otherwise `get_object_or_404(StageGroups, ...)` into
+    # an UNRELATED StageGroups row (possibly in a different, non-RR stage) and the substring guard
+    # below would inspect the wrong stage and be bypassed — silently mutating the wrong stage's groups.
+    # Detecting the id against RoundRobinGroup first closes that collision. (Adversarial-review fix,
+    # owner 2026-06-19.) RR teams live on RoundRobinGroup.teams (M2M) + drive generated lobbies, so a
+    # DnD move there is not supported — fail SAFE (use Reseed).
+    from .models import RoundRobinGroup
+    _rr_msg = ("This is a round-robin stage; teams there are managed on the base groups. "
+               "Use Reseed to reorganise round-robin teams.")
+    if RoundRobinGroup.objects.filter(group_id__in=[i for i in (_from_id, _to_id) if i]).exists():
+        return Response({"message": _rr_msg}, status=400)
+
+    from_group = get_object_or_404(StageGroups, group_id=_from_id)
+    to_group = get_object_or_404(StageGroups, group_id=_to_id)
+    if from_group.stage_id != to_group.stage_id:
+        return Response({"message": "Both groups must be in the same stage."}, status=400)
+    if from_group.group_id == to_group.group_id:
+        return Response({"message": "Source and target groups are the same."}, status=400)
+
+    stage = from_group.stage
+    event = stage.event
+    if not _seeding_gate(user, event):
+        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+
+    # Round-robin fail-safe #2 — STRUCTURAL guard on the RESOLVED stage (authoritative). The old check
+    # was `"round" in stage_format` which both over-matches (legacy 'br - roundrobin' Knockout) and
+    # under-matches ('cs - league'); the presence of RoundRobinGroup rows is the real signal that a
+    # stage's teams live on the RR M2M (same source of truth get_event_group_rosters uses).
+    if stage.round_robin_groups.exists():
+        return Response({"message": _rr_msg}, status=400)
+
+    tt_id = request.data.get("tournament_team_id")
+    player_id = request.data.get("player_id")
+    if not tt_id and not player_id:
+        return Response({"message": "tournament_team_id or player_id is required."}, status=400)
+    force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
+
+    # Locate the competitor's row in the SOURCE group.
+    src_filter = {"stage_group": from_group}
+    tgt_filter = {"stage_group": to_group}
+    if tt_id:
+        src_filter["tournament_team_id"] = tt_id
+        tgt_filter["tournament_team_id"] = tt_id
+    else:
+        src_filter["player_id"] = player_id
+        tgt_filter["player_id"] = player_id
+
+    row = StageGroupCompetitor.objects.filter(**src_filter).first()
+    if not row:
+        return Response({"message": "That competitor is not in the source group."}, status=404)
+    if StageGroupCompetitor.objects.filter(**tgt_filter).exists():
+        return Response({"message": "That competitor is already in the target group."}, status=400)
+
+    # Results guard (team only — solo stats are out of scope for the guard): if the team already has
+    # entered results in the source group, warn + require force (old-group stats stay behind).
+    if tt_id:
+        from .models import TournamentTeamMatchStats
+        has_results = TournamentTeamMatchStats.objects.filter(
+            match__group=from_group, tournament_team_id=tt_id,
+        ).exists()
+        if has_results and not force:
+            return Response({
+                "message": "This team already has results entered in its current group. Moving it "
+                           "leaves those results in the old group's standings. Move anyway?",
+                "requires_force": True,
+            }, status=409)
+
+    with transaction.atomic():
+        row.delete()
+        if tt_id:
+            StageGroupCompetitor.objects.create(stage_group=to_group, tournament_team_id=tt_id)
+        else:
+            StageGroupCompetitor.objects.create(stage_group=to_group, player_id=player_id)
+
+    _reconcile_group_roles(stage)
+    return Response({
+        "message": "Moved to the new group.",
+        "from_group_id": from_group.group_id,
+        "to_group_id": to_group.group_id,
+    }, status=200)
