@@ -2,6 +2,7 @@ import uuid
 from django.db import models
 from afc_team.models import Team, TeamMembers
 from django.conf import settings
+from django.utils import timezone
 from django.utils.text import slugify
 
 # ---------------- Event ----------------
@@ -174,6 +175,20 @@ class Event(models.Model):
     # register_for_event, and surfaced on the public event page so players know before trying.
     require_team_logo = models.BooleanField(default=False)
     require_esport_images = models.BooleanField(default=False)
+    # ── Extra registration requirements (F3, owner 2026-06-19) ──────────────────────────────
+    #   require_player_uid           -> every registering player (solo user, or each roster member
+    #                                   of a team registration) must have their Free Fire UID set
+    #                                   (afc_auth.User.uid non-empty). When ON, registration HARD-
+    #                                   BLOCKS until every roster UID is filled (the inline UID
+    #                                   prompt still lets them set it). When OFF, behaves as before.
+    #   require_player_profile_image -> every registering player must have a PROFILE image uploaded
+    #                                   (afc_auth.UserProfile.profile_pic) - distinct from the
+    #                                   esports image gated by require_esport_images above.
+    # Same lifecycle as require_team_logo/require_esport_images: set in create_event/edit_event,
+    # toggles on both wizards, enforced in register_for_event (+ event_links qualification gate)
+    # via the shared missing_registration_assets() helper, surfaced on the public event page.
+    require_player_uid = models.BooleanField(default=False)
+    require_player_profile_image = models.BooleanField(default=False)
 
     # ── Flagged-kill counting (owner 2026-06-16) ───────────────────────────────────────────
     # The match-log FILE upload (upload_team_match_result) credits a team's TOTAL kills from the
@@ -989,3 +1004,49 @@ class HeadToHeadMatch(models.Model):
         b = self.team_b.team.team_name if self.team_b else "?"
         return f"H2H {self.bracket} R{self.round_number}.{self.position}: {a} vs {b} ({self.status})"
 
+
+
+# ── No-show reputation (F1, owner 2026-06-19) ──────────────────────────────────────────────────
+class NoShowRecord(models.Model):
+    """One NO-SHOW occurrence (a team OR a solo player) in one event.
+
+    Powers the repeat-no-show WARNING: a team/player is "flagged" when it has >= 2 records that are
+    still standing (cleared_at IS NULL) with occurred_at within a trailing 7 days, counted across
+    ALL events (platform-wide, so any organizer/admin sees the warning). Created when an organizer/
+    admin marks a no-show (afc_tournament_and_scrims.views.mark_no_show) or confirms a
+    detect-no-shows suggestion; SOFT-CLEARED (cleared_at set) when the no-show is undone, so the
+    warning reflects only currently-standing no-shows (history is retained for audit).
+
+    team xor user is populated per the event's participant type (team events -> team; solo -> user).
+    Read by: get_no_show_warnings (bulk badge endpoint consumed by the FE NoShowWarningBadge +
+    useNoShowWarnings hook on RegisteredTeamsTab and the admin Teams list)."""
+    SOURCE_CHOICES = [("manual", "manual"), ("auto", "auto")]
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="no_show_records")
+    team = models.ForeignKey(
+        Team, null=True, blank=True, on_delete=models.CASCADE, related_name="no_show_records"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.CASCADE, related_name="no_show_records",
+    )
+    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default="manual")
+    occurred_at = models.DateTimeField(default=timezone.now)
+    # Soft-clear on undo (null = still standing). Keeps the audit trail while dropping the count.
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="+",
+    )
+    note = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        ordering = ["-occurred_at"]
+        indexes = [
+            models.Index(fields=["team", "cleared_at", "occurred_at"]),
+            models.Index(fields=["user", "cleared_at", "occurred_at"]),
+        ]
+
+    def __str__(self):
+        who = (self.team.team_name if self.team_id else
+               (self.user.username if self.user_id else "?"))
+        return f"NoShow {who} @ {self.event_id} ({'cleared' if self.cleared_at else 'standing'})"

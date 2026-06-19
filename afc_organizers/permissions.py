@@ -51,8 +51,26 @@ def org_can(user, perm, organization) -> bool:
 
 
 def org_can_event(user, perm, event) -> bool:
-    """Event-scoped variant: resolves the event's owning org. Native AFC events (no
-    organization) are admin-only — organizers never touch events outside their own org."""
+    """Event-scoped variant: resolves the event's owning org(s). Native AFC events (no
+    organization) are admin-only — organizers never touch events outside their own org.
+
+    Multi-org co-ownership (F6, owner 2026-06-19): the action is allowed if the user can do `perm`
+    in the PRIMARY org (Event.organization) OR in any ACCEPTED CO-OWNING org whose scoped grant
+    includes `perm`. The co-owner check runs ONLY when the primary check fails, and only queries
+    when an event actually has co-owners — so events with no co-owners (the overwhelming majority)
+    keep the exact single-org behaviour + cost. This one change lets co-ownership flow through every
+    endpoint that already gates on org_can_event (edit/results/registrations/broadcast/seeding/…)."""
     if event.organization_id is None:
         return is_platform_org_admin(user)
-    return org_can(user, perm, event.organization)
+    # 1) Primary org (creator) — unchanged fast path.
+    if org_can(user, perm, event.organization):
+        return True
+    # 2) Accepted co-owners: the co-org's grant must include `perm` AND the user must be able to do
+    #    `perm` within that co-org (owner implicitly, or a sub_organizer who holds it).
+    from .models import EventCoOrganizer
+    for co in EventCoOrganizer.objects.filter(
+        event_id=event.event_id, status="accepted",
+    ).select_related("organization"):
+        if getattr(co, perm, False) and org_can(user, perm, co.organization):
+            return True
+    return False

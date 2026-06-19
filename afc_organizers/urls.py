@@ -15,7 +15,7 @@ from django.urls import path
 from . import (
     views_admin, views_organizer, views_public,
     views_reviews, views_reports, views_blacklist, views_blacklist_lookup,
-    views_leaderboard_design,
+    views_leaderboard_design, co_organizers, payouts,
 )
 
 urlpatterns = [
@@ -32,6 +32,9 @@ urlpatterns = [
          name="organizers_admin_suspend"),
     path("admin/delete-organization/<slug:slug>/", views_admin.admin_delete_organization,
          name="organizers_admin_delete"),
+    # F5 (owner 2026-06-19): admin restores a soft-deleted org (clean delete kept everything intact).
+    path("admin/restore-organization/<slug:slug>/", views_admin.admin_restore_organization,
+         name="organizers_admin_restore"),
     path("admin/manage-organization-member/<slug:slug>/", views_admin.admin_manage_organization_member,
          name="organizers_admin_manage_member"),
 
@@ -50,6 +53,26 @@ urlpatterns = [
          name="organizers_edit_member"),
     path("remove-organization-member/<slug:slug>/<int:user_id>/", views_organizer.remove_organization_member,
          name="organizers_remove_member"),
+    # F6-P4 (owner 2026-06-19): organizer payouts + co-owner auto-split.
+    path("admin/payouts/", payouts.admin_list_org_payouts, name="organizers_admin_payouts"),
+    path("admin/payouts/release/", payouts.admin_release_org_payout, name="organizers_admin_payout_release"),
+    path("admin/payouts/mark-paid/", payouts.admin_mark_org_payout_paid, name="organizers_admin_payout_paid"),
+    path("<slug:slug>/payout-account/", payouts.save_payout_account, name="organizers_payout_account"),
+    path("<slug:slug>/earnings/", payouts.my_org_earnings, name="organizers_earnings"),
+
+    # F6 (owner 2026-06-19): multi-org event co-ownership. Creator-owner invites; invited-owner responds.
+    path("co-organizers/invite/", co_organizers.invite_co_organizer, name="organizers_co_invite"),
+    path("co-organizers/respond/", co_organizers.respond_co_organizer, name="organizers_co_respond"),
+    path("co-organizers/revoke/", co_organizers.revoke_co_organizer, name="organizers_co_revoke"),
+    path("co-organizers/", co_organizers.list_event_co_organizers, name="organizers_co_list"),
+
+    # F5 (owner 2026-06-19): sub-organizer leaves; owner suspends/soft-deletes their own org.
+    path("leave-organization/<slug:slug>/", views_organizer.leave_organization,
+         name="organizers_leave"),
+    path("organization/<slug:slug>/suspend/", views_organizer.suspend_my_organization,
+         name="organizers_owner_suspend"),
+    path("organization/<slug:slug>/delete/", views_organizer.delete_my_organization,
+         name="organizers_owner_delete"),
 
     # (The "request a design" feature was removed 2026-06-13 in favour of the self-serve design
     # library below; its routes + views_design.py module were deleted.)

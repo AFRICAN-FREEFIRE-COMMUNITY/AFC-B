@@ -385,6 +385,17 @@ def admin_edit_organization(request, slug):
         valid_statuses = {choice[0] for choice in Organization.STATUS_CHOICES}
         if new_status not in valid_statuses:
             return Response({"message": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST)
+        # Keep the soft-delete stamps consistent with status so this generic edit path can't produce
+        # an "active but stamped deleted" or "deleted with no audit stamps" row (the dedicated
+        # delete/restore endpoints stamp/clear correctly; this one used to bypass them). Stamp on the
+        # transition INTO deleted, clear on the transition OUT. (Adversarial-review fix, owner 2026-06-19.)
+        from django.utils import timezone
+        if new_status == "deleted" and org.status != "deleted":
+            org.deleted_at = timezone.now()
+            org.deleted_by = user
+        elif new_status != "deleted" and org.status == "deleted":
+            org.deleted_at = None
+            org.deleted_by = None
         org.status = new_status
 
     org.save()
@@ -430,10 +441,20 @@ def admin_suspend_organization(request, slug):
 # ──────────────────────────────────────────────────────────────────────────────
 # 6) admin_delete_organization  (DELETE, <slug>)
 # ──────────────────────────────────────────────────────────────────────────────
-# SOFT delete. We never drop the row (events, audit trail, history would vanish).
-# Instead: flag the org "deleted", re-home its events back to AFC (organization →
-# NULL, which the Event FK is built to allow via SET_NULL), and mark every member
-# "removed" so the org disappears from their dashboards.
+# CLEAN soft delete (F5, owner 2026-06-19). We flag the org "deleted" + stamp deleted_at/by and
+# stop there: events STAY attached and members STAY (status unchanged), so an AFC admin can RESTORE
+# everything intact. The org + its events disappear from public/organizer surfaces because those
+# queries already status-filter to active orgs (e.g. _ACTIVE_ORG_EVENT in tournament views). This
+# replaces the old re-home-to-AFC behavior, which made restore lossy. Event/results data is ALWAYS
+# retained either way (owner rule). Used by admin_delete_organization + the owner-initiated delete.
+def _soft_delete_org(org, actor):
+    from django.utils import timezone
+    org.status = "deleted"
+    org.deleted_at = timezone.now()
+    org.deleted_by = actor
+    org.save(update_fields=["status", "deleted_at", "deleted_by", "updated_at"])
+
+
 @api_view(["DELETE"])
 def admin_delete_organization(request, slug):
     # Auth + AFC-staff gate.
@@ -445,19 +466,37 @@ def admin_delete_organization(request, slug):
     if err:
         return err
 
-    # 1) Soft-delete the org itself.
-    org.status = "deleted"
-    org.save()
-
-    # 2) Re-home every event under this org back to AFC (no orphaned events).
-    #    Imported locally to avoid a module-level cross-app import cycle.
-    from afc_tournament_and_scrims.models import Event
-    Event.objects.filter(organization=org).update(organization=None)
-
-    # 3) Detach all members so the org leaves their dashboards.
-    org.members.update(status="removed")
-
+    _soft_delete_org(org, user)
     return Response({"message": "Organization deleted."}, status=status.HTTP_200_OK)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6b) admin_restore_organization  (POST, <slug>)  — reverse a soft-delete (F5)
+# ──────────────────────────────────────────────────────────────────────────────
+# Brings a soft-deleted org back to "active". Because the clean delete kept events + members
+# intact, restore simply flips the status + clears the delete stamps — the org, its events, and
+# its team reappear everywhere. Admin-only. No-op-safe if the org isn't actually deleted.
+@api_view(["POST"])
+def admin_restore_organization(request, slug):
+    user, err = _require_platform_admin(request)
+    if err:
+        return err
+
+    org, err = _org_or_404(slug)
+    if err:
+        return err
+
+    if org.status != "deleted":
+        return Response(
+            {"message": "Organization is not deleted."}, status=status.HTTP_400_BAD_REQUEST
+        )
+    org.status = "active"
+    org.deleted_at = None
+    org.deleted_by = None
+    org.save(update_fields=["status", "deleted_at", "deleted_by", "updated_at"])
+    return Response(
+        {"message": "Organization restored.", "status": org.status}, status=status.HTTP_200_OK
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

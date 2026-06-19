@@ -436,8 +436,15 @@ def org_metrics(request, slug):
     # ── The org's events (one fetch). Every metric below is scoped to these rows. ──
     # We pull the columns we need once and iterate in Python for the splits/trend so we never
     # re-query per event. `max_teams_or_players` is the registration capacity (drives fill-rate).
+    # F6 (owner 2026-06-19): SHARED STATISTICS — include events this org PRIMARY-owns OR
+    # co-owns (an accepted EventCoOrganizer), so a co-owned event's numbers show in BOTH orgs'
+    # dashboards. .distinct() guards the join. Single-org orgs are unaffected (no co-owned rows).
+    from django.db.models import Q as _Q
     events = list(
-        Event.objects.filter(organization=org).values(
+        Event.objects.filter(
+            _Q(organization=org)
+            | _Q(co_organizers__organization=org, co_organizers__status="accepted")
+        ).distinct().values(
             "event_id", "event_name", "competition_type", "participant_type",
             "event_mode", "event_status", "start_date", "max_teams_or_players",
             "prizepool_cash_value", "tournament_tier",

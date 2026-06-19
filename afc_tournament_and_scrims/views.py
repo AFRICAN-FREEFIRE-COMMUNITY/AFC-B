@@ -185,6 +185,14 @@ def get_all_events(request):
             "organization_id": event.organization_id,
             "organization_name": event.organization.name if event.organization_id else None,
             "organization_slug": event.organization.slug if event.organization_id else None,
+            # organization_logo: absolute URL of the owning org's logo (null for native AFC events
+            # or an org without a logo). Consumed by the user-facing event cards (tournaments list +
+            # home) to show the org avatar beside the existing name badge. See FE EventCard.
+            "organization_logo": (
+                request.build_absolute_uri(event.organization.logo.url)
+                if (event.organization_id and event.organization.logo)
+                else None
+            ),
             "rankings_verified": event.rankings_verified,
         }
         localize_field(item, "event_name", event.event_name, locale)
@@ -224,6 +232,13 @@ def get_all_events_paginated(request):
         "organization_id": event.organization_id,
         "organization_name": event.organization.name if event.organization_id else None,
         "organization_slug": event.organization.slug if event.organization_id else None,
+        # organization_logo: absolute URL of the owning org's logo (null when native AFC / no logo).
+        # Consumed by the paginated user-facing event cards to show the org avatar beside the name.
+        "organization_logo": (
+            request.build_absolute_uri(event.organization.logo.url)
+            if (event.organization_id and event.organization.logo)
+            else None
+        ),
         "rankings_verified": event.rankings_verified,
     } for event in paginated]
 
@@ -1155,6 +1170,9 @@ def create_event(request):
             # "true"/"1"/bool from the wizard toggles; enforced in register_for_event.
             require_team_logo=_as_bool(request.data.get("require_team_logo")),
             require_esport_images=_as_bool(request.data.get("require_esport_images")),
+            # F3 extra registration requirements (owner 2026-06-19) — same parse pattern.
+            require_player_uid=_as_bool(request.data.get("require_player_uid")),
+            require_player_profile_image=_as_bool(request.data.get("require_player_profile_image")),
         )
 
         # change sponsor_usernames to a list
@@ -1431,6 +1449,12 @@ def duplicate_event(request, event_id):
             event_end_time=source.event_end_time,
             registration_start_time=source.registration_start_time,
             registration_end_time=source.registration_end_time,
+            # Registration requirements — carry the source's gates onto the clone (these were
+            # previously dropped, so a duplicated event silently lost its require_* toggles). F3.
+            require_team_logo=source.require_team_logo,
+            require_esport_images=source.require_esport_images,
+            require_player_uid=source.require_player_uid,
+            require_player_profile_image=source.require_player_profile_image,
         )
 
         # ── 2) Clone each Stage (config only) ──
@@ -2384,6 +2408,11 @@ def edit_event(request):
         event.require_team_logo = _as_bool(request.data.get("require_team_logo"))
     if "require_esport_images" in request.data:
         event.require_esport_images = _as_bool(request.data.get("require_esport_images"))
+    # F3 extra registration requirements (owner 2026-06-19).
+    if "require_player_uid" in request.data:
+        event.require_player_uid = _as_bool(request.data.get("require_player_uid"))
+    if "require_player_profile_image" in request.data:
+        event.require_player_profile_image = _as_bool(request.data.get("require_player_profile_image"))
 
     if "waitlist_capacity" in request.data:
         try:
@@ -3545,11 +3574,12 @@ def get_event_details(request):
     #   team -> TournamentTeam (not waitlisted)
     if event.participant_type == "solo":
         active_registered = RegisteredCompetitors.objects.filter(
-            event=event, status__in=["registered", "approved"], is_waitlisted=False
+            event=event, status__in=["registered", "approved"], is_waitlisted=False,
+            is_no_show=False,  # F1: a no-show frees its slot for waitlist promotion
         ).count()
     else:
         active_registered = TournamentTeam.objects.filter(
-            event=event, is_waitlisted=False
+            event=event, is_waitlisted=False, is_no_show=False,  # F1: no-show frees the slot
         ).count()
 
     # -------- BASIC EVENT DATA --------
@@ -3567,6 +3597,24 @@ def get_event_details(request):
         "organization_id": event.organization_id,
         "organization_name": event.organization.name if event.organization_id else None,
         "organization_slug": event.organization.slug if event.organization_id else None,
+        # organization_logo: absolute URL of the owning org's logo (null for native AFC / no logo).
+        # The logged-out detail endpoint already returns this; mirrored here so the user-facing
+        # event detail page can render the "Organized by [logo] name" header for logged-in viewers too.
+        "organization_logo": (
+            request.build_absolute_uri(event.organization.logo.url)
+            if (event.organization_id and event.organization.logo)
+            else None
+        ),
+        # F6 co-ownership (owner 2026-06-19): accepted co-organizing orgs, for "Organized by A & B"
+        # branding + the event-edit co-organizer panel. Empty list for normal single-org events.
+        "co_organizers": [
+            {
+                "name": c.organization.name,
+                "slug": c.organization.slug,
+                "logo": request.build_absolute_uri(c.organization.logo.url) if c.organization.logo else None,
+            }
+            for c in event.co_organizers.filter(status="accepted").select_related("organization")
+        ],
         "competition_type": event.competition_type,
         "participant_type": event.participant_type,
         "event_type": event.event_type,
@@ -3621,6 +3669,8 @@ def get_event_details(request):
         # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
         "require_team_logo": event.require_team_logo,
         "require_esport_images": event.require_esport_images,
+        "require_player_uid": event.require_player_uid,
+        "require_player_profile_image": event.require_player_profile_image,
         "waitlist_capacity": event.waitlist_capacity,
         "waitlist_discord_role_id": event.waitlist_discord_role_id,
         # Waitlist slot-assignment mode (owner 2026-06-17): shown on the user event page so waitlisted
@@ -3674,7 +3724,11 @@ def get_event_details(request):
                     # full player identity, not just the in-game name (owner request 2026-06-09).
                     "uid": reg.user.uid,
                     "full_name": reg.user.full_name,
-                    "status": reg.status
+                    "status": reg.status,
+                    # F1 (owner 2026-06-19): expose the no-show flag so RegisteredTeamsTab can render
+                    # the "No-show ✓" toggled state AND reach the CLEAR path (clicking a marked row
+                    # sends value=false). Without this the FE state was always undefined -> un-clearable.
+                    "is_no_show": reg.is_no_show,
                 })
 
     event_data["registered_competitors"] = registered
@@ -3700,6 +3754,9 @@ def get_event_details(request):
                 "team_id": tt.team.team_id,
                 "team_name": tt.team.team_name,
                 "status": tt.status,
+                # F1 (owner 2026-06-19): no-show flag drives the RegisteredTeamsTab toggle + clear path
+                # (see the solo dict above for why this is required).
+                "is_no_show": tt.is_no_show,
                 # Full player roster of THIS registered team so the admin "Registered
                 # Teams" view can expand a team to its players (owner request 2026-06-09).
                 # username is the in-game name; uid + full_name give full identity; the
@@ -4255,11 +4312,12 @@ def get_event_details_not_logged_in(request):
     # logged-out event page can show "Registration full / Join Waitlist" too.
     if event.participant_type == "solo":
         active_registered = RegisteredCompetitors.objects.filter(
-            event=event, status__in=["registered", "approved"], is_waitlisted=False
+            event=event, status__in=["registered", "approved"], is_waitlisted=False,
+            is_no_show=False,  # F1: a no-show frees its slot for waitlist promotion
         ).count()
     else:
         active_registered = TournamentTeam.objects.filter(
-            event=event, is_waitlisted=False
+            event=event, is_waitlisted=False, is_no_show=False,  # F1: no-show frees the slot
         ).count()
 
     event_data = {
@@ -4335,9 +4393,21 @@ def get_event_details_not_logged_in(request):
         # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
         "require_team_logo": event.require_team_logo,
         "require_esport_images": event.require_esport_images,
+        "require_player_uid": event.require_player_uid,
+        "require_player_profile_image": event.require_player_profile_image,
         "waitlist_capacity": event.waitlist_capacity,
         "registered_count": active_registered,
         "is_full": active_registered >= event.max_teams_or_players,
+        # F6 co-ownership (owner 2026-06-19): accepted co-organizers for the public "Organized by
+        # A & B" branding on the logged-out event page. Empty for normal single-org events.
+        "co_organizers": [
+            {
+                "name": c.organization.name,
+                "slug": c.organization.slug,
+                "logo": request.build_absolute_uri(c.organization.logo.url) if c.organization.logo else None,
+            }
+            for c in event.co_organizers.filter(status="accepted").select_related("organization")
+        ],
     }
 
     # i18n TRANSLATE-ON-READ (owner 2026-06-15): the public, logged-out mirror of get_event_details -
@@ -4738,6 +4808,59 @@ def determine_team_country(roster_users, team_owner):
 #     return most_common[0][0]
 
 
+# ── Registration eligibility helper (F3, owner 2026-06-19) ─────────────────────────────────────
+# Single source of truth for the per-PLAYER registration requirements an event can demand before a
+# team/player may register: an esports image (UserProfile.esports_pic), a profile image
+# (UserProfile.profile_pic), and a Free Fire UID (User.uid). Each is gated by its own event toggle
+# (require_esport_images / require_player_profile_image / require_player_uid). Team-logo is a
+# TEAM-level asset and is checked by the caller (it is not per-player). This helper is shared by
+# register_for_event (solo + team roster) AND event_links._registration_gates (qualification
+# promotions) so the rule lives in ONE place. Returns {user_id: [field_key,...]} for players who
+# are MISSING something; field_key is a stable token the FE maps to localized copy:
+#   "esports_image" | "profile_image" | "uid". Empty dict = everyone passes (or no toggle on).
+def _missing_registration_assets(user_ids, event):
+    from afc_auth.models import UserProfile
+    user_ids = [int(u) for u in user_ids if u is not None]
+    need_esports = bool(getattr(event, "require_esport_images", False))
+    need_profile = bool(getattr(event, "require_player_profile_image", False))
+    need_uid = bool(getattr(event, "require_player_uid", False))
+    if not user_ids or not (need_esports or need_profile or need_uid):
+        return {}
+    profiles = {p.user_id: p for p in UserProfile.objects.filter(user_id__in=user_ids)}
+    uids = dict(User.objects.filter(user_id__in=user_ids).values_list("user_id", "uid"))
+    out = {}
+    for uid_ in user_ids:
+        prof = profiles.get(uid_)
+        missing = []
+        # An ImageField is "empty" when null OR "" (a failed upload can leave a blank string).
+        if need_esports and not (prof and prof.esports_pic and str(prof.esports_pic) != ""):
+            missing.append("esports_image")
+        if need_profile and not (prof and prof.profile_pic and str(prof.profile_pic) != ""):
+            missing.append("profile_image")
+        if need_uid and not (uids.get(uid_) or "").strip():
+            missing.append("uid")
+        if missing:
+            out[uid_] = missing
+    return out
+
+
+# Build the canonical 403 body for unmet registration requirements: a per-player list of missing
+# fields (+ an optional team-logo flag). Consumed by the FE registration flow, which renders a
+# "who needs what" panel with Edit-Profile / team-edit deep links pointing at the exact player.
+def _registration_requirements_response(missing_map, team_logo_missing=False):
+    ids = list(missing_map.keys())
+    names = dict(User.objects.filter(user_id__in=ids).values_list("user_id", "username")) if ids else {}
+    return {
+        "code": "registration_requirements_unmet",
+        "message": "Some players are missing required profile info before this registration can proceed.",
+        "team_logo_missing": bool(team_logo_missing),
+        "missing": [
+            {"user_id": uid_, "username": names.get(uid_, str(uid_)), "fields": fields}
+            for uid_, fields in missing_map.items()
+        ],
+    }
+
+
 @api_view(["POST"])
 def register_for_event(request):
     # -------------------------
@@ -4811,20 +4934,14 @@ def register_for_event(request):
         if BannedPlayer.objects.filter(banned_player=user, is_active=True).exists():
             return Response({"message": "You are banned from registering for this event."}, status=403)
 
-        # ── ESPORT-IMAGE CRITERIA (owner 2026-06-12) ──
-        # When the event creator required esport images, a solo player cannot register until
-        # their UserProfile.esports_pic is uploaded (replace-only asset; see
-        # afc_auth.views.upload_esport_image). code lets the FE deep-link to the profile editor.
-        if event.require_esport_images:
-            from afc_auth.models import UserProfile
-            has_esport_image = UserProfile.objects.filter(
-                user=user, esports_pic__isnull=False
-            ).exclude(esports_pic="").exists()
-            if not has_esport_image:
-                return Response({
-                    "message": "This event requires an esport image. Upload yours on your profile before registering.",
-                    "code": "esport_image_required",
-                }, status=403)
+        # ── PER-PLAYER REGISTRATION REQUIREMENTS (F3, owner 2026-06-19) ──
+        # esports image / profile image / Free Fire UID, each gated by its own event toggle
+        # (require_esport_images / require_player_profile_image / require_player_uid). The shared
+        # _missing_registration_assets helper returns whatever this solo registrant is missing; the
+        # structured 403 lets the FE point them straight at the field to fix on their profile.
+        solo_missing = _missing_registration_assets([user.user_id], event)
+        if solo_missing:
+            return Response(_registration_requirements_response(solo_missing), status=403)
 
         
         if is_public == False:
@@ -5116,30 +5233,14 @@ def register_for_event(request):
                 "staff_user_ids": list(picked_staff_ids),
             }, status=400)
 
-        # ── ESPORT-IMAGE CRITERIA (owner 2026-06-12) ──
-        # When required, EVERY roster member must have their esport image uploaded
-        # (UserProfile.esports_pic). The error NAMES the missing players so the captain knows
-        # exactly who must upload before retrying.
-        if event.require_esport_images:
-            from afc_auth.models import UserProfile
-            with_image = set(
-                UserProfile.objects.filter(
-                    user_id__in=roster_member_ids, esports_pic__isnull=False
-                ).exclude(esports_pic="").values_list("user_id", flat=True)
-            )
-            missing_ids = [uid for uid in roster_member_ids if uid not in with_image]
-            if missing_ids:
-                missing_names = list(
-                    User.objects.filter(user_id__in=missing_ids).values_list("username", flat=True)
-                )
-                return Response({
-                    "message": (
-                        "This event requires every rostered player to have an esport image. "
-                        f"Missing: {', '.join(missing_names)}."
-                    ),
-                    "code": "esport_image_required",
-                    "missing_players": missing_names,
-                }, status=403)
+        # ── PER-PLAYER REGISTRATION REQUIREMENTS (F3, owner 2026-06-19) ──
+        # EVERY rostered player must satisfy the event's enabled per-player requirements (esports
+        # image / profile image / Free Fire UID). The shared helper returns exactly who is missing
+        # what, so the structured 403 NAMES each offending player + the fields they must add before
+        # retrying (the FE renders a per-player "missing X" panel with Edit-Profile deep links).
+        roster_missing = _missing_registration_assets(roster_member_ids, event)
+        if roster_missing:
+            return Response(_registration_requirements_response(roster_missing), status=403)
 
         # Prevent players being in two rosters for the same event.
         # Fetch the conflicting roster rows WITH the player + the team they are
@@ -8312,6 +8413,8 @@ def get_event_details_for_admin(request):
         # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
         "require_team_logo": event.require_team_logo,
         "require_esport_images": event.require_esport_images,
+        "require_player_uid": event.require_player_uid,
+        "require_player_profile_image": event.require_player_profile_image,
             "waitlist_capacity": event.waitlist_capacity,
             "waitlist_discord_role_id": event.waitlist_discord_role_id,
             # Waitlist slot-assignment mode (owner 2026-06-17): rehydrates the edit form's mode picker.
@@ -12124,6 +12227,10 @@ def get_event_group_rosters(request):
                 "stage_name": stage.stage_name,
                 "stage_format": stage.stage_format,
                 "stage_status": stage.stage_status,
+                # Authoritative RR flag (not a stage_format string heuristic) so the GroupTeamMover
+                # can hide RR stages — their teams live on the RR M2M, not StageGroupCompetitor, so a
+                # DnD move there is unsupported (the move endpoint fail-safes it). (Owner 2026-06-19.)
+                "is_round_robin": True,
                 "groups": groups_payload,
             })
             continue  # RR stage fully handled; skip the StageGroups path below.
@@ -12196,6 +12303,7 @@ def get_event_group_rosters(request):
             "stage_name": stage.stage_name,
             "stage_format": stage.stage_format,
             "stage_status": stage.stage_status,
+            "is_round_robin": False,  # standard StageGroups stage: teams ARE movable via DnD.
             "groups": groups_payload,
         })
 
@@ -18979,9 +19087,14 @@ def _auth_event_results(request, event):
     return admin, None
 
 
-def _as_bool(v, default=None):
-    """Coerce a request value to bool. Accepts python bool or the usual truthy strings; returns
-    `default` for None/'null'/'' (used so a per-flag override can be cleared back to NULL)."""
+def _as_bool_nullable(v, default=None):
+    """Coerce a request value to bool, but return `default` (None) for None/'null'/'' so a per-flag
+    override can be CLEARED back to NULL. Distinct from `_as_bool` (line ~396) which always returns a
+    real False for missing values. RENAMED 2026-06-19 (adversarial review): both used to be named
+    `_as_bool`, and the module-level redefinition silently shadowed the first, so the always-False
+    toggles (waitlist, F3 registration gates) were actually getting None back for omitted fields and
+    risked an IntegrityError into their NOT NULL BooleanField columns. Only the flagged-kill per-player
+    OVERRIDE wants the nullable behaviour — it now calls this explicitly."""
     if isinstance(v, bool):
         return v
     if v in (None, "null", ""):
@@ -19040,7 +19153,7 @@ def set_event_flagged_kills(request):
     admin, err = _auth_event_results(request, event)
     if err:
         return err
-    val = _as_bool(request.data.get("count_flagged_kills"), default=None)
+    val = _as_bool_nullable(request.data.get("count_flagged_kills"), default=None)
     if val is None:
         return Response({"message": "count_flagged_kills (bool) is required."}, status=400)
     event.count_flagged_kills = val
@@ -19070,7 +19183,7 @@ def set_match_kill_flag(request):
     if err:
         return err
     # count_kills may be explicitly null to clear the override back to "follow event default".
-    flag.count_kills = _as_bool(request.data.get("count_kills"), default=None)
+    flag.count_kills = _as_bool_nullable(request.data.get("count_kills"), default=None)
     flag.save(update_fields=["count_kills"])
     updated = _recompute_team_kills_for_event(event)
     return Response({
@@ -19635,6 +19748,29 @@ def _notify_promoted(event, recipients, display_name):
     )
 
 
+def _apply_no_show_record(event, *, user_obj=None, team_obj=None, value=True, actor=None, source="manual"):
+    """Mirror the is_no_show flag into NoShowRecord history (F1) that powers the repeat-no-show
+    warning. Marking creates ONE STANDING record per (event, target) — idempotent, so re-marking
+    never double-counts; undoing SOFT-CLEARS the standing record(s) (cleared_at = now) so the
+    7-day warning count drops while the audit row survives. team_obj for team events, user_obj for
+    solo. Called by mark_no_show (manual) and confirm-detected-no-show (suggest-then-confirm)."""
+    from .models import NoShowRecord
+    qs = NoShowRecord.objects.filter(event=event, cleared_at__isnull=True)
+    if team_obj is not None:
+        qs = qs.filter(team=team_obj)
+    elif user_obj is not None:
+        qs = qs.filter(user=user_obj)
+    else:
+        return
+    if value:
+        if not qs.exists():
+            NoShowRecord.objects.create(
+                event=event, team=team_obj, user=user_obj, source=source, created_by=actor,
+            )
+    else:
+        qs.update(cleared_at=timezone.now())
+
+
 @api_view(["POST"])
 def mark_no_show(request):
     """POST /events/mark-no-show/  body: { event_id, competitor_id|tournament_team_id, value? }
@@ -19660,6 +19796,7 @@ def mark_no_show(request):
             return Response({"message": "Registered competitor not found."}, status=404)
         reg.is_no_show = bool(value)
         reg.save(update_fields=["is_no_show"])
+        _apply_no_show_record(event, user_obj=reg.user, value=value, actor=user)  # F1 history
         name = reg.user.username if reg.user else f"competitor {cid}"
     else:
         ttid = request.data.get("tournament_team_id")
@@ -19668,6 +19805,7 @@ def mark_no_show(request):
         tt = get_object_or_404(TournamentTeam, tournament_team_id=ttid, event=event)
         tt.is_no_show = bool(value)
         tt.save(update_fields=["is_no_show"])
+        _apply_no_show_record(event, team_obj=tt.team, value=value, actor=user)  # F1 history
         name = tt.team.team_name if tt.team_id else f"team {ttid}"
 
     AdminHistory.objects.create(
@@ -19675,7 +19813,158 @@ def mark_no_show(request):
         description=f"{'Marked' if value else 'Cleared'} no-show for {name} in {event.event_name} (ID: {event.event_id})",
     )
     set_audit(request, f"{'Marked' if value else 'Cleared'} no-show for {name} ({event.event_name})")
-    return Response({"message": f"{'Marked' if value else 'Cleared'} no-show for {name}.", "is_no_show": bool(value)}, status=200)
+    # F1: surface the affected target's fresh warning status so the FE can update the badge inline.
+    warn = _no_show_warning_for(
+        team_ids=[tt.team_id] if event.participant_type != "solo" and tt.team_id else None,
+        user_ids=[reg.user_id] if event.participant_type == "solo" and reg.user_id else None,
+    )
+    return Response({
+        "message": f"{'Marked' if value else 'Cleared'} no-show for {name}.",
+        "is_no_show": bool(value),
+        "warning": warn,
+    }, status=200)
+
+
+# ── No-show warning computation (F1, owner 2026-06-19) ─────────────────────────────────────────
+# A team/player is FLAGGED ("repeat no-show") when it has >= NO_SHOW_WARNING_THRESHOLD STANDING
+# records (cleared_at IS NULL) with occurred_at inside a trailing NO_SHOW_WARNING_DAYS window,
+# counted across ALL events. Returns {"teams": {id: {...}}, "users": {id: {...}}}.
+NO_SHOW_WARNING_DAYS = 7
+NO_SHOW_WARNING_THRESHOLD = 2
+
+
+def _no_show_warning_for(team_ids=None, user_ids=None):
+    from datetime import timedelta
+    from django.db.models import Count, Max, Q
+    from .models import NoShowRecord
+    cutoff = timezone.now() - timedelta(days=NO_SHOW_WARNING_DAYS)
+    out = {"teams": {}, "users": {}}
+
+    def _rows(field, ids):
+        return (NoShowRecord.objects.filter(**{f"{field}__in": list(ids)}, cleared_at__isnull=True)
+                .values(field)
+                .annotate(total=Count("id"),
+                          recent=Count("id", filter=Q(occurred_at__gte=cutoff)),
+                          last=Max("occurred_at")))
+
+    if team_ids:
+        for r in _rows("team_id", team_ids):
+            out["teams"][r["team_id"]] = {
+                "recent_count": r["recent"], "total": r["total"],
+                "is_warning": r["recent"] >= NO_SHOW_WARNING_THRESHOLD,
+                "last_occurred": r["last"],
+            }
+    if user_ids:
+        for r in _rows("user_id", user_ids):
+            out["users"][r["user_id"]] = {
+                "recent_count": r["recent"], "total": r["total"],
+                "is_warning": r["recent"] >= NO_SHOW_WARNING_THRESHOLD,
+                "last_occurred": r["last"],
+            }
+    return out
+
+
+@api_view(["POST"])
+def get_no_show_warnings(request):
+    """POST /events/no-show-warnings/  body {team_ids?:[int], user_ids?:[int]}
+    Bulk no-show warning status for badges (mirrors the blacklist-counts bulk pattern). Auth: AFC
+    admin OR any active organization member — no-show reputation is staff/organizer-only info and the
+    badges only render on admin/organizer surfaces, so a regular player must not be able to enumerate
+    other teams'/users' no-show counts (adversarial-review fix, owner 2026-06-19).
+    Consumed by FE useNoShowWarnings -> NoShowWarningBadge (RegisteredTeamsTab rows + admin Teams)."""
+    auth = request.headers.get("Authorization") or ""
+    user = validate_token(auth.split(" ")[1]) if auth.startswith("Bearer ") else None
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    from afc_organizers.models import OrganizationMember
+    is_organizer = OrganizationMember.objects.filter(user=user, status="active").exists()
+    if not (_is_event_admin(user) or is_organizer):
+        return Response({"message": "You do not have permission to view no-show reputation."}, status=403)
+    team_ids = [int(x) for x in (request.data.get("team_ids") or []) if str(x).isdigit()]
+    user_ids = [int(x) for x in (request.data.get("user_ids") or []) if str(x).isdigit()]
+    return Response(_no_show_warning_for(team_ids=team_ids, user_ids=user_ids), status=200)
+
+
+@api_view(["POST"])
+def detect_no_shows(request):
+    """POST /events/detect-no-shows/  body { event_id, stage_id? }
+    SUGGEST-ONLY (owner decision): list registered, ACTIVE, non-waitlisted competitors that have
+    ZERO results entered for the event (or a given stage) — i.e. they look like no-shows. Does NOT
+    set any flag; the admin/organizer confirms each via mark-no-show. Gate: event admin OR organizer
+    who can edit the event. Consumed by the FE "Check for no-shows" suggestions panel."""
+    user, event, err = _waitlist_gate(request)
+    if err:
+        return err
+    stage_id = request.data.get("stage_id")
+    from .models import StageGroupCompetitor, TournamentTeamMatchStats
+    suggestions = []
+
+    if event.participant_type != "solo":
+        sgc = StageGroupCompetitor.objects.filter(
+            stage_group__stage__event=event, status="active",
+            tournament_team__isnull=False,
+            tournament_team__is_no_show=False, tournament_team__is_waitlisted=False,
+        ).select_related("tournament_team__team")
+        played = TournamentTeamMatchStats.objects.filter(match__group__stage__event=event)
+        if stage_id:
+            sgc = sgc.filter(stage_group__stage_id=stage_id)
+            played = played.filter(match__group__stage_id=stage_id)
+        played_ids = set(played.values_list("tournament_team_id", flat=True))
+        # Head-to-Head / bracket stages keep in-progress results in HeadToHeadMatch and only write
+        # synthetic TournamentTeamMatchStats when the bracket COMPLETES, so a team that already played
+        # (and lost) a live/completed H2H match has no TTMS row yet. Count those teams as "played" too,
+        # otherwise they're falsely suggested as no-shows (adversarial-review fix, owner 2026-06-19).
+        from .models import HeadToHeadMatch
+        h2h_q = HeadToHeadMatch.objects.filter(stage__event=event, status__in=["live", "completed"])
+        if stage_id:
+            h2h_q = h2h_q.filter(stage_id=stage_id)
+        for a_id, b_id in h2h_q.values_list("team_a_id", "team_b_id"):
+            if a_id:
+                played_ids.add(a_id)
+            if b_id:
+                played_ids.add(b_id)
+        seen = set()
+        for row in sgc:
+            tt = row.tournament_team
+            if not tt or tt.tournament_team_id in seen:
+                continue
+            seen.add(tt.tournament_team_id)
+            if tt.tournament_team_id not in played_ids:
+                suggestions.append({
+                    "tournament_team_id": tt.tournament_team_id,
+                    "name": tt.team.team_name if tt.team_id else f"team {tt.tournament_team_id}",
+                })
+    else:
+        # Solo: registered active non-waitlisted players with no solo stats.
+        from .models import SoloPlayerMatchStats
+        sgc = StageGroupCompetitor.objects.filter(
+            stage_group__stage__event=event, status="active", player__isnull=False,
+        ).select_related("player__user")
+        played = SoloPlayerMatchStats.objects.filter(match__group__stage__event=event)
+        if stage_id:
+            sgc = sgc.filter(stage_group__stage_id=stage_id)
+            played = played.filter(match__group__stage_id=stage_id)
+        # SoloPlayerMatchStats keys the player by its `competitor` FK (RegisteredCompetitors pk),
+        # NOT a `player` field — so collect competitor_id and compare against the RegisteredCompetitors
+        # pk (row.player is the RegisteredCompetitors instance, .id is that pk). The earlier code used
+        # `player_id`, which raised FieldError and (under the old broad except) silently returned zero
+        # suggestions for EVERY solo event. Fixed 2026-06-19 (adversarial review).
+        played_ids = set(played.values_list("competitor_id", flat=True))
+        seen = set()
+        for row in sgc:
+            reg = row.player
+            if not reg or reg.id in seen:
+                continue
+            seen.add(reg.id)
+            if getattr(reg, "is_no_show", False) or getattr(reg, "is_waitlisted", False):
+                continue
+            if reg.id not in played_ids:
+                suggestions.append({
+                    "competitor_id": reg.user_id,
+                    "name": reg.user.username if reg.user_id else f"competitor {reg.id}",
+                })
+
+    return Response({"suggestions": suggestions, "count": len(suggestions)}, status=200)
 
 
 def _promote_competitor(event, *, competitor_id=None, tournament_team_id=None):

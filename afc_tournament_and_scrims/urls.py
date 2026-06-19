@@ -47,6 +47,7 @@ from .seeding_management import (
     reseed_into_groups,
     delete_group_managed,
     delete_stage_managed,
+    move_team_between_groups,
 )
 from .views_event_graphic import event_stage_graphic
 from django.conf import settings
@@ -169,6 +170,8 @@ urlpatterns = [
     path('seeding/reseed/', reseed_into_groups, name='seeding_reseed'),
     path('seeding/delete-group/', delete_group_managed, name='seeding_delete_group'),
     path('seeding/delete-stage/', delete_stage_managed, name='seeding_delete_stage'),
+    # F2 (owner 2026-06-19): move a team/player between groups in a stage (drag-and-drop).
+    path('seeding/move-team/', move_team_between_groups, name='seeding_move_team'),
     # Reorder stages / groups (manual drag-to-arrange, owner 2026-06-15). Default order=0 means
     # "auto-arrange by date/time"; these endpoints write 1-based orders that override the date sort
     # (and return a `warning` when the manual order diverges from the schedule). Views
@@ -251,6 +254,9 @@ urlpatterns = [
     path("search/", search_events, name="search_events"),
     # Waitlist no-show + promotion (owner 2026-06-17). See mark_no_show / promote_from_waitlist / promote_next_waitlist.
     path("mark-no-show/", mark_no_show, name="mark_no_show"),
+    # F1 no-show reputation (owner 2026-06-19): bulk warning badges + suggest-only detection.
+    path("no-show-warnings/", get_no_show_warnings, name="get_no_show_warnings"),
+    path("detect-no-shows/", detect_no_shows, name="detect_no_shows"),
     path("promote-from-waitlist/", promote_from_waitlist, name="promote_from_waitlist"),
     path("promote-next-waitlist/", promote_next_waitlist, name="promote_next_waitlist"),
     # Pause / resume a started stage (Actions tab Start -> Pause/Resume). See set_stage_status.
