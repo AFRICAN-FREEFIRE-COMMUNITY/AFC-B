@@ -68,21 +68,15 @@ GEMINI_MODEL_DEFAULT = "gemini-2.5-flash"
 #     translate_batch() skip the API entirely and return the ORIGINAL English with ZERO network cost.
 #     It SELF-HEALS: once the TTL lapses the next miss tries the API again, so dropping in a working
 #     key resumes translation within ~5 min (or clear the cache key "afc:translation:engine_down").
-# Manual kill switch: settings.TRANSLATION_ENABLED = False (or an empty GEMINI_API_KEY) forces English
-# immediately with no cache/network work at all. See _translation_enabled().
+# IMPORTANT - clearing or expiring the key does NOT wipe existing translations. translate() /
+# translate_batch() always check TranslationCache FIRST and serve any stored translation with NO API
+# call (the key is only needed to CREATE a new translation). So an empty / expired / over-quota key
+# only affects cache MISSES (brand-new, never-translated content), which fall back to the original
+# English; set a valid key again and new content translates on first view and caches. There is no
+# cache-skipping kill switch - that would needlessly blank already-translated content.
 _GEMINI_TIMEOUT = (5, 15)          # (connect, read) seconds — replaces the old hang-prone 60s
 _ENGINE_DOWN_KEY = "afc:translation:engine_down"
 _ENGINE_DOWN_TTL = 300             # seconds the breaker stays open after a failure (5 min, self-heals)
-
-
-def _translation_enabled() -> bool:
-    """Master on/off for machine translation. Returns False when there is no usable key (so an expired
-    key that ops has CLEARED, or a never-configured key, instantly serves English) or when ops sets
-    settings.TRANSLATION_ENABLED = False. Lets translation be disabled with no deploy. Read at the top
-    of translate() / translate_batch()."""
-    if not (getattr(settings, "GEMINI_API_KEY", "") or ""):
-        return False
-    return getattr(settings, "TRANSLATION_ENABLED", True) is not False
 
 
 def _engine_down() -> bool:
