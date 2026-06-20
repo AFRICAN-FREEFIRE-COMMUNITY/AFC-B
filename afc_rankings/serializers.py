@@ -73,6 +73,9 @@ def team_monthly(s):
         "rank": s.rank,
         "team_id": s.team_id,
         "team_name": _team_name(s),
+        # Team country (Team.country) so the rankings UI can show a flag beside the name; None for
+        # ghost rows (no real Team). No extra query - the view select_relateds team. (owner 2026-06-20)
+        "country": (s.team.country if s.team_id else None),
         "is_ghost": bool(getattr(s, "ghost_team_id", None)),
         # ghost-claim hints (NULL for real rows): let the FE target request-claim + hide the
         # button once not unclaimed. See _ghost_team_claim above.
@@ -94,6 +97,9 @@ def team_quarterly(s):
         "rank": s.rank,
         "team_id": s.team_id,
         "team_name": _team_name(s),
+        # Team country (Team.country) so the rankings UI can show a flag beside the name; None for
+        # ghost rows (no real Team). No extra query - the view select_relateds team. (owner 2026-06-20)
+        "country": (s.team.country if s.team_id else None),
         "is_ghost": bool(getattr(s, "ghost_team_id", None)),
         # ghost-claim hints (NULL for real rows): see _ghost_team_claim above.
         "ghost_team_id": gid,

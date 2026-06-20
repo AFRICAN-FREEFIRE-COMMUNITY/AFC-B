@@ -88,6 +88,13 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # a Pro key uses api.deepl.com). Set in the environment (DEEPL_API_KEY), never hardcoded.
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY")
 
+# Google Sign-In (owner 2026-06-20) - the OAuth 2.0 "Web application" Client ID used to VERIFY the
+# Google ID token that the frontend's "Continue with Google" button produces (afc_auth.views.
+# google_auth). It is the SAME id the frontend ships as NEXT_PUBLIC_GOOGLE_CLIENT_ID. Public value,
+# but kept in the environment so local/prod can differ. When unset, google_auth returns a clean
+# "not configured" 400 and the rest of auth is unaffected.
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',

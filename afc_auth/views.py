@@ -778,6 +778,171 @@ def login(request):
         }, status=status.HTTP_401_UNAUTHORIZED)
 
 
+def _unique_username_from_email(email):
+    """Derive a unique, <=40-char username from a Google email local-part.
+
+    Google SSO users never chose a username, but the User model requires a unique
+    one. Slugify the email local-part to [a-z0-9_], then append -2, -3, ... until
+    it is free. Called only by google_auth (below).
+    """
+    import re as _re
+    base = _re.sub(r"[^a-z0-9_]", "", email.split("@")[0].lower()) or "player"
+    base = base[:40]
+    candidate = base
+    n = 1
+    while User.objects.filter(username=candidate).exists():
+        n += 1
+        suffix = f"-{n}"
+        candidate = (base[: 40 - len(suffix)]) + suffix
+    return candidate
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Sign-In (owner 2026-06-20)
+#
+# PURPOSE
+#   "Continue with Google" for BOTH sign up and sign in. Uses the Google Identity
+#   Services (GIS) ID-TOKEN flow: the React login/register pages render Google's
+#   button, the user authenticates with Google in a popup, and Google hands the
+#   browser a signed JWT ID token. The frontend POSTs that token here as
+#   `credential`; we verify it against our Google OAuth Client ID, then find-or-
+#   create the AFC user by email and issue our own SessionToken - the SAME token
+#   the password `login` view returns, so the rest of the app is unchanged.
+#
+#   No password is involved: Google has already verified the email, so a brand-new
+#   Google user is created already-active (skips email confirmation) with an
+#   unusable password. An existing email (whether they first signed up with a
+#   password or with Google) simply logs in - email is the account link key.
+#
+# AUTH     : none (this IS the login). Trust comes from the Google signature check.
+# REQUEST  : POST /auth/google/  JSON { "credential": "<google id token>" }
+# RESPONSE : 200 { message, session_token, user{id,username,language}, geo, is_new }
+#            400 missing credential / Google SSO not configured on server
+#            401 invalid/unverifiable Google token or unverified email
+#            403 account not active
+# CONFIG   : settings.GOOGLE_OAUTH_CLIENT_ID (env GOOGLE_OAUTH_CLIENT_ID) - the
+#            SAME client id the frontend uses (NEXT_PUBLIC_GOOGLE_CLIENT_ID).
+# FRONTEND : app/(auth)/login + app/(auth)/register "Continue with Google" button
+#            (components/auth/GoogleSignInButton.tsx -> AuthContext.loginWithGoogle).
+# RELATED  : mirrors the SessionToken issuance + geo/language block in `login`.
+# ─────────────────────────────────────────────────────────────────────────────
+@api_view(["POST"])
+def google_auth(request):
+    credential = request.data.get("credential") or request.data.get("id_token")
+    if not credential:
+        return Response({"message": "Google credential is required."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    client_id = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", None)
+    if not client_id:
+        return Response({"message": "Google sign-in is not configured on the server."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    # ── verify the Google ID token signature + audience (google-auth) ──────────
+    # verify_oauth2_token checks the JWT signature against Google's public keys,
+    # the issuer (accounts.google.com), the audience (our client_id) and expiry.
+    try:
+        from google.oauth2 import id_token as google_id_token
+        from google.auth.transport import requests as google_requests
+        claims = google_id_token.verify_oauth2_token(
+            credential, google_requests.Request(), client_id
+        )
+    except Exception:
+        return Response({"message": "Could not verify your Google sign-in. Please try again."},
+                        status=status.HTTP_401_UNAUTHORIZED)
+
+    # Email must be present AND Google-verified before we trust it as an identity.
+    email = (claims.get("email") or "").strip().lower()
+    if not email or not claims.get("email_verified", False):
+        return Response({"message": "Your Google account has no verified email."},
+                        status=status.HTTP_401_UNAUTHORIZED)
+
+    full_name = (claims.get("name") or "").strip()[:40]
+
+    # ── find-or-create the AFC user by email (email is the unique link key) ─────
+    is_new = False
+    user = User.objects.filter(email__iexact=email).first()
+    if user is None:
+        is_new = True
+        user = User(
+            email=email,
+            full_name=full_name or email.split("@")[0][:40],
+            username=_unique_username_from_email(email),
+            role="player",
+            is_active=True,   # Google already verified the email -> skip confirmation
+            status="active",
+            has_completed_onboarding=False,  # genuinely new -> show the first-login onboarding
+        )
+        user.set_unusable_password()  # SSO account: no local password to check
+        user.save()
+        UserProfile.objects.get_or_create(user=user)
+
+    # Respect account state exactly like the password login path does.
+    if not user.is_active:
+        return Response({"message": "Your account is not active. Please contact support."},
+                        status=status.HTTP_403_FORBIDDEN)
+
+    # ── issue our SessionToken (mirrors the password login view) ────────────────
+    SessionToken.objects.filter(user=user).delete()
+    session_token = generate_session_token()
+    SessionToken.objects.create(user=user, token=session_token)
+    user.last_login = timezone.now()
+    user.save(update_fields=["last_login"])
+
+    # Login history + once-a-day geo + first-login language detect (same as login).
+    ip = get_client_ip(request)
+    today = timezone.localdate()
+    cached = (LoginHistory.objects
+              .filter(user=user, created_at__date=today)
+              .exclude(country__isnull=True).exclude(country="")
+              .order_by("created_at").first())
+    if cached:
+        response = {"country": cached.country, "city": cached.city, "region": cached.region,
+                    "timezone": cached.timezone, "org": cached.org, "cached": True}
+        org = cached.org
+        is_vpn = cached.is_vpn
+    else:
+        response = geo_for_ip(ip)
+        org = response.get("org")
+        is_vpn = looks_like_vpn(org)
+    LoginHistory.objects.create(
+        user=user, ip_address=ip, user_agent=request.META.get("HTTP_USER_AGENT", ""),
+        country=response.get("country"), city=response.get("city"),
+        region=response.get("region"), timezone=response.get("timezone"),
+        org=org, is_vpn=is_vpn,
+    )
+    try:
+        detected_country = response.get("country")
+        if not user.language and detected_country:
+            user.language = language_for_country(detected_country)
+            user.save(update_fields=["language"])
+    except Exception:
+        pass
+
+    # Welcome email for a brand-new Google account (owner 2026-06-20). Google users skip the
+    # email-verification step (no code), so they would otherwise never get the welcome that
+    # verify_code sends to password signups. Same email_welcome builder + send_email chokepoint,
+    # localized to the user's language. Best-effort: a mail hiccup must NOT fail the sign-in.
+    if is_new:
+        try:
+            send_email(
+                user.email,
+                "Welcome to African Free Fire Community",
+                email_welcome(user.username),
+                language=user.language or "en",
+            )
+        except Exception:
+            pass
+
+    return Response({
+        "message": "Login successful",
+        "session_token": session_token,
+        "user": {"id": user.user_id, "username": user.username, "language": user.language or "en"},
+        "geo": response,
+        "is_new": is_new,
+    }, status=status.HTTP_200_OK)
+
+
 @api_view(["POST"])
 def signup(request):
     in_game_name = request.data.get("in_game_name")
@@ -880,13 +1045,17 @@ def signup(request):
                     stale_unverified.delete()
 
                 # Create new user (is_active=False → unverified until verify_code runs).
+                # has_completed_onboarding=False: a genuinely new account, so it gets the
+                # first-login onboarding once they verify + sign in (owner 2026-06-20). The
+                # field defaults True for the existing userbase; new signups opt IN here.
                 user = User.objects.create(
                     username=in_game_name,
                     uid=uid if uid else None,
                     email=email,
                     is_active=False,
                     full_name=full_name,
-                    country=country
+                    country=country,
+                    has_completed_onboarding=False,
                 )
                 user.set_password(password)
                 user.save()
@@ -2081,15 +2250,23 @@ def get_user_profile(request):
     total_tournaments_played = Event.objects.filter(event_id__in=all_event_ids, competition_type="tournament").count()
     total_scrims_played = Event.objects.filter(event_id__in=all_event_ids, competition_type="scrims").count()
 
+    # ---------------- CURRENT TEAM (live roster) ----------------
+    # Owner bug 2026-06-20: this endpoint used to read user.team, a field that does NOT
+    # exist on the User model, so getattr(user, "team", None) was ALWAYS None -> the "team"
+    # response field was always null and total_earnings always 0. The source of truth for a
+    # player's CURRENT team is afc_team.TeamMembers (unique one-team-per-member), the same
+    # source the team roster, public profile, and the fixed afc_player endpoints use. Resolve
+    # it once here and reuse for both the earnings fallback and the "team" field below.
+    _current_member = TeamMembers.objects.filter(member=user).select_related("team").first()
+    _current_team = _current_member.team if _current_member else None
+
     # ---------------- TOTAL EARNINGS ----------------
-    # I don’t see a User.total_earnings field in what you sent.
-    # So we do a safe fallback:
-    # - If user has a team and that Team has total_earnings, use it
-    # - Else 0
+    # Original documented intent: if the player has a team and that Team has total_earnings,
+    # use it; else 0. (Now sourced from the live-roster team instead of the broken user.team.)
     total_earnings = 0
     try:
-        if getattr(user, "team", None) and hasattr(user.team, "total_earnings"):
-            total_earnings = user.team.total_earnings or 0
+        if _current_team is not None and _current_team.total_earnings is not None:
+            total_earnings = _current_team.total_earnings or 0
     except Exception:
         total_earnings = 0
 
@@ -2133,7 +2310,8 @@ def get_user_profile(request):
         # and UID inputs when this is True; edit_profile enforces the same rule server-side. See
         # _has_active_event_registration. Releases once all their events are completed.
         "identity_locked": _has_active_event_registration(user),
-        "team": user.team.team_name if getattr(user, "team", None) else None,
+        # CURRENT team name from the live roster (resolved above), not the nonexistent user.team.
+        "team": _current_team.team_name if _current_team else None,
         # Name of a team this user OWNS that has no logo (or null). Drives the team-logo half of the
         # profile-completion reminder; the FE links it to that team's page so the owner can add a logo.
         "team_without_logo": _team_without_logo,
@@ -2148,6 +2326,12 @@ def get_user_profile(request):
         # and WelcomeTour.tsx auto-shows the animated newcomer tour only while this is False. Flipped
         # True by POST /auth/mark-welcome-seen/ (mark_welcome_seen) when the user finishes/skips it.
         "has_seen_welcome": user.has_seen_welcome,
+        # One-time NEW-USER ONBOARDING flag (owner 2026-06-20). False for a brand-new account;
+        # the frontend AuthContext sends a first-login user with this False to /onboarding (the
+        # skippable upload-your-requirements flow). Flipped True by POST /auth/complete-onboarding/
+        # on Finish OR Skip. The onboarding steps read uid / profile_pic / esport_image_url (above)
+        # to show which requirements are already satisfied.
+        "has_completed_onboarding": user.has_completed_onboarding,
         # One-time dashboard intro callouts: {"sponsor": true, ...} once each is dismissed. The
         # frontend DashboardIntroCoachmark shows a "here is where your new dashboard lives" callout
         # for any accessible dashboard whose key is missing, then flips it via
@@ -2339,6 +2523,23 @@ def upload_esport_image(request):
     if not esport_image:
         return Response({"message": "esport_image file is required."},
                         status=status.HTTP_400_BAD_REQUEST)
+
+    # ── Human-picture gate (owner 2026-06-20) ───────────────────────────────────
+    # Stop players uploading random gallery items (logos, screenshots, memes) as
+    # their esport image. Runs a FREE, fully-local OpenCV face detector (no paid AI
+    # API) - see afc_auth.face_check.image_has_human_face. Fails OPEN: if the
+    # detector is unavailable or errors it returns True, so it can never wrongly
+    # block a legitimate upload; it only rejects images where it is confident there
+    # is no human face. The React profile-edit "Esport Image" widget shows this 400
+    # message as a toast.
+    from .face_check import image_has_human_face
+    has_face, _why = image_has_human_face(esport_image)
+    if not has_face:
+        return Response(
+            {"message": "We couldn't find a person in that image. Your esport image must be a "
+                        "clear photo of you (a bust shot). Please upload a real picture of yourself."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     profile, _created = UserProfile.objects.get_or_create(user=user)
     profile.esports_pic = esport_image  # replace-only: the old file reference is overwritten
