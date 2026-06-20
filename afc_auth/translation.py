@@ -4,13 +4,13 @@
 #
 # WHAT THIS IS:
 #   A small, failure-safe layer that translates English UI strings and content into French / Portuguese
-#   using Gemini, with a persistent DB cache so repeat translations cost zero API calls. It is the
+#   using DeepL, with a persistent DB cache so repeat translations cost zero API calls. It is the
 #   single place the rest of the backend goes through to localize text - no other module should call
-#   Gemini for translation directly.
+#   the translation engine directly. (Gemini is used ONLY for OCR now, in afc_ocr/services/gemini.py.)
 #
 # PUBLIC API (what callers import):
 #   translate(text, target, source="en") -> str            single string, cached
-#   translate_batch(texts, target, source="en") -> list    many strings in ONE Gemini call (rate-friendly)
+#   translate_batch(texts, target, source="en") -> list    many strings in ONE DeepL batch (rate-friendly)
 #   translate_richtext(doc, target, source="en") -> doc    Tiptap JSON doc, translates only text leaves
 #   translate_html(html, target, source="en") -> str       HTML email body, translates only visible text
 #   localize_field(data, key, value, target, ...) -> data  TRANSLATE-ON-READ: write data[key] + data[key_en]
@@ -18,11 +18,11 @@
 #   lang_name(code) -> str                                  "fr" -> "French", "pt" -> "Portuguese"
 #
 # HOW IT CONNECTS END TO END:
-#   - Engine     : Gemini, same REST shape as afc_ocr/services/gemini.py
-#                  (POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key=KEY),
-#                  using settings.GEMINI_API_KEY + settings.GEMINI_MODEL (defaults to gemini-2.5-flash).
+#   - Engine     : DeepL v2 (POST {api-free|api}.deepl.com/v2/translate, header Authorization:
+#                  DeepL-Auth-Key), using settings.DEEPL_API_KEY. A FREE key ends in ":fx" and is
+#                  auto-routed to the free host. Native batch (<=50 texts/request); fr -> FR, pt -> PT-PT.
 #   - Cache      : afc_auth.models.TranslationCache. Key = sha256(source_text + target_lang). A hit
-#                  returns instantly and NEVER calls the API; a miss calls Gemini, stores, returns.
+#                  returns instantly and NEVER calls the API; a miss calls DeepL, stores, returns.
 #   - Locale in  : callers decide the target language from afc_auth.locale_middleware.get_locale(request)
 #                  (Accept-Language header) or from afc_auth.models.User.language (the user's saved
 #                  preference, set in afc_auth Phase 0 - see User.LANGUAGE_CHOICES / language_utils.py).
@@ -43,13 +43,17 @@ from django.core.cache import cache  # circuit-breaker store (Redis db 1) — se
 
 logger = logging.getLogger(__name__)
 
-# Gemini endpoint template - identical shape to afc_ocr/services/gemini.py so ops only configures one
-# key/model pair. We resolve the model at call time from settings so GEMINI_MODEL env can switch
-# Flash<->Pro without a code change (Flash is the sensible default: fast + cheap for short UI text).
-GEMINI_URL_TMPL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-)
-GEMINI_MODEL_DEFAULT = "gemini-2.5-flash"
+# Translation engine = DeepL (owner 2026-06-20). Gemini is used ONLY for OCR now (afc_ocr/services/
+# gemini.py); this module no longer calls Gemini at all. DeepL is purpose-built for translation, has a
+# generous free tier, and (cache-first below) costs ~nothing. The host depends on the KEY TYPE: a FREE
+# key ends in ":fx" and MUST use api-free.deepl.com; a Pro key uses api.deepl.com (wrong host -> 403).
+DEEPL_FREE_HOST = "https://api-free.deepl.com"
+DEEPL_PRO_HOST = "https://api.deepl.com"
+# DeepL accepts up to 50 `text` params per request; we chunk cache-misses to stay under that.
+DEEPL_MAX_BATCH = 50
+# Our 2-letter locale -> DeepL target-language code. African Lusophone (Angola/Mozambique) uses
+# European Portuguese, so pt -> PT-PT. English is never a target (we only translate AWAY from English).
+DEEPL_LANG = {"fr": "FR", "pt": "PT-PT"}
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # ENGINE RESILIENCE (owner 2026-06-20): an expired / invalid / over-quota key must NEVER stall the site
@@ -62,7 +66,7 @@ GEMINI_MODEL_DEFAULT = "gemini-2.5-flash"
 #   2. With no breaker, EVERY cache-miss string re-hit the dead key (one network round trip each, per
 #      field, per request, forever), so fr/pt reads stayed slow until the key was fixed.
 # The two guards below make the site instant + English the moment the engine is unhealthy:
-#   • _GEMINI_TIMEOUT  - (connect, read) seconds: fail fast instead of hanging a worker.
+#   • _DEEPL_TIMEOUT   - (connect, read) seconds: fail fast instead of hanging a worker.
 #   • circuit breaker  - the first engine-level failure (bad/expired key, quota, network, timeout)
 #     "trips" a flag in the Django cache for _ENGINE_DOWN_TTL seconds; while tripped, translate() /
 #     translate_batch() skip the API entirely and return the ORIGINAL English with ZERO network cost.
@@ -74,7 +78,7 @@ GEMINI_MODEL_DEFAULT = "gemini-2.5-flash"
 # only affects cache MISSES (brand-new, never-translated content), which fall back to the original
 # English; set a valid key again and new content translates on first view and caches. There is no
 # cache-skipping kill switch - that would needlessly blank already-translated content.
-_GEMINI_TIMEOUT = (5, 15)          # (connect, read) seconds — replaces the old hang-prone 60s
+_DEEPL_TIMEOUT = (5, 15)           # (connect, read) seconds: fail fast; never hang a worker
 _ENGINE_DOWN_KEY = "afc:translation:engine_down"
 _ENGINE_DOWN_TTL = 300             # seconds the breaker stays open after a failure (5 min, self-heals)
 
@@ -89,9 +93,9 @@ def _engine_down() -> bool:
 
 
 def _trip_breaker():
-    """Open the breaker for _ENGINE_DOWN_TTL seconds so the next reads skip Gemini and serve the
+    """Open the breaker for _ENGINE_DOWN_TTL seconds so the next reads skip the engine and serve the
     original English instantly (no per-request network cost). Called ONLY for engine-level failures
-    (bad/expired key, quota 429, network error, timeout, 5xx) - never for a one-off content rejection.
+    (bad/expired key, quota, rate-limit, network error, timeout, 5xx) - never a one-off content reject.
     Best-effort: a cache write failure is swallowed (we just keep paying round trips until it recovers)."""
     try:
         cache.set(_ENGINE_DOWN_KEY, True, _ENGINE_DOWN_TTL)
@@ -99,8 +103,8 @@ def _trip_breaker():
         pass
 
 
-# Map our 2-letter locale codes to the full language name Gemini expects in the prompt. Mirrors
-# afc_auth.models.User.LANGUAGE_CHOICES (en/fr/pt). Used by lang_name() and the prompt builders.
+# Map our 2-letter locale codes to a human language name. Mirrors afc_auth.models.User.LANGUAGE_CHOICES
+# (en/fr/pt). Used by lang_name() for display/logging (DeepL itself uses the codes in DEEPL_LANG above).
 LANG_NAMES = {
     "en": "English",
     "fr": "French",
@@ -115,13 +119,6 @@ def lang_name(code) -> str:
     return LANG_NAMES.get((code or "").lower(), code or "English")
 
 
-def _effective_model() -> str:
-    """The Gemini model id actually used per call: settings.GEMINI_MODEL when set, else the Flash
-    default. Read by every API-calling helper below. Same resolution rule as
-    afc_ocr.services.gemini.effective_model() so both layers track the same ops setting."""
-    return getattr(settings, "GEMINI_MODEL", None) or GEMINI_MODEL_DEFAULT
-
-
 def _cache_key(text: str, target: str) -> str:
     """sha256 hex of (source_text + target_lang). Folding the target lang into the hash input means
     the same English string requested for 'fr' and 'pt' produce different keys, so the two cached
@@ -129,77 +126,72 @@ def _cache_key(text: str, target: str) -> str:
     return hashlib.sha256(f"{text}{target}".encode("utf-8")).hexdigest()
 
 
-def _call_gemini(prompt: str) -> str:
-    """Low-level Gemini text call. Returns the raw model text (stripped of markdown fences). Raises on
-    any failure - callers (translate / translate_batch) are responsible for the failure-safe fallback,
-    so this stays a thin, single-responsibility wrapper. Mirrors the request/response handling in
-    afc_ocr.services.gemini.call_gemini but for a text-only prompt."""
-    api_key = getattr(settings, "GEMINI_API_KEY", "") or ""
+def _call_deepl(texts, target, source="en"):
+    """Low-level DeepL batch call: translate `texts` (a list of non-empty strings) into `target`,
+    returning a list of translations aligned 1:1 with the input order. Raises on ANY failure - the
+    callers (translate / translate_batch) own the failure-safe fallback to the original text.
+
+    Trips the circuit breaker on engine-level failures (bad/expired key, quota, rate-limit, outage,
+    network/timeout) so a dead key stops costing a network round trip per request. NEVER echoes the
+    raw exception (it can carry the auth key): always raises a key-free RuntimeError."""
+    api_key = getattr(settings, "DEEPL_API_KEY", "") or ""
     if not api_key:
-        # No key configured -> let the caller fall back to the original text.
-        raise ValueError("GEMINI_API_KEY is not configured in settings.")
+        # No key configured -> let the caller fall back to the original text(s).
+        raise ValueError("DEEPL_API_KEY is not configured in settings.")
 
-    # Circuit breaker: a recent engine-level failure (e.g. an expired key) is "open" for a few minutes.
-    # While open we do NOT pay another network round trip - bail immediately so the caller (translate /
-    # translate_batch) falls back to the original English. This is what keeps a dead key from re-stalling
-    # every request. The breaker self-heals when its cache TTL lapses (next miss tries the API again).
+    # Circuit breaker: a recent engine-level failure (e.g. an expired key) is "open" for a few minutes;
+    # while open we do NOT pay another round trip - bail so the caller falls back to English. Self-heals
+    # when the cache TTL lapses (the next miss tries the API again).
     if _engine_down():
-        raise RuntimeError("Gemini translate skipped: engine circuit-breaker is open.")
+        raise RuntimeError("DeepL translate skipped: engine circuit-breaker is open.")
 
-    url = GEMINI_URL_TMPL.format(model=_effective_model(), api_key=api_key)
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        # Low temperature: translation should be deterministic, not creative.
-        "generationConfig": {"temperature": 0.1},
+    # A FREE key (":fx" suffix) MUST use the free host; a Pro key the pro host. Wrong host -> 403.
+    host = DEEPL_FREE_HOST if api_key.endswith(":fx") else DEEPL_PRO_HOST
+    target_code = DEEPL_LANG.get((target or "").lower(), (target or "").upper())
+    data = {
+        # requests serialises a list value as repeated `text=` params -> DeepL's native batch (<=50).
+        "text": list(texts),
+        "target_lang": target_code,
+        "source_lang": (source or "en").upper(),
+        # Keep our exact spacing/case around short UI strings; don't let DeepL "tidy" them.
+        "preserve_formatting": "1",
     }
+    headers = {"Authorization": f"DeepL-Auth-Key {api_key}"}
 
-    # Short (connect, read) timeout instead of the old 60s: a slow/unreachable engine must fail fast so
-    # it can never hold a gunicorn worker past the prod request timeout. A network-level failure (DNS,
-    # refused, timeout) means the engine is unreachable -> trip the breaker, then fall back to English.
+    # Short (connect, read) timeout so a slow/unreachable engine fails fast and can never hold a worker
+    # past the prod request timeout. A network-level failure means the engine is unreachable -> trip.
     try:
-        resp = requests.post(url, json=payload, timeout=_GEMINI_TIMEOUT)
+        resp = requests.post(f"{host}/v2/translate", data=data, headers=headers, timeout=_DEEPL_TIMEOUT)
     except requests.RequestException:
         _trip_breaker()
-        # Do not echo the exception (its message can embed the ?key=... URL): raise a key-free error.
-        raise RuntimeError("Gemini translate request failed: engine unreachable.") from None
+        raise RuntimeError("DeepL translate request failed: engine unreachable.") from None
 
-    try:
-        resp.raise_for_status()
-    except requests.HTTPError:
-        # NEVER let the raw HTTPError propagate: requests embeds the full URL (which carries
-        # ?key=<GEMINI_API_KEY>) in its message. Re-raise a key-free RuntimeError keeping Gemini's
-        # own error detail, exactly as afc_ocr.services.gemini.call_gemini does.
+    if resp.status_code != 200:
+        # Engine-level codes that open the breaker: 403 (bad key / wrong free-vs-pro host), 429 (rate
+        # limit), 456 (monthly quota exhausted), 5xx (outage). A 400 is usually a bad param/content
+        # issue, not the engine being down, so it does NOT trip.
+        code = resp.status_code
+        if code in (403, 429, 456) or code >= 500:
+            _trip_breaker()
         detail = ""
         try:
-            detail = ((resp.json().get("error") or {}).get("message") or "")[:300]
+            detail = (resp.json().get("message") or "")[:300]
         except Exception:
             pass
-        # Engine-level failures trip the breaker so we stop hammering a dead key and serve English
-        # instantly: 401/403 (invalid/expired/disabled key), 429 (quota), 5xx (Gemini outage), and a
-        # 400 ONLY when it is clearly a key problem (Gemini says "API key ...") rather than a one-off
-        # content rejection. An expired key returns exactly these, which is the case the owner hit.
-        code = resp.status_code
-        if code in (401, 403, 429) or code >= 500 or (code == 400 and "key" in detail.lower()):
-            _trip_breaker()
         raise RuntimeError(
-            f"Gemini translate request failed with HTTP {code}"
-            + (f": {detail}" if detail else "")
+            f"DeepL translate failed with HTTP {code}" + (f": {detail}" if detail else "")
         ) from None
 
-    # Defensive parse: a safety-blocked or empty candidate has no parts[].text, which would KeyError.
-    # Surface that as a clean error so the caller falls back to the original text.
-    data = resp.json()
+    # DeepL returns translations in input order, so no fragile re-matching is needed.
     try:
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError("Gemini returned no translatable text (empty or blocked candidate).") from None
+        out = [t["text"] for t in resp.json()["translations"]]
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise RuntimeError("DeepL returned an unreadable response.") from None
 
-    # Strip markdown fences if the model wrapped its reply in ```...``` (same cleanup as the OCR layer).
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1] if lines and lines[-1] == "```" else lines[1:])
-
-    return text.strip()
+    if len(out) != len(texts):
+        # A mismatched count means we cannot safely map results back -> fail so callers keep originals.
+        raise RuntimeError("DeepL returned a mismatched number of translations.")
+    return out
 
 
 def translate(text, target, source="en") -> str:
@@ -209,11 +201,11 @@ def translate(text, target, source="en") -> str:
     Behavior:
       - No-op (returns `text` unchanged) when target == source, or text is blank/None.
       - Cache: sha256(text+target) -> TranslationCache lookup. A HIT returns the cached translation
-        and makes NO API call. A MISS calls Gemini, stores the row, and returns the result.
-      - Failure-safe: ANY error (no key, network, HTTP, blocked, parse) returns the ORIGINAL `text`.
+        and makes NO API call. A MISS calls DeepL, stores the row, and returns the result.
+      - Failure-safe: ANY error (no key, network, HTTP, quota, parse) returns the ORIGINAL `text`.
         Translation never raises into a request.
 
-    Connects to: afc_auth.models.TranslationCache (cache rows) and Gemini (engine). Callers pick
+    Connects to: afc_auth.models.TranslationCache (cache rows) and DeepL (engine). Callers pick
     `target` from afc_auth.locale_middleware.get_locale(request) or User.language.
     """
     # ── 1. no-op guards ──────────────────────────────────────────────────────────────────────────
@@ -238,18 +230,12 @@ def translate(text, target, source="en") -> str:
         # A DB read failure must not break translation; fall through and try the API instead.
         logger.warning("TranslationCache lookup failed; falling through to API", exc_info=True)
 
-    # ── 3. cache miss -> call Gemini ─────────────────────────────────────────────────────────────
-    prompt = (
-        f"Translate this UI text from English to {lang_name(target)}. "
-        "Preserve placeholders like {name}/%s/{{x}} and HTML tags exactly. "
-        "Return ONLY the translation, no quotes or notes:\n\n"
-        f"{text}"
-    )
+    # ── 3. cache miss -> call DeepL (single-item batch) ──────────────────────────────────────────
     try:
-        translated = _call_gemini(prompt)
+        translated = _call_deepl([text], target, source=source)[0]
     except Exception:
         # Failure-safe: any engine error -> original English text, never raise.
-        logger.warning("Gemini translate failed for target=%s; returning original text", target, exc_info=True)
+        logger.warning("DeepL translate failed for target=%s; returning original text", target, exc_info=True)
         return text
 
     if not translated:
@@ -275,19 +261,18 @@ def translate(text, target, source="en") -> str:
 
 def translate_batch(texts, target, source="en") -> list:
     """
-    Translate many strings in ONE Gemini call to respect rate limits, returning a list aligned 1:1
-    with the input order.
+    Translate many strings via DeepL's native batch to respect rate limits, returning a list aligned
+    1:1 with the input order.
 
     Used by: the build-time UI-catalog script and any bulk content path. Cheaper than N calls because
-    the entire catalog goes up in a single request.
+    the misses go up together (chunked to DeepL's <=50-texts-per-request limit).
 
     Behavior:
       - No-op (returns the input unchanged) when target == source, or `texts` is empty.
       - Cache-first: each text is checked against TranslationCache; only the cache MISSES are sent to
-        Gemini, then their results are stored. Hits never hit the API.
-      - The Gemini call sends the misses as a numbered list and parses the numbered reply back. If
-        parsing fails (count mismatch / unreadable), it FALLS BACK to per-item translate() so every
-        slot still gets its best-effort result (and stays failure-safe per item).
+        DeepL, then their results are stored. Hits never hit the API.
+      - DeepL returns translations 1:1 in input order, so results map straight back (no parsing). A
+        failed chunk keeps its ORIGINAL English for those slots; the rest still translate.
       - Failure-safe: anything that goes wrong yields the ORIGINAL English text for that slot.
     """
     # ── no-op guards ─────────────────────────────────────────────────────────────────────────────
@@ -321,80 +306,32 @@ def translate_batch(texts, target, source="en") -> list:
 
     miss_texts = [texts[i] for i in miss_indexes]
 
-    # ── 2. one Gemini call for all misses, as a numbered list ────────────────────────────────────
-    # We number the items and ask the model to return the SAME numbering so we can re-align the reply
-    # to the inputs. Numbered list is robust to multi-line items because each item starts with "N. ".
-    numbered = "\n".join(f"{n + 1}. {t}" for n, t in enumerate(miss_texts))
-    prompt = (
-        f"Translate each numbered UI text from English to {lang_name(target)}. "
-        "Preserve placeholders like {name}/%s/{{x}} and HTML tags exactly. "
-        "Return ONLY a numbered list with the SAME numbers, one translation per line, "
-        "no quotes, no notes, no blank lines between items:\n\n"
-        f"{numbered}"
-    )
+    # ── 2. translate the misses via DeepL, chunked to its per-request batch limit ─────────────────
+    # DeepL returns translations 1:1 in input order (no fragile numbered-list parsing). If a chunk
+    # fails, that chunk's slots keep their ORIGINAL English (failure-safe) and the rest still proceed.
+    translated_misses = []
+    for start in range(0, len(miss_texts), DEEPL_MAX_BATCH):
+        chunk = miss_texts[start:start + DEEPL_MAX_BATCH]
+        try:
+            translated_misses.extend(_call_deepl(chunk, target, source=source))
+        except Exception:
+            logger.warning("DeepL batch translate failed for target=%s; chunk kept as English", target, exc_info=True)
+            translated_misses.extend(chunk)  # keep originals for this chunk -> stays length-aligned
 
-    parsed = None
-    try:
-        raw = _call_gemini(prompt)
-        parsed = _parse_numbered(raw, len(miss_texts))
-    except Exception:
-        logger.warning("Gemini batch translate failed for target=%s; will fall back per-item", target, exc_info=True)
-        parsed = None
-
-    # ── 3a. parse OK -> fill results + store each cache row ───────────────────────────────────────
-    if parsed is not None:
-        for n, idx in enumerate(miss_indexes):
-            translated = parsed[n] or texts[idx]  # empty parse line -> keep original
-            results[idx] = translated
-            if translated and translated != texts[idx]:
-                try:
-                    TranslationCache.objects.get_or_create(
-                        source_hash=_cache_key(texts[idx], target),
-                        target_lang=target,
-                        defaults={"source_lang": source, "translated_text": translated},
-                    )
-                except Exception:
-                    logger.warning("TranslationCache batch store failed (idx=%s)", idx, exc_info=True)
-        return results
-
-    # ── 3b. parse failed -> per-item fallback (translate() is itself cached + failure-safe) ───────
-    for idx in miss_indexes:
-        results[idx] = translate(texts[idx], target, source=source)
+    # ── 3. write results back + store the freshly-translated rows (best-effort) ────────────────────
+    for n, idx in enumerate(miss_indexes):
+        translated = translated_misses[n] or texts[idx]
+        results[idx] = translated
+        if translated and translated != texts[idx]:
+            try:
+                TranslationCache.objects.get_or_create(
+                    source_hash=_cache_key(texts[idx], target),
+                    target_lang=target,
+                    defaults={"source_lang": source, "translated_text": translated},
+                )
+            except Exception:
+                logger.warning("TranslationCache batch store failed (idx=%s)", idx, exc_info=True)
     return results
-
-
-def _parse_numbered(raw: str, expected: int):
-    """Parse Gemini's numbered-list reply back into a list of `expected` strings.
-
-    Returns the list on success, or None when the reply cannot be confidently aligned (wrong count,
-    unreadable) so translate_batch can fall back to per-item translation. We split on lines that begin
-    with 'N.' / 'N)' and stitch any wrapped continuation lines onto the current item, so multi-line
-    translations survive. Only used by translate_batch above."""
-    if not raw:
-        return None
-
-    import re
-
-    items = []
-    current = None
-    # A line that starts a new item: optional leading space, digits, then '.' or ')'.
-    start_re = re.compile(r"^\s*(\d+)[.)]\s?(.*)$")
-    for line in raw.splitlines():
-        m = start_re.match(line)
-        if m:
-            if current is not None:
-                items.append(current)
-            current = m.group(2)
-        elif current is not None:
-            # Continuation of the current item (a wrapped line) - keep the newline.
-            current += "\n" + line
-    if current is not None:
-        items.append(current)
-
-    # Only trust the parse if the item count matches exactly; otherwise alignment is unsafe.
-    if len(items) != expected:
-        return None
-    return [s.strip() for s in items]
 
 
 def translate_richtext(doc, target, source="en"):
@@ -568,8 +505,8 @@ def translate_html(html, target, source="en") -> str:
         translated core so the surrounding layout/spacing is unchanged.
       - Verification codes / reset tokens that the builders render as their OWN text node (e.g. the
         6-digit code) are pure digits; translate() / translate_batch() pass digit-only strings through
-        unchanged (Gemini is told to preserve placeholders, and a number has nothing to translate), so
-        codes survive. Links live in href attributes, which we never touch.
+        unchanged (DeepL preserves formatting, and a number has nothing to translate), so codes
+        survive. Links live in href attributes, which we never touch.
 
     FAILURE-SAFE (project rule): ANY error - BeautifulSoup import/parse failure, batch failure -
     returns the ORIGINAL `html` so an email always sends (in English) rather than failing. Mirrors the
@@ -616,7 +553,7 @@ def translate_html(html, target, source="en") -> str:
 
     # ── 1. collect translatable text nodes (skip CSS/JS, comments/doctype/etc + whitespace-only) ──
     nodes = []          # the NavigableString objects we will replace
-    cores = []          # the stripped text we actually send to Gemini (aligned 1:1 with `nodes`)
+    cores = []          # the stripped text we actually send to DeepL (aligned 1:1 with `nodes`)
     affixes = []        # (leading_ws, trailing_ws) to re-wrap around each translated core
     for text_node in soup.find_all(string=True):
         # Never translate code/style or non-text string nodes (comments, the doctype token, etc).

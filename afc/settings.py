@@ -82,6 +82,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # a touch more accuracy). Read at call time by afc_ocr.services.gemini.call_gemini.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
+# Translations (news/events/notifications/emails via afc_auth.translation) run on DeepL, NOT Gemini
+# (owner 2026-06-20) - DeepL is purpose-built for translation with a generous free tier. Gemini above
+# stays ONLY for OCR. A DeepL FREE key ends in ":fx" (the engine auto-routes it to api-free.deepl.com;
+# a Pro key uses api.deepl.com). Set in the environment (DEEPL_API_KEY), never hardcoded.
+DEEPL_API_KEY = os.getenv("DEEPL_API_KEY")
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
