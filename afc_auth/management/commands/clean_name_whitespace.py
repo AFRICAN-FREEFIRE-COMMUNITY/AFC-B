@@ -61,11 +61,13 @@ class Command(BaseCommand):
             to_update = []  # (pk, stripped) safe to write
 
             for pk, val, stripped in dirty:
+                # SAFETY: never blank a field. If a value is pure whitespace (strips to
+                # empty), leave it untouched - we only ever remove surrounding spaces from
+                # a non-empty name, never erase content.
+                if stripped == "":
+                    collisions.append((pk, val, "all-whitespace, left untouched"))
+                    continue
                 if unique:
-                    if stripped == "":
-                        # Trimming to empty on a unique field is unsafe - leave it.
-                        collisions.append((pk, val, "trims to empty"))
-                        continue
                     # Collision: another row already holds (or, processed earlier here,
                     # will hold) the clean value.
                     clash = (
