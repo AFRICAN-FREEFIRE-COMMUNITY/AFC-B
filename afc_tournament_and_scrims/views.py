@@ -3948,6 +3948,11 @@ def get_event_details(request):
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,
+                # Discord role id echoed so the edit form re-submits it. Without this the organizer
+                # edit page (which loads ONLY this public endpoint, not get-event-details-for-admin)
+                # rehydrates a blank id and a plain Save WIPED any admin-set group Discord role to NULL
+                # via edit_event group_defaults .get(...) default. (bug fix 2026-06-20)
+                "group_discord_role_id": group.group_discord_role_id,
                 "prizepool": group.prizepool,
                 "prizepool_cash_value": group.prizepool_cash_value,
                 "prize_distribution": group.prize_distribution,
@@ -3974,6 +3979,10 @@ def get_event_details(request):
             "stage_order": stage.stage_order,
             "start_date": stage.start_date,
             "end_date": stage.end_date,
+            # Discord role id echoed for the same reason as group_discord_role_id above: the organizer
+            # edit page loads only this public endpoint, so omitting it made a plain Save wipe the
+            # admin-set stage Discord role to NULL via edit_event stage_defaults .get(...). (fix 2026-06-20)
+            "stage_discord_role_id": stage.stage_discord_role_id,
             "prizepool": stage.prizepool,
             "prizepool_cash_value": stage.prizepool_cash_value,
             "prize_distribution": stage.prize_distribution,
