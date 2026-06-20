@@ -821,15 +821,18 @@ class ProfileSentiment(models.Model):
 
     class Meta:
         constraints = [
-            # One stance row per voter per player, and per voter per team.
+            # One stance row per voter per player, and per voter per team. NO condition:
+            # MySQL does not support partial/conditional unique constraints (warning W036)
+            # and would silently skip them. A plain unique on (voter, target_user) is safe
+            # because MySQL treats NULLs as DISTINCT - team-sentiment rows (target_user=NULL)
+            # never collide on it, and player rows are deduped; the (voter, target_team) pair
+            # mirrors it for teams. So this enforces the intended one-stance-per-subject on MySQL.
             models.UniqueConstraint(
                 fields=["voter", "target_user"],
-                condition=models.Q(target_user__isnull=False),
                 name="unique_voter_player_sentiment",
             ),
             models.UniqueConstraint(
                 fields=["voter", "target_team"],
-                condition=models.Q(target_team__isnull=False),
                 name="unique_voter_team_sentiment",
             ),
         ]
