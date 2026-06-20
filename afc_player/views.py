@@ -190,17 +190,29 @@ def get_all_users(request):
         .values("mvp").annotate(c=Count("pk"))
     }
 
-    # ── team membership: user -> [tournament_team ids] + last team name (mirrors .last()) ──
-    # Ordered by id so the LAST membership row per user wins the display name, exactly like
-    # the old `TournamentTeamMember.objects.filter(user=user).last()`.
+    # ── tournament-team participation: user -> [tournament_team ids] (for WINS only) ──
+    # TournamentTeamMember is the per-event participation HISTORY (who played for which
+    # team in a tournament); rows are never deleted, so it is the right source for
+    # counting wins across every team a player ever competed with - but it is the WRONG
+    # source for "current team" (a player who once played under a team keeps showing it
+    # forever even after leaving). See the bug fix below for the displayed team name.
     team_ids_by_user = {}
-    last_team_name_by_user = {}
     for m in (TournamentTeamMember.objects
-              .values("user", "tournament_team", "tournament_team__team__team_name")
+              .values("user", "tournament_team")
               .order_by("user", "id")):
-        uid = m["user"]
-        team_ids_by_user.setdefault(uid, []).append(m["tournament_team"])
-        last_team_name_by_user[uid] = m["tournament_team__team__team_name"]
+        team_ids_by_user.setdefault(m["user"], []).append(m["tournament_team"])
+
+    # ── CURRENT team name: from the LIVE roster TeamMembers (owner bug 2026-06-20) ──
+    # The admin players list used to show last_team_name from TournamentTeamMember (the
+    # tournament history above), so it displayed a stale team a player had since LEFT
+    # (e.g. NVS.PRIME showed "RESTART ESPORTS" though he is not on that roster). The
+    # source of truth for the CURRENT team is afc_team.TeamMembers, which has a
+    # unique-one-team-per-member constraint and is what the team roster + public profile
+    # read. One bulk query, keyed by member -> current team name.
+    current_team_name_by_user = {
+        row["member"]: row["team__team_name"]
+        for row in TeamMembers.objects.values("member", "team__team_name")
+    }
 
     # ── wins (placement == 1) per tournament_team: one grouped count ──
     wins_by_team = {
@@ -222,7 +234,8 @@ def get_all_users(request):
         data.append({
             "user_id": uid,
             "name": user.username,
-            "team_name": last_team_name_by_user.get(uid),
+            # CURRENT team from the live roster (was the stale tournament-history name).
+            "team_name": current_team_name_by_user.get(uid),
             "total_kills": kills_by_user.get(uid, 0),
             "total_wins": total_wins,
             "total_mvps": mvps_by_user.get(uid, 0),
@@ -266,11 +279,13 @@ def get_player_details(request):
     # + booyahs + per_event[] + recent_matches[]). Defensive against null leaderboards.
     agg = compute_player_stats(player, include_breakdown=True)
 
-    # Team + roles (unchanged behaviour: last tournament team for display name, current
-    # TeamMembers row for in-game / management role).
-    team_member = TournamentTeamMember.objects.filter(user=player).last()
-    team_name = team_member.tournament_team.team.team_name if team_member else None
-    member = TeamMembers.objects.filter(member=player).first()
+    # Team + roles, ALL from the CURRENT live roster row (owner bug 2026-06-20). This
+    # used to take the team NAME from the last TournamentTeamMember (tournament history),
+    # which showed a team the player had since LEFT. The source of truth for the current
+    # team + roles is the single TeamMembers row (unique one-team-per-member), the same
+    # source the team roster + public profile read.
+    member = TeamMembers.objects.filter(member=player).select_related("team").first()
+    team_name = member.team.team_name if member and member.team_id else None
     in_game_role = member.in_game_role if member else None
     management_role = member.management_role if member else None
 
@@ -368,6 +383,10 @@ def get_public_player_stats(request):
     # numbers are layered on below ONLY when the viewer is permitted to see them.
     payload = {
         **profile,
+        # Player PK (identity-level, not PII) - the public profile needs it for the
+        # fan/hater sentiment widget (owner 2026-06-20). basic_player_profile keys off
+        # IGN and historically omitted the id; expose it explicitly here.
+        "user_id": player.user_id,
         "tier_history": tier_history,
         "stats_visible": stats_visible,
     }

@@ -2,6 +2,18 @@ from django.urls import path, include
 from .views import *
 from django.conf import settings
 from django.conf.urls.static import static
+# Player-to-player reports (owner 2026-06-20) live in their own module, mirroring the
+# afc_player_market moderation split. Imported explicitly so the route names are clear.
+from .views_player_reports import (
+    file_player_report,
+    file_team_report,
+    my_player_reports,
+    admin_list_player_reports,
+    admin_respond_player_report,
+    complete_onboarding,
+)
+# Fan / Hater public sentiment (owner 2026-06-20). See views_sentiment.py.
+from .views_sentiment import get_sentiment, set_sentiment
 
 
 urlpatterns = [
@@ -14,7 +26,24 @@ urlpatterns = [
     # wrong view and caused a TypeError 500). See views.verify_email_token.
     path('verify/<uidb64>/<token>/', verify_email_token, name='verify_email_token'),
     path('login/', login, name='login'),
+    # Google Sign-In (owner 2026-06-20): verifies a Google ID token and issues a
+    # SessionToken (sign up + sign in in one). Consumed by the FE "Continue with
+    # Google" button -> AuthContext.loginWithGoogle. See views.google_auth.
+    path('google/', google_auth, name='google_auth'),
     # path('logout/', logout, name='logout'),
+    # ── Player-to-player reports (owner 2026-06-20) ─────────────────────────────
+    # A player reports another player (proof + notes); admins triage + answer; the
+    # reporter reads the answer. See afc_auth/views_player_reports.py.
+    path('report-player/', file_player_report, name='file_player_report'),
+    path('report-team/', file_team_report, name='file_team_report'),
+    path('my-player-reports/', my_player_reports, name='my_player_reports'),
+    path('admin/player-reports/', admin_list_player_reports, name='admin_list_player_reports'),
+    path('admin/player-reports/<int:report_id>/', admin_respond_player_report, name='admin_respond_player_report'),
+    # First-login onboarding: mark the skippable requirements flow done/skipped.
+    path('complete-onboarding/', complete_onboarding, name='complete_onboarding'),
+    # Fan / Hater public sentiment on a player or team profile (owner 2026-06-20).
+    path('sentiment/', get_sentiment, name='get_sentiment'),
+    path('sentiment/set/', set_sentiment, name='set_sentiment'),
     path('send-verification-token/', send_verification_token, name='send_verification_token'),
     path('verify-token/', verify_token, name='verify_token'),
     path('resend-token/', resend_token, name='resend_token'),

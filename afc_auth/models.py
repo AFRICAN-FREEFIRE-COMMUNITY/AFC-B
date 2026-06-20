@@ -70,6 +70,17 @@ class User(AbstractUser):
     #                 best-effort by frontend app/(user)/_components/WelcomeTour.tsx on finish.
     has_seen_welcome = models.BooleanField(default=False)
 
+    # One-time NEW-USER ONBOARDING (owner 2026-06-20): the skippable first-login flow that walks a
+    # brand-new account through the usual site requirements (upload esports image, set Free Fire UID,
+    # add a profile picture). Flipped True when the user finishes OR skips the flow.
+    #
+    # DEFAULT TRUE on purpose: this field was added to an existing 6k-user base, and the AddField
+    # default backfills EVERY existing row - defaulting True means the whole existing userbase is
+    # treated as already-onboarded and is NOT swept into the flow. Genuinely NEW accounts get False
+    # set EXPLICITLY at creation (signup() + google_auth()), so only they see onboarding. Read by
+    # get_user_profile (frontend AuthContext -> OnboardingGate); written by complete_onboarding.
+    has_completed_onboarding = models.BooleanField(default=True)
+
     # One-time DASHBOARD intro coach marks (owner 2026-06-12): when a user is GRANTED access to a
     # role dashboard (admin / sponsor / organizer / vendor), their next login shows a one-time
     # callout pointing at the nav menu where that dashboard lives - NOT a navigate-now popup.
@@ -83,6 +94,19 @@ class User(AbstractUser):
 
     USERNAME_FIELD = "username"  # Set in_game_name as username
     REQUIRED_FIELDS = ["email", "full_name"]
+
+    def save(self, *args, **kwargs):
+        # Trim-on-save for name fields (owner 2026-06-20). Seed data carried stray
+        # leading/trailing whitespace in usernames/names (~21% of users), which breaks
+        # name-based lookups: SQL `=` ignores only TRAILING spaces (MySQL PADSPACE) and
+        # `__iexact`/LIKE ignores neither. Stripping here is the single chokepoint that
+        # keeps every new + edited row clean regardless of which view wrote it; the
+        # clean_name_whitespace management command backfills the existing rows.
+        for f in ("username", "full_name", "uid"):
+            v = getattr(self, f, None)
+            if isinstance(v, str):
+                setattr(self, f, v.strip())
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.username
@@ -634,6 +658,191 @@ class TranslationCache(models.Model):
 
     def __str__(self):
         return f"{self.source_lang}->{self.target_lang} {self.source_hash[:12]}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PLAYER-TO-PLAYER REPORTS  (owner 2026-06-20)
+# ──────────────────────────────────────────────────────────────────────────────
+#  Lets ANY player report ANOTHER player with proof + notes; admins review every
+#  report and ANSWER it (the answer is shown back to the reporter). When a single
+#  player collects 3+ reports inside a rolling 2-week window, a "repeat offender"
+#  flag is surfaced to admins (computed on read - see views_player_reports.
+#  _recent_report_count - so it needs no extra column).
+#
+#  Modelled field-for-field on afc_player_market.MarketReport so the original dev
+#  reads it the same way; the difference is the SUBJECT is always a User (a player),
+#  there is no post/team, and `admin_response` is a reporter-FACING answer (vs
+#  MarketReport.resolution_notes which is an internal triage note).
+#
+#  Consumed by (afc_auth/views_player_reports.py + afc_auth/urls.py):
+#    • POST  /auth/report-player/                 (file_player_report)   — any user
+#    • GET   /auth/my-player-reports/             (my_player_reports)    — reporter
+#    • GET   /auth/admin/player-reports/          (admin_list_player_reports)
+#    • PATCH /auth/admin/player-reports/<id>/     (admin_respond_player_report)
+#  Frontend: ReportPlayerDialog on app/(user)/players/[username] (file) + the
+#  "Player Reports" tab on the admin dashboard (triage + answer), and a "My reports"
+#  view where the reporter reads the admin's answer.
+# ══════════════════════════════════════════════════════════════════════════════
+class UserReport(models.Model):
+    """An abuse report a user files against another PLAYER or a whole TEAM.
+
+    subject_type says which: "player" -> reported_user is set; "team" -> reported_team
+    is set (owner 2026-06-20, "player and team reports"). reporter / reported_user /
+    reported_team are all SET_NULL so deleting an account or team does NOT erase the
+    abuse record (only the link goes null) - the history must outlive the subject,
+    exactly like afc_player_market.MarketReport.
+    """
+
+    # Whether the report targets a single player or a whole team.
+    SUBJECT_TYPE_CHOICES = [
+        ("player", "Player"),
+        ("team", "Team"),
+    ]
+
+    # Report reasons. Kept deliberately close to MarketReport.CATEGORY_CHOICES plus
+    # the player-vs-player specifics (cheating, toxicity, impersonation). Shared by
+    # player + team reports (all categories apply to a team too).
+    CATEGORY_CHOICES = [
+        ("cheating", "Cheating / hacking"),
+        ("toxicity", "Toxic / abusive behaviour"),
+        ("harassment", "Harassment"),
+        ("impersonation", "Impersonation / fake identity"),
+        ("scam", "Scam / fraud"),
+        ("other", "Other"),
+    ]
+
+    # Triage lifecycle (mirrors MarketReport minus the "banned" terminal state -
+    # banning a player is the existing site-wide BannedPlayer flow, not this queue).
+    STATUS_CHOICES = [
+        ("open", "Open"),
+        ("reviewing", "Reviewing"),
+        ("resolved", "Resolved"),
+        ("dismissed", "Dismissed"),
+    ]
+
+    # ── who reported whom ──
+    reporter = models.ForeignKey(
+        "afc_auth.User", null=True, on_delete=models.SET_NULL,
+        related_name="user_reports_filed",
+    )
+    subject_type = models.CharField(
+        max_length=10, choices=SUBJECT_TYPE_CHOICES, default="player",
+    )
+    # Exactly one of these is set, per subject_type. Both SET_NULL so a deleted
+    # player/team only nulls the link, never erases the report.
+    reported_user = models.ForeignKey(
+        "afc_auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="user_reports_against",
+    )
+    reported_team = models.ForeignKey(
+        "afc_team.Team", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="user_reports_against",
+    )
+
+    # ── the report body (category + required notes + optional proof image) ──
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default="other")
+    details = models.TextField()                       # required free text ("notes")
+    evidence = models.ImageField(
+        upload_to="player_report_evidence/", null=True, blank=True
+    )                                                  # optional proof screenshot
+
+    # ── triage + the admin's reporter-facing ANSWER ──
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="open")
+    reviewed_by = models.ForeignKey(
+        "afc_auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="user_reports_reviewed",
+    )
+    admin_response = models.TextField(blank=True, default="")  # shown to the reporter
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            # The repeat-offender check filters by subject + created_at window, so
+            # index both subject FKs paired with created_at for a cheap COUNT.
+            models.Index(fields=["reported_user", "created_at"]),
+            models.Index(fields=["reported_team", "created_at"]),
+        ]
+
+    def __str__(self):
+        if self.subject_type == "team":
+            who = self.reported_team.team_name if self.reported_team else "deleted team"
+        else:
+            who = self.reported_user.username if self.reported_user else "deleted"
+        by = self.reporter.username if self.reporter else "deleted"
+        return f"Report of {who} by {by} ({self.status})"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FAN / HATER SENTIMENT  (owner 2026-06-20)
+# ──────────────────────────────────────────────────────────────────────────────
+#  A fun, public reaction on a player or team profile: any logged-in user can tap
+#  "I'm a fan" or "I'm a hater" ONCE per subject. The two are mutually exclusive
+#  (one stance per voter per subject); tapping the active stance again clears it,
+#  tapping the other switches. The fan + hater COUNTS are shown publicly on the
+#  profile to everyone.
+#
+#  One row per (voter, subject). Both target FKs are SET_NULL so a deleted account
+#  /team only nulls the link. Enforced-unique per subject in the view via
+#  get_or_create(voter, target_user|target_team).
+#
+#  Consumed by (afc_auth/views_sentiment.py + afc_auth/urls.py):
+#    • POST /auth/sentiment/set/   (set_sentiment)  — toggle/switch, returns counts
+#    • GET  /auth/sentiment/       (get_sentiment)  — public counts + my stance
+#  Frontend: components/profile/FanHater.tsx on the player profile + team page.
+# ══════════════════════════════════════════════════════════════════════════════
+class ProfileSentiment(models.Model):
+    SUBJECT_TYPE_CHOICES = [
+        ("player", "Player"),
+        ("team", "Team"),
+    ]
+    STANCE_CHOICES = [
+        ("fan", "Fan"),
+        ("hater", "Hater"),
+    ]
+
+    voter = models.ForeignKey(
+        "afc_auth.User", on_delete=models.CASCADE, related_name="sentiments_given",
+    )
+    subject_type = models.CharField(max_length=10, choices=SUBJECT_TYPE_CHOICES)
+    target_user = models.ForeignKey(
+        "afc_auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="sentiments_received",
+    )
+    target_team = models.ForeignKey(
+        "afc_team.Team", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="sentiments_received",
+    )
+    stance = models.CharField(max_length=6, choices=STANCE_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # One stance row per voter per player, and per voter per team.
+            models.UniqueConstraint(
+                fields=["voter", "target_user"],
+                condition=models.Q(target_user__isnull=False),
+                name="unique_voter_player_sentiment",
+            ),
+            models.UniqueConstraint(
+                fields=["voter", "target_team"],
+                condition=models.Q(target_team__isnull=False),
+                name="unique_voter_team_sentiment",
+            ),
+        ]
+        indexes = [
+            # Counting fans/haters per subject = group by target + stance.
+            models.Index(fields=["target_user", "stance"]),
+            models.Index(fields=["target_team", "stance"]),
+        ]
+
+    def __str__(self):
+        tgt = self.target_team.team_name if self.subject_type == "team" and self.target_team else (
+            self.target_user.username if self.target_user else "deleted")
+        return f"{self.voter_id} is {self.stance} of {tgt}"
 
 
 

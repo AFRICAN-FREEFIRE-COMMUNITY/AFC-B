@@ -35,6 +35,18 @@ class Team(models.Model):
     total_earnings = models.DecimalField(max_digits=15, decimal_places=2, default=0.0, null=True, blank=True)
     team_captain = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='captained_teams')
 
+    def save(self, *args, **kwargs):
+        # Trim-on-save for the name fields (owner 2026-06-20). Seed data had stray
+        # leading/trailing whitespace in team names (~41% of teams), e.g. 'FROZEN EMPIRE ',
+        # which breaks name-based lookups (SQL `=` ignores only trailing spaces; LIKE/
+        # __iexact ignores neither). Stripping here keeps new + edited teams clean; the
+        # clean_name_whitespace management command backfills existing rows.
+        if isinstance(self.team_name, str):
+            self.team_name = self.team_name.strip()
+        if isinstance(self.team_tag, str):
+            self.team_tag = self.team_tag.strip()
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.team_name
     
