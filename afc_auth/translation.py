@@ -39,6 +39,7 @@ import logging
 
 import requests  # same HTTP client afc_ocr/services/gemini.py uses, kept consistent on purpose
 from django.conf import settings
+from django.core.cache import cache  # circuit-breaker store (Redis db 1) — see _engine_down/_trip_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,60 @@ GEMINI_URL_TMPL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 )
 GEMINI_MODEL_DEFAULT = "gemini-2.5-flash"
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# ENGINE RESILIENCE (owner 2026-06-20): an expired / invalid / over-quota key must NEVER stall the site
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# This layer runs INSIDE request handling (translate-on-read: localize_field is called by the news /
+# events / notifications read views). The failure-safe contract already returns English on ANY error,
+# but two latency gaps turned a DEAD KEY into "Impossible de charger cette page":
+#   1. The old single 60s timeout let one bad call hold a gunicorn worker past the ~30s prod request
+#      timeout (afc_leaderboard/models.py) -> the worker is killed -> the navigation gets no response.
+#   2. With no breaker, EVERY cache-miss string re-hit the dead key (one network round trip each, per
+#      field, per request, forever), so fr/pt reads stayed slow until the key was fixed.
+# The two guards below make the site instant + English the moment the engine is unhealthy:
+#   • _GEMINI_TIMEOUT  - (connect, read) seconds: fail fast instead of hanging a worker.
+#   • circuit breaker  - the first engine-level failure (bad/expired key, quota, network, timeout)
+#     "trips" a flag in the Django cache for _ENGINE_DOWN_TTL seconds; while tripped, translate() /
+#     translate_batch() skip the API entirely and return the ORIGINAL English with ZERO network cost.
+#     It SELF-HEALS: once the TTL lapses the next miss tries the API again, so dropping in a working
+#     key resumes translation within ~5 min (or clear the cache key "afc:translation:engine_down").
+# Manual kill switch: settings.TRANSLATION_ENABLED = False (or an empty GEMINI_API_KEY) forces English
+# immediately with no cache/network work at all. See _translation_enabled().
+_GEMINI_TIMEOUT = (5, 15)          # (connect, read) seconds — replaces the old hang-prone 60s
+_ENGINE_DOWN_KEY = "afc:translation:engine_down"
+_ENGINE_DOWN_TTL = 300             # seconds the breaker stays open after a failure (5 min, self-heals)
+
+
+def _translation_enabled() -> bool:
+    """Master on/off for machine translation. Returns False when there is no usable key (so an expired
+    key that ops has CLEARED, or a never-configured key, instantly serves English) or when ops sets
+    settings.TRANSLATION_ENABLED = False. Lets translation be disabled with no deploy. Read at the top
+    of translate() / translate_batch()."""
+    if not (getattr(settings, "GEMINI_API_KEY", "") or ""):
+        return False
+    return getattr(settings, "TRANSLATION_ENABLED", True) is not False
+
+
+def _engine_down() -> bool:
+    """True while the circuit breaker is open (a recent engine-level failure). Best-effort: if the cache
+    backend itself is unreachable we return False and let the call fall through to the API guard."""
+    try:
+        return cache.get(_ENGINE_DOWN_KEY) is True
+    except Exception:
+        return False
+
+
+def _trip_breaker():
+    """Open the breaker for _ENGINE_DOWN_TTL seconds so the next reads skip Gemini and serve the
+    original English instantly (no per-request network cost). Called ONLY for engine-level failures
+    (bad/expired key, quota 429, network error, timeout, 5xx) - never for a one-off content rejection.
+    Best-effort: a cache write failure is swallowed (we just keep paying round trips until it recovers)."""
+    try:
+        cache.set(_ENGINE_DOWN_KEY, True, _ENGINE_DOWN_TTL)
+    except Exception:
+        pass
+
 
 # Map our 2-letter locale codes to the full language name Gemini expects in the prompt. Mirrors
 # afc_auth.models.User.LANGUAGE_CHOICES (en/fr/pt). Used by lang_name() and the prompt builders.
@@ -90,6 +145,13 @@ def _call_gemini(prompt: str) -> str:
         # No key configured -> let the caller fall back to the original text.
         raise ValueError("GEMINI_API_KEY is not configured in settings.")
 
+    # Circuit breaker: a recent engine-level failure (e.g. an expired key) is "open" for a few minutes.
+    # While open we do NOT pay another network round trip - bail immediately so the caller (translate /
+    # translate_batch) falls back to the original English. This is what keeps a dead key from re-stalling
+    # every request. The breaker self-heals when its cache TTL lapses (next miss tries the API again).
+    if _engine_down():
+        raise RuntimeError("Gemini translate skipped: engine circuit-breaker is open.")
+
     url = GEMINI_URL_TMPL.format(model=_effective_model(), api_key=api_key)
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -97,7 +159,16 @@ def _call_gemini(prompt: str) -> str:
         "generationConfig": {"temperature": 0.1},
     }
 
-    resp = requests.post(url, json=payload, timeout=60)
+    # Short (connect, read) timeout instead of the old 60s: a slow/unreachable engine must fail fast so
+    # it can never hold a gunicorn worker past the prod request timeout. A network-level failure (DNS,
+    # refused, timeout) means the engine is unreachable -> trip the breaker, then fall back to English.
+    try:
+        resp = requests.post(url, json=payload, timeout=_GEMINI_TIMEOUT)
+    except requests.RequestException:
+        _trip_breaker()
+        # Do not echo the exception (its message can embed the ?key=... URL): raise a key-free error.
+        raise RuntimeError("Gemini translate request failed: engine unreachable.") from None
+
     try:
         resp.raise_for_status()
     except requests.HTTPError:
@@ -109,8 +180,15 @@ def _call_gemini(prompt: str) -> str:
             detail = ((resp.json().get("error") or {}).get("message") or "")[:300]
         except Exception:
             pass
+        # Engine-level failures trip the breaker so we stop hammering a dead key and serve English
+        # instantly: 401/403 (invalid/expired/disabled key), 429 (quota), 5xx (Gemini outage), and a
+        # 400 ONLY when it is clearly a key problem (Gemini says "API key ...") rather than a one-off
+        # content rejection. An expired key returns exactly these, which is the case the owner hit.
+        code = resp.status_code
+        if code in (401, 403, 429) or code >= 500 or (code == 400 and "key" in detail.lower()):
+            _trip_breaker()
         raise RuntimeError(
-            f"Gemini translate request failed with HTTP {resp.status_code}"
+            f"Gemini translate request failed with HTTP {code}"
             + (f": {detail}" if detail else "")
         ) from None
 
