@@ -1,6 +1,7 @@
 from datetime import timedelta, timedelta
 from django.utils import timezone
 import uuid
+from collections import Counter
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -81,6 +82,77 @@ def _playing_member_count(team):
     return TeamMembers.objects.filter(
         team=team, management_role__in=PLAYER_ROLES
     ).count()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Team country auto-derivation (owner 2026-06-20)
+#
+# Team.country is AUTO-set from the LOCATION of the team's PLAYING members (PLAYER_ROLES; staff are
+# excluded). Rule: the single most-common player country wins; if the top spot is a TIE between two or
+# more countries (no clear majority, e.g. 2 NG / 2 ZA / 1 TG) it falls back to the TEAM OWNER's country.
+# Counting uses a NORMALIZED key (afc_tournament_and_scrims.views.normalize_country, pycountry-backed) so
+# "Nigeria" and "NG" are the SAME country; the stored value is a human-readable name. Recomputed on every
+# roster change by the TeamMembers signal (afc_team/signals.py) and explicitly after an ownership transfer
+# and when a member edits their own country (afc_auth.edit_profile). There is NO season/transfer-window
+# lock (owner dropped that): the team country is always live.
+# Consumed by: get_team_details (FE team page country + per-member country + the rule explanation),
+# the recompute_team_countries management command (one-off backfill), and the signal/explicit triggers.
+# ──────────────────────────────────────────────────────────────────────────
+def _canonical_country(raw):
+    """(counting_key, display_name) for a free-text/ISO country string, or ("","") when blank/unknown.
+    Uses the shared pycountry-backed normalizer so 'Nigeria' and 'NG' collapse to one key; the display
+    name is pycountry's canonical Name (properly cased) when resolvable, else the title-cased key."""
+    if not raw or not str(raw).strip():
+        return "", ""
+    # Lazy cross-app import: afc_tournament_and_scrims.views is heavy and would be circular at load time.
+    from afc_tournament_and_scrims.views import normalize_country
+    key = normalize_country(raw)              # lowercased canonical name, or lowercased raw if unknown
+    if not key:
+        return "", ""
+    try:
+        import pycountry
+        return key, pycountry.countries.lookup(key).name
+    except Exception:
+        return key, key.title()
+
+
+def _derive_team_country(team):
+    """Derive a team's country from its PLAYING members' locations (see the section header above).
+    Returns the DISPLAY country name to store on Team.country, or "" when nothing is resolvable.
+    Counts only PLAYER_ROLES members; unique most-common country wins; a tie at the top -> owner country."""
+    playing = (
+        TeamMembers.objects
+        .filter(team=team, management_role__in=PLAYER_ROLES)
+        .select_related("member")
+    )
+    pairs = [_canonical_country(getattr(tm.member, "country", "")) for tm in playing]
+    counts = Counter(k for k, _ in pairs if k)
+    display_by_key = {k: d for k, d in pairs if k}
+
+    _, owner_display = _canonical_country(getattr(team.team_owner, "country", "") or "")
+
+    if not counts:
+        return owner_display                 # no playing-member countries -> owner's country
+
+    ranked = counts.most_common()
+    # A unique top (clear plurality) wins; a tie for first place falls back to the owner's country.
+    if len(ranked) == 1 or ranked[0][1] > ranked[1][1]:
+        win_key = ranked[0][0]
+        return display_by_key.get(win_key, win_key.title())
+    return owner_display
+
+
+def recompute_team_country(team):
+    """Re-derive + persist Team.country (best-effort; writes only when it actually changes). Called by the
+    TeamMembers signal (afc_team/signals.py) and by the owner-transfer / profile-country-edit paths. Safe
+    to call any time; never raises into the caller so a recompute can't break a roster mutation."""
+    try:
+        new_country = (_derive_team_country(team) or "")[:64]
+        if new_country != (team.country or ""):
+            team.country = new_country
+            team.save(update_fields=["country"])
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -525,6 +597,11 @@ def transfer_ownership(request):
         # Transfer ownership
         team.team_owner = new_owner
         team.save()
+
+        # Re-derive the team country now that the owner changed: on a country TIE the tiebreak follows
+        # the (new) owner. Neither change above triggers the roster signal (the old-owner role change is a
+        # bulk .update(), and the owner change is a Team save, not a TeamMembers save), so recompute here.
+        recompute_team_country(team)
 
         # Log the action
         Report.objects.create(
@@ -1123,6 +1200,9 @@ def get_team_details(request):
             "username": m.member.username,
             "management_role": m.management_role,
             "in_game_role": m.in_game_role,
+            # Per-member country (raw User.country) so the team page can show each member's location and
+            # explain how the auto-derived team country (above) was decided. (owner 2026-06-20)
+            "country": m.member.country,
             "join_date": m.join_date,
             "discord_id": m.member.discord_id,
         }
@@ -1709,7 +1789,28 @@ def manage_team_roster(request):
         # Management-role (captain / manager / etc.) changes are NOT newly restricted here — they
         # keep only the crossing rule already enforced per-member below. With no active season the
         # guard does not fire (positions stay editable), matching the existing pattern.
-        wants_position_change = any("in_game_role" in (data or {}) for data in updates)
+        #
+        # IMPORTANT (owner 2026-06-20): only treat it as a position change when the in_game_role VALUE
+        # actually DIFFERS from the member's current one. The frontend re-sends every member's existing
+        # in_game_role on every save, so the old "key is present" test fired on management-only
+        # changes too - which wrongly blocked e.g. an owner changing their own management role while the
+        # window was closed. Comparing against the stored value keeps positions locked (their intent)
+        # without blocking management-role edits.
+        def _is_real_position_change():
+            for data in updates:
+                if not isinstance(data, dict) or "in_game_role" not in data:
+                    continue
+                try:
+                    _cur = TeamMembers.objects.get(
+                        team=team, member_id=data.get("member_id")
+                    ).in_game_role or ""
+                except TeamMembers.DoesNotExist:
+                    continue
+                if str(data.get("in_game_role") or "") != str(_cur):
+                    return True
+            return False
+
+        wants_position_change = _is_real_position_change()
         if wants_position_change:
             from afc_rankings.models import Season
             active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
@@ -1765,9 +1866,14 @@ def manage_team_roster(request):
                 # does not, so it is exempt). Basis = _playing_member_count (PLAYER_ROLES), the
                 # same cap basis used by the invite-accept path.
                 joining_play = new_m_role in PLAYER_ROLES and tm.management_role not in PLAYER_ROLES
-                if tm.member == user:
+                # The team OWNER may change their OWN management role to ANY role (owner request
+                # 2026-06-20) - still subject to the crossing/window, 6-player cap, and one-staff-each
+                # checks below. Everyone else is still hard-blocked from changing their own role, and a
+                # non-owner (e.g. a coach who can manage the roster) still cannot change the owner's role.
+                is_owner_self = (tm.member == user) and (tm.member_id == team.team_owner_id)
+                if tm.member == user and not is_owner_self:
                     failures.append("You cannot change your own management role")
-                elif tm.member_id == team.team_owner_id:
+                elif tm.member_id == team.team_owner_id and not is_owner_self:
                     failures.append("The team owner's management role cannot be changed")
                 elif new_m_role not in valid_m_roles:
                     failures.append("Invalid management_role")

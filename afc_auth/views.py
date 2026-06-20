@@ -2107,6 +2107,16 @@ def get_user_profile(request):
     from afc_shop.models import Vendor as _Vendor
     is_vendor = _Vendor.objects.filter(user=user, status="active").exists()
 
+    # Profile-completion reminder (owner 2026-06-20): the name of a team this user OWNS that still has no
+    # logo, so the owner (the only one who can fix it) gets a soft, dismissible nudge. Based on owned_teams
+    # (Team.team_owner), NOT user.team - a user can own a team without user.team being populated. We loop
+    # so the empty-logo check is uniform whether team_logo is "" or NULL; owners have very few teams.
+    _team_without_logo = None
+    for _ot in Team.objects.filter(team_owner=user).only("team_id", "team_name", "team_logo"):
+        if not _ot.team_logo:
+            _team_without_logo = _ot.team_name
+            break
+
     return Response({
         "user_id": user.user_id,
         "full_name": user.full_name,
@@ -2124,6 +2134,9 @@ def get_user_profile(request):
         # _has_active_event_registration. Releases once all their events are completed.
         "identity_locked": _has_active_event_registration(user),
         "team": user.team.team_name if getattr(user, "team", None) else None,
+        # Name of a team this user OWNS that has no logo (or null). Drives the team-logo half of the
+        # profile-completion reminder; the FE links it to that team's page so the owner can add a logo.
+        "team_without_logo": _team_without_logo,
         "role": user.role,
         "profile_pic": profile_pic_url,
         # The separate esport image (see upload_esport_image): null until the player uploads one.

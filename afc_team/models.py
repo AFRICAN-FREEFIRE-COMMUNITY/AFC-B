@@ -26,7 +26,12 @@ class Team(models.Model):
     is_banned = models.BooleanField(default=False)
     team_tier = models.CharField(max_length=1, default="3")
     team_description = models.CharField(max_length=200, default="We Love Playing Free Fire")
-    country = models.CharField(max_length=20)
+    # Auto-derived from the LOCATION of the team's PLAYING members (owner 2026-06-20): the most-common
+    # player country wins; a tie for first falls back to the team owner's country. Recomputed on every
+    # roster change via the TeamMembers signal (afc_team/signals.py) + recompute_team_country() in views.
+    # Widened from 20 -> 64 because some country names exceed 20 chars (e.g. "Democratic Republic of the
+    # Congo"). Stored as a human-readable name. blank=True so a team with no resolvable country is valid.
+    country = models.CharField(max_length=64, blank=True)
     total_earnings = models.DecimalField(max_digits=15, decimal_places=2, default=0.0, null=True, blank=True)
     team_captain = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='captained_teams')
 
