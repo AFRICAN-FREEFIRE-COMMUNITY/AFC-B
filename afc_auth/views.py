@@ -833,7 +833,9 @@ def google_auth(request):
         return Response({"message": "Google credential is required."},
                         status=status.HTTP_400_BAD_REQUEST)
 
-    client_id = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", None)
+    # Defensive .strip(): a stray space/CR in the .env value would make the audience
+    # check fail with a confusing "could not verify".
+    client_id = (getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", None) or "").strip() or None
     if not client_id:
         return Response({"message": "Google sign-in is not configured on the server."},
                         status=status.HTTP_400_BAD_REQUEST)
@@ -841,13 +843,22 @@ def google_auth(request):
     # ── verify the Google ID token signature + audience (google-auth) ──────────
     # verify_oauth2_token checks the JWT signature against Google's public keys,
     # the issuer (accounts.google.com), the audience (our client_id) and expiry.
+    # clock_skew_in_seconds tolerates a modestly out-of-sync SERVER clock, the most
+    # common cause of a "could not verify" when the client id is correct ("Token used
+    # too early/late"). The real exception is logged so the cause is visible in the
+    # server log instead of being swallowed into a generic 401.
     try:
         from google.oauth2 import id_token as google_id_token
         from google.auth.transport import requests as google_requests
         claims = google_id_token.verify_oauth2_token(
-            credential, google_requests.Request(), client_id
+            credential, google_requests.Request(), client_id, clock_skew_in_seconds=60,
         )
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger("afc_auth").warning(
+            "Google sign-in verify failed (client_id=%s...): %s: %s",
+            client_id[:18], type(exc).__name__, exc,
+        )
         return Response({"message": "Could not verify your Google sign-in. Please try again."},
                         status=status.HTTP_401_UNAUTHORIZED)
 
