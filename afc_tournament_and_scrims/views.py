@@ -20372,14 +20372,46 @@ def download_esport_media(request):
         cleaned = _re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "").strip()).strip("_")
         return cleaned or str(fallback)
 
+    # ── Size + naming options (owner 2026-06-21) ────────────────────────────────
+    # esport_size: "original" (default) | "role" (108x130, the role-picture slot).
+    # logo_size:   "original" (default) | "gloo" (1000x1000) | "head" (108x130).
+    # esport_naming: how to name each esport file - "ign" (in-game name) | "uid" |
+    #                "both" (ign_uid, default). Team logos are always named the team.
+    _ESPORT_SIZES = {"role": (108, 130)}
+    _LOGO_SIZES = {"gloo": (1000, 1000), "head": (108, 130)}
+    esport_target = _ESPORT_SIZES.get(request.data.get("esport_size"))
+    logo_target = _LOGO_SIZES.get(request.data.get("logo_size"))
+    esport_naming = (request.data.get("esport_naming") or "both").lower()
+
+    def _resize(raw, target, keep_alpha):
+        """Return (bytes, ext_or_None). target None -> original bytes (ext_or_None=None).
+        Resizes to the EXACT target via cover-crop (ImageOps.fit - scales + centre-crops,
+        no distortion or letterboxing). keep_alpha keeps transparency as PNG (logos);
+        otherwise JPEG. Fail-safe: returns the original bytes on any error."""
+        if not target:
+            return raw, None
+        try:
+            from PIL import Image, ImageOps
+            im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
+            fitted = ImageOps.fit(im, target, Image.LANCZOS)
+            out = io.BytesIO()
+            if keep_alpha and (fitted.mode in ("RGBA", "LA") or (fitted.mode == "P" and "transparency" in fitted.info)):
+                fitted.save(out, format="PNG", optimize=True)
+                return out.getvalue(), ".png"
+            fitted.convert("RGB").save(out, format="JPEG", quality=90)
+            return out.getvalue(), ".jpg"
+        except Exception:
+            return raw, None
+
     included, missing = [], []
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for team in Team.objects.filter(team_id__in=team_ids):
             if team.team_logo:
                 try:
-                    ext = os.path.splitext(team.team_logo.name)[1] or ".png"
-                    zf.writestr(f"team_logos/{_safe(team.team_name, team.team_id)}{ext}", team.team_logo.read())
+                    data, new_ext = _resize(team.team_logo.read(), logo_target, keep_alpha=True)
+                    ext = new_ext or (os.path.splitext(team.team_logo.name)[1] or ".png")
+                    zf.writestr(f"team_logos/{_safe(team.team_name, team.team_id)}{ext}", data)
                     included.append(f"team logo: {team.team_name}")
                     continue
                 except Exception:
@@ -20395,13 +20427,17 @@ def download_esport_media(request):
             profile = profiles.get(u.user_id)
             if profile and profile.esports_pic:
                 try:
-                    ext = os.path.splitext(profile.esports_pic.name)[1] or ".png"
-                    # Filename = IGN_UID (owner 2026-06-12): the in-game name plus the Free Fire UID, so
-                    # graphics teams can match files to game accounts without opening the platform.
-                    zf.writestr(
-                        f"esport_images/{_safe(u.username, u.user_id)}_{_safe(u.uid, u.user_id)}{ext}",
-                        profile.esports_pic.read(),
-                    )
+                    data, new_ext = _resize(profile.esports_pic.read(), esport_target, keep_alpha=False)
+                    ext = new_ext or (os.path.splitext(profile.esports_pic.name)[1] or ".png")
+                    # File name per esport_naming (owner 2026-06-21): ign | uid | both (ign_uid,
+                    # default) so graphics teams can match files to game accounts how they prefer.
+                    if esport_naming == "ign":
+                        base = _safe(u.username, u.user_id)
+                    elif esport_naming == "uid":
+                        base = _safe(u.uid, u.user_id)
+                    else:
+                        base = f"{_safe(u.username, u.user_id)}_{_safe(u.uid, u.user_id)}"
+                    zf.writestr(f"esport_images/{base}{ext}", data)
                     included.append(f"esport image: {u.username}")
                     continue
                 except Exception:
