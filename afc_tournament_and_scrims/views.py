@@ -947,6 +947,20 @@ def create_event(request):
         if field not in request.data:
             return Response({"message": f"Missing field: {field}"}, status=400)
 
+    # Event + registration start/end TIMES are compulsory for both admins and organizers
+    # (owner 2026-06-21). The wizard now requires them client-side; enforce server-side too
+    # so the times are never silently blank. Times are HH:MM strings in the creator's tz.
+    required_times = [
+        "event_start_time", "event_end_time",
+        "registration_start_time", "registration_end_time",
+    ]
+    missing_times = [t for t in required_times if not (request.data.get(t) or "").strip()]
+    if missing_times:
+        return Response(
+            {"message": f"Missing required time(s): {', '.join(missing_times)}."},
+            status=400,
+        )
+
     is_sponsored = request.data.get("is_sponsored", False)
     if isinstance(is_sponsored, str):
         is_sponsored = is_sponsored.lower() in ("1", "true", "yes")
@@ -1129,7 +1143,11 @@ def create_event(request):
             registration_fee_currency=registration_fee_currency,
             competition_type=request.data.get("competition_type"),
             participant_type=request.data.get("participant_type"),
-            event_type=request.data.get("event_type"),
+            # event_type "external" (off-platform registration link) is an AFC-admin-only
+            # concept. Organizer events (org is not None) are ALWAYS "internal" so the
+            # user-facing page uses on-platform registration, never a "Register (External
+            # Link)" button. This is the source of truth even if the FE sends "external".
+            event_type=("internal" if org else request.data.get("event_type")),
             max_teams_or_players=int(request.data.get("max_teams_or_players")),
             event_name=request.data.get("event_name"),
             event_mode=request.data.get("event_mode"),
@@ -1165,6 +1183,9 @@ def create_event(request):
             event_end_time=request.data.get("event_end_time") or None,
             registration_start_time=request.data.get("registration_start_time") or None,
             registration_end_time=request.data.get("registration_end_time") or None,
+            # IANA tz of the creator's browser (owner 2026-06-21) so the times above can
+            # be shown in both the viewer's local tz and the host's tz on the public page.
+            timezone=request.data.get("timezone") or None,
 
             # ── Media registration criteria (owner 2026-06-12) ── booleans arrive as
             # "true"/"1"/bool from the wizard toggles; enforced in register_for_event.
@@ -1736,7 +1757,17 @@ def delete_event(request):
     # AFC admins may delete any event; an org member needs can_edit_events on the event's
     # owning org. org_can_event treats native (org=None) events as admin-only, so org
     # members can never delete AFC events.
-    if not is_admin and not org_can_event(user, "can_edit_events", event):
+    #
+    # ALSO (owner 2026-06-21): the person who CREATED an event may delete it while it is
+    # still a DRAFT, even without can_edit_events. This is what powers "delete your own
+    # draft" on the admin + organizer Drafts pages. Restricted to is_draft so a creator
+    # can never nuke a published/live event this way (those still need admin/org rights).
+    is_creator_draft = bool(event.creator_id) and event.creator_id == user.pk and event.is_draft
+    if (
+        not is_admin
+        and not is_creator_draft
+        and not org_can_event(user, "can_edit_events", event)
+    ):
         return Response({"message": "You do not have permission to modify this event."}, status=403)
 
     set_audit(request, f"Deleted the event {event.event_name}")
@@ -2289,6 +2320,12 @@ def edit_event(request):
         if time_field in request.data:
             setattr(event, time_field, request.data.get(time_field) or None)
 
+    # Re-capture the creator/editor's tz whenever the edit form sends it, so the stored
+    # times stay paired with the tz they were entered in (owner 2026-06-21). The edit
+    # wizard now always sends both the four times and `timezone`.
+    if "timezone" in request.data:
+        event.timezone = request.data.get("timezone") or None
+
     if event.registration_open_date and event.registration_end_date:
         if event.registration_open_date > event.registration_end_date:
             return Response({"message": "registration_open_date cannot be after registration_end_date."}, status=400)
@@ -2435,7 +2472,14 @@ def edit_event(request):
     
     # ensure the evnt hasnt started if they wanna chnage the event type
 
-    if "event_type" in request.data and request.data.get("event_type") != event.event_type:
+    # Organizer events are ALWAYS internal (off-platform "external" registration is an
+    # AFC-admin-only concept). Force it here as the source of truth and ignore any
+    # event_type the organizer edit form sends, so an org event can never flip to
+    # "external" (which would surface a "Register (External Link)" button to users).
+    if event.organization_id:
+        if event.event_type != "internal":
+            event.event_type = "internal"
+    elif "event_type" in request.data and request.data.get("event_type") != event.event_type:
         if event.start_date and event.start_date <= timezone.now().date():
             return Response({"message": "Cannot change event_type after the event has started."}, status=400)
 
@@ -3684,6 +3728,10 @@ def get_event_details(request):
         "registration_end_time": event.registration_end_time,
         "event_start_time": event.event_start_time,
         "event_end_time": event.event_end_time,
+        # IANA tz the times above were entered in (owner 2026-06-21). EventDetailsWrapper
+        # pairs it with the *_date + *_time fields to render BOTH the viewer's local time
+        # and the host's time with a label. Null on legacy events -> UI shows raw time.
+        "timezone": event.timezone,
         # M: capacity snapshot so the frontend can switch Register -> Join Waitlist
         # once the active roster is full (matches register_for_event enforcement).
         "registered_count": active_registered,
@@ -4622,6 +4670,28 @@ from django.conf import settings
 
 ALLOWED_REGISTER_ROLES = ["team_captain", "vice_captain"]
 
+# Roles allowed to REGISTER a team for an event (owner 2026-06-21). The team owner is
+# always allowed (checked separately); on top of that, ONLY these management roles may
+# register the team: captain, vice-captain, manager, coach (owner added vice-captain
+# 2026-06-21). The frontend mirrors this exact set in EventDetailsWrapper
+# (TEAM_REGISTER_ROLES) so the Register button shows the right "only owner / captain /
+# vice-captain / manager / coach can register" popup to anyone else.
+TEAM_EVENT_REGISTER_ROLES = ["team_captain", "vice_captain", "manager", "coach"]
+
+
+def _user_can_register_team(user, team) -> bool:
+    """True if `user` may register `team` for an event: the team owner, or a member whose
+    management_role is one of TEAM_EVENT_REGISTER_ROLES (captain / manager / coach).
+    Used ONLY by register_for_event - other team gates keep _user_is_team_captain_or_owner."""
+    if user == team.team_owner:
+        return True
+    return TeamMembers.objects.filter(
+        team=team,
+        member=user,
+        management_role__in=TEAM_EVENT_REGISTER_ROLES,
+    ).exists()
+
+
 def _maybe_json_list(val):
     if val is None:
         return []
@@ -5141,9 +5211,14 @@ def register_for_event(request):
 
         team = get_object_or_404(Team, team_id=team_id)
 
-        # captain/owner check
-        if not _user_is_team_captain_or_owner(user, team):
-            return Response({"message": "Only captain/vice-captain/team owner can register the team."}, status=403)
+        # Registration permission (owner 2026-06-21): only the team owner, captain,
+        # vice-captain, manager, or coach may register the team. The FE shows the Register
+        # button to every member but pops this same rule when a non-privileged member clicks.
+        if not _user_can_register_team(user, team):
+            return Response(
+                {"message": "Only the team owner, captain, vice-captain, manager, or coach can register the team."},
+                status=403,
+            )
 
         # ── ban guard (afc_auth.BannedPlayer + Team.is_banned) ──
         # A team event registration is blocked if the team is banned (TeamBan -> Team.is_banned)
@@ -8431,6 +8506,9 @@ def get_event_details_for_admin(request):
             # K: event start/end times so the admin analytics view can show them.
             "event_start_time": event.event_start_time,
             "event_end_time": event.event_end_time,
+            # Creator/editor tz the times were entered in (owner 2026-06-21); rehydrates
+            # the admin edit form so a resave keeps the same tz.
+            "timezone": event.timezone,
             },
         "registration_timeline": {
             "registration_start_date": event.registration_open_date,

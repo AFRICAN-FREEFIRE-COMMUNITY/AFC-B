@@ -1526,22 +1526,15 @@ def exit_team(request):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Active-tournament lock (separate from, and additional to, the transfer-window guard
-        # above): a team's roster is FROZEN while it is registered for a tournament that has not
-        # finished. "Active registration" = a TournamentTeam row for this team whose status is not
-        # a removed one (disqualified / withdrawn / left) and whose event is still upcoming or
-        # ongoing (not completed). TournamentTeam lives in afc_tournament_and_scrims and is
-        # imported lazily here (same as Season) to avoid an app-level import cycle.
-        from afc_tournament_and_scrims.models import TournamentTeam
-        has_active_registration = (
-            TournamentTeam.objects.filter(team=team)
-            .exclude(status__in=["disqualified", "withdrawn", "left"])
-            .filter(event__event_status__in=["upcoming", "ongoing"])
-            .exists()
-        )
-        if has_active_registration:
+        # Active-tournament lock (per-player, owner 2026-06-21): you cannot leave the team while
+        # YOU are still on its roster for a live (upcoming/ongoing) tournament - you'd be pulling
+        # yourself out of an event mid-flight. But once the organizer has taken you off every
+        # active event roster (or you were never a playing member, e.g. a coach), you are free to
+        # leave. (Previously this was a BLANKET team-level lock that trapped everyone whenever the
+        # team had any active registration; see _member_in_active_event_roster for the rationale.)
+        if _member_in_active_event_roster(team, user.user_id):
             return Response(
-                {"message": "You cannot leave your team while it is registered for an active tournament. Withdraw from the tournament first or wait until it is completed."},
+                {"message": "You are on your team's roster for an active tournament. You can leave once the event organizer removes you from the event roster, or the tournament is completed."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -1737,6 +1730,33 @@ def _can_manage_roster(user, team):
     return TeamMembers.objects.filter(
         team=team, member=user, management_role="coach"
     ).exists()
+
+
+def _member_in_active_event_roster(team, member_id) -> bool:
+    """True if `member_id` is CURRENTLY on `team`'s roster for a tournament that is still
+    upcoming/ongoing (not completed) and not a removed registration.
+
+    WHY (owner 2026-06-21): the team-side "remove member" / "leave team" actions used to be
+    blocked whenever the TEAM had ANY active tournament registration - a blanket lock that
+    also trapped coaches/managers (who never play) and players an admin/organizer had ALREADY
+    removed from the event roster. The owner's rule: a player the team can no longer field for
+    the event (off every active event roster) should be removable from the team.
+
+    The per-event roster is TournamentTeamMember (afc_tournament_and_scrims). Editing a roster
+    DELETES the removed player's TournamentTeamMember row (edit_roster), and staff roles are
+    never added to it, so this returns False for both cases -> the team may remove them. It
+    stays True (locked) only while the player is actually rostered for a live event.
+    """
+    from afc_tournament_and_scrims.models import TournamentTeamMember
+    return (
+        TournamentTeamMember.objects.filter(
+            tournament_team__team=team,
+            user_id=member_id,
+        )
+        .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+        .filter(tournament_team__event__event_status__in=["upcoming", "ongoing"])
+        .exists()
+    )
 
 
 def _transfer_window_open():
@@ -2007,22 +2027,17 @@ def kick_team_member(request):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Active-tournament lock (separate from, and additional to, the transfer-window guard
-        # above): a captain cannot remove a player while the team is registered for a tournament
-        # that has not finished. "Active registration" = a TournamentTeam row for this team whose
-        # status is not a removed one (disqualified / withdrawn / left) and whose event is still
-        # upcoming or ongoing (not completed). TournamentTeam is imported lazily (same as Season)
-        # to avoid an app-level import cycle.
-        from afc_tournament_and_scrims.models import TournamentTeam
-        has_active_registration = (
-            TournamentTeam.objects.filter(team=team)
-            .exclude(status__in=["disqualified", "withdrawn", "left"])
-            .filter(event__event_status__in=["upcoming", "ongoing"])
-            .exists()
-        )
-        if has_active_registration:
+        # Active-tournament lock (per-player, owner 2026-06-21): the team can't remove a player
+        # who is STILL on its roster for a live (upcoming/ongoing) tournament - that player is
+        # committed to the event. But if the organizer has already removed that player from the
+        # event roster (Edit roster deletes their TournamentTeamMember row), or they were never a
+        # playing member (a coach/manager/analyst is never on the event roster), the team may
+        # remove them. (Previously this was a BLANKET team-level lock that blocked removing ANY
+        # member - even a coach - whenever the team had an active registration, which is the bug
+        # the owner reported. See _member_in_active_event_roster.)
+        if _member_in_active_event_roster(team, member_id):
             return Response(
-                {"error": "You cannot remove a player while the team is registered for an active tournament."},
+                {"error": "This player is on the team's roster for an active tournament. Ask the event organizer to remove them from the event roster first, then you can remove them from the team."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 

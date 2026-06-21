@@ -149,6 +149,16 @@ class Event(models.Model):
     registration_start_time = models.TimeField(null=True, blank=True)
     registration_end_time = models.TimeField(null=True, blank=True)
 
+    # IANA timezone of the person who created/last set the event's times (e.g.
+    # "Africa/Lagos"), captured from the browser on create/edit (owner 2026-06-21).
+    # The date/time fields above are stored as the HOST's wall-clock; pairing them
+    # with this tz lets the frontend show BOTH the viewer's local time AND the host's
+    # time with a label ("17:00 your time • 18:00 WAT"). Nullable for events created
+    # before this field existed (the UI falls back to showing the raw time, no label).
+    # Read by: get_event_details / get-event-details-for-admin -> EventDetailsWrapper
+    # (lib/i18n/time.ts formatEventWindow). Written by: create_event / edit_event.
+    timezone = models.CharField(max_length=64, null=True, blank=True)
+
     # ── Paid registration (feature "paid-events", 2026-06-08) ──────────────────────────────
     # registration_type: "free" keeps the current instant-register flow; "paid" means a
     # registration is only created AFTER the entry fee is paid. registration_fee is the entry
