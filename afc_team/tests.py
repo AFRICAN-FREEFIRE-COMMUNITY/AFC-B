@@ -97,7 +97,7 @@ import datetime
 
 from afc_team.models import TeamMembers
 from afc_rankings.models import Season
-from afc_tournament_and_scrims.models import Event, TournamentTeam
+from afc_tournament_and_scrims.models import Event, TournamentTeam, TournamentTeamMember
 
 
 # A fixed date used for all the Event/Season date fields in these fixtures.
@@ -164,23 +164,48 @@ class RuleB_TournamentMembershipLockTests(TestCase):
                                 content_type="application/json",
                                 HTTP_AUTHORIZATION=f"Bearer {tok}")
 
-    def test_exit_blocked_during_active_tournament(self):
-        # An active (upcoming) registration freezes membership: exit must 403 + NOT delete.
-        _make_event(self.owner, event_status="upcoming")
-        tt = TournamentTeam.objects.create(event=_make_event(self.owner, name="E2"), team=self.team)
+    def _roster(self, tt, user):
+        # Put `user` on the event roster for TournamentTeam `tt` (the per-event roster the
+        # lock keys off, owner 2026-06-21 per-player rule).
+        return TournamentTeamMember.objects.create(
+            tournament_team=tt, user=user, event=tt.event, status="active",
+        )
+
+    def test_exit_blocked_while_on_active_event_roster(self):
+        # On the roster of a live event -> exit must 403 + NOT delete.
+        ev = _make_event(self.owner, event_status="upcoming")
+        tt = TournamentTeam.objects.create(event=ev, team=self.team)
         self.assertEqual(tt.status, "active")
+        self._roster(tt, self.member)
         res = self._exit(self.member_tok)
         self.assertEqual(res.status_code, 403)
         self.assertIn("active tournament", res.json()["message"])
         self.assertTrue(TeamMembers.objects.filter(pk=self.membership.pk).exists())
 
-    def test_kick_blocked_during_active_tournament(self):
-        # Same freeze applies to a captain/owner kick.
-        TournamentTeam.objects.create(event=_make_event(self.owner), team=self.team)
+    def test_kick_blocked_while_on_active_event_roster(self):
+        # Same freeze applies to a captain/owner kick of a rostered player.
+        tt = TournamentTeam.objects.create(event=_make_event(self.owner), team=self.team)
+        self._roster(tt, self.member)
         res = self._kick(self.owner_tok, self.member.user_id)
         self.assertEqual(res.status_code, 403)
         self.assertIn("active tournament", res.json()["error"])
         self.assertTrue(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+    def test_kick_allowed_when_off_active_roster(self):
+        # Per-player rule (owner 2026-06-21): the team IS registered for a live event, but this
+        # member is NOT on that event's roster (e.g. an organizer removed them, or they are a
+        # coach who never plays). The team must be able to remove them.
+        TournamentTeam.objects.create(event=_make_event(self.owner), team=self.team)
+        res = self._kick(self.owner_tok, self.member.user_id)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+    def test_exit_allowed_when_off_active_roster(self):
+        # Same per-player rule for self-leave: not on the live event roster -> may leave.
+        TournamentTeam.objects.create(event=_make_event(self.owner), team=self.team)
+        res = self._exit(self.member_tok)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(TeamMembers.objects.filter(pk=self.membership.pk).exists())
 
     def test_exit_allowed_with_no_active_registration(self):
         # No tournament registration at all -> leave still works (window is open).
