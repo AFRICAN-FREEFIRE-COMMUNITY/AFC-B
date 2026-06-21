@@ -30,6 +30,11 @@ urlpatterns = [
     # SessionToken (sign up + sign in in one). Consumed by the FE "Continue with
     # Google" button -> AuthContext.loginWithGoogle. See views.google_auth.
     path('google/', google_auth, name='google_auth'),
+    # Discord sign-in/sign-up (SSO) - start -> Discord, callback exchanges the code +
+    # issues a session, exchange swaps the one-time handoff for the token. See views.
+    path('discord/sso/start/', discord_sso_start, name='discord_sso_start'),
+    path('discord/sso/callback/', discord_sso_callback, name='discord_sso_callback'),
+    path('discord/sso/exchange/', discord_sso_exchange, name='discord_sso_exchange'),
     # path('logout/', logout, name='logout'),
     # ── Player-to-player reports (owner 2026-06-20) ─────────────────────────────
     # A player reports another player (proof + notes); admins triage + answer; the
