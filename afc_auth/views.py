@@ -2023,6 +2023,9 @@ def edit_profile(request):
     email = request.data.get("email")
     uid = request.data.get("uid")
     profile_pic = request.FILES.get("profile_pic")
+    # HEIC/HEIF -> JPEG + downscale so the avatar displays + stays small (owner 2026-06-21).
+    from .image_utils import normalize_image_upload
+    profile_pic = normalize_image_upload(profile_pic, force_jpeg=True)
 
     # Validate required fields
     if not all([full_name, in_game_name, email]):
@@ -2534,6 +2537,12 @@ def upload_esport_image(request):
     if not esport_image:
         return Response({"message": "esport_image file is required."},
                         status=status.HTTP_400_BAD_REQUEST)
+
+    # HEIC/HEIF (iPhone default) -> JPEG before anything else (owner 2026-06-21): browsers
+    # can't render HEIC and OpenCV can't decode it, so without this the image neither
+    # displays nor gets face-checked. Fail-safe passthrough for non-HEIC / on error.
+    from .image_utils import normalize_image_upload
+    esport_image = normalize_image_upload(esport_image, force_jpeg=True)
 
     # ── Human-picture gate (owner 2026-06-20) ───────────────────────────────────
     # Stop players uploading random gallery items (logos, screenshots, memes) as

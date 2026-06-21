@@ -230,6 +230,9 @@ def create_team(request):
     # Extract data
     team_name = request.data.get("team_name")
     team_logo = request.FILES.get("team_logo")
+    # HEIC/HEIF -> JPEG so the logo displays in browsers (owner 2026-06-21). Passthrough otherwise.
+    from afc_auth.image_utils import normalize_image_upload
+    team_logo = normalize_image_upload(team_logo)
     team_description = request.data.get("team_description", "We Love Playing Free Fire")
     country = user.country
     join_settings = request.data.get("join_settings", "by_request")
@@ -900,6 +903,9 @@ def edit_team(request):
     team_id = request.data.get("team_id")
     team_name = request.data.get("team_name")
     team_logo = request.FILES.get("team_logo")
+    # HEIC/HEIF -> JPEG so the logo displays in browsers (owner 2026-06-21). Passthrough otherwise.
+    from afc_auth.image_utils import normalize_image_upload
+    team_logo = normalize_image_upload(team_logo)
     join_settings = request.data.get("join_settings")
     # OPTIONAL short team handle. Default to a sentinel (object()) so we can tell "key omitted"
     # (leave the tag untouched) apart from "key sent empty" (owner is clearing the tag).
