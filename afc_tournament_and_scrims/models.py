@@ -446,6 +446,29 @@ class Leaderboard(models.Model):
         unique_together = ("event", "stage", "group")
 
 # ---------------- Matches & Stats ----------------
+# Default per-map SCORING CONFIG (owner 2026-06-21): every new map (Match) starts pre-filled with the
+# standard Battle-Royale ladder — 1 point/kill, no assist/damage bonus, placement 12/9/8/7/6/5/4/3/2/1 —
+# so admins/organizers no longer fill it in per map. It is still fully editable per map (the Scoring
+# Config tab -> POST /events/edit-match-scoring-config/ overwrites Match.scoring_settings), and "Apply
+# to..." copies one map's config to others. Persisted as Match.scoring_settings; read by every scoring
+# compute path as `match.scoring_settings or {}`. DEFAULT_PLACEMENT_POINTS is the single source of truth
+# (mirror it in the frontend leaderboard editor's default form state).
+DEFAULT_PLACEMENT_POINTS = {
+    "1": 12, "2": 9, "3": 8, "4": 7, "5": 6, "6": 5, "7": 4, "8": 3, "9": 2, "10": 1,
+}
+
+
+def default_scoring_settings():
+    """Fresh default Match.scoring_settings dict (a NEW object each call — required for a mutable
+    JSONField default). The standard BR ladder above + 1 kill point, 0 assist, 0 damage."""
+    return {
+        "kill_point": 1,
+        "points_per_assist": 0,
+        "points_per_1000_damage": 0,
+        "placement_points": dict(DEFAULT_PLACEMENT_POINTS),
+    }
+
+
 class Match(models.Model):
     match_id = models.AutoField(primary_key=True)
     leaderboard = models.ForeignKey(Leaderboard, on_delete=models.CASCADE, related_name="matches", null=True, blank=True)
@@ -468,7 +491,7 @@ class Match(models.Model):
     room_details_released_at = models.DateTimeField(null=True, blank=True)
     result_inputted = models.BooleanField(default=False)
     upload_method = models.CharField(max_length=30, null=True, blank=True)
-    scoring_settings = models.JSONField(default=dict, blank=True)
+    scoring_settings = models.JSONField(default=default_scoring_settings, blank=True)
     match_map = models.CharField(
         max_length=50,
         choices=[

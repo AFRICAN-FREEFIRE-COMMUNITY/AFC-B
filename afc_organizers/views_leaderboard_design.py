@@ -26,7 +26,10 @@ Consumed by: the organizer + admin "Leaderboard designs" page + the leaderboard 
 """
 import json
 
-from rest_framework.decorators import api_view
+from django.http import FileResponse, Http404
+from django.urls import reverse
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -86,11 +89,24 @@ def _serialize_logo(logo, request=None):
 
 
 def _serialize_font(f, request=None):
-    """An uploaded font library item: its (absolute) file URL + name."""
+    """An uploaded font library item: its name + a CORS-enabled file URL.
+
+    The `file` URL points at the Django-served font_file view (organizers/leaderboard-fonts/by-id/
+    <id>/file/), NOT the raw /media/ URL. The frontend loads this via the browser FontFace API to
+    PREVIEW the typeface (canvas cells/text, the font pickers, the §E library). In production /media/
+    is served by nginx with NO Access-Control-Allow-Origin, so a cross-origin FontFace load of the
+    raw media URL fails and every font fell back to DM Sans (owner 2026-06-21). Serving the bytes
+    through Django routes the response through corsheaders, which DOES add the CORS header, so the
+    cross-origin font load succeeds. Server-side export is unaffected (it reads f.file.path directly).
+    """
+    file_url = None
+    if f.file:
+        path = reverse("organizers_leaderboard_font_file", args=[f.id])
+        file_url = request.build_absolute_uri(path) if request is not None else path
     return {
         "id": f.id,
         "name": f.name,
-        "file": _abs_url(request, f.file),
+        "file": file_url,
     }
 
 
@@ -962,3 +978,36 @@ def font_item(request, font_id):
                         status=status.HTTP_403_FORBIDDEN)
     f.delete()
     return Response({"message": "Font removed."})
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def font_file(request, font_id):
+    """GET organizers/leaderboard-fonts/by-id/<font_id>/file/ — stream a font's raw bytes.
+
+    WHY THIS EXISTS (owner 2026-06-21 "see how the fonts will look"): uploaded fonts live under
+    /media/, which in PRODUCTION is served by nginx directly and therefore carries NO
+    Access-Control-Allow-Origin header. The browser FontFace API (used by DesignFieldsEditor to
+    preview a typeface in the canvas, the three font pickers, and the §E font library) requires CORS
+    for ANY cross-origin font, so loading a /media/ font from the frontend origin silently failed in
+    prod and every font fell back to DM Sans. Serving the SAME bytes through this Django view routes
+    the response through corsheaders (CORS_ORIGIN_ALLOW_ALL=True), which adds the CORS header the
+    cross-origin FontFace load needs, so the preview works. (Local dev already worked because there
+    Django serves /media/ itself, through corsheaders.)
+
+    PUBLIC (AllowAny): a cross-origin FontFace fetch cannot attach the auth cookie/header, and a font
+    file is not sensitive. Consumed by: frontend/lib/leaderboardDesigns.ts LeaderboardDesignFont.file
+    -> DesignFieldsEditor.tsx FontFace loader. The serialized `file` URL (see _serialize_font) points
+    here. Server-side PNG export is unaffected (it reads f.file.path on disk, never this URL).
+    """
+    f = OrgLeaderboardDesignFont.objects.filter(id=font_id).first()
+    if not f or not f.file:
+        raise Http404("Font not found.")
+    # Content type per extension (default to TTF). The FE only needs the bytes; the @font-face format
+    # is inferred by the browser regardless, but a correct type keeps caches/proxies happy.
+    name = f.file.name.lower()
+    ctype = "font/otf" if name.endswith(".otf") else "font/ttf"
+    resp = FileResponse(f.file.open("rb"), content_type=ctype)
+    # Font bytes are immutable for a given id, and the FE loads each once per session, so cache hard.
+    resp["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp

@@ -51,7 +51,8 @@ from afc_auth.views import validate_token
 from afc_organizers.permissions import org_can_event
 
 from .models import (
-    Match, Stages, StageGroups, StageCompetitor, StageGroupCompetitor,
+    Event, Match, Stages, StageGroups, StageCompetitor, StageGroupCompetitor,
+    RegisteredCompetitors, TournamentTeam,
 )
 
 
@@ -190,6 +191,150 @@ def _distribute_into_groups(stage, shuffle=True, only_ungrouped=False):
     StageGroupCompetitor.objects.bulk_create(entries, ignore_conflicts=True)
     _reconcile_group_roles(stage)
     return len(entries)
+
+
+# ── AUTO-SEED added/registered competitors into the bracket (owner 2026-06-21) ────────────────────
+# WHY: registration (public register_for_event, admin add_teams_to_event, qualifier promotion) only
+# creates EVENT-level rows (RegisteredCompetitors / TournamentTeam). It does NOT place a competitor
+# into a stage's groups (StageCompetitor -> StageGroupCompetitor). So added teams never showed up in
+# the groups and could not have stats entered until an admin MANUALLY ran "Seed to groups". The owner
+# wants that to happen automatically: instantly when teams are added, and as a safety-net when the
+# Stats/leaderboard page opens. autoseed_stage() is the engine; it does EXACTLY what the manual seed
+# does (StageCompetitor pool + the round-robin _distribute_into_groups above), just automatically and
+# idempotently. Callers: views.add_teams_to_event/add_teams_to_stage (on add) + sync_entry_stage_seeding
+# (the Stats-page safety-net) below.
+
+# Only these formats place competitors into StageGroups via the round-robin algorithm. Round-robin
+# stages use RoundRobinGroup base groups (assigned in the RoundRobinPanel, a different subsystem) and
+# CS knockout/double-elim/league use fixed head-to-head brackets, so auto-distributing registrations
+# into them would be wrong. We restrict auto-seed to the group-standings formats and leave the rest to
+# their format-specific tools. (The MANUAL seed endpoints stay unrestricted, as before.)
+GROUP_DISTRIBUTABLE_FORMATS = {"br - normal", "cs - normal"}
+
+
+def entry_stage(event):
+    """The event's ENTRY stage = the first by display order (stage_order, then start_date, then id) —
+    the stage that takes REGISTRATION-based seeding. Later stages fill from results/qualifiers, never
+    from raw registrations, so registration auto-seed only ever targets this one stage (owner choice
+    2026-06-21: "entry stage only"). Returns a Stages or None when the event has no stages yet."""
+    return (
+        Stages.objects.filter(event=event)
+        .order_by("stage_order", "start_date", "stage_id")
+        .first()
+    )
+
+
+def _missing_stage_competitor_entries(stage):
+    """The StageCompetitor rows that SHOULD exist for `stage` but don't yet, built from the event's
+    CONFIRMED registrations (mirrors views.seed_event_competitors_to_stage's competitor selection):
+      - solo events -> every RegisteredCompetitors(status="registered")
+      - team events -> every TournamentTeam(status="active") that is not waitlisted
+    Returns a list of UNSAVED StageCompetitor (only the missing ones, so it is idempotent)."""
+    event = stage.event
+    if event.participant_type == "solo":
+        regs = RegisteredCompetitors.objects.filter(event=event, status="registered")
+        existing = set(
+            StageCompetitor.objects.filter(stage=stage).values_list("player_id", flat=True)
+        )
+        return [StageCompetitor(stage=stage, player=r) for r in regs if r.id not in existing]
+    teams = (
+        TournamentTeam.objects.filter(event=event, status="active")
+        .exclude(is_waitlisted=True)  # waitlisted teams are not confirmed participants yet
+    )
+    existing = set(
+        StageCompetitor.objects.filter(stage=stage).values_list("tournament_team_id", flat=True)
+    )
+    return [
+        StageCompetitor(stage=stage, tournament_team=t)
+        for t in teams if t.tournament_team_id not in existing
+    ]
+
+
+def autoseed_stage(stage, *, shuffle=False):
+    """Idempotently fold ALL confirmed registrations of stage.event into `stage`'s bracket:
+      1. create any missing StageCompetitor rows (the stage pool), then
+      2. distribute the still-UNGROUPED competitors into the stage's groups (StageGroupCompetitor),
+         using the same round-robin algorithm as the manual "Seed to groups" action.
+    Safe to call repeatedly: missing-only creation + only_ungrouped distribution means existing
+    placements are never moved or duplicated (admins can still manually reseed/move afterwards).
+
+    Restricted to GROUP_DISTRIBUTABLE_FORMATS (br/cs normal); other formats (round-robin, CS brackets)
+    are left to their own tools and return a no-op with a `skipped` note. BEST-EFFORT: any failure is
+    swallowed + logged so it never breaks the operation that triggered it (Discord side-effect pattern).
+    Returns a dict of counts.
+    """
+    result = {
+        "stage_id": getattr(stage, "stage_id", None),
+        "stage_competitors_added": 0,
+        "group_seeds_added": 0,
+    }
+    if not stage:
+        result["skipped"] = "no_stage"
+        return result
+    if stage.stage_format not in GROUP_DISTRIBUTABLE_FORMATS:
+        # RR base groups / CS brackets are placed by their own subsystems, not registration auto-seed.
+        result["skipped"] = f"format:{stage.stage_format}"
+        return result
+    try:
+        with transaction.atomic():
+            new_sc = _missing_stage_competitor_entries(stage)
+            if new_sc:
+                StageCompetitor.objects.bulk_create(new_sc, ignore_conflicts=True)
+                result["stage_competitors_added"] = len(new_sc)
+            # Distribute the still-ungrouped pool into the stage's groups (no-op if there are no groups).
+            result["group_seeds_added"] = _distribute_into_groups(
+                stage, shuffle=shuffle, only_ungrouped=True,
+            )
+        # Best-effort Discord STAGE-role reconcile for the newly pooled competitors (group roles are
+        # reconciled inside _distribute_into_groups). Mirrors views.seed_event_competitors_to_stage.
+        if result["stage_competitors_added"]:
+            try:
+                from .views import reconcile_stage_roles  # lazy: avoid load-time circular import
+                reconcile_stage_roles(stage.stage_id)
+            except Exception:
+                pass  # non-critical
+    except Exception as exc:  # never break the triggering add/stat operation
+        import logging
+        logging.getLogger(__name__).warning(
+            "autoseed_stage failed for stage %s: %s", result["stage_id"], exc,
+        )
+    return result
+
+
+def autoseed_entry_stage(event, *, shuffle=False):
+    """autoseed_stage() on the event's ENTRY stage (see entry_stage). No-op when the event has no
+    stages yet. This is what the on-add hooks + the Stats-page safety-net call for an event."""
+    return autoseed_stage(entry_stage(event), shuffle=shuffle)
+
+
+@api_view(["POST"])
+def sync_entry_stage_seeding(request):
+    """POST events/seeding/sync-entry-stage/ {event_id} — the Stats-page SAFETY-NET for auto-seeding.
+
+    Idempotently seeds every confirmed registration of the event into its ENTRY stage's groups (see
+    autoseed_entry_stage). Fired by the admin + organizer Stats/leaderboard pages when they open
+    (owner 2026-06-21: "automatically seed those added teams ALSO when they click on Stat"), so teams
+    added by ANY path — admin add_teams_to_event, public/organizer register_for_event, or qualifier
+    promotion — appear in the groups and can have stats entered WITHOUT a manual seed step.
+
+    AUTH: gated exactly like the other seeding endpoints (_seeding_gate = AFC event admin OR organizer
+    with can_manage_registrations on the owning org), so it covers admins AND organizers. Underneath,
+    autoseed_* is best-effort, so this returns 200 with counts even when there is nothing to do.
+    Consumed by: frontend lib/seedingManagement.ts -> the admin + organizer leaderboard pages."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if not _seeding_gate(user, event):
+        return Response(
+            {"message": "You do not have permission to manage seeding for this event."},
+            status=403,
+        )
+    result = autoseed_entry_stage(event)
+    return Response({"message": "Entry-stage seeding synced.", **result}, status=200)
 
 
 def _group_competitor_keys(group):

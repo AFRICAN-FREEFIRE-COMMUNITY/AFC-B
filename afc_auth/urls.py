@@ -14,6 +14,12 @@ from .views_player_reports import (
 )
 # Fan / Hater public sentiment (owner 2026-06-20). See views_sentiment.py.
 from .views_sentiment import get_sentiment, set_sentiment
+# Watchlist (owner 2026-06-21): shared advisory list of suspicious players/teams. See views_watchlist.py.
+from .views_watchlist import (
+    watchlist_collection,
+    watchlist_item,
+    watchlist_tags,
+)
 
 
 urlpatterns = [
@@ -44,6 +50,13 @@ urlpatterns = [
     path('my-player-reports/', my_player_reports, name='my_player_reports'),
     path('admin/player-reports/', admin_list_player_reports, name='admin_list_player_reports'),
     path('admin/player-reports/<int:report_id>/', admin_respond_player_report, name='admin_respond_player_report'),
+
+    # ── Watchlist (owner 2026-06-21): shared advisory list of suspicious players/teams. ──
+    # /tags/ before the <int> item route so the int converter never swallows it. Gate (admin OR
+    # organizer) is inside the views. See afc_auth/views_watchlist.py.
+    path('watchlist/tags/', watchlist_tags, name='watchlist_tags'),
+    path('watchlist/<int:watch_id>/', watchlist_item, name='watchlist_item'),
+    path('watchlist/', watchlist_collection, name='watchlist_collection'),
     # First-login onboarding: mark the skippable requirements flow done/skipped.
     path('complete-onboarding/', complete_onboarding, name='complete_onboarding'),
     # Fan / Hater public sentiment on a player or team profile (owner 2026-06-20).

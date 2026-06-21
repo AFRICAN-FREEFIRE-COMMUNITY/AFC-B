@@ -3987,6 +3987,42 @@ def get_event_details(request):
                     .order_by("-total_points", "-total_kills", "tournament_team__team__team_name")
                 )
 
+            # ── Include SEEDED competitors with no results yet (owner 2026-06-21 bug fix) ──
+            # Same gap as the admin leaderboard: the aggregation only yields competitors that already
+            # have stats rows, so a team/player SEEDED into this group but not yet played was missing
+            # from the PUBLIC standings too. Materialize + append a 0 row for each seeded competitor
+            # absent from the list so it shows at 0 points (appended after the DB-ordered real rows).
+            overall = list(overall)
+            if event.participant_type == "solo":
+                _present = {r["competitor_id"] for r in overall}
+                for _sc in StageGroupCompetitor.objects.filter(
+                    stage_group=group, player__isnull=False,
+                ).select_related("player__user"):
+                    if _sc.player_id in _present:
+                        continue
+                    overall.append({
+                        "competitor_id": _sc.player_id,
+                        "competitor__user__username": (
+                            _sc.player.user.username if _sc.player and _sc.player.user else ""
+                        ),
+                        "matches_played": 0, "total_kills": 0, "placement_sum": 0, "total_points": 0,
+                    })
+            else:
+                _present = {r["tournament_team_id"] for r in overall}
+                for _sc in StageGroupCompetitor.objects.filter(
+                    stage_group=group, tournament_team__isnull=False,
+                ).select_related("tournament_team__team"):
+                    if _sc.tournament_team_id in _present:
+                        continue
+                    overall.append({
+                        "tournament_team_id": _sc.tournament_team_id,
+                        "tournament_team__team__team_name": (
+                            _sc.tournament_team.team.team_name
+                            if _sc.tournament_team and _sc.tournament_team.team else ""
+                        ),
+                        "matches_played": 0, "total_kills": 0, "placement_sum": 0, "total_points": 0,
+                    })
+
             groups_payload.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
@@ -5192,6 +5228,10 @@ def register_for_event(request):
         
         
 
+        # WATCHLIST soft-warning (owner 2026-06-21): heads-up to the event's runners if this solo
+        # registrant is on the shared watchlist. Advisory only (never blocks); best-effort.
+        notify_watchlist_on_register(event, player=user)
+
         return Response({
             "message": (
                 "Registered. Your registration is pending sponsor approval."
@@ -5665,6 +5705,10 @@ def register_for_event(request):
                     for u in roster_users
                 ])
 
+
+        # WATCHLIST soft-warning (owner 2026-06-21): heads-up to the event's runners if this team
+        # (or any player on its roster) is on the shared watchlist. Advisory only; best-effort.
+        notify_watchlist_on_register(event, team=team)
 
         return Response({
             "message": f"Team successfully registered ({participant_type}). Discord roles queued.",
@@ -12030,6 +12074,46 @@ def get_all_leaderboard_details_for_event(request):
             # team rows expose the `team_name` alias, solo rows `competitor__user__username`.
             name_key = "competitor__user__username" if event.participant_type == "solo" else "team_name"
 
+            # ── Include SEEDED competitors with no results yet (owner 2026-06-21 bug fix) ──
+            # The aggregation above only yields competitors that ALREADY have match-stats rows, so a
+            # team/player SEEDED into this group (StageGroupCompetitor) but not yet played was MISSING
+            # from the standings entirely. Append a zero row for every seeded competitor absent from
+            # `overall` so they show at 0 points (the carry-over loop below fills carry_over_points;
+            # they sort last on 0 / are appended after the DB-ordered real rows on a plain stage). This
+            # is purely the READ-side fix; seeding rows are created correctly by autoseed/manual seed.
+            _present_ids = {r[id_key] for r in overall}
+            if event.participant_type == "solo":
+                for _sc in StageGroupCompetitor.objects.filter(
+                    stage_group=group, player__isnull=False,
+                ).select_related("player__user"):
+                    if _sc.player_id in _present_ids:
+                        continue
+                    overall.append({
+                        "competitor_id": _sc.player_id,
+                        "competitor__user__username": (
+                            _sc.player.user.username if _sc.player and _sc.player.user else ""
+                        ),
+                        "matches_played": 0, "total_kills": 0, "total_booyah": 0,
+                        "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
+                        "total_points": 0, "effective_total": 0, "last_match_placement": 999,
+                    })
+            else:
+                for _sc in StageGroupCompetitor.objects.filter(
+                    stage_group=group, tournament_team__isnull=False,
+                ).select_related("tournament_team__team"):
+                    if _sc.tournament_team_id in _present_ids:
+                        continue
+                    overall.append({
+                        "tournament_team_id": _sc.tournament_team_id,
+                        "team_name": (
+                            _sc.tournament_team.team.team_name
+                            if _sc.tournament_team and _sc.tournament_team.team else ""
+                        ),
+                        "matches_played": 0, "total_kills": 0, "total_booyah": 0,
+                        "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
+                        "total_points": 0, "effective_total": 0, "last_match_placement": 999,
+                    })
+
             # (1) Point-Rush carry-over: seed each competitor's running total with the bonus
             # banked from any earlier stage whose point_rush_target_stage is THIS stage. We add
             # it into effective_total so the standings (and the champion replay below) see it.
@@ -16548,10 +16632,22 @@ def add_teams_to_stage(request):
             continue
         new_entries.append(StageCompetitor(stage=stage, tournament_team=team))
     StageCompetitor.objects.bulk_create(new_entries)
+
+    # AUTO-SEED (owner 2026-06-21): adding teams to a stage should also place them into that stage's
+    # groups automatically, so they appear in the groups + can have stats entered without a separate
+    # "Seed to groups" click. Distribute only the still-UNGROUPED pool (idempotent, preserves existing
+    # placements), and only for group-standings formats (round-robin / CS brackets keep their own
+    # placement tools). Best-effort under the hood. See seeding_management.
+    from .seeding_management import _distribute_into_groups, GROUP_DISTRIBUTABLE_FORMATS
+    group_seeds_added = 0
+    if stage.stage_format in GROUP_DISTRIBUTABLE_FORMATS:
+        group_seeds_added = _distribute_into_groups(stage, shuffle=False, only_ungrouped=True)
+
     return Response({
         "message": f"{len(new_entries)} teams added to stage.",
         "stage_id": stage.stage_id,
         "added_team_ids": [entry.tournament_team.team_id for entry in new_entries],
+        "group_seeds_added": group_seeds_added,  # how many were also auto-placed into groups
     }, status=200)
 
 
@@ -16891,6 +16987,17 @@ def upload_team_match_result(request):
     team_stats_to_create = []
     player_stats_to_create = []
     missing_teams = []
+    # Teams whose NAME matches a registered team but whose uploaded players' UIDs are NOT on that
+    # team's roster (owner 2026-06-21): the team EXISTS, the players don't match -> relabel from the
+    # misleading "team not on the site" + let the FE offer a one-click "Add to watchlist". Built off a
+    # normalized team-name index so a clan tag / spacing / non-ascii prefix still matches
+    # ("龙 | ANONYMOUS" -> "anonymous" == registered "ANONYMOUS"). Only an UNAMBIGUOUS single match relabels.
+    roster_mismatch_teams = []
+    def _norm_tname(n):
+        return re.sub(r"[^a-z0-9]", "", (n or "").lower())
+    name_to_tt = {}
+    for _tt in TournamentTeam.objects.filter(event=event).select_related("team"):
+        name_to_tt.setdefault(_norm_tname(_tt.team.team_name), []).append(_tt)
     # Result feedback surfaced to the FE (FileUploadStep.tsx) so the admin can confirm
     # attributions and resolve flagged players. See the response contract at the bottom.
     attributed = []        # credited players: {team_name, site_team_name, username, uid, kills}
@@ -16925,7 +17032,22 @@ def upload_team_match_result(request):
             team_data["_team_obj"] = team_obj
 
             if not team_obj:
-                missing_teams.append(team_data["team_name"])
+                # Team UID-unresolved. If the block's NAME matches exactly one registered team, the
+                # team EXISTS but fielded off-roster players (the owner's "team obviously exists" case):
+                # remember the matched team so the per-player loop relabels + the FE offers a watchlist
+                # button. Otherwise it is genuinely not on the site.
+                _matched = name_to_tt.get(_norm_tname(team_data["team_name"])) or []
+                _site_tt = _matched[0] if len(_matched) == 1 else None
+                team_data["_name_matched_tt"] = _site_tt
+                if _site_tt:
+                    roster_mismatch_teams.append({
+                        "team_name": team_data["team_name"],
+                        "site_team_name": _site_tt.team.team_name,
+                        "site_team_id": _site_tt.team_id,
+                        "tournament_team_id": _site_tt.tournament_team_id,
+                    })
+                else:
+                    missing_teams.append(team_data["team_name"])
                 continue
 
             # Classify this block into ROSTERED players (count normally) vs FLAGGED ringers — a UID
@@ -17009,15 +17131,21 @@ def upload_team_match_result(request):
             # Whole block's team not found on the site: report EACH UID (not just the team)
             # so the admin sees exactly who/what went unattributed.
             if not team_obj:
+                # Relabel using the name-match found in the team-stats loop: if the team exists on the
+                # site (just with off-roster players), say so + carry site_team_id so the FE shows
+                # "Team exists, players not on roster" and an "Add to watchlist" button (the TEAM).
+                _site_tt = team_data.get("_name_matched_tt")
+                _reason = "team_exists_roster_mismatch" if _site_tt else "team_not_on_site"
                 for p in team_data["players"]:
                     unknown_players.append({
                         "team_name": block_team_name,
-                        "site_team_name": None,
-                        "tournament_team_id": None,
+                        "site_team_name": _site_tt.team.team_name if _site_tt else None,
+                        "tournament_team_id": _site_tt.tournament_team_id if _site_tt else None,
+                        "site_team_id": _site_tt.team_id if _site_tt else None,
                         "uid": p["uid"],
                         "name": p["name"],
                         "kills": p["kills"],
-                        "reason": "team_not_on_site",
+                        "reason": _reason,
                     })
                 continue
 
@@ -17034,6 +17162,7 @@ def upload_team_match_result(request):
                         "team_name": block_team_name,
                         "site_team_name": site_team_name,
                         "tournament_team_id": block_tt_id,
+                        "site_team_id": team_obj.team_id,  # for the "Add team to watchlist" button
                         "uid": uid,
                         "name": p["name"],
                         "kills": p["kills"],
@@ -17047,6 +17176,9 @@ def upload_team_match_result(request):
                         "team_name": block_team_name,
                         "site_team_name": site_team_name,
                         "tournament_team_id": block_tt_id,
+                        "site_team_id": team_obj.team_id,            # the block team (watchlist: team)
+                        "registered_user_id": member.user_id,        # the player's real account (watchlist: player)
+                        "other_team_id": member.tournament_team.team_id,
                         "uid": uid,
                         "name": p["name"],
                         "kills": p["kills"],
@@ -17156,12 +17288,69 @@ def upload_team_match_result(request):
         "parsed_teams": len(parsed_teams),
         "saved_teams": len(created_team_stats),
         "saved_players": len(player_stats_to_create),
-        "missing_teams": missing_teams[:20],          # team blocks where NO player UID matched
+        "missing_teams": missing_teams[:20],          # team blocks where NO player UID matched + name unknown
+        "roster_mismatch_teams": roster_mismatch_teams[:20],  # team EXISTS on site but uploaded UIDs off-roster
         "attributed": attributed,                      # per-player kills credited (admin confirmation)
         "unknown_uids": unknown_players,               # file UIDs that could not be credited (+ reason)
         "roster_no_uid": roster_no_uid,                # rostered players with no UID set (cannot match)
         "unmatched_count": len(unknown_players),       # convenience count for the FE toast
     }, status=200)
+
+
+def notify_watchlist_on_register(event, *, team=None, player=None):
+    """WATCHLIST soft heads-up (owner 2026-06-21): if a team being registered/added (or any player on
+    its roster), or a solo player, is on the ACTIVE watchlist, notify the event's RUNNERS (the event
+    creator + the owning org's owners) so they're aware a watched entity entered. Advisory ONLY — it
+    NEVER blocks. Best-effort: any failure is swallowed so it can never break registration. Reused by
+    add_teams_to_event now; drop the same call into register_for_event's success paths to cover public/
+    organizer registration. Notification carries an event deep link (target_type=event)."""
+    try:
+        from afc_auth.models import WatchlistEntry, Notifications
+        watched = []
+        if team is not None:
+            if WatchlistEntry.objects.filter(status="active", subject_type="team", team=team).exists():
+                watched.append(team.team_name)
+            # Any player on the team's roster who is individually watched (check the team's general
+            # roster so it works even before TournamentTeamMember rows are written).
+            member_ids = list(TeamMembers.objects.filter(team=team).values_list("member_id", flat=True))
+            if member_ids:
+                for e in WatchlistEntry.objects.filter(
+                    status="active", subject_type="player", player_id__in=member_ids,
+                ).select_related("player"):
+                    nm = e.player.username if e.player else "a player"
+                    watched.append(f"{nm} (on {team.team_name})")
+        if player is not None:
+            if WatchlistEntry.objects.filter(status="active", subject_type="player", player=player).exists():
+                watched.append(player.username)
+        if not watched:
+            return
+
+        recipients = set()
+        if event.creator_id:
+            recipients.add(event.creator_id)
+        if event.organization_id:
+            from afc_organizers.models import OrganizationMember
+            recipients.update(
+                OrganizationMember.objects.filter(
+                    organization_id=event.organization_id, status="active", role="owner",
+                ).values_list("user_id", flat=True)
+            )
+        if not recipients:
+            return
+        names = ", ".join(watched[:5])
+        link_id = getattr(event, "slug", "") or str(event.event_id)
+        for uid in recipients:
+            Notifications.objects.create(
+                user_id=uid,
+                title="Watchlisted entrant registered",
+                message=f"Heads up: {names} (on the watchlist) just entered {event.event_name}.",
+                notification_type="watchlist_register",
+                related_event=event,
+                target_type="event",
+                target_id=link_id,
+            )
+    except Exception:
+        pass  # advisory + best-effort: never break the registration/add
 
 
 @api_view(["POST"])
@@ -17238,10 +17427,25 @@ def add_teams_to_event(request):
         if new_registrations:
             RegisteredCompetitors.objects.bulk_create(new_registrations)
 
+    # AUTO-SEED (owner 2026-06-21): added teams must flow into the bracket automatically, not just the
+    # event roster. Fold every confirmed registration into the ENTRY stage's groups so the new teams
+    # appear in the groups and can have stats entered WITHOUT a manual "Seed to groups" step. Idempotent
+    # + best-effort (never breaks the add); only acts on group-standings stage formats. The Stats-page
+    # safety-net (seeding_management.sync_entry_stage_seeding) catches any other add path. See
+    # seeding_management.autoseed_entry_stage.
+    from .seeding_management import autoseed_entry_stage
+    seed_result = autoseed_entry_stage(event)
+
+    # WATCHLIST soft-warning (owner 2026-06-21): if any added team (or a player on it) is on the
+    # active watchlist, give the event's runners a heads-up. Advisory only — the add already happened.
+    for _team in teams:
+        notify_watchlist_on_register(event, team=_team)
+
     return Response({
         "message": f"{len(new_registrations)} teams registered and {len(new_tournament_teams)} teams added.",
         "event_id": event.event_id,
         "added_team_ids": [team.team_id for team in teams],
+        "auto_seed": seed_result,  # {stage_id, stage_competitors_added, group_seeds_added}
     }, status=200)
 
     
@@ -17295,6 +17499,15 @@ def add_teams_to_group(request):
             continue
         new_entries.append(StageGroupCompetitor(stage_group=group, tournament_team=team))
     StageGroupCompetitor.objects.bulk_create(new_entries)
+
+    # Keep the stage POOL consistent (owner 2026-06-21 auto-seed): a team placed straight into a group
+    # must also exist as a StageCompetitor (stage-level seed), otherwise undo/reseed (which work off the
+    # StageCompetitor pool) would silently drop it. get_or_create is idempotent.
+    for entry in new_entries:
+        StageCompetitor.objects.get_or_create(
+            stage=group.stage, tournament_team=entry.tournament_team,
+        )
+
     return Response({
         "message": f"{len(new_entries)} teams added to group.",
         "group_id": group.group_id,

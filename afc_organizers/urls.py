@@ -134,6 +134,10 @@ urlpatterns = [
     path("leaderboard-designs/", views_leaderboard_design.designs_collection,
          name="organizers_leaderboard_designs"),           # GET (?organization_id=) / POST
     # Uploaded FONT library (TTF/OTF), org-scoped or AFC-native.
+    # The /file/ sub-route (CORS-enabled font bytes for the browser FontFace preview) is listed
+    # BEFORE the bare by-id route so it is matched first. See font_file() for the CORS rationale.
+    path("leaderboard-fonts/by-id/<int:font_id>/file/", views_leaderboard_design.font_file,
+         name="organizers_leaderboard_font_file"),         # GET (public, CORS) — font bytes for preview
     path("leaderboard-fonts/by-id/<int:font_id>/", views_leaderboard_design.font_item,
          name="organizers_leaderboard_font_item"),         # DELETE
     path("leaderboard-fonts/", views_leaderboard_design.fonts_collection,
