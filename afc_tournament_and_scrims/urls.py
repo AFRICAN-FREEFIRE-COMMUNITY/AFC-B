@@ -48,6 +48,7 @@ from .seeding_management import (
     delete_group_managed,
     delete_stage_managed,
     move_team_between_groups,
+    sync_entry_stage_seeding,
 )
 from .views_event_graphic import event_stage_graphic
 from django.conf import settings
@@ -172,6 +173,9 @@ urlpatterns = [
     path('seeding/delete-stage/', delete_stage_managed, name='seeding_delete_stage'),
     # F2 (owner 2026-06-19): move a team/player between groups in a stage (drag-and-drop).
     path('seeding/move-team/', move_team_between_groups, name='seeding_move_team'),
+    # Stats-page safety-net (owner 2026-06-21): idempotently auto-seed every registration into the
+    # entry stage's groups. Fired by the admin + organizer leaderboard pages on open. Gated admin+org.
+    path('seeding/sync-entry-stage/', sync_entry_stage_seeding, name='seeding_sync_entry_stage'),
     # Reorder stages / groups (manual drag-to-arrange, owner 2026-06-15). Default order=0 means
     # "auto-arrange by date/time"; these endpoints write 1-based orders that override the date sort
     # (and return a `warning` when the manual order diverges from the schedule). Views

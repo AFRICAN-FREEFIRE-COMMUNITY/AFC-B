@@ -776,6 +776,97 @@ class UserReport(models.Model):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  WATCHLIST  (owner 2026-06-21)
+# ──────────────────────────────────────────────────────────────────────────────
+#  A SHARED, AFC-WIDE ADVISORY watchlist of suspicious players + teams. Distinct from
+#  BannedPlayer / TeamBan / afc_organizers.OrganizerBlacklist (which all BLOCK): this one
+#  ONLY WARNS. Every AFC admin AND every organizer sees the same entries; both can add and
+#  clear them (added_by + reason are recorded for accountability). Wherever an admin/organizer
+#  sees a flagged name (registered teams, rosters, leaderboard standings + results entry, the
+#  upload review, team/player admin pages) a "Watch" tag is shown, and there is a dedicated
+#  Watchlist tab in the admin + organizer dashboards. It NEVER blocks registration/play/results;
+#  it only raises a soft heads-up Notifications row to the event's organizer(s)+admins when a
+#  watched team/player registers (afc_tournament_and_scrims.register_for_event / add_teams_*).
+#
+#  One ACTIVE row per subject (a player OR a team) — re-flagging a cleared subject reactivates
+#  the same logical entry. player/team are SET_NULL so a deleted account/team only nulls the link.
+#
+#  Consumed by (afc_auth/views_watchlist.py + afc_auth/urls.py, prefix auth/):
+#    • GET   auth/watchlist/        list (filter subject_type/status, search, paginate)
+#    • POST  auth/watchlist/        add  {subject_type, player_id|team_id, reason, source?, context?}
+#    • PATCH auth/watchlist/<id>/   clear / reactivate
+#    • GET   auth/watchlist/tags/   bulk "which of these ids are watched" (renders <WatchTag> N+1-free)
+#  Gate: afc_auth.watchlist_permissions.can_use_watchlist (AFC admin OR any active organizer).
+#  Frontend: /a/watchlist (admin, i18n-exempt) + /organizer/watchlist (i18n en/fr/pt),
+#  components <WatchTag>, lib/watchlist.ts. Spec: WEBSITE/tasks/watchlist-spec.md.
+# ══════════════════════════════════════════════════════════════════════════════
+class WatchlistEntry(models.Model):
+    SUBJECT_TYPE_CHOICES = [
+        ("player", "Player"),
+        ("team", "Team"),
+    ]
+    STATUS_CHOICES = [
+        ("active", "Active"),    # currently watched (tag shows, warnings fire)
+        ("cleared", "Cleared"),  # soft-cleared; kept for audit, no tag/warning
+    ]
+    SOURCE_CHOICES = [
+        ("manual", "Added manually"),
+        ("upload", "Added from a leaderboard upload mismatch"),
+    ]
+
+    watch_id = models.AutoField(primary_key=True)
+    subject_type = models.CharField(max_length=10, choices=SUBJECT_TYPE_CHOICES, default="player")
+    # Exactly one of these is set, per subject_type. SET_NULL: a deleted player/team only nulls the
+    # link, never erases the watch history (same rule as UserReport).
+    player = models.ForeignKey(
+        "afc_auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="watchlist_entries_against",
+    )
+    team = models.ForeignKey(
+        "afc_team.Team", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="watchlist_entries_against",
+    )
+
+    reason = models.TextField()  # required: why they are being watched
+    added_by = models.ForeignKey(
+        "afc_auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="watchlist_entries_added",
+    )
+    source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default="manual")
+    # Free-text provenance for an upload-sourced flag, e.g. "event 130, uid 1270915668 (TC• M KING)".
+    context = models.CharField(max_length=255, blank=True, default="")
+
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="active")
+    cleared_by = models.ForeignKey(
+        "afc_auth.User", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="watchlist_entries_cleared",
+    )
+    cleared_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            # The bulk tags lookup filters active entries by subject FK, so index each FK.
+            models.Index(fields=["player", "status"]),
+            models.Index(fields=["team", "status"]),
+        ]
+
+    @property
+    def subject_name(self):
+        """Display name of the watched subject (for tags, the tab, notifications)."""
+        if self.subject_type == "team":
+            return self.team.team_name if self.team else "deleted team"
+        return self.player.username if self.player else "deleted player"
+
+    def __str__(self):
+        by = self.added_by.username if self.added_by else "deleted"
+        return f"Watch {self.subject_type} {self.subject_name} by {by} ({self.status})"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  FAN / HATER SENTIMENT  (owner 2026-06-20)
 # ──────────────────────────────────────────────────────────────────────────────
 #  A fun, public reaction on a player or team profile: any logged-in user can tap
