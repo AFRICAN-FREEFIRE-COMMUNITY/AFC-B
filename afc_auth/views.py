@@ -4296,6 +4296,223 @@ def discord_callback(request):
     return redirect(f"{return_url}?discord=connected")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Discord SIGN-IN / SIGN-UP (SSO)  (owner 2026-06-21)
+#
+# Separate from connect_discord (which LINKS a Discord account to an ALREADY-logged-in
+# user for roles). This is full authentication: "Continue with Discord" on the login +
+# register pages. Standard OAuth2 authorization-code flow (Discord has no ID-token /
+# button widget like Google, so it's a redirect round-trip):
+#   start    -> redirect the browser to Discord's consent (scope: identify email).
+#   callback -> Discord redirects back with ?code; we exchange it, read /users/@me,
+#               find-or-create the AFC user BY EMAIL, issue our SessionToken, then bounce
+#               to the frontend with a short-lived ONE-TIME handoff code (NOT the token -
+#               keeps the session token out of the URL/logs).
+#   exchange -> the frontend callback page POSTs that handoff code and gets the real
+#               session token, then logs the user in.
+#
+# Reuses the SAME Discord app as connect_discord (DISCORD_CLIENT_ID/SECRET). The Discord
+# Developer Portal must list this callback as an OAuth2 redirect:
+#   https://api.africanfreefirecommunity.com/auth/discord/sso/callback/  (prod)
+#   http://localhost:8000/auth/discord/sso/callback/                     (local)
+# redirect_uri is derived from the request host so it matches automatically.
+#
+# FRONTEND: components/auth/DiscordSignInButton.tsx (button) + app/(auth)/discord/callback
+# (the exchange page). State carries a CSRF nonce + the post-login path.
+# ─────────────────────────────────────────────────────────────────────────────
+def _discord_frontend_origin(request):
+    """Frontend origin to bounce back to, matched to the API host (local vs prod)."""
+    host = request.get_host()
+    if "localhost" in host or "127.0.0.1" in host:
+        return settings.FRONTEND_URL_LOCAL
+    return settings.FRONTEND_URL
+
+
+@api_view(["GET"])
+def discord_sso_start(request):
+    """Kick off Discord sign-in: redirect the browser to Discord's consent screen.
+    Query: ?next=<relative frontend path to land on after login> (default /home)."""
+    import secrets
+    from urllib.parse import urlencode
+
+    if not settings.DISCORD_CLIENT_ID:
+        return redirect(f"{_discord_frontend_origin(request)}/auth/discord/callback?status=failed")
+
+    next_path = request.GET.get("next") or "/home"
+    if not next_path.startswith("/"):
+        next_path = "/home"  # relative only - never an open redirect
+
+    nonce = secrets.token_urlsafe(16)
+    # State holds a CSRF nonce; we stash the post-login path against it server-side.
+    cache.set(f"discord_sso_state:{nonce}", next_path, 600)
+
+    redirect_uri = request.build_absolute_uri("/auth/discord/sso/callback/")
+    params = {
+        "client_id": settings.DISCORD_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "identify email",
+        "state": nonce,
+        "prompt": "consent",
+    }
+    return redirect("https://discord.com/api/oauth2/authorize?" + urlencode(params))
+
+
+@api_view(["GET"])
+def discord_sso_callback(request):
+    """Discord redirects here with ?code. Exchange -> /users/@me -> find-or-create by
+    email -> issue SessionToken -> bounce to the frontend callback with a one-time handoff."""
+    import secrets
+    from urllib.parse import quote
+
+    fo = _discord_frontend_origin(request)
+    fail = f"{fo}/auth/discord/callback?status=failed"
+
+    code = request.GET.get("code")
+    state = request.GET.get("state")
+    if request.GET.get("error") or not code or not state:
+        return redirect(fail)
+
+    next_path = cache.get(f"discord_sso_state:{state}")
+    if not next_path:
+        return redirect(fail)  # unknown/expired state (CSRF guard)
+    cache.delete(f"discord_sso_state:{state}")
+
+    redirect_uri = request.build_absolute_uri("/auth/discord/sso/callback/")
+
+    # ── exchange code -> access token ──
+    try:
+        tr = requests.post(
+            "https://discord.com/api/oauth2/token",
+            data={
+                "client_id": settings.DISCORD_CLIENT_ID,
+                "client_secret": settings.DISCORD_CLIENT_SECRET,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+        if tr.status_code != 200:
+            return redirect(fail)
+        access_token = tr.json().get("access_token")
+        if not access_token:
+            return redirect(fail)
+    except Exception:
+        return redirect(fail)
+
+    # ── fetch the Discord user (needs a VERIFIED email as the identity key) ──
+    try:
+        me = requests.get(
+            "https://discord.com/api/users/@me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        ).json()
+    except Exception:
+        return redirect(fail)
+
+    discord_id = me.get("id")
+    email = (me.get("email") or "").strip().lower()
+    if not email or not me.get("verified", False):
+        return redirect(f"{fo}/auth/discord/callback?status=no_email")
+
+    full_name = (me.get("global_name") or me.get("username") or email.split("@")[0])[:40]
+
+    # ── find-or-create the AFC user by email (same link key as Google SSO) ──
+    is_new = False
+    user = User.objects.filter(email__iexact=email).first()
+    if user is None:
+        is_new = True
+        user = User(
+            email=email,
+            full_name=full_name,
+            username=_unique_username_from_email(email),
+            role="player",
+            is_active=True,
+            status="active",
+            has_completed_onboarding=False,  # new account -> first-login onboarding
+        )
+        user.set_unusable_password()
+        user.save()
+        UserProfile.objects.get_or_create(user=user)
+
+    if not user.is_active:
+        return redirect(f"{fo}/auth/discord/callback?status=inactive")
+
+    # Bonus: auto-link the Discord account (unless it already belongs to someone else).
+    try:
+        if discord_id and not User.objects.filter(discord_id=discord_id).exclude(user_id=user.user_id).exists():
+            user.discord_id = discord_id
+            user.discord_username = me.get("username", "")
+            user.discord_connected = True
+            user.save()
+    except Exception:
+        pass
+
+    # ── issue our SessionToken (mirrors login/google_auth) ──
+    SessionToken.objects.filter(user=user).delete()
+    session_token = generate_session_token()
+    SessionToken.objects.create(user=user, token=session_token)
+    user.last_login = timezone.now()
+    user.save(update_fields=["last_login"])
+
+    # Login history + once-a-day geo + first-login language detect (best-effort).
+    try:
+        ip = get_client_ip(request)
+        today = timezone.localdate()
+        cached = (LoginHistory.objects
+                  .filter(user=user, created_at__date=today)
+                  .exclude(country__isnull=True).exclude(country="")
+                  .order_by("created_at").first())
+        if cached:
+            geo = {"country": cached.country, "city": cached.city, "region": cached.region,
+                   "timezone": cached.timezone, "org": cached.org}
+            org, is_vpn = cached.org, cached.is_vpn
+        else:
+            geo = geo_for_ip(ip)
+            org = geo.get("org")
+            is_vpn = looks_like_vpn(org)
+        LoginHistory.objects.create(
+            user=user, ip_address=ip, user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            country=geo.get("country"), city=geo.get("city"), region=geo.get("region"),
+            timezone=geo.get("timezone"), org=org, is_vpn=is_vpn,
+        )
+        if not user.language and geo.get("country"):
+            user.language = language_for_country(geo.get("country"))
+            user.save(update_fields=["language"])
+    except Exception:
+        pass
+
+    # Welcome email for a brand-new Discord account (no email-verification code path).
+    if is_new:
+        try:
+            send_email(user.email, "Welcome to African Free Fire Community",
+                       email_welcome(user.username), language=user.language or "en")
+        except Exception:
+            pass
+
+    # ── one-time handoff: keep the session token OUT of the URL ──
+    handoff = secrets.token_urlsafe(24)
+    cache.set(f"discord_sso_handoff:{handoff}", session_token, 90)
+    return redirect(f"{fo}/auth/discord/callback?code={handoff}&next={quote(next_path)}")
+
+
+@api_view(["POST"])
+def discord_sso_exchange(request):
+    """Swap the one-time handoff code (from the callback redirect) for the real session
+    token. Single-use + short-lived. Body: { "code": "<handoff>" }."""
+    code = request.data.get("code")
+    if not code:
+        return Response({"message": "code is required."}, status=400)
+    key = f"discord_sso_handoff:{code}"
+    session_token = cache.get(key)
+    if not session_token:
+        return Response({"message": "This sign-in link has expired. Please try again."}, status=400)
+    cache.delete(key)  # one-time use
+    return Response({"session_token": session_token}, status=200)
+
+
 @api_view(["GET"])
 def get_all_login_history(request):
     # select_related('user') avoids an N+1 on history.user.username per row.
