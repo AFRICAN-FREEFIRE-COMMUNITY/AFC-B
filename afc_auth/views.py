@@ -828,8 +828,14 @@ def _unique_username_from_email(email):
 # ─────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def google_auth(request):
+    # Two front-ends both land here (both end in a verified Google ID token):
+    #   • credential : a GIS ID token (the old iframe button) - verified directly.
+    #   • code       : an auth code from the GIS CODE client (the custom full-width
+    #                  button, popup) - exchanged server-side for an id token first.
+    # The code path needs the client SECRET; the credential path does not.
     credential = request.data.get("credential") or request.data.get("id_token")
-    if not credential:
+    code = request.data.get("code")
+    if not credential and not code:
         return Response({"message": "Google credential is required."},
                         status=status.HTTP_400_BAD_REQUEST)
 
@@ -839,6 +845,40 @@ def google_auth(request):
     if not client_id:
         return Response({"message": "Google sign-in is not configured on the server."},
                         status=status.HTTP_400_BAD_REQUEST)
+
+    import logging as _logging
+    _glog = _logging.getLogger("afc_auth")
+
+    # ── code flow: exchange the popup auth code for tokens, then take its id_token ──
+    if code and not credential:
+        client_secret = (getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", None) or "").strip() or None
+        if not client_secret:
+            return Response({"message": "Google sign-in is not fully configured on the server."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            tok = requests.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": "postmessage",  # GIS popup code client
+                },
+                timeout=10,
+            )
+            if tok.status_code != 200:
+                _glog.warning("Google code exchange failed: %s %s", tok.status_code, tok.text[:200])
+                return Response({"message": "Could not verify your Google sign-in. Please try again."},
+                                status=status.HTTP_401_UNAUTHORIZED)
+            credential = tok.json().get("id_token")
+            if not credential:
+                return Response({"message": "Could not verify your Google sign-in. Please try again."},
+                                status=status.HTTP_401_UNAUTHORIZED)
+        except Exception as exc:
+            _glog.warning("Google code exchange error: %s: %s", type(exc).__name__, exc)
+            return Response({"message": "Could not verify your Google sign-in. Please try again."},
+                            status=status.HTTP_401_UNAUTHORIZED)
 
     # ── verify the Google ID token signature + audience (google-auth) ──────────
     # verify_oauth2_token checks the JWT signature against Google's public keys,
@@ -854,8 +894,7 @@ def google_auth(request):
             credential, google_requests.Request(), client_id, clock_skew_in_seconds=60,
         )
     except Exception as exc:
-        import logging
-        logging.getLogger("afc_auth").warning(
+        _glog.warning(
             "Google sign-in verify failed (client_id=%s...): %s: %s",
             client_id[:18], type(exc).__name__, exc,
         )

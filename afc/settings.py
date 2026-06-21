@@ -94,6 +94,11 @@ DEEPL_API_KEY = os.getenv("DEEPL_API_KEY")
 # but kept in the environment so local/prod can differ. When unset, google_auth returns a clean
 # "not configured" 400 and the rest of auth is unaffected.
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+# Client SECRET (owner 2026-06-21): needed only for the CUSTOM "Continue with Google" button,
+# which uses the GIS code flow (popup -> auth code -> backend exchanges it for an id token, so
+# the button can be a full-width AFC-styled button instead of Google's locked iframe). The
+# original id-token (credential) path does NOT use this. Secret, env-only, never committed.
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
