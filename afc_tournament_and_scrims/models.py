@@ -119,6 +119,17 @@ class Event(models.Model):
     restricted_countries = models.JSONField(default=list, blank=True) # ["Nigeria", "Ghana", ...]
 
     is_public = models.BooleanField(default=True)
+    # ── Per-event DISCORD requirement (owner 2026-06-22) ──────────────────────────────────────────
+    # When require_discord is True, EVERY participant (the solo registrant, or ALL roster members of a
+    # team) must have a connected Discord account AND be a member of discord_server_id before they can
+    # register; register_for_event blocks otherwise with code "discord_required" (naming who fails).
+    # discord_server_id blank => fall back to the global AFC guild (settings.DISCORD_GUILD_ID). NOTE:
+    # the AFC bot must be a member of discord_server_id for the membership check to resolve. Set in the
+    # create/edit event modals (admin + organizer), echoed by get_event_details +
+    # get-event-details-for-admin, enforced in register_for_event. Independent of the discord ROLE ids
+    # below (which only auto-assign a role to whoever already has Discord connected).
+    require_discord = models.BooleanField(default=False)
+    discord_server_id = models.CharField(max_length=100, null=True, blank=True)
     is_sponsored = models.BooleanField(default=False)
     sponsor_name = models.CharField(max_length=100, null=True, blank=True)
     sponsor_requirement_description = models.CharField(max_length=200, null=True, blank=True)

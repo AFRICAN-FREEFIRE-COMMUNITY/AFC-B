@@ -3815,6 +3815,27 @@ def check_discord_membership(discord_id):
     return r.status_code == 200  # 200 means they are in the server
 
 
+def check_discord_membership_in_guild(discord_id, guild_id=None):
+    """True iff `discord_id` is a member of `guild_id` (per-event Discord server requirement, owner
+    2026-06-22). Falls back to the global AFC guild when guild_id is blank, so an event with
+    require_discord but no custom server checks the AFC server. Returns False on any non-200 (not a
+    member, OR the AFC bot is not in that guild / bad guild id) and on a network error - the caller
+    treats False as "requirement not met" and blocks with a clear message. Consumed by
+    afc_tournament_and_scrims.register_for_event. NOTE: the AFC bot must be a member of guild_id."""
+    if not discord_id:
+        return False
+    gid = (str(guild_id).strip() if guild_id else "") or DISCORD_GUILD_ID
+    try:
+        r = requests.get(
+            f"https://discord.com/api/guilds/{gid}/members/{discord_id}",
+            headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}"},
+            timeout=8,
+        )
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
+
+
 @api_view(["POST"])
 def check_discord_membership_v2(request):
     discord_id = request.data.get("discord_id")
