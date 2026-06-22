@@ -334,6 +334,10 @@ def create_event(request):
     if isinstance(is_sponsored, str):
         is_sponsored = is_sponsored.lower() in ("1", "true", "yes")
 
+    discord_required = request.data.get("discord_required", False)
+    if isinstance(discord_required, str):
+        discord_required = discord_required.lower() in ("1", "true", "yes")
+
     sponsor_usernames = request.data.get("sponsor_usernames", [])
     sponsor_name = request.data.get("sponsor_name")
     sponsor_field_label = request.data.get("sponsor_field_label")
@@ -475,6 +479,7 @@ def create_event(request):
             restricted_countries=restricted_countries,
             is_public = is_public,
             is_sponsored=is_sponsored,
+            discord_required=discord_required,
             sponsor_name=sponsor_name,
             sponsor_field_label=sponsor_field_label,
             sponsor_requirement_description=sponsor_requirement_description,
@@ -1383,6 +1388,12 @@ def edit_event(request):
         if isinstance(is_waitlist_enabled, str):
             is_waitlist_enabled = is_waitlist_enabled.lower() in ("1", "true", "yes")
         event.is_waitlist_enabled = is_waitlist_enabled
+
+    if "discord_required" in request.data:
+        discord_required = request.data.get("discord_required")
+        if isinstance(discord_required, str):
+            discord_required = discord_required.lower() in ("1", "true", "yes")
+        event.discord_required = discord_required
 
     if "waitlist_capacity" in request.data:
         try:
@@ -2420,6 +2431,7 @@ def get_event_details(request):
         "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
         "is_public": event.is_public,
         "is_sponsored": event.is_sponsored,
+        "discord_required": event.discord_required,
         "sponsor_name": event.sponsor_name,
         "sponsor_field_label": event.sponsor_field_label,
         "sponsor_requirement_description": event.sponsor_requirement_description,
@@ -3199,6 +3211,7 @@ def get_event_details_not_logged_in(request):
         "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
         "is_public": event.is_public,
         "is_sponsored": event.is_sponsored,
+        "discord_required": event.discord_required,
         "sponsor_name": event.sponsor_name,
         "sponsor_field_label": event.sponsor_field_label,
         "sponsor_requirement_description": event.sponsor_requirement_description,
@@ -3651,12 +3664,13 @@ def register_for_event(request):
             if EventInviteToken.objects.filter(event=event, token=invite_token, is_used=True).exists():
                 return Response({"message": "Invite token has already been used."}, status=403)
 
-        # Discord checks
-        if not user.discord_connected or not user.discord_id:
-            return Response({"message": "Connect your Discord account first."}, status=403)
+        # Discord checks (only when the organiser/admin marked this event Discord-required)
+        if event.discord_required:
+            if not user.discord_connected or not user.discord_id:
+                return Response({"message": "Connect your Discord account first."}, status=403)
 
-        if not check_discord_membership(user.discord_id):
-            return Response({"message": "You must join the Discord server before registering."}, status=403)
+            if not check_discord_membership(user.discord_id):
+                return Response({"message": "You must join the Discord server before registering."}, status=403)
 
         # Prevent duplicate solo registration
         if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
@@ -3883,14 +3897,15 @@ def register_for_event(request):
         #         "restricted_players": restricted
         #     }, status=403)
 
-        # Discord checks
-        # for u in roster_users:
-        #     if u.status != "active":
-        #         return Response({"message": f"{u.username} is not active."}, status=403)
-        #     if not u.discord_connected or not u.discord_id:
-        #         return Response({"message": f"{u.username} has not connected Discord."}, status=403)
-        #     if not check_discord_membership_v3(str(u.discord_id)):
-        #         return Response({"message": f"{u.username} has not joined the Discord server."}, status=403)
+        # Discord checks (only when the organiser/admin marked this event Discord-required)
+        if event.discord_required:
+            for u in roster_users:
+                if u.status != "active":
+                    return Response({"message": f"{u.username} is not active."}, status=403)
+                if not u.discord_connected or not u.discord_id:
+                    return Response({"message": f"{u.username} has not connected Discord."}, status=403)
+                if not check_discord_membership_v3(str(u.discord_id)):
+                    return Response({"message": f"{u.username} has not joined the Discord server."}, status=403)
 
         
         # Other verification
@@ -7121,6 +7136,7 @@ def get_event_details_for_admin(request):
             "prize_distribution": event.prize_distribution,
             "is_public": event.is_public,
             "is_sponsored": event.is_sponsored,
+            "discord_required": event.discord_required,
             "sponsor_name": event.sponsor_name,
             "sponsor_field_label": event.sponsor_field_label,
             "sponsor_requirement_description": event.sponsor_requirement_description,

@@ -103,6 +103,8 @@ class Event(models.Model):
     waitlist_capacity = models.PositiveIntegerField(null=True, blank=True)
     waitlist_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
 
+    discord_required = models.BooleanField(default=False)
+
     event_start_time = models.TimeField(null=True, blank=True)
     event_end_time = models.TimeField(null=True, blank=True)
     registration_start_time = models.TimeField(null=True, blank=True)
