@@ -1199,6 +1199,24 @@ def get_team_details(request):
 
     # Members
     members_qs = TeamMembers.objects.filter(team=team).select_related("member")
+    # Per-member profile-image presence for the registration requirement marker (owner 2026-06-22):
+    # the tournament register flow shows, per selected roster member, which event requirements they
+    # still fail (UID / Discord / esport image / profile image). uid + discord_id already come from
+    # User below; the two image flags come from UserProfile. Prefetch all profiles in ONE query
+    # (keyed by user_id) to avoid an N+1 across the roster, and expose only booleans (no media URLs)
+    # since the marker only needs "present or not". Consumed by EventDetailsWrapper's roster step.
+    from afc_auth.models import UserProfile
+    member_ids = [m.member.user_id for m in members_qs]
+    profiles_by_user = {
+        p.user_id: p
+        for p in UserProfile.objects.filter(user_id__in=member_ids)
+    }
+
+    def _has_image(user_id, field):
+        prof = profiles_by_user.get(user_id)
+        val = getattr(prof, field, None) if prof else None
+        return bool(val and str(val) != "")
+
     members_data = [
         {
             "id": m.member.user_id,
@@ -1211,6 +1229,11 @@ def get_team_details(request):
             "country": m.member.country,
             "join_date": m.join_date,
             "discord_id": m.member.discord_id,
+            # Registration-requirement marker flags (owner 2026-06-22): does this member have an
+            # esport image / profile image on file? Pairs with `uid` + `discord_id` above so the
+            # register flow can show a per-member ✓/✗ for every active event requirement.
+            "has_esports_image": _has_image(m.member.user_id, "esports_pic"),
+            "has_profile_image": _has_image(m.member.user_id, "profile_pic"),
         }
         for m in members_qs
     ]
