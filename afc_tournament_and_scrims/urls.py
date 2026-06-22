@@ -195,6 +195,10 @@ urlpatterns = [
     path('edit-match-result/', edit_match_result, name='edit_match_result'),
     path('disqualify-player/', disqualify_player, name='disqualify_player'),
     path('disqualify-team/', disqualify_team, name='disqualify_team'),
+    # Team management (owner 2026-06-22): remove a team from an event ENTIRELY (frees the slot;
+    # distinct from disqualify) + reactivate a disqualified team. Gated admin/organizer.
+    path('remove-team-from-event/', remove_team_from_event, name='remove_team_from_event'),
+    path('reactivate-team/', reactivate_team, name='reactivate_team'),
     path('sync-event-registrations-with-discord-roles/', sync_event_registrations_with_discord_roles, name='sync_event_registrations_with_discord_roles'),
     path('get-event-details-not-logged-in/', get_event_details_not_logged_in, name='get_event_details_not_logged_in'),
     path('validate-team-roster-discord/', validate_team_roster_discord, name='validate_team_roster_discord'),
