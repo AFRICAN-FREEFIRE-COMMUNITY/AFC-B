@@ -33,6 +33,13 @@ def queue_discord_role_assignments(candidates, batch_size=500):
     existing set (scoped to the candidates' users + roles, so the probe stays small),
     then plain set membership filters the inserts."""
     candidates = [c for c in candidates if c is not None]
+    # Drop candidates with no discord_id (owner 2026-06-22 registration-500 fix): a user who has
+    # NOT connected Discord has discord_id=None, but DiscordRoleAssignment.discord_id is NOT NULL,
+    # so including them crashed bulk_create with IntegrityError("Column 'discord_id' cannot be
+    # null") - the generic "An error occurred" a player hit on "Continue to Discord" once Discord
+    # became optional on the frontend. Such users simply get no role queued; if they connect
+    # Discord later, the reconcile path re-adds it.
+    candidates = [c for c in candidates if getattr(c, "discord_id", None)]
     if not candidates:
         return 0
 
