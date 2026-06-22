@@ -10245,18 +10245,20 @@ def disqualify_registered_competitor(request):
             {"message": "Invalid or expired session token."},
             status=status.HTTP_401_UNAUTHORIZED
         )
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
-    
     competitor_id = request.data.get("competitor_id")
     event_id = request.data.get("event_id")
 
     if not competitor_id or not event_id:
         return Response({"message": "competitor_id, event_id, and stage_id are required."}, status=400)
-    
+
     user = get_object_or_404(User, user_id=competitor_id)
 
     event = get_object_or_404(Event, event_id=event_id)
+    # Registration gate (owner 2026-06-22: open solo disqualify to organizers too) - org-aware, after
+    # the event loads: AFC admins always; organizers with can_manage_registrations on the owning org.
+    # Matches disqualify_team's gate (native AFC events stay admin-only via org_can_event).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
     competitor = get_object_or_404(RegisteredCompetitors, user=user, event=event)
 
     
@@ -10295,20 +10297,17 @@ def reactivate_registered_competitor(request):
             {"message": "Invalid or expired session token."},
             status=status.HTTP_401_UNAUTHORIZED
         )
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
-    
-    # stage_id = request.data.get("stage_id")
     competitor_id = request.data.get("competitor_id")
     event_id = request.data.get("event_id")
 
     if not competitor_id or not event_id:
         return Response({"message": "competitor_id and event_id are required."}, status=400)
 
-    # stage = get_object_or_404(Stages, stage_id=stage_id)
-
     user = get_object_or_404(User, user_id=competitor_id)
     event = get_object_or_404(Event, event_id=event_id)
+    # Registration gate (owner 2026-06-22: organizers may manage solo reactivation too) - org-aware.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
 
     competitor = get_object_or_404(RegisteredCompetitors, user=user, event=event)
 
