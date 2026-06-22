@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.utils.dateparse import parse_date
 
-from afc_auth.views import assign_discord_role, check_discord_membership, check_discord_membership_v3, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
+from afc_auth.views import assign_discord_role, check_discord_membership, check_discord_membership_in_guild, check_discord_membership_v3, discord_member_has_role, get_client_ip, remove_discord_role, validate_token
 from afc_team.models import Team, TeamMembers
 # STAFF_ROLES is the canonical "support-only" role set (coach / manager / analyst) defined
 # in afc_team.views. We import it (no cycle: afc_team.views imports only afc_tournament_and_scrims
@@ -1085,6 +1085,12 @@ def create_event(request):
     if isinstance(is_public, str):
         is_public = is_public.lower() in ("1", "true", "yes")
 
+    # Per-event Discord requirement (owner 2026-06-22): a toggle + the server to require membership in.
+    require_discord = request.data.get("require_discord", False)
+    if isinstance(require_discord, str):
+        require_discord = require_discord.lower() in ("1", "true", "yes")
+    discord_server_id = (request.data.get("discord_server_id") or "").strip() or None
+
     # ── Paid registration parse + validate (feature "paid-events", 2026-06-08) ──
     # "free" keeps instant registration; "paid" requires a positive fee, and for an
     # organizer-owned event the org must have accepted the paid-event terms first (recorded on
@@ -1175,6 +1181,8 @@ def create_event(request):
             # restricted_regions=restricted_regions,
             restricted_countries=restricted_countries,
             is_public = is_public,
+            require_discord=require_discord,
+            discord_server_id=discord_server_id,
             is_sponsored=is_sponsored,
             sponsor_name=sponsor_name,
             sponsor_field_label=sponsor_field_label,
@@ -2385,6 +2393,13 @@ def edit_event(request):
         if isinstance(is_public, str):
             is_public = is_public.lower() in ("1", "true", "yes")
         event.is_public = is_public
+
+    # Per-event Discord requirement (owner 2026-06-22). PATCH-style: only touched when present.
+    if "require_discord" in request.data:
+        rd = request.data.get("require_discord")
+        event.require_discord = rd.lower() in ("1", "true", "yes") if isinstance(rd, str) else bool(rd)
+    if "discord_server_id" in request.data:
+        event.discord_server_id = (request.data.get("discord_server_id") or "").strip() or None
 
     if "is_sponsored" in request.data:
 
@@ -3694,6 +3709,10 @@ def get_event_details(request):
         "is_registered": is_registered,
         "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
         "is_public": event.is_public,
+        # Per-event Discord requirement (owner 2026-06-22): echoed so the create/edit forms rehydrate
+        # the toggle + server, and the user event page can show a "Discord required" note.
+        "require_discord": event.require_discord,
+        "discord_server_id": event.discord_server_id,
         "is_sponsored": event.is_sponsored,
         "sponsor_name": event.sponsor_name,
         "sponsor_field_label": event.sponsor_field_label,
@@ -4460,6 +4479,10 @@ def get_event_details_not_logged_in(request):
         # "is_registered": is_registered,
         "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
         "is_public": event.is_public,
+        # Per-event Discord requirement (owner 2026-06-22): echoed so the create/edit forms rehydrate
+        # the toggle + server, and the user event page can show a "Discord required" note.
+        "require_discord": event.require_discord,
+        "discord_server_id": event.discord_server_id,
         "is_sponsored": event.is_sponsored,
         "sponsor_name": event.sponsor_name,
         "sponsor_field_label": event.sponsor_field_label,
@@ -5058,7 +5081,16 @@ def register_for_event(request):
         if solo_missing:
             return Response(_registration_requirements_response(solo_missing), status=403)
 
-        
+        # ── Per-event DISCORD requirement (owner 2026-06-22): the registrant must have a connected
+        # Discord account AND be a member of the event's Discord server. code "discord_required" lets
+        # the FE show a Connect-Discord action. discord_server_id blank => the global AFC guild. ──
+        if event.require_discord and not check_discord_membership_in_guild(user.discord_id, event.discord_server_id):
+            return Response({
+                "message": "This event requires Discord. Connect your Discord account and join the event's Discord server, then try again.",
+                "code": "discord_required",
+            }, status=403)
+
+
         if is_public == False:
             # ── private-event invite gate (SOLO) ──
             # Mirrors the TEAM gate below — keep both in sync.
@@ -5458,6 +5490,23 @@ def register_for_event(request):
                 "message": f"Your team is not eligible for this event based on country restriction. Team Country({team_country})",
                 "team_country": team_country
             }, status=403)
+
+        # ── Per-event DISCORD requirement (owner 2026-06-22): EVERY roster member must have a
+        # connected Discord account AND be a member of the event's Discord server. Names exactly who
+        # fails so the captain can fix them. code "discord_required" drives the FE Connect-Discord
+        # action. discord_server_id blank => the global AFC guild. One API check per roster member. ──
+        if event.require_discord:
+            discord_missing = [
+                u.username for u in roster_users
+                if not check_discord_membership_in_guild(u.discord_id, event.discord_server_id)
+            ]
+            if discord_missing:
+                return Response({
+                    "message": "This event requires Discord. These players must connect Discord and join the event's Discord server: "
+                               + ", ".join(discord_missing),
+                    "code": "discord_required",
+                    "discord_missing": discord_missing,
+                }, status=403)
 
         # ✅ restriction enforcement for each roster member
         # restricted = []
