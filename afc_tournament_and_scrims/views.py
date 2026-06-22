@@ -15861,10 +15861,116 @@ def disqualify_team(request):
         "reason": reason or None,
         "updated": {
             "tournament_team": 1,
-            "registered_competitors_rows": reg_rows, 
+            "registered_competitors_rows": reg_rows,
             "stage_competitors_rows": stage_rows,
             "stage_group_competitors_rows": group_rows,
         }
+    }, status=200)
+
+
+def _resolve_event_team(request):
+    """Shared resolver for the team-management endpoints below (owner 2026-06-22): auth + the
+    org-aware registration gate + load the TournamentTeam for {event_id, tournament_team_id|team_id}.
+    Returns (admin, event, tt, None) on success or (None, None, None, error_response). Team events
+    only (duo/squad)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, None, None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return None, None, None, Response({"message": "Invalid or expired session token."}, status=401)
+    event_id = request.data.get("event_id")
+    tournament_team_id = request.data.get("tournament_team_id")
+    team_id = request.data.get("team_id")
+    if not event_id:
+        return None, None, None, Response({"message": "event_id is required."}, status=400)
+    if not tournament_team_id and not team_id:
+        return None, None, None, Response({"message": "tournament_team_id or team_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return None, None, None, Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+    if event.participant_type == "solo":
+        return None, None, None, Response({"message": "This endpoint is for TEAM events only (duo/squad)."}, status=400)
+    if tournament_team_id:
+        tt = get_object_or_404(TournamentTeam, tournament_team_id=tournament_team_id, event=event)
+    else:
+        tt = get_object_or_404(TournamentTeam, event=event, team__team_id=team_id)
+    return admin, event, tt, None
+
+
+@api_view(["POST"])
+def remove_team_from_event(request):
+    """POST events/remove-team-from-event/ {event_id, tournament_team_id|team_id} — REMOVE a team
+    from an event ENTIRELY (owner 2026-06-22). Distinct from disqualify_team (which KEEPS the record,
+    marked 'disqualified'): this DELETES the team's registration + tournament-team + members + any
+    stage/group seeds, freeing the slot as if they never registered. Gated: AFC admin OR organizer
+    with can_manage_registrations. BLOCKED when the team already has match results (deleting would
+    orphan TournamentTeamMatchStats) — disqualify instead. Best-effort Discord-role cleanup.
+    Consumed by RegisteredTeamsTab's Remove button (admin + organizer)."""
+    admin, event, tt, err = _resolve_event_team(request)
+    if err:
+        return err
+
+    # Results guard: a team with entered match stats can't be cleanly removed (orphaned stats).
+    if TournamentTeamMatchStats.objects.filter(match__group__stage__event=event, tournament_team=tt).exists():
+        return Response({
+            "message": "This team has match results and can't be removed (it would orphan the stats). Disqualify it instead.",
+            "code": "has_results",
+        }, status=400)
+
+    team = tt.team
+    team_name = team.team_name
+    # Best-effort: strip this event's Discord roles from each member before deleting the rows.
+    try:
+        for m in tt.members.select_related("user").all():
+            u = m.user
+            if not (u and u.discord_id):
+                continue
+            for stage in Stages.objects.filter(event=event):
+                if stage.stage_discord_role_id:
+                    remove_discord_role(u.discord_id, stage.stage_discord_role_id)
+                for group in StageGroups.objects.filter(stage=stage):
+                    if group.group_discord_role_id:
+                        remove_discord_role(u.discord_id, group.group_discord_role_id)
+    except Exception:
+        pass
+
+    with transaction.atomic():
+        StageGroupCompetitor.objects.filter(stage_group__stage__event=event, tournament_team=tt).delete()
+        StageCompetitor.objects.filter(stage__event=event, tournament_team=tt).delete()
+        TournamentTeamMember.objects.filter(tournament_team=tt).delete()
+        RegisteredCompetitors.objects.filter(event=event, team=team).delete()
+        tt.delete()
+
+    return Response({
+        "message": f"Team '{team_name}' removed from the event.",
+        "event_id": event.event_id,
+        "team_id": team.team_id,
+        "team_name": team_name,
+    }, status=200)
+
+
+@api_view(["POST"])
+def reactivate_team(request):
+    """POST events/reactivate-team/ {event_id, tournament_team_id|team_id} — reverse a team
+    disqualification (owner 2026-06-22): set the tournament-team + its registration + stage/group
+    seeds back to active. Gated like disqualify_team. Team events only. Consumed by the Reactivate
+    button that replaces Disqualify once a team is disqualified."""
+    admin, event, tt, err = _resolve_event_team(request)
+    if err:
+        return err
+    with transaction.atomic():
+        tt.status = "active"
+        tt.save(update_fields=["status"])
+        RegisteredCompetitors.objects.filter(event=event, team=tt.team).update(status="registered")
+        StageCompetitor.objects.filter(stage__event=event, tournament_team=tt).update(status="active")
+        StageGroupCompetitor.objects.filter(stage_group__stage__event=event, tournament_team=tt).update(status="active")
+    return Response({
+        "message": f"Team '{tt.team.team_name}' reactivated.",
+        "event_id": event.event_id,
+        "tournament_team_id": tt.tournament_team_id,
+        "team_id": tt.team.team_id,
+        "team_name": tt.team.team_name,
     }, status=200)
 
 
