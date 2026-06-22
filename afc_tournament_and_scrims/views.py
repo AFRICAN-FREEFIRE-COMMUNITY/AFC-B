@@ -5160,7 +5160,10 @@ def register_for_event(request):
                 # assign waitlist discord role
                 role_id = event.waitlist_discord_role_id
 
-                if role_id:
+                # Only when the user has connected Discord: discord_id is NOT NULL on
+                # DiscordRoleAssignment, so a get_or_create with discord_id=None crashes registration
+                # with an IntegrityError (Discord is optional on the FE). See discord_roles.py.
+                if role_id and user.discord_id:
                     DiscordRoleAssignment.objects.get_or_create(
                         user=user,
                         discord_id=user.discord_id,
@@ -5214,9 +5217,10 @@ def register_for_event(request):
                 EventInviteToken.objects.filter(event=event, token=invite_token).update(is_used=True, used_by=user, used_at=timezone.now())
 
 
-            # Queue discord role
+            # Queue discord role (only if the user connected Discord: discord_id is NOT NULL, so a
+            # get_or_create with discord_id=None 500s registration; Discord is optional on the FE).
             role_id = getattr(settings, "DISCORD_TOURNAMENT_SOLO_ROLE_ID", None)
-            if role_id:
+            if role_id and user.discord_id:
                 DiscordRoleAssignment.objects.get_or_create(
                     user=user,
                     discord_id=user.discord_id,
@@ -5687,8 +5691,9 @@ def register_for_event(request):
 
             # Queue discord roles
             # role_id = getattr(settings, "DISCORD_TOURNAMENT_TEAM_ROLE_ID", None)
-            role_id_stage= Stages.objects.filter(event=event).first()
-            role_id = role_id_stage.stage_discord_role_id
+            role_id_stage = Stages.objects.filter(event=event).first()
+            # Guard: an event with no stages yet has role_id_stage=None (AttributeError = 500).
+            role_id = role_id_stage.stage_discord_role_id if role_id_stage else None
             if role_id:
                 # Duplicate-safe queue (afc_auth.discord_roles): see the waitlist branch
                 # above; a re-registered roster must not insert twin assignment rows.
