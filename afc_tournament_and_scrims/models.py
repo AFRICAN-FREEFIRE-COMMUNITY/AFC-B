@@ -130,6 +130,11 @@ class Event(models.Model):
     # below (which only auto-assign a role to whoever already has Discord connected).
     require_discord = models.BooleanField(default=False)
     discord_server_id = models.CharField(max_length=100, null=True, blank=True)
+    # The Discord INVITE LINK players must use to join the event's server (owner 2026-06-22). Required
+    # in the create/edit modal when require_discord is turned on, and shown to EVERY user on the event
+    # page so they can join before registering. The toggle is gated in the UI behind a "the AFC bot is
+    # a member of discord_server_id" check (afc_auth.verify_bot_in_guild) so membership can be verified.
+    discord_invite_link = models.CharField(max_length=255, null=True, blank=True)
     is_sponsored = models.BooleanField(default=False)
     sponsor_name = models.CharField(max_length=100, null=True, blank=True)
     sponsor_requirement_description = models.CharField(max_length=200, null=True, blank=True)

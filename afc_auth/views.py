@@ -3836,6 +3836,76 @@ def check_discord_membership_in_guild(discord_id, guild_id=None):
         return False
 
 
+def bot_is_in_guild(guild_id):
+    """True iff the AFC bot is a member of guild_id (owner 2026-06-22). A bot can only GET a guild it
+    belongs to, so a 200 from GET /guilds/<id> means the bot is in that server. Gates the per-event
+    require-Discord toggle: an organizer invites the bot to their server, we verify it is in before the
+    toggle can be enabled. Fail-safe to False on any error."""
+    if not guild_id:
+        return False
+    try:
+        r = requests.get(
+            f"https://discord.com/api/guilds/{str(guild_id).strip()}",
+            headers={"Authorization": f"Bot {DISCORD_BOT_TOKEN}"},
+            timeout=8,
+        )
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def _discord_admin_or_organizer(user):
+    """Audience that creates/edits events: AFC admins (coarse or granular) OR any active organizer.
+    Gates the bot-invite + verify endpoints below. Lazy org import avoids an import cycle."""
+    if not user:
+        return False
+    if user.role in ("admin", "moderator", "support"):
+        return True
+    if user.userroles.filter(
+        role__role_name__in=("head_admin", "super_admin", "event_admin", "organizer_admin"),
+    ).exists():
+        return True
+    try:
+        from afc_organizers.models import OrganizationMember
+        return OrganizationMember.objects.filter(user=user, status="active").exists()
+    except Exception:
+        return False
+
+
+@api_view(["GET"])
+def discord_bot_invite_url(request):
+    """GET auth/discord-bot-invite-url/?guild_id=<id?> -> {"invite_url"}. The OAuth URL an organizer
+    opens to ADD the AFC bot to their Discord server (owner 2026-06-22 per-event require-Discord).
+    guild_id pre-selects + locks their server in the Discord dialog. permissions=268435456 (Manage
+    Roles - the bot assigns tournament roles). Gated to admins/organizers. Consumed by the event
+    create/edit modals' "Invite bot" button."""
+    auth = request.headers.get("Authorization")
+    user = validate_token(auth.split(" ")[1]) if auth and auth.startswith("Bearer ") else None
+    if not _discord_admin_or_organizer(user):
+        return Response({"message": "Unauthorized."}, status=403)
+    client_id = settings.DISCORD_CLIENT_ID
+    guild_id = (request.GET.get("guild_id") or "").strip()
+    url = f"https://discord.com/oauth2/authorize?client_id={client_id}&scope=bot&permissions=268435456"
+    if guild_id:
+        url += f"&guild_id={guild_id}&disable_guild_select=true"
+    return Response({"invite_url": url})
+
+
+@api_view(["POST"])
+def verify_bot_in_guild(request):
+    """POST auth/verify-bot-in-guild/ {guild_id} -> {"in_guild": bool}. Confirms the AFC bot is a
+    member of the given server so the create/edit modal can ENABLE the require-Discord toggle (owner
+    2026-06-22). Gated to admins/organizers. Consumed by the modals' "Verify bot" button."""
+    auth = request.headers.get("Authorization")
+    user = validate_token(auth.split(" ")[1]) if auth and auth.startswith("Bearer ") else None
+    if not _discord_admin_or_organizer(user):
+        return Response({"message": "Unauthorized."}, status=403)
+    guild_id = (request.data.get("guild_id") or "").strip()
+    if not guild_id:
+        return Response({"message": "guild_id is required."}, status=400)
+    return Response({"in_guild": bot_is_in_guild(guild_id)})
+
+
 @api_view(["POST"])
 def check_discord_membership_v2(request):
     discord_id = request.data.get("discord_id")
