@@ -2000,7 +2000,10 @@ def _has_active_event_registration(user) -> bool:
     profile while a player is committed to a live event, so the link between the player and their
     match results / leaderboard rows stays stable for the duration of the event. The lock RELEASES
     once all their events are completed, so a player can still fix a typo between tournaments
-    (owner decision 2026-06-15: "while in an active event").
+    (owner decision 2026-06-15: "while in an active event"). It ALSO releases for any event whose
+    organizer/admin has an OPEN roster-edit window (Event.roster_edit_open) — during roster editing
+    players must be able to fix IGN/UID to meet registration requirements (owner 2026-06-22). See
+    the roster-edit-window unlock below.
 
     Both registration paths count:
       - team registration: TournamentTeamMember -> TournamentTeam.event
@@ -2017,22 +2020,70 @@ def _has_active_event_registration(user) -> bool:
     """
     LIVE_STATUSES = ["upcoming", "ongoing"]
 
-    # Team path: a non-rejected membership whose team's event is still live.
-    if (TournamentTeamMember.objects
+    # ── ROSTER-EDIT UNLOCK (owner 2026-06-22) ─────────────────────────────────────────────────
+    # The lock must release exactly WHEN ROSTER EDITING IS ALLOWED for a normal player, so a player
+    # can fix their IGN/UID (and meet the registration requirements) while the roster is still
+    # changeable. That allow-condition mirrors edit_roster's own gate (afc_tournament_and_scrims
+    # .edit_roster): roster editing is allowed when registration is still open
+    # (today <= registration_end_date) OR an org/admin opened a roster-edit window
+    # (Event.roster_edit_open), AND no match has results yet (result_inputted) — once any result
+    # exists, identity is FROZEN for attribution even if a window is open (edit_roster's match-start
+    # lock applies to everyone). So an event LOCKS the player iff it is live AND
+    #   (registration closed AND no window) OR (a match already has results).
+    # Conservative for the multi-event case: ANY live event that still locks keeps the player locked,
+    # protecting that event's result/leaderboard attribution. (The previous rule locked for the whole
+    # upcoming/ongoing span, which created a catch-22: a player committed to a live event could not
+    # fix the very UID the registration requires.)
+    # Byte-match edit_roster's own window check, which uses date.today() (afc_tournament_and_scrims
+    # .edit_roster), so the identity unlock and the roster-edit window can never skew by a calendar day.
+    from datetime import date
+    today = date.today()
+
+    # All live, NON-CANCELLED events the user is committed to (team + solo paths), de-duplicated.
+    # Team path: a disqualified/withdrawn/left TournamentTeam is NOT a live commitment — disqualify_team
+    # cancels the TournamentTeam (and its RegisteredCompetitors/StageCompetitor rows) but deliberately
+    # leaves the TournamentTeamMember rows intact, so we must exclude cancelled teams here too, mirroring
+    # the cancellation exclusion already applied on the solo RegisteredCompetitors path (else a member of
+    # a knocked-out team stays wrongly identity-locked).
+    live_event_ids = set(
+        TournamentTeamMember.objects
             .filter(user=user,
                     tournament_team__event__event_status__in=LIVE_STATUSES,
                     tournament_team__event__is_draft=False)
             .exclude(status="rejected")
-            .exists()):
-        return True
-
-    # Solo path: a still-participating registration in a live event.
-    return (RegisteredCompetitors.objects
+            .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+            .values_list("tournament_team__event_id", flat=True)
+    )
+    live_event_ids |= set(
+        RegisteredCompetitors.objects
             .filter(user=user,
                     event__event_status__in=LIVE_STATUSES,
                     event__is_draft=False)
             .exclude(status__in=["rejected", "withdrawn", "left", "disqualified"])
-            .exists())
+            .values_list("event_id", flat=True)
+    )
+    if not live_event_ids:
+        return False
+
+    # Events that already have an entered match result -> identity is FROZEN for attribution even if a
+    # roster-edit window is open (edit_roster's match-start lock applies to everyone). One grouped query
+    # over all the candidate events, not one exists() per event.
+    events_with_results = set(
+        Match.objects
+            .filter(group__stage__event_id__in=live_event_ids, result_inputted=True)
+            .values_list("group__stage__event_id", flat=True)
+    )
+
+    for ev in Event.objects.filter(event_id__in=live_event_ids):
+        if ev.event_id in events_with_results:
+            return True  # results entered -> freeze identity
+        # Roster editing allowed for a normal player == identity editable (mirrors edit_roster gate):
+        # registration still open OR an org/admin roster-edit window is open.
+        roster_editing_allowed = (today <= ev.registration_end_date) or ev.roster_edit_open
+        if not roster_editing_allowed:
+            return True  # registration closed + no window -> roster fixed -> identity locked
+    # Every live event still allows roster editing AND has no results -> identity unlocked.
+    return False
 
 
 @api_view(["POST"])
@@ -2061,6 +2112,18 @@ def edit_profile(request):
     in_game_name = request.data.get("in_game_name")
     email = request.data.get("email")
     uid = request.data.get("uid")
+    # ── UID PRESERVE (owner 2026-06-22) ──────────────────────────────────────────────
+    # edit_profile is a full-form save, but several callers (onboarding, the in-flow UID
+    # prompt, and any partial/legacy form) can POST without the `uid` field. The
+    # `user.uid = uid` write below is UNCONDITIONAL, so an absent/blank uid would silently
+    # blank a previously-set Free Fire UID. That player then FAILS the event "Require player
+    # UID" gate (afc_tournament_and_scrims._missing_registration_assets) even though they had
+    # added it — the exact "all players have UIDs but it says one is missing" report. Treat an
+    # absent/empty uid as "no change": fall back to the stored value, and store NULL (not "")
+    # when it was genuinely never set (matches User.uid null=True). Nothing in the product
+    # intentionally CLEARS a UID, so preserving here is always correct.
+    uid = (uid or "").strip() or (user.uid or "")
+    uid = uid or None
     profile_pic = request.FILES.get("profile_pic")
     # HEIC/HEIF -> JPEG + downscale so the avatar displays + stays small (owner 2026-06-21).
     from .image_utils import normalize_image_upload
@@ -2087,8 +2150,11 @@ def edit_profile(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-    # Check for uniqueness conflicts
-    if User.objects.exclude(pk=user.pk).filter(uid=uid).exists():
+    # Check for uniqueness conflicts. Guard on a truthy uid: with the UID-preserve above a
+    # never-set uid is None, and `filter(uid=None)` would match every other UID-less user
+    # (hundreds of them) and wrongly report "already in use", blocking the save. Only a real
+    # uid value needs the collision check.
+    if uid and User.objects.exclude(pk=user.pk).filter(uid=uid).exists():
         return Response({"message": "UID is already in use by another user."}, status=status.HTTP_400_BAD_REQUEST)
 
     if User.objects.exclude(pk=user.pk).filter(email=email).exists():
