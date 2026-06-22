@@ -17070,6 +17070,13 @@ def upload_team_match_result(request):
     if not uploaded_file:
         return Response({"message": "file required."}, status=400)
 
+    # DRY-RUN preview (owner 2026-06-22, multi-map .log upload): when truthy, do the FULL parse +
+    # roster attribution + flag derivation and build the SAME response summary, but roll the whole
+    # write transaction back at the end so NOTHING persists. This powers the per-map "Review before
+    # apply" step — the FE calls this per file with dry_run=true to show matched / unknown / flagged
+    # players, then re-calls the SAME endpoint WITHOUT dry_run to actually save. Real path unchanged.
+    dry_run = _as_bool(request.data.get("dry_run"))
+
     match = get_object_or_404(Match, match_id=match_id)
 
     if not match.group:
@@ -17430,6 +17437,12 @@ def upload_team_match_result(request):
         match.result_inputted = True
         match.save(update_fields=["result_inputted"])
 
+        # DRY-RUN: roll back EVERY write above (the idempotent clear, team/player stats, kill flags,
+        # result_inputted) as the LAST act of the atomic block. All the summary lists were already
+        # built in Python, so the preview response is accurate without persisting anything.
+        if dry_run:
+            transaction.set_rollback(True)
+
     # Registered players on the teams that appeared in the file but who have NO in-game UID set:
     # they can never be UID-matched, which is the usual reason a known player shows 0 kills.
     # Surfaced so the admin can add their UID on the profile and re-upload (no silent zero).
@@ -17449,17 +17462,23 @@ def upload_team_match_result(request):
                 })
 
     # Auto-complete the event if this upload finished its final stage (owner 2026-06-16). Best-effort.
-    try:
-        maybe_autocomplete_event(event, admin)
-    except Exception:
-        pass
+    # Skipped on a dry-run preview: nothing was saved, so the event state must not change.
+    if not dry_run:
+        try:
+            maybe_autocomplete_event(event, admin)
+        except Exception:
+            pass
 
     return Response({
-        "message": "Team match results uploaded successfully.",
+        "message": (
+            "Match-log preview ready (nothing saved yet)." if dry_run
+            else "Team match results uploaded successfully."
+        ),
+        "dry_run": dry_run,                            # true = preview only, no DB writes (multi-map review)
         "match_id": match.match_id,
         "parsed_teams": len(parsed_teams),
-        "saved_teams": len(created_team_stats),
-        "saved_players": len(player_stats_to_create),
+        "saved_teams": len(created_team_stats),        # on dry_run: teams that WOULD be saved
+        "saved_players": len(player_stats_to_create),  # on dry_run: players that WOULD be credited
         "missing_teams": missing_teams[:20],          # team blocks where NO player UID matched + name unknown
         "roster_mismatch_teams": roster_mismatch_teams[:20],  # team EXISTS on site but uploaded UIDs off-roster
         "attributed": attributed,                      # per-player kills credited (admin confirmation)
