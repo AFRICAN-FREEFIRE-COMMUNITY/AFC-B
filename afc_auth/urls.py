@@ -51,6 +51,11 @@ urlpatterns = [
     path('admin/player-reports/', admin_list_player_reports, name='admin_list_player_reports'),
     path('admin/player-reports/<int:report_id>/', admin_respond_player_report, name='admin_respond_player_report'),
 
+    # ── Per-event Discord bot (owner 2026-06-22): invite the AFC bot to an organizer's server +
+    # verify it is in before the require-Discord toggle can be enabled. Gated admin/organizer. ──
+    path('discord-bot-invite-url/', discord_bot_invite_url, name='discord_bot_invite_url'),
+    path('verify-bot-in-guild/', verify_bot_in_guild, name='verify_bot_in_guild'),
+
     # ── Watchlist (owner 2026-06-21): shared advisory list of suspicious players/teams. ──
     # /tags/ before the <int> item route so the int converter never swallows it. Gate (admin OR
     # organizer) is inside the views. See afc_auth/views_watchlist.py.
