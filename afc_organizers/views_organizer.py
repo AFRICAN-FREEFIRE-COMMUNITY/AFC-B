@@ -259,6 +259,17 @@ def edit_organization_profile(request, slug):
     # ── apply only the fields actually present in the request (PATCH semantics) ──
     # Text/JSON fields: update when the key was sent so callers can clear a field
     # explicitly without us guessing intent on absent keys.
+    # Display NAME (owner 2026-06-23): the organizer can rename their org. This changes only the
+    # display name, NOT the slug (the public /organizations/<slug> handle stays stable so existing
+    # links never break). A blank name is rejected — the org must always have a name.
+    if "name" in request.data:
+        new_name = (request.data.get("name") or "").strip()
+        if not new_name:
+            return Response(
+                {"message": "Organization name cannot be empty."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        org.name = new_name
     if "email" in request.data:
         org.email = request.data.get("email") or None
     if "description" in request.data:

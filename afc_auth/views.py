@@ -4532,7 +4532,7 @@ def discord_sso_start(request):
     from urllib.parse import urlencode
 
     if not settings.DISCORD_CLIENT_ID:
-        return redirect(f"{_discord_frontend_origin(request)}/auth/discord/callback?status=failed")
+        return redirect(f"{_discord_frontend_origin(request)}/discord/callback?status=failed")
 
     next_path = request.GET.get("next") or "/home"
     if not next_path.startswith("/"):
@@ -4562,7 +4562,7 @@ def discord_sso_callback(request):
     from urllib.parse import quote
 
     fo = _discord_frontend_origin(request)
-    fail = f"{fo}/auth/discord/callback?status=failed"
+    fail = f"{fo}/discord/callback?status=failed"
 
     code = request.GET.get("code")
     state = request.GET.get("state")
@@ -4611,7 +4611,7 @@ def discord_sso_callback(request):
     discord_id = me.get("id")
     email = (me.get("email") or "").strip().lower()
     if not email or not me.get("verified", False):
-        return redirect(f"{fo}/auth/discord/callback?status=no_email")
+        return redirect(f"{fo}/discord/callback?status=no_email")
 
     full_name = (me.get("global_name") or me.get("username") or email.split("@")[0])[:40]
 
@@ -4634,7 +4634,7 @@ def discord_sso_callback(request):
         UserProfile.objects.get_or_create(user=user)
 
     if not user.is_active:
-        return redirect(f"{fo}/auth/discord/callback?status=inactive")
+        return redirect(f"{fo}/discord/callback?status=inactive")
 
     # Bonus: auto-link the Discord account (unless it already belongs to someone else).
     try:
@@ -4691,7 +4691,7 @@ def discord_sso_callback(request):
     # ── one-time handoff: keep the session token OUT of the URL ──
     handoff = secrets.token_urlsafe(24)
     cache.set(f"discord_sso_handoff:{handoff}", session_token, 90)
-    return redirect(f"{fo}/auth/discord/callback?code={handoff}&next={quote(next_path)}")
+    return redirect(f"{fo}/discord/callback?code={handoff}&next={quote(next_path)}")
 
 
 @api_view(["POST"])
