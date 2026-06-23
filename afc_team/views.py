@@ -961,6 +961,20 @@ def edit_team(request):
         # "" -> clear the tag (NULL); otherwise store the cleaned, upper-cased handle.
         team.team_tag = normalized_tag if normalized_tag else None
 
+    # Team description (owner 2026-06-23): editable from the team-edit page. PATCH semantics — only
+    # touched when the client sends the key. Capped at 200 chars (matches the model field). A blank
+    # value falls back to the same default the create flow uses, so the profile never shows an empty
+    # description. Consumed by the team-edit page (app/(user)/teams/[id]/edit) + shown on the team profile.
+    team_description = request.data.get("team_description", _TAG_UNSET)
+    if team_description is not _TAG_UNSET:
+        team_description = (team_description or "").strip()
+        if len(team_description) > 200:
+            return Response(
+                {"message": "Team description must be 200 characters or fewer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        team.team_description = team_description or "We Love Playing Free Fire"
+
     team.save()
 
     # Log report if team name was changed
