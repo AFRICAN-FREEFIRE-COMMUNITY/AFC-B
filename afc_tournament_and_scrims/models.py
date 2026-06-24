@@ -189,6 +189,17 @@ class Event(models.Model):
     registration_type = models.CharField(max_length=10, choices=REGISTRATION_TYPE_CHOICES, default="free")
     registration_fee = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     registration_fee_currency = models.CharField(max_length=3, default="USD")
+    # PER-COUNTRY payment rules for a PAID event (owner 2026-06-24). registration_fee above is the BASE
+    # fee; this lets the creator set, per country, whether teams/players from that country pay or join
+    # FREE, and optionally OVERRIDE the amount + currency for that country. A squad's country is its
+    # derived Team.country; a solo registrant's is their User.country. Shape:
+    #   { "default_pays": true|false,                  # unlisted countries: pay the base fee, or free?
+    #     "countries": { "Nigeria": {"pays": true, "amount": "50.00", "currency": "NGN"},  # amount/currency optional -> base
+    #                    "Ghana":   {"pays": false} } }
+    # NULL / empty on a paid event == everyone pays the base fee (back-compatible with pre-2026-06-24
+    # paid events). The single resolver is resolve_registration_fee() in views.py; never trust a
+    # client-sent amount. Independent of the private-event invite-link gate (both apply).
+    country_payment_rules = models.JSONField(null=True, blank=True)
 
     # ── Media registration criteria (owner 2026-06-12) ─────────────────────────────────────
     # Event creators (admins or organizers) can REQUIRE media before registration:
@@ -548,6 +559,21 @@ class TournamentTeam(models.Model):
     reached_finals = models.BooleanField(default=False)
     finals_appearances = models.PositiveIntegerField(default=0)
     result_finalized = models.BooleanField(default=False)
+
+    # PER-TEAM roster-edit allowance (owner 2026-06-24). The event-wide Event.roster_edit_until opens
+    # roster editing for ALL teams; this opens it for THIS ONE team only — an admin/organizer can let a
+    # specific team fix its roster (and its members fix IGN/UID) even when the event-wide window is
+    # closed. Set via set_team_roster_edit_window; honoured by edit_roster (an allow-path that also
+    # overrides the match-start results freeze while open) and by afc_auth._has_active_event_registration
+    # (releases the identity lock for that team's members while open). Auto-closes by time, no cron.
+    roster_edit_until = models.DateTimeField(null=True, blank=True)
+
+    @property
+    def roster_edit_open(self) -> bool:
+        """True while THIS team's per-team roster-edit allowance is open (roster_edit_until set AND now
+        is at/before it). Mirrors Event.roster_edit_open but scoped to one team. Auto-closes by time."""
+        from django.utils import timezone as _tz
+        return bool(self.roster_edit_until) and _tz.now() <= self.roster_edit_until
 
     def __str__(self):
         return f"{self.team.team_name} in {self.event.event_name}"

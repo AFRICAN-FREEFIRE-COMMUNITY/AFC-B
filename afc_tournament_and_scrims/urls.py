@@ -232,6 +232,9 @@ urlpatterns = [
     # that lets team captains edit their event roster past registration close (auto-closes, capped at
     # event end). View: set_roster_edit_window. Consumed by the admin + organizer event-manage toggle.
     path("roster-edit-window/", set_roster_edit_window, name="set_roster_edit_window"),
+    # PER-TEAM roster-edit allowance (owner 2026-06-24): same as the event-wide window but for ONE team.
+    # View: set_team_roster_edit_window. Consumed by the admin + organizer per-team roster control.
+    path("team-roster-edit-window/", set_team_roster_edit_window, name="set_team_roster_edit_window"),
     # Admin / organizer single-player roster add (roster-rules, 2026-06-15). Additive sibling of
     # edit-roster/: appends ONE TournamentTeamMember. View: add_player_to_event_roster.
     path("add-player-to-event-roster/", add_player_to_event_roster, name="add_player_to_event_roster"),

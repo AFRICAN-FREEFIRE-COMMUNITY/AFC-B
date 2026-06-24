@@ -6,7 +6,7 @@ from django.shortcuts import render, get_object_or_404
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from afc_auth.views import validate_token
+from afc_auth.views import validate_token, is_stats_admin
 from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats, EventPrizePayout
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
 from afc_auth.models import AdminHistory, BannedPlayer, Notifications, TeamBan, User, UserProfile, UserRoles
@@ -14,7 +14,8 @@ from django.utils.timezone import now
 # Invite.invite_id is a UUID. Looking it up with a non-UUID value (e.g. a tampered URL)
 # raises ValidationError, NOT DoesNotExist, so we catch it to return 404 instead of 500.
 from django.core.exceptions import ValidationError
-from django.db.models import Avg, Count, F, Min, Q, Sum
+from django.db.models import Avg, Count, DecimalField, F, Min, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from .models import Team, TeamMembers, Invite, TeamSocialMediaLinks
 import json
 from rest_framework.decorators import api_view
@@ -1154,17 +1155,21 @@ def _can_view_team_stats(viewer, team):
     """
     Decide whether `viewer` (a User or None) may see `team`'s detailed stats.
 
-    True when the viewer is an AFC admin (User.role == "admin") OR a current
-    member of THIS team (a TeamMembers row for this (team, viewer)). Anonymous
-    (viewer is None) or non-member viewers => False.
+    Owner rule (2026-06-24): team statistics are visible ONLY to:
+      • current members of THIS team (so a player sees their OWN team's stats), and
+      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role).
 
-    Query cost: at most one tiny indexed existence check on TeamMembers. No N+1.
+    Everyone else => False, INCLUDING organizers, sponsors, players who are NOT on this team, and
+    anonymous viewers. (Members see the team AGGREGATE; individual teammate stats are gated separately
+    by afc_player._can_view_player_stats, which members do NOT pass for each other.)
+
+    Query cost: is_stats_admin (one indexed UserRoles check at most) then one TeamMembers existence check.
     """
     if viewer is None:
         return False
 
-    # AFC admins always see full stats (consistent with require_admin elsewhere).
-    if getattr(viewer, "role", None) == "admin":
+    # AFC admins (NOT organizers/sponsors) see full stats. Shared predicate with the player-stats gate.
+    if is_stats_admin(viewer):
         return True
 
     # Member of this exact team?
@@ -1368,6 +1373,14 @@ def get_team_details(request):
     # rankings read API's two independent publish gates. Empty list when nothing published.
     tier_history = _team_tier_history(team)
 
+    # total_earnings (owner 2026-06-24 fix): the stored Team.total_earnings field has NO writer anywhere
+    # in the codebase, so it was permanently 0 / stale. Derive it LIVE the same way the per-event prize
+    # above is derived: the Sum of every EventPrizePayout recorded for any of this team's TournamentTeam
+    # rows. Truthful, always current, and consistent with the per-event prize figures on this same page.
+    live_total_earnings = EventPrizePayout.objects.filter(
+        tournament_team__team=team
+    ).aggregate(total=Sum("amount"))["total"] or 0
+
     team_data = {
         "team_id": team.team_id,
         "team_name": team.team_name,
@@ -1383,7 +1396,7 @@ def get_team_details(request):
         "team_tier": team.team_tier,
         "team_description": team.team_description,
         "country": team.country,
-        "total_earnings": str(team.total_earnings or 0),
+        "total_earnings": str(live_total_earnings),
         "total_members": members_qs.count(),
         "members": members_data,
         "social_media_links": social_links,
@@ -2254,8 +2267,25 @@ def get_team_with_highest_wins(request):
 
 @api_view(["GET"])
 def get_top_earning_teams(request):
-    qs = Team.objects.order_by("-total_earnings")[:5]
-    data = [{"team_id": t.team_id, "team_name": t.team_name, "total_earnings": t.total_earnings} for t in qs]
+    # total_earnings (owner 2026-06-24 fix): Team.total_earnings has NO writer, so ordering by it
+    # ranked every team at 0 (arbitrary order). Derive earnings LIVE via an annotation = the Sum of
+    # every EventPrizePayout across the team's TournamentTeam rows (same source as get_team_details),
+    # then order + return that. Teams with no payout sort last at 0.
+    # Reverse path: Team -> TournamentTeam (related_name "tournament_entries") -> EventPrizePayout
+    # (no related_name on its tournament_team FK, so the default reverse query name is "eventprizepayout").
+    qs = (
+        Team.objects.annotate(
+            earnings=Coalesce(
+                Sum("tournament_entries__eventprizepayout__amount"),
+                Value(0, output_field=DecimalField(max_digits=15, decimal_places=2)),
+            )
+        )
+        .order_by("-earnings")[:5]
+    )
+    data = [
+        {"team_id": t.team_id, "team_name": t.team_name, "total_earnings": str(t.earnings)}
+        for t in qs
+    ]
     return Response({"top_earning_teams": data}, status=status.HTTP_200_OK)
 
 

@@ -954,7 +954,7 @@ def update_application_status(request):
             if addr and addr not in recipient_targets:
                 recipient_targets[addr] = (getattr(su, "language", "") or "en")
 
-        team_email_subject = f"Trial Started â€” {player.username} has been added!"
+        team_email_subject = f"Trial Started: {player.username} has been added!"
         team_email_body = f"""
 <!DOCTYPE html>
 <html lang="en">

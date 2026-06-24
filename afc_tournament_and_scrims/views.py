@@ -404,6 +404,195 @@ def _as_bool(val):
     return False
 
 
+# FE-constant country labels (constants/index.ts) that pycountry cannot resolve on its own -> map to
+# an ISO alpha-2 code it can. Only the parenthesized Congos need this; everything else (incl. the
+# curly-apostrophe "Cote d'Ivoire" and accented "Sao Tome") resolves via normalize_country once the
+# apostrophe is folded. Used by _country_match_key.
+_CC_RULE_ALIAS = {
+    "congo (kinshasa)": "cd", "congo-kinshasa": "cd", "democratic republic of the congo": "cd",
+    "dr congo": "cd", "drc": "cd",
+    "congo (brazzaville)": "cg", "congo-brazzaville": "cg", "republic of the congo": "cg",
+}
+
+
+def _country_match_key(name):
+    """Canonical comparison key so per-country payment rules match regardless of which of the THREE
+    country vocabularies a value came from (owner 2026-06-24, adversarial-review fix):
+      - rule keys authored from the FE `countries` constant (human names, curly apostrophes),
+      - Team.country stored as the pycountry canonical name (afc_team._canonical_country),
+      - User.country stored raw from ipinfo as an ISO alpha-2 code ("NG" / "TZ" / "CI").
+    Reuses normalize_country (pycountry: resolves ISO codes + fuzzy names; defined later in this file,
+    called at runtime so the forward reference is fine) + _simple_normalize (lower/strip + curly->
+    straight apostrophe fold), plus a small alias for the parenthesized Congo labels pycountry can't
+    resolve. Returns "" for blank/None. Used ONLY by resolve_registration_fee."""
+    import unicodedata
+    from afc_auth.language_utils import _simple_normalize
+    if not name:
+        return ""
+    folded = _simple_normalize(name)
+    key = _simple_normalize(normalize_country(_CC_RULE_ALIAS.get(folded, folded)))
+    # Strip accents so an accented canonical ("côte d'ivoire", "são tomé") and an ASCII spelling
+    # collapse to the same key (defensive against non-FE clients / spelling drift).
+    return "".join(c for c in unicodedata.normalize("NFKD", key) if not unicodedata.combining(c))
+
+
+def resolve_registration_fee(event, *, team=None, user=None, country=None):
+    """PER-COUNTRY registration fee resolver (owner 2026-06-24). SINGLE source of truth for
+    "does this registrant pay, and how much?" on an event. Pass `team` for a squad registration
+    (uses the derived Team.country), `user` for a solo registration (uses User.country), or an
+    explicit `country` string (wins over team/user) when the caller already has the authoritative
+    country (e.g. register_for_event passes the SUBMITTED-roster country so the fee can't be gamed by
+    a stale stored Team.country, and matches the country used for the restriction check).
+
+    Returns {"pays": bool, "amount": Decimal, "currency": str}.
+      - Non-paid event -> always free (pays False).
+      - Paid event, NO per-country rules (legacy / null) -> everyone pays the BASE fee.
+      - Paid event WITH rules (Event.country_payment_rules): look up the registrant's country in
+        rules["countries"] via _country_match_key (normalized across ISO codes / pycountry names /
+        FE labels): a matched rule with pays False -> FREE; pays True -> the rule's amount/currency
+        override, or the base fee when the override is absent; an override amount <= 0 -> FREE (never
+        a $0 charge, which Stripe rejects). An UNLISTED country falls back to rules["default_pays"]
+        (True -> base fee, False -> free).
+
+    Callers: init_registration_payment (charge the RESOLVED amount, never a client-sent one),
+    register_for_event (a free-country registrant skips the paid-row gate), and the event-details
+    endpoints (echo the viewer's resolved fee as `your_registration_fee`). Independent of the
+    private-event invite-link gate (both gates apply). Mirrors Event.country_payment_rules docstring.
+    """
+    from decimal import Decimal
+
+    base_amount = event.registration_fee or Decimal("0")
+    base_ccy = (event.registration_fee_currency or "USD").upper()[:3]
+    free = {"pays": False, "amount": Decimal("0"), "currency": base_ccy}
+    paid_base = {"pays": True, "amount": base_amount, "currency": base_ccy}
+
+    # Free events never charge, regardless of any stored rules.
+    if getattr(event, "registration_type", "free") != "paid":
+        return free
+
+    rules = event.country_payment_rules or {}
+    countries = rules.get("countries") or {}
+    # Legacy paid event (no rules object at all) -> everyone pays the base fee.
+    if not countries and "default_pays" not in rules:
+        return paid_base
+
+    # Registrant country: explicit `country` wins (the caller's authoritative value); else squad ->
+    # team.country, solo -> user.country. Blank/unknown -> default branch.
+    if country is None:
+        if team is not None:
+            country = (getattr(team, "country", "") or "").strip()
+        elif user is not None:
+            country = (getattr(user, "country", "") or "").strip()
+        else:
+            country = ""
+
+    # Country match against the rules map, normalized across the three vocabularies (ISO alpha-2 /
+    # pycountry canonical name / FE label) so a rule authored as "Nigeria" matches a solo "NG" and a
+    # squad "Nigeria", and "Tanzania" matches the stored "Tanzania, United Republic of", etc.
+    matched = None
+    ckey = _country_match_key(country)
+    if ckey:
+        for name, rule in countries.items():
+            if _country_match_key(name) == ckey:
+                matched = rule or {}
+                break
+
+    if matched is not None:
+        if not matched.get("pays", True):
+            return free
+        amt = matched.get("amount")
+        try:
+            amt = Decimal(str(amt)) if amt not in (None, "") else base_amount
+        except Exception:
+            amt = base_amount
+        # An override of 0 (or below) means FREE, not a $0 charge (Stripe rejects sub-minimum / a $0
+        # session never reaches "paid", so a paying-but-$0 row would dead-end registration).
+        if amt <= 0:
+            return free
+        ccy = (str(matched.get("currency") or base_ccy).upper()[:3]) or base_ccy
+        return {"pays": True, "amount": amt, "currency": ccy}
+
+    # Country not listed -> default_pays decides.
+    return paid_base if bool(rules.get("default_pays", True)) else free
+
+
+def _parse_country_payment_rules(raw):
+    """Validate + normalize a client-sent country_payment_rules payload for create/edit_event.
+    Accepts a dict or a JSON string. Returns (rules_or_None, error_or_None). None rules == "no
+    per-country rules" (everyone pays the base fee). Shape is enforced here so the resolver above can
+    trust the stored data: default_pays bool, countries -> {<trimmed name>: {pays bool, amount?>=0,
+    currency? 3-char}}. Empty/falsey input -> (None, None)."""
+    import json as _json
+    from decimal import Decimal, InvalidOperation
+
+    # Override currencies the platform actually supports (mirrors the FE REGISTRATION_FEE_CURRENCIES
+    # picker). Enforced here so a non-FE client can't store an unsupported code that would only fail
+    # later at the Stripe checkout. Keep in sync with frontend create/_components/types.ts.
+    _ALLOWED_CCY = {"USD", "NGN", "GHS", "KES", "ZAR", "GBP", "EUR"}
+
+    if raw in (None, "", "null"):
+        return None, None
+    if isinstance(raw, str):
+        try:
+            raw = _json.loads(raw)
+        except (ValueError, TypeError):
+            return None, "country_payment_rules must be valid JSON."
+    if not isinstance(raw, dict):
+        return None, "country_payment_rules must be an object."
+
+    out = {"default_pays": bool(raw.get("default_pays", True)), "countries": {}}
+    countries = raw.get("countries") or {}
+    if not isinstance(countries, dict):
+        return None, "country_payment_rules.countries must be an object."
+
+    for name, rule in countries.items():
+        cname = str(name or "").strip()
+        if not cname:
+            continue  # skip blank country rows
+        rule = rule or {}
+        entry = {"pays": bool(rule.get("pays", True))}
+        amt = rule.get("amount")
+        if amt not in (None, ""):
+            try:
+                dval = Decimal(str(amt))
+            except (InvalidOperation, ValueError, TypeError):
+                return None, f"Invalid amount for {cname}."
+            if dval < 0:
+                return None, f"Amount for {cname} cannot be negative."
+            entry["amount"] = str(dval)
+        ccy = rule.get("currency")
+        if ccy:
+            ccy = str(ccy).strip().upper()
+            if len(ccy) != 3:
+                return None, f"Currency for {cname} must be a 3-letter code."
+            if ccy not in _ALLOWED_CCY:
+                return None, f"Currency for {cname} is not supported."
+            entry["currency"] = ccy
+        out["countries"][cname] = entry
+
+    # An all-default rules object with no countries listed is equivalent to "no rules".
+    if not out["countries"] and out["default_pays"]:
+        return None, None
+    return out, None
+
+
+def _serialize_viewer_fee(event, user):
+    """JSON-safe `your_registration_fee` for the event-details endpoints (owner 2026-06-24): what the
+    VIEWER would pay, so the detail page can show "Entry fee: X" / "Free for your country" BEFORE any
+    registration step. Resolved from the viewer's User.country (a best-effort preview; squad events use
+    the chosen team's country at actual register time, which may differ for a captain whose team is
+    majority another country). Returns:
+      - None  -> not a paid event, OR an anonymous viewer (FE then shows the base fee + "varies by
+                 country" when rules exist).
+      - {"pays": bool, "amount": str, "currency": str}  -> the viewer's resolved fee."""
+    if getattr(event, "registration_type", "free") != "paid":
+        return None
+    if user is None:
+        return None
+    fee = resolve_registration_fee(event, user=user)
+    return {"pays": fee["pays"], "amount": str(fee["amount"]), "currency": fee["currency"]}
+
+
 def _validate_scoring_modes(stages_data):
     """Validate the per-stage scoring-mode config (Champion-Point / Point-Rush) for a
     create/edit payload. `stages_data` is the submit-ordered list of stage dicts; the
@@ -1128,6 +1317,14 @@ def create_event(request):
             org.paid_terms_version = "2026-06-08"
             org.save(update_fields=["paid_terms_accepted_at", "paid_terms_accepted_by", "paid_terms_version"])
 
+    # PER-COUNTRY payment rules (owner 2026-06-24): only meaningful on a paid event. Validated +
+    # normalized by _parse_country_payment_rules; resolve_registration_fee() reads it at register time.
+    country_payment_rules = None
+    if registration_type == "paid":
+        country_payment_rules, _cpr_err = _parse_country_payment_rules(request.data.get("country_payment_rules"))
+        if _cpr_err:
+            return Response({"error": _cpr_err}, status=400)
+
     # ---------------- WAITLIST FIELDS (owner 2026-06-17) ----------------
     # create_event previously VALIDATED waitlist input (block above) but never PERSISTED it, so an
     # event created with the waitlist toggle on was silently saved with waitlist off until an edit.
@@ -1152,6 +1349,7 @@ def create_event(request):
             registration_type=registration_type,
             registration_fee=registration_fee,
             registration_fee_currency=registration_fee_currency,
+            country_payment_rules=country_payment_rules,
             competition_type=request.data.get("competition_type"),
             participant_type=request.data.get("participant_type"),
             # event_type "external" (off-platform registration link) is an AFC-admin-only
@@ -1436,6 +1634,7 @@ def duplicate_event(request, event_id):
             registration_type=source.registration_type,
             registration_fee=source.registration_fee,
             registration_fee_currency=source.registration_fee_currency,
+            country_payment_rules=source.country_payment_rules,
             competition_type=source.competition_type,
             participant_type=source.participant_type,
             event_type=source.event_type,
@@ -2384,6 +2583,18 @@ def edit_event(request):
     # A paid event must end up with a positive fee.
     if event.registration_type == "paid" and (event.registration_fee is None or event.registration_fee <= 0):
         return Response({"message": "A paid event needs a registration_fee greater than 0."}, status=400)
+
+    # PER-COUNTRY payment rules (owner 2026-06-24). PATCH-style: only touched when the key is present.
+    # Sending null/empty clears the rules (everyone pays base). A FREE event always has null rules, and
+    # we wipe them FIRST so a paid->free save with leftover (even malformed) rules never raises a
+    # spurious 400 from parsing rules that are about to be discarded anyway (review finding #9).
+    if event.registration_type != "paid":
+        event.country_payment_rules = None
+    elif "country_payment_rules" in request.data:
+        parsed, _cpr_err = _parse_country_payment_rules(request.data.get("country_payment_rules"))
+        if _cpr_err:
+            return Response({"message": _cpr_err}, status=400)
+        event.country_payment_rules = parsed
 
     if "event_banner" in request.FILES:
         event.event_banner = request.FILES.get("event_banner")
@@ -3589,6 +3800,20 @@ def get_event_details(request):
                 user=user
             ).exists()
 
+    # Per-team roster-edit window for the VIEWER's OWN team in this event (owner 2026-06-24). Lets the
+    # user-facing Edit Roster button open for a team the organizer specifically allowed, even when the
+    # event-wide window is closed. None when the viewer isn't on a registered (non-cancelled) team here.
+    viewer_team_roster_edit_until = None
+    viewer_team_roster_edit_open = False
+    if user and event.participant_type != "solo":
+        _vtt = (TournamentTeam.objects
+                .filter(event=event, members__user=user)
+                .exclude(status__in=["disqualified", "withdrawn", "left"])
+                .first())
+        if _vtt:
+            viewer_team_roster_edit_until = _vtt.roster_edit_until
+            viewer_team_roster_edit_open = _vtt.roster_edit_open
+
     # -------- ROOM-DETAILS VISIBILITY CONTEXT (owner 2026-06-17) --------
     # Room id/name/password must appear on the user-facing event page ONLY to the registered
     # competitors of the group, and ONLY after the organizer POSTS them (broadcast room_details ->
@@ -3706,6 +3931,15 @@ def get_event_details(request):
         "registration_type": event.registration_type,
         "registration_fee": event.registration_fee,
         "registration_fee_currency": event.registration_fee_currency,
+        # Per-country payment (owner 2026-06-24): country_payment_rules rehydrates the edit form;
+        # your_registration_fee = the VIEWER's resolved fee so the detail page shows the amount (or
+        # "free for your country") before registration. See _serialize_viewer_fee / resolve_registration_fee.
+        "country_payment_rules": event.country_payment_rules,
+        "your_registration_fee": _serialize_viewer_fee(event, user),
+        # Per-team roster-edit window for the VIEWER's own team (owner 2026-06-24): the user-facing Edit
+        # Roster button opens when the EVENT window OR this team's window is open. Null/false for non-members.
+        "your_team_roster_edit_until": viewer_team_roster_edit_until,
+        "your_team_roster_edit_open": viewer_team_roster_edit_open,
         "event_rules": event.event_rules,
         "event_status": event.event_status,
         "registration_link": event.registration_link,
@@ -3836,6 +4070,12 @@ def get_event_details(request):
                 # F1 (owner 2026-06-19): no-show flag drives the RegisteredTeamsTab toggle + clear path
                 # (see the solo dict above for why this is required).
                 "is_no_show": tt.is_no_show,
+                # Per-team roster-edit window (owner 2026-06-24): drives the RegisteredTeamsTab per-team
+                # "Allow roster edit" control (admin/organizer) + the user-facing Edit Roster button for
+                # this team. roster_edit_open is the live now<=until snapshot; the FE also derives it from
+                # roster_edit_until vs the wall clock so an idle panel flips closed without a refetch.
+                "roster_edit_until": tt.roster_edit_until,
+                "roster_edit_open": tt.roster_edit_open,
                 # Full player roster of THIS registered team so the admin "Registered
                 # Teams" view can expand a team to its players (owner request 2026-06-09).
                 # username is the in-game name; uid + full_name give full identity; the
@@ -4467,6 +4707,10 @@ def get_event_details_not_logged_in(request):
         "registration_type": event.registration_type,
         "registration_fee": event.registration_fee,
         "registration_fee_currency": event.registration_fee_currency,
+        # Per-country payment (owner 2026-06-24): anon viewer -> your_registration_fee is null (the FE
+        # shows the base fee + "varies by country" when rules exist). Rules echoed for completeness.
+        "country_payment_rules": event.country_payment_rules,
+        "your_registration_fee": None,
         "event_rules": event.event_rules,
         "event_status": event.event_status,
         "registration_link": event.registration_link,
@@ -5059,15 +5303,46 @@ def register_for_event(request):
     # complete even if the user closed the tab after paying (their paid record persists).
     if event.registration_type == "paid":
         from .models import EventRegistrationPayment
-        has_paid = EventRegistrationPayment.objects.filter(
-            event=event, user=user, status="paid"
-        ).exclude(release_status="refunded").exists()
-        if not has_paid:
-            return Response(
-                {"message": "Payment required. Please pay the entry fee to register.",
-                 "code": "payment_required"},
-                status=402,
-            )
+        # PER-COUNTRY payment (owner 2026-06-24, hardened after adversarial review). Resolve whether
+        # THIS registrant's country pays:
+        #   - SQUAD/DUO: use the SUBMITTED-roster country (determine_team_country over roster_member_ids,
+        #     the SAME basis as the country-restriction check + what's stored on the registration) so a
+        #     stale/gamed stored Team.country can't change the fee (review finding #4).
+        #   - SOLO: the registrant's own country.
+        # A FREE-country registrant skips the paid-row gate entirely (mirrors init returning {free:true}).
+        # A PAYING registrant must have a paid row BOUND to this registration: same team (squad) + at
+        # least the resolved amount in the resolved currency, so a payment made for a cheaper/other team
+        # or another country can't satisfy an expensive registration (review findings #2/#3). The
+        # private-invite gate further below still applies independently.
+        if participant_type in ("duo", "squad") and team_id:
+            # Defensive int() coercion: skip non-numeric ids so malformed input can't 500 in this early
+            # gate (the real roster validation + clean 400s live further down the squad branch).
+            _roster_ids = []
+            for _x in (roster_member_ids or []):
+                try:
+                    if _x is not None:
+                        _roster_ids.append(int(_x))
+                except (TypeError, ValueError):
+                    continue
+            _roster_users = list(User.objects.filter(user_id__in=_roster_ids)) if _roster_ids else []
+            _reg_country = determine_team_country(_roster_users, user)
+            registrant_fee = resolve_registration_fee(event, country=_reg_country)
+        else:
+            registrant_fee = resolve_registration_fee(event, user=user)
+
+        if registrant_fee["pays"]:
+            paid_q = EventRegistrationPayment.objects.filter(
+                event=event, user=user, status="paid",
+                amount__gte=registrant_fee["amount"], currency=registrant_fee["currency"],
+            ).exclude(release_status="refunded")
+            if participant_type in ("duo", "squad") and team_id:
+                paid_q = paid_q.filter(team_id=team_id)
+            if not paid_q.exists():
+                return Response(
+                    {"message": "Payment required. Please pay the entry fee to register.",
+                     "code": "payment_required"},
+                    status=402,
+                )
 
     # -------------------------
     # SOLO
@@ -5875,7 +6150,7 @@ def check_and_activate_team(tournament_team):
         # send_email (afc_auth.views) localizes the subject + visible body text to this locale.
         owner_lang = (getattr(tournament_team.team.team_owner, "language", "") or "en")
 
-        subject = f'AFC Registration Update – Your Team {team_name} is now Fully Registered for {event_name}'
+        subject = f'AFC Registration Update: Your Team {team_name} is now Fully Registered for {event_name}'
         message = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -6060,7 +6335,7 @@ def confirm_player(request):
     # =========================
     # 📧 EMAIL TO PLAYER
     # =========================
-    subject = f'AFC Registration Update – Your Application for {event_name} Has Been Accepted'
+    subject = f'AFC Registration Update: Your Application for {event_name} Has Been Accepted'
 
     player_message = f"""
 <!DOCTYPE html>
@@ -6123,7 +6398,7 @@ def confirm_player(request):
     # =========================
     # 📧 EMAIL TO TEAM OWNER
     # =========================
-    subject = f'AFC Registration Update – Player {player_username} Accepted for {event_name}'
+    subject = f'AFC Registration Update: Player {player_username} Accepted for {event_name}'
 
     owner_message = f"""
 <!DOCTYPE html>
@@ -6329,7 +6604,7 @@ def reject_player(request):
     # =========================
     # 📧 EMAIL TO PLAYER
     # =========================
-    subject = f'AFC Registration Update – Your Application for {event_name} Has Been Rejected'
+    subject = f'AFC Registration Update: Your Application for {event_name} Has Been Rejected'
 
     player_message = f"""
 <!DOCTYPE html>
@@ -6408,7 +6683,7 @@ def reject_player(request):
     # =========================
     # 📧 EMAIL TO TEAM OWNER
     # =========================
-    subject = f'AFC Registration Update – Player {player_username} Rejected for {event_name}'
+    subject = f'AFC Registration Update: Player {player_username} Rejected for {event_name}'
 
     owner_message = f"""
 <!DOCTYPE html>
@@ -18246,6 +18521,79 @@ def set_roster_edit_window(request):
 
 
 @api_view(["POST"])
+def set_team_roster_edit_window(request):
+    """
+    POST /events/team-roster-edit-window/  (admin / organizer)
+
+    PER-TEAM roster-edit allowance (owner 2026-06-24). Like set_roster_edit_window, but opens/closes the
+    window for ONE specific team in an event instead of all teams. Lets an admin/organizer let a single
+    team fix its roster (and its members fix IGN/UID) even when the event-wide window is closed and even
+    after results are entered (while open). Auto-closes by time (TournamentTeam.roster_edit_open).
+
+    Request body:
+      { "event_id": <id>, "team_id": <id>, "until": "<ISO datetime>" }  -> OPEN until that instant.
+      { "event_id": <id>, "team_id": <id>, "open": false }              -> CLOSE now (also: until null/"").
+    Response: { "tournament_team_id", "team_id", "roster_edit_until": <iso|null>, "roster_edit_open": bool }.
+
+    Auth: same manager gate as set_roster_edit_window / edit_roster (AFC event admin OR organizer with
+    can_manage_registrations on the owning org). `until` must be in the future and no later than the
+    event end. Consumed by the admin + organizer event-manage per-team roster control; honoured by
+    edit_roster + afc_auth._has_active_event_registration.
+    """
+    from django.utils.dateparse import parse_datetime
+    from datetime import datetime as _dt, time as _time
+
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.data.get("event_id")
+    team_id = request.data.get("team_id")
+    if not event_id or not team_id:
+        return Response({"message": "event_id and team_id are required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+
+    # Same manager gate as set_roster_edit_window / edit_roster.
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to manage this event's roster window."}, status=403)
+
+    tt = TournamentTeam.objects.filter(event=event, team_id=team_id).first()
+    if not tt:
+        return Response({"message": "That team is not registered for this event."}, status=404)
+
+    raw_until = request.data.get("until")
+    open_flag = request.data.get("open")
+
+    # CLOSE: explicit open=false, or an empty/null `until`.
+    if open_flag in (False, "false") or raw_until in (None, "", "null"):
+        tt.roster_edit_until = None
+        tt.save(update_fields=["roster_edit_until"])
+        return Response({"tournament_team_id": tt.tournament_team_id, "team_id": tt.team_id,
+                         "roster_edit_until": None, "roster_edit_open": False}, status=200)
+
+    # OPEN: parse the closing instant, then CAP it at the event end (the window can't outlive the event).
+    # Capping (rather than rejecting an over-end value) lets a simple per-team toggle send "open to the
+    # max" without the FE needing the exact end date.
+    until = parse_datetime(str(raw_until))
+    if not until:
+        return Response({"message": "Invalid 'until' datetime."}, status=400)
+    if timezone.is_naive(until):
+        until = timezone.make_aware(until, timezone.get_current_timezone())
+    end_of_event = timezone.make_aware(_dt.combine(event.end_date, _time.max), timezone.get_current_timezone())
+    until = min(until, end_of_event)
+    if until <= timezone.now():
+        return Response({"message": "This event has already ended; cannot open a roster-edit window."}, status=400)
+
+    tt.roster_edit_until = until
+    tt.save(update_fields=["roster_edit_until"])
+    return Response({"tournament_team_id": tt.tournament_team_id, "team_id": tt.team_id,
+                     "roster_edit_until": tt.roster_edit_until, "roster_edit_open": tt.roster_edit_open}, status=200)
+
+
+@api_view(["POST"])
 def edit_roster(request):
 
     # ---------------- AUTH ----------------
@@ -18272,6 +18620,14 @@ def edit_roster(request):
     event = get_object_or_404(Event, event_id=event_id)
     team = get_object_or_404(Team, team_id=team_id)
 
+    # Resolve the TournamentTeam early: its per-team roster-edit window (owner 2026-06-24) is an extra
+    # allow-path checked alongside the event-wide window in the registration + results gates below.
+    tt = TournamentTeam.objects.filter(event=event, team=team).first()
+    if not tt:
+        return Response({"message": "Team not registered."}, status=404)
+    # Either the event-wide window OR this team's per-team window opens roster editing for this team.
+    roster_window_open = event.roster_edit_open or tt.roster_edit_open
+
     # ---------------- STAFF (MANAGER) OVERRIDE FLAG ----------------
     # Feature "staff-edit-roster-after-close" (2026-06-10): AFC staff must be able to
     # CORRECT a team's roster even after registration closes (e.g. a team registered the
@@ -18292,13 +18648,18 @@ def edit_roster(request):
     # ALLOW-path that lets captains self-edit past registration close until it AUTO-CLOSES at
     # event.roster_edit_until (capped at the event end; see set_roster_edit_window). The match-start
     # lock below still applies to everyone.
-    if date.today() > event.registration_end_date and not is_manager and not event.roster_edit_open:
+    if date.today() > event.registration_end_date and not is_manager and not roster_window_open:
         return Response({"message": "Registration closed. Cannot edit roster."}, status=403)
 
     # ---------------- MATCH START CHECK ----------------
-    # NOT bypassed for managers: editing a roster after any match has results would orphan
-    # the match stats, so this lock applies to everyone, staff included.
-    if Match.objects.filter(group__stage__event=event, result_inputted=True).exists():
+    # Editing a roster after results would normally orphan match stats, so this freezes everyone
+    # (staff included) ONCE results exist. EXCEPTION (owner 2026-06-24): an OPEN roster-edit window
+    # (event-wide OR this team's per-team window) explicitly overrides the freeze - the organizer
+    # opened it on purpose to let this team correct its roster even mid-event. Without an open window
+    # the freeze stands for everyone.
+    if (not roster_window_open) and Match.objects.filter(
+        group__stage__event=event, result_inputted=True
+    ).exists():
         return Response({
             "message": "Roster cannot be edited after matches have started."
         }, status=403)
@@ -18309,10 +18670,7 @@ def edit_roster(request):
     if not (_user_is_team_captain_or_owner(user, team) or is_manager):
         return Response({"message": "Only captain/owner can edit roster."}, status=403)
 
-    tt = TournamentTeam.objects.filter(event=event, team=team).first()
-
-    if not tt:
-        return Response({"message": "Team not registered."}, status=404)
+    # tt (TournamentTeam) + roster_window_open were resolved at the top of this function.
 
     # ---------------- ROSTER RULES ----------------
     if event.participant_type == "duo":
@@ -19174,10 +19532,18 @@ def upload_match_result_image(request):
                     )
                 )
 
-            created_team_stats = TournamentTeamMatchStats.objects.bulk_create(
+            TournamentTeamMatchStats.objects.bulk_create(
                 team_stats_to_create, batch_size=200
             )
-            ts_map = {ts.tournament_team_id: ts.team_stats_id for ts in created_team_stats}
+            # MySQL's bulk_create does NOT populate PKs (can_return_rows_from_bulk_insert=False), so the
+            # returned objects carry team_stats_id=None. Reading the rows back by match gives real PKs;
+            # without this every per-player TournamentPlayerMatchStats below hit `if not ts_id: continue`
+            # and was skipped -> OCR team uploads saved team totals but ZERO individual kills. Mirrors the
+            # file-upload path (upload_team_match_result re-fetch).
+            ts_map = {
+                ts.tournament_team_id: ts.team_stats_id
+                for ts in TournamentTeamMatchStats.objects.filter(match=match)
+            }
 
             for team_data in merged:
                 for p in team_data.get("players", []):

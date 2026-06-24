@@ -1819,6 +1819,16 @@ def ocr_job_apply(request, lb_id, job_id):
     if jnf:
         return jnf
 
+    # Idempotency guard (owner 2026-06-24 fix): re-applying an already-applied OCR job created a SECOND
+    # map (the prior applied_match was orphaned) whose rows DOUBLE-COUNTED in the standings. Block a
+    # second apply; the FE should edit/delete the existing map instead of re-applying the job.
+    if job.status == "applied" and job.applied_match_id:
+        return Response(
+            {"message": "This OCR job has already been applied.",
+             "code": "ocr_already_applied", "applied_match_id": job.applied_match_id},
+            status=409,
+        )
+
     data = request.data or {}
     # match_map: explicit override, else the map label the admin typed on the job.
     match_map = data.get("match_map") or job.map_label or None
