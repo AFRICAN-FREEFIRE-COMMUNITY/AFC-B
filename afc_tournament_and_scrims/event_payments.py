@@ -115,8 +115,66 @@ def init_registration_payment(request):
     if RegisteredCompetitors.objects.filter(event=event, user=user, status="registered").exists():
         return Response({"message": "You are already registered for this event."}, status=409)
 
-    # already paid + not yet refunded? reuse it (idempotent: do not double-charge)
-    existing = EventRegistrationPayment.objects.filter(event=event, user=user, status="paid").exclude(release_status="refunded").first()
+    from .views import resolve_registration_fee, determine_team_country, _user_can_register_team
+    from afc_auth.models import User as AfcUser
+
+    team = None
+    team_id = request.data.get("team_id")
+    if team_id:
+        team = Team.objects.filter(team_id=team_id).first()
+        # Membership/ownership check (review finding #3): the fee is priced off this team's country, so
+        # a client must NOT be able to price (or get {free}) off a team they don't belong to.
+        if team and not _user_can_register_team(user, team):
+            return Response({"message": "You cannot register this team.", "code": "not_team_member"}, status=403)
+
+    # PER-COUNTRY payment (owner 2026-06-24, hardened after adversarial review): the amount + whether
+    # this registrant pays is resolved SERVER-SIDE from country_payment_rules + the registrant's country.
+    # Squad: use the SUBMITTED-roster country (determine_team_country over roster_member_ids), the SAME
+    # basis register_for_event uses, so init + register agree and a stale Team.country can't be gamed.
+    # Solo: the registrant's own country. Never trust a client-sent amount. resolve_registration_fee is
+    # the single source of truth (also used by register_for_event + the event-details echo).
+    roster_ids = request.data.get("roster_member_ids") or []
+    if isinstance(roster_ids, str):
+        try:
+            roster_ids = json.loads(roster_ids)
+        except (ValueError, TypeError):
+            roster_ids = []
+    if team is not None:
+        # Defensive int() coercion: skip any non-numeric id so a malformed client can't 500 here
+        # (the real roster validation lives in register_for_event). Empty roster -> determine_team_country
+        # falls back to the team's stored country (not just the owner) so a stale client that omits the
+        # roster still prices off the team, not the lone owner.
+        rid = []
+        for x in roster_ids:
+            try:
+                if x is not None:
+                    rid.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        roster_users = list(AfcUser.objects.filter(user_id__in=rid)) if rid else []
+        reg_country = determine_team_country(roster_users, user) or (getattr(team, "country", "") or "")
+        fee = resolve_registration_fee(event, country=reg_country)
+    else:
+        fee = resolve_registration_fee(event, user=user)
+    # FREE for this registrant's country -> no Stripe; the FE registers directly (register_for_event
+    # mirrors this and skips the paid-row gate for a free-country registrant).
+    if not fee["pays"]:
+        return Response({"free": True, "message": "No entry fee for your country. You can register directly."}, status=200)
+
+    amount = fee["amount"]
+    currency = (fee["currency"] or "USD").upper()
+
+    # Already paid + not refunded? Reuse it ONLY when the existing row SATISFIES this registration's
+    # resolved fee (review pass-2): same currency, at least the resolved amount, and (squad) the same
+    # team. Otherwise (e.g. a cheaper/other-team row, or the operator raised the fee after payment) we
+    # fall through to a FRESH checkout for the now-correct amount, so the user is never dead-ended on a
+    # row the hardened register gate would reject. Mirrors the register_for_event binding exactly.
+    existing_q = EventRegistrationPayment.objects.filter(
+        event=event, user=user, status="paid", currency=currency, amount__gte=amount,
+    ).exclude(release_status="refunded")
+    if team is not None:
+        existing_q = existing_q.filter(team=team)
+    existing = existing_q.first()
     if existing:
         return Response({"message": "You have already paid for this event. You can complete your registration.",
                          "payment_id": str(existing.payment_id), "already_paid": True}, status=200)
@@ -125,14 +183,8 @@ def init_registration_payment(request):
     if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
         return Response({"message": "Registration limit reached."}, status=403)
 
-    team = None
-    team_id = request.data.get("team_id")
-    if team_id:
-        team = Team.objects.filter(team_id=team_id).first()
-
-    currency = (event.registration_fee_currency or "USD").upper()
     payment = EventRegistrationPayment.objects.create(
-        event=event, user=user, team=team, amount=event.registration_fee, currency=currency, provider="stripe",
+        event=event, user=user, team=team, amount=amount, currency=currency, provider="stripe",
     )
 
     base = getattr(settings, "FRONTEND_URL", "https://africanfreefirecommunity.com").rstrip("/")
@@ -146,7 +198,7 @@ def init_registration_payment(request):
         "client_reference_id": str(payment.payment_id),
         "line_items[0][price_data][currency]": currency.lower(),
         "line_items[0][price_data][product_data][name]": f"Entry fee: {event.event_name}",
-        "line_items[0][price_data][unit_amount]": _amount_minor(event.registration_fee, currency),
+        "line_items[0][price_data][unit_amount]": _amount_minor(amount, currency),
         "line_items[0][quantity]": "1",
         # Adaptive Pricing: Stripe shows + charges in the buyer's local currency (verified working).
         "adaptive_pricing[enabled]": "true",

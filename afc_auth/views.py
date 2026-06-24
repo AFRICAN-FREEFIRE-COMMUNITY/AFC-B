@@ -175,6 +175,33 @@ def validate_token(token):
         return None
 
 
+# Granular UserRoles names that count as an AFC platform admin for STATS visibility (owner 2026-06-24).
+# DELIBERATELY excludes "organizer", "organizer_admin", "sponsor", "sponsor_admin": organizers and
+# sponsors must NOT be able to view player/team statistics. Coarse roles admin/moderator/support are
+# handled separately in is_stats_admin.
+_STATS_ADMIN_GRANULAR_ROLES = [
+    "super_admin", "head_admin", "metrics_admin", "shop_admin",
+    "news_admin", "event_admin", "teams_admin", "partner_admin",
+]
+
+
+def is_stats_admin(user) -> bool:
+    """True if `user` is an AFC admin allowed to view ANY player's or team's statistics.
+
+    Admin = coarse User.role in (admin, moderator, support) OR a granular platform-admin UserRoles row
+    (see _STATS_ADMIN_GRANULAR_ROLES). Organizers and sponsors are intentionally NOT admins here.
+    Shared by the player-stats gate (afc_player._can_view_player_stats) and the team-stats gate
+    (afc_team._can_view_team_stats) so both surfaces enforce the SAME rule. Returns False for None."""
+    if user is None:
+        return False
+    if getattr(user, "role", None) in ("admin", "moderator", "support"):
+        return True
+    try:
+        return user.userroles.filter(role__role_name__in=_STATS_ADMIN_GRANULAR_ROLES).exists()
+    except Exception:
+        return False
+
+
 def require_admin(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
@@ -2018,71 +2045,65 @@ def _has_active_event_registration(user) -> bool:
         frontend profile-edit form (app/(user)/profile/edit/page.tsx) disables + explains the two
         fields. AuthContext maps it onto User.identity_locked.
     """
-    LIVE_STATUSES = ["upcoming", "ongoing"]
-
-    # ── ROSTER-EDIT UNLOCK (owner 2026-06-22) ─────────────────────────────────────────────────
-    # The lock must release exactly WHEN ROSTER EDITING IS ALLOWED for a normal player, so a player
-    # can fix their IGN/UID (and meet the registration requirements) while the roster is still
-    # changeable. That allow-condition mirrors edit_roster's own gate (afc_tournament_and_scrims
-    # .edit_roster): roster editing is allowed when registration is still open
-    # (today <= registration_end_date) OR an org/admin opened a roster-edit window
-    # (Event.roster_edit_open), AND no match has results yet (result_inputted) — once any result
-    # exists, identity is FROZEN for attribution even if a window is open (edit_roster's match-start
-    # lock applies to everyone). So an event LOCKS the player iff it is live AND
-    #   (registration closed AND no window) OR (a match already has results).
-    # Conservative for the multi-event case: ANY live event that still locks keeps the player locked,
-    # protecting that event's result/leaderboard attribution. (The previous rule locked for the whole
-    # upcoming/ongoing span, which created a catch-22: a player committed to a live event could not
-    # fix the very UID the registration requires.)
-    # Byte-match edit_roster's own window check, which uses date.today() (afc_tournament_and_scrims
-    # .edit_roster), so the identity unlock and the roster-edit window can never skew by a calendar day.
+    # ── STARTED-vs-COMPLETED LOCK (owner 2026-06-24) ──────────────────────────────────────────
+    # The lock is held ONLY by an event that has STARTED and is NOT yet completed. A COMPLETED event,
+    # or one already PAST ITS END DATE (the auto-complete sweep can lag), RELEASES the lock; an event
+    # that has not started yet never locks. For a started, not-completed event the registrant can still
+    # edit while a roster-edit window is OPEN - either the event-wide Event.roster_edit_open OR THIS
+    # team's per-team TournamentTeam.roster_edit_open - and an open window OVERRIDES the results freeze
+    # (mirrors edit_roster). With no open window, a started event allows editing only while registration
+    # is open AND no results exist yet; otherwise it LOCKS. Multi-event: ANY single locked event keeps
+    # the user locked (protects that event's result/leaderboard attribution). Uses date.today() to match
+    # edit_roster's own window check so the identity unlock and the roster-edit window never skew by a day.
     from datetime import date
     today = date.today()
 
-    # All live, NON-CANCELLED events the user is committed to (team + solo paths), de-duplicated.
-    # Team path: a disqualified/withdrawn/left TournamentTeam is NOT a live commitment — disqualify_team
-    # cancels the TournamentTeam (and its RegisteredCompetitors/StageCompetitor rows) but deliberately
-    # leaves the TournamentTeamMember rows intact, so we must exclude cancelled teams here too, mirroring
-    # the cancellation exclusion already applied on the solo RegisteredCompetitors path (else a member of
-    # a knocked-out team stays wrongly identity-locked).
-    live_event_ids = set(
-        TournamentTeamMember.objects
-            .filter(user=user,
-                    tournament_team__event__event_status__in=LIVE_STATUSES,
-                    tournament_team__event__is_draft=False)
-            .exclude(status="rejected")
-            .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
-            .values_list("tournament_team__event_id", flat=True)
-    )
-    live_event_ids |= set(
-        RegisteredCompetitors.objects
-            .filter(user=user,
-                    event__event_status__in=LIVE_STATUSES,
-                    event__is_draft=False)
-            .exclude(status__in=["rejected", "withdrawn", "left", "disqualified"])
-            .values_list("event_id", flat=True)
-    )
-    if not live_event_ids:
+    # Candidate (event, tournament_team-or-None) pairs the user is committed to: non-draft, non-cancelled.
+    # Team path keeps the TournamentTeam so we can read its per-team roster-edit window. A disqualified/
+    # withdrawn/left TournamentTeam is NOT a live commitment (disqualify_team leaves the member rows but
+    # cancels the TournamentTeam), so exclude those - mirrors the solo cancellation exclusion.
+    candidates = []  # list of (Event, TournamentTeam | None)
+    for ttm in (TournamentTeamMember.objects
+                .filter(user=user, tournament_team__event__is_draft=False)
+                .exclude(status="rejected")
+                .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+                .select_related("tournament_team", "tournament_team__event")):
+        candidates.append((ttm.tournament_team.event, ttm.tournament_team))
+    for rc in (RegisteredCompetitors.objects
+               .filter(user=user, event__is_draft=False)
+               .exclude(status__in=["rejected", "withdrawn", "left", "disqualified"])
+               .select_related("event")):
+        candidates.append((rc.event, None))
+
+    if not candidates:
         return False
 
-    # Events that already have an entered match result -> identity is FROZEN for attribution even if a
-    # roster-edit window is open (edit_roster's match-start lock applies to everyone). One grouped query
-    # over all the candidate events, not one exists() per event.
+    # Events that already have an entered match result (one grouped query over all candidate events).
+    cand_event_ids = {ev.event_id for ev, _ in candidates}
     events_with_results = set(
         Match.objects
-            .filter(group__stage__event_id__in=live_event_ids, result_inputted=True)
+            .filter(group__stage__event_id__in=cand_event_ids, result_inputted=True)
             .values_list("group__stage__event_id", flat=True)
     )
 
-    for ev in Event.objects.filter(event_id__in=live_event_ids):
-        if ev.event_id in events_with_results:
-            return True  # results entered -> freeze identity
-        # Roster editing allowed for a normal player == identity editable (mirrors edit_roster gate):
-        # registration still open OR an org/admin roster-edit window is open.
-        roster_editing_allowed = (today <= ev.registration_end_date) or ev.roster_edit_open
-        if not roster_editing_allowed:
-            return True  # registration closed + no window -> roster fixed -> identity locked
-    # Every live event still allows roster editing AND has no results -> identity unlocked.
+    for ev, tt in candidates:
+        # STARTED? status flipped to ongoing, OR the start date has arrived even if the status lags.
+        started = ev.event_status == "ongoing" or (ev.start_date and today >= ev.start_date)
+        if not started:
+            continue  # not started yet -> never locks (owner: only started events lock)
+        # RELEASED? completed status, OR already past the end date (auto-complete sweep can lag).
+        released = ev.event_status == "completed" or (ev.end_date and today > ev.end_date)
+        if released:
+            continue  # completed / past end -> released, editable
+        # An OPEN roster-edit window (event-wide OR this team's per-team window) keeps it editable and
+        # overrides the results freeze (owner 2026-06-24).
+        if ev.roster_edit_open or (tt is not None and tt.roster_edit_open):
+            continue
+        # No window: editable only while registration is open AND no results exist yet (mirrors edit_roster).
+        reg_open = bool(ev.registration_end_date) and today <= ev.registration_end_date
+        if reg_open and ev.event_id not in events_with_results:
+            continue
+        return True  # started, not released, no window, and (reg closed OR results exist) -> LOCKED
     return False
 
 
@@ -2380,12 +2401,21 @@ def get_user_profile(request):
     _current_team = _current_member.team if _current_member else None
 
     # ---------------- TOTAL EARNINGS ----------------
-    # Original documented intent: if the player has a team and that Team has total_earnings,
-    # use it; else 0. (Now sourced from the live-roster team instead of the broken user.team.)
+    # Intent: the player's CURRENT team total earnings (else 0). Team.total_earnings has NO writer
+    # anywhere, so reading that stored field always returned 0 (owner 2026-06-24 fix). Derive it LIVE,
+    # the same way get_team_details does: the Sum of every EventPrizePayout across the team's
+    # TournamentTeam rows. Failure-safe (0 on any error).
     total_earnings = 0
     try:
-        if _current_team is not None and _current_team.total_earnings is not None:
-            total_earnings = _current_team.total_earnings or 0
+        if _current_team is not None:
+            # NOTE: do NOT `from django.db.models import Sum` here - Sum is already imported at module
+            # level and used earlier in this function (the stats aggregates above); a local import would
+            # make `Sum` function-local and UnboundLocalError those earlier uses (500 on every profile
+            # load). EventPrizePayout is only used here, so its local import is safe.
+            from afc_tournament_and_scrims.models import EventPrizePayout
+            total_earnings = EventPrizePayout.objects.filter(
+                tournament_team__team=_current_team
+            ).aggregate(total=Sum("amount"))["total"] or 0
     except Exception:
         total_earnings = 0
 

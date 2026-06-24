@@ -33,7 +33,7 @@ from afc_player.aggregation import (
 # Session-token resolver. We reuse the SAME helper the authenticated team/auth
 # endpoints use (afc_auth.views.validate_token: token string -> User or None) so
 # the optional-auth path here behaves identically to the rest of the codebase.
-from afc_auth.views import validate_token
+from afc_auth.views import validate_token, is_stats_admin
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -76,18 +76,17 @@ def _viewer_from_request(request):
 
 def _can_view_player_stats(viewer, player):
     """
-    Decide whether `viewer` (a User or None) may see `player`'s detailed stats.
+    Decide whether `viewer` (a User or None) may see `player`'s INDIVIDUAL stats.
 
-    True when ANY of:
-      • the viewer IS the player (own profile),
-      • the viewer is an AFC admin (User.role == "admin"),
-      • the viewer shares an ACTIVE team with the player (teammate) — i.e. both
-        are rows in TeamMembers for the SAME team.
+    Owner rule (2026-06-24): individual player statistics are private. Visible ONLY to:
+      • the viewer themselves (own profile), and
+      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role).
 
-    Anonymous (viewer is None) or unrelated viewers => False.
+    Everyone else => False, INCLUDING the player's own teammates (a player may see their TEAM's
+    aggregate stats via the team page, but NOT a teammate's individual stats), organizers, sponsors,
+    other players, and anonymous viewers.
 
-    Query cost: at most two tiny indexed lookups on TeamMembers (the player's
-    team, then a membership existence check for the viewer on that team). No N+1.
+    Query cost: O(1) — own-id check, then is_stats_admin (one indexed UserRoles existence check at most).
     """
     if viewer is None:
         return False
@@ -96,23 +95,9 @@ def _can_view_player_stats(viewer, player):
     if viewer.user_id == player.user_id:
         return True
 
-    # AFC admins always see full stats (consistent with require_admin elsewhere).
-    if getattr(viewer, "role", None) == "admin":
-        return True
-
-    # Teammate check: find the player's current team (unique per member), then
-    # confirm the viewer is also a member of that same team.
-    player_team_id = (
-        TeamMembers.objects.filter(member=player)
-        .values_list("team_id", flat=True)
-        .first()
-    )
-    if player_team_id is None:
-        return False  # player is on no team -> nobody is a teammate
-
-    return TeamMembers.objects.filter(
-        team_id=player_team_id, member=viewer
-    ).exists()
+    # AFC admins (NOT organizers/sponsors) see full stats. Single source of truth shared with the
+    # team-stats gate so both surfaces agree on who counts as an admin.
+    return is_stats_admin(viewer)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
