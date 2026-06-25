@@ -248,6 +248,9 @@ urlpatterns = [
     path("delete-match-result-image/", delete_match_result_image, name="delete_match_result_image"),
     path("cancel-event/", cancel_event, name="cancel_event"),
     path("complete-event/", complete_event, name="complete_event"),
+    # Reopen a completed event (owner 2026-06-25): admins OR organizers (can_edit_events) flip a
+    # completed event back to active to fix/add results. Consumed by the shared ActionsTab "Reopen".
+    path("reopen-event/", reopen_event, name="reopen_event"),
     # Flagged-kill controls (owner 2026-06-16): list ringers + the event default, flip the event
     # default, override one flagged player. Each mutation recomputes the event's team totals.
     # Consumed by the FlaggedKillsPanel on the event leaderboard editor (admin + organizer).
