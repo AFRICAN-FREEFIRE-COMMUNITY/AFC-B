@@ -102,6 +102,13 @@ class Event(models.Model):
     partner_published = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)
     is_draft = models.BooleanField(default=True)
+    # Manual-reopen guard (owner 2026-06-25): set True when an admin/organizer REOPENS a completed
+    # event (reopen_event). It ONLY excludes the event from the DATE-based daily auto-complete sweep
+    # (update_event_and_stage_statuses, views.py) so a reopened PAST-end event isn't re-completed
+    # overnight. It does NOT block results-based auto-complete (maybe_autocomplete_event) or the manual
+    # complete_event, so a reopened event still closes normally once its final results are (re)entered
+    # or an admin marks it complete. Read nowhere on the user side.
+    auto_complete_suppressed = models.BooleanField(default=False)
     registration_restriction = models.CharField(
         max_length=20,
         choices=REG_RESTRICTION_CHOICES,

@@ -75,7 +75,11 @@ def update_event_and_stage_statuses():
     today = timezone.localdate()
 
     # EVENTS
-    Event.objects.filter(is_draft=False, end_date__lt=today).exclude(event_status="completed").update(event_status="completed")
+    # NOTE: exclude(auto_complete_suppressed=True) so an event an admin/organizer manually REOPENED
+    # (reopen_event) is NOT silently re-completed by this date sweep just because its end_date is in
+    # the past. Such events stay active until results-based auto-complete or a manual complete closes
+    # them again. (owner 2026-06-25)
+    Event.objects.filter(is_draft=False, end_date__lt=today).exclude(event_status="completed").exclude(auto_complete_suppressed=True).update(event_status="completed")
     Event.objects.filter(is_draft=False, start_date__lte=today, end_date__gte=today).exclude(event_status="ongoing").update(event_status="ongoing")
     Event.objects.filter(is_draft=False, start_date__gt=today).exclude(event_status="upcoming").update(event_status="upcoming")
 
@@ -11489,6 +11493,14 @@ def upload_solo_match_result(request):
     if not uploaded_file:
         return Response({"message": "file is required."}, status=400)
 
+    # DRY-RUN preview (owner 2026-06-25, multi-map .log upload for SOLO events): when truthy, do the
+    # FULL parse + RegisteredCompetitors mapping + scoring and build the SAME response summary, but
+    # roll the whole write transaction back at the end so NOTHING persists. Mirrors the team endpoint
+    # (upload_team_match_result dry_run) so MultiMapLogPanel can drive a per-map "Review before apply"
+    # step for solo events too — the FE calls this per file with dry_run=true, then re-calls WITHOUT
+    # dry_run to actually save. Real path unchanged.
+    dry_run = _as_bool(request.data.get("dry_run"))
+
     match = get_object_or_404(Match, match_id=match_id)
 
     # ---------------- EVENT + LEADERBOARD ----------------
@@ -11602,18 +11614,31 @@ def upload_solo_match_result(request):
         # re-upload safe: prevents duplicates and makes upload idempotent
         SoloPlayerMatchStats.objects.filter(match=match).delete()
         SoloPlayerMatchStats.objects.bulk_create(stats_to_create, batch_size=500)
+        # result_inputted now lives INSIDE the atomic block (was a bare save below) so the dry-run
+        # rollback also reverts it — otherwise a preview would flip the match to "results inputted".
+        match.result_inputted = True
+        match.save(update_fields=["result_inputted"])
 
-    match.result_inputted = True
-    match.save()
+        # DRY-RUN: roll back every write above (the idempotent clear, the solo stats, result_inputted)
+        # as the LAST act of the atomic block. The counts below were built in Python, so the preview
+        # response stays accurate without persisting anything.
+        if dry_run:
+            transaction.set_rollback(True)
 
     # Auto-complete the event if this upload finished its final stage (owner 2026-06-16). Best-effort.
-    try:
-        maybe_autocomplete_event(event, admin)
-    except Exception:
-        pass
+    # Skipped on a dry-run preview: nothing was saved, so the event state must not change.
+    if not dry_run:
+        try:
+            maybe_autocomplete_event(event, admin)
+        except Exception:
+            pass
 
     return Response({
-        "message": "Solo match results uploaded (scoring pulled from leaderboard).",
+        "message": (
+            "Solo match-log preview ready (nothing saved yet)." if dry_run
+            else "Solo match results uploaded (scoring pulled from leaderboard)."
+        ),
+        "dry_run": dry_run,  # true = preview only, no DB writes (multi-map review)
         "match_id": match.match_id,
         "leaderboard_id": leaderboard.leaderboard_id,
         "kill_point": kill_point_value,
@@ -19874,6 +19899,77 @@ def complete_event(request):
     complete_event_core(event, user, source="manual")
     return Response(
         {"message": f"Event '{event.event_name}' has been marked as complete."},
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def reopen_event(request):
+    """Reopen a COMPLETED event (owner 2026-06-25). Flips event_status from "completed" back to an
+    ACTIVE state so admins/organizers can fix or add results, edit rosters, etc. after the event was
+    completed (manually, by results auto-complete, or by the date sweep).
+
+    Auth gate (admins AND orgs, per owner): an AFC event admin (_is_event_admin) OR an organizer
+    holding can_edit_events on the owning org (org_can_event) — the SAME gate as edit_event, so an
+    organizer can reopen THEIR own event. Unlike complete_event/cancel_event (admin-only), this is
+    intentionally org-capable. Native (org=None) events stay admin-only via org_can_event.
+
+    Behaviour: only a "completed" event can be reopened (400 otherwise). The new status is derived by
+    the event's dates, mirroring the daily sweep: before start_date -> "upcoming", else "ongoing"
+    (a past-end event becomes "ongoing" so it's editable). We also set Event.auto_complete_suppressed
+    so the DATE-based daily sweep (update_event_and_stage_statuses) doesn't re-complete a past-end
+    event overnight; results-based auto-complete (maybe_autocomplete_event) and manual complete_event
+    still work, so the event re-closes normally afterwards. No player notification is sent (this is an
+    admin/organizer correction, not a player-facing milestone); an AdminHistory row records it.
+
+    Request: { event_id }. Consumed by the shared ActionsTab "Reopen" button on both the admin
+    (app/(a)/a/events/[slug]/edit) and organizer (app/(organizer)/.../edit) event-edit pages."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    # Admins always pass; otherwise the organizer must hold can_edit_events on the owning org.
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    if event.event_status != "completed":
+        return Response(
+            {"message": f"Only a completed event can be reopened (this one is {event.event_status})."},
+            status=400,
+        )
+
+    # Return the event to the active status its dates imply (same rule as the daily sweep).
+    today = timezone.localdate()
+    new_status = "upcoming" if (event.start_date and today < event.start_date) else "ongoing"
+
+    event.event_status = new_status
+    event.auto_complete_suppressed = True
+    event.save(update_fields=["event_status", "auto_complete_suppressed"])
+
+    try:
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="reopen_event",
+            description=(f"Reopened event {event.event_name} (ID: {event.event_id}) "
+                         f"to {new_status}"),
+        )
+    except Exception:
+        pass
+
+    return Response(
+        {
+            "message": f"Event '{event.event_name}' has been reopened.",
+            "event_status": new_status,
+        },
         status=200,
     )
 
