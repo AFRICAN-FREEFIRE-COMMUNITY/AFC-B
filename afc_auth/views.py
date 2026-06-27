@@ -2199,6 +2199,18 @@ def edit_profile(request):
     if language not in valid_languages:
         language = user.language or "en"  # invalid/unknown -> keep the current language
 
+    # STATS PRIVACY opt-in (owner 2026-06-27): the "Show my stats to others" switch in profile edit.
+    # Posted as the string "true"/"false" (FormData) or a real bool (JSON). Parse leniently; treat an
+    # ABSENT field as "no change" so a partial/legacy save (onboarding, the in-flow UID prompt) can
+    # never silently flip a user's privacy choice. Only an explicit true/false value changes it.
+    #   - Consumed gate: afc_player.views._can_view_player_stats (whether outsiders see this user's stats).
+    sv_raw = request.data.get("stats_visible", None)
+    if sv_raw is not None:
+        if isinstance(sv_raw, bool):
+            user.stats_visible = sv_raw
+        else:
+            user.stats_visible = str(sv_raw).strip().lower() in ("true", "1", "yes", "on")
+
     # Update User fields
     user.full_name = full_name
     user.username = in_game_name
@@ -2224,6 +2236,8 @@ def edit_profile(request):
         "in_game_name": user.username,
         "email": user.email,
         "uid": user.uid,
+        # Echo the saved stats-privacy choice so the FE settings switch reflects the persisted value.
+        "stats_visible": user.stats_visible,
         "profile_pic_url": request.build_absolute_uri(user_profile.profile_pic.url) if user_profile.profile_pic else None
     }, status=status.HTTP_200_OK)
 
@@ -2454,6 +2468,11 @@ def get_user_profile(request):
         "in_game_name": user.username,
         "email": user.email,
         "uid": user.uid,
+        # STATS PRIVACY opt-in (owner 2026-06-27): whether this user lets OUTSIDERS see their individual
+        # player-profile stats. Default False (hidden). The FE profile-edit "Show my stats to others"
+        # switch reads this to seed itself; edit_profile writes it; afc_player._can_view_player_stats
+        # enforces it. (The user + admins always see the stats regardless of this value.)
+        "stats_visible": user.stats_visible,
         # IDENTITY LOCK (owner 2026-06-15): True while the player is signed up for a live event
         # (upcoming/ongoing). The frontend profile-edit form disables + explains the in-game name
         # and UID inputs when this is True; edit_profile enforces the same rule server-side. See
@@ -5268,6 +5287,88 @@ def get_general_broadcast_history(request):
           .order_by("-created_at"))
     total = qs.count()
     results = [b.to_history_dict() for b in qs[offset:offset + limit]]
+    return Response({
+        "results": results,
+        "total_count": total,
+        "has_more": offset + limit < total,
+        "next_offset": (offset + limit) if (offset + limit) < total else None,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_all_broadcasts(request):
+    """GET /auth/all-broadcasts/ — ADMIN GLOBAL broadcast audit (owner 2026-06-27).
+
+    The missing cross-event admin view: lists EVERY broadcast ever sent, across ALL scopes (general,
+    direct, event, stage, group, room_details) and ALL senders — crucially the ORGANIZER event
+    broadcasts that get_general_broadcast_history filters OUT (it only shows general/direct) and that
+    the per-event get_broadcast_history only shows one event at a time. So an admin can finally see, in
+    one place, every message an organizer sent to players: who, when, the scope/event, recipient count,
+    and the FULL message content.
+
+    Filters (all optional, AND-combined):
+      • scope=<scope>        — restrict to one scope (event/stage/group/room_details/general/direct)
+      • sender_id=<id>       — only broadcasts from this user (e.g. one organizer)
+      • event_id=<id>        — only broadcasts tied to this event
+      • search=<text>        — case-insensitive match on title, message, or sender username
+    Paginated (limit default 20, max 100) with has_more / next_offset / total_count, newest first.
+
+    Auth: AFC admins only (is_broadcast_admin — coarse admin/moderator/support or a granular platform
+    admin role); organizers/sponsors/players get 403. Read-only.
+    Source rows: SentBroadcast (afc_auth.models), written by deliver_broadcast on every send.
+    Consumed by: the admin "Broadcasts" audit page (frontend app/(a)/a/broadcasts)."""
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    # Reuse the broadcast-admin definition (same set exempt from the organizer rate limit) so "who can
+    # send unlimited" and "who can audit everything" stay one consistent notion of AFC admin.
+    from .broadcast_ratelimit import is_broadcast_admin
+    if not is_broadcast_admin(user):
+        return Response({"message": "You do not have permission to view broadcasts."}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        limit = min(max(int(request.GET.get("limit", 20)), 1), 100)
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        offset = max(int(request.GET.get("offset", 0)), 0)
+    except (TypeError, ValueError):
+        offset = 0
+
+    qs = SentBroadcast.objects.select_related("event", "sender").order_by("-created_at")
+
+    # ── optional filters ──
+    scope = (request.GET.get("scope") or "").strip()
+    if scope:
+        qs = qs.filter(scope=scope)
+    sender_id = request.GET.get("sender_id")
+    if sender_id and str(sender_id).isdigit():
+        qs = qs.filter(sender_id=int(sender_id))
+    event_id = request.GET.get("event_id")
+    if event_id and str(event_id).isdigit():
+        qs = qs.filter(event_id=int(event_id))
+    search = (request.GET.get("search") or "").strip()
+    if search:
+        # Local import of Django's Q: this module's top-level `Q` is sympy's (from sympy import Q),
+        # which is NOT a queryset predicate. Import the ORM Q here so the OR-filter is correct.
+        from django.db.models import Q as DjangoQ
+        qs = qs.filter(
+            DjangoQ(title__icontains=search)
+            | DjangoQ(message__icontains=search)
+            | DjangoQ(sender_username__icontains=search)
+        )
+
+    total = qs.count()
+    results = []
+    for b in qs[offset:offset + limit]:
+        row = b.to_history_dict()
+        # Add sender_id so the FE can offer a "filter to this organizer" affordance (the shared
+        # to_history_dict only carries the username snapshot).
+        row["sender_id"] = b.sender_id
+        results.append(row)
     return Response({
         "results": results,
         "total_count": total,

@@ -1155,25 +1155,109 @@ def _can_view_team_stats(viewer, team):
     """
     Decide whether `viewer` (a User or None) may see `team`'s detailed stats.
 
-    Owner rule (2026-06-24): team statistics are visible ONLY to:
-      • current members of THIS team (so a player sees their OWN team's stats), and
-      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role).
+    Owner rule (2026-06-24 lockdown + 2026-06-27 team opt-in): team statistics are PRIVATE BY DEFAULT.
+    Visible to:
+      • current members of THIS team (so a player always sees their OWN team's stats) — regardless of
+        the toggle, and
+      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role) —
+        always, and
+      • ANY other viewer (organizers, sponsors, non-member players, the public, anonymous) ONLY when the
+        team has OPTED IN via team.stats_visible == True, which only the team owner/manager can set
+        (see edit_team). Default False reproduces the original lockdown (members + admins only).
 
-    Everyone else => False, INCLUDING organizers, sponsors, players who are NOT on this team, and
-    anonymous viewers. (Members see the team AGGREGATE; individual teammate stats are gated separately
-    by afc_player._can_view_player_stats, which members do NOT pass for each other.)
+    Members see the team AGGREGATE; individual teammate stats are gated separately by
+    afc_player._can_view_player_stats (members do NOT pass that for each other unless the teammate opted in).
 
-    Query cost: is_stats_admin (one indexed UserRoles check at most) then one TeamMembers existence check.
+    Query cost: is_stats_admin (one indexed UserRoles check at most), one TeamMembers existence check,
+    then a boolean field read.
+    """
+    # AFC admins (NOT organizers/sponsors) always see full stats. Shared predicate with the player gate.
+    if viewer is not None and is_stats_admin(viewer):
+        return True
+
+    # Current member of this exact team — always sees their own team's aggregate.
+    if viewer is not None and TeamMembers.objects.filter(team=team, member=viewer).exists():
+        return True
+
+    # Everyone else (including anonymous) sees team stats ONLY if the team opted in (owner/manager set it).
+    return bool(team.stats_visible)
+
+
+# Leadership roles allowed to change team-level settings like the stats-privacy toggle. The OWNER is
+# always allowed (Team.team_owner). Among TeamMembers, only the leadership roles qualify — a plain
+# member/coach/analyst cannot expose the whole team's stats. "manager" is the role the owner named;
+# captain/vice are the de-facto team leads, so they're included too. (Coach/analyst deliberately excluded.)
+_TEAM_MANAGER_ROLES = ("manager", "team_captain", "vice_captain")
+
+
+def _is_team_owner_or_manager(viewer, team):
+    """True when `viewer` may change `team`'s settings: the team OWNER or a leadership member.
+
+    Used by: set_team_stats_visibility (the write gate) and get_team_details (`can_manage_stats`, so the
+    FE only renders the "Show team stats publicly" switch to someone who can actually flip it).
+    O(1): an FK compare, then at most one indexed TeamMembers existence check.
     """
     if viewer is None:
         return False
-
-    # AFC admins (NOT organizers/sponsors) see full stats. Shared predicate with the player-stats gate.
-    if is_stats_admin(viewer):
+    if team.team_owner_id == viewer.user_id:
         return True
+    return TeamMembers.objects.filter(
+        team=team, member=viewer, management_role__in=_TEAM_MANAGER_ROLES
+    ).exists()
 
-    # Member of this exact team?
-    return TeamMembers.objects.filter(team=team, member=viewer).exists()
+
+@api_view(["POST"])
+def set_team_stats_visibility(request):
+    """POST /team/set-stats-visibility/ — owner/manager toggles whether the team's aggregate stats are
+    PUBLIC (visible to outsiders).
+
+    Request  : { "team_id": <int>, "stats_visible": <bool> }  (Bearer session token required)
+    Response : 200 { "message": ..., "stats_visible": <bool> }   on success
+               400 missing team_id/flag · 401 bad token · 403 not owner/manager · 404 team not found
+
+    Auth/gate: validate_token -> must be the team OWNER or a leadership member (_is_team_owner_or_manager);
+    a plain member cannot expose the whole team. Writes Team.stats_visible (afc_team.models), the single
+    flag the _can_view_team_stats gate reads to decide if OUTSIDERS see team stats. Default stays False
+    (private). Kept as a narrow single-field endpoint (NOT folded into the owner-only edit_team) so a
+    MANAGER who isn't the owner can still flip it.
+    Frontend caller: the "Show team stats publicly" switch on the team management/edit surface, which
+    seeds itself from get_team_details `stats_public` and is shown only when `can_manage_stats` is True.
+    """
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    team_id = request.data.get("team_id")
+    if not team_id:
+        return Response({"message": "team_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        team = Team.objects.get(team_id=team_id)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Only the owner or a leadership member may open up the team's stats.
+    if not _is_team_owner_or_manager(user, team):
+        return Response(
+            {"message": "Only the team owner or a manager can change who sees the team's stats."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # Parse the flag leniently (bool from JSON, "true"/"false" from FormData). A missing flag is rejected
+    # so the toggle endpoint always makes a deliberate change (no silent no-op write).
+    sv_raw = request.data.get("stats_visible", None)
+    if sv_raw is None:
+        return Response({"message": "stats_visible is required."}, status=status.HTTP_400_BAD_REQUEST)
+    new_val = sv_raw if isinstance(sv_raw, bool) else str(sv_raw).strip().lower() in ("true", "1", "yes", "on")
+
+    team.stats_visible = new_val
+    team.save(update_fields=["stats_visible"])
+    return Response(
+        {"message": "Team stats visibility updated.", "stats_visible": team.stats_visible},
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(["POST"])
@@ -1406,6 +1490,13 @@ def get_team_details(request):
         # a "Team stats are visible to team members only." message instead of the
         # numbers, keeping the public identity above visible.
         "stats_visible": stats_visible,
+        # ── Team stats PRIVACY SETTING (owner 2026-06-27) — distinct from the computed `stats_visible`
+        # above. `stats_visible` = "can THIS viewer see the numbers" (membership/admin/opt-in resolved).
+        # `stats_public` = the TEAM's own toggle value (Team.stats_visible), which the owner/manager sets
+        # to open team stats to OUTSIDERS. The FE "Show team stats publicly" switch seeds itself from
+        # `stats_public` and renders only when `can_manage_stats` is True (viewer is owner/manager).
+        "stats_public": team.stats_visible,
+        "can_manage_stats": _is_team_owner_or_manager(viewer, team),
         # Stats (zeroed when stats_visible is False)
         "total_wins": total_wins,
         "total_losses": total_matches - total_wins,

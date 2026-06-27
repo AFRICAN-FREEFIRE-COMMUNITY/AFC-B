@@ -723,6 +723,70 @@ def design_page_item(request, design_id, page_id):
     return Response({"page": _serialize_page(page, request)})
 
 
+@api_view(["POST"])
+def apply_background_to_all(request, design_id):
+    """POST organizers/leaderboard-designs/by-id/<design_id>/apply-background-to-all/ (owner 2026-06-27)
+
+    Apply ONE uploaded background image to EVERY page of a multi-page design at once (or to the
+    design-level background when the design is still single-page / has no explicit page rows). Saves the
+    owner/admin from re-uploading the same backdrop on each page tab.
+
+    Multipart body (at least one file required):
+      • background_instagram  — the IG/portrait backdrop to apply to all pages
+      • background_youtube     — the YT/landscape backdrop to apply to all pages
+    Whichever file(s) are present are applied; the other size is left untouched on every page.
+
+    Response 200: {"design": <updated design dict>} (full design so the editor refreshes every page).
+    400 when no file is supplied. Gate: _get_design_for_write (same as design_item PATCH / page edits).
+    Consumed by: DesignFieldsEditor "Apply to all pages" background control."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+
+    ig_file = request.FILES.get("background_instagram")
+    yt_file = request.FILES.get("background_youtube")
+    if not ig_file and not yt_file:
+        return Response(
+            {"message": "Upload at least one background image to apply."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Read each upload's bytes ONCE. A single uploaded file object can't be re-saved onto many model
+    # instances (its stream is consumed on the first save), so we wrap the bytes in a fresh ContentFile
+    # per target — each page/design gets its own stored copy. Mirrors how other multipart saves here
+    # take request.FILES[...] directly, just fanned out to N targets.
+    from django.core.files.base import ContentFile
+    ig_bytes = ig_file.read() if ig_file else None
+    yt_bytes = yt_file.read() if yt_file else None
+
+    def _copy(src_file, data):
+        return ContentFile(data, name=getattr(src_file, "name", "background"))
+
+    pages = list(d.pages.all())
+    if pages:
+        # Multi-page: stamp the backdrop on every page.
+        for p in pages:
+            if ig_bytes is not None:
+                p.background_instagram = _copy(ig_file, ig_bytes)
+            if yt_bytes is not None:
+                p.background_youtube = _copy(yt_file, yt_bytes)
+            p.save()
+    else:
+        # Single-page design: apply to the design-level background fields (page 1 is implicit).
+        if ig_bytes is not None:
+            d.background_instagram = _copy(ig_file, ig_bytes)
+        if yt_bytes is not None:
+            d.background_youtube = _copy(yt_file, yt_bytes)
+        d.save()
+
+    d_fresh = (OrgLeaderboardDesign.objects.select_related("organization")
+               .prefetch_related("logos", "fields", "texts", "pages").get(id=design_id))
+    return Response({"design": _serialize_design(d_fresh, request)}, status=status.HTTP_200_OK)
+
+
 # ───────────── Connected-column FIELDS (placed data columns on a design) ─────────────
 # Each field binds to a real standings stat and is drawn at x_pct for every row of its column
 # group. The connected-columns palette + drag canvas in LeaderboardDesignsManager manage these.

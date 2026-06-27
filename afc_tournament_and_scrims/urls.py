@@ -265,6 +265,8 @@ urlpatterns = [
     # per-MAP (single match) room-details broadcast. owner 2026-06-18. See broadcast_match_room_details.
     path("broadcast-match-room-details/", broadcast_match_room_details, name="broadcast_match_room_details"),
     path("broadcast-history/", get_broadcast_history, name="get_broadcast_history"),
+    # Live organizer-broadcast rate-limit snapshot for the composer counter (owner 2026-06-27).
+    path("broadcast-rate-status/", broadcast_rate_status, name="broadcast_rate_status"),
     path("search/", search_events, name="search_events"),
     # Waitlist no-show + promotion (owner 2026-06-17). See mark_no_show / promote_from_waitlist / promote_next_waitlist.
     path("mark-no-show/", mark_no_show, name="mark_no_show"),

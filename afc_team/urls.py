@@ -18,6 +18,9 @@ urlpatterns = [
     path('view-join-requests-for-a-team/', view_join_requests_for_a_team, name='view_join_requests_for_a_team'),
     path('edit-team', edit_team, name='edit_team'),
     path('get-all-teams/', get_all_teams, name='get_all_teams'),
+    # Owner/manager toggles whether the team's aggregate stats are public (owner 2026-06-27).
+    # Consumed by the "Show team stats publicly" switch on the team management/edit surface.
+    path('set-stats-visibility/', set_team_stats_visibility, name='set_team_stats_visibility'),
     path('get-team-details/', get_team_details, name='get_team_details'),
     path('get-user-current-team/', get_user_current_team, name='get_user_current_team'),
     path('get-player-details/', get_player_details, name='get_player_details'),

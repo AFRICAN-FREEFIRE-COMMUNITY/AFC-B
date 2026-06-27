@@ -92,6 +92,19 @@ class User(AbstractUser):
     #   - Written by: afc_auth.views.mark_dashboard_intro_seen (POST /auth/mark-dashboard-intro-seen/).
     seen_dashboard_intros = models.JSONField(default=dict, blank=True)
 
+    # Per-user STATS PRIVACY opt-in (owner 2026-06-27). The 2026-06-24 lockdown (v7.0.64) already
+    # hides every player's individual stats from organizers/sponsors/non-members; this flag is the
+    # USER's own switch on TOP of that, deciding whether ordinary viewers (other players, the public)
+    # may see their individual player-profile stats. DEFAULT FALSE = hidden: stats stay private until
+    # the user explicitly opts in. Self + AFC admins (is_stats_admin) ALWAYS see the stats regardless,
+    # so a user never loses sight of their own numbers.
+    #   - Read by  : afc_player.views._can_view_player_stats (the gate that decides if a viewer sees a
+    #                player's stats) and afc_auth.views.get_user_profile (returned so the FE settings
+    #                toggle shows the current value).
+    #   - Written by: afc_auth.views.edit_profile (the "Show my stats to others" switch in profile edit).
+    # Companion: Team.stats_visible (afc_team) is the team-level equivalent, set by the owner/manager.
+    stats_visible = models.BooleanField(default=False)
+
     USERNAME_FIELD = "username"  # Set in_game_name as username
     REQUIRED_FIELDS = ["email", "full_name"]
 
