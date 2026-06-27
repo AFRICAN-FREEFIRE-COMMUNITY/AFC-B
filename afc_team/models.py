@@ -35,6 +35,18 @@ class Team(models.Model):
     total_earnings = models.DecimalField(max_digits=15, decimal_places=2, default=0.0, null=True, blank=True)
     team_captain = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='captained_teams')
 
+    # Team-level STATS PRIVACY opt-in (owner 2026-06-27). Companion to User.stats_visible (afc_auth):
+    # that flag governs an individual player's stats; THIS flag governs the TEAM's aggregate stats
+    # (the team-profile Statistics tab) for outside viewers. DEFAULT FALSE = hidden. Only the team
+    # OWNER or a MANAGER may flip it (the user controls who can open it up), so a lone roster member
+    # can't expose the whole team. AFC admins (is_stats_admin) and the team's own current members
+    # always see team stats regardless of this flag; it only opens the stats to OUTSIDERS.
+    #   - Read by  : afc_team.views._can_view_team_stats (gate for team-stats visibility) and
+    #                get_team_details (returned as team.stats_visible so the FE settings switch +
+    #                the public TeamStatisticsTab gate reflect it).
+    #   - Written by: afc_team.views.edit_team (the "Show team stats publicly" switch, owner/manager only).
+    stats_visible = models.BooleanField(default=False)
+
     def save(self, *args, **kwargs):
         # Trim-on-save for the name fields (owner 2026-06-20). Seed data had stray
         # leading/trailing whitespace in team names (~41% of teams), e.g. 'FROZEN EMPIRE ',

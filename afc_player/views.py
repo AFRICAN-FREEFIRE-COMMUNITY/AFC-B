@@ -78,26 +78,32 @@ def _can_view_player_stats(viewer, player):
     """
     Decide whether `viewer` (a User or None) may see `player`'s INDIVIDUAL stats.
 
-    Owner rule (2026-06-24): individual player statistics are private. Visible ONLY to:
-      • the viewer themselves (own profile), and
-      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role).
+    Owner rule (2026-06-24 lockdown + 2026-06-27 per-user opt-in): individual player statistics are
+    PRIVATE BY DEFAULT. Visible to:
+      • the viewer themselves (own profile) — always, regardless of any preference, and
+      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role) —
+        always, they override the user's choice, and
+      • ANY other viewer (teammates, other players, organizers, sponsors, the public, anonymous) ONLY
+        when the player has OPTED IN via their profile switch (player.stats_visible == True).
 
-    Everyone else => False, INCLUDING the player's own teammates (a player may see their TEAM's
-    aggregate stats via the team page, but NOT a teammate's individual stats), organizers, sponsors,
-    other players, and anonymous viewers.
+    So the default (stats_visible False) reproduces the original lockdown exactly — only self + admins.
+    Flipping the switch on opens the individual stats to everyone else. anonymous (viewer None) can see
+    them too once opted in (a public profile), since the stats are then explicitly public.
 
-    Query cost: O(1) — own-id check, then is_stats_admin (one indexed UserRoles existence check at most).
+    Query cost: O(1) — own-id check, is_stats_admin (one indexed UserRoles existence check at most),
+    then a boolean field read.
     """
-    if viewer is None:
-        return False
-
-    # Own profile — always full visibility.
-    if viewer.user_id == player.user_id:
+    # Own profile — always full visibility, even if the user hides stats from others.
+    if viewer is not None and viewer.user_id == player.user_id:
         return True
 
-    # AFC admins (NOT organizers/sponsors) see full stats. Single source of truth shared with the
-    # team-stats gate so both surfaces agree on who counts as an admin.
-    return is_stats_admin(viewer)
+    # AFC admins (NOT organizers/sponsors) always see full stats — they override the user's choice.
+    # Single source of truth shared with the team-stats gate so both surfaces agree on who is an admin.
+    if viewer is not None and is_stats_admin(viewer):
+        return True
+
+    # Everyone else (including anonymous viewers) sees the stats ONLY if the player opted in.
+    return bool(player.stats_visible)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

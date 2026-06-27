@@ -73,6 +73,19 @@ def can_use_watchlist(user) -> bool:
         return False
 
 
+def _is_watchlist_admin(user) -> bool:
+    """True for AFC ADMINS only (NOT plain organizers): coarse role admin/moderator/support, or a
+    granular WATCHLIST_ADMIN_ROLES role. This is the SUPERSET privilege used to decide who may
+    clear/reactivate ENTRIES THEY DID NOT ADD (owner 2026-06-27): admins can touch any entry, an
+    organizer can only touch entries they personally added (entry.added_by). Distinct from
+    can_use_watchlist (which also grants plain organizers view/add/clear-own)."""
+    if not user:
+        return False
+    if user.role in ("admin", "moderator", "support"):
+        return True
+    return user.userroles.filter(role__role_name__in=WATCHLIST_ADMIN_ROLES).exists()
+
+
 def _paginate(request, queryset):
     """?limit (default 50, max 200) + ?offset. (page, total_count, has_more). Junk -> defaults."""
     try:
@@ -108,6 +121,10 @@ def _serialize(entry):
         "source": entry.source,
         "context": entry.context,
         "status": entry.status,
+        # Numeric id of who added the entry — the FE compares it to the current user's id to decide
+        # whether to show the Remove control (organizers can only remove their OWN entries; admins
+        # remove any). Mirrors the server-side gate in watchlist_item. (owner 2026-06-27)
+        "added_by_id": entry.added_by_id,
         "added_by_username": entry.added_by.username if entry.added_by else None,
         "cleared_by_username": entry.cleared_by.username if entry.cleared_by else None,
         "cleared_at": entry.cleared_at.isoformat() if entry.cleared_at else None,
@@ -234,7 +251,12 @@ def watchlist_collection(request):
 def watchlist_item(request, watch_id):
     """Clear (stop watching) or reactivate one entry. Body: {action: "clear"|"reactivate"}.
     Clearing is a soft-clear (status=cleared + cleared_by/at) so the audit trail survives.
-    Gate: can_use_watchlist (any admin/organizer, since any can add). Response 200 {entry}."""
+
+    Gate (owner 2026-06-27): can_use_watchlist (any admin/organizer) to reach the endpoint, THEN an
+    OWNERSHIP check — an organizer may only clear/reactivate an entry THEY added (entry.added_by);
+    AFC admins (_is_watchlist_admin) may touch ANY entry. This stops one organizer from removing a
+    flag another organizer raised. Response 200 {entry}; 403 when an organizer targets someone else's
+    entry."""
     user, err = _authenticate(request)
     if err:
         return err
@@ -247,6 +269,14 @@ def watchlist_item(request, watch_id):
     )
     if not entry:
         return Response({"message": "Watchlist entry not found."}, status=404)
+
+    # OWNERSHIP: only the original adder or an AFC admin may modify this entry. A plain organizer who
+    # didn't add it is blocked (they can still SEE it via list_watchlist, just not remove/reactivate it).
+    if not _is_watchlist_admin(user) and entry.added_by_id != user.user_id:
+        return Response(
+            {"message": "You can only remove watchlist entries you added. Ask an admin to remove others."},
+            status=403,
+        )
 
     action = request.data.get("action", "clear")
     if action == "reactivate":

@@ -129,6 +129,10 @@ urlpatterns = [
     path("leaderboard-designs/by-id/<int:design_id>/pages/",
          views_leaderboard_design.design_pages,
          name="organizers_leaderboard_design_pages"),       # POST (create next page)
+    # Apply ONE background image to EVERY page at once (or design-level when single-page). owner 2026-06-27.
+    path("leaderboard-designs/by-id/<int:design_id>/apply-background-to-all/",
+         views_leaderboard_design.apply_background_to_all,
+         name="organizers_leaderboard_design_apply_bg_all"),  # POST (multipart bg -> all pages)
     path("leaderboard-designs/by-id/<int:design_id>/", views_leaderboard_design.design_item,
          name="organizers_leaderboard_design_item"),       # PATCH / DELETE
     path("leaderboard-designs/", views_leaderboard_design.designs_collection,

@@ -198,6 +198,12 @@ def get_all_events(request):
                 else None
             ),
             "rankings_verified": event.rankings_verified,
+            # partner_published (owner 2026-06-27): whether this event is currently exposed through the
+            # read-only PARTNER API (afc_partner_api scope.py gates on it FIRST). Additive boolean —
+            # consumed by the admin "API Keys" partner detail page (app/(a)/a/partners/[slug]) so each
+            # event's "Publish to partner API" button reflects the LIVE published state instead of only
+            # session actions. Harmless everywhere else (ignored by callers that don't read it).
+            "partner_published": event.partner_published,
         }
         localize_field(item, "event_name", event.event_name, locale)
         event_list.append(item)
@@ -20184,6 +20190,20 @@ def broadcast_announcement(request):
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
         return Response({"message": "You do not have permission to broadcast to this event."}, status=403)
 
+    # ── ORGANIZER BROADCAST RATE LIMIT (owner 2026-06-27) ──────────────────────────────────────────
+    # Non-admin senders (organizers) are capped at 5 broadcasts/hour with a 5-min cooldown between sends
+    # so players aren't spammed. Admins are exempt. Checked BEFORE sending; the slot is consumed AFTER a
+    # successful send (record_broadcast_send) so a failed send costs nothing. 429 carries resets_at +
+    # remaining so the FE can tell the organizer when sending re-opens and how many are left.
+    from afc_auth.broadcast_ratelimit import check_broadcast_rate, record_broadcast_send
+    allowed, rl = check_broadcast_rate(user)
+    if not allowed:
+        return Response(
+            {"message": rl["message"], "reason": rl["reason"], "resets_at": rl["resets_at"],
+             "remaining": rl["remaining"], "limit": rl["limit"]},
+            status=429,
+        )
+
     recipients = _all_registered_users(event)
     from afc_auth.views import deliver_broadcast
     # MULTI deep-link (owner 2026-06-17): the composer may send a `targets` array (multi-event picker);
@@ -20196,6 +20216,8 @@ def broadcast_announcement(request):
         sender=user, scope="event",
     )
     count = len(recipients)
+    # Consume one rate-limit slot now that the broadcast actually went out; remaining feeds the FE counter.
+    remaining = record_broadcast_send(user)
 
     AdminHistory.objects.create(
         admin_user=user,
@@ -20208,7 +20230,9 @@ def broadcast_announcement(request):
 
     return Response(
         {"message": f"Announcement sent to {count} users.", "recipients": count,
-         "pushed": pushed, "emailed": emailed},
+         "pushed": pushed, "emailed": emailed,
+         # Live rate-limit hints for the composer UI: how many broadcasts remain this hour (organizers).
+         "rate_remaining": remaining, "rate_limit": rl["limit"]},
         status=200,
     )
 
@@ -20336,6 +20360,17 @@ def broadcast_match_room_details(request):
     if not recipients:
         return Response({"message": "This group has no players to message yet.", "recipients": 0}, status=400)
 
+    # Organizer broadcast rate limit (owner 2026-06-27): admins exempt; organizers capped 5/hr + 5-min
+    # cooldown. Room-details sends count too (owner: include all broadcast types). Checked before send.
+    from afc_auth.broadcast_ratelimit import check_broadcast_rate, record_broadcast_send
+    allowed, rl = check_broadcast_rate(user)
+    if not allowed:
+        return Response(
+            {"message": rl["message"], "reason": rl["reason"], "resets_at": rl["resets_at"],
+             "remaining": rl["remaining"], "limit": rl["limit"]},
+            status=429,
+        )
+
     # Release this map's room details to the user event page, then deliver to the group.
     match.room_details_released_at = timezone.now()
     match.save(update_fields=["room_details_released_at"])
@@ -20348,6 +20383,7 @@ def broadcast_match_room_details(request):
         stage_id=group.stage_id, stage_name=group.stage.stage_name,
         group_id=group.group_id, group_name=group.group_name,
     )
+    remaining = record_broadcast_send(user)
 
     AdminHistory.objects.create(
         admin_user=user, action="broadcast_match_room_details",
@@ -20366,7 +20402,8 @@ def broadcast_match_room_details(request):
     )
     return Response(
         {"message": f"Room details sent to {len(recipients)} players for this map.",
-         "recipients": len(recipients), "pushed": pushed, "emailed": emailed},
+         "recipients": len(recipients), "pushed": pushed, "emailed": emailed,
+         "rate_remaining": remaining, "rate_limit": rl["limit"]},
         status=200,
     )
 
@@ -20440,6 +20477,16 @@ def broadcast_to_group(request):
             status=400,
         )
 
+    # Organizer broadcast rate limit (owner 2026-06-27): admins exempt; organizers 5/hr + 5-min cooldown.
+    from afc_auth.broadcast_ratelimit import check_broadcast_rate, record_broadcast_send
+    allowed, rl = check_broadcast_rate(user)
+    if not allowed:
+        return Response(
+            {"message": rl["message"], "reason": rl["reason"], "resets_at": rl["resets_at"],
+             "remaining": rl["remaining"], "limit": rl["limit"]},
+            status=429,
+        )
+
     # DEEP-LINK target (owner 2026-06-15): optional. Left blank, deliver_broadcast auto-links to THIS
     # event so the "Take me there" button opens the tournament page by default.
     target_type = (request.data.get("target_type") or "").strip().lower()
@@ -20458,6 +20505,7 @@ def broadcast_to_group(request):
         stage_id=group.stage_id, stage_name=group.stage.stage_name,
         group_id=group.group_id, group_name=group.group_name,
     )
+    remaining = record_broadcast_send(user)
 
     AdminHistory.objects.create(
         admin_user=user,
@@ -20483,7 +20531,8 @@ def broadcast_to_group(request):
 
     return Response(
         {"message": f"Message sent to {len(recipients)} players in {group.group_name}.",
-         "recipients": len(recipients)},
+         "recipients": len(recipients),
+         "rate_remaining": remaining, "rate_limit": rl["limit"]},
         status=200,
     )
 
@@ -20531,6 +20580,16 @@ def broadcast_to_stage(request):
     if not recipients:
         return Response({"message": "This stage has no players to message yet.", "recipients": 0}, status=400)
 
+    # Organizer broadcast rate limit (owner 2026-06-27): admins exempt; organizers 5/hr + 5-min cooldown.
+    from afc_auth.broadcast_ratelimit import check_broadcast_rate, record_broadcast_send
+    allowed, rl = check_broadcast_rate(user)
+    if not allowed:
+        return Response(
+            {"message": rl["message"], "reason": rl["reason"], "resets_at": rl["resets_at"],
+             "remaining": rl["remaining"], "limit": rl["limit"]},
+            status=429,
+        )
+
     if mode == "room_details":
         title = f"Match Room Details: {event.event_name}"
         # Combine each group's room-details summary (skip groups with none set).
@@ -20563,6 +20622,7 @@ def broadcast_to_stage(request):
         target_type=target_type, target_id=target_id, targets=request.data.get("targets"),
         sender=user, scope="stage", stage_id=stage.stage_id, stage_name=stage.stage_name,
     )
+    remaining = record_broadcast_send(user)
 
     AdminHistory.objects.create(
         admin_user=user,
@@ -20580,7 +20640,8 @@ def broadcast_to_stage(request):
 
     return Response(
         {"message": f"Message sent to {len(recipients)} players in {stage.stage_name}.",
-         "recipients": len(recipients), "pushed": pushed, "emailed": emailed},
+         "recipients": len(recipients), "pushed": pushed, "emailed": emailed,
+         "rate_remaining": remaining, "rate_limit": rl["limit"]},
         status=200,
     )
 
@@ -20627,6 +20688,25 @@ def get_broadcast_history(request):
         "has_more": offset + limit < total,
         "next_offset": (offset + limit) if (offset + limit) < total else None,
     }, status=200)
+
+
+@api_view(["GET"])
+def broadcast_rate_status(request):
+    """GET /events/broadcast-rate-status/ (owner 2026-06-27)
+    Snapshot of the CURRENT user's organizer-broadcast rate-limit budget, WITHOUT consuming a slot, so
+    the broadcast composer can show "N of 5 left this hour" + a live cooldown countdown the moment it
+    opens (before any send). Admins get exempt=True (no limits shown). Response:
+      { exempt, remaining, limit, cooldown_until }   (cooldown_until = ISO time the 5-min gap lifts, or null)
+    Auth: any authenticated user (the numbers are about the caller themselves).
+    Consumed by: SendNotificationModal / ActionsTab broadcast composer (admin + organizer event pages)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    from afc_auth.broadcast_ratelimit import broadcast_rate_status as _status
+    return Response(_status(user), status=200)
 
 
 @api_view(["GET"])
