@@ -27,6 +27,9 @@ urlpatterns = [
     # NOTE: declared BEFORE the <slug> detail routes so "keys" can never be swallowed
     # by the <slug:slug> converter (it would otherwise match "keys" as a partner slug).
     path("admin/keys/<int:key_id>/revoke/", views_admin.revoke_key, name="partner_admin_revoke_key"),
+    # HARD-delete a key (removes the row, vs revoke which soft-disables it). owner 2026-06-27.
+    # Also declared before the <slug> routes so "keys" is never read as a partner slug.
+    path("admin/keys/<int:key_id>/delete/", views_admin.delete_key, name="partner_admin_delete_key"),
 
     # ── per-event publish gate (event addressed by slug) ──
     # Also declared before the <slug> partner detail routes for the same reason
