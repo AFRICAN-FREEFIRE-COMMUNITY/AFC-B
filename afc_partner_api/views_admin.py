@@ -509,6 +509,30 @@ def revoke_key(request, key_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 7b) delete_key  (DELETE partners/admin/keys/<key_id>/delete/)
+# ──────────────────────────────────────────────────────────────────────────────
+# HARD-delete a single key (owner 2026-06-27): removes the PartnerApiKey ROW entirely, unlike
+# revoke_key which only soft-disables it (status="revoked", row kept for audit). After deletion the
+# key vanishes from the list; any integration using it 401s immediately (authenticate_partner looks up
+# the row by prefix, and a deleted row is indistinguishable from an unknown one). Keyed by key_id
+# (the key is the addressable thing). Consumed by the admin partner-detail "Delete" action
+# (frontend app/(a)/a/partners/[slug]); the FE shows a confirm dialog since this is irreversible.
+@api_view(["DELETE"])
+def delete_key(request, key_id):
+    # Auth + partner-admin gate (same as revoke_key).
+    user, err = _require_partner_admin(request)
+    if err:
+        return err
+
+    key = PartnerApiKey.objects.filter(key_id=key_id).first()
+    if not key:
+        return Response({"message": "API key not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    key.delete()
+    return Response({"message": "API key deleted."}, status=status.HTTP_200_OK)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 8) publish_event  (POST partners/admin/events/<event_slug>/publish/)
 # ──────────────────────────────────────────────────────────────────────────────
 # Flip Event.partner_published — the gate the read API's scope predicate applies
