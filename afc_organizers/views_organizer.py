@@ -39,6 +39,10 @@ from afc_organizers.models import Organization, OrganizationMember, PERMISSION_F
 from afc_organizers.permissions import org_can
 from afc_auth.models import User, Roles, UserRoles
 from .permissions import member_or_403 as _member_or_403
+# Super-admin god-mode: lets a head_admin/super_admin operating "as" this org (via the
+# X-Act-As-Org header) read the org shell even though they are not a member. The header
+# is inert for everyone else. See afc_auth/act_as.py.
+from afc_auth.act_as import resolve_acting_org
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -127,8 +131,10 @@ def get_my_organizations(request):
     )
 
     results = []
+    seen_slugs = set()
     for member in memberships:
         org = member.organization
+        seen_slugs.add(org.slug)
         results.append(
             {
                 "organization": {
@@ -140,6 +146,28 @@ def get_my_organizations(request):
                 },
                 "role": member.role,
                 "permissions": _effective_permissions(member),
+            }
+        )
+
+    # ── super-admin god-mode (act_as.py) ──
+    # If a super admin is operating "as" an org they are NOT a member of, surface that org
+    # here too so the organizer shell / switcher can render it. The row is flagged
+    # admin_override with an all-True permission map. resolve_acting_org honors the
+    # X-Act-As-Org header ONLY for a god-mode admin (no-op for everyone else), so a normal
+    # user can never inject an org they don't belong to.
+    acting_org = resolve_acting_org(request, user)
+    if acting_org and acting_org.slug not in seen_slugs:
+        results.append(
+            {
+                "organization": {
+                    "organization_id": acting_org.organization_id,
+                    "slug": acting_org.slug,
+                    "name": acting_org.name,
+                    "logo": request.build_absolute_uri(acting_org.logo.url) if acting_org.logo else None,
+                    "status": acting_org.status,
+                },
+                "role": "admin_override",
+                "permissions": {field: True for field in PERMISSION_FIELDS},
             }
         )
 
@@ -184,11 +212,21 @@ def get_organization(request, slug):
 
     # Membership is the gate — must be an active member of THIS org.
     member = _member_or_403(user, org)
+    # ── super-admin god-mode (act_as.py) ──
+    # A god-mode admin (head_admin/super_admin) acting "as" THIS org (X-Act-As-Org == slug)
+    # bypasses the membership gate and gets an all-True permission map, so the organizer
+    # dashboard renders for them exactly as it would for the owner. resolve_acting_org is
+    # inert for everyone else, so a non-member with no god-mode rights is still 403.
+    override = False
     if not member:
-        return Response(
-            {"message": "You are not a member of this organization."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        acting_org = resolve_acting_org(request, user)
+        if acting_org and acting_org.organization_id == org.organization_id:
+            override = True
+        else:
+            return Response(
+                {"message": "You are not a member of this organization."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
     # Full inline serialization — includes branding, contact, description, socials.
     organization = {
@@ -206,8 +244,14 @@ def get_organization(request, slug):
         "event_count": org.events.count(),
     }
 
+    # A god-mode override has no OrganizationMember row, so report all-True perms; a real
+    # member reports their effective map.
+    my_permissions = (
+        {field: True for field in PERMISSION_FIELDS} if override
+        else _effective_permissions(member)
+    )
     return Response(
-        {"organization": organization, "my_permissions": _effective_permissions(member)},
+        {"organization": organization, "my_permissions": my_permissions},
         status=status.HTTP_200_OK,
     )
 

@@ -281,6 +281,13 @@ _ACTION_SENTENCES = {
         f"Viewed admin details of the {_noun(c, 'event', 'slug', 'event_id', 'event_name')}"
     ),
 
+    # ── shop: super-admin customer delivery PII view (afc_shop/delivery.py) — both are POST
+    #    reads so this middleware records every browse + per-record reveal of customer PII. ──
+    "admin_list_delivery_info": lambda c: "Browsed collected customer delivery information",
+    "admin_reveal_delivery_info": lambda c: (
+        f"Revealed full delivery details for {_noun(c, 'order', 'order_id')}"
+    ),
+
     # ── event linking / qualification chains (event_links.py) ──
     "create_event_link": _event_link_create,
     "fire_event_link": lambda c: (
@@ -558,6 +565,17 @@ class AuditLogMiddleware:
         extra = getattr(request, "audit_details", {}) or {}
         if extra:
             metadata["details"] = _redact(extra)
+
+        # Super-admin god-mode breadcrumb (afc_auth/act_as.py): if the actor sent an act-as
+        # header (operating inside another org/vendor's dashboard), tag the audit row with the
+        # impersonated target so the trail shows WHO acted AS WHOM. Best-effort; never breaks.
+        try:
+            from afc_auth.act_as import acting_as_tag
+            acting = acting_as_tag(request)
+            if acting:
+                metadata["acting_as"] = acting
+        except Exception:
+            pass
 
         # Summary: PREFER a specific, view-authored summary (afc_auth.audit.set_audit) - it knows the
         # entity name + before/after ("Changed Detty December from internal to external"). Otherwise

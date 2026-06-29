@@ -60,6 +60,9 @@ from rest_framework.response import Response
 
 from afc_auth.models import User
 from afc_auth.views import require_admin, validate_token
+# Super-admin god-mode: a head_admin/super_admin managing-as a vendor (X-Act-As-Vendor
+# header) acts AS that vendor for product CRUD. Inert for everyone else. See act_as.py.
+from afc_auth.act_as import resolve_acting_vendor
 
 from .models import Product, ProductMedia, ProductVariant, ShopChangeLog, Vendor
 # Reuse the shop's media helpers + caps so a vendor product behaves exactly like an
@@ -170,6 +173,17 @@ def _require_active_vendor(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, None, Response({"message": "Invalid or expired session token."}, status=401)
+
+    # ── super-admin god-mode (afc_auth.act_as) ──
+    # A super admin (head_admin/super_admin) operating inside a vendor's dashboard sends
+    # X-Act-As-Vendor and acts AS that vendor for product CRUD. resolve_acting_vendor is
+    # honored ONLY for a god-mode admin (inert for everyone else), so a normal caller can
+    # never borrow another vendor's identity here. NOTE: the bank/payout gates live in
+    # connect.py / paystack_payout.py and deliberately do NOT do this — bank/payout is out
+    # of god-mode scope (owner decision 2026-06-29).
+    acting_vendor = resolve_acting_vendor(request, user)
+    if acting_vendor:
+        return user, acting_vendor, None
 
     # The caller must own a Vendor account. (A User could in theory have more than
     # one; Phase B1 uses the first, matching fulfilment.vendor_my_orders.)

@@ -69,6 +69,23 @@ from .paystack_payout import (
 # SAME state machine the vendor page drives. GET verifies the URL with Meta; POST handles
 # inbound events. Public (Meta/Kapso is the caller), so it is NOT auth-gated.
 from .whatsapp_webhook import whatsapp_webhook
+# Saved delivery info (owner request 2026-06-29): user-scoped saved-address CRUD + the
+# SUPER-ADMIN-ONLY view of all collected customer delivery PII (afc_shop/delivery.py).
+from .delivery import (
+    list_my_delivery_profiles,
+    create_delivery_profile,
+    update_delivery_profile,
+    delete_delivery_profile,
+    set_default_delivery_profile,
+    admin_list_delivery_info,
+    admin_reveal_delivery_info,
+)
+# Shop "save for later" / wishlist (owner request 2026-06-29, afc_shop/wishlist.py).
+from .wishlist import (
+    toggle_wishlist,
+    list_my_wishlist,
+    my_wishlist_ids,
+)
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -205,6 +222,27 @@ urlpatterns = [
     path("vendor/bank/", vendor_save_bank, name="vendor_save_bank"),
     path("vendor/payout-method/", vendor_payout_method, name="vendor_payout_method"),
     path("admin/payouts/retry-paystack/", admin_retry_owed_paystack_payouts, name="admin_retry_owed_paystack_payouts"),
+
+    # ── Saved delivery info (owner request 2026-06-29) ──
+    # USER saved-address CRUD (owner-scoped) powering the checkout picker (CartDetails.tsx)
+    # + the /profile/addresses manage page. The two admin/* routes are the SUPER-ADMIN-ONLY
+    # (require_head_admin) view of all collected delivery PII, sourced from Order rows; both
+    # are POST so AuditLogMiddleware records every browse + reveal. See afc_shop/delivery.py.
+    path("delivery-profiles/", list_my_delivery_profiles, name="list_my_delivery_profiles"),
+    path("delivery-profiles/create/", create_delivery_profile, name="create_delivery_profile"),
+    path("delivery-profiles/update/", update_delivery_profile, name="update_delivery_profile"),
+    path("delivery-profiles/delete/", delete_delivery_profile, name="delete_delivery_profile"),
+    path("delivery-profiles/set-default/", set_default_delivery_profile, name="set_default_delivery_profile"),
+    path("admin/delivery-info/", admin_list_delivery_info, name="admin_list_delivery_info"),
+    path("admin/delivery-info/reveal/", admin_reveal_delivery_info, name="admin_reveal_delivery_info"),
+
+    # ── Shop wishlist / "save for later" (owner request 2026-06-29) ──
+    # toggle = add/remove in one call (heart button); list = the saved-items page feed;
+    # ids = the saved product-id set so the shop grid renders each heart's state. See
+    # afc_shop/wishlist.py.
+    path("wishlist/toggle/", toggle_wishlist, name="toggle_wishlist"),
+    path("wishlist/", list_my_wishlist, name="list_my_wishlist"),
+    path("wishlist/ids/", my_wishlist_ids, name="my_wishlist_ids"),
 
     # ── Marketplace: WhatsApp INBOUND webhook (afc_shop/whatsapp_webhook.py) ──
     # GET = Meta verification handshake (echo hub.challenge). POST = inbound events

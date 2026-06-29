@@ -355,6 +355,15 @@ def stripe_buy_now(request):
             for i in order_items
         ])
 
+    # ── saved delivery info (owner request 2026-06-29, mirrors buy_now) ──
+    # Persist/link a SavedDeliveryProfile when the buyer ticked "save my info" or picked a
+    # saved entry. Best-effort; the later update_fields saves don't touch saved_profile, so
+    # persist it explicitly here. See afc_shop/delivery.py.
+    from afc_shop.delivery import attach_delivery_profile
+    attach_delivery_profile(order, user, request.data)
+    if order.saved_profile_id:
+        order.save(update_fields=["saved_profile"])
+
     # ── Stripe Checkout Session ────────────────────────────────────────────────────────────────
     # One line item per order line, priced via price_data in the shop currency. Adaptive Pricing
     # shows + charges the buyer in their local currency (same as the events flow). success_url +

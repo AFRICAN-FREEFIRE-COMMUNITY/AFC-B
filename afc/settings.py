@@ -122,6 +122,13 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# ── CORS: allow the super-admin "act-as" (god-mode) request headers ────────────
+# The frontend axios interceptor sets X-Act-As-Org / X-Act-As-Vendor when a super admin is
+# operating inside an organizer/vendor dashboard (see afc_auth/act_as.py). These are CUSTOM
+# request headers, so they must be added to the CORS allow-list or the browser preflight
+# blocks them cross-origin. Everything else stays on django-cors-headers' defaults.
+from corsheaders.defaults import default_headers as _cors_default_headers
+CORS_ALLOW_HEADERS = (*_cors_default_headers, "x-act-as-org", "x-act-as-vendor")
 
 
 ROOT_URLCONF = 'afc.urls'
