@@ -86,7 +86,8 @@ def _aggregate_team_standings(stats_qs):
     block in `get_all_leaderboard_details_for_event` exactly, so a team's number is the
     same whether read per-lobby, per-day or cumulatively:
 
-      effective_total = Σplacement + Σkill + Σbonus − Σpenalty   (the authoritative score)
+      effective_total = Σtotal_points = Σ(placement + kill + assist + damage + bonus − penalty)
+                        (the stored per-match total summed; the authoritative score)
       tiebreakers     = −effective_total, −total_booyah, −total_kills   (same chain, DB-side)
 
     Grouping by `tournament_team` is what makes a team that plays MORE THAN ONE lobby
@@ -120,12 +121,16 @@ def _aggregate_team_standings(stats_qs):
             kill_sum=Coalesce(Sum("kill_points"), 0),
             bonus_sum=Coalesce(Sum("bonus_points"), 0),
             penalty_sum=Coalesce(Sum("penalty_points"), 0),
-            effective_total=(
-                Coalesce(Sum("placement_points"), 0)
-                + Coalesce(Sum("kill_points"), 0)
-                + Coalesce(Sum("bonus_points"), 0)
-                - Coalesce(Sum("penalty_points"), 0)
-            ),
+            # effective_total = the authoritative TEAM score = the stored per-match total_points
+            # summed (placement + kill + ASSIST + DAMAGE + bonus - penalty). It previously re-derived
+            # the total from placement+kill+bonus-penalty only, which DROPPED assist/damage points and
+            # so disagreed with the public leaderboard + advance_group (both rank on the stored
+            # total_points). Summing the stored column unifies every team-ranking surface (this
+            # aggregator feeds advance_round_robin, advancement_routing, and event_links) and includes
+            # assist/damage (owner 2026-06-29 point-rush metric split). SOLO is unaffected: its stored
+            # total_points is already placement+kill only. The placement/kill/bonus/penalty sums stay
+            # as independent display columns; the sort key below still orders on effective_total.
+            effective_total=Coalesce(Sum("total_points"), 0),
         )
         # Keep the server sort authoritative (FE renders verbatim) and identical to the
         # per-lobby leaderboard's lead tiebreakers: points, then booyahs, then kills, then

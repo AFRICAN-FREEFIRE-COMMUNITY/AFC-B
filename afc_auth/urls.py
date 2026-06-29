@@ -124,6 +124,11 @@ urlpatterns = [
     path("send-notification/", send_notification, name="send_notification"),
     path("send-notification-to-multiple-users/", send_notification_to_multiple_users, name="send_notification_to_multiple_users"),
     path("admin-send-message/", admin_send_message, name="admin_send_message"),
+    # Letter-avatar assignment broadcast (owner 2026-06-29, feature #7 / plan B7): notify every member
+    # of each listed team of the letter assigned to them for an event. Gated to AFC event admins OR the
+    # event's organizers; respects the shared broadcast rate limit. Consumed by the events
+    # SendNotificationModal "Letter assignments" mode. See views.broadcast_letter_assignments.
+    path("broadcast-letter-assignments/", broadcast_letter_assignments, name="broadcast_letter_assignments"),
     # Admin Settings broadcast history (general + direct sends). owner 2026-06-17.
     path("broadcast-history/", get_general_broadcast_history, name="get_general_broadcast_history"),
     # Admin GLOBAL broadcast audit (ALL scopes + senders, incl. organizer event broadcasts). owner 2026-06-27.

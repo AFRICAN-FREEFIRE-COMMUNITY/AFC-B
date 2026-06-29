@@ -109,6 +109,15 @@ class Event(models.Model):
     # complete_event, so a reopened event still closes normally once its final results are (re)entered
     # or an admin marks it complete. Read nowhere on the user side.
     auto_complete_suppressed = models.BooleanField(default=False)
+    # Per-event results visibility (owner 2026-06-29): organizers/admins can HIDE the public
+    # standings until they're ready to reveal them (social-reveal timing). Defaults True so every
+    # EXISTING event stays visible. When False, the two public detail endpoints
+    # (get_event_details / get_event_details_not_logged_in) withhold each group's
+    # overall_leaderboard (returned as []) and echo results_published=false; the admin/organizer
+    # result surfaces (get_event_details_for_admin, get-group-leaderboard) are NOT gated, so staff
+    # can still enter/manage results. Flipped via the set_results_visibility endpoint, surfaced by
+    # the shared Event Actions tab (ActionsTab) on both the admin + organizer event-edit pages.
+    results_published = models.BooleanField(default=True)
     registration_restriction = models.CharField(
         max_length=20,
         choices=REG_RESTRICTION_CHOICES,
@@ -233,6 +242,19 @@ class Event(models.Model):
     # via the shared missing_registration_assets() helper, surfaced on the public event page.
     require_player_uid = models.BooleanField(default=False)
     require_player_profile_image = models.BooleanField(default=False)
+
+    # ── Letter avatars (A-Z) registration requirement (feature #7, owner 2026-06-29) ──────────────
+    # 0 = off (the default; every existing event is unaffected). When > 0, a team/player may only
+    # register once the LETTERS available to them cover at least this many: for a team that is the
+    # LIVE union of every roster member's afc_auth.User.letter_avatars PLUS the team's
+    # afc_team.Team.manual_letter_avatars (never stored - mirrors Team.total_earnings); for a solo
+    # registrant it is their own User.letter_avatars count. Enforced in register_for_event (which
+    # returns a 403 {code:"letter_avatars_required", required, available_count, available_letters}
+    # that the public tournament page surfaces with a deep link to the player/team letter editor).
+    # Set in create_event / edit_event (parsed + clamped 0-26), echoed by get_event_details so the
+    # admin/organizer Step1EventDetails toggle + the public event page can read it. The per-team
+    # letter actually ASSIGNED for in-game use lives on TournamentTeam.assigned_letter below.
+    min_letter_avatars = models.PositiveIntegerField(default=0)
 
     # ── Flagged-kill counting (owner 2026-06-16) ───────────────────────────────────────────
     # The match-log FILE upload (upload_team_match_result) credits a team's TOTAL kills from the
@@ -575,6 +597,40 @@ class TournamentTeam(models.Model):
     # (releases the identity lock for that team's members while open). Auto-closes by time, no cron.
     roster_edit_until = models.DateTimeField(null=True, blank=True)
 
+    # ── Letter avatar assigned for THIS event (feature #7, owner 2026-06-29) ──────────────────────
+    # The single A-Z letter an admin/organizer assigned to this registered team for in-game use in
+    # this event (e.g. so every team flies a distinct letter banner). NULL = not yet assigned. It is
+    # written by the assign_team_letter endpoint (POST events/assign-team-letter/) and echoed per team
+    # in get_event_details.tournament_teams + the event-team-letters list, where the RegisteredTeamsTab
+    # Assign-letter Select reads it and the SendNotificationModal "Letter assignments" broadcast
+    # announces it. OWNER DECISION (Open Q g, 2026-06-29): a letter is UNIQUE per team per event - the
+    # Meta UniqueConstraint below stops two teams in the same event holding the same letter (the
+    # endpoint also guards it with a friendly 409). Reassigning a team to a new letter frees its old
+    # one automatically (a single column update). Distinct from Event.min_letter_avatars, which is the
+    # registration REQUIREMENT, not the per-team in-game assignment.
+    assigned_letter = models.CharField(max_length=1, null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # One letter per event: no two TournamentTeam rows in the same event may share the SAME
+            # non-null assigned_letter. This is a PLAIN UniqueConstraint (no `condition=`) ON PURPOSE.
+            #   • MySQL — the PRODUCTION database — IGNORES the partial-index `condition` on a
+            #     UniqueConstraint, so the previous conditional form (condition=assigned_letter is not
+            #     null) gave ZERO DB enforcement there: two teams in one event could be saved with the
+            #     same letter straight through the ORM. It only ever worked on Postgres.
+            #   • A plain unique index DOES enforce on MySQL. And because BOTH MySQL and Postgres allow
+            #     MULTIPLE NULLs in a unique index, every unassigned team (assigned_letter = NULL) still
+            #     coexists without colliding — only two NON-NULL teams sharing a letter in the same event
+            #     are rejected at the DB level. So dropping the condition loses nothing and gains real
+            #     MySQL enforcement.
+            # The app-level 409 in assign_team_letter stays as the friendly first line of defence; this
+            # constraint is the DB backstop that enforces Open Q (g) even on a direct/bulk write.
+            models.UniqueConstraint(
+                fields=["event", "assigned_letter"],
+                name="uniq_assigned_letter_per_event",
+            ),
+        ]
+
     @property
     def roster_edit_open(self) -> bool:
         """True while THIS team's per-team roster-edit allowance is open (roster_edit_until set AND now
@@ -733,6 +789,86 @@ class StageGroupCompetitor(models.Model):
 
     class Meta:
         unique_together = ("stage_group", "tournament_team", "player")
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# BRANCHING ADVANCEMENT ROUTING (feature #9, owner plan WEBSITE/tasks/advancement-routing-plan.md)
+#
+# WHAT THIS ADDS
+#   Until now advancement was MANUAL + hardcoded-linear: advance_group_competitors_to_next_stage
+#   (views.py) takes the top `StageGroups.teams_qualifying` of ONE group into the single stage that
+#   follows it in display order, and advance_round_robin does the same off a stage's cumulative
+#   table. There was no way to SPLIT a stage's finishers into DIFFERENT later stages (e.g. "top 1-8
+#   of the Group Stage go to the Finals, 9-16 go to the Play-In"), or to skip a stage.
+#
+#   StageAdvancementRule is the additive primitive that makes that possible: each row says
+#   "positions [position_from .. position_to] of <source_stage> (optionally restricted to one
+#   <source_group>) advance into <target_stage>". A stage with one or more rows is in "branching
+#   mode"; the PRESENCE of rules is the only mode signal (no boolean flag), so a legacy event with
+#   ZERO rows behaves byte-identically (the old endpoints still serve it).
+#
+# HOW IT CONNECTS (trace end-to-end)
+#   - Authored in the create/edit event wizards (StageModal / StageConfigModal "Advancement
+#     routing" section) as a per-stage array of {position_from, position_to, source_group_index|
+#     null, target_stage_index}. The FE sends INDICES (mirroring point_rush_target_index); the
+#     backend resolves them to the FK rows in a SECOND PASS after every stage+group exists
+#     (create_event / edit_event, views.py), exactly how Point-Rush targets are wired. Validated
+#     pre-transaction by views._validate_advancement_rules (no cycles, no overlap, clamp).
+#   - Echoed back (resolved to ids + display names) under each stage in get_event_details
+#     (views.py) as `advancement_rules`, consumed by the public TournamentStructure branch chips
+#     and by the edit form to rehydrate the rows.
+#   - EXECUTED by afc_tournament_and_scrims.advancement_routing.route_stage_advancement(stage):
+#     it builds the source standings per scope (group / stage-wide, reusing the canonical
+#     round_robin._aggregate_team_standings for teams), slices [from-1:to], and seeds the winners
+#     into each target_stage via StageCompetitor.get_or_create + the same Discord-role queue the
+#     legacy advance uses. Fired by the events/advance-stage-by-rules/ endpoint (admins+orgs) from
+#     the shared ActionsTab.
+#   - CASCADE on both stage ends + the group end, so deleting any referenced stage/group drops the
+#     rule (no dangling routing). teams_qualifying_from_stage / StageGroups.teams_qualifying are
+#     KEPT untouched as the legacy default + the "Top N" display; rules OVERRIDE only when present.
+# ════════════════════════════════════════════════════════════════════════════════════════════
+class StageAdvancementRule(models.Model):
+    """One branching-advancement edge: positions [position_from..position_to] of `source_stage`
+    (optionally scoped to `source_group`) advance into `target_stage`.
+
+    Ranges are 1-based and INCLUSIVE (position_from=1, position_to=8 -> the top 8). When
+    `source_group` is null the ranking is the WHOLE stage's standings (stage-wide); when set it is
+    that single group's standings. `target_stage` must be strictly LATER than `source_stage` in
+    display order (no cycles) - enforced by views._validate_advancement_rules at author time.
+    `order` keeps the author's row order for display + a stable apply sequence. See the module
+    header above for the full data-flow."""
+    id = models.AutoField(primary_key=True)
+    # Both stage ends CASCADE: a rule is meaningless once either stage is gone (mirrors how
+    # EventLink/EventQualification hang off their stages). The reverse accessors are named so a
+    # stage can ask for BOTH the rules it feeds out of and the rules that feed into it.
+    source_stage = models.ForeignKey(
+        Stages, on_delete=models.CASCADE, related_name="advancement_rules")
+    # null = stage-wide scope (rank across the whole source stage). When set, the rule ranks only
+    # this group's standings. CASCADE so deleting the group drops its per-group rules.
+    source_group = models.ForeignKey(
+        StageGroups, null=True, blank=True, on_delete=models.CASCADE,
+        related_name="advancement_rules_as_source")
+    target_stage = models.ForeignKey(
+        Stages, on_delete=models.CASCADE, related_name="advancement_rules_as_target")
+    position_from = models.PositiveIntegerField()   # 1-based, inclusive
+    position_to = models.PositiveIntegerField()     # inclusive (>= position_from)
+    # Author row order (display + apply sequence). Mirrors RoundRobinGroup.order / Stages.stage_order.
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Stable order for the engine + the get_event_details echo + the public chips.
+        ordering = ["source_stage_id", "order", "id"]
+        indexes = [
+            models.Index(fields=["source_stage"]),
+            models.Index(fields=["target_stage"]),
+        ]
+
+    def __str__(self):
+        scope = (f"group {self.source_group_id}" if self.source_group_id
+                 else f"stage {self.source_stage_id}")
+        return (f"{scope} #{self.position_from}-{self.position_to} -> "
+                f"stage {self.target_stage_id}")
 
 
 # class PlacementPointSystem(models.Model):

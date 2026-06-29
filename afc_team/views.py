@@ -1206,6 +1206,189 @@ def _is_team_owner_or_manager(viewer, team):
     ).exists()
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Letter Avatars (A-Z) — team-side helpers (feature owner 2026-06-29)
+#
+# Free Fire ships 26 fixed "letter avatars" (one per A-Z). A team's USABLE letters are
+# LIVE-DERIVED, never stored: union(each current member's afc_auth.User.letter_avatars) ∪
+# Team.manual_letter_avatars (the manual extras a manager declares). This mirrors how
+# Team.total_earnings is derived live in get_team_details rather than persisted, so the
+# available set self-corrects whenever the roster or a member's own letters change.
+#
+# Consumed by: get_team_details (returns available_letters / manual_letters / member_letters +
+# can_manage_letters + a per-member has_letter_avatars marker) and set_team_letters (the write
+# endpoint). The frontend callers are app/(user)/teams/[id]/edit (manager "Team letter avatars"
+# panel using the shared LetterAvatarPicker) and the public app/(user)/teams/[id] detail page
+# (read-only available chips).
+# ──────────────────────────────────────────────────────────────────────────
+
+# Roles allowed to manage a team's MANUAL letter-avatar extras (owner 2026-06-29, Open Q (h)).
+# Deliberately a SUPERSET of _TEAM_MANAGER_ROLES (the stats-privacy managers): the owner asked for
+# manager + COACH to be included here, because letter avatars are roster/match-day logistics that
+# coaches/managers handle, whereas opening the team's stats to outsiders is kept narrower. A plain
+# member / analyst cannot. The team OWNER (Team.team_owner) is always allowed on top of these.
+_TEAM_LETTER_MANAGER_ROLES = ("team_captain", "vice_captain", "manager", "coach")
+
+
+def _normalize_letters(raw):
+    """Canonicalize an arbitrary value into the stored letter-avatar form: a sorted, de-duplicated
+    list of UPPERCASE single A-Z characters (e.g. ["A","C","Z"]).
+
+    Mirrors the frontend picker's normalizeLetters (components/ui/letter-avatar-picker.tsx) byte for
+    byte, so a value the user toggles round-trips cleanly through set_team_letters. Accepts a list/
+    iterable of strings (a lone string is treated as a single entry). Anything that is not a real
+    single letter A-Z is dropped defensively — this is the NORMALIZER, not the validator; the write
+    endpoint validates+rejects bad input separately before calling this. Never raises.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    out = set()
+    try:
+        items = list(raw)
+    except TypeError:
+        return []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        ch = item.strip().upper()
+        if len(ch) == 1 and "A" <= ch <= "Z":
+            out.add(ch)
+    return sorted(out)
+
+
+def _can_manage_team_letters(viewer, team):
+    """True when `viewer` may edit `team.manual_letter_avatars`.
+
+    Allowed: the team OWNER (Team.team_owner), or a member whose management_role is one of
+    _TEAM_LETTER_MANAGER_ROLES (captain / vice-captain / manager / coach). Shares the shape of
+    _is_team_owner_or_manager (an FK compare, then at most one indexed TeamMembers existence check).
+
+    Used by: set_team_letters (the write gate) and get_team_details (returned as `can_manage_letters`
+    so the team-edit FE only renders the manual-letters picker to someone who can actually save it).
+    """
+    if viewer is None:
+        return False
+    if team.team_owner_id == viewer.user_id:
+        return True
+    return TeamMembers.objects.filter(
+        team=team, member=viewer, management_role__in=_TEAM_LETTER_MANAGER_ROLES
+    ).exists()
+
+
+def _team_available_letters(team, members_qs=None):
+    """LIVE-DERIVE a team's letter-avatar coverage. Returns a 3-tuple of sorted A-Z char lists:
+
+        member_letters : union of every current member's afc_auth.User.letter_avatars (the letters the
+                         team gets "for free" from who is on the roster)
+        manual_letters : team.manual_letter_avatars (the EXTRA letters a manager declared by hand)
+        available      : the de-duplicated union of the two (what the team can actually field)
+
+    Nothing here is stored — it is recomputed every read so it self-corrects when a member joins/
+    leaves or edits their own letters (plan Open Q (c)). `letter_avatars` lives on afc_auth.User and
+    is read via getattr so this stays resilient (treats a missing/None value as "no letters"). When
+    `members_qs` is supplied it is reused (get_team_details passes its already-evaluated roster
+    queryset so no extra query is issued); otherwise the roster is fetched here.
+    Callers: get_team_details (read) and set_team_letters (returns the recomputed available set).
+    """
+    if members_qs is None:
+        members_qs = TeamMembers.objects.filter(team=team).select_related("member")
+    member_union = set()
+    for m in members_qs:
+        member_union.update(_normalize_letters(getattr(m.member, "letter_avatars", None)))
+    manual = _normalize_letters(getattr(team, "manual_letter_avatars", None))
+    return sorted(member_union), manual, sorted(member_union | set(manual))
+
+
+@api_view(["POST"])
+def set_team_letters(request):
+    """POST /team/set-team-letters/ — owner/captain/vice-captain/manager/coach declares the team's
+    MANUAL letter-avatar EXTRAS (letters the team can field that no current member already covers).
+
+    Request  : { "team_id": <int>, "manual_letters": ["B","Q", ...] }   (Bearer session token required)
+    Response : 200 { "message", "manual_letters": [...], "member_letters": [...], "available_letters": [...] }
+               400 missing/invalid input · 401 bad token · 403 not allowed · 404 team not found
+
+    Auth/gate: validate_token -> _can_manage_team_letters (owner, or captain/vice-captain/manager/
+    coach). A plain member/analyst cannot. Each entry must be a single A-Z letter; anything else is
+    REJECTED (a typo surfaces an error instead of being silently dropped). The empty list is valid and
+    clears all manual extras. Stores Team.manual_letter_avatars (normalized to sorted/deduped/UPPER).
+    The team's AVAILABLE letters are NOT stored — they are recomputed live (member union ∪ manual) and
+    returned so the FE can refresh its chips without a second round-trip. Mirrors the narrow
+    single-purpose shape of set_team_stats_visibility (so a manager who isn't the owner can still save).
+    Frontend caller: the "Team letter avatars" panel on app/(user)/teams/[id]/edit, rendered only when
+    get_team_details returns can_manage_letters=True; the panel uses the shared LetterAvatarPicker with
+    member-covered letters passed as disabledLetters so managers only ADD extras on top.
+    """
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    team_id = request.data.get("team_id")
+    if not team_id:
+        return Response({"message": "team_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        team = Team.objects.get(team_id=team_id)
+    except Team.DoesNotExist:
+        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Only the owner or a leadership/support manager may declare the team's manual letters.
+    if not _can_manage_team_letters(user, team):
+        return Response(
+            {"message": "Only the team owner, captain, vice-captain, manager or coach can change the team letters."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # Parse the incoming list. FormData / x-www-form-urlencoded clients send the array as a JSON
+    # string, so decode that case. A missing key is rejected (the endpoint always makes a deliberate
+    # change); an explicit empty list is allowed (clears all manual extras).
+    raw = request.data.get("manual_letters", None)
+    if raw is None:
+        return Response({"message": "manual_letters is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return Response(
+                {"message": "manual_letters must be a list of single letters A-Z."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    if not isinstance(raw, list):
+        return Response(
+            {"message": "manual_letters must be a list of single letters A-Z."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Strict validation: every entry must be a single A-Z letter. We reject (not silently drop) bad
+    # input so a client typo surfaces clearly. Normalization (upper/dedupe/sort) happens after.
+    for item in raw:
+        ch = item.strip().upper() if isinstance(item, str) else ""
+        if len(ch) != 1 or not ("A" <= ch <= "Z"):
+            return Response(
+                {"message": f"Invalid letter '{item}'. Each entry must be a single letter A-Z."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    team.manual_letter_avatars = _normalize_letters(raw)
+    team.save(update_fields=["manual_letter_avatars"])
+
+    # Recompute + return the live coverage so the FE can refresh without a second get-team-details call.
+    member_letters, manual_letters, available_letters = _team_available_letters(team)
+    return Response(
+        {
+            "message": "Team letters updated.",
+            "manual_letters": manual_letters,
+            "member_letters": member_letters,
+            "available_letters": available_letters,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @api_view(["POST"])
 def set_team_stats_visibility(request):
     """POST /team/set-stats-visibility/ — owner/manager toggles whether the team's aggregate stats are
@@ -1337,9 +1520,25 @@ def get_team_details(request):
             # register flow can show a per-member ✓/✗ for every active event requirement.
             "has_esports_image": _has_image(m.member.user_id, "esports_pic"),
             "has_profile_image": _has_image(m.member.user_id, "profile_pic"),
+            # Letter-avatar marker (Letter Avatars feature, owner 2026-06-29): does this member own
+            # any A-Z letter avatars of their own? Mirrors has_esports_image above. Lets the
+            # team-edit letters panel show which members already contribute letters to the team's
+            # available set (their letters auto-cover those slots, so a manager only adds extras).
+            "has_letter_avatars": bool(
+                _normalize_letters(getattr(m.member, "letter_avatars", None))
+            ),
         }
         for m in members_qs
     ]
+
+    # ── Letter Avatars (A-Z) — LIVE-DERIVED team coverage (owner 2026-06-29) ───
+    # available_letters = union(each member's User.letter_avatars) ∪ team.manual_letter_avatars,
+    # never stored (see _team_available_letters). member_letters / manual_letters are also returned
+    # so the team-edit picker can lock member-covered letters (disabledLetters) and the FE can show
+    # member-derived vs manual-extra chips distinctly. members_qs is already evaluated above, so the
+    # helper reuses its cached rows (no extra query). Consumed by the team-edit "Team letter avatars"
+    # panel + the public team-detail read-only chips.
+    member_letters, manual_letters, available_letters = _team_available_letters(team, members_qs)
 
     # Social links
     social_links = [
@@ -1497,6 +1696,19 @@ def get_team_details(request):
         # `stats_public` and renders only when `can_manage_stats` is True (viewer is owner/manager).
         "stats_public": team.stats_visible,
         "can_manage_stats": _is_team_owner_or_manager(viewer, team),
+        # ── Letter Avatars (A-Z), LIVE-DERIVED (owner 2026-06-29) ──
+        # available_letters: what the team can actually field = member union ∪ manual extras.
+        # member_letters : the part auto-covered by current members' own letter avatars (the FE
+        #                  team-edit picker passes these as disabledLetters so a manager can only ADD).
+        # manual_letters : the team's manual extras (Team.manual_letter_avatars), editable via
+        #                  set_team_letters when can_manage_letters is True.
+        # can_manage_letters: viewer is owner/captain/vice-captain/manager/coach (gate for the
+        #                  team-edit "Team letter avatars" panel). All four are read by app/(user)/teams/[id]/edit
+        #                  and the public app/(user)/teams/[id] detail page (read-only chips).
+        "available_letters": available_letters,
+        "member_letters": member_letters,
+        "manual_letters": manual_letters,
+        "can_manage_letters": _can_manage_team_letters(viewer, team),
         # Stats (zeroed when stats_visible is False)
         "total_wins": total_wins,
         "total_losses": total_matches - total_wins,

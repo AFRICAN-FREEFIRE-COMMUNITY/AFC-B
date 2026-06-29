@@ -36,6 +36,15 @@ urlpatterns = [
     path("my-posts/", get_posts_related_to_me, name="get_posts_related_to_me"),
     path("edit-post/", edit_recruitment_post, name="edit_recruitment_post"),
     path("delete-post/", delete_recruitment_post, name="delete_recruitment_post"),
+    # Per-image screenshot removal (owner 2026-06-29 refinement): the Edit Player gallery X +
+    # "Remove all" call this for immediate in-place removal. See views.remove_post_image.
+    path("remove-post-image/", remove_post_image, name="remove_post_image"),
+
+    # ── "Player Available Post" location feature (owner 2026-06-29) ──────────────
+    # Residential-state reference data + the create/edit form bootstrap. See views
+    # location_subdivisions / my_market_context.
+    path("location-subdivisions/", location_subdivisions, name="location_subdivisions"),
+    path("my-market-context/", my_market_context, name="my_market_context"),
 
     # ── Moderation: reporting + bans (feature "J-market-reporting") ──────────────
     # User files a report against a post; moderators triage the queue + ban subjects.

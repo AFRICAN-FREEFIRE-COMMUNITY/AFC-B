@@ -71,6 +71,23 @@ class RecruitmentPost(models.Model):
     # views._validate_video_url (never trust an arbitrary URL into an embed); the FE derives the
     # actual embed iframe from the parsed host + video id (lib/videoEmbed.ts), never raw HTML.
     video_url = models.URLField(max_length=300, blank=True, default="")
+    # OPTIONAL residential location (owner 2026-06-29: "Player Available Post" feature 3).
+    # The state/province (an ISO 3166-2 subdivision NAME, e.g. "Lagos") the player lives in.
+    # Stored as the human-readable name because that is exactly what we display verbatim on the
+    # post card + dialog and what the recruiter STATE FILTER compares against (no code -> name
+    # round-trip anywhere in the UI). The set of valid names per country comes from pycountry via
+    # GET /player-market/location-subdivisions/ (see views._subdivisions_for); the create/edit form
+    # LOCKS the picker to the player's IP-detected country (views.my_market_context). Blank-allowed
+    # because the field is optional and TEAM posts never set it.
+    residential_state = models.CharField(max_length=120, blank=True, default="")
+    # OPTIONAL residential COUNTRY (owner 2026-06-29 refinement): the country the player's
+    # residential_state belongs to, stored as the pycountry country NAME (e.g. "Nigeria"). It is
+    # DERIVED server-side from the player's detected location (views._actor_country_name, the same
+    # login-country signal _actor_country_code uses), NEVER taken from the client, and is set ONLY
+    # when residential_state is set (cleared together). It powers TRUE country filtering on the
+    # recruiter's players-tab filter (combinable with the state filter), matched in the FE off this
+    # field. Blank-allowed; TEAM posts never set it.
+    residential_country = models.CharField(max_length=120, blank=True, default="")
 
     # Applies to team posts
     team = models.ForeignKey('afc_team.Team', on_delete=models.CASCADE, null=True, blank=True)
@@ -91,6 +108,52 @@ class RecruitmentPost(models.Model):
             models.Index(fields=['country']),
             models.Index(fields=['created_at']),
         ]
+
+
+class RecruitmentPostImage(models.Model):
+    """An in-game profile screenshot attached to a recruitment post (owner 2026-06-29:
+    "Player Available Post" feature 2). A post may carry AT MOST 3 of these; the cap is
+    enforced server-side in afc_player_market/views (_save_post_images), not by the model.
+
+    Why a separate table rather than three ImageFields on RecruitmentPost: a one-to-many
+    keeps the post row clean, lets us add/remove a screenshot without touching the post,
+    and renders naturally as a gallery on the card/dialog. This mirrors how attachments are
+    modelled elsewhere (a child row with a FK + an ordering column).
+
+    Image handling mirrors afc_auth.upload_esport_image: every file is run through
+    afc_auth.image_utils.normalize_image_upload (HEIC -> JPEG + downscale to keep storage
+    small) BEFORE it is saved. Unlike the esport image there is NO face-detection gate -- a
+    screenshot is a game capture, not a portrait.
+
+    Consumed by:
+      * POST /player-market/create-recruitment-post/  (create_recruitment_post)
+      * POST /player-market/edit-post/                (edit_recruitment_post)
+      * serialized (absolute URLs, ordered) into the post list + detail responses:
+        view_all_player_availability_post / get_post_details / get_posts_related_to_me /
+        get_recruitment_posts via views._serialize_post_images.
+    Frontend: the screenshot uploader in the Create/Edit Player form and the gallery shown
+    on the player card + View Player dialog (app/(user)/player-markets/page.tsx).
+    """
+
+    post = models.ForeignKey(
+        'RecruitmentPost', on_delete=models.CASCADE, related_name='images',
+    )
+    # upload_to mirrors the esport image's media layout (its own folder under MEDIA_ROOT).
+    image = models.ImageField(upload_to='recruitment_post_images/')
+    # Display order (0,1,2). Set on save to the next free slot so the gallery is stable.
+    order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Galleries always render in insertion order; index the FK + order so the per-post
+        # fetch (filter(post=...).order_by("order")) stays index-served.
+        ordering = ['order', 'id']
+        indexes = [
+            models.Index(fields=['post', 'order']),
+        ]
+
+    def __str__(self):
+        return f"RecruitmentPostImage(post={self.post_id} #{self.order})"
 
 
 class RecruitmentApplication(models.Model):

@@ -23,7 +23,7 @@ from afc_team.views import STAFF_ROLES
 # use a LOCAL variable named `scoring` for `match.scoring_settings`, which would shadow
 # a bare module import and break `scoring.compute_*` inside those functions.
 from afc_tournament_and_scrims import scoring as scoring_lib
-from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageAdvancementRule, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
 # set_audit -> supply a SPECIFIC human audit summary (entity name + before/after) that the
 # AuditLogMiddleware records, e.g. "Changed Detty December: event type from internal to external".
@@ -51,6 +51,11 @@ from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 
 from afc_auth.views import send_email
+# deliver_broadcast: the single in-app-push + branded-email fan-out used by the Letter Avatars
+# assignment notification (assign_team_letter, feature #7). Imported at top alongside send_email
+# (afc_auth.views already loads cleanly here - the broadcast_letter_assignments cycle note only
+# applies the OTHER direction, afc_auth importing the tournament app).
+from afc_auth.views import deliver_broadcast
 
 
 # ── event-admin check (AFC platform side) ──
@@ -414,6 +419,21 @@ def _as_bool(val):
     return False
 
 
+def _parse_min_letter_avatars(val):
+    """Coerce + CLAMP the Event.min_letter_avatars field (Letter Avatars, feature #7). Accepts a
+    form/JSON int or numeric string; anything missing/blank/garbage -> 0 (feature off). The result is
+    clamped to 0..26 (there are only 26 letters, so a higher threshold could never be met). Used by
+    create_event + edit_event so the stored requirement is always sane; the FE toggle in
+    Step1EventDetails sends the number, register_for_event reads it back as the gate."""
+    if val is None or (isinstance(val, str) and val.strip() == ""):
+        return 0
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(26, n))
+
+
 # FE-constant country labels (constants/index.ts) that pycountry cannot resolve on its own -> map to
 # an ISO alpha-2 code it can. Only the parenthesized Congos need this; everything else (incl. the
 # curly-apostrophe "Cote d'Ivoire" and accented "Sao Tome") resolves via normalize_country once the
@@ -613,7 +633,8 @@ def _validate_scoring_modes(stages_data):
       • Champion-Point on  → champion_point_threshold must be a positive int.
       • Point-Rush on      → point_rush_reward must be a non-empty mapping AND a
                              point_rush_target_index must be supplied.
-      • A Point-Rush stage may not target itself (carry-over only flows to a LATER stage).
+      • A Point-Rush stage must target a strictly LATER stage (carry-over only flows forward —
+        it may not target itself OR an earlier/equal stage). Mirrors the advancement cycle guard.
     Callers turn the returned message into a 400 Response so no partial event is written."""
     n = len(stages_data)
     for idx, stage_data in enumerate(stages_data):
@@ -639,10 +660,15 @@ def _validate_scoring_modes(stages_data):
                 tgt_idx = int(tgt_idx)
             except (TypeError, ValueError):
                 return "Point-Rush target stage index must be a number."
-            if tgt_idx == idx:
-                return "A Point-Rush stage cannot carry over into itself."
             if not (0 <= tgt_idx < n):
                 return "Point-Rush target stage index is out of range."
+            # Carry-over only flows FORWARD: the target must be a strictly later stage. Rejecting
+            # tgt_idx <= idx blocks self-targeting (== idx) AND an earlier-or-equal stage (< idx),
+            # mirroring the advancement cycle guard below (a banked Point-Rush bonus seeded into an
+            # already-played earlier stage could never count, so the config is meaningless).
+            if tgt_idx <= idx:
+                return ("A Point-Rush stage must carry over into a LATER stage "
+                        "(not into itself or an earlier stage).")
     return None
 
 
@@ -705,6 +731,152 @@ def _validate_round_robin_groups(stages_data):
                     )
                 seen_team_ids.add(team_id)
     return None
+
+
+def _validate_advancement_rules(stages_data):
+    """Validate the per-stage BRANCHING ADVANCEMENT rules (feature #9) in a create/edit payload,
+    BEFORE the transaction (mirrors _validate_scoring_modes / _validate_round_robin_groups) so a
+    bad payload 400s without writing a half-built event.
+
+    Each stage may carry `advancement_rules`: a list of
+        {position_from, position_to, source_group_index|null, target_stage_index}
+    where target_stage_index is the 0-based position of the TARGET stage in this same submit-ordered
+    `stages_data` (same convention as point_rush_target_index), and source_group_index is the
+    0-based index of the source GROUP within the rule's own stage (null = stage-wide). The resolved
+    StageAdvancementRule rows (source_stage / source_group / target_stage / position_from /
+    position_to) are written in the create_event / edit_event second pass; the engine that runs them
+    is advancement_routing.route_stage_advancement.
+
+    Rules enforced (plan DECISIONS):
+      • position_from >= 1 and position_to >= position_from (a non-empty 1-based inclusive range).
+      • target_stage_index in range AND strictly LATER than the rule's own stage (no cycles /
+        self-routing — advancement only ever flows forward).
+      • source_group_index, when given, is a valid 0-based group index of that stage (null allowed
+        = stage-wide). A stage with no groups (e.g. round-robin) only allows stage-wide rules.
+      • NO OVERLAP within a scope: two rules of the SAME stage + SAME scope (same source_group_index,
+        treating null as its own "stage-wide" scope) may not cover the same position. GAPS are
+        allowed (uncovered positions are simply eliminated). Pos past the field is CLAMPED at apply
+        time (not an error here).
+    Returns an error message string on the first problem, or None when every rule is clean."""
+    n = len(stages_data)
+    for idx, stage_data in enumerate(stages_data):
+        rules = stage_data.get("advancement_rules")
+        if not rules:
+            continue
+        if not isinstance(rules, list):
+            return "advancement_rules must be a list."
+        # Group count for this stage (round-robin sends groups=[] -> only stage-wide rules allowed).
+        group_count = len(stage_data.get("groups") or [])
+        # A round-robin stage's identity lives in its BASE groups (a different subsystem); the normal
+        # per-group routing the wiring resolves would silently degrade an RR per-group rule to
+        # stage-wide. Reject per-group RR rules outright so the author gets a clear error instead.
+        is_round_robin = stage_data.get("stage_format") == ROUND_ROBIN_FORMAT
+        # Per-scope covered position sets, for the overlap check. Key = source_group_index or "stage".
+        covered = {}
+        for rule in rules:
+            try:
+                pf = int(rule.get("position_from"))
+                pt = int(rule.get("position_to"))
+            except (TypeError, ValueError):
+                return "Each advancement rule needs numeric position_from and position_to."
+            if pf < 1:
+                return "An advancement rule's start position must be 1 or greater."
+            if pt < pf:
+                return "An advancement rule's end position cannot be before its start position."
+
+            tgt = rule.get("target_stage_index")
+            if tgt is None or tgt == "":
+                return "Each advancement rule needs a target stage."
+            try:
+                tgt = int(tgt)
+            except (TypeError, ValueError):
+                return "An advancement rule's target stage index must be a number."
+            if not (0 <= tgt < n):
+                return "An advancement rule's target stage is out of range."
+            if tgt <= idx:
+                return ("An advancement rule must point to a LATER stage "
+                        "(a stage cannot advance into itself or an earlier stage).")
+
+            sg = rule.get("source_group_index")
+            scope_key = "stage"
+            if sg is not None and sg != "":
+                # Per-group routing is unsupported on a round-robin stage (base groups are advanced
+                # by the round-robin advance, not this engine); require a stage-wide rule instead.
+                if is_round_robin:
+                    return ("Per-group advancement routing is not supported on a round-robin stage; "
+                            "use a stage-wide rule (round-robin base groups advance separately).")
+                try:
+                    sg = int(sg)
+                except (TypeError, ValueError):
+                    return "An advancement rule's source group index must be a number."
+                if not (0 <= sg < group_count):
+                    return "An advancement rule's source group is out of range for this stage."
+                scope_key = sg
+
+            # Overlap check within (this stage, this scope): no position may be covered twice.
+            scope_set = covered.setdefault(scope_key, set())
+            new_positions = set(range(pf, pt + 1))
+            if scope_set & new_positions:
+                return ("Advancement rules for the same source cannot overlap "
+                        "(two rules cover the same finishing position).")
+            scope_set |= new_positions
+    return None
+
+
+def _wire_advancement_rules(stages_in_order, stage_groups_in_order, stages_data):
+    """Resolve + persist each stage's branching advancement rules in the create/edit SECOND PASS
+    (feature #9), after every stage + group exists. DRY core shared by create_event and edit_event.
+
+    Args:
+      stages_in_order      - the created/upserted Stages rows in SUBMIT order (created_stages /
+                             upserted_stages), so target_stage_index maps 1:1.
+      stage_groups_in_order- parallel list: stage_groups_in_order[i] = the StageGroups rows of
+                             stages_in_order[i] in submit order (for source_group_index). A stage
+                             with no normal groups (round-robin) has [] here, so only stage-wide
+                             rules resolve for it (per-group ones were already range-rejected by
+                             _validate_advancement_rules).
+      stages_data          - the submit-ordered stage dicts carrying advancement_rules.
+
+    Idempotent per save: every source stage's existing rules are DELETED then RECREATED from the
+    payload (so an edit that removes/repoints a rule is reflected, exactly like the Point-Rush link
+    is re-set each save). Indices were already validated, so out-of-range values are skipped
+    defensively rather than raising. Connects to: StageAdvancementRule (written here) ->
+    advancement_routing.route_stage_advancement (reads them) -> get_event_details echo (re-renders)."""
+    for idx, (src_stage, stage_data) in enumerate(zip(stages_in_order, stages_data)):
+        # Replace this stage's rule set wholesale (delete-then-recreate keeps it idempotent).
+        StageAdvancementRule.objects.filter(source_stage=src_stage).delete()
+        rules = stage_data.get("advancement_rules") or []
+        own_groups = stage_groups_in_order[idx] if idx < len(stage_groups_in_order) else []
+        for order_idx, rule in enumerate(rules):
+            try:
+                pf = int(rule.get("position_from"))
+                pt = int(rule.get("position_to"))
+                tgt_idx = int(rule.get("target_stage_index"))
+            except (TypeError, ValueError):
+                continue  # validator already vetted these; skip a malformed straggler defensively
+            if not (0 <= tgt_idx < len(stages_in_order)):
+                continue
+            target_stage = stages_in_order[tgt_idx]
+
+            # source_group_index -> the stage's own group at that index (null = stage-wide).
+            source_group = None
+            sg_idx = rule.get("source_group_index")
+            if sg_idx is not None and sg_idx != "":
+                try:
+                    sg_idx = int(sg_idx)
+                except (TypeError, ValueError):
+                    sg_idx = None
+                if sg_idx is not None and 0 <= sg_idx < len(own_groups):
+                    source_group = own_groups[sg_idx]
+
+            StageAdvancementRule.objects.create(
+                source_stage=src_stage,
+                source_group=source_group,
+                target_stage=target_stage,
+                position_from=pf,
+                position_to=pt,
+                order=order_idx,
+            )
 
 
 def _resolve_round_robin_team_ids(team_ids, event, user):
@@ -1029,6 +1201,43 @@ def _build_round_robin_stage(stage, event, user, stage_data):
                 stage, event, user, gd, sources, default_date, default_time)
 
 
+def _advancement_rules_echo(stage):
+    """Echo a stage's BRANCHING ADVANCEMENT rules (feature #9) for both the public structure view
+    and the edit form. Returns a list (empty for a rule-less / legacy stage) of:
+      {id, position_from, position_to,
+       source_group_id, source_group_name,   # null/null = stage-wide scope
+       target_stage_id, target_stage_name, order}
+
+    CONSUMERS
+      • TournamentStructure.tsx (public) renders one chip per rule under the source stage card
+        ("Top {from}-{to} -> {targetStage}", group variant when source_group set).
+      • the admin/organizer edit form rehydrates the authoring rows, mapping target_stage_id ->
+        target_stage_index and source_group_id -> source_group_index client-side.
+    Source of the rows: StageAdvancementRule (Meta.ordering = source_stage, order, id), written by
+    _wire_advancement_rules in create_event/edit_event. NOTE for the next-phase (letter-avatars)
+    agent: this key is appended to the SAME stages_payload dict as `round_robin` below — add your
+    echo as another sibling key; do not rewrite the dict."""
+    rules = (
+        StageAdvancementRule.objects
+        .filter(source_stage=stage)
+        .select_related("source_group", "target_stage")
+        .order_by("order", "id")
+    )
+    return [
+        {
+            "id": r.id,
+            "position_from": r.position_from,
+            "position_to": r.position_to,
+            "source_group_id": r.source_group_id,
+            "source_group_name": (r.source_group.group_name if r.source_group_id else None),
+            "target_stage_id": r.target_stage_id,
+            "target_stage_name": r.target_stage.stage_name if r.target_stage_id else None,
+            "order": r.order,
+        }
+        for r in rules
+    ]
+
+
 def _round_robin_stage_echo(stage):
     """Echo a round-robin stage's structure so the FE event editor can rehydrate it.
 
@@ -1276,6 +1485,12 @@ def create_event(request):
     if round_robin_groups_error:
         return Response({"message": round_robin_groups_error}, status=400)
 
+    # Branching advancement rules (feature #9): no cycles, no overlap, valid target/group indices.
+    # Resolved to StageAdvancementRule rows in the second pass below (after every stage+group exists).
+    advancement_rules_error = _validate_advancement_rules(stages_data)
+    if advancement_rules_error:
+        return Response({"message": advancement_rules_error}, status=400)
+
     is_draft = request.data.get("is_draft", True)
     if isinstance(is_draft, str):
         is_draft = is_draft.lower() in ("1", "true", "yes")
@@ -1416,6 +1631,10 @@ def create_event(request):
             # F3 extra registration requirements (owner 2026-06-19) — same parse pattern.
             require_player_uid=_as_bool(request.data.get("require_player_uid")),
             require_player_profile_image=_as_bool(request.data.get("require_player_profile_image")),
+            # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars required to
+            # register (0 = off). Clamped 0-26 by the shared parser so a bad payload can't store an
+            # impossible threshold. Enforced in register_for_event; toggled in Step1EventDetails.
+            min_letter_avatars=_parse_min_letter_avatars(request.data.get("min_letter_avatars")),
         )
 
         # change sponsor_usernames to a list
@@ -1442,6 +1661,10 @@ def create_event(request):
         # carry-over targets in a SECOND PASS below (a stage may point at a LATER stage
         # that does not exist yet while we are still building this one).
         created_stages = []
+        # Branching advancement (feature #9): track each stage's created GROUPS in submit order so
+        # a rule's source_group_index (0-based into the stage's `groups` array) resolves to the
+        # right StageGroups row in the advancement second pass. Aligned 1:1 with created_stages.
+        created_stage_groups = []
         for stage_data in stages_data:
             stage = Stages.objects.create(
                 event=event,
@@ -1467,6 +1690,8 @@ def create_event(request):
                 stage_order=int(stage_data.get("stage_order", 0) or 0),
             )
             created_stages.append(stage)
+            # The groups created for THIS stage, in submit order (for advancement source_group_index).
+            stage_groups_in_order = []
 
             # ── BR Round-Robin (sub-project B, Task 4): a round-robin stage sends BASE
             # groups (round_robin_groups) instead of plain `groups`, and we build the base
@@ -1492,6 +1717,7 @@ def create_event(request):
                     # else 0 = "auto-arrange by date/time" (no forced submit-index ordering).
                     group_order=int(group_data.get("group_order", 0) or 0),
                 )
+                stage_groups_in_order.append(group)  # advancement source_group_index resolution
 
                 # Auto-create a leaderboard for this group
                 leaderboard = Leaderboard.objects.create(
@@ -1522,6 +1748,9 @@ def create_event(request):
                 if matches_to_create:
                     Match.objects.bulk_create(matches_to_create, batch_size=500)
 
+            # Done with this stage's groups — record them (in submit order) for the advancement pass.
+            created_stage_groups.append(stage_groups_in_order)
+
         # ── Second pass: wire Point-Rush carry-over targets now that every Stages row
         # exists. The FE sends point_rush_target_index = the 0-based position of the target
         # stage in the submitted `stages` array, so we zip created_stages (built in submit
@@ -1534,6 +1763,16 @@ def create_event(request):
                 if 0 <= tgt_idx < len(created_stages):
                     src_stage.point_rush_target_stage = created_stages[tgt_idx]
                     src_stage.save(update_fields=["point_rush_target_stage"])
+
+        # ── Second pass: wire BRANCHING ADVANCEMENT rules now that every stage + group exists
+        # (feature #9). The FE sends, per stage, advancement_rules=[{position_from, position_to,
+        # source_group_index|null, target_stage_index}]. target_stage_index is the 0-based position
+        # in `stages_data` (resolved against created_stages, exactly like point_rush_target_index);
+        # source_group_index is the 0-based index into THIS stage's submit-ordered groups
+        # (created_stage_groups), or null = stage-wide. _validate_advancement_rules already rejected
+        # cycles / overlaps / out-of-range indices, so here we just create the resolved rows. The
+        # engine that runs them is advancement_routing.route_stage_advancement. ──
+        _wire_advancement_rules(created_stages, created_stage_groups, stages_data)
 
         AdminHistory.objects.create(
             admin_user=user,
@@ -1699,6 +1938,10 @@ def duplicate_event(request, event_id):
             require_esport_images=source.require_esport_images,
             require_player_uid=source.require_player_uid,
             require_player_profile_image=source.require_player_profile_image,
+            # Letter avatars (feature #7): carry the source's registration threshold onto the clone
+            # (the per-team assigned_letter is per-registration and is NOT cloned - the clone has no
+            # registrations yet).
+            min_letter_avatars=source.min_letter_avatars,
         )
 
         # ── 2) Clone each Stage (config only) ──
@@ -2697,6 +2940,10 @@ def edit_event(request):
         event.require_player_uid = _as_bool(request.data.get("require_player_uid"))
     if "require_player_profile_image" in request.data:
         event.require_player_profile_image = _as_bool(request.data.get("require_player_profile_image"))
+    # Letter avatars (feature #7, owner 2026-06-29): editable like the other registration gates;
+    # changing it only affects FUTURE registrations. Clamped 0-26 by the shared parser.
+    if "min_letter_avatars" in request.data:
+        event.min_letter_avatars = _parse_min_letter_avatars(request.data.get("min_letter_avatars"))
 
     if "waitlist_capacity" in request.data:
         try:
@@ -2799,6 +3046,12 @@ def edit_event(request):
         if round_robin_groups_error:
             return Response({"message": round_robin_groups_error}, status=400)
 
+        # Branching advancement rules (feature #9): no cycles/overlap, valid indices. Resolved to
+        # StageAdvancementRule rows in the second pass below (after every stage is upserted).
+        advancement_rules_error = _validate_advancement_rules(as_list(request.data.get("stages")))
+        if advancement_rules_error:
+            return Response({"message": advancement_rules_error}, status=400)
+
     with transaction.atomic():
         event.save()
 
@@ -2844,6 +3097,10 @@ def edit_event(request):
             # Track upserted Stages in submit order for the Point-Rush target second pass
             # below (a stage may target a LATER stage not yet upserted while we process this one).
             upserted_stages = []
+            # Branching advancement (feature #9): parallel list of each stage's upserted GROUPS in
+            # submit order, so a rule's source_group_index resolves correctly. Aligned with
+            # upserted_stages; round-robin stages keep [] here (only stage-wide rules apply).
+            upserted_stage_groups = []
 
             for stage_data in stages_data:
                 stage_id = stage_data.get("stage_id")
@@ -2898,6 +3155,8 @@ def edit_event(request):
 
                 kept_stage_ids.append(stage.stage_id)
                 upserted_stages.append(stage)
+                # This stage's upserted groups in submit order (advancement source_group_index).
+                stage_groups_in_order = []
 
                 # ── BR Round-Robin (sub-project B, Task 4): rebuild base groups + lobbies
                 # from round_robin_groups, KEEPING lobbies that already have entered results.
@@ -2957,6 +3216,7 @@ def edit_event(request):
                             group = StageGroups.objects.create(stage=stage, **group_defaults)
 
                     kept_group_ids.append(group.group_id)
+                    stage_groups_in_order.append(group)  # advancement source_group_index resolution
                     # ---- Sync Matches + Leaderboard ----
 
                     match_count = group.match_count or 0
@@ -3024,6 +3284,9 @@ def edit_event(request):
                         .exclude(match_number__in=kept_match_numbers)\
                         .delete()
 
+                # Done with this stage's groups — record them for the advancement second pass.
+                upserted_stage_groups.append(stage_groups_in_order)
+
             # ── Second pass: wire Point-Rush carry-over targets now that every stage is
             # upserted. point_rush_target_index is the 0-based position of the target stage
             # in the submitted `stages` array, which maps 1:1 to upserted_stages (built in
@@ -3040,6 +3303,12 @@ def edit_event(request):
                 if src_stage.point_rush_target_stage_id != (target_stage.stage_id if target_stage else None):
                     src_stage.point_rush_target_stage = target_stage
                     src_stage.save(update_fields=["point_rush_target_stage"])
+
+            # ── Second pass: re-wire BRANCHING ADVANCEMENT rules (feature #9). Delete-then-recreate
+            # each stage's StageAdvancementRule rows from the payload (so removing/repointing a rule
+            # on edit is reflected), resolving target_stage_index against upserted_stages and
+            # source_group_index against this stage's upserted groups. See _wire_advancement_rules. ──
+            _wire_advancement_rules(upserted_stages, upserted_stage_groups, stages_data)
 
             if delete_missing:
                 StageGroups.objects.filter(stage__event=event).exclude(group_id__in=kept_group_ids).delete()
@@ -3794,6 +4063,14 @@ def get_event_details(request):
     if _org_hidden(event) and not (user and _is_event_admin(user)):
         return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Per-event results visibility (owner 2026-06-29): when results_published is False, the public
+    # standings are withheld (overall_leaderboard returned as [] for every group below) so an
+    # organizer can time the social reveal. We compute the flag once here and apply it where each
+    # group's overall_leaderboard is appended; the event payload also echoes results_published so
+    # the user-facing Results/Structure view (TournamentStructure / StageResultsTable) can show a
+    # clean "Results not published yet" empty state. Toggled via set_results_visibility.
+    results_hidden = not event.results_published
+
     # -------- IS REGISTERED CHECK --------
     is_registered = False
     if user:
@@ -3990,6 +4267,11 @@ def get_event_details(request):
         "require_esport_images": event.require_esport_images,
         "require_player_uid": event.require_player_uid,
         "require_player_profile_image": event.require_player_profile_image,
+        # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars a team/player must have
+        # available to register (0 = off). Read by Step1EventDetails (admin/org toggle, rehydrated
+        # through the admin edit page which merges this get_event_details echo) AND the public
+        # EventDetailsWrapper register gate. The per-team assigned_letter rides in tournament_teams below.
+        "min_letter_avatars": event.min_letter_avatars,
         "waitlist_capacity": event.waitlist_capacity,
         "waitlist_discord_role_id": event.waitlist_discord_role_id,
         # Waitlist slot-assignment mode (owner 2026-06-17): shown on the user event page so waitlisted
@@ -4011,6 +4293,10 @@ def get_event_details(request):
         # once the active roster is full (matches register_for_event enforcement).
         "registered_count": active_registered,
         "is_full": active_registered >= event.max_teams_or_players,
+        # Per-event results visibility (owner 2026-06-29): false => the standings below are withheld
+        # (each group's overall_leaderboard is []) and the user-facing Results/Structure view shows a
+        # "Results not published yet" state instead. See results_hidden above + set_results_visibility.
+        "results_published": event.results_published,
     }
 
     # i18n TRANSLATE-ON-READ (owner 2026-06-15): localize the two user-visible event copy fields
@@ -4086,6 +4372,12 @@ def get_event_details(request):
                 # roster_edit_until vs the wall clock so an idle panel flips closed without a refetch.
                 "roster_edit_until": tt.roster_edit_until,
                 "roster_edit_open": tt.roster_edit_open,
+                # Letter avatars (feature #7, owner 2026-06-29): the single A-Z letter assigned to this
+                # team for THIS event (null = unassigned). Drives the RegisteredTeamsTab per-row Assign
+                # Select (showing it as a Badge) + the "Broadcast assignments" payload. The team's heavy
+                # LIVE available_letters union is intentionally NOT computed here - it comes from the
+                # dedicated events/event-team-letters/ endpoint so this hot detail view stays cheap.
+                "assigned_letter": tt.assigned_letter,
                 # Full player roster of THIS registered team so the admin "Registered
                 # Teams" view can expand a team to its players (owner request 2026-06-09).
                 # username is the in-game name; uid + full_name give full identity; the
@@ -4304,6 +4596,15 @@ def get_event_details(request):
                         "matches_played": 0, "total_kills": 0, "placement_sum": 0, "total_points": 0,
                     })
 
+            # ── Point-Rush carry-over overlay (scoring-modes) ─────────────────────────────────────
+            # Fold any bonus banked by an earlier stage that targets THIS stage into the PUBLIC
+            # standings, so the carried-over points show on the user-facing tournament page too — not
+            # only in the admin results editor. Computed on read, never persisted (mirrors the admin
+            # builder). Skipped when results are withheld (overall is returned [] anyway), which also
+            # avoids the extra source-stage ranking queries for the common no-Point-Rush event.
+            if not results_hidden:
+                _apply_public_carry_over(stage, overall, event.participant_type)
+
             groups_payload.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
@@ -4333,7 +4634,8 @@ def get_event_details(request):
                     "last_updated": lb.last_updated,
                 },
                 "matches": matches_payload,
-                "overall_leaderboard": list(overall)
+                # Withheld ([]) when the event's results are not published yet (owner 2026-06-29).
+                "overall_leaderboard": [] if results_hidden else list(overall)
             })
 
         stages_payload.append({
@@ -4366,6 +4668,9 @@ def get_event_details(request):
             # ── BR Round-Robin echo (None for every other format): base groups + the
             # game-day lobbies' source group ids, so the FE stage builder can rehydrate. ──
             "round_robin": _round_robin_stage_echo(stage),
+            # ── Branching advancement rules echo (feature #9): [] for a legacy/rule-less stage.
+            # Consumed by the public TournamentStructure chips + the edit form rehydration. ──
+            "advancement_rules": _advancement_rules_echo(stage),
         })
 
     event_data["stages"] = stages_payload
@@ -4680,6 +4985,11 @@ def get_event_details_not_logged_in(request):
     if _org_hidden(event):
         return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Per-event results visibility (owner 2026-06-29): same rule as get_event_details. False withholds
+    # every group's overall_leaderboard (returned []) and echoes results_published so the public
+    # (logged-out) Results/Structure view shows a "Results not published yet" state. See set_results_visibility.
+    results_hidden = not event.results_published
+
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor").all()
 
     # M: capacity snapshot (same counting rule as register_for_event) so the public,
@@ -4721,6 +5031,9 @@ def get_event_details_not_logged_in(request):
         # shows the base fee + "varies by country" when rules exist). Rules echoed for completeness.
         "country_payment_rules": event.country_payment_rules,
         "your_registration_fee": None,
+        # Per-event results visibility (owner 2026-06-29): false => standings below withheld + the
+        # public Results/Structure view shows "Results not published yet". See results_hidden / set_results_visibility.
+        "results_published": event.results_published,
         "event_rules": event.event_rules,
         "event_status": event.event_status,
         "registration_link": event.registration_link,
@@ -4942,6 +5255,14 @@ def get_event_details_not_logged_in(request):
                            )
                            .order_by("-total_points", "-total_kills", "tournament_team__team__team_name"))
 
+            # ── Point-Rush carry-over overlay (anon public view) ──────────────────────────────────
+            # Same on-read overlay as get_event_details: materialise the standings so we can fold the
+            # carried-over bonus (banked by an earlier stage targeting THIS stage) into the rows the
+            # anonymous tournament page shows. Skipped when results are withheld (output is [] anyway).
+            overall = list(overall)
+            if not results_hidden:
+                _apply_public_carry_over(stage, overall, event.participant_type)
+
             groups_payload.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
@@ -4960,7 +5281,8 @@ def get_event_details_not_logged_in(request):
                     "last_updated": lb.last_updated,
                 },
                 "matches": matches_payload,
-                "overall_leaderboard": list(overall),
+                # Withheld ([]) when the event's results are not published yet (owner 2026-06-29).
+                "overall_leaderboard": [] if results_hidden else overall,
             })
 
         stages_payload.append({
@@ -4972,6 +5294,9 @@ def get_event_details_not_logged_in(request):
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
             "groups": groups_payload,
+            # ── Branching advancement rules echo (feature #9): [] for a legacy/rule-less stage.
+            # Drives the public TournamentStructure branch chips (anon viewers). ──
+            "advancement_rules": _advancement_rules_echo(stage),
         })
 
     event_data["stages"] = stages_payload
@@ -5266,6 +5591,53 @@ def _registration_requirements_response(missing_map, team_logo_missing=False):
     }
 
 
+# ── Letter avatars (A-Z) availability (feature #7, owner 2026-06-29) ────────────────────────────
+# A registration's AVAILABLE letters are LIVE-DERIVED, never stored (mirrors Team.total_earnings):
+#   TEAM -> union(every roster member's afc_auth.User.letter_avatars) ∪ Team.manual_letter_avatars
+#   SOLO -> the single registrant's own User.letter_avatars (no team => pass team=None)
+# Returns a sorted, de-duplicated list of single UPPERCASE A-Z chars. Authoring already stores them
+# clean (afc_auth.normalize_letter_avatars / afc_team set-team-letters), but we re-normalise here so a
+# hand-edited/legacy row can never inflate the count with junk. SHARED by the register_for_event
+# letter gate (Event.min_letter_avatars) AND get_event_team_letters so "what counts" lives in ONE place.
+def _norm_letter_char(ch):
+    """Return a single A-Z uppercase char, or None if `ch` is not exactly one letter."""
+    s = str(ch).strip().upper()
+    return s if len(s) == 1 and "A" <= s <= "Z" else None
+
+
+def _letter_avatars_available(users, team=None):
+    letters = set()
+    for u in (users or []):
+        for ch in (getattr(u, "letter_avatars", None) or []):
+            c = _norm_letter_char(ch)
+            if c:
+                letters.add(c)
+    # Manual team extras (afc_team.Team.manual_letter_avatars) only apply to a TEAM registration.
+    if team is not None:
+        for ch in (getattr(team, "manual_letter_avatars", None) or []):
+            c = _norm_letter_char(ch)
+            if c:
+                letters.add(c)
+    return sorted(letters)
+
+
+def _letter_avatars_required_response(event, available):
+    """Build the canonical 403 body for the letter-avatars registration gate. Mirrors the
+    discord_required / team_logo_required shape so EventDetailsWrapper.handleRegistrationGateError can
+    branch on the code and deep-link the user to the team letters editor (managers) or /profile/edit
+    (solo). `available` is the live list from _letter_avatars_available."""
+    return {
+        "code": "letter_avatars_required",
+        "message": (
+            f"This event requires at least {event.min_letter_avatars} letter avatar(s) available "
+            f"to register. You currently have {len(available)}."
+        ),
+        "required": event.min_letter_avatars,
+        "available_count": len(available),
+        "available_letters": available,
+    }
+
+
 @api_view(["POST"])
 def register_for_event(request):
     # -------------------------
@@ -5387,6 +5759,15 @@ def register_for_event(request):
                 "message": "This event requires Discord. Connect your Discord account and join the event's Discord server, then try again.",
                 "code": "discord_required",
             }, status=403)
+
+        # ── LETTER AVATARS requirement (feature #7, owner 2026-06-29) ──
+        # When the event requires >=N letter avatars, a SOLO registrant must personally own at least
+        # N (their own afc_auth.User.letter_avatars). The structured 403 (code "letter_avatars_required")
+        # lets EventDetailsWrapper deep-link them to /profile/edit to add the letters they own.
+        if event.min_letter_avatars and event.min_letter_avatars > 0:
+            available_letters = _letter_avatars_available([user])
+            if len(available_letters) < event.min_letter_avatars:
+                return Response(_letter_avatars_required_response(event, available_letters), status=403)
 
 
         if is_public == False:
@@ -5805,6 +6186,15 @@ def register_for_event(request):
                     "code": "discord_required",
                     "discord_missing": discord_missing,
                 }, status=403)
+
+        # ── LETTER AVATARS requirement (feature #7, owner 2026-06-29) ──
+        # union(roster members' User.letter_avatars) ∪ Team.manual_letter_avatars must cover >= N.
+        # Live-derived (never stored). Same structured 403 as the solo path; the FE deep-links a
+        # manager to the team letters editor so members add theirs / the team adds manual extras.
+        if event.min_letter_avatars and event.min_letter_avatars > 0:
+            available_letters = _letter_avatars_available(roster_users, team=team)
+            if len(available_letters) < event.min_letter_avatars:
+                return Response(_letter_avatars_required_response(event, available_letters), status=403)
 
         # ✅ restriction enforcement for each roster member
         # restricted = []
@@ -8840,6 +9230,9 @@ def get_event_details_for_admin(request):
             # ── BR Round-Robin echo (None for every other format): base groups + the
             # game-day lobbies' source group ids, so the admin editor can rehydrate. ──
             "round_robin": _round_robin_stage_echo(stage),
+            # ── Branching advancement rules echo (feature #9): [] for a legacy/rule-less stage.
+            # The admin/organizer edit form rehydrates the authoring rows from this. ──
+            "advancement_rules": _advancement_rules_echo(stage),
         })
 
     pageviews = event.pageviews.count()
@@ -12141,8 +12534,11 @@ def _group_ranked_ids(group, participant_type):
     The id is the tournament_team_id (team events) or competitor_id (solo events). The sort
     mirrors the standings sort the builder uses — total effective points first, then kills —
     so Point-Rush rewards land on whoever is actually 1st/2nd/3rd in the lobby right now.
-    `effective_total` = placement + kill + bonus - penalty, computed the same way as in the
-    per-group OVERALL aggregate below (kept in sync deliberately)."""
+    Kept in sync deliberately with the per-group OVERALL aggregate below, per participant type:
+    the TEAM total is the stored Σtotal_points (placement + kill + ASSIST + DAMAGE + bonus -
+    penalty), so a lobby's 1st/2nd/3rd here matches the team leaderboard exactly; the SOLO total
+    stays placement + kill + bonus - penalty (solo total_points carries no assist/damage)
+    (owner 2026-06-29 point-rush metric split)."""
     if participant_type == "solo":
         rows = (
             SoloPlayerMatchStats.objects.filter(match__group=group)
@@ -12160,12 +12556,14 @@ def _group_ranked_ids(group, participant_type):
 
     rows = (
         TournamentTeamMatchStats.objects.filter(match__group=group)
+        # TEAM total = the stored Σtotal_points (placement + kill + ASSIST + DAMAGE + bonus -
+        # penalty), so a lobby's finishing order here matches the team leaderboard / OVERALL
+        # aggregate exactly (which also rank on Σtotal_points). Previously this re-derived
+        # placement+kill+bonus-penalty and dropped assist/damage, so the Point-Rush reward could
+        # land on a team that wasn't actually the leaderboard's 1st (owner 2026-06-29).
         .values("tournament_team_id")
         .annotate(
-            total=Coalesce(Sum("placement_points"), 0)
-            + Coalesce(Sum("kill_points"), 0)
-            + Coalesce(Sum("bonus_points"), 0)
-            - Coalesce(Sum("penalty_points"), 0),
+            total=Coalesce(Sum("total_points"), 0),
             kills=Coalesce(Sum("kills"), 0),
         )
         .order_by("-total", "-kills")
@@ -12193,6 +12591,91 @@ def _carry_over_for_stage(stage, participant_type):
             for cid, bonus in rewards.items():
                 out[cid] += bonus
     return dict(out)
+
+
+def _apply_public_carry_over(stage, rows, participant_type):
+    """Fold the Point-Rush carry-over into the PUBLIC per-group standings rows, IN PLACE.
+
+    WHY THIS EXISTS
+        Point-Rush carry-over is computed ON READ and never persisted: _carry_over_for_stage sums
+        the placement->bonus a competitor banked in every earlier stage whose point_rush_target_stage
+        is THIS stage. The admin results editor (get_all_leaderboard_details_for_event, see the
+        carry-over overlay at the OVERALL block) already applies it, so admins saw the carried points
+        — but the two USER-FACING endpoints (get_event_details / get_event_details_not_logged_in)
+        summed only the stored per-match total_points, so a normal viewer's leaderboard for the
+        connected stage showed NO carry-over. From the user's seat the points "didn't carry over".
+        This applies the SAME on-read overlay to the public rows so they DO.
+
+    WHAT IT DOES
+        `rows` is the materialised list of dict rows from a public OVERALL aggregation (each carries
+        the seed id — tournament_team_id / competitor_id — the name alias, total_kills and the summed
+        total_points). For every row we set `carry_over_points` (0 when none) and add any nonzero
+        bonus into `total_points` — the field the public leaderboard both displays and sorts on. We
+        re-sort ONLY when a nonzero bonus actually lands, on exactly the public DB key
+        (-total_points, -total_kills, name); a stage with no Point-Rush source is left byte-identical
+        (its DB .order_by() stays authoritative, and the appended seeded-at-0 rows keep their place).
+        Deliberately mirrors the admin builder's overlay so the two surfaces agree.
+
+    Idempotent / read-only: touches no DB rows, only the in-memory list. Returns the same list for
+    convenience. Called per group by both public endpoints (matching how the admin builder calls
+    _carry_over_for_stage per group)."""
+    carry_over = _carry_over_for_stage(stage, participant_type)
+    id_key = "competitor_id" if participant_type == "solo" else "tournament_team_id"
+    # Name tiebreaker alias matches each public aggregation's .values()/.order_by() tail.
+    name_key = ("competitor__user__username" if participant_type == "solo"
+                else "tournament_team__team__team_name")
+    changed = False
+    for row in rows:
+        bonus = carry_over.get(row.get(id_key), 0)
+        row["carry_over_points"] = bonus
+        if bonus:
+            row["total_points"] = int(row.get("total_points") or 0) + bonus
+            changed = True
+    if changed:
+        rows.sort(key=lambda r: (
+            -int(r.get("total_points") or 0),
+            -int(r.get("total_kills") or 0),
+            r.get(name_key) or "",
+        ))
+    return rows
+
+
+def _fold_carry_over(rows, stage, participant_type, *, id_key, metric_key, sort_key, carry=None):
+    """OWNER OVERRIDE (2026-06-29): Point-Rush carry-over IS part of a competitor's TOTAL POINTS and
+    must count toward QUALIFICATION, not only display. (This intentionally supersedes the earlier
+    "advancement/round-robin standings exclude per-lobby overlays" spec note — the owner: "the point
+    adds to the team's total points.")
+
+    When `stage` is a Point-Rush TARGET (i.e. has point_rush_sources), add each competitor's banked
+    carry-over — the SAME on-read bonus _carry_over_for_stage computes for the leaderboard — into the
+    ranking metric `metric_key`, then re-rank with `sort_key`. So a team whose source-stage placement
+    bonus lifts its total above a rival now advances AHEAD of it. NO-OP when the stage has no
+    Point-Rush source (carry == {} -> rows returned untouched), so a normal stage advances
+    byte-identically. NOTHING is persisted (mirrors the leaderboard overlay and avoids the seed-time
+    double-count flagged earlier); the bonus exists only inside this one ranking pass.
+
+    Shared by both legacy advance endpoints (advance_group_competitors_to_next_stage via total_points,
+    advance_round_robin via effective_total), by the branching engine
+    (advancement_routing._ranking_for_rule), AND by CROSS-EVENT linked qualification
+    (event_links._stage_top_rows) — all via lazy import — so the leaderboard + in-event advancement +
+    cross-event qualification + the admin editor all rank on the same carry-over-inclusive total.
+
+    `carry` lets a caller pass a PRE-COMPUTED {id: bonus} dict instead of having this resolve it from
+    _carry_over_for_stage. event_links' SOLO table is keyed by user_id while _carry_over_for_stage
+    keys by competitor_id, so that caller re-keys the bonus to user_id and passes it here (with a
+    matching id_key). When `carry` is None we resolve it ourselves (the default for the team paths,
+    whose id IS the competitor id). `rows` is a list of dict standings rows; mutated in place + returned."""
+    if carry is None:
+        carry = _carry_over_for_stage(stage, participant_type)
+    if not carry:
+        return rows
+    for r in rows:
+        bonus = carry.get(r.get(id_key), 0)
+        r["carry_over_points"] = bonus
+        if bonus:
+            r[metric_key] = int(r.get(metric_key) or 0) + bonus
+    rows.sort(key=sort_key)
+    return rows
 
 
 @api_view(["POST"])
@@ -12274,12 +12757,12 @@ def get_all_leaderboard_details_for_event(request):
                         .select_related("tournament_team__team")
                         .annotate(
                             team_name=F("tournament_team__team__team_name"),
-                            effective_total=(
-                                Coalesce(F("placement_points"), 0) +
-                                Coalesce(F("kill_points"), 0) +
-                                Coalesce(F("bonus_points"), 0) -
-                                Coalesce(F("penalty_points"), 0)
-                            )
+                            # effective_total = the stored per-match total_points (placement + kill +
+                            # ASSIST + DAMAGE + bonus - penalty), NOT a re-derived placement+kill+
+                            # bonus-penalty (which dropped assist/damage and disagreed with the public
+                            # leaderboard / advance_group ranking). Unifies the admin editor's team
+                            # ordering with every other team-ranking surface (owner 2026-06-29).
+                            effective_total=Coalesce(F("total_points"), 0),
                         )
                         .order_by("-effective_total", "-kills", "team_name")
                     )
@@ -12414,12 +12897,14 @@ def get_all_leaderboard_details_for_event(request):
 
                         total_points=Coalesce(Sum("total_points"), 0),
 
-                        effective_total=(
-                            Coalesce(Sum("placement_points"), 0) +
-                            Coalesce(Sum("kill_points"), 0) +
-                            Coalesce(Sum("bonus_points"), 0) -
-                            Coalesce(Sum("penalty_points"), 0)
-                        ),
+                        # effective_total = the stored total_points sum (placement + kill + ASSIST +
+                        # DAMAGE + bonus - penalty) = the `total_points` annotation just above. It
+                        # previously re-derived placement+kill+bonus-penalty, dropping assist/damage and
+                        # disagreeing with the public leaderboard + advance_group cut. We ALIAS the
+                        # already-computed total_points annotation (F(...), not a second Sum, which would
+                        # nest an aggregate over an aggregate). The placement/kill/bonus/penalty sums above
+                        # stay as independent display columns (owner 2026-06-29 point-rush split).
+                        effective_total=F("total_points"),
 
                         last_match_placement=Coalesce(
                             last_placement_subq,
@@ -13373,14 +13858,23 @@ def advance_group_competitors_to_next_stage(request):
     # 3) Winners + advance
     with transaction.atomic():
         if event.participant_type == "solo":
-            overall = (SoloPlayerMatchStats.objects
+            # Rank the FULL group (no DB slice yet) so the Point-Rush carry-over fold can lift a
+            # competitor above the cut line BEFORE we take the top qualify_n (owner override 2026-06-29:
+            # carry-over counts toward qualification). No-op when this stage has no Point-Rush source.
+            overall = list(SoloPlayerMatchStats.objects
                        .filter(match__group=group)
                        .values("competitor_id")
                        .annotate(
                            total_points=Sum("total_points"),
                            total_kills=Sum("kills"),
                        )
-                       .order_by("-total_points", "-total_kills")[:qualify_n])
+                       .order_by("-total_points", "-total_kills"))
+            overall = _fold_carry_over(
+                overall, stage, event.participant_type,
+                id_key="competitor_id", metric_key="total_points",
+                sort_key=lambda r: (-int(r.get("total_points") or 0),
+                                    -int(r.get("total_kills") or 0)),
+            )[:qualify_n]
 
             winner_ids = [row["competitor_id"] for row in overall]
             if not winner_ids:
@@ -13417,14 +13911,22 @@ def advance_group_competitors_to_next_stage(request):
                     queued_roles += 1
 
         else:
-            overall = (TournamentTeamMatchStats.objects
+            # Same as the solo branch: rank the full group, fold Point-Rush carry-over into the team
+            # totals (owner override 2026-06-29), THEN take the top qualify_n. No-op without a source.
+            overall = list(TournamentTeamMatchStats.objects
                        .filter(match__group=group)
                        .values("tournament_team_id")
                        .annotate(
                            total_points=Sum("total_points"),
                            total_kills=Sum("kills"),
                        )
-                       .order_by("-total_points", "-total_kills")[:qualify_n])
+                       .order_by("-total_points", "-total_kills"))
+            overall = _fold_carry_over(
+                overall, stage, event.participant_type,
+                id_key="tournament_team_id", metric_key="total_points",
+                sort_key=lambda r: (-int(r.get("total_points") or 0),
+                                    -int(r.get("total_kills") or 0)),
+            )[:qualify_n]
 
             winner_ids = [row["tournament_team_id"] for row in overall]
             if not winner_ids:
@@ -13562,6 +14064,21 @@ def advance_round_robin(request):
     cumulative = round_robin.cumulative_standings(stage)
     if not cumulative:
         return Response({"message": "No standings found (no results entered?)."}, status=400)
+
+    # OWNER OVERRIDE (2026-06-29): fold Point-Rush carry-over into the cumulative ranking when THIS
+    # round-robin stage is itself a Point-Rush TARGET, so banked points count toward who qualifies out
+    # of it. Re-ranks on the same key cumulative_standings used (effective_total -> booyah -> kills ->
+    # name). No-op for a stage with no Point-Rush source, so the per_group/overall selection below is
+    # unchanged for normal events. cumulative_standings itself is left untouched (graphic export +
+    # event-linking keep the raw table); the override is localised to this advancement path.
+    cumulative = _fold_carry_over(
+        cumulative, stage, event.participant_type,
+        id_key="tournament_team_id", metric_key="effective_total",
+        sort_key=lambda r: (-int(r.get("effective_total") or 0),
+                            -int(r.get("total_booyah") or 0),
+                            -int(r.get("total_kills") or 0),
+                            r.get("team_name") or ""),
+    )
 
     # Pick the advancing tournament_team_ids per mode.
     if mode == "per_group":
@@ -18625,6 +19142,231 @@ def set_team_roster_edit_window(request):
 
 
 @api_view(["POST"])
+def assign_team_letter(request):
+    """POST /events/assign-team-letter/  (admin / organizer)  - Letter Avatars feature #7, plan B5.
+
+    Assign ONE A-Z letter to a registered team for in-game use in this event (e.g. each team flies a
+    distinct letter banner). OWNER DECISION (Open Q g, 2026-06-29): a letter is UNIQUE per team per
+    event - assigning a letter already held by ANOTHER team in this event is rejected with a friendly
+    409 naming that team; reassigning a team to a new letter frees its old one automatically (a single
+    column update). Admins/organizers may CHANGE an assignment at ANY time (no lock once set or once
+    the event starts).
+
+    REQUEST (JSON)
+      { "event_id": <int>, "team_id": <int>,
+        "letter": "A",          # a single A-Z char; "" / null / "none" CLEARS the assignment (unassign)
+        "broadcast": false }    # optional: when true ALSO emails the team (push happens either way)
+
+    RESPONSE
+      200 { tournament_team_id, team_id, team_name, assigned_letter, notified }
+      400 missing ids / invalid letter   403 not an event admin / org for this event
+      404 team not registered for this event   409 letter already taken by another team in this event
+
+    GATE
+      AFC event admin (_is_event_admin) OR organizer with can_manage_registrations on the event's
+      owning org (org_can_event). Mirrors set_team_roster_edit_window + the afc_auth
+      broadcast_letter_assignments gate so "who can assign" == "who can announce".
+
+    NOTIFICATION (plan Open Q i: notify all team members)
+      On a successful assignment every member of the team gets an in-app notification (and, when
+      broadcast=true, also the branded email) via afc_auth.deliver_broadcast. related_event stamps the
+      "Take me there" deep link onto the event (target_type=event). log=False so a single assignment
+      does not flood the broadcast-history audit; the bulk header "Broadcast assignments" button
+      (afc_auth.broadcast_letter_assignments) is the audited event-wide announce path.
+
+    CONSUMED BY
+      frontend RegisteredTeamsTab.tsx per-row "Assign" Select (admin + organizer event edit). The
+      live available_letters + the greying of taken letters come from get_event_team_letters below.
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.data.get("event_id")
+    team_id = request.data.get("team_id")
+    if not event_id or not team_id:
+        return Response({"message": "event_id and team_id are required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+
+    # Same gate as set_team_roster_edit_window / broadcast_letter_assignments.
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to assign letters for this event."}, status=403)
+
+    tt = TournamentTeam.objects.filter(event=event, team_id=team_id).select_related("team").first()
+    if not tt:
+        return Response({"message": "That team is not registered for this event."}, status=404)
+
+    # CLEAR (unassign): an empty / null / "none" letter frees this team's letter for reuse.
+    raw_letter = request.data.get("letter")
+    if raw_letter in (None, "", "none", "None"):
+        tt.assigned_letter = None
+        tt.save(update_fields=["assigned_letter"])
+        return Response({
+            "tournament_team_id": tt.tournament_team_id, "team_id": tt.team_id,
+            "team_name": tt.team.team_name, "assigned_letter": None, "notified": 0,
+        }, status=200)
+
+    letter = _norm_letter_char(raw_letter)
+    if not letter:
+        return Response({"message": "letter must be a single A-Z character."}, status=400)
+
+    # UNIQUE per event (Open Q g, HARD). The conditional DB UniqueConstraint
+    # (uniq_assigned_letter_per_event) is a NO-OP on MySQL, which has no partial indexes - so this
+    # check IS the real enforcement. To make it HARD even under concurrent assigns by two staff, we
+    # lock this event's TournamentTeam rows FOR UPDATE inside one transaction, re-read the clash under
+    # the lock, then write. Reassigning THIS team to a new letter is fine (exclude self) and frees its
+    # old letter automatically (a single column update). No data is written before any early return,
+    # so returning the 409 inside the atomic block is safe (only SELECTs ran).
+    with transaction.atomic():
+        locked = list(
+            TournamentTeam.objects
+            .select_for_update()
+            .filter(event=event)
+            .select_related("team")
+        )
+        # Re-resolve tt from the locked snapshot (same row, now lock-held).
+        tt = next((x for x in locked if x.pk == tt.pk), tt)
+        clash = next(
+            (x for x in locked if x.assigned_letter == letter and x.pk != tt.pk),
+            None,
+        )
+        if clash:
+            return Response({
+                "code": "letter_taken",
+                "message": f"Letter {letter} is already assigned to {clash.team.team_name} in this event.",
+                "conflicting_team_id": clash.team_id,
+                "conflicting_team_name": clash.team.team_name,
+            }, status=409)
+
+        tt.assigned_letter = letter
+        tt.save(update_fields=["assigned_letter"])
+
+    # Notify every member of the team (Open Q i). TeamMembers is the live team roster (not the event
+    # roster) so EVERY teammate hears about it. broadcast=true also emails; either way they get the
+    # in-app push. deliver_broadcast localizes the email per recipient + stamps the event deep link.
+    broadcast = _as_bool(request.data.get("broadcast"))
+    recipients = [
+        tm.member
+        for tm in TeamMembers.objects.filter(team=tt.team).select_related("member")
+        if tm.member
+    ]
+    notified = 0
+    if recipients:
+        # English source line (broadcasts are stored in English; deliver_broadcast translate-on-reads
+        # the in-app row + localizes the email). No em/en dashes.
+        message = f"Your assigned letter for {event.event_name} is {letter}."
+        try:
+            pushed, _emailed = deliver_broadcast(
+                recipients, "Letter assignment", message,
+                delivery="both" if broadcast else "push",
+                notification_type="letter_assignment", related_event=event,
+                sender=user, scope="event", log=False,
+            )
+            notified = pushed
+        except Exception:
+            # A notification failure must never roll back an assignment that already persisted.
+            pass
+
+    return Response({
+        "tournament_team_id": tt.tournament_team_id,
+        "team_id": tt.team_id,
+        "team_name": tt.team.team_name,
+        "assigned_letter": tt.assigned_letter,
+        "notified": notified,
+    }, status=200)
+
+
+@api_view(["GET"])
+def get_event_team_letters(request):
+    """GET /events/event-team-letters/?event_id=&limit=&offset=  (admin / organizer)  - feature #7, B6.
+
+    Paginated list of every registered team in the event with the data the RegisteredTeamsTab
+    Assign-letter UI needs:
+      - available_letters: the LIVE union of the team's roster members' afc_auth.User.letter_avatars
+        PLUS afc_team.Team.manual_letter_avatars (never stored - see _letter_avatars_available).
+      - assigned_letter:   the letter currently assigned to this team for this event (null = none).
+      - member_count:      the team's event-roster size.
+    This heavy per-team union query is deliberately kept OFF get_event_details (which only echoes the
+    cheap assigned_letter); the FE fetches this endpoint lazily when the letter UI is shown.
+
+    RESPONSE
+      200 { event_id, min_letter_avatars,
+            teams: [{tournament_team_id, team_id, team_name, available_letters, assigned_letter, member_count}],
+            limit, offset, total_count, has_more, next_offset }
+      400 missing event_id   403 not an event admin / org for this event   404 event not found
+
+    GATE
+      Same as assign_team_letter (AFC event admin OR org can_manage_registrations). Read-only.
+
+    CONSUMED BY
+      frontend RegisteredTeamsTab.tsx (the "Available letters" column + per-row Assign Select greying
+      letters already taken by OTHER teams, computed client-side from each team's assigned_letter).
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.GET.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to view this event's letters."}, status=403)
+
+    # Pagination (best-practice rule 10: always bounded). Default 50, clamp 1..200.
+    try:
+        limit = int(request.GET.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        offset = int(request.GET.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    limit = max(1, min(200, limit))
+    offset = max(0, offset)
+
+    base_qs = (
+        event.tournament_teams
+        .select_related("team")
+        .prefetch_related("members__user")
+        .order_by("tournament_team_id")
+    )
+    total_count = base_qs.count()
+    page = base_qs[offset:offset + limit]
+
+    teams = []
+    for tt in page:
+        # The team's event-roster member users feed the live union (+ the team's manual extras).
+        member_users = [m.user for m in tt.members.all() if m.user]
+        teams.append({
+            "tournament_team_id": tt.tournament_team_id,
+            "team_id": tt.team_id,
+            "team_name": tt.team.team_name,
+            "available_letters": _letter_avatars_available(member_users, team=tt.team),
+            "assigned_letter": tt.assigned_letter,
+            "member_count": len(member_users),
+        })
+
+    return Response({
+        "event_id": event.event_id,
+        "min_letter_avatars": event.min_letter_avatars,
+        "teams": teams,
+        "limit": limit,
+        "offset": offset,
+        "total_count": total_count,
+        "has_more": offset + limit < total_count,
+        "next_offset": (offset + limit) if (offset + limit < total_count) else None,
+    }, status=200)
+
+
+@api_view(["POST"])
 def edit_roster(request):
 
     # ---------------- AUTH ----------------
@@ -19975,6 +20717,80 @@ def reopen_event(request):
         {
             "message": f"Event '{event.event_name}' has been reopened.",
             "event_status": new_status,
+        },
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def set_results_visibility(request):
+    """Publish or hide an event's PUBLIC standings (owner 2026-06-29), so an organizer can time the
+    "social reveal" of results. Flips Event.results_published.
+
+    Auth gate (admins AND orgs): an AFC event admin (_is_event_admin) OR an organizer holding
+    can_edit_events on the owning org (org_can_event) -- the SAME gate as reopen_event / edit_event,
+    so an organizer can manage THEIR own event. Native (org=None) events stay admin-only via
+    org_can_event.
+
+    Effect: when results_published is False, the two PUBLIC detail endpoints (get_event_details +
+    get_event_details_not_logged_in) withhold each group's overall_leaderboard (return []) and echo
+    results_published=false, and the user-facing tournament Results/Structure view renders a clean
+    "Results not published yet" state instead of standings. The admin/organizer result surfaces
+    (get_event_details_for_admin, get-group-leaderboard) are NOT gated, so staff can still enter and
+    review results while they're hidden from the public. Default True means existing events stay
+    visible until an organizer hides them.
+
+    Request:  { event_id, results_published: bool }
+    Response: { message, results_published }
+    Consumed by: the shared Event Actions tab (ActionsTab.handleToggleResultsVisibility) on both the
+    admin (app/(a)/a/events/[slug]/edit) and organizer (app/(organizer)/.../edit) event-edit pages."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+
+    # Accept a JSON bool or the string forms the FE/forms may send ("true"/"True"/"1").
+    raw = request.data.get("results_published")
+    if raw is None:
+        return Response({"message": "results_published is required."}, status=400)
+    if isinstance(raw, bool):
+        new_value = raw
+    else:
+        new_value = str(raw).strip().lower() in ("true", "1", "yes", "on")
+
+    event = get_object_or_404(Event, event_id=event_id)
+
+    # Admins always pass; otherwise the organizer must hold can_edit_events on the owning org.
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
+
+    event.results_published = new_value
+    event.save(update_fields=["results_published"])
+
+    try:
+        AdminHistory.objects.create(
+            admin_user=user,
+            action="set_results_visibility",
+            description=(f"{'Published' if new_value else 'Hid'} results for event "
+                         f"{event.event_name} (ID: {event.event_id})"),
+        )
+    except Exception:
+        pass
+
+    return Response(
+        {
+            "message": (
+                f"Results for '{event.event_name}' are now public."
+                if new_value
+                else f"Results for '{event.event_name}' are now hidden from players."
+            ),
+            "results_published": new_value,
         },
         status=200,
     )

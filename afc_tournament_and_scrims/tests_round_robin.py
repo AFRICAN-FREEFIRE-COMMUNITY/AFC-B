@@ -117,19 +117,24 @@ class RoundRobinScheduleTests(SimpleTestCase):
         )
 
     def test_games_per_day_and_maps_propagate(self):
-        # games_per_day → each lobby's match_count; maps → each lobby's match_maps.
+        # games_per_day → each lobby's match_count, and the supplied maps are EXPANDED to exactly
+        # that many entries, cycling when fewer maps than matches are given (owner 2026-06-17, so
+        # match_count and len(match_maps) stay in lock-step). 3 matches over [bermuda, purgatory]
+        # → [bermuda, purgatory, bermuda].
         specs = round_robin_schedule(
             ["A", "B"], games_per_day=3, maps=["bermuda", "purgatory"])
 
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0]["match_count"], 3)
-        self.assertEqual(specs[0]["match_maps"], ["bermuda", "purgatory"])
+        self.assertEqual(specs[0]["match_maps"], ["bermuda", "purgatory", "bermuda"])
 
     def test_maps_default_to_bermuda(self):
-        # No maps given → default to the single Bermuda map (BR default lobby map).
+        # No maps given → default to the single "Bermuda" map. Capitalised on purpose (owner
+        # 2026-06-17) to match the FE AVAILABLE_MAPS labels so an auto-generated schedule lines up
+        # with the meeting editor's map stepper.
         specs = round_robin_schedule(["A", "B"])
 
-        self.assertEqual(specs[0]["match_maps"], ["bermuda"])
+        self.assertEqual(specs[0]["match_maps"], ["Bermuda"])
         self.assertEqual(specs[0]["match_count"], 1)  # games_per_day default is 1
 
     def test_maps_are_copied_not_aliased(self):
@@ -383,6 +388,11 @@ class RoundRobinCreateEventTests(TestCase):
             "event_mode": "virtual",
             "start_date": d, "end_date": d,
             "registration_open_date": d, "registration_end_date": d,
+            # The 4 event/registration TIMES became compulsory server-side (owner 2026-06-21); the
+            # create wizard always sends them now, so this payload must too or create-event 400s
+            # with "Missing required time(s)".
+            "event_start_time": "18:00", "event_end_time": "20:00",
+            "registration_start_time": "10:00", "registration_end_time": "17:00",
             "prizepool": "$1000",
             "number_of_stages": 1,
             "is_draft": False,
@@ -580,6 +590,9 @@ class RoundRobinEditEventTests(TestCase):
             **extra_event,
             "start_date": d, "end_date": d,
             "registration_open_date": d, "registration_end_date": d,
+            # The 4 times are compulsory on create (owner 2026-06-21) — see _payload above.
+            "event_start_time": "18:00", "event_end_time": "20:00",
+            "registration_start_time": "10:00", "registration_end_time": "17:00",
             "stages": [self._stage()],
         }
 

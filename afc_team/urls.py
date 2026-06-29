@@ -21,6 +21,11 @@ urlpatterns = [
     # Owner/manager toggles whether the team's aggregate stats are public (owner 2026-06-27).
     # Consumed by the "Show team stats publicly" switch on the team management/edit surface.
     path('set-stats-visibility/', set_team_stats_visibility, name='set_team_stats_visibility'),
+    # Owner/captain/vice-captain/manager/coach declares the team's MANUAL letter-avatar extras
+    # (Letter Avatars feature, owner 2026-06-29). Consumed by the "Team letter avatars" panel on the
+    # team-edit page (app/(user)/teams/[id]/edit). Mirrors set-stats-visibility: a narrow single-field
+    # write so a manager who isn't the owner can still save. Gate: _can_manage_team_letters.
+    path('set-team-letters/', set_team_letters, name='set_team_letters'),
     path('get-team-details/', get_team_details, name='get_team_details'),
     path('get-user-current-team/', get_user_current_team, name='get_user_current_team'),
     path('get-player-details/', get_player_details, name='get_player_details'),

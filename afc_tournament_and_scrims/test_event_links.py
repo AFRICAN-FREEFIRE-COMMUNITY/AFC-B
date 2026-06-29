@@ -303,10 +303,13 @@ class FireAndPromoteTests(EventLinkBase):
     def test_standings_edit_diff_and_creator_notification(self):
         link_id = self._create_link().json()["link"]["id"]
         self._fire(link_id)
-        # EDIT the standings after the fire: Charlie's stats jump to #1.
+        # EDIT the standings after the fire: Charlie's stats jump to #1. Bump total_points too
+        # (= placement + kill here): team ranking keys on the stored total_points column (owner
+        # 2026-06-29 point-rush metric split), which every real edit path recomputes, so a raw
+        # .update() must keep it in sync or the standings won't move.
         tt_charlie = TournamentTeam.objects.get(event=self.source, team=self.teams["Charlie"])
         TournamentTeamMatchStats.objects.filter(tournament_team=tt_charlie).update(
-            placement_points=50, kill_points=10,
+            placement_points=50, kill_points=10, total_points=60,
         )
         resp = self.client.get(f"/events/{self.source.event_id}/links/", **bearer(self.admin_tok))
         out = resp.json()["outbound"][0]
