@@ -49,6 +49,17 @@ class User(AbstractUser):
     # session_token = models.CharField(max_length=16)
     full_name = models.CharField(max_length=40)
     country = models.CharField(max_length=40, blank=True, default='')
+    # ── IP-derived country, drives the per-PLAYER flag (owner ask 2026-06-29) ──────────────
+    # `country` (above) is the player's PROFILE country: set once at signup or hand-edited, and it
+    # is what the TEAM flag is derived from (afc_team.views._derive_team_country). The owner wants
+    # the flag shown next to a PLAYER's name to reflect where that player actually IS, not the
+    # team's country, so we denormalize the latest IP-resolved country here. It is refreshed on
+    # every login (login / google_auth / discord) by set_ip_country() in views.py, skipped when the
+    # connection looks like a VPN/datacenter so an exit node can't mislabel the flag. Readers do
+    # `ip_country or country` (profile country is the fallback): afc_team.views.get_team_details
+    # (roster flag), afc_player.aggregation (public player profile), afc_player.views (admin detail).
+    # Denormalized onto User (not read from LoginHistory) so list/roster serializers avoid an N+1.
+    ip_country = models.CharField(max_length=40, blank=True, default='')
     # Preferred language code ("en"/"fr"/"pt"). See LANGUAGE_CHOICES above for the why + the readers/writers.
     # Default is BLANK on purpose (not "en"): blank means "not yet chosen/detected", which is what the
     # login() country auto-detect guard (`if not user.language`) keys off, so a first login from a

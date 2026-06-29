@@ -287,7 +287,9 @@ def get_player_details(request):
         "email": player.email,            # admin surface — PII allowed here (auth-gated)
         "uid": player.uid,
         "discord_username": player.discord_username,
-        "country": player.country,
+        # Admin player detail: show the IP-derived location (owner 2026-06-29), profile country as
+        # fallback. Same source as the public flag (afc_auth.views.set_ip_country / User.ip_country).
+        "country": (player.ip_country or player.country),
         "in_game_role": in_game_role,
         "management_role": management_role,
 

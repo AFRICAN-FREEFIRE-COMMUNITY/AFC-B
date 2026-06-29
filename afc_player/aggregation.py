@@ -301,7 +301,9 @@ def basic_player_profile(player, request=None):
 
     return {
         "username": player.username,
-        "country": player.country,
+        # Player flag = IP-derived country (owner 2026-06-29), profile country as fallback. See
+        # afc_auth.views.set_ip_country / User.ip_country. Consumed by the public player profile.
+        "country": (player.ip_country or player.country),
         "uid": player.uid,
         "discord_username": player.discord_username,
         "profile_picture": _abs(getattr(profile, "profile_pic", None)) if profile else None,
