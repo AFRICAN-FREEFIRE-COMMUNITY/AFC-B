@@ -162,6 +162,29 @@ def looks_like_vpn(org):
     o = str(org).lower()
     return any(tok in o for tok in _VPN_ORG_TOKENS)
 
+
+def set_ip_country(user, country, is_vpn):
+    """Denormalize the latest IP-resolved country onto User.ip_country (drives the per-PLAYER flag).
+
+    Called from all three login paths (login / google_auth / discord) right after the LoginHistory
+    row is written, reusing the country that geo_for_ip() already resolved (no extra ipinfo call).
+    The flag readers (afc_team roster, afc_player profile + admin detail) do `ip_country or country`,
+    so an empty value falls back to the player's profile country. See User.ip_country (models.py).
+
+    Guards:
+      - is_vpn True  -> skip (a VPN/datacenter exit node must not mislabel the player's flag; the
+                        previous ip_country, or the profile country, stays as the shown flag).
+      - falsy country -> skip (geo failed / behind a stripped proxy header -> keep last known).
+      - unchanged    -> skip the write (avoid a needless UPDATE on every login).
+    Best-effort: wrapped by callers in try/except so a geo hiccup can never break a login.
+    """
+    if not country or is_vpn:
+        return
+    if user.ip_country != country:
+        user.ip_country = country
+        user.save(update_fields=["ip_country"])
+
+
 def validate_token(token):
     try:
         session = SessionToken.objects.get(token=token)
@@ -770,6 +793,12 @@ def login(request):
             is_vpn=is_vpn,
         )
 
+        # Refresh the player's IP-derived flag country (best-effort; never blocks login).
+        try:
+            set_ip_country(user, response.get("country"), is_vpn)
+        except Exception:
+            pass
+
         # ── i18n Phase 0: auto-detect the user's language from their country on FIRST login only ──
         # If the user has never had a language set (blank/None) and the geo lookup above resolved a
         # country, default them to fr/pt for Francophone/Lusophone Africa (else en) via
@@ -988,6 +1017,10 @@ def google_auth(request):
         region=response.get("region"), timezone=response.get("timezone"),
         org=org, is_vpn=is_vpn,
     )
+    try:
+        set_ip_country(user, response.get("country"), is_vpn)  # IP-derived player flag (best-effort)
+    except Exception:
+        pass
     try:
         detected_country = response.get("country")
         if not user.language and detected_country:
@@ -4882,6 +4915,7 @@ def discord_sso_callback(request):
             country=geo.get("country"), city=geo.get("city"), region=geo.get("region"),
             timezone=geo.get("timezone"), org=org, is_vpn=is_vpn,
         )
+        set_ip_country(user, geo.get("country"), is_vpn)  # IP-derived player flag (best-effort)
         if not user.language and geo.get("country"):
             user.language = language_for_country(geo.get("country"))
             user.save(update_fields=["language"])

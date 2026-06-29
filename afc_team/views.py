@@ -1510,9 +1510,13 @@ def get_team_details(request):
             "username": m.member.username,
             "management_role": m.management_role,
             "in_game_role": m.in_game_role,
-            # Per-member country (raw User.country) so the team page can show each member's location and
-            # explain how the auto-derived team country (above) was decided. (owner 2026-06-20)
-            "country": m.member.country,
+            # Per-member country drives the per-PLAYER flag next to the member's name on the team page.
+            # Owner ask 2026-06-29: that flag must reflect where the player actually IS (their IP), not
+            # the team's country, so we serve User.ip_country (refreshed each login by
+            # afc_auth.views.set_ip_country) and fall back to the profile User.country when the IP
+            # country is empty (geo failed / VPN-skipped). The TEAM country (above) still derives from
+            # the raw profile country via _derive_team_country, so it is intentionally unaffected.
+            "country": (m.member.ip_country or m.member.country),
             "join_date": m.join_date,
             "discord_id": m.member.discord_id,
             # Registration-requirement marker flags (owner 2026-06-22): does this member have an
