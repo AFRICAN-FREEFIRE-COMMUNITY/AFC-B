@@ -75,6 +75,9 @@ urlpatterns = [
     # on the event's org. Consumed by the organizer + admin events lists' "Duplicate" action
     # (lib events.duplicateEvent). Full URL: events/<event_id>/duplicate-event/.
     path('<int:event_id>/duplicate-event/', duplicate_event, name='duplicate_event'),
+    # Manual tournament-tier override / reset (head/super admin only); owner 2026-06-30.
+    # Full URL: events/<event_id>/set-tier/. Consumed by the admin event detail page tier control.
+    path('<int:event_id>/set-tier/', set_event_tier, name='set_event_tier'),
 
     # ── Event linking / qualification chains ── (events/<id>/links/... + events/links/<id>/...)
     path('<int:event_id>/links/create/', create_link, name='create_event_link'),      # POST
