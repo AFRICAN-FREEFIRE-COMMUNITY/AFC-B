@@ -348,6 +348,10 @@ def stripe_buy_now(request):
                 quantity=i["quantity"],
                 unit_price=i["unit_price"],
                 line_total=i["line_total"],
+                # Snapshot product + variant name at purchase (owner 2026-06-29, same fix as buy_now):
+                # these were never set so My Orders showed a blank name. Keeps order history correct.
+                product_name_snapshot=i["variant"].product.name,
+                variant_title_snapshot=(i["variant"].title or i["variant"].sku or ""),
                 # snapshot the applied coupon code per line; the order-level coupon FK is the
                 # source of truth (same as buy_now).
                 coupon_code=(coupon.code if coupon else None),

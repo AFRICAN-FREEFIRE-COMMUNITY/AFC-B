@@ -1519,6 +1519,12 @@ def buy_now(request):
                 quantity=i["quantity"],
                 unit_price=i["unit_price"],
                 line_total=i["line_total"],
+                # Snapshot the product + variant name at purchase time (owner 2026-06-29: My Orders
+                # showed a blank product name). These were never set, so every OrderItem stored "";
+                # the order pages read product_name_snapshot/variant_title_snapshot. Snapshotting
+                # keeps the order history correct even if the product is later renamed or deleted.
+                product_name_snapshot=i["variant"].product.name,
+                variant_title_snapshot=(i["variant"].title or i["variant"].sku or ""),
                 # snapshot the applied coupon code per line (the order-level coupon FK above
                 # is the source of truth; this is the historical per-item record).
                 coupon_code=(coupon.code if coupon else None),
@@ -2097,8 +2103,11 @@ def get_my_orders(request):
             "created_at": order.created_at,
             "tax": str(order.tax),
             "items": [{
-                "product_name": item.product_name_snapshot,
-                "variant_title": item.variant_title_snapshot,
+                # Fall back to the live product/variant name when the snapshot is blank, so
+                # ORDERS PLACED BEFORE the snapshot fix (owner 2026-06-29) still show a name
+                # instead of "" (new orders snapshot it at checkout; see buy_now/stripe_buy_now).
+                "product_name": item.product_name_snapshot or item.variant.product.name,
+                "variant_title": item.variant_title_snapshot or item.variant.title or item.variant.sku or "",
                 "quantity": item.quantity,
                 "unit_price": str(item.unit_price),
                 "line_total": str(item.line_total),
@@ -2143,11 +2152,16 @@ def get_order_details(request):
         "tax": str(order.tax),
         # "voucher": item.fulfillment_records.first().provider_payload if item.fulfillment_records.exists() else None,
         "items": [{
-            "product_name": item.product_name_snapshot,
-            "variant_title": item.variant_title_snapshot,
+            # snapshot-or-live fallback (owner 2026-06-29) so pre-fix orders still show a name.
+            "product_name": item.product_name_snapshot or item.variant.product.name,
+            "variant_title": item.variant_title_snapshot or item.variant.title or item.variant.sku or "",
             "quantity": item.quantity,
             "unit_price": str(item.unit_price),
             "line_total": str(item.line_total),
+            # Product image on the order DETAIL page too (owner 2026-06-29: "expected the image and
+            # all product details, not just the order id"). get_my_orders already sends this; the
+            # detail endpoint omitted it. Consumed by frontend orders/[id]/page.tsx.
+            "product_image": _abs_url(request, item.variant.product.image),
         } for item in order.items.all()]
     }
 
