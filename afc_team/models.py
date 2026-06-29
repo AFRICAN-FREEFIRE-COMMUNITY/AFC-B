@@ -47,6 +47,21 @@ class Team(models.Model):
     #   - Written by: afc_team.views.edit_team (the "Show team stats publicly" switch, owner/manager only).
     stats_visible = models.BooleanField(default=False)
 
+    # MANUAL letter-avatar extras for the team (Letter Avatars feature, owner 2026-06-29).
+    # Free Fire ships a fixed set of 26 "letter avatars" (one per A-Z). A team's USABLE letters
+    # are LIVE-DERIVED, never stored: union(every current member's afc_auth.User.letter_avatars)
+    # ∪ THIS field. This field holds ONLY the manual EXTRAS a team manager declares by hand (letters
+    # the team can field that no current member's own letter avatars already cover). Mirrors how
+    # Team.total_earnings / the team's available letters are computed live rather than persisted, so
+    # the team's available set self-corrects whenever a member joins, leaves, or edits their letters.
+    # Stored canonical form: sorted, de-duplicated, UPPERCASE single chars, e.g. ["B","Q","Z"].
+    #   - Read by  : afc_team.views.get_team_details (folded into the live `available_letters` union +
+    #                returned raw as `manual_letters`) and afc_team.views._team_available_letters.
+    #   - Written by: afc_team.views.set_team_letters (POST /team/set-team-letters/), gated by
+    #                _can_manage_team_letters (owner + captain/vice-captain/manager/coach).
+    # Default empty list (no backfill needed); blank=True so an empty list is a valid value.
+    manual_letter_avatars = models.JSONField(default=list, blank=True)
+
     def save(self, *args, **kwargs):
         # Trim-on-save for the name fields (owner 2026-06-20). Seed data had stray
         # leading/trailing whitespace in team names (~41% of teams), e.g. 'FROZEN EMPIRE ',

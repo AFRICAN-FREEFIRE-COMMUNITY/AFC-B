@@ -24,6 +24,7 @@ from afc_tournament_and_scrims.models import (
     Event,
     Leaderboard,
     Match,
+    StageGroupCompetitor,
     StageGroups,
     Stages,
     TournamentTeam,
@@ -322,6 +323,10 @@ class CreateEventScoringModesDBTests(TestCase):
             "max_teams_or_players": 16,
             "event_name": "Scoring Modes Cup",
             "event_mode": "virtual",
+            # The 4 event/registration times are compulsory on create (owner 2026-06-21); without
+            # them create-event 400s on the times check before any of this stage config is stored.
+            "event_start_time": "18:00", "event_end_time": "20:00",
+            "registration_start_time": "10:00", "registration_end_time": "17:00",
             "start_date": today,
             "end_date": today,
             "registration_open_date": today,
@@ -383,6 +388,10 @@ class CreateEventScoringModesDBTests(TestCase):
             "max_teams_or_players": 16,
             "event_name": "Bad Champion Cup",
             "event_mode": "virtual",
+            # Times compulsory on create (owner 2026-06-21). Supply them so the 400 this test asserts
+            # comes from the missing champion threshold, NOT the earlier required-times guard.
+            "event_start_time": "18:00", "event_end_time": "20:00",
+            "registration_start_time": "10:00", "registration_end_time": "17:00",
             "start_date": today,
             "end_date": today,
             "registration_open_date": today,
@@ -423,6 +432,10 @@ class CreateEventScoringModesDBTests(TestCase):
             "max_teams_or_players": 16,
             "event_name": "Self Target Cup",
             "event_mode": "virtual",
+            # Times compulsory on create (owner 2026-06-21). Supply them so the 400 this test asserts
+            # comes from the Point-Rush self-target rule, NOT the earlier required-times guard.
+            "event_start_time": "18:00", "event_end_time": "20:00",
+            "registration_start_time": "10:00", "registration_end_time": "17:00",
             "start_date": today,
             "end_date": today,
             "registration_open_date": today,
@@ -733,3 +746,184 @@ class GetAllLeaderboardDetailsScoringModesDBTests(TestCase):
         # A must lead on the booyah tiebreaker (DB order), NOT B on kills (the old buggy order).
         self.assertEqual(overall[0]["tournament_team_id"], self.tt_a.tournament_team_id)
         self.assertEqual(overall[1]["tournament_team_id"], self.tt_b.tournament_team_id)
+
+
+# ── Gap 2 (Point-Rush carry-over on the PUBLIC leaderboard). ─────────────────────────────────────
+# The Point-Rush carry-over is computed ON READ (never persisted) by views._carry_over_for_stage and
+# was already folded into the ADMIN results editor (get_all_leaderboard_details_for_event). It was
+# MISSING from the two user-facing endpoints (get_event_details / get_event_details_not_logged_in),
+# so from a normal viewer's seat the banked points "didn't carry over" into the connected stage.
+# views._apply_public_carry_over now applies the SAME overlay to the public rows. These tests build a
+# real 2-stage squad event (Semis -> Finals, Point-Rush reward {1:10, 2:7}), enter Semis results, seed
+# both teams into Finals, and prove the carry-over surfaces on the public path. TestCase => rolled back.
+
+
+class PublicCarryOverDBTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+        # Admin user + forged session token (role="admin" -> the manual-entry endpoint's _is_event_admin
+        # short-circuits True; get_event_details is public/optional-auth so it needs no token at all).
+        self.admin = User.objects.create(
+            username="pub_admin", email="pub_admin@example.com",
+            full_name="Pub Admin", role="admin", password="x",
+        )
+        self.token = SessionToken.objects.create(
+            user=self.admin, token="pub-admin-token-1234567890",
+            expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1),
+        )
+
+        today = datetime.date.today()
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=16, event_name="Carry Over Public Cup", event_mode="virtual",
+            start_date=today, end_date=today, registration_open_date=today, registration_end_date=today,
+            prizepool="0", event_rules="rules", event_status="ongoing",
+            registration_link="https://example.com/reg", number_of_stages=2, creator=self.admin,
+            results_published=True,  # public overall_leaderboard is withheld ([]) when this is False
+        )
+
+        # Finals is the carry-over TARGET; Semis is the Point-Rush SOURCE pointing at it.
+        self.finals = Stages.objects.create(
+            event=self.event, stage_name="Finals", start_date=today, end_date=today,
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=1, stage_order=2,
+        )
+        self.semis = Stages.objects.create(
+            event=self.event, stage_name="Semis", start_date=today, end_date=today,
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=2, stage_order=1,
+            point_rush_enabled=True, point_rush_reward={"1": 10, "2": 7},
+            point_rush_target_stage=self.finals,
+        )
+
+        # Semis group + leaderboard + one match (real results entered here).
+        self.semis_group = StageGroups.objects.create(
+            stage=self.semis, group_name="Semis A", playing_date=today,
+            playing_time=datetime.time(18, 0), teams_qualifying=2, match_count=1,
+        )
+        self.semis_lb = Leaderboard.objects.create(
+            leaderboard_name="Semis LB", event=self.event, stage=self.semis, group=self.semis_group,
+            creator=self.admin, placement_points={"1": 12, "2": 9}, kill_point=1.0,
+            leaderboard_method="manual",
+        )
+        self.semis_match = Match.objects.create(
+            leaderboard=self.semis_lb, group=self.semis_group, match_number=1, match_map="bermuda",
+            scoring_settings={"placement_points": {"1": 12, "2": 9}, "kill_point": 1},
+        )
+
+        # Finals group + leaderboard. No Finals results: teams are SEEDED in (StageGroupCompetitor),
+        # so they show on the public Finals standings at 0 points + then receive the carry-over.
+        self.finals_group = StageGroups.objects.create(
+            stage=self.finals, group_name="Finals A", playing_date=today,
+            playing_time=datetime.time(18, 0), teams_qualifying=1, match_count=1,
+        )
+        self.finals_lb = Leaderboard.objects.create(
+            leaderboard_name="Finals LB", event=self.event, stage=self.finals, group=self.finals_group,
+            creator=self.admin, placement_points={"1": 12, "2": 9}, kill_point=1.0,
+            leaderboard_method="manual",
+        )
+
+        self.team_a = Team.objects.create(
+            team_name="Alpha", team_tag="ALP", join_settings="open",
+            team_creator=self.admin, team_owner=self.admin, country="NG",
+        )
+        self.team_b = Team.objects.create(
+            team_name="Bravo", team_tag="BRV", join_settings="open",
+            team_creator=self.admin, team_owner=self.admin, country="NG",
+        )
+        self.tt_a = TournamentTeam.objects.create(event=self.event, team=self.team_a, registered_by=self.admin)
+        self.tt_b = TournamentTeam.objects.create(event=self.event, team=self.team_b, registered_by=self.admin)
+
+        # Seed both into the Finals group so they appear in the public Finals standings at 0.
+        StageGroupCompetitor.objects.create(stage_group=self.finals_group, tournament_team=self.tt_a)
+        StageGroupCompetitor.objects.create(stage_group=self.finals_group, tournament_team=self.tt_b)
+
+    def _enter_semis(self):
+        # A wins Semis (placement 1 -> 12 pts), B 2nd (placement 2 -> 9 pts). So in the Semis group
+        # standings A ranks 1st (reward 10) and B 2nd (reward 7).
+        results = [
+            {"tournament_team_id": self.tt_a.tournament_team_id, "placement": 1, "played": True,
+             "players": [{"kills": 0, "damage": 0, "assists": 0, "played": True}]},
+            {"tournament_team_id": self.tt_b.tournament_team_id, "placement": 2, "played": True,
+             "players": [{"kills": 0, "damage": 0, "assists": 0, "played": True}]},
+        ]
+        resp = self.client.post(
+            "/events/enter-team-match-result-manual/",
+            data={"match_id": self.semis_match.match_id, "results": json.dumps(results)},
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def test_carry_over_dict_off_live_semis_standings(self):
+        # _carry_over_for_stage(Finals) must read the LIVE Semis lobby standings and map the reward
+        # table onto them: A (1st) -> 10, B (2nd) -> 7.
+        from afc_tournament_and_scrims import views
+        self._enter_semis()
+        carry = views._carry_over_for_stage(self.finals, "squad")
+        self.assertEqual(carry.get(self.tt_a.tournament_team_id), 10)
+        self.assertEqual(carry.get(self.tt_b.tournament_team_id), 7)
+
+    def test_apply_public_carry_over_folds_and_reorders(self):
+        # The helper stamps carry_over_points, folds it into total_points, and re-sorts so the bigger
+        # carry-over leads — even though the input list had B first.
+        from afc_tournament_and_scrims import views
+        self._enter_semis()
+        rows = [
+            {"tournament_team_id": self.tt_b.tournament_team_id,
+             "tournament_team__team__team_name": "Bravo", "total_kills": 0, "total_points": 0},
+            {"tournament_team_id": self.tt_a.tournament_team_id,
+             "tournament_team__team__team_name": "Alpha", "total_kills": 0, "total_points": 0},
+        ]
+        views._apply_public_carry_over(self.finals, rows, "squad")
+        by_id = {r["tournament_team_id"]: r for r in rows}
+        self.assertEqual(by_id[self.tt_a.tournament_team_id]["carry_over_points"], 10)
+        self.assertEqual(by_id[self.tt_a.tournament_team_id]["total_points"], 10)
+        self.assertEqual(by_id[self.tt_b.tournament_team_id]["carry_over_points"], 7)
+        self.assertEqual(by_id[self.tt_b.tournament_team_id]["total_points"], 7)
+        # A (10) now leads B (7), despite B being first in the input list.
+        self.assertEqual(rows[0]["tournament_team_id"], self.tt_a.tournament_team_id)
+
+    def test_no_point_rush_source_is_noop(self):
+        # Applied to a stage that NO source targets (Semis itself), the overlay stamps carry_over_points
+        # 0 everywhere, leaves total_points untouched, and preserves the existing order. Guards the
+        # common no-Point-Rush event from any reordering regression.
+        from afc_tournament_and_scrims import views
+        self._enter_semis()
+        rows = [
+            {"tournament_team_id": self.tt_b.tournament_team_id,
+             "tournament_team__team__team_name": "Bravo", "total_kills": 5, "total_points": 9},
+            {"tournament_team_id": self.tt_a.tournament_team_id,
+             "tournament_team__team__team_name": "Alpha", "total_kills": 0, "total_points": 12},
+        ]
+        before = [r["tournament_team_id"] for r in rows]
+        views._apply_public_carry_over(self.semis, rows, "squad")
+        self.assertTrue(all(r["carry_over_points"] == 0 for r in rows))
+        self.assertEqual([r["tournament_team_id"] for r in rows], before)  # order preserved
+        self.assertEqual(rows[0]["total_points"], 9)  # unchanged
+
+    def test_public_endpoint_surfaces_carry_over(self):
+        # End-to-end: the PUBLIC get_event_details endpoint must now carry the bonus into the Finals
+        # group standings (id + name + total_points + carry_over_points), with A leading on its 10.
+        self._enter_semis()
+        resp = self.client.post("/events/get-event-details/", data={"slug": self.event.slug})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        stages = resp.json()["event_details"]["stages"]
+        finals = next(s for s in stages if s["stage_id"] == self.finals.stage_id)
+        overall = finals["groups"][0]["overall_leaderboard"]
+        by_id = {r["tournament_team_id"]: r for r in overall}
+        self.assertEqual(by_id[self.tt_a.tournament_team_id]["carry_over_points"], 10)
+        self.assertEqual(by_id[self.tt_a.tournament_team_id]["total_points"], 10)
+        self.assertEqual(by_id[self.tt_b.tournament_team_id]["carry_over_points"], 7)
+        self.assertEqual(by_id[self.tt_b.tournament_team_id]["total_points"], 7)
+        self.assertEqual(overall[0]["tournament_team_id"], self.tt_a.tournament_team_id)
+
+    def test_public_endpoint_withholds_when_results_unpublished(self):
+        # When results are not published the public overall is []; the carry-over overlay must not
+        # resurrect rows (regression guard for the results-visibility gate).
+        self._enter_semis()
+        self.event.results_published = False
+        self.event.save(update_fields=["results_published"])
+        resp = self.client.post("/events/get-event-details/", data={"slug": self.event.slug})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        stages = resp.json()["event_details"]["stages"]
+        finals = next(s for s in stages if s["stage_id"] == self.finals.stage_id)
+        self.assertEqual(finals["groups"][0]["overall_leaderboard"], [])

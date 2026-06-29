@@ -90,12 +90,22 @@ def _stage_top_rows(stage, participant_type):
 
     TEAM stages reuse round_robin.cumulative_standings (the SAME effective_total table the
     stage leaderboards render; tournament_team_id is resolved back to the platform team).
-    SOLO stages aggregate SoloPlayerMatchStats with the identical points formula."""
+    SOLO stages aggregate SoloPlayerMatchStats with the identical points formula.
+
+    OWNER 2026-06-29: when `stage` is a Point-Rush TARGET (has point_rush_sources) the banked
+    carry-over is folded into the ranking BEFORE the caller slices the top N (fire_link takes
+    rows[:qualify_count]). So CROSS-EVENT linked qualification ranks on the SAME carry-over-inclusive
+    total as in-event advancement (advance_*) and the leaderboard, per the owner ("the point adds to
+    the team's total points"). No-op for a stage with no Point-Rush source, so a normal link fires
+    byte-identically."""
+    # Lazy imports dodge the views<->event_links cycle (same pattern as _registration_gates below).
+    from .views import _carry_over_for_stage, _fold_carry_over
+
     if participant_type == "solo":
         from django.db.models import Case, Count, F, IntegerField, Sum, Value, When
         from django.db.models.functions import Coalesce
 
-        rows = (
+        rows = list(
             SoloPlayerMatchStats.objects.filter(match__group__stage=stage)
             .values("competitor__user_id", name=F("competitor__user__username"))
             .annotate(
@@ -112,10 +122,43 @@ def _stage_top_rows(stage, participant_type):
             )
             .order_by("-effective_total", "-total_booyah", "-total_kills", "name")
         )
+        # _carry_over_for_stage keys by competitor_id, but this solo table is keyed by user_id. Re-key
+        # the bonus to user_id (one RegisteredCompetitors per user per event) so the fold lands on the
+        # right player, then fold + re-rank through the shared helper (carry= passes the re-keyed dict).
+        carry = _carry_over_for_stage(stage, "solo")
+        if carry:
+            uid_by_comp = dict(
+                RegisteredCompetitors.objects.filter(id__in=list(carry.keys()))
+                .values_list("id", "user_id")
+            )
+            carry_by_user = {}
+            for comp_id, bonus in carry.items():
+                uid = uid_by_comp.get(comp_id)
+                if uid is not None:
+                    carry_by_user[uid] = carry_by_user.get(uid, 0) + bonus
+            _fold_carry_over(
+                rows, stage, "solo",
+                id_key="competitor__user_id", metric_key="effective_total",
+                sort_key=lambda r: (-int(r.get("effective_total") or 0),
+                                    -int(r.get("total_booyah") or 0),
+                                    -int(r.get("total_kills") or 0),
+                                    r.get("name") or ""),
+                carry=carry_by_user,
+            )
         return [{"user_id": r["competitor__user_id"], "name": r["name"]} for r in rows]
 
+    # TEAM: fold carry-over into the cumulative table (keyed by tournament_team_id) before resolving
+    # each row back to its platform team. The helper resolves the carry dict itself for team scope.
+    rows = _fold_carry_over(
+        round_robin.cumulative_standings(stage), stage, participant_type,
+        id_key="tournament_team_id", metric_key="effective_total",
+        sort_key=lambda r: (-int(r.get("effective_total") or 0),
+                            -int(r.get("total_booyah") or 0),
+                            -int(r.get("total_kills") or 0),
+                            r.get("team_name") or ""),
+    )
     out = []
-    for r in round_robin.cumulative_standings(stage):
+    for r in rows:
         tt = TournamentTeam.objects.select_related("team").filter(
             tournament_team_id=r["tournament_team_id"],
         ).first()

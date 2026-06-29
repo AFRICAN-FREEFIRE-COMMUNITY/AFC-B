@@ -1688,6 +1688,48 @@ def unban_player(request):
     }, status=status.HTTP_200_OK)
 
 
+# ── News scheduled-publish helpers (owner: News "schedule publish" feature) ───────────────────────
+# Shared by the News list/detail views below to decide who may SEE not-yet-published (scheduled)
+# items, and to turn the raw `scheduled_publish_at` string from the admin form into a publish state.
+def _is_news_admin(user):
+    """True when `user` is allowed to see/manage scheduled (not-yet-published) news.
+
+    Mirrors EXACTLY the create_news / edit_news permission gate (role in admin|moderator|support AND
+    holds the head_admin or news_admin granular role) so the people who can schedule a post are the
+    same people who can see it before it goes live. Used by get_all_news + get_news_detail to expose
+    scheduled items to admins while hiding them from the public.
+    """
+    if not user:
+        return False
+    if user.role not in ["admin", "moderator", "support"]:
+        return False
+    return user.userroles.filter(role__role_name__in=["head_admin", "news_admin"]).exists()
+
+
+def _resolve_scheduled_publish(scheduled_raw):
+    """Turn the optional `scheduled_publish_at` request value into (scheduled_dt, is_published, error).
+
+    Single source of truth for create_news + edit_news so both endpoints treat scheduling identically:
+      • blank / not a future time  -> (None, True,  None)  => publish immediately (current behaviour)
+      • valid FUTURE datetime      -> (dt,   False, None)  => create/keep hidden until the beat task fires
+      • unparseable when provided   -> (None, True,  "<message>")  => caller returns 400
+
+    The frontend sends an ISO-8601 UTC string (new Date(localValue).toISOString()), so parse_datetime
+    yields a timezone-aware datetime; a naive value is coerced to aware defensively. Compared against
+    timezone.now() (settings.USE_TZ is True).
+    """
+    if not scheduled_raw:
+        return None, True, None
+    dt = parse_datetime(scheduled_raw)
+    if dt is None:
+        return None, True, "Invalid scheduled_publish_at datetime."
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt)
+    if dt > timezone.now():
+        return dt, False, None       # genuinely in the future -> schedule (hidden for now)
+    return None, True, None          # past/now -> nothing to schedule, publish right away
+
+
 @api_view(["POST"])
 def create_news(request):
     # Retrieve session token
@@ -1742,6 +1784,13 @@ def create_news(request):
         except Event.DoesNotExist:
             return Response({"message": "Related event not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Scheduled publish (optional). A FUTURE scheduled_publish_at creates the post HIDDEN
+    # (is_published=False); the publish_scheduled_news beat task flips it live at that time. Blank or a
+    # past time -> publish immediately (preserves the original behaviour). See _resolve_scheduled_publish.
+    scheduled_dt, is_published, sched_error = _resolve_scheduled_publish(request.data.get("scheduled_publish_at"))
+    if sched_error:
+        return Response({"message": sched_error}, status=status.HTTP_400_BAD_REQUEST)
+
     # Create the news
     news = News.objects.create(
         news_title=news_title,
@@ -1749,7 +1798,9 @@ def create_news(request):
         category=category,
         related_event=related_event,
         images=images,
-        author=user
+        author=user,
+        scheduled_publish_at=scheduled_dt,
+        is_published=is_published,
     )
 
     set_audit(request, f"Posted the news '{news_title}'")
@@ -1760,10 +1811,16 @@ def create_news(request):
     )
 
     return Response({
-        "message": "News created successfully.",
+        # When scheduled, tell the admin it will go live later (the FE shows this toast).
+        "message": (
+            f"News scheduled to publish on {news.scheduled_publish_at.isoformat()}."
+            if not news.is_published else "News created successfully."
+        ),
         "news_id": news.news_id,
         "news_title": news.news_title,
         "category": news.category,
+        "is_published": news.is_published,
+        "scheduled_publish_at": news.scheduled_publish_at,
         "author_name": user.username,
         "author_pic": request.build_absolute_uri(user.userprofile.profile_pic.url) if hasattr(user, 'userprofile') and user.userprofile.profile_pic else None
 
@@ -1836,6 +1893,20 @@ def edit_news(request):
     news.content = content
     news.category = category
     news.images = images
+
+    # Scheduled publish (optional). Only act when the field is actually present in the request so an
+    # edit that omits it leaves the publish state untouched. When present:
+    #   • a FUTURE datetime  -> re-schedule (hidden until then),
+    #   • blank or a past time -> publish now and clear the schedule.
+    # The admin edit form only pre-fills this input for not-yet-published items, so editing an
+    # already-live post (blank input) just keeps it published. Same helper as create_news.
+    if "scheduled_publish_at" in request.data:
+        scheduled_dt, is_published, sched_error = _resolve_scheduled_publish(request.data.get("scheduled_publish_at"))
+        if sched_error:
+            return Response({"message": sched_error}, status=status.HTTP_400_BAD_REQUEST)
+        news.scheduled_publish_at = scheduled_dt
+        news.is_published = is_published
+
     news.save()
 
     set_audit(request, f"Edited the news '{news_title}'")
@@ -1846,10 +1917,15 @@ def edit_news(request):
     )
 
     return Response({
-        "message": "News updated successfully.",
+        "message": (
+            f"News scheduled to publish on {news.scheduled_publish_at.isoformat()}."
+            if not news.is_published else "News updated successfully."
+        ),
         "news_id": news.news_id,
         "news_title": news.news_title,
-        "category": news.category
+        "category": news.category,
+        "is_published": news.is_published,
+        "scheduled_publish_at": news.scheduled_publish_at,
     }, status=status.HTTP_200_OK)
 
 
@@ -1867,7 +1943,22 @@ def get_all_news(request):
     # Consumed by frontend/app/(user)/news/page.tsx and _components/LatestNews.tsx.
     from django.db.models import Count
 
+    # Resolve the optional viewer FIRST (Bearer header or ?token=). We need it both for the caller's
+    # liked/disliked sets (below) AND to decide visibility: news admins see scheduled (not-yet-public)
+    # items, everyone else sees only published ones. Anonymous viewers just get empty sets.
+    viewer = None
+    auth = request.headers.get("Authorization", "")
+    token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else request.GET.get("token")
+    if token:
+        viewer = validate_token(token)
+    is_admin_viewer = _is_news_admin(viewer)
+
+    # Scheduled-publish visibility gate (News "schedule publish" feature): the PUBLIC list hides any
+    # item that has not gone live yet (is_published=False). Admins keep the full list - including
+    # scheduled items - so the admin News page can show them with a "Scheduled" state + time.
     news_list = News.objects.select_related("author", "related_event").order_by("-created_at")
+    if not is_admin_viewer:
+        news_list = news_list.filter(is_published=True)
 
     # Like/dislike counts in ONE grouped query each → {news_id: count}.
     like_counts = dict(
@@ -1877,16 +1968,11 @@ def get_all_news(request):
         NewsDislike.objects.values_list("news").annotate(c=Count("pk")).values_list("news", "c")
     )
 
-    # The caller's own liked/disliked sets (optional auth: Bearer header or ?token=). Two
-    # set queries instead of two-per-article. Anonymous viewers just get empty sets.
+    # The caller's own liked/disliked sets. Two set queries instead of two-per-article.
     liked_ids, disliked_ids = set(), set()
-    auth = request.headers.get("Authorization", "")
-    token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else request.GET.get("token")
-    if token:
-        viewer = validate_token(token)
-        if viewer:
-            liked_ids = set(NewsLike.objects.filter(user=viewer).values_list("news_id", flat=True))
-            disliked_ids = set(NewsDislike.objects.filter(user=viewer).values_list("news_id", flat=True))
+    if viewer:
+        liked_ids = set(NewsLike.objects.filter(user=viewer).values_list("news_id", flat=True))
+        disliked_ids = set(NewsDislike.objects.filter(user=viewer).values_list("news_id", flat=True))
 
     # i18n TRANSLATE-ON-READ (owner 2026-06-15): localize the user-visible news fields to the
     # caller's locale (request.locale, set by afc_auth.locale_middleware from Accept-Language).
@@ -1913,6 +1999,12 @@ def get_all_news(request):
             "dislikes": dislike_counts.get(news.news_id, 0),
             "is_liked_by_user": news.news_id in liked_ids,
             "is_disliked_by_user": news.news_id in disliked_ids,
+            # Scheduled-publish state. For the public these are always published items; for admins this
+            # is what lets the News page render the "Scheduled" badge + the go-live time. `status` is a
+            # derived convenience string the admin list filters/badges on ("scheduled" | "published").
+            "is_published": news.is_published,
+            "scheduled_publish_at": news.scheduled_publish_at,
+            "status": "published" if news.is_published else "scheduled",
         }
         # news_title is plain text; content is a Tiptap JSON document (richtext=True).
         localize_field(item, "news_title", news.news_title, locale)
@@ -1934,6 +2026,15 @@ def get_news_detail(request):
     except News.DoesNotExist:
         return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Scheduled-publish visibility gate: a not-yet-published (scheduled) item must not be reachable by
+    # direct slug for the public. Only a news admin may preview it (the admin detail/edit pages send a
+    # Bearer token for exactly this). Everyone else gets the same 404 as a non-existent slug.
+    if not news.is_published:
+        auth = request.headers.get("Authorization", "")
+        viewer = validate_token(auth.split(" ", 1)[1]) if auth.startswith("Bearer ") else None
+        if not _is_news_admin(viewer):
+            return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
+
     news_views = NewsViews.objects.filter(news=news).count()
 
     news_data = {
@@ -1944,7 +2045,11 @@ def get_news_detail(request):
         "author": news.author.username,
         "created_at": news.created_at,
         "updated_at": news.updated_at,
-        "total_views": news_views
+        "total_views": news_views,
+        # Scheduled-publish state so the admin edit form can pre-fill the schedule + show "Scheduled".
+        "is_published": news.is_published,
+        "scheduled_publish_at": news.scheduled_publish_at,
+        "status": "published" if news.is_published else "scheduled",
     }
 
     # i18n TRANSLATE-ON-READ (owner 2026-06-15): same contract as get_all_news - localize the title
@@ -2107,6 +2212,41 @@ def _has_active_event_registration(user) -> bool:
     return False
 
 
+# ── LETTER AVATARS normalization (owner 2026-06-29) ─────────────────────────────────────────────
+# Single source of truth for turning whatever the client sent into the canonical stored form for
+# User.letter_avatars: UPPERCASE single A-Z chars, de-duplicated, sorted. Mirrors exactly the
+# normalization in the shared FE picker (frontend/components/ui/letter-avatar-picker.tsx) so a
+# selection round-trips identically between client and server. Used by edit_profile to sanitize the
+# player's submitted letters; the stored result is what the team available-letters union and the
+# event register-gate (Event.min_letter_avatars) later count.
+def normalize_letter_avatars(value):
+    """Canonicalize a letter-avatar selection -> sorted, de-duped, uppercase single A-Z chars.
+
+    Accepts the shapes the client may send:
+      - a real list (JSON request body)            -> ["A", "c", "A"]
+      - a JSON-array string (FormData append)      -> '["A","C"]'
+      - a comma/space separated string (defensive) -> "A, C Z"
+    Anything that is not a single A-Z letter is dropped, so a malformed payload can never store junk."""
+    items = []
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+    elif isinstance(value, str):
+        s = value.strip()
+        if s:
+            try:
+                parsed = json.loads(s)
+                items = parsed if isinstance(parsed, list) else [parsed]
+            except (ValueError, TypeError):
+                # Not JSON -> treat as a delimited list ("A,C,Z" or "A C Z").
+                items = re.split(r"[,\s]+", s)
+    out = set()
+    for raw in items:
+        ch = (raw if isinstance(raw, str) else str(raw)).strip().upper()
+        if len(ch) == 1 and "A" <= ch <= "Z":
+            out.add(ch)
+    return sorted(out)
+
+
 @api_view(["POST"])
 def edit_profile(request):
     # Retrieve session token
@@ -2211,6 +2351,17 @@ def edit_profile(request):
         else:
             user.stats_visible = str(sv_raw).strip().lower() in ("true", "1", "yes", "on")
 
+    # LETTER AVATARS (owner 2026-06-29): the player's owned Free Fire letter avatars (A-Z). The FE
+    # picker (frontend/app/(user)/profile/edit/page.tsx, via components/ui/letter-avatar-picker.tsx)
+    # posts these as a JSON-array string in this same FormData. Treat an ABSENT key as "no change"
+    # (mirror the UID/stats_visible preserve guard) so a partial/legacy save never wipes the set; an
+    # explicit empty array "[]" is a real "I own none". normalize_letter_avatars sanitizes to the
+    # stored canonical form. Consumed downstream by the team available-letters union + the event
+    # register-gate (Event.min_letter_avatars) - see normalize_letter_avatars / the model field note.
+    la_raw = request.data.get("letter_avatars", None)
+    if la_raw is not None:
+        user.letter_avatars = normalize_letter_avatars(la_raw)
+
     # Update User fields
     user.full_name = full_name
     user.username = in_game_name
@@ -2238,6 +2389,9 @@ def edit_profile(request):
         "uid": user.uid,
         # Echo the saved stats-privacy choice so the FE settings switch reflects the persisted value.
         "stats_visible": user.stats_visible,
+        # Echo the saved letter avatars (canonical sorted/deduped/uppercase) so the FE picker can
+        # confirm what persisted without a re-fetch.
+        "letter_avatars": user.letter_avatars or [],
         "profile_pic_url": request.build_absolute_uri(user_profile.profile_pic.url) if user_profile.profile_pic else None
     }, status=status.HTTP_200_OK)
 
@@ -2473,6 +2627,11 @@ def get_user_profile(request):
         # switch reads this to seed itself; edit_profile writes it; afc_player._can_view_player_stats
         # enforces it. (The user + admins always see the stats regardless of this value.)
         "stats_visible": user.stats_visible,
+        # LETTER AVATARS (owner 2026-06-29): the player's owned Free Fire letter avatars (A-Z),
+        # canonical sorted/deduped/uppercase. The FE "Letter avatars" picker in profile edit seeds
+        # itself from this; edit_profile writes it; the team available-letters union + the event
+        # register-gate (Event.min_letter_avatars) read the stored set. Defaults to [] (owns none).
+        "letter_avatars": user.letter_avatars or [],
         # IDENTITY LOCK (owner 2026-06-15): True while the player is signed up for a live event
         # (upcoming/ongoing). The frontend profile-edit form disables + explains the in-game name
         # and UID inputs when this is True; edit_profile enforces the same rule server-side. See
@@ -5250,6 +5409,215 @@ def admin_send_message(request):
         "recipients": len(recipients),
         "pushed": pushed,
         "emailed": emailed,
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+def broadcast_letter_assignments(request):
+    """POST /auth/broadcast-letter-assignments/ - tell each team the letter avatar assigned to them
+    for ONE event (Letter Avatars feature #7, plan B7).
+
+    WHAT IT DOES
+        Given an event and a list of per-team letter assignments, this notifies EVERY member of each
+        listed team with the auto-composed line "Your assigned letter for <event> is <X>." (in-app
+        push and/or branded email). The per-team letter data is supplied BY THE CALLER (the admin/org
+        RegisteredTeamsTab, which already knows each TournamentTeam.assigned_letter) - this endpoint
+        does not read TournamentTeam itself, so it stays fully inside afc_auth and never couples to the
+        tournament schema. The actual letter assignment is set elsewhere (afc_tournament_and_scrims
+        assign_team_letter, plan B5); this endpoint is purely the OPTIONAL "broadcast the results" step.
+
+    REQUEST (JSON)
+        {
+          "event_id":   <int>,                                   # which event the letters are for
+          "assignments":[ {"team_id": <int>, "letter": "A"}, ...],# one per team to notify
+          "delivery":   "both" | "push" | "email"                # optional, default "both"
+        }
+        Each assignment's `letter` is normalized to a single A-Z char; entries with no team / no valid
+        letter are skipped. `team_name` may ride along but is ignored (the live Team name is used).
+
+    RESPONSE
+        201 { message, event_id, teams_notified, recipients, pushed, emailed,
+              rate_remaining, rate_limit }            # rate_* keep the FE composer counter live
+        400 invalid / empty assignments or delivery   404 event not found
+        403 not an event admin / org for this event   429 organizer broadcast rate limit hit
+
+    AUTH / GATE
+        AFC event admins, OR organizers holding can_manage_registrations on the event's owning org
+        (native AFC events stay admin-only). Mirrors assign_team_letter (B5) +
+        afc_tournament_and_scrims.seeding_management._seeding_gate so "who can assign" == "who can
+        announce". Helpers are imported lazily to avoid load-time coupling with the tournament app
+        (seeding_management itself imports afc_auth.views, so a top-level import would cycle).
+
+    RATE LIMIT
+        Non-admin organizers are held to the shared broadcast budget (5/hour + 5-min cooldown,
+        afc_auth.broadcast_ratelimit). The WHOLE batch counts as ONE send: we check_broadcast_rate
+        once up front, then record_broadcast_send once after a successful delivery (a failed/empty
+        batch costs nothing). Admins are exempt.
+
+    HISTORY
+        Per-team deliver_broadcast calls run with log=False so the audit is not flooded with one row
+        per team; instead we write ONE summary SentBroadcast (scope="event") so the admin/organizer
+        broadcast history shows a single "letter assignments" entry for the batch.
+
+    CONSUMED BY
+        frontend app/(a)/a/events/_components/SendNotificationModal.tsx ("Letter assignments" mode).
+        The tournament agent wires the trigger button (RegisteredTeamsTab "Broadcast assignments")
+        that opens that modal with the per-team letter data.
+    """
+    # ── auth (mirror admin_send_message) ──
+    session_token = request.headers.get("Authorization")
+    if not session_token or not session_token.startswith("Bearer "):
+        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # ── resolve the event ──
+    # Lazy imports: afc_tournament_and_scrims.seeding_management imports from afc_auth.views, so a
+    # top-level import here would create a load-time cycle. afc_team is imported the same way as in
+    # admin_send_message (afc_team imports from afc_auth).
+    from afc_tournament_and_scrims.models import Event
+    from afc_tournament_and_scrims.seeding_management import _is_event_admin
+    from afc_organizers.permissions import org_can_event
+    from afc_team.models import Team, TeamMembers
+    from .broadcast_ratelimit import (
+        check_broadcast_rate, record_broadcast_send, RATE_LIMIT_PER_HOUR,
+    )
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        event = Event.objects.get(event_id=event_id)
+    except Event.DoesNotExist:
+        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # ── gate: AFC event admin OR organizer with can_manage_registrations on the owning org ──
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response(
+            {"message": "You do not have permission to broadcast letter assignments for this event."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ── input ──
+    delivery = (request.data.get("delivery") or "both").strip().lower()
+    if delivery not in ("push", "email", "both"):
+        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=status.HTTP_400_BAD_REQUEST)
+
+    raw_assignments = request.data.get("assignments")
+    # Tolerate a JSON-string payload (FormData) as well as a real list (JSON body).
+    if isinstance(raw_assignments, str):
+        try:
+            raw_assignments = json.loads(raw_assignments)
+        except (ValueError, TypeError):
+            raw_assignments = None
+    if not isinstance(raw_assignments, (list, tuple)) or not raw_assignments:
+        return Response({"message": "assignments must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Normalize + validate each assignment: keep only {team_id, single A-Z letter}. De-dupe by team_id
+    # (last write wins) so a team is never messaged twice in one batch.
+    valid = {}
+    for a in raw_assignments:
+        if not isinstance(a, dict):
+            continue
+        tid = a.get("team_id")
+        letter = normalize_letter_avatars(a.get("letter"))  # reuse the single-char normalizer -> list
+        if not tid or not letter:
+            continue
+        valid[tid] = letter[0]  # exactly one letter per team for this event (plan Open Q g)
+    if not valid:
+        return Response({"message": "No valid team/letter assignments to send."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # ── rate limit (check once for the whole batch, BEFORE sending) ──
+    allowed, info = check_broadcast_rate(user)
+    if not allowed:
+        return Response({
+            "message": info.get("message", "You're sending broadcasts too quickly."),
+            "reason": info.get("reason"),
+            "resets_at": info.get("resets_at"),
+            "remaining": info.get("remaining", 0),
+            "limit": info.get("limit", RATE_LIMIT_PER_HOUR),
+        }, status=429)
+
+    # ── deliver one personalized broadcast per team ──
+    event_name = event.event_name
+    teams_notified = 0
+    total_recipients = 0
+    total_pushed = 0
+    total_emailed = 0
+    for team_id, letter in valid.items():
+        try:
+            team = Team.objects.get(team_id=team_id)
+        except Team.DoesNotExist:
+            continue  # a stale/removed team in the caller's list is skipped, not fatal
+        recipients = [
+            tm.member
+            for tm in TeamMembers.objects.filter(team=team).select_related("member")
+            if tm.member
+        ]
+        if not recipients:
+            continue
+        # Auto-composed, English (broadcasts are stored in English; deliver_broadcast localizes the
+        # email per recipient and the in-app row is translate-on-read). No em/en dashes.
+        message = f"Your assigned letter for {event_name} is {letter}."
+        # log=False: we write ONE summary SentBroadcast below instead of one per team. related_event
+        # makes deliver_broadcast stamp the deep-link target (event) so "Take me there" opens the event.
+        pushed, emailed = deliver_broadcast(
+            recipients, "Letter assignment", message, delivery=delivery,
+            notification_type="letter_assignment", related_event=event,
+            sender=user, scope="event", log=False,
+        )
+        teams_notified += 1
+        total_recipients += len(recipients)
+        total_pushed += pushed
+        total_emailed += emailed
+
+    if teams_notified == 0:
+        # Every listed team was stale or empty -> nothing went out, so DON'T consume a rate slot.
+        return Response(
+            {"message": "None of the selected teams had members to notify."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ── one summary history row for the whole batch (scope="event") ──
+    try:
+        SentBroadcast.objects.create(
+            sender=user,
+            sender_username=getattr(user, "username", "") or "",
+            scope="event",
+            title="Letter assignment",
+            message=f"Letter assignments broadcast to {teams_notified} team(s) for {event_name}.",
+            delivery=delivery,
+            recipient_count=total_recipients,
+            event=event,
+            targets=[{"target_type": "event", "target_id": event.slug or str(event.event_id)}],
+        )
+    except Exception:
+        pass  # a history-log failure must never break a delivery that already happened
+
+    # ── consume one rate slot now that the batch actually went out ──
+    rate_remaining = record_broadcast_send(user)
+
+    set_audit(request, f"Broadcast letter assignments to {teams_notified} team(s) for '{event_name}'")
+    AdminHistory.objects.create(
+        admin_user=user,
+        action="broadcast_letter_assignments",
+        description=(
+            f"Broadcast letter assignments for '{event_name}' to {teams_notified} team(s) "
+            f"({total_pushed} pushed, {total_emailed} emailed)"
+        ),
+    )
+
+    return Response({
+        "message": f"Letter assignments sent to {teams_notified} team(s).",
+        "event_id": event.event_id,
+        "teams_notified": teams_notified,
+        "recipients": total_recipients,
+        "pushed": total_pushed,
+        "emailed": total_emailed,
+        # Keep the FE composer's "N of 5 left this hour" counter live without a refetch (lib/broadcasts).
+        "rate_remaining": rate_remaining,
+        "rate_limit": RATE_LIMIT_PER_HOUR,
     }, status=status.HTTP_201_CREATED)
 
 

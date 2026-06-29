@@ -51,6 +51,16 @@ app.conf.beat_schedule = {
         'task': 'afc_tournament_and_scrims.tasks.close_finished_events',
         'schedule': crontab(minute=0, hour=1),     # 01:00 every day
     },
+    # ── Auto-release scheduled news (News "schedule publish" feature) ─────────
+    # Every minute, flip any news item whose scheduled_publish_at has arrived from hidden
+    # (is_published=False) to live. Runs on the default queue (a normal `celery -A afc worker`
+    # drains it; no dedicated worker needed) and on `celery -A afc beat`. The minute cadence
+    # makes "publish at HH:MM" land within ~60s. See afc_auth.tasks.publish_scheduled_news and
+    # the afc_auth.News field contract for the full data flow.
+    'publish_scheduled_news_every_minute': {
+        'task': 'afc_auth.tasks.publish_scheduled_news',
+        'schedule': crontab(minute='*'),           # every minute
+    },
 }
 
 @app.task(bind=True)

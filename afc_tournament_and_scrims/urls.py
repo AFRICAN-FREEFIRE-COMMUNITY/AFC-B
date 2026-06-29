@@ -50,6 +50,11 @@ from .seeding_management import (
     move_team_between_groups,
     sync_entry_stage_seeding,
 )
+# Branching advancement routing (feature #9, owner plan WEBSITE/tasks/advancement-routing-plan.md):
+# run a stage's StageAdvancementRule rows to seed each rule's [from..to] finishers into a later
+# stage. Own module (same isolation rationale as seeding_management / event_links). Additive — the
+# legacy advance endpoints below are untouched and still serve rule-less stages.
+from .advancement_routing import advance_stage_by_rules
 from .views_event_graphic import event_stage_graphic
 from django.conf import settings
 from django.conf.urls.static import static
@@ -157,6 +162,11 @@ urlpatterns = [
     path('advance-group-competitors-to-next-stage/', advance_group_competitors_to_next_stage, name='advance_group_competitors_to_next_stage'),
     # BR Round-Robin (sub-project B): advance top-N from the CUMULATIVE table (or top-K per base group).
     path('advance-round-robin/', advance_round_robin, name='advance_round_robin'),
+    # Branching advancement (feature #9): run a stage's StageAdvancementRule rows (split a stage's
+    # finishers into different later stages). {event_id, stage_id, dry_run?}. Admins + organizers
+    # (advancement_routing._advance_gate). dry_run = the "who routes where" preview. Fires only when
+    # the stage has rules; rule-less stages keep using the two legacy advance endpoints above.
+    path('advance-stage-by-rules/', advance_stage_by_rules, name='advance_stage_by_rules'),
     path('edit-solo-match-result/', edit_solo_match_result, name='edit_solo_match_result'),
     path('edit-leaderboard/', edit_leaderboard, name='edit_leaderboard'),
     path('remove-non-nigeria-registered-competitors/', remove_non_nigeria_registered_competitors, name='remove_non_nigeria_registered_competitors'),
@@ -235,6 +245,13 @@ urlpatterns = [
     # PER-TEAM roster-edit allowance (owner 2026-06-24): same as the event-wide window but for ONE team.
     # View: set_team_roster_edit_window. Consumed by the admin + organizer per-team roster control.
     path("team-roster-edit-window/", set_team_roster_edit_window, name="set_team_roster_edit_window"),
+    # ── Letter avatars (A-Z) per-event team assignment (feature #7, owner 2026-06-29) ──
+    # assign-team-letter: set/clear the UNIQUE-per-event letter for one registered team (admin/org),
+    #   notifying its members (+ optional email broadcast). event-team-letters: paginated list of every
+    #   registered team's live available_letters + assigned_letter + member_count for the assign UI.
+    #   Both gated _is_event_admin OR org can_manage_registrations. Consumed by RegisteredTeamsTab.
+    path("assign-team-letter/", assign_team_letter, name="assign_team_letter"),
+    path("event-team-letters/", get_event_team_letters, name="get_event_team_letters"),
     # Admin / organizer single-player roster add (roster-rules, 2026-06-15). Additive sibling of
     # edit-roster/: appends ONE TournamentTeamMember. View: add_player_to_event_roster.
     path("add-player-to-event-roster/", add_player_to_event_roster, name="add_player_to_event_roster"),
@@ -251,6 +268,10 @@ urlpatterns = [
     # Reopen a completed event (owner 2026-06-25): admins OR organizers (can_edit_events) flip a
     # completed event back to active to fix/add results. Consumed by the shared ActionsTab "Reopen".
     path("reopen-event/", reopen_event, name="reopen_event"),
+    # Per-event results visibility (owner 2026-06-29): admins OR organizers (can_edit_events) publish
+    # or hide an event's PUBLIC standings (social-reveal timing). Consumed by the shared ActionsTab
+    # "Results visibility" toggle; the public detail endpoints withhold standings when hidden.
+    path("set-results-visibility/", set_results_visibility, name="set_results_visibility"),
     # Flagged-kill controls (owner 2026-06-16): list ringers + the event default, flip the event
     # default, override one flagged player. Each mutation recomputes the event's team totals.
     # Consumed by the FlaggedKillsPanel on the event leaderboard editor (admin + organizer).

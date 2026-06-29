@@ -105,6 +105,20 @@ class User(AbstractUser):
     # Companion: Team.stats_visible (afc_team) is the team-level equivalent, set by the owner/manager.
     stats_visible = models.BooleanField(default=False)
 
+    # LETTER AVATARS (owner 2026-06-29). Free Fire ships a fixed "letter avatar" per letter (A-Z); a
+    # player declares which ones they OWN here. Stored canonical: UPPERCASE single A-Z chars, de-duped,
+    # sorted (e.g. ["A", "C", "Z"]) - the same normalization the shared FE picker applies (see
+    # frontend/components/ui/letter-avatar-picker.tsx and afc_auth.views.normalize_letter_avatars).
+    # Default [] = owns none. Lives on User (not UserProfile) to match uid / stats_visible, which
+    # edit_profile + get_user_profile already touch (precedent: seen_dashboard_intros).
+    #   - Read by  : afc_auth.views.get_user_profile (echo so the FE picker seeds itself); the team
+    #                "available letters" union (afc_team.Team derives union(member.letter_avatars) +
+    #                Team.manual_letter_avatars, LIVE - never stored); the event register-gate that
+    #                counts a roster's available letters (afc_tournament_and_scrims.register_for_event,
+    #                Event.min_letter_avatars).
+    #   - Written by: afc_auth.views.edit_profile (the "Letter avatars" picker in profile edit).
+    letter_avatars = models.JSONField(default=list, blank=True)
+
     USERNAME_FIELD = "username"  # Set in_game_name as username
     REQUIRED_FIELDS = ["email", "full_name"]
 
@@ -325,8 +339,30 @@ class News(models.Model):
     author = models.ForeignKey(User, on_delete=models.CASCADE)  # Admin, Mod, or Support
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
 
+    # ── Scheduled publish / auto-release (owner: News "schedule publish" feature) ──────────────
+    # Two fields drive a timer-based release:
+    #   • is_published        - the public visibility gate. Default True so every PRE-EXISTING news
+    #                           row stays visible after this migration (nothing was hidden before).
+    #                           A news item is only shown on the PUBLIC list/detail when this is True.
+    #   • scheduled_publish_at - the future moment the item should go live. When an admin schedules a
+    #                           post for later, create_news sets this to that (timezone-aware, UTC)
+    #                           datetime and is_published=False, so the post is created HIDDEN.
+    #
+    # How it connects end to end:
+    #   - Written by : afc_auth.views.create_news / edit_news (admin create/edit endpoints) when the
+    #                  optional `scheduled_publish_at` field is sent from the admin News form
+    #                  (frontend app/(a)/a/news/create + [slug]/edit).
+    #   - Flipped by : afc_auth.tasks.publish_scheduled_news - a Celery beat task (every minute, see
+    #                  afc/celery_config.py 'publish_scheduled_news_every_minute') that sets
+    #                  is_published=True on any due item (scheduled_publish_at <= now). It KEEPS
+    #                  scheduled_publish_at so the admin can still see "this went live at <time>".
+    #   - Filtered by: afc_auth.views.get_all_news (public list) + get_news_detail (public detail)
+    #                  exclude is_published=False for non-admin viewers; the ADMIN list still shows
+    #                  scheduled items with their time + a "Scheduled" state (is_published is exposed
+    #                  to admin callers so the frontend can render the badge).
+    scheduled_publish_at = models.DateTimeField(null=True, blank=True)
+    is_published = models.BooleanField(default=True)
 
     def __str__(self):
         return self.news_title
