@@ -66,7 +66,10 @@ class OrgPermissionTests(TestCase):
         self.assertFalse(permissions.org_can_event(self.owner, "can_upload_results", native_event))
 
     def test_org_can_event_org_event_resolves_to_org_can(self):
-        org_event = SimpleNamespace(organization_id=self.org.pk, organization=self.org)
+        # event_id is required by the F6 co-owner branch in org_can_event (it queries
+        # EventCoOrganizer.filter(event_id=...)); the stub predates that feature, so we add
+        # it here. 0 matches no co-owner rows -> the check falls through to org_can as intended.
+        org_event = SimpleNamespace(organization_id=self.org.pk, organization=self.org, event_id=0)
         self.assertTrue(permissions.org_can_event(self.owner, "can_upload_results", org_event))
         self.assertFalse(permissions.org_can_event(self.sub, "can_upload_results", org_event))
         self.assertTrue(permissions.org_can_event(self.sub, "can_view_metrics", org_event))

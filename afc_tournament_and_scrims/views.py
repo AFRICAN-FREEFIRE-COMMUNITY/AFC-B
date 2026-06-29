@@ -4608,6 +4608,13 @@ def get_event_details(request):
             groups_payload.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
+                # is_my_group (owner 2026-06-29): True when THIS viewer competes in this group
+                # (viewer_group_ids = the StageGroups they play in, the same set _can_see_room
+                # gates room creds on). Lets the frontend surface a "Your match" callout (play time
+                # + room ID/password) for registered players WITHOUT digging into Structure, and it
+                # works even before the room is posted. Consumed by EventDetailsWrapper
+                # (YourMatchCallout) + the TournamentStructure "your group" highlight.
+                "is_my_group": group.group_id in viewer_group_ids,
                 # Manual display order (reorder feature): echoed so the edit form re-submits it and a
                 # plain Save does NOT reset the dragged order back to auto-by-date. (bug fix 2026-06-15)
                 "group_order": group.group_order,
@@ -18006,6 +18013,45 @@ def upload_team_match_result(request):
     unknown_players = []   # file UIDs that could NOT be credited, each with a reason
     seen_uids = set()      # a uid is credited at most once per match (de-dupe malformed files)
 
+    # ── Resolve each log block -> site team by PLURALITY + per-match UNIQUENESS (bug fix 2026-06-29) ──
+    # OLD rule: a block took the site team of the FIRST of its players found on any roster. That
+    # double-counted a team when one of its rostered players was fielded inside ANOTHER (often
+    # unregistered) team's lineup in-game: that foreign block walked to the cross-rostered UID and
+    # grabbed the SAME site team, creating a SECOND TournamentTeamMatchStats row for it in the match
+    # -> the team appeared TWICE on the leaderboard with an inflated total (the reported TRG ESPORT
+    # bug: TRG's player UID 6701313338 played inside the "VOLTA E-SPORT" block, so VOLTA's result was
+    # also credited to TRG). NEW rule: each block resolves to the site team MOST of its players are
+    # rostered to, and a site team is claimed by AT MOST ONE block per match. Contested team -> the
+    # block with the stronger (more-matched) claim wins; the weaker block is left unresolved, so its
+    # off-roster players are FLAGGED/reported instead of silently inflating someone else's score.
+    from collections import Counter
+    id_to_tt = {m.tournament_team_id: m.tournament_team for m in uid_to_member.values()}
+    for team_data in parsed_teams:
+        counts = Counter()
+        seen_block_uids = set()
+        for p in team_data["players"]:
+            member = uid_to_member.get(p["uid"])
+            if member and p["uid"] not in seen_block_uids:
+                seen_block_uids.add(p["uid"])
+                counts[member.tournament_team_id] += 1
+        team_data["_roster_counts"] = counts
+    # Assign STRONGEST claims first so the true owner takes its team before any foreign block can.
+    claimed_team_ids = set()
+    for team_data in sorted(
+        parsed_teams,
+        key=lambda td: max(td["_roster_counts"].values(), default=0),
+        reverse=True,
+    ):
+        resolved = None
+        for tt_id, _cnt in sorted(
+            team_data["_roster_counts"].items(), key=lambda kv: kv[1], reverse=True
+        ):
+            if tt_id not in claimed_team_ids and id_to_tt.get(tt_id) is not None:
+                resolved = id_to_tt[tt_id]
+                claimed_team_ids.add(tt_id)
+                break
+        team_data["_team_obj"] = resolved
+
     with transaction.atomic():
 
         # Safe re-upload (idempotent): clear this match's prior stats AND its ringer flags so the
@@ -18020,18 +18066,10 @@ def upload_team_match_result(request):
             placement = team_data["placement"]
             players = team_data["players"]
 
-            team_obj = None
-
-            # Resolve the block's site team via the first player whose UID is on a roster.
-            for p in players:
-                member = uid_to_member.get(p["uid"])
-                if member:
-                    team_obj = member.tournament_team
-                    break
-
-            # Stash the resolved team so the per-player loop below can both attribute to it
-            # AND report unknown players under the correct site team.
-            team_data["_team_obj"] = team_obj
+            # Site team resolved by the plurality + per-match-uniqueness pre-pass above
+            # (bug fix 2026-06-29) — no longer "first rostered UID wins", which double-counted a
+            # team whose player was fielded in another block's lineup.
+            team_obj = team_data.get("_team_obj")
 
             if not team_obj:
                 # Team UID-unresolved. If the block's NAME matches exactly one registered team, the

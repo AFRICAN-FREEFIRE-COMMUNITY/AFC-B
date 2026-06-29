@@ -1526,6 +1526,14 @@ def buy_now(request):
             for i in order_items_to_create
         ])
 
+    # ── saved delivery info (owner request 2026-06-29) ──
+    # If the buyer ticked "save my info" (save_delivery_info) we persist a reusable
+    # SavedDeliveryProfile; if they picked an existing saved entry (saved_profile_id) we link
+    # to it. Best-effort: a saved-profile hiccup must never fail the order. The link is
+    # persisted by the order.save() just below. See afc_shop/delivery.py.
+    from afc_shop.delivery import attach_delivery_profile
+    attach_delivery_profile(order, user, request.data)
+
     # PAYSTACK INIT
     reference = f"PS_{uuid.uuid4().hex}"
 
@@ -2070,7 +2078,14 @@ def get_my_orders(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    orders = Order.objects.filter(user=user).order_by("-created_at")
+    # prefetch items -> variant -> product so the new per-item product thumbnail (below) is
+    # resolved without an N+1 across orders. OrderItem.variant is PROTECTed, so item.variant
+    # and item.variant.product are always present.
+    orders = (
+        Order.objects.filter(user=user)
+        .order_by("-created_at")
+        .prefetch_related("items__variant__product")
+    )
 
     data = []
     for order in orders:
@@ -2087,6 +2102,10 @@ def get_my_orders(request):
                 "quantity": item.quantity,
                 "unit_price": str(item.unit_price),
                 "line_total": str(item.line_total),
+                # product thumbnail for the my-orders list (owner request 2026-06-29) so the
+                # buyer sees the picture of what they ordered, not just the name. Consumed by
+                # frontend OrdersClient.tsx (the Items cell + the "+N more" tooltip).
+                "product_image": _abs_url(request, item.variant.product.image),
             } for item in order.items.all()]
         })
 

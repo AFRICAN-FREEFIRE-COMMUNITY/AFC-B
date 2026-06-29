@@ -48,6 +48,9 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from afc_auth.views import validate_token
+# Super-admin god-mode: a head_admin/super_admin managing-as a vendor (X-Act-As-Vendor
+# header) sees that vendor's order queue. Inert for everyone else. See act_as.py.
+from afc_auth.act_as import resolve_acting_vendor
 from .models import FulfillmentEvidence, Order, Vendor
 from . import emails
 
@@ -595,8 +598,12 @@ def vendor_my_orders(request):
     if not user:
         return Response({"message": "Invalid session"}, status=401)
 
-    # The caller must own at least one active Vendor account.
-    vendor = Vendor.objects.filter(user=user).first()
+    # ── super-admin god-mode (afc_auth.act_as) ──
+    # A super admin managing-as a vendor (X-Act-As-Vendor header) sees THAT vendor's order
+    # queue; resolve_acting_vendor is inert for non-god-mode callers, so a normal caller
+    # still resolves only their own Vendor. Order STATE transitions already allow admins
+    # via fulfilment._authorise, so no separate change is needed for those.
+    vendor = resolve_acting_vendor(request, user) or Vendor.objects.filter(user=user).first()
     if not vendor:
         return Response({"message": "You are not a vendor."}, status=403)
 

@@ -470,6 +470,15 @@ class Order(models.Model):
     state = models.CharField(max_length=50, blank=True)
     postcode = models.CharField(max_length=20, blank=True)
 
+    # Saved delivery profile this order's address came from, if the buyer picked a saved
+    # entry at checkout (afc_shop/delivery.py). SET_NULL so deleting a saved profile never
+    # deletes order history. The full delivery snapshot still lives on the fields above;
+    # this is only the link back to the reusable profile. String ref = model defined below.
+    saved_profile = models.ForeignKey(
+        "SavedDeliveryProfile", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="orders",
+    )
+
     tax = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
 
     # ── Payment provider (which gateway took the money for THIS order) ──────────────
@@ -770,3 +779,78 @@ class VendorPayout(models.Model):
 
     def __str__(self):
         return f"Payout to {self.vendor.display_name} for order #{self.order_id} ({self.status})"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SavedDeliveryProfile — a buyer's reusable delivery/contact details.
+#
+# WHY this exists (owner request 2026-06-29):
+#   At checkout a buyer can tick "save my info for next time"; on a later checkout they
+#   pick a saved entry from a dropdown instead of retyping. This table holds those saved
+#   entries (several per user, one default). The fields mirror the delivery snapshot on
+#   Order so the picker can prefill the checkout form 1:1.
+#
+# HOW it connects:
+#   - CRUD is OWNER-SCOPED in afc_shop/delivery.py (list/create/update/delete/set-default),
+#     every lookup filtered by user -> 404 on cross-user.
+#   - buy_now (views.py) / stripe_buy_now (stripe_checkout.py) call delivery.persist_delivery_profile
+#     when save_delivery_info is sent, and set Order.saved_profile when a saved entry was used.
+#   - The SUPER-ADMIN PII view (delivery.admin_list_delivery_info) reads ORDER rows, NOT this
+#     table — every checkout already snapshots the address onto its Order.
+#   - Default uniqueness is enforced in the view layer inside a transaction (MySQL has no
+#     partial unique index): saving is_default=True clears is_default on the user's others.
+# ─────────────────────────────────────────────────────────────────────────────
+class SavedDeliveryProfile(models.Model):
+    user = models.ForeignKey(
+        "afc_auth.User", on_delete=models.CASCADE, related_name="delivery_profiles",
+    )
+    label = models.CharField(max_length=60, blank=True)   # "Home", "Office" — shown in the picker
+    first_name = models.CharField(max_length=50)
+    last_name = models.CharField(max_length=50)
+    email = models.EmailField()
+    phone_number = models.CharField(max_length=20)
+    address = models.TextField()
+    city = models.CharField(max_length=50)
+    state = models.CharField(max_length=50)
+    postcode = models.CharField(max_length=20, blank=True)
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        # Default first, then most-recently-touched: the order the picker lists them in.
+        ordering = ["-is_default", "-updated_at"]
+
+    def __str__(self):
+        return f"{self.user.username} delivery: {self.label or self.address[:20]}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Wishlist — a product a user saved for later (the shop "save for later" list).
+#
+# WHY this exists (owner request 2026-06-29):
+#   Buyers want to save products they are interested in and come back to them. One row per
+#   (user, product); the save/heart button toggles it.
+#
+# HOW it connects:
+#   - Toggled + listed by afc_shop/wishlist.py (Bearer auth, owner-scoped).
+#   - Read by the FE saved-items page + the heart button on product cards (ShopClient.tsx)
+#     and the product detail page (ProductDetailPage.tsx).
+#   - CASCADE on product so a deleted product drops out of every user's wishlist.
+# ─────────────────────────────────────────────────────────────────────────────
+class Wishlist(models.Model):
+    user = models.ForeignKey(
+        "afc_auth.User", on_delete=models.CASCADE, related_name="wishlist_items",
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name="wishlisted_by",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # A product can be saved at most once per user; newest saves first.
+        unique_together = ("user", "product")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.user.username} saved {self.product.name}"
