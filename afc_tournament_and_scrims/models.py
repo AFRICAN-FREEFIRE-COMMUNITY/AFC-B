@@ -717,6 +717,14 @@ class MatchKillFlag(models.Model):
     REASON_CHOICES = [
         ("not_on_roster", "Played for this team but is on no roster for this event"),
         ("belongs_to_other_team", "Played for this team but is registered on another team"),
+        # NAME-MATCH reasons (owner 2026-06-29): created by upload_team_match_result when a file
+        # player did NOT UID-match but their in-game NAME (ascii-folded, clan-tag-stripped) matches a
+        # registered roster member. Both are created count_kills=False (explicit PENDING) so they need
+        # an admin/organizer approval (set_match_kill_flag -> True) before their kills join the team
+        # total. name_matched_uid_changed = matches a member of THIS team (UID just changed);
+        # name_matched_other_team = matches a member registered on a DIFFERENT team.
+        ("name_matched_uid_changed", "Name matches a roster member of this team but the UID differs"),
+        ("name_matched_other_team", "Name matches a roster member registered on another team"),
     ]
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="kill_flags")
     # The team the ringer's kills were credited TO in the file (the block they appeared in).

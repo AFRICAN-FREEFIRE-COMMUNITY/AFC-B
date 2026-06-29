@@ -17873,11 +17873,22 @@ def upload_team_match_result(request):
       missing_teams   : team blocks where no player UID matched any roster member
       attributed      : [{team_name, site_team_name, username, uid, kills}] credited players
       unknown_uids    : [{team_name, site_team_name, tournament_team_id, uid, name, kills,
-                          reason, [other_team_name]}] flagged players.
+                          reason, flag_id, [other_team_name], [matched_user_id, matched_username,
+                          scope]}] flagged players.
                         reason in: not_on_roster | belongs_to_other_team | team_not_on_site |
-                                   duplicate_in_file | no_team_stats
+                                   duplicate_in_file | no_team_stats |
+                                   name_matched_uid_changed | name_matched_other_team
+                        NAME-MATCH (owner 2026-06-29): a non-UID player whose in-game NAME matches a
+                          roster member becomes a PENDING flag (count_kills=False) — name_matched_
+                          uid_changed (this team, scope=same_team) or name_matched_other_team
+                          (another team, scope=other_team) — carrying matched_user_id/matched_username
+                          and a flag_id the FE approves inline via PATCH events/flagged-kills/flag/.
+                          belongs_to_other_team is now PENDING too (was auto-counted). Approving a
+                          pending flag (set_match_kill_flag count_kills=true) adds its kills to the
+                          team total via _recompute_team_kills_for_event.
       roster_no_uid   : [{tournament_team_id, user_id, username}] rostered players with no UID set
       unmatched_count : len(unknown_uids), convenience for the FE toast
+      pending_count   : flagged rows awaiting an admin approval (name match + cross-team)
     """
 
     # -------- AUTH --------
@@ -18007,6 +18018,78 @@ def upload_team_match_result(request):
     name_to_tt = {}
     for _tt in TournamentTeam.objects.filter(event=event).select_related("team"):
         name_to_tt.setdefault(_norm_tname(_tt.team.team_name), []).append(_tt)
+
+    # ── PLAYER NAME-MATCH index (owner 2026-06-29) ───────────────────────────────────────────────
+    # When a file player does NOT UID-match a roster member, fall back to matching by in-game NAME so
+    # a player whose Free Fire UID changed (or who never set it) is still recognised. Every name match
+    # is created as a PENDING MatchKillFlag (count_kills=False) and only joins the team total once an
+    # admin/organizer approves it (set_match_kill_flag) — so a missed/over-eager match degrades safely
+    # to a visible, uncounted flag. _norm_pname mirrors _norm_tname but ASCII-folds first so
+    # "龙 | ProGamer" and "[XTR] Pro.Gamer" both normalise to a bare a-z0-9 key.
+    def _norm_pname(n):
+        import unicodedata
+        s = unicodedata.normalize("NFKD", n or "").encode("ascii", "ignore").decode().lower()
+        return re.sub(r"[^a-z0-9]", "", s)
+
+    def _clan_tail(raw):
+        # Segment AFTER the last clan separator (| ｜ ] } ) : .) — "[XTR] ProGamer" -> "ProGamer".
+        # Used only by the two-pass fallback below when the full normalized name found nothing.
+        parts = re.split(r"[|｜\]\})\:\.]", raw or "")
+        return parts[-1] if parts else (raw or "")
+
+    def _name_lookup(idx, nk, raw):
+        # Two-pass exact-normalized lookup in a per-team index { norm_username: [member, ...] }.
+        # Pass 1: the full normalized key nk. Pass 2 (only if pass 1 is empty): the clan-tag tail of
+        # the RAW name, normalized. Returns (member, collided): a UNIQUE candidate -> (member, False);
+        # an AMBIGUOUS collision (>1 candidates) -> (None, True) so the caller forces not_on_roster
+        # instead of rerouting to an other-team lookalike (§3 collision rule); no candidate ->
+        # (None, False).
+        cands = idx.get(nk, [])
+        if not cands:
+            tail = _norm_pname(_clan_tail(raw))
+            if tail and tail != nk:
+                cands = idx.get(tail, [])
+        if len(cands) == 1:
+            return cands[0], False
+        return None, (len(cands) > 1)
+
+    def _name_lookup_global(idx, nk, raw, exclude_tt=None):
+        # Same two-pass match against the GLOBAL index { norm_username: [ {tt_id, ...}, ... ] }, but
+        # excluding the block's own team so the caller can prefer a same-team match first (§3). Returns
+        # the single OTHER-team candidate iff exactly one across the attempted keys, else None.
+        cands = [c for c in idx.get(nk, []) if c["tt_id"] != exclude_tt]
+        if not cands:
+            tail = _norm_pname(_clan_tail(raw))
+            if tail and tail != nk:
+                cands = [c for c in idx.get(tail, []) if c["tt_id"] != exclude_tt]
+        return cands[0] if len(cands) == 1 else None
+
+    # Build the two name indexes off the full event roster (roster_by_team holds {user_id, username,
+    # uid} per team). per_team_name_idx answers "is this name on THIS team?"; global_name_idx answers
+    # "is this name on SOME team?" (other-team match). Names that normalize to empty (all-emoji) are
+    # skipped so they never match (edge case 12).
+    per_team_name_idx = {}   # tt_id -> { norm_username: [ {user_id, username, uid}, ... ] }
+    global_name_idx = {}     # norm_username -> [ {tt_id, user_id, username, uid}, ... ]
+    for tt_id, mems in roster_by_team.items():
+        for m in mems:
+            k = _norm_pname(m["username"])
+            if not k:
+                continue
+            per_team_name_idx.setdefault(tt_id, {}).setdefault(k, []).append(m)
+            global_name_idx.setdefault(k, []).append({"tt_id": tt_id, **m})
+
+    # tt_id -> TournamentTeam, so a name_matched_other_team flag can carry the real team's id/name.
+    tt_by_id = {}
+    for _lst in name_to_tt.values():
+        for _tt in _lst:
+            tt_by_id[_tt.tournament_team_id] = _tt
+
+    # Whether a flag's kills will count at THIS upload: its explicit per-flag count_kills if set, else
+    # the event default. Pending name/cross-team flags carry count_kills=False -> contribute 0 here,
+    # exactly matching what _recompute_team_kills_for_event computes later (§1e).
+    def _will_count(f):
+        return f["count_kills"] if f["count_kills"] is not None else event.count_flagged_kills
+
     # Result feedback surfaced to the FE (FileUploadStep.tsx) so the admin can confirm
     # attributions and resolve flagged players. See the response contract at the bottom.
     attributed = []        # credited players: {team_name, site_team_name, username, uid, kills}
@@ -18054,6 +18137,15 @@ def upload_team_match_result(request):
 
     with transaction.atomic():
 
+        # §1i snapshot (owner 2026-06-29): capture any per-flag approval/rejection (count_kills set to
+        # True/False by an admin in the panel) BEFORE the idempotent clear wipes the rows, so a
+        # re-upload of the same match can RESTORE those decisions after the flags are re-derived.
+        # Without this every re-upload would silently discard the admin's approvals. Keyed by the
+        # stable (tournament_team_id, uid) so it survives the row recreation.
+        prior = {(fl.tournament_team_id, fl.uid): fl.count_kills
+                 for fl in MatchKillFlag.objects.filter(match=match)
+                 if fl.count_kills is not None}
+
         # Safe re-upload (idempotent): clear this match's prior stats AND its ringer flags so the
         # whole result is re-derived from the freshly uploaded file.
         TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
@@ -18073,22 +18165,43 @@ def upload_team_match_result(request):
 
             if not team_obj:
                 # Team UID-unresolved. If the block's NAME matches exactly one registered team, the
-                # team EXISTS but fielded off-roster players (the owner's "team obviously exists" case):
-                # remember the matched team so the per-player loop relabels + the FE offers a watchlist
-                # button. Otherwise it is genuinely not on the site.
+                # team EXISTS but fielded off-roster players (the owner's "team obviously exists" case).
                 _matched = name_to_tt.get(_norm_tname(team_data["team_name"])) or []
-                _site_tt = _matched[0] if len(_matched) == 1 else None
-                team_data["_name_matched_tt"] = _site_tt
+                # TEAM NAME-MATCH ADOPTION (requirement 1, owner 2026-06-29): adopt the team by NAME so
+                # it is scored (placement points) instead of being skipped entirely. Adopt ONLY a
+                # UNIQUE (len==1) name match that no UID block already claimed this match — preserving
+                # the per-match unique_together(match, tournament_team) and not stealing a team a real
+                # UID block already owns. Its players still flow through the per-player classification
+                # below, so their kills stay gated behind the pending flags (0 until approved).
+                _site_tt = next((tt for tt in _matched
+                                 if tt.tournament_team_id not in claimed_team_ids), None) \
+                    if len(_matched) == 1 else None
                 if _site_tt:
+                    team_obj = _site_tt
+                    team_data["_team_obj"] = _site_tt
+                    claimed_team_ids.add(_site_tt.tournament_team_id)   # keep per-match uniqueness
+                    team_data["_name_matched_tt"] = _site_tt           # advisory relabel still useful
                     roster_mismatch_teams.append({
                         "team_name": team_data["team_name"],
                         "site_team_name": _site_tt.team.team_name,
                         "site_team_id": _site_tt.team_id,
                         "tournament_team_id": _site_tt.tournament_team_id,
                     })
+                    # DO NOT continue -> fall through to the classification below so the team gets its
+                    # TournamentTeamMatchStats row (placement points) and each player a pending flag.
                 else:
-                    missing_teams.append(team_data["team_name"])
-                continue
+                    # Not adopted: ambiguous (>1 match) or already claimed -> advisory/missing as before.
+                    team_data["_name_matched_tt"] = (_matched[0] if len(_matched) == 1 else None)
+                    if team_data["_name_matched_tt"]:
+                        roster_mismatch_teams.append({
+                            "team_name": team_data["team_name"],
+                            "site_team_name": team_data["_name_matched_tt"].team.team_name,
+                            "site_team_id": team_data["_name_matched_tt"].team_id,
+                            "tournament_team_id": team_data["_name_matched_tt"].tournament_team_id,
+                        })
+                    else:
+                        missing_teams.append(team_data["team_name"])
+                    continue
 
             # Classify this block into ROSTERED players (count normally) vs FLAGGED ringers — a UID
             # that played for this team but is NOT on its site roster (not_on_roster) or is
@@ -18098,8 +18211,20 @@ def upload_team_match_result(request):
             # Event.count_flagged_kills is on (True by default = unchanged legacy behavior).
             block_tt_id = team_obj.tournament_team_id
             rostered_kills = 0
-            block_flags = []      # ringers: {uid, name, kills, reason, registered_user_id}
+            block_flags = []      # ringers: {uid, name, kills, reason, registered_user_id, count_kills}
             seen_block = set()    # de-dupe a uid repeated within this block (count once)
+            # ORDER-INDEPENDENT dedup (adversarial-review HIGH fix 2026-06-29): the full set of roster
+            # members this block credits BY UID, computed in a PRE-PASS. The old code built this set
+            # incrementally during classification, so a NAME match for a member was only skipped when
+            # their real-UID row appeared BEFORE the changed-UID row in the file; if the changed-UID row
+            # came first, the same member was credited twice on approval (rostered + flag). Pre-computing
+            # makes the dedup hold regardless of file order.
+            block_credited = {
+                uid_to_member[p["uid"]].user_id
+                for p in players
+                if (uid_to_member.get(p["uid"])
+                    and uid_to_member[p["uid"]].tournament_team_id == block_tt_id)
+            }
             for p in players:
                 uid = p["uid"]
                 member = uid_to_member.get(uid)
@@ -18108,17 +18233,66 @@ def upload_team_match_result(request):
                         continue
                     seen_block.add(uid)
                     rostered_kills += p["kills"]
-                else:  # member is None (not_on_roster) OR on another team (belongs_to_other_team)
+                else:  # member is None (no UID match) OR on another team (belongs_to_other_team)
                     if uid in seen_block:
                         continue
                     seen_block.add(uid)
-                    block_flags.append({
+                    nk = _norm_pname(p["name"])
+                    # Flag carries an explicit count_kills: None = follow the event default (legacy
+                    # not_on_roster), False = PENDING approval (name match / cross-team, requirement c).
+                    f = {
                         "uid": uid, "name": p["name"], "kills": p["kills"],
-                        "reason": "not_on_roster" if member is None else "belongs_to_other_team",
                         "registered_user_id": (member.user_id if member else None),
-                    })
+                        "count_kills": None,
+                    }
+                    if member is not None:
+                        # UID matched but the player is registered on ANOTHER team. Deliberate behavior
+                        # change (owner req c): now PENDING (was auto-counted when count_flagged_kills).
+                        f["reason"] = "belongs_to_other_team"
+                        f["count_kills"] = False
+                    else:
+                        # No UID match -> resolve by NAME (§3 two-pass clan-tag fallback). A SAME-team
+                        # name match (just a changed UID) is preferred; an ambiguous same-team collision
+                        # OR a same-member-already-credited stays not_on_roster (never rerouted to an
+                        # other-team lookalike); only a clean no-same-candidate falls to the other-team
+                        # check (adversarial-review MED + LOW fixes 2026-06-29).
+                        same, same_collision = _name_lookup(
+                            per_team_name_idx.get(block_tt_id, {}), nk, p["name"])
+                        if same is not None:
+                            if same["user_id"] not in block_credited:
+                                # Name matches a member of THIS team whose UID changed -> pending.
+                                f["reason"] = "name_matched_uid_changed"
+                                f["count_kills"] = False
+                                f["registered_user_id"] = same["user_id"]
+                                f["matched_username"] = same["username"]
+                            else:
+                                # Same member is already UID-credited this block (old + new UID both in
+                                # the file) -> skip; do NOT reroute to an other-team match.
+                                f["reason"] = "not_on_roster"
+                        elif same_collision:
+                            # >1 same-team members share this name -> ambiguous -> not_on_roster.
+                            f["reason"] = "not_on_roster"
+                        else:
+                            other = _name_lookup_global(
+                                global_name_idx, nk, p["name"], exclude_tt=block_tt_id)
+                            if other:
+                                # Name matches a UNIQUE member on a DIFFERENT team -> pending approval,
+                                # carrying that team's id/name so the panel shows who they really are.
+                                f["reason"] = "name_matched_other_team"
+                                f["count_kills"] = False
+                                f["registered_user_id"] = other["user_id"]
+                                f["matched_username"] = other["username"]
+                                f["other_team_id"] = tt_by_id[other["tt_id"]].team_id
+                                f["other_team_name"] = tt_by_id[other["tt_id"]].team.team_name
+                            else:
+                                # Genuinely unknown -> not_on_roster; count_kills stays None so it
+                                # still follows the event default.
+                                f["reason"] = "not_on_roster"
+                    block_flags.append(f)
             team_data["_flags"] = block_flags
-            counted_flagged = sum(f["kills"] for f in block_flags) if event.count_flagged_kills else 0
+            # §1e: pending (count_kills=False) flags contribute 0 here; not_on_roster still follows the
+            # event default. Mirrors _recompute_team_kills_for_event so the upload total is consistent.
+            counted_flagged = sum(f["kills"] for f in block_flags if _will_count(f))
             total_kills = rostered_kills + counted_flagged
 
             # Shared team formula (placement + kills only on this log path; assists/damage/bonus/
@@ -18191,14 +18365,23 @@ def upload_team_match_result(request):
 
             site_team_name = team_obj.team.team_name
             block_tt_id = team_obj.tournament_team_id
+            # Authoritative classification computed in the team-stats loop (§1d), keyed by uid. Reading
+            # it here keeps the RESPONSE row's reason/match fields IDENTICAL to the persisted
+            # MatchKillFlag (incl. the credited_user_ids dedup) instead of re-deriving and risking drift.
+            flags_by_uid = {fl["uid"]: fl for fl in team_data.get("_flags", [])}
 
             for p in team_data["players"]:
                 uid = p["uid"]
                 member = uid_to_member.get(uid)
 
-                # 1) UID not on ANY roster for this event -> played in-game, not on the site.
+                # 1) UID not on ANY roster -> may still NAME-match a roster member (§1g). Mirror the
+                # flag built above: name_matched_uid_changed (this team) / name_matched_other_team
+                # (another team) carry the matched player + scope so the review panel can approve them
+                # inline; otherwise it stays a plain not_on_roster.
                 if not member:
-                    unknown_players.append({
+                    _fl = flags_by_uid.get(uid, {})
+                    _reason = _fl.get("reason", "not_on_roster")
+                    _row = {
                         "team_name": block_team_name,
                         "site_team_name": site_team_name,
                         "tournament_team_id": block_tt_id,
@@ -18206,8 +18389,18 @@ def upload_team_match_result(request):
                         "uid": uid,
                         "name": p["name"],
                         "kills": p["kills"],
-                        "reason": "not_on_roster",
-                    })
+                        "reason": _reason,
+                    }
+                    if _reason in ("name_matched_uid_changed", "name_matched_other_team"):
+                        _row["matched_user_id"] = _fl.get("registered_user_id")
+                        _row["matched_username"] = _fl.get("matched_username")
+                        _row["registered_user_id"] = _fl.get("registered_user_id")  # watchlist: player
+                        _row["scope"] = ("same_team" if _reason == "name_matched_uid_changed"
+                                         else "other_team")
+                        if _reason == "name_matched_other_team":
+                            _row["other_team_id"] = _fl.get("other_team_id")
+                            _row["other_team_name"] = _fl.get("other_team_name")
+                    unknown_players.append(_row)
                     continue
 
                 # 2) UID belongs to a DIFFERENT team's roster in this event -> don't mis-credit.
@@ -18278,8 +18471,9 @@ def upload_team_match_result(request):
         )
 
         # Persist the flagged ringers (owner 2026-06-16) so the admin/organizer panel can list
-        # them and toggle whether each one's kills count. count_kills defaults to NULL = follow
-        # the event's count_flagged_kills. unique_together(match, team, uid) + ignore_conflicts
+        # them and toggle whether each one's kills count. count_kills carries the per-flag override
+        # (§1f): None = follow the event's count_flagged_kills (not_on_roster), False = PENDING
+        # approval (name match / cross-team). unique_together(match, team, uid) + ignore_conflicts
         # guard against a UID repeated across blocks.
         flag_rows = []
         for team_data in parsed_teams:
@@ -18291,9 +18485,35 @@ def upload_team_match_result(request):
                     match=match, tournament_team=tobj,
                     uid=f["uid"], name=f["name"], kills=f["kills"],
                     reason=f["reason"], registered_user_id=f["registered_user_id"],
+                    count_kills=f["count_kills"],     # §1f: persist pending(False)/default(None)
                 ))
         if flag_rows:
             MatchKillFlag.objects.bulk_create(flag_rows, ignore_conflicts=True)
+
+        # §1h — inject flag_id onto every response row (skip on dry_run, where no row persists). MySQL
+        # leaves PKs null on bulk_create, so re-fetch and map by (team, uid) — the same pattern used
+        # for ts_map above. Lets the review panel approve a pending row inline via set_match_kill_flag.
+        if not dry_run:
+            fid = {(fl.tournament_team_id, fl.uid): fl.id
+                   for fl in MatchKillFlag.objects.filter(match=match)}
+            for row in unknown_players:
+                row["flag_id"] = fid.get((row.get("tournament_team_id"), row.get("uid")))
+
+        # §1i — RESTORE admin approvals across a re-upload. `prior` (snapshotted before the idempotent
+        # clear) holds each (team, uid) -> count_kills the admin had set; re-apply it to the freshly
+        # re-derived flag so the re-upload does not silently discard the decision. Then recompute once
+        # (only if something was restored) so a restored approval re-adds its kills to the team total
+        # (the upload computed totals assuming all new flags pending). Skipped on dry_run.
+        restored_any = False
+        if not dry_run and prior:
+            for fl in MatchKillFlag.objects.filter(match=match):
+                pv = prior.get((fl.tournament_team_id, fl.uid))
+                if pv is not None and fl.count_kills != pv:
+                    fl.count_kills = pv
+                    fl.save(update_fields=["count_kills"])
+                    restored_any = True
+        if restored_any:
+            _recompute_team_kills_for_event(event)
 
         match.result_inputted = True
         match.save(update_fields=["result_inputted"])
@@ -18346,6 +18566,14 @@ def upload_team_match_result(request):
         "unknown_uids": unknown_players,               # file UIDs that could not be credited (+ reason)
         "roster_no_uid": roster_no_uid,                # rostered players with no UID set (cannot match)
         "unmatched_count": len(unknown_players),       # convenience count for the FE toast
+        # §1j: how many unknown rows are PENDING an admin approval (name match or cross-team). Each
+        # carries a flag_id the FE can approve inline via PATCH events/flagged-kills/flag/.
+        "pending_count": sum(
+            1 for r in unknown_players
+            if r["reason"] in (
+                "name_matched_uid_changed", "name_matched_other_team", "belongs_to_other_team",
+            )
+        ),
     }, status=200)
 
 

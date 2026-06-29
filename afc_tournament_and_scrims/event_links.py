@@ -32,7 +32,7 @@ ENDPOINTS (mounted under events/ via afc_tournament_and_scrims/urls.py)
     POST   events/links/<link_id>/decide/       decide          (allow|reject|decline|
                                                                  replace_next|replace_team|undo)
 """
-from django.db import models, transaction
+from django.db import models, transaction, IntegrityError
 from django.utils import timezone
 
 from rest_framework.decorators import api_view
@@ -508,15 +508,32 @@ def create_link(request, event_id):
     if EventLink.objects.filter(source_stage=stage, target_event=target).exclude(status="cancelled").exists():
         return Response({"message": "That stage is already linked to that event."}, status=400)
 
-    link = EventLink.objects.create(
-        source_event=source_event,
-        source_stage=stage,
-        target_event=target,
-        qualify_count=qualify_count,
-        auto_promote=bool(request.data.get("auto_promote", True)),
-        roster_mode=roster_mode,
-        created_by=user,
-    )
+    # A previously-CANCELLED link for this (stage, target) still occupies the DB unique constraint
+    # (uniq_stage_target_link is unconditional, and MySQL cannot do a partial/filtered index). The
+    # duplicate guard above only looks at non-cancelled links, so re-creating after an Unlink would
+    # otherwise hit an IntegrityError -> an opaque 500 ("Failed to create the link"). Its promotions
+    # were already withdrawn on cancel, so its qualifications carry no live registrations; drop the
+    # stale row (CASCADE clears those quals) before inserting the fresh link. (owner bug 2026-06-29)
+    with transaction.atomic():
+        EventLink.objects.filter(
+            source_stage=stage, target_event=target, status="cancelled"
+        ).delete()
+        try:
+            link = EventLink.objects.create(
+                source_event=source_event,
+                source_stage=stage,
+                target_event=target,
+                qualify_count=qualify_count,
+                auto_promote=bool(request.data.get("auto_promote", True)),
+                roster_mode=roster_mode,
+                created_by=user,
+            )
+        except IntegrityError:
+            # Defensive: a concurrent create raced us to the unique pair. Surface a clean message
+            # instead of a 500 so the dialog shows why.
+            return Response(
+                {"message": "That stage is already linked to that event."}, status=400
+            )
     return Response({"message": "Link created.", "link": _serialize_link(link)}, status=201)
 
 
@@ -851,8 +868,18 @@ def import_competitors(request, event_id):
 
 @api_view(["DELETE"])
 def cancel_link(request, link_id):
-    """DELETE events/links/<link_id>/ — cancel a link. Promoted registrations stay (cancelling
-    the rule never un-registers teams)."""
+    """DELETE events/links/<link_id>/ — cancel a qualification link AND withdraw the
+    registrations it auto-promoted into the target event.
+
+    Owner expectation (2026-06-29): unlinking should bring the qualified teams BACK OUT of the
+    target event, not leave them registered there. So for every team/competitor THIS link
+    promoted (status promoted/replaced), we call _withdraw_promotion — which removes ONLY the
+    rows the link itself created (the promoted TournamentTeam + its members + the target
+    RegisteredCompetitors row). A team that was ALREADY independently registered in the target
+    is never touched. Pass ?keep_registrations=true to cancel the rule but LEAVE the promoted
+    teams in place (the old behaviour).
+
+    Consumed by: the Linked events card's Unlink action."""
     user, err = _auth_user(request)
     if err:
         return err
@@ -862,9 +889,39 @@ def cancel_link(request, link_id):
         return Response({"message": "Link not found."}, status=404)
     if not _can_manage_link(user, link):
         return Response({"message": "You do not have permission to manage this link."}, status=403)
-    link.status = "cancelled"
-    link.save(update_fields=["status"])
-    return Response({"message": "Link cancelled."})
+
+    # Opt-out: ?keep_registrations=true cancels the rule without removing the promoted teams.
+    keep = str(request.GET.get("keep_registrations", "")).lower() in ("1", "true", "yes")
+
+    withdrawn = 0
+    with transaction.atomic():
+        if not keep:
+            for qual in link.qualifications.filter(
+                status__in=("promoted", "replaced"),
+            ).select_related(
+                "promoted_tournament_team",
+                "promoted_tournament_team__team",
+                "promoted_competitor",
+            ):
+                if qual.promoted_tournament_team_id or qual.promoted_competitor_id:
+                    # Remove the link-created registration from the target, then mark the
+                    # qualification withdrawn (mirrors the decline/undo paths above).
+                    _withdraw_promotion(qual)
+                    qual.status = "withdrawn"
+                    qual.note = "withdrawn: qualification link cancelled"
+                    qual.decided_by, qual.decided_at = user, timezone.now()
+                    qual.save()
+                    withdrawn += 1
+        link.status = "cancelled"
+        link.save(update_fields=["status"])
+
+    msg = "Link cancelled."
+    if withdrawn:
+        msg = (
+            f"Link cancelled. {withdrawn} qualified "
+            f"{'team' if withdrawn == 1 else 'teams'} removed from the target event."
+        )
+    return Response({"message": msg, "withdrawn": withdrawn})
 
 
 @api_view(["POST"])

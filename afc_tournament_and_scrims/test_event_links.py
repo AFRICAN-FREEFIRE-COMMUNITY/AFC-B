@@ -319,3 +319,63 @@ class FireAndPromoteTests(EventLinkBase):
         self.client.get(f"/events/{self.source.event_id}/links/", **bearer(self.admin_tok))
         self.assertEqual(Notifications.objects.filter(
             notification_type="link_standings_changed", user=self.admin).count(), 1)
+
+
+class CancelLinkWithdrawTests(EventLinkBase):
+    """Unlinking a FIRED link brings the qualified teams back out of the target (owner
+    2026-06-29: "I unlinked it and expected the teams sent forward to come back"). Cancelling
+    now withdraws the link-created registrations; ?keep_registrations=true preserves them."""
+
+    def _cancel(self, link_id, keep=False, tok=None):
+        url = f"/events/links/{link_id}/"
+        if keep:
+            url += "?keep_registrations=true"
+        return self.client.delete(url, **bearer(tok or self.admin_tok))
+
+    def test_cancel_withdraws_promoted_teams(self):
+        link_id = self._create_link().json()["link"]["id"]
+        self._fire(link_id)
+        # Promotion registered Alpha + Bravo into the target.
+        self.assertTrue(RegisteredCompetitors.objects.filter(
+            event=self.target, team=self.teams["Alpha"]).exists())
+
+        resp = self._cancel(link_id)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertGreaterEqual(resp.json()["withdrawn"], 1)
+
+        # The promoted teams are now REMOVED from the target.
+        self.assertFalse(RegisteredCompetitors.objects.filter(
+            event=self.target, team=self.teams["Alpha"]).exists())
+        self.assertFalse(RegisteredCompetitors.objects.filter(
+            event=self.target, team=self.teams["Bravo"]).exists())
+        self.assertFalse(TournamentTeam.objects.filter(
+            event=self.target, team=self.teams["Alpha"]).exists())
+        # The link itself is cancelled.
+        self.assertEqual(EventLink.objects.get(id=link_id).status, "cancelled")
+
+    def test_cancel_keep_registrations_leaves_teams(self):
+        link_id = self._create_link().json()["link"]["id"]
+        self._fire(link_id)
+        resp = self._cancel(link_id, keep=True)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["withdrawn"], 0)
+        # Opt-out: the promoted teams stay registered in the target.
+        self.assertTrue(RegisteredCompetitors.objects.filter(
+            event=self.target, team=self.teams["Alpha"]).exists())
+        self.assertEqual(EventLink.objects.get(id=link_id).status, "cancelled")
+
+    def test_recreate_after_cancel_succeeds(self):
+        # The (source_stage, target_event) unique constraint survives a cancel (the row stays,
+        # status=cancelled). Re-creating the same link must drop the stale cancelled row and
+        # succeed, NOT hit an IntegrityError -> 500 ("Failed to create the link") (owner 2026-06-29).
+        link_id = self._create_link().json()["link"]["id"]
+        self._fire(link_id)
+        self.assertEqual(self._cancel(link_id).status_code, 200)
+
+        resp = self._create_link()  # same stage -> same target, again
+        self.assertEqual(resp.status_code, 201, resp.content)
+        # Exactly one live link for the pair; no leftover cancelled row.
+        self.assertEqual(EventLink.objects.filter(
+            source_stage=self.stage, target_event=self.target).exclude(status="cancelled").count(), 1)
+        self.assertEqual(EventLink.objects.filter(
+            source_stage=self.stage, target_event=self.target, status="cancelled").count(), 0)
