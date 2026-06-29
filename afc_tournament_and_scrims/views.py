@@ -72,8 +72,25 @@ def _is_event_admin(user):
         user.userroles.filter(role__role_name__in=["event_admin", "head_admin"]).exists()
 
 
+# ── all-groups ROOM-DETAILS visibility (owner 2026-06-29) ──
+# Seeing EVERY group's room id/name/password is a competitive-integrity surface (you could peek at
+# or grief other groups' lobbies), so it is restricted MORE tightly than the general event-admin
+# check above. Per the owner: "only super, head and event admins" — i.e. the platform super-admin
+# (User.role == "admin") plus the granular head_admin / event_admin roles. Deliberately EXCLUDES
+# organizers (an organizer is no longer treated as event staff for room visibility — they fall
+# through to the per-group path and, like any player, only see their OWN group's room) AND the
+# moderator/support staff roles (not in the owner's list). Used only by get_event_details'
+# _can_see_room gate; everything else still uses the broader _is_event_admin.
+def _can_see_all_group_rooms(user):
+    if not user:
+        return False
+    return user.role == "admin" or \
+        user.userroles.filter(role__role_name__in=["head_admin", "event_admin"]).exists()
+
+
 from celery import shared_task
 from django.utils import timezone
+from django.utils.text import slugify  # event re-slug on rename (edit_event, owner 2026-06-29)
 
 @shared_task
 def update_event_and_stage_statuses():
@@ -209,6 +226,11 @@ def get_all_events(request):
             # event's "Publish to partner API" button reflects the LIVE published state instead of only
             # session actions. Harmless everywhere else (ignored by callers that don't read it).
             "partner_published": event.partner_published,
+            # Tournament tier (tier_1/2/3) so the user-facing event CARD can show a tier badge
+            # (owner 2026-06-29: "events ranked into tiers... badges so they KNOW the tier").
+            # The detail endpoints already return this; the card list omitted it. The FE maps the
+            # code -> "Tier N" + color (TournamentTierBadge).
+            "tournament_tier": event.tournament_tier,
         }
         localize_field(item, "event_name", event.event_name, locale)
         event_list.append(item)
@@ -255,6 +277,8 @@ def get_all_events_paginated(request):
             else None
         ),
         "rankings_verified": event.rankings_verified,
+        # Tournament tier for the card badge (owner 2026-06-29); see get_all_events above.
+        "tournament_tier": event.tournament_tier,
     } for event in paginated]
 
     return Response({
@@ -2718,6 +2742,10 @@ def edit_event(request):
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
         return Response({"message": "Event not found."}, status=404)
+    # Remember the name BEFORE the update loop applies any rename, so we can re-slug the event
+    # when the name changes (owner 2026-06-29: a duplicated event was stuck with its "...-copy"
+    # slug after being renamed, because Event.save() only auto-slugs when the slug is blank).
+    _old_event_name = event.event_name
 
     # AFC admins may edit any event; an org member needs can_edit_events on the event's
     # owning org. org_can_event treats native (org=None) events as admin-only, so org
@@ -3051,6 +3079,19 @@ def edit_event(request):
         advancement_rules_error = _validate_advancement_rules(as_list(request.data.get("stages")))
         if advancement_rules_error:
             return Response({"message": advancement_rules_error}, status=400)
+
+    # Re-slug when the name actually changed, so the URL follows the rename (owner 2026-06-29).
+    # Mirrors Event.save()'s generator (slugify + a -2/-3 uniqueness suffix), but runs on rename
+    # too — save() alone only fires when the slug is blank, which is why a renamed "...-copy" event
+    # kept the stale slug. We only re-slug on a real change (not every save) to avoid needlessly
+    # churning a live event's URL; uniqueness excludes THIS event so a no-op name keeps its slug.
+    if event.event_name and event.event_name != _old_event_name:
+        base = slugify(event.event_name)[:70] or "event"
+        new_slug, i = base, 2
+        while Event.objects.filter(slug=new_slug).exclude(pk=event.pk).exists():
+            new_slug = f"{base}-{i}"
+            i += 1
+        event.slug = new_slug
 
     with transaction.atomic():
         event.save()
@@ -4106,13 +4147,15 @@ def get_event_details(request):
     # competitors of the group, and ONLY after the organizer POSTS them (broadcast room_details ->
     # Match.room_details_released_at). Build the viewer's context once here so the per-match payload
     # below can gate cheaply:
-    #   viewer_is_event_staff -> AFC event admin OR an organizer who can edit this event: sees all (to
-    #     verify what players will see). Everyone else is gated.
+    #   viewer_is_event_staff -> super/head/event ADMIN ONLY (sees every group's room). Organizers are
+    #     intentionally NOT staff here (owner 2026-06-29: all-groups room creds are a competitive-
+    #     integrity surface); an organizer who is also a participant still sees their own group's room
+    #     via the per-group path below, like any player.
     #   viewer_group_ids -> the StageGroups the viewer competes in (solo competitor or any team they're
     #     a member of). A viewer only sees a group's room once it's released.
     #   viewer_is_event_waitlisted -> for fcfs_room events, waitlisted competitors also get the room
     #     (the whole point of "first to join the room") even though they're not slotted into a group.
-    viewer_is_event_staff = bool(user and (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)))
+    viewer_is_event_staff = _can_see_all_group_rooms(user)
     viewer_group_ids = set()
     viewer_is_event_waitlisted = False
     if user and not viewer_is_event_staff:

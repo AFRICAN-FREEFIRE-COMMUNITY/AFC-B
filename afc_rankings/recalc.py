@@ -292,7 +292,7 @@ def _player_team_at_eval(player, season):
     return row.team if row else None
 
 
-def run_evaluation(season, user=None, *, dry_run=False, force=False):
+def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=True):
     """Quarterly EVALUATION — lock every team/player tier for the season (§16).
 
     Order matters: teams are tiered first (from their final score with the §7.4 activity
@@ -301,6 +301,20 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False):
     rows are LEFT UNTOUCHED — evaluation never silently un-bans or un-overrides. A successful
     run stamps ``Season.tier_eval_run/_at/_by`` + ``scores_frozen_at`` and each row's
     ``tier_assigned_at``.
+
+    recompute=True (default, REAL runs only): before tiering, rebuild the season's quarterly
+    SCORES from match results via ``recalc_season(season)``. WHY (owner bug 2026-06-29: "I ran
+    evaluation and got nothing even though results were inputted"): tiering only re-tiers
+    ``*QuarterlyScore`` rows that ALREADY exist, and those rows are normally kept fresh by the
+    signal-driven (Celery) recalc pipeline. If that pipeline never ran for this season (no
+    worker, or results entered before the season was active), the rows are missing/empty and
+    evaluation produces NOTHING. Recomputing here makes "Run evaluation" self-sufficient: it
+    derives the scores straight from the match stats in the season window first, THEN tiers
+    them. This is a deliberate, explicit admin batch action (like ``manage.py recalc_rankings``)
+    — NOT the live-edit hot path the "recalc is never inline" rule guards, so running it
+    synchronously here is correct. It runs OUTSIDE the tier-lock transaction so the heavy
+    recompute never holds the season row lock. dry_run skips it (a preview must write nothing);
+    pass recompute=False to tier the existing rows as-is (tests / callers that pre-seed scores).
 
     dry_run=True computes the would-be changes and returns them WITHOUT writing anything.
     force=True re-runs an already-evaluated season; without it a second run is rejected.
@@ -313,6 +327,14 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False):
     # re-run guard (skipped for a dry run, which writes nothing)
     if season.tier_eval_run and not force and not dry_run:
         return {"ok": False, "error": "Season already evaluated — re-run with force=true to overwrite."}
+
+    # Refresh the season's quarterly SCORES from match results before tiering (real runs only).
+    # See the docstring: this is what makes evaluation return tiers even if the async recalc
+    # pipeline never built the score rows. Done before the atomic tier-lock so the recompute
+    # (which writes many rows + reranks) doesn't hold the season select_for_update lock.
+    recomputed = bool(recompute and not dry_run)
+    if recomputed:
+        recalc_season(season)
 
     now = timezone.now()
     team_changes, player_changes = [], []
@@ -400,8 +422,22 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False):
     for c in team_changes:
         if c["new_tier"] is not None:
             dist[c["new_tier"]] = dist.get(c["new_tier"], 0) + 1
+    # When NOTHING was evaluated, tell the admin WHY (the old silent "0" is what made this look
+    # broken). After a recompute, empty means there are genuinely no countable results in the
+    # season's date window; without a recompute it means the score rows were never built.
+    note = ""
+    if not team_changes and not player_changes:
+        note = (
+            "No tournament results were found in this season's date range, so there is nothing "
+            "to tier. Check that results have been entered and that the season's start/end dates "
+            "cover them."
+            if recomputed else
+            "No quarterly scores exist for this season yet. Run a real evaluation (not a dry run) "
+            "so the scores are rebuilt from match results first."
+        )
     return {
         "ok": True, "dry_run": dry_run, "force": force, "season_id": season.season_id,
+        "recomputed": recomputed, "note": note,
         "teams_evaluated": len(team_changes), "players_evaluated": len(player_changes),
         "tier_distribution": dist, "team_changes": team_changes, "player_changes": player_changes,
     }
