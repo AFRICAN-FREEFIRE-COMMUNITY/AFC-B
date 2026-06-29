@@ -80,6 +80,12 @@ class Event(models.Model):
     event_status = models.CharField(max_length=20, choices=EVENT_STATUS_CHOICES)
     registration_link = models.URLField()
     tournament_tier = models.CharField(max_length=20, choices=TOURNAMENT_TIER_CHOICES, default="tier_3")
+    # tier_overridden (owner 2026-06-30): True when a HEAD or SUPER admin manually set the tier,
+    # which pins it so the automatic classifier (afc_rankings EventTierRule, run on create/edit via
+    # afc_tournament_and_scrims.views.apply_event_tier) never overwrites the manual decision. False =
+    # the tier is auto-classified from the event's prize/teams/format. Mirrors the rankings
+    # TeamQuarterlyScore.tier_overridden pattern (a manual lock the recalc respects).
+    tier_overridden = models.BooleanField(default=False)
     # rankings §4/§7.2 — prize money conversion locked at award date
     prize_currency = models.CharField(max_length=3, default="NGN")  # USD | NGN
     usd_to_ngn_rate = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)

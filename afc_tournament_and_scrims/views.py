@@ -88,6 +88,64 @@ def _can_see_all_group_rooms(user):
         user.userroles.filter(role__role_name__in=["head_admin", "event_admin"]).exists()
 
 
+# ── tier override gate (owner 2026-06-30) ──
+# Who may MANUALLY override an event's auto-classified tournament tier: ONLY a super admin
+# (User.role == "admin") or a head_admin. NOT event_admins, NOT organizers — the owner wants the
+# tier (a cross-event ranking weight) lockable only at the top. Tighter than _is_event_admin.
+def _is_head_or_super_admin(user):
+    if not user:
+        return False
+    return user.role == "admin" or \
+        user.userroles.filter(role__role_name="head_admin").exists()
+
+
+# ── automatic tournament-tier classification (owner 2026-06-30) ──
+# Compute an event's tier (tier_1/2/3) from the admin "Tournament Tiers" rules
+# (afc_rankings.EventTierRule, first-match-wins) so events are "actually ranked into tiers"
+# instead of every event silently defaulting to tier_3. Builds the same sample shape the rules
+# classifier expects (prize / teams / players / format), then maps the int tier back to the
+# Event.tournament_tier code string. Fail-soft: any error / no rules -> keep the event's current
+# tier (never crash event create/edit over a classification hiccup).
+def auto_classify_event(event):
+    try:
+        from afc_rankings.admin_tournament_tiers import classify, _get_config
+        from afc_rankings.models import EventTierRule
+        is_solo = event.participant_type == "solo"
+        cap = int(event.max_teams_or_players or 0)
+        # Event.event_mode -> the classifier's lan/virtual format. hybrid counts as lan (it has a
+        # physical leg); the classifier ignores an unknown/None format (no format rule fires).
+        fmt = {"physical(lan)": "lan", "virtual": "virtual", "hybrid": "lan"}.get(event.event_mode)
+        sample = {
+            "prize": int(event.prizepool_cash_value or 0),
+            "teams": 0 if is_solo else cap,
+            "players": cap if is_solo else 0,
+            "format": fmt,
+        }
+        rules = list(EventTierRule.objects.all().order_by("priority", "created_at"))
+        result = classify(rules, _get_config().default_tier, sample)
+        return f"tier_{result['tier']}"
+    except Exception:
+        return event.tournament_tier or "tier_3"
+
+
+def apply_event_tier(event, user, data):
+    """Set event.tournament_tier on create/edit: a HEAD/SUPER admin's explicit pick OVERRIDES (and
+    pins, via tier_overridden) the auto classifier; everyone else's tier is auto-classified from the
+    rules. A previously-overridden event is left alone unless a head/super admin changes it again.
+    Persists tournament_tier + tier_overridden. (owner 2026-06-30: "both, but only head/super can override".)
+    """
+    requested = data.get("tournament_tier")
+    if requested and _is_head_or_super_admin(user):
+        # Manual override by a head/super admin -> pin it.
+        event.tournament_tier = requested
+        event.tier_overridden = True
+    elif not event.tier_overridden:
+        # Not pinned (and the editor can't override) -> auto-classify from the rules.
+        event.tournament_tier = auto_classify_event(event)
+    # else: pinned by a prior head/super override + this editor can't override -> keep as-is.
+    event.save(update_fields=["tournament_tier", "tier_overridden"])
+
+
 from celery import shared_task
 from django.utils import timezone
 from django.utils.text import slugify  # event re-slug on rename (edit_event, owner 2026-06-29)
@@ -1339,6 +1397,50 @@ def _round_robin_stage_echo(stage):
 
 
 @api_view(["POST"])
+def set_event_tier(request, event_id):
+    """Manually OVERRIDE (or reset) an event's tournament tier. HEAD/SUPER admin only.
+
+    Owner 2026-06-30 ("both, but only head/super can override"): the tier is normally
+    auto-classified from the Tournament Tiers rules (apply_event_tier on create/edit). This
+    endpoint lets a head/super admin pin a specific tier, or reset to auto.
+
+    Request:  { "tournament_tier": "tier_1"|"tier_2"|"tier_3" }  -> pin that tier (tier_overridden=True)
+              { "reset": true }                                  -> clear the override + re-classify
+    Response: { tournament_tier, tier_overridden }.
+    Consumed by the admin event detail page (app/(a)/a/events/[slug]/page.tsx) tier control.
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    # Gate: only a super admin or head_admin may touch the tier (not event_admins/organizers).
+    if not _is_head_or_super_admin(user):
+        return Response({"message": "Only a head or super admin can override an event's tier."}, status=403)
+
+    event = Event.objects.filter(event_id=event_id).first()
+    if not event:
+        return Response({"message": "Event not found."}, status=404)
+
+    if request.data.get("reset"):
+        # Clear the manual lock + re-classify from the rules.
+        event.tier_overridden = False
+        event.tournament_tier = auto_classify_event(event)
+        event.save(update_fields=["tournament_tier", "tier_overridden"])
+        return Response({"tournament_tier": event.tournament_tier, "tier_overridden": False}, status=200)
+
+    requested = request.data.get("tournament_tier")
+    valid = {c[0] for c in Event.TOURNAMENT_TIER_CHOICES}
+    if requested not in valid:
+        return Response({"message": f"tournament_tier must be one of {sorted(valid)}."}, status=400)
+    event.tournament_tier = requested
+    event.tier_overridden = True
+    event.save(update_fields=["tournament_tier", "tier_overridden"])
+    return Response({"tournament_tier": event.tournament_tier, "tier_overridden": True}, status=200)
+
+
+@api_view(["POST"])
 def create_event(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
@@ -1660,6 +1762,11 @@ def create_event(request):
             # impossible threshold. Enforced in register_for_event; toggled in Step1EventDetails.
             min_letter_avatars=_parse_min_letter_avatars(request.data.get("min_letter_avatars")),
         )
+
+        # Set the tournament tier: a head/super admin's explicit pick overrides, otherwise
+        # auto-classify from the Tournament Tiers rules (owner 2026-06-30). Runs after create so
+        # the classifier sees the event's final prize/teams/format.
+        apply_event_tier(event, user, request.data)
 
         # change sponsor_usernames to a list
         sponsor_usernames = _as_list(sponsor_usernames)
@@ -2796,10 +2903,14 @@ def edit_event(request):
     for field in [
         "competition_type", "participant_type",
         "max_teams_or_players", "event_name", "event_mode",
-        "event_status", "registration_link", "tournament_tier",
+        "event_status", "registration_link",
         "event_rules", "is_draft", "is_public", "event_type"
     ]:
         update_field(field)
+    # NOTE: tournament_tier is intentionally NOT in the loop above (owner 2026-06-30): it is set by
+    # apply_event_tier() after the save below, which auto-classifies from the Tournament Tiers rules
+    # and only lets a HEAD/SUPER admin override + pin it. Letting any editor set it directly here
+    # would bypass that gate.
 
     for date_field in ["start_date", "end_date", "registration_open_date", "registration_end_date"]:
         update_field(date_field, parse_date)
@@ -3095,6 +3206,11 @@ def edit_event(request):
 
     with transaction.atomic():
         event.save()
+
+        # Re-apply the tournament tier after the edit saved the event's prize/teams/format:
+        # a head/super admin's explicit pick overrides + pins it, otherwise it is re-classified
+        # from the Tournament Tiers rules (owner 2026-06-30). Skipped-effect when pinned.
+        apply_event_tier(event, user, request.data)
 
         # new_data = {
         #     "event_name": event.event_name,
@@ -4274,6 +4390,9 @@ def get_event_details(request):
         "event_status": event.event_status,
         "registration_link": event.registration_link,
         "tournament_tier": event.tournament_tier,
+        # tier_overridden (owner 2026-06-30): True when a head/super admin pinned the tier (vs
+        # auto-classified). The admin event detail page shows "Auto" vs "Overridden" + the control.
+        "tier_overridden": event.tier_overridden,
         "registration_restriction": event.registration_restriction,
         "restriction_mode": event.restriction_mode,
         "restricted_countries": event.restricted_countries,
