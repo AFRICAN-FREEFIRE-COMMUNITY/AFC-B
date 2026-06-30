@@ -281,6 +281,8 @@ urlpatterns = [
     path("flagged-kills/", get_event_flagged_kills, name="get_event_flagged_kills"),
     path("flagged-kills/set/", set_event_flagged_kills, name="set_event_flagged_kills"),
     path("flagged-kills/flag/", set_match_kill_flag, name="set_match_kill_flag"),
+    # Attribute one unmatched in-game team block to a registered team (or clear it). owner 2026-06-30.
+    path("flagged-kills/unmatched-team/", attribute_unmatched_team, name="attribute_unmatched_team"),
     path("broadcast-announcement/", broadcast_announcement, name="broadcast_announcement"),
     # per-group broadcast composer (AFC official + organizer). See broadcast_to_group.
     path("broadcast-to-group/", broadcast_to_group, name="broadcast_to_group"),

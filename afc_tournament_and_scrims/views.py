@@ -18178,6 +18178,7 @@ def upload_team_match_result(request):
     # FLAGGED for the admin/organizer below — never silently dropped (the old bug).
     from collections import defaultdict
     from .models import MatchKillFlag  # ringer flags persisted below (owner 2026-06-16)
+    from .models import UnmatchedTeamBlock  # unmatched team blocks persisted below (owner 2026-06-30)
 
     all_uids = [p["uid"] for t in parsed_teams for p in t["players"]]
 
@@ -18350,11 +18351,21 @@ def upload_team_match_result(request):
                  for fl in MatchKillFlag.objects.filter(match=match)
                  if fl.count_kills is not None}
 
-        # Safe re-upload (idempotent): clear this match's prior stats AND its ringer flags so the
-        # whole result is re-derived from the freshly uploaded file.
+        # Same idea for UNMATCHED-team attributions (owner 2026-06-30): snapshot which registered team
+        # each in-game block was attributed to, keyed by in-game name, so a re-upload restores the admin's
+        # decision after the blocks are re-derived. NULL (unresolved) decisions don't need restoring.
+        prior_block_attr = {
+            blk.team_name: blk.attributed_team_id
+            for blk in UnmatchedTeamBlock.objects.filter(match=match)
+            if blk.attributed_team_id is not None
+        }
+
+        # Safe re-upload (idempotent): clear this match's prior stats, ringer flags AND unmatched-team
+        # blocks so the whole result is re-derived from the freshly uploaded file.
         TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
         TournamentTeamMatchStats.objects.filter(match=match).delete()
         MatchKillFlag.objects.filter(match=match).delete()
+        UnmatchedTeamBlock.objects.filter(match=match).delete()
 
         # -------- CREATE TEAM STATS --------
         for team_data in parsed_teams:
@@ -18437,6 +18448,22 @@ def upload_team_match_result(request):
                             })
                         else:
                             missing_teams.append(team_data["team_name"])
+                            # Persist the block (owner 2026-06-30) so it can be attributed to a registered
+                            # team later from the SAME flagged panel (no re-upload). Store its placement +
+                            # total kills; restore the admin's prior attribution across a re-upload (only
+                            # when that team still exists in the event). On dry_run the whole transaction
+                            # rolls back, so the preview lists the team without persisting anything.
+                            _blk_kills = sum(int(p.get("kills", 0)) for p in team_data["players"])
+                            _restored_tt = prior_block_attr.get(team_data["team_name"])
+                            if _restored_tt not in tt_by_id:
+                                _restored_tt = None
+                            UnmatchedTeamBlock.objects.create(
+                                match=match,
+                                team_name=team_data["team_name"],
+                                placement=team_data["placement"],
+                                kills=_blk_kills,
+                                attributed_team_id=_restored_tt,
+                            )
                         continue
 
             # Classify this block into ROSTERED players (count normally) vs FLAGGED ringers — a UID
@@ -21344,7 +21371,7 @@ def _recompute_team_kills_for_event(event):
     bonus/penalty preserved). Called after the toggle or a per-flag override changes."""
     from collections import defaultdict
     from django.db.models import Sum
-    from .models import MatchKillFlag
+    from .models import MatchKillFlag, UnmatchedTeamBlock
 
     counted_by_key = defaultdict(int)   # (match_id, tournament_team_id) -> Σ counted flagged kills
     for f in (MatchKillFlag.objects.filter(tournament_team__event=event)
@@ -21352,30 +21379,68 @@ def _recompute_team_kills_for_event(event):
         if f.effective_count:
             counted_by_key[(f.match_id, f.tournament_team_id)] += f.kills
 
+    # Admin-attributed unmatched-team blocks (owner 2026-06-30): a block attributed to a registered team
+    # adds its kills to that team's match total, and seeds a placement if the team has no row in the
+    # match (it appears ONLY via the attribution, e.g. "the saint" -> "The saints"). NULL-attributed
+    # blocks contribute nothing.
+    attr_kills = defaultdict(int)        # (match_id, tt_id) -> Σ attributed block kills
+    attr_placement = {}                  # (match_id, tt_id) -> placement to seed a brand-new row
+    for blk in (UnmatchedTeamBlock.objects
+                .filter(match__group__stage__event=event, attributed_team__isnull=False)
+                .select_related("match")):
+        key = (blk.match_id, blk.attributed_team_id)
+        attr_kills[key] += blk.kills
+        attr_placement.setdefault(key, blk.placement)
+
+    def _score(match, placement, kills, damage, assists, bonus, penalty, played):
+        scoring = match.scoring_settings or {}
+        try:
+            pp = {int(k): int(v) for k, v in (scoring.get("placement_points") or {}).items()}
+        except Exception:
+            pp = {}
+        return scoring_lib.compute_team_points(
+            placement_points=pp, kill_point=float(scoring.get("kill_point", 1)),
+            points_per_assist=0, points_per_1000_damage=0,
+            placement=placement, kills=kills, damage=damage, assists=assists,
+            bonus=bonus, penalty=penalty, played=played,
+        )
+
     updated = 0
+    seen = set()
     qs = (TournamentTeamMatchStats.objects
           .filter(tournament_team__event=event)
           .select_related("match"))
     for ts in qs:
+        key = (ts.match_id, ts.tournament_team_id)
+        seen.add(key)
         rostered = ts.player_stats.aggregate(s=Sum("kills"))["s"] or 0
-        flagged = counted_by_key.get((ts.match_id, ts.tournament_team_id), 0)
-        new_kills = rostered + flagged
-        scoring = ts.match.scoring_settings or {}
-        try:
-            placement_points = {int(k): int(v) for k, v in (scoring.get("placement_points") or {}).items()}
-        except Exception:
-            placement_points = {}
-        kill_point = float(scoring.get("kill_point", 1))
-        pts = scoring_lib.compute_team_points(
-            placement_points=placement_points, kill_point=kill_point,
-            points_per_assist=0, points_per_1000_damage=0,
-            placement=ts.placement, kills=new_kills, damage=ts.damage, assists=ts.assists,
-            bonus=ts.bonus_points or 0, penalty=ts.penalty_points or 0, played=ts.played,
-        )
+        new_kills = rostered + counted_by_key.get(key, 0) + attr_kills.get(key, 0)
+        pts = _score(ts.match, ts.placement, new_kills, ts.damage, ts.assists,
+                     ts.bonus_points or 0, ts.penalty_points or 0, ts.played)
         ts.kills = new_kills
         ts.kill_points = pts["kill_points"]
         ts.total_points = pts["total_points"]
         ts.save(update_fields=["kills", "kill_points", "total_points"])
+        updated += 1
+
+    # Attributed block whose team has NO stats row in that match yet -> create one (placement from the
+    # block, kills = its attributed total). This is how a team that only appears via the admin's
+    # attribution gets scored.
+    for key, kills in attr_kills.items():
+        if key in seen:
+            continue
+        match_id, tt_id = key
+        match = Match.objects.filter(match_id=match_id).first()
+        if not match:
+            continue
+        placement = attr_placement.get(key, 0)
+        pts = _score(match, placement, kills, 0, 0, 0, 0, True)
+        TournamentTeamMatchStats.objects.create(
+            match_id=match_id, tournament_team_id=tt_id, placement=placement,
+            kills=kills, damage=0, assists=0,
+            placement_points=pts["placement_points"], kill_points=pts["kill_points"],
+            total_points=pts["total_points"], played=True, penalty_points=0, bonus_points=0,
+        )
         updated += 1
     return updated
 
@@ -21441,11 +21506,38 @@ def get_event_flagged_kills(request):
         "count_kills": f.count_kills,            # null = follow the event default
         "effective_count": f.effective_count,    # resolved: does this player's kills count right now?
     } for f in flags]
+
+    # Unmatched-team blocks (owner 2026-06-30): in-game teams from a match-log upload that matched NO
+    # registered team. The panel lists them with an "attribute to / don't count" dropdown (event_teams
+    # are the options) so this one surface resolves BOTH ringer players and whole-team attribution.
+    from .models import UnmatchedTeamBlock
+    blocks = (UnmatchedTeamBlock.objects
+              .filter(match__group__stage__event=event)
+              .select_related("match", "attributed_team__team")
+              .order_by("team_name", "match_id"))
+    unmatched_rows = [{
+        "block_id": b.id,
+        "match_id": b.match_id,
+        "team_name": b.team_name,
+        "placement": b.placement,
+        "kills": b.kills,
+        "attributed_team_id": b.attributed_team_id,
+        "attributed_team_name": (b.attributed_team.team.team_name
+                                 if b.attributed_team_id and b.attributed_team.team_id else None),
+    } for b in blocks]
+    event_teams = sorted(
+        ({"tournament_team_id": tt.tournament_team_id, "team_name": tt.team.team_name}
+         for tt in TournamentTeam.objects.filter(event=event).select_related("team")),
+        key=lambda t: (t["team_name"] or "").lower(),
+    )
+
     return Response({
         "event_id": event.event_id,
         "count_flagged_kills": event.count_flagged_kills,
         "flags": rows,
         "flag_count": len(rows),
+        "unmatched_teams": unmatched_rows,
+        "event_teams": event_teams,
     })
 
 
@@ -21499,6 +21591,71 @@ def set_match_kill_flag(request):
         "flag_id": flag.id,
         "count_kills": flag.count_kills,
         "effective_count": flag.effective_count,
+        "team_rows_recomputed": updated,
+    })
+
+
+def _cleanup_attribution_only_stat(match, tt_id):
+    """Delete the TournamentTeamMatchStats for (match, tt_id) IF that team only existed in the match via
+    an unmatched-block attribution that has now been removed/changed — i.e. it has NO player stats, NO
+    ringer flags, and NO (remaining) attributed block in the match. Guards a real played/manual row from
+    deletion (those have player_stats or flags). owner 2026-06-30."""
+    from .models import MatchKillFlag, UnmatchedTeamBlock
+    has_players = TournamentPlayerMatchStats.objects.filter(
+        team_stats__match=match, team_stats__tournament_team_id=tt_id).exists()
+    has_flags = MatchKillFlag.objects.filter(match=match, tournament_team_id=tt_id).exists()
+    has_block = UnmatchedTeamBlock.objects.filter(
+        match=match, attributed_team_id=tt_id).exists()
+    if not (has_players or has_flags or has_block):
+        TournamentTeamMatchStats.objects.filter(match=match, tournament_team_id=tt_id).delete()
+
+
+@api_view(["PATCH"])
+def attribute_unmatched_team(request):
+    """PATCH events/flagged-kills/unmatched-team/ — attribute one unmatched in-game team block to a
+    registered team (its placement + kills are then scored for that team), or clear it (null = don't
+    count). Body: {block_id, tournament_team_id: int|null}. Auth: AFC event admin OR org member with
+    can_upload_results on the block's event. Consumed by the FlaggedKillsPanel unmatched-teams section.
+
+    On a change we recompute the whole event (the attributed team's row + kills are produced by
+    _recompute_team_kills_for_event) and clean up the OLD team's row if it only existed via this
+    attribution. Returns the updated block."""
+    block_id = request.data.get("block_id")
+    if not block_id:
+        return Response({"message": "block_id is required."}, status=400)
+    from .models import UnmatchedTeamBlock
+    block = get_object_or_404(
+        UnmatchedTeamBlock.objects.select_related("match__group__stage__event"), id=block_id)
+    event = block.match.group.stage.event
+    admin, err = _auth_event_results(request, event)
+    if err:
+        return err
+
+    # Resolve the target team: null/'' clears the attribution; otherwise it must be a team registered
+    # for THIS event (so a block can't be scored for an unrelated team).
+    raw = request.data.get("tournament_team_id")
+    new_tt_id = None
+    if raw not in (None, "", "null"):
+        try:
+            new_tt_id = int(raw)
+        except (TypeError, ValueError):
+            return Response({"message": "tournament_team_id must be an integer or null."}, status=400)
+        if not TournamentTeam.objects.filter(tournament_team_id=new_tt_id, event=event).exists():
+            return Response({"message": "That team is not registered for this event."}, status=400)
+
+    old_tt_id = block.attributed_team_id
+    block.attributed_team_id = new_tt_id
+    block.save(update_fields=["attributed_team"])
+
+    # If we moved the points off a team it only reached via this block, drop its now-empty row.
+    if old_tt_id and old_tt_id != new_tt_id:
+        _cleanup_attribution_only_stat(block.match, old_tt_id)
+
+    updated = _recompute_team_kills_for_event(event)
+    return Response({
+        "message": "Team attribution updated.",
+        "block_id": block.id,
+        "attributed_team_id": block.attributed_team_id,
         "team_rows_recomputed": updated,
     })
 
