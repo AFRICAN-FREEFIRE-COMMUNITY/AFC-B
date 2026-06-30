@@ -395,6 +395,44 @@ class MarketReport(models.Model):
         return f"MarketReport({self.subject_type} {who} {self.category} [{self.status}])"
 
 
+class MarketReportEvidence(models.Model):
+    """One evidence attachment (image OR video) on a MarketReport (owner 2026-06-30).
+
+    Supersedes the single MarketReport.evidence ImageField with a one-to-many so a reporter can
+    attach MULTIPLE screenshots AND screen-recording VIDEOS as proof, and a moderator can view/play
+    every one of them on the report. Mirrors RecruitmentPostImage (a child row with a FK + ordering
+    column). The legacy MarketReport.evidence field is KEPT for old rows; new reports populate THIS
+    table (and the endpoint mirrors the first image back into evidence for any reader of that field).
+
+    `file` is a plain FileField (not ImageField) so it accepts videos as well as images; both share
+    one media folder. `media_type` is derived from the upload's content-type at save time ("image" or
+    "video") so the admin UI can pick an <img> vs a <video controls> player without sniffing the URL.
+
+    Consumed by:
+      • POST /player-market/report-post/  (file_market_report)  — rows created here (_save_report_evidence).
+      • serialized (relative url + media_type, ordered) by views_moderation._serialize_report -> the
+        admin "Reports & Flags" gallery on app/(a)/a/player-markets/page.tsx.
+    """
+    MEDIA_TYPE_CHOICES = [("image", "Image"), ("video", "Video")]
+
+    report = models.ForeignKey(
+        "MarketReport", on_delete=models.CASCADE, related_name="evidence_files",
+    )
+    # Plain FileField so videos are allowed too; same upload folder as the legacy single image.
+    file = models.FileField(upload_to="market_report_evidence/")
+    media_type = models.CharField(max_length=10, choices=MEDIA_TYPE_CHOICES, default="image")
+    # Display order (0,1,2,...) so the moderator gallery renders in attach order.
+    order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["order", "id"]
+        indexes = [models.Index(fields=["report", "order"])]
+
+    def __str__(self):
+        return f"MarketReportEvidence(report={self.report_id} {self.media_type})"
+
+
 class MarketBan(models.Model):
     """A moderator-applied ban blocking a player or a team from the player market.
 
