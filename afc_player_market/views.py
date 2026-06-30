@@ -217,6 +217,43 @@ def _validate_video_url(raw):
     return url, None
 
 
+def _resolve_video_url(url):
+    """Resolve a TikTok SHARE SHORT link to its canonical video URL so the FE can EMBED it instead
+    of linking out (owner 2026-06-30).
+
+    TikTok's share button hands out vm.tiktok.com / vt.tiktok.com / tiktok.com/t/<code> short links
+    that carry NO /video/<id> in the path, so lib/videoEmbed.parseVideoEmbed can't build a player and
+    falls back to an outbound link. Following the redirect yields the real
+    tiktok.com/@user/video/<id> URL (which DOES embed). We strip the tracking query so the stored URL
+    stays clean + under the 300-char cap. Everything else (full TikTok/YouTube/Instagram links) passes
+    through unchanged. Fail-soft: any network error / non-redirect returns the ORIGINAL url (the FE
+    then just renders the plain link, same as before).
+    """
+    if not url:
+        return url
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+        is_short = host in ("vm.tiktok.com", "vt.tiktok.com") or (
+            host.endswith("tiktok.com") and "/t/" in urlparse(url).path
+        )
+        if not is_short:
+            return url
+        import requests
+        resp = requests.head(
+            url, allow_redirects=True, timeout=6,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; AFCBot/1.0)"},
+        )
+        final = (resp.url or "").split("?")[0]  # canonical, drop ?_t=... tracking params
+        # Only accept a resolved URL that actually points at a video (has /video/<id>); else keep
+        # the original (e.g. a profile short link with no specific video can't be embedded).
+        if final and "/video/" in final and len(final) <= 300:
+            return final
+    except Exception:
+        pass
+    return url
+
+
 # ==============================================================================
 #  "Player Available Post" feature set (owner 2026-06-29)
 # ==============================================================================
@@ -572,7 +609,8 @@ def create_recruitment_post(request):
             video_url, video_err = _validate_video_url(data.get("video_url"))
             if video_err:
                 return Response({"message": video_err}, status=400)
-            post.video_url = video_url
+            # Resolve TikTok short links to the embeddable canonical URL (owner 2026-06-30).
+            post.video_url = _resolve_video_url(video_url)
             # OPTIONAL residential state (feature 3). Free CharField storing the ISO-3166-2
             # subdivision NAME the FE picker emits; blank when the player skips it. Trimmed to
             # the column cap. Not validated against pycountry here (the FE locks the picker to
@@ -2364,7 +2402,8 @@ def edit_recruitment_post(request):
             video_url, video_err = _validate_video_url(data.get("video_url"))
             if video_err:
                 return Response({"message": video_err}, status=400)
-            post.video_url = video_url
+            # Resolve TikTok short links to the embeddable canonical URL (owner 2026-06-30).
+            post.video_url = _resolve_video_url(video_url)
 
         # OPTIONAL residential state (feature 3): present-key-wins, so sending "" clears it.
         # residential_country (refinement) follows the state: we only (re)derive the country from the
