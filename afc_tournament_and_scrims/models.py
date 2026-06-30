@@ -764,6 +764,41 @@ class MatchKillFlag(models.Model):
         return bool(ev.count_flagged_kills) if ev else True
 
 
+class UnmatchedTeamBlock(models.Model):
+    """A team block from a match-log FILE upload whose in-game name matched NO registered team
+    (owner 2026-06-30). Instead of silently dropping it, the upload PERSISTS it so an admin/organizer
+    can attribute its result to a registered team (or leave it uncounted) from the SAME persistent
+    panel that resolves ringer players - one place for every upload-attribution decision, no re-upload.
+
+    Stores the block's placement + total kills (its KillScore) so attribution re-scores WITHOUT the
+    file. When `attributed_team` is set, that team's TournamentTeamMatchStats for the match is created
+    (with this block's placement if it had no row) and this `kills` is added to its total by
+    _recompute_team_kills_for_event. NULL `attributed_team` = unresolved / "don't count" (nothing
+    scored). Re-derived on every idempotent re-upload of the match (old rows cleared first); the
+    admin's prior attribution is restored across a re-upload, mirroring MatchKillFlag's approval restore.
+
+    Consumed by: views.upload_team_match_result (create + restore), get_event_flagged_kills (list),
+    attribute_unmatched_team (set), _recompute_team_kills_for_event (scoring).
+    """
+    match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="unmatched_team_blocks")
+    team_name = models.CharField(max_length=120)        # in-game team name from the file
+    placement = models.PositiveIntegerField(default=0)  # the block's Rank in the file
+    kills = models.PositiveIntegerField(default=0)      # the block's KillScore (team kill total)
+    # The registered team an admin attributed this block to. NULL = unresolved (its points are NOT
+    # counted). SET_NULL so removing a team from the event doesn't delete the upload record.
+    attributed_team = models.ForeignKey(TournamentTeam, null=True, blank=True,
+                                        on_delete=models.SET_NULL, related_name="attributed_blocks")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # One row per (match, in-game name): a re-upload clears the match's rows first; a team name
+        # appears once per block.
+        unique_together = ("match", "team_name")
+
+    def __str__(self):
+        return f"UnmatchedTeamBlock({self.team_name!r} m={self.match_id} -> {self.attributed_team_id})"
+
+
 class EventPageView(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="pageviews")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)  # if available

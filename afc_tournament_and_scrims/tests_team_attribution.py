@@ -157,3 +157,45 @@ class TeamAttributionTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertIn("ZZZ UNKNOWN CLAN", resp.json().get("missing_teams", []))
         self.assertIsNone(self._team_stat(target), "nothing should be scored without an attribution")
+
+    # ── 3. PERSISTENT block + attribute/unattribute from the panel endpoint ───────────────────────
+    def test_persistent_block_attribute_and_unattribute(self):
+        from afc_tournament_and_scrims.models import UnmatchedTeamBlock
+        target = self._register("Phoenix Squad", ["8001", "8002", "8003", "8004"])
+        log = (
+            "TeamName: ZZZ UNKNOWN CLAN  Rank: 1  KillScore: 6  RankScore: 12  TotalScore: 18\n"
+            "NAME: zz.one  ID: 5001  KILL: 4\n"
+            "NAME: zz.two  ID: 5002  KILL: 2\n"
+        )
+        # Real upload (not dry-run) -> the unmatched block PERSISTS, unresolved (not scored yet).
+        self.assertEqual(self._upload(log).status_code, 200)
+        blk = UnmatchedTeamBlock.objects.get(match=self.match, team_name="ZZZ UNKNOWN CLAN")
+        self.assertIsNone(blk.attributed_team_id)
+        self.assertEqual((blk.kills, blk.placement), (6, 1))
+        self.assertIsNone(self._team_stat(target))
+
+        auth = {"HTTP_AUTHORIZATION": f"Bearer {self.token.token}"}
+        # GET flagged-kills lists the block + the registered teams as options.
+        g = self.client.get(f"/events/flagged-kills/?event_id={self.event.event_id}", **auth).json()
+        self.assertTrue(any(u["block_id"] == blk.id for u in g["unmatched_teams"]))
+        self.assertTrue(any(t["tournament_team_id"] == target.tournament_team_id for t in g["event_teams"]))
+
+        # Attribute -> the team is scored (placement + kills).
+        a = self.client.patch(
+            "/events/flagged-kills/unmatched-team/",
+            data={"block_id": blk.id, "tournament_team_id": target.tournament_team_id},
+            format="json", **auth,
+        )
+        self.assertEqual(a.status_code, 200, a.content)
+        st = self._team_stat(target)
+        self.assertIsNotNone(st)
+        self.assertEqual((st.placement, st.kills), (1, 6))
+
+        # Unattribute (null) -> the attribution-only row is cleaned up.
+        a2 = self.client.patch(
+            "/events/flagged-kills/unmatched-team/",
+            data={"block_id": blk.id, "tournament_team_id": None},
+            format="json", **auth,
+        )
+        self.assertEqual(a2.status_code, 200, a2.content)
+        self.assertIsNone(self._team_stat(target))
