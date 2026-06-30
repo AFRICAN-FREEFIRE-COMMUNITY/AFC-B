@@ -38,6 +38,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from .models import User
+from .models import FxRate  # multi-currency FX rates (owner 2026-06-30)
 from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -2401,6 +2402,12 @@ def edit_profile(request):
     user.email = email
     user.uid = uid
     user.language = language
+    # Multi-currency (owner 2026-06-30): persist the chosen display currency ONLY when the request
+    # includes it (absent = leave unchanged, so a partial save can't wipe it; mirrors the UID-preserve
+    # rule). "" clears it -> resolver falls back to the country-derived currency.
+    pref_ccy = request.data.get("preferred_currency", None)
+    if pref_ccy is not None:
+        user.preferred_currency = (pref_ccy or "").upper()[:3]
     user.save()
 
     # Update or create UserProfile
@@ -2417,6 +2424,8 @@ def edit_profile(request):
         "country": user.country,
         # i18n Phase 0: echo back the saved language so the FE can confirm + sync its locale/cookie.
         "language": user.language or "en",
+        # Multi-currency: echo the saved display currency (uppercased; "" = country-derived default).
+        "preferred_currency": user.preferred_currency or "",
         "in_game_name": user.username,
         "email": user.email,
         "uid": user.uid,
@@ -6101,3 +6110,58 @@ def get_news_likes_dislikes_count(request):
         "is_liked_by_user": is_liked,
         "is_disliked_by_user": is_disliked,
     }, status=status.HTTP_200_OK)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# fx_rates — public FX rates for the frontend money layer (multi-currency, owner 2026-06-30).
+#
+# GET /auth/fx-rates/  ->  {
+#   "base": "USD",
+#   "rates": { "NGN": "1378.20", "GHS": "11.27", ... },   # units per 1 USD (string decimals)
+#   "currency": "NGN",        # the VIEWER's resolved display currency (auth optional)
+#   "charge_markup": "0.03",  # FX buffer applied to CHARGES (display uses the raw rate)
+#   "updated_at": "..."
+# }
+# The frontend lib/fx.ts fetches + caches this; lib/money.ts formatMoney() converts USD->currency.
+# No auth required (rates are public); if a Bearer token is present we also return that user's
+# resolved display currency so the FE can default the picker. Never errors (rates fail-soft).
+# ─────────────────────────────────────────────────────────────────────────────
+@api_view(["GET"])
+def fx_rates(request):
+    from . import fx
+    rates = fx.get_rates()
+    viewer_currency = "USD"
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        u = validate_token(auth.split(" ")[1])
+        if u:
+            viewer_currency = fx.user_currency(u)
+    newest = FxRate.objects.order_by("-updated_at").first()
+    return Response({
+        "base": "USD",
+        "rates": {c: str(r) for c, r in rates.items()},
+        "currency": viewer_currency,
+        "charge_markup": str(fx.FX_CHARGE_MARKUP),
+        "updated_at": newest.updated_at.isoformat() if newest else None,
+    }, status=200)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# set_preferred_currency — set ONLY the user's display currency (multi-currency, owner 2026-06-30).
+#
+# POST /auth/set-currency/  body { "currency": "NGN" }  (or "" to clear -> country-derived default)
+# Dedicated endpoint (NOT edit_profile, which sets every profile field unconditionally and would WIPE
+# the profile on a partial save — the UID-wipe lesson). Bearer auth. Returns the saved currency.
+# Called by the frontend CurrencyContext.setCurrency (the currency picker).
+# ─────────────────────────────────────────────────────────────────────────────
+@api_view(["POST"])
+def set_preferred_currency(request):
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    currency = (request.data.get("currency") or "").upper()[:3]
+    user.preferred_currency = currency
+    user.save(update_fields=["preferred_currency"])
+    return Response({"preferred_currency": user.preferred_currency or ""}, status=200)
