@@ -18102,6 +18102,21 @@ def upload_team_match_result(request):
     # players, then re-calls the SAME endpoint WITHOUT dry_run to actually save. Real path unchanged.
     dry_run = _as_bool(request.data.get("dry_run"))
 
+    # MANUAL TEAM ATTRIBUTION (owner 2026-06-30): a map { in-game TeamName -> tournament_team_id } the
+    # admin picked in the review for blocks that did NOT auto-resolve to a registered team. A block whose
+    # name is in this map is SCORED for the chosen registered team (placement + its players' kills via the
+    # usual flag path) instead of being dropped; a block left unmapped stays in missing_teams ("don't
+    # count"). Only honoured for a team registered to THIS event and not already claimed by a UID/name
+    # block this match (per-match unique_together). Sent by FileUploadStep's missing-teams resolver.
+    team_attributions_raw = _maybe_json(request.data.get("team_attributions"), default={})
+    team_attributions = {}
+    if isinstance(team_attributions_raw, dict):
+        for _k, _v in team_attributions_raw.items():
+            try:
+                team_attributions[str(_k).strip()] = int(_v)
+            except (TypeError, ValueError):
+                continue
+
     match = get_object_or_404(Match, match_id=match_id)
 
     if not match.group:
@@ -18199,6 +18214,11 @@ def upload_team_match_result(request):
     roster_mismatch_teams = []
     def _norm_tname(n):
         return re.sub(r"[^a-z0-9]", "", (n or "").lower())
+    # Singular/plural fold (owner 2026-06-30): drop a single trailing 's' so "the saint" still resolves
+    # to the registered "The saints" (and vice versa). Used ONLY as a fallback when the exact normalized
+    # name misses, and ONLY when it yields a UNIQUE team — so it never silently merges two distinct teams.
+    def _sing_tname(s):
+        return s[:-1] if s.endswith("s") else s
     name_to_tt = {}
     for _tt in TournamentTeam.objects.filter(event=event).select_related("team"):
         name_to_tt.setdefault(_norm_tname(_tt.team.team_name), []).append(_tt)
@@ -18350,7 +18370,20 @@ def upload_team_match_result(request):
             if not team_obj:
                 # Team UID-unresolved. If the block's NAME matches exactly one registered team, the
                 # team EXISTS but fielded off-roster players (the owner's "team obviously exists" case).
-                _matched = name_to_tt.get(_norm_tname(team_data["team_name"])) or []
+                _norm_q = _norm_tname(team_data["team_name"])
+                _matched = name_to_tt.get(_norm_q) or []
+                if not _matched:
+                    # Singular/plural fallback (owner 2026-06-30): the exact normalized name missed, so try
+                    # folding a trailing 's' off both sides ("the saint" <-> registered "The saints"). Collect
+                    # every team whose singular form equals the query's; the UNIQUE-match adoption below then
+                    # accepts it ONLY if it resolves to exactly one team (ambiguous stays unmatched, so two
+                    # genuinely different "Saint"/"Saints" teams are never merged by accident).
+                    _q_sing = _sing_tname(_norm_q)
+                    _matched = [
+                        tt for _k, _lst in name_to_tt.items()
+                        if _sing_tname(_k) == _q_sing
+                        for tt in _lst
+                    ]
                 # TEAM NAME-MATCH ADOPTION (requirement 1, owner 2026-06-29): adopt the team by NAME so
                 # it is scored (placement points) instead of being skipped entirely. Adopt ONLY a
                 # UNIQUE (len==1) name match that no UID block already claimed this match — preserving
@@ -18374,18 +18407,37 @@ def upload_team_match_result(request):
                     # DO NOT continue -> fall through to the classification below so the team gets its
                     # TournamentTeamMatchStats row (placement points) and each player a pending flag.
                 else:
-                    # Not adopted: ambiguous (>1 match) or already claimed -> advisory/missing as before.
-                    team_data["_name_matched_tt"] = (_matched[0] if len(_matched) == 1 else None)
-                    if team_data["_name_matched_tt"]:
+                    # Not auto-adopted (ambiguous, already claimed, or no name match). Try the admin's
+                    # MANUAL ATTRIBUTION first (owner 2026-06-30): a registered team they picked for this
+                    # in-game block in the review. Honoured only for a valid event team not already claimed
+                    # this match (per-match uniqueness). When honoured we DO NOT continue -> the block falls
+                    # through to classification so the chosen team gets its placement + its players' kills.
+                    _attr_tt = tt_by_id.get(team_attributions.get(team_data["team_name"]))
+                    if _attr_tt and _attr_tt.tournament_team_id not in claimed_team_ids:
+                        team_obj = _attr_tt
+                        team_data["_team_obj"] = _attr_tt
+                        claimed_team_ids.add(_attr_tt.tournament_team_id)
+                        team_data["_name_matched_tt"] = _attr_tt
                         roster_mismatch_teams.append({
                             "team_name": team_data["team_name"],
-                            "site_team_name": team_data["_name_matched_tt"].team.team_name,
-                            "site_team_id": team_data["_name_matched_tt"].team_id,
-                            "tournament_team_id": team_data["_name_matched_tt"].tournament_team_id,
+                            "site_team_name": _attr_tt.team.team_name,
+                            "site_team_id": _attr_tt.team_id,
+                            "tournament_team_id": _attr_tt.tournament_team_id,
+                            "manual": True,          # admin-attributed (vs auto name-match)
                         })
                     else:
-                        missing_teams.append(team_data["team_name"])
-                    continue
+                        # No attribution -> advisory relabel (unique name match) or missing as before.
+                        team_data["_name_matched_tt"] = (_matched[0] if len(_matched) == 1 else None)
+                        if team_data["_name_matched_tt"]:
+                            roster_mismatch_teams.append({
+                                "team_name": team_data["team_name"],
+                                "site_team_name": team_data["_name_matched_tt"].team.team_name,
+                                "site_team_id": team_data["_name_matched_tt"].team_id,
+                                "tournament_team_id": team_data["_name_matched_tt"].tournament_team_id,
+                            })
+                        else:
+                            missing_teams.append(team_data["team_name"])
+                        continue
 
             # Classify this block into ROSTERED players (count normally) vs FLAGGED ringers — a UID
             # that played for this team but is NOT on its site roster (not_on_roster) or is
@@ -18750,6 +18802,14 @@ def upload_team_match_result(request):
         "saved_teams": len(created_team_stats),        # on dry_run: teams that WOULD be saved
         "saved_players": len(player_stats_to_create),  # on dry_run: players that WOULD be credited
         "missing_teams": missing_teams[:20],          # team blocks where NO player UID matched + name unknown
+        # Every team registered for this event (id + name) so the FE missing-teams resolver can offer an
+        # "attribute these points to..." dropdown (owner 2026-06-30). Re-uploading with the chosen ids in
+        # `team_attributions` scores those blocks for the picked teams. Sorted by name.
+        "event_teams": sorted(
+            ({"tournament_team_id": _tt.tournament_team_id, "team_name": _tt.team.team_name}
+             for _tt in tt_by_id.values()),
+            key=lambda t: (t["team_name"] or "").lower(),
+        ),
         "roster_mismatch_teams": roster_mismatch_teams[:20],  # team EXISTS on site but uploaded UIDs off-roster
         "attributed": attributed,                      # per-player kills credited (admin confirmation)
         "unknown_uids": unknown_players,               # file UIDs that could not be credited (+ reason)
