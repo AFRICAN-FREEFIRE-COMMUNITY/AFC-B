@@ -60,6 +60,14 @@ class User(AbstractUser):
     # (roster flag), afc_player.aggregation (public player profile), afc_player.views (admin detail).
     # Denormalized onto User (not read from LoginHistory) so list/roster serializers avoid an N+1.
     ip_country = models.CharField(max_length=40, blank=True, default='')
+    # ── Preferred display currency (multi-currency, owner 2026-06-30) ──────────────────────
+    # The platform stores money in USD and shows each user their own currency. This is the user's
+    # chosen display currency (ISO-4217, e.g. "NGN", "USD", "GHS"). BLANK = not chosen -> the
+    # resolver (afc_auth.fx.user_currency) derives it from the user's country (ip_country/country),
+    # falling back to USD. An explicit pick in profile settings stores it here and is never
+    # auto-overridden. Display-only: it never changes how money is STORED (always USD), only how the
+    # FE renders it (lib/money formatMoney via the /auth/fx-rates/ rates).
+    preferred_currency = models.CharField(max_length=3, blank=True, default='')
     # Preferred language code ("en"/"fr"/"pt"). See LANGUAGE_CHOICES above for the why + the readers/writers.
     # Default is BLANK on purpose (not "en"): blank means "not yet chosen/detected", which is what the
     # login() country auto-detect guard (`if not user.language`) keys off, so a first login from a
@@ -1001,3 +1009,27 @@ class ProfileSentiment(models.Model):
 
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FxRate — cached USD->currency exchange rates (multi-currency, owner 2026-06-30).
+#
+# WHY: the platform stores money in USD and shows each user their local currency, so we need
+# live FX rates. One row per ISO-4217 currency, `rate` = units of that currency per 1 USD
+# (matching the open.er-api.com / exchangerate-api "USD base" payload). Refreshed lazily (see
+# afc_auth.fx.get_rates: re-fetch when the newest row is stale) so no Celery-beat/cron is needed.
+# Durable (DB) so a brief FX-API outage falls back to the last-good rates instead of breaking
+# every money render.
+#
+# HOW IT CONNECTS:
+#   - Written by afc_auth.fx.refresh_fx_rates() (hits the free no-key FX API).
+#   - Read by afc_auth.fx.get_rates()/convert() and served by the /auth/fx-rates/ endpoint, which
+#     the frontend lib/fx.ts fetches + caches; lib/money.ts formatMoney() converts USD->user currency.
+# ─────────────────────────────────────────────────────────────────────────────
+class FxRate(models.Model):
+    currency = models.CharField(max_length=3, unique=True, db_index=True)  # ISO-4217, e.g. "NGN"
+    rate = models.DecimalField(max_digits=20, decimal_places=8)            # units per 1 USD
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"1 USD = {self.rate} {self.currency}"
