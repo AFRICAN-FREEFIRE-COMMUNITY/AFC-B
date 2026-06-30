@@ -34,6 +34,7 @@ from afc_auth.models import User
 from afc_team.models import TeamMembers
 from afc_tournament_and_scrims.models import (
     Match,
+    RegisteredCompetitors,
     TournamentPlayerMatchStats,
     TournamentTeamMatchStats,
     TournamentTeamMember,
@@ -256,6 +257,86 @@ def compute_player_stats(player, *, include_breakdown=True):
         result["recent_matches"] = match_breakdown[:25]
 
     return result
+
+
+def compute_registered_events(player):
+    """
+    The events a player is CURRENTLY registered for (event_status upcoming/ongoing),
+    across BOTH the ways a player can enter an event:
+      • SOLO events  → afc_tournament_and_scrims.RegisteredCompetitors (keyed straight to
+                       the User as the solo competitor)            → participant_type "solo"
+      • SQUAD events → afc_tournament_and_scrims.TournamentTeamMember (the player's roster
+                       slot) → TournamentTeam → Event              → participant_type "squad"
+
+    This is deliberately NOT part of the stats block in compute_player_stats: a player's
+    registration schedule is PUBLIC information, not sensitive performance data. Its caller
+    (afc_player.views.get_public_player_stats) therefore merges it into the response payload
+    OUTSIDE the stats_visible privacy gate, so every viewer — anonymous, other players,
+    teammates, admins — gets it. This mirrors the team side, where
+    afc_team.views.get_team_details returns `registered_events` outside its own stats gate.
+
+    Filtering (matches the team query): drop draft events and cancelled registrations
+    (RegisteredCompetitors status rejected/withdrawn/left/disqualified; TournamentTeamMember
+    rejected, or whose TournamentTeam is disqualified/withdrawn/left) and keep only
+    upcoming/ongoing events (completed events show in per_event[] instead).
+
+    Returns a list of dicts, deduped by event_id (squad WINS when a player somehow appears
+    both ways for one event — squad rows are written last so they overwrite), sorted by
+    event start_date ascending (soonest first; null dates last):
+      {event_id, event_slug, event_name, event_status, event_date, participant_type}
+
+    Consumed by: get_public_player_stats -> payload["registered_events"] -> frontend
+    PlayerClient.tsx "Registered Events" section on the public player profile.
+    """
+    # Keyed by event_id so a player registered in the same event both ways is listed once.
+    events_by_id = OrderedDict()
+
+    # ── SOLO registrations (write first; squad overwrites on the dedupe below) ──
+    solo_qs = (
+        RegisteredCompetitors.objects
+        .filter(user=player)
+        .exclude(status__in=["rejected", "withdrawn", "left", "disqualified"])
+        .filter(event__is_draft=False, event__event_status__in=["upcoming", "ongoing"])
+        .select_related("event")
+    )
+    for rc in solo_qs:
+        ev = rc.event
+        events_by_id[ev.event_id] = {
+            "event_id": ev.event_id,
+            "event_slug": ev.slug,
+            "event_name": ev.event_name,
+            "event_status": ev.event_status,
+            "event_date": ev.start_date.isoformat() if ev.start_date else None,
+            "participant_type": "solo",
+        }
+
+    # ── SQUAD registrations (the player on a tournament-team roster) ──
+    squad_qs = (
+        TournamentTeamMember.objects
+        .filter(user=player)
+        .exclude(status="rejected")
+        .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+        .filter(
+            tournament_team__event__is_draft=False,
+            tournament_team__event__event_status__in=["upcoming", "ongoing"],
+        )
+        .select_related("tournament_team__event")
+    )
+    for ttm in squad_qs:
+        ev = ttm.tournament_team.event
+        events_by_id[ev.event_id] = {
+            "event_id": ev.event_id,
+            "event_slug": ev.slug,
+            "event_name": ev.event_name,
+            "event_status": ev.event_status,
+            "event_date": ev.start_date.isoformat() if ev.start_date else None,
+            "participant_type": "squad",
+        }
+
+    rows = list(events_by_id.values())
+    # Soonest first; events with no start_date sort last (None -> True sorts after False).
+    rows.sort(key=lambda e: (e["event_date"] is None, e["event_date"] or ""))
+    return rows
 
 
 def basic_player_profile(player, request=None):

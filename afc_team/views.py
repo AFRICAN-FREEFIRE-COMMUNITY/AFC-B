@@ -1668,6 +1668,39 @@ def get_team_details(request):
         tournament_team__team=team
     ).aggregate(total=Sum("amount"))["total"] or 0
 
+    # ── Registered events (PUBLIC — owner 2026-06-30) ─────────────────────────
+    # The upcoming/ongoing events this team is CURRENTLY registered for. Deliberately
+    # computed OUTSIDE the stats_visible privacy block above: a team's registration
+    # schedule is public information (not sensitive performance data), so every viewer
+    # — anonymous, non-member, member, admin — gets it. We read the team's live
+    # TournamentTeam rows, dropping cancelled entries (disqualified/withdrawn/left; a
+    # re-link withdraws the old row, so this also collapses stale duplicates) and draft
+    # events, and keep only events whose status is upcoming or ongoing (completed events
+    # live in the stats-gated tournament_performance above instead). Each row carries the
+    # event slug so the frontend can deep-link to /tournaments/<slug>. Consumed by
+    # frontend app/(user)/teams/[id]/page.tsx -> the "Registered Events" card in the
+    # Overview tab (mirrors the player profile's registered_events section).
+    registered_events_qs = (
+        TournamentTeam.objects
+        .filter(team=team)
+        .exclude(status__in=["disqualified", "withdrawn", "left"])
+        .filter(event__is_draft=False, event__event_status__in=["upcoming", "ongoing"])
+        .select_related("event")
+    )
+    registered_events = [
+        {
+            "event_id": tt.event.event_id,
+            "event_slug": tt.event.slug,
+            "event_name": tt.event.event_name,
+            "event_status": tt.event.event_status,
+            "event_date": tt.event.start_date.isoformat() if tt.event.start_date else None,
+            "participant_type": "squad",
+        }
+        for tt in registered_events_qs
+    ]
+    # Soonest first; events with no start_date sort last (None -> True sorts after False).
+    registered_events.sort(key=lambda e: (e["event_date"] is None, e["event_date"] or ""))
+
     team_data = {
         "team_id": team.team_id,
         "team_name": team.team_name,
@@ -1725,6 +1758,9 @@ def get_team_details(request):
         # additive: per-season tier / rank history (publish-gated; [] when nothing published)
         # Always returned — tier/rank are public ranking data, not private team stats.
         "tier_history": tier_history,
+        # additive: events this team is CURRENTLY registered for (upcoming/ongoing). Always
+        # returned — registration schedule is public, NOT gated by stats_visible. Built above.
+        "registered_events": registered_events,
     }
 
     return Response({"team": team_data}, status=status.HTTP_200_OK)
@@ -2103,17 +2139,35 @@ def _member_in_active_event_roster(team, member_id) -> bool:
     DELETES the removed player's TournamentTeamMember row (edit_roster), and staff roles are
     never added to it, so this returns False for both cases -> the team may remove them. It
     stays True (locked) only while the player is actually rostered for a live event.
+
+    STAGE-OVER release (owner 2026-06-30): even while the event is still upcoming/ongoing, if the
+    member's TournamentTeam is no longer in any ACTIVE stage (its stage/group is over and it did
+    not advance) the player can no longer be fielded for that event, so it no longer locks the
+    removal. Mirrors the identity-lock stage-over release (afc_auth._competitor_in_active_stage):
+    a team that advances keeps an active StageCompetitor in the next stage and stays locked; an
+    eliminated team has none and unlocks. Safe default: a roster row with NO StageCompetitor data
+    at all (stages unseeded / data gap) stays locked so we never wrongly free a live roster.
     """
-    from afc_tournament_and_scrims.models import TournamentTeamMember
-    return (
+    from afc_tournament_and_scrims.models import TournamentTeamMember, StageCompetitor
+    live_rosters = (
         TournamentTeamMember.objects.filter(
             tournament_team__team=team,
             user_id=member_id,
         )
         .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
         .filter(tournament_team__event__event_status__in=["upcoming", "ongoing"])
-        .exists()
+        .select_related("tournament_team", "tournament_team__event")
     )
+    for ttm in live_rosters:
+        tt = ttm.tournament_team
+        stage_rows = StageCompetitor.objects.filter(stage__event=tt.event, tournament_team=tt)
+        if not stage_rows.exists():
+            return True  # no stage data -> safe default: treat as still on a live roster (locked)
+        # NOT-completed stage (upcoming/ongoing/paused) with an active row = still in. Only "completed"
+        # releases; a paused stage is in progress, not over.
+        if stage_rows.filter(status="active").exclude(stage__stage_status="completed").exists():
+            return True  # still in an active stage -> locked
+    return False  # off every active event roster (or all their stages are over) -> removable
 
 
 def _transfer_window_open():
