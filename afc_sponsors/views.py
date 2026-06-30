@@ -43,6 +43,7 @@ ENDPOINTS (mounted at sponsors/ via afc/urls.py)
 """
 import csv
 
+from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.text import slugify
 
@@ -82,6 +83,37 @@ def _is_sponsor_admin(user):
         return True
     return user.userroles.filter(
         role__role_name__in=("head_admin", "super_admin", "sponsor_admin"),
+    ).exists()
+
+
+def _can_create_sponsor(user):
+    """Can the caller CREATE and LIST sponsor entities for the event-create picker?
+
+    Authorizes (owner 2026-06-30, "organizers should be able to create sponsors also; admins
+    should not have to create sponsors before organizers can use them"):
+      - any sponsor-admin (the existing admin path — see _is_sponsor_admin), OR
+      - any ACTIVE organizer who can create events: an AFC platform org-admin
+        (is_platform_org_admin), an org OWNER (implicitly), or a sub_organizer whose
+        OrganizationMember row grants can_create_events. This mirrors exactly how event-create
+        authorizes organizers (afc_organizers.permissions.org_can with "can_create_events"), so
+        anyone allowed to run an event can self-serve the sponsors that event attaches to.
+
+    CONSUMED BY create_sponsor + list_sponsors below, which back the SHARED event-create sponsor
+    picker (frontend components/sponsorship-builder.tsx, used by both the admin and organizer
+    create wizards). Organizers need BOTH gates: list (to pick existing sponsors) and create (the
+    inline "Create sponsor" modal). Lazy import keeps afc_sponsors free of an import-time
+    dependency on afc_organizers (whose models pull in tournament + team)."""
+    if _is_sponsor_admin(user):
+        return True
+    from afc_organizers.models import OrganizationMember
+    from afc_organizers.permissions import is_platform_org_admin
+    if is_platform_org_admin(user):
+        return True
+    # Any active membership that can create events: owners implicitly, sub_organizers by grant.
+    return OrganizationMember.objects.filter(
+        user=user, status="active",
+    ).filter(
+        Q(role="owner") | Q(can_create_events=True),
     ).exists()
 
 
@@ -140,11 +172,15 @@ def create_sponsor(request):
     """POST sponsors/create/  body: {name, description?, website?, socials?}
 
     Create a sponsor entity. Slug derives from the name (unique-suffixed on collision).
-    Auth: sponsor-admin. Response 201: {sponsor}. Consumed by /a/sponsors "Create sponsor"."""
+    Auth: sponsor-admin OR an organizer who can create events (_can_create_sponsor) — so an
+    organizer can self-serve a sponsor inline from the event-create picker without an admin
+    pre-creating it. created_by + the model's default active status apply to BOTH paths (same
+    code), so an organizer-created sponsor is identical to an admin-created one. Response 201:
+    {sponsor}. Consumed by /a/sponsors "Create sponsor" AND the shared sponsorship-builder modal."""
     user, err = _auth_user(request)
     if err:
         return err
-    if not _is_sponsor_admin(user):
+    if not _can_create_sponsor(user):
         return Response({"message": "You do not have permission to manage sponsors."}, status=403)
 
     name = (request.data.get("name") or "").strip()
@@ -173,12 +209,14 @@ def create_sponsor(request):
 
 @api_view(["GET"])
 def list_sponsors(request):
-    """GET sponsors/?q=&limit=&offset=  — paginated sponsor list for the admin table.
-    Auth: sponsor-admin. Response: the house envelope of _serialize_sponsor rows."""
+    """GET sponsors/?q=&limit=&offset=  — paginated sponsor list for the admin table AND the
+    event-create sponsor typeahead. Auth: sponsor-admin OR an organizer who can create events
+    (_can_create_sponsor) — organizers must be able to LIST to pick existing sponsors in the
+    builder. Response: the house envelope of _serialize_sponsor rows."""
     user, err = _auth_user(request)
     if err:
         return err
-    if not _is_sponsor_admin(user):
+    if not _can_create_sponsor(user):
         return Response({"message": "You do not have permission to manage sponsors."}, status=403)
 
     qs = Sponsor.objects.all()

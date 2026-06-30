@@ -26,6 +26,7 @@ from afc_tournament_and_scrims.models import (
 # Shared player-stats aggregation (reused by the admin + public player endpoints).
 from afc_player.aggregation import (
     compute_player_stats,
+    compute_registered_events,
     basic_player_profile,
     player_tier_history,
 )
@@ -382,6 +383,11 @@ def get_public_player_stats(request):
         "user_id": player.user_id,
         "tier_history": tier_history,
         "stats_visible": stats_visible,
+        # Events the player is CURRENTLY registered for (upcoming/ongoing), solo + squad
+        # (owner 2026-06-30). PUBLIC schedule data, so it sits OUTSIDE the stats_visible
+        # branch below and is returned to every viewer. See aggregation.compute_registered_events;
+        # rendered by PlayerClient.tsx's "Registered Events" section.
+        "registered_events": compute_registered_events(player),
     }
 
     if stats_visible:

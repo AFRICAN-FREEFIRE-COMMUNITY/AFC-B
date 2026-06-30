@@ -4249,6 +4249,7 @@ def get_event_details(request):
     # event-wide window is closed. None when the viewer isn't on a registered (non-cancelled) team here.
     viewer_team_roster_edit_until = None
     viewer_team_roster_edit_open = False
+    viewer_team_stage_over = False
     if user and event.participant_type != "solo":
         _vtt = (TournamentTeam.objects
                 .filter(event=event, members__user=user)
@@ -4257,6 +4258,16 @@ def get_event_details(request):
         if _vtt:
             viewer_team_roster_edit_until = _vtt.roster_edit_until
             viewer_team_roster_edit_open = _vtt.roster_edit_open
+            # STAGE-OVER (owner 2026-06-30): the viewer's team is eliminated / its stage is over and it did
+            # not advance -> edit_roster's registration-close lock AND results freeze both release for it,
+            # so the user-facing Edit Roster button should open. Mirrors edit_roster's team_stage_over and
+            # the identity-lock release (afc_auth._competitor_in_active_stage). Only "completed" = over;
+            # SAFE DEFAULT: no StageCompetitor rows -> NOT over (button stays governed by window/registration).
+            _vtt_stage_rows = StageCompetitor.objects.filter(stage__event=event, tournament_team=_vtt)
+            viewer_team_stage_over = (
+                _vtt_stage_rows.exists()
+                and not _vtt_stage_rows.filter(status="active").exclude(stage__stage_status="completed").exists()
+            )
 
     # -------- ROOM-DETAILS VISIBILITY CONTEXT (owner 2026-06-17) --------
     # Room id/name/password must appear on the user-facing event page ONLY to the registered
@@ -4386,6 +4397,9 @@ def get_event_details(request):
         # Roster button opens when the EVENT window OR this team's window is open. Null/false for non-members.
         "your_team_roster_edit_until": viewer_team_roster_edit_until,
         "your_team_roster_edit_open": viewer_team_roster_edit_open,
+        # True when the viewer's team is eliminated/its stage is over -> Edit Roster button opens even after
+        # registration close + results (owner 2026-06-30 stage-over rule; consumed by EventDetailsWrapper).
+        "your_team_stage_over": viewer_team_stage_over,
         "event_rules": event.event_rules,
         "event_status": event.event_status,
         "registration_link": event.registration_link,
@@ -6256,11 +6270,19 @@ def register_for_event(request):
         # can name WHO is the problem and WHERE they're already registered — a
         # captain needs that to know which player to drop. (Previously this only
         # returned a generic message + bare user_ids.)
+        #
+        # Only an ACTIVE prior registration blocks (owner 2026-06-30, "removal frees re-registration"):
+        # a player whose earlier team for THIS event was disqualified / withdrew / left is no longer
+        # holding a live spot, so they may register again on another team. Mirrors the cancelled-status
+        # exclusion used by _member_in_active_event_roster and _has_active_event_registration. (Removing a
+        # player via edit_roster deletes their TournamentTeamMember row outright, which already frees them.)
         conflicting_members = list(
             TournamentTeamMember.objects.filter(
                 user_id__in=roster_member_ids,
                 tournament_team__event=event,
-            ).select_related("user", "tournament_team__team")
+            )
+            .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+            .select_related("user", "tournament_team__team")
         )
         if conflicting_members:
             conflicts = [
@@ -19829,6 +19851,21 @@ def edit_roster(request):
     # Either the event-wide window OR this team's per-team window opens roster editing for this team.
     roster_window_open = event.roster_edit_open or tt.roster_edit_open
 
+    # STAGE-OVER allow-path (owner 2026-06-30, "if a stage or group is over... they should be able to edit
+    # team roster"): a team whose stage/group is over and that did NOT advance is done competing. For it the
+    # post-registration-close lock AND the match-start results freeze both relax, so its captain can still
+    # edit the roster even though registration closed / the event has results elsewhere. A team that
+    # ADVANCES keeps an active StageCompetitor in the next (upcoming/ongoing/paused) stage and stays locked;
+    # if a later recalc re-qualifies an eliminated team its rows move back to active and it re-locks (mirrors
+    # the identity-lock release in afc_auth._competitor_in_active_stage). Only "completed" = over. SAFE
+    # DEFAULT: a team with NO StageCompetitor rows at all (stages unseeded / data gap) is treated as STILL IN
+    # so we never wrongly open a live roster. This does NOT relax the manager-only / captain permission gate.
+    _tt_stage_rows = StageCompetitor.objects.filter(stage__event=event, tournament_team=tt)
+    team_stage_over = (
+        _tt_stage_rows.exists()
+        and not _tt_stage_rows.filter(status="active").exclude(stage__stage_status="completed").exists()
+    )
+
     # ---------------- STAFF (MANAGER) OVERRIDE FLAG ----------------
     # Feature "staff-edit-roster-after-close" (2026-06-10): AFC staff must be able to
     # CORRECT a team's roster even after registration closes (e.g. a team registered the
@@ -19849,7 +19886,7 @@ def edit_roster(request):
     # ALLOW-path that lets captains self-edit past registration close until it AUTO-CLOSES at
     # event.roster_edit_until (capped at the event end; see set_roster_edit_window). The match-start
     # lock below still applies to everyone.
-    if date.today() > event.registration_end_date and not is_manager and not roster_window_open:
+    if date.today() > event.registration_end_date and not is_manager and not roster_window_open and not team_stage_over:
         return Response({"message": "Registration closed. Cannot edit roster."}, status=403)
 
     # ---------------- MATCH START CHECK ----------------
@@ -19857,8 +19894,11 @@ def edit_roster(request):
     # (staff included) ONCE results exist. EXCEPTION (owner 2026-06-24): an OPEN roster-edit window
     # (event-wide OR this team's per-team window) explicitly overrides the freeze - the organizer
     # opened it on purpose to let this team correct its roster even mid-event. Without an open window
-    # the freeze stands for everyone.
-    if (not roster_window_open) and Match.objects.filter(
+    # the freeze stands for everyone. STAGE-OVER EXCEPTION (owner 2026-06-30): an eliminated team
+    # (team_stage_over, computed above with the registration gate) is done competing, so the freeze no
+    # longer needs to protect its attribution -> it may edit its roster. An advancing team keeps an
+    # active stage row (team_stage_over False) and stays frozen.
+    if (not roster_window_open) and (not team_stage_over) and Match.objects.filter(
         group__stage__event=event, result_inputted=True
     ).exists():
         return Response({

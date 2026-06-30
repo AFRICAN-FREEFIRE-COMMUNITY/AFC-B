@@ -2157,6 +2157,39 @@ def delete_news(request):
     return Response({"message": "News deleted successfully."}, status=status.HTTP_200_OK)
 
 
+def _competitor_in_active_stage(ev, tt, rc) -> bool:
+    """Is this competitor still ACTIVELY COMPETING in event `ev`? (owner 2026-06-30, "stage/group over
+    counts as completed for those teams/players").
+
+    A team (`tt`, a TournamentTeam) or a solo entry (`rc`, a RegisteredCompetitors) is "still in" when it
+    holds an ACTIVE StageCompetitor row in a stage that is NOT completed (upcoming, ongoing, OR paused - a
+    paused stage is in progress, not over, so it must keep them locked). Why this is naturally
+    qualification-aware: when results are entered the advancement engine writes the next stage's
+    StageCompetitor rows, so a team that ADVANCES gets an active row in the next (upcoming/ongoing) stage
+    and stays "in"; a team that is ELIMINATED (its stage completed and it did not advance) has no active row
+    in any non-completed stage and falls "out". If a later recalculation flips who qualifies, those rows
+    move, so the answer tracks live qualification with no extra bookkeeping.
+
+    SAFE DEFAULT — this gates the identity lock, so erring toward "still in" (locked) protects result
+    attribution: if there are NO StageCompetitor rows for this competitor at all (stages not seeded yet, or
+    a data gap), return True. The stage-over release therefore only fires when we positively have stage data
+    that shows the competitor out of every active stage. Consumed by `_has_active_event_registration`.
+    """
+    from afc_tournament_and_scrims.models import StageCompetitor
+    base = StageCompetitor.objects.filter(stage__event=ev)
+    if tt is not None:
+        base = base.filter(tournament_team=tt)
+    elif rc is not None:
+        base = base.filter(player=rc)
+    else:
+        return True  # unknown competitor -> safe default (keep locked)
+    if not base.exists():
+        return True  # no stage data for them -> safe default (don't wrongly unlock mid-event)
+    # Positively have stage rows: locked only while an ACTIVE one sits in a NOT-completed stage
+    # (upcoming/ongoing/paused). Only a "completed" stage is over.
+    return base.filter(status="active").exclude(stage__stage_status="completed").exists()
+
+
 def _has_active_event_registration(user) -> bool:
     """
     True when `user` is currently signed up for an event that has NOT finished yet
@@ -2201,31 +2234,33 @@ def _has_active_event_registration(user) -> bool:
     # Team path keeps the TournamentTeam so we can read its per-team roster-edit window. A disqualified/
     # withdrawn/left TournamentTeam is NOT a live commitment (disqualify_team leaves the member rows but
     # cancels the TournamentTeam), so exclude those - mirrors the solo cancellation exclusion.
-    candidates = []  # list of (Event, TournamentTeam | None)
+    candidates = []  # list of (Event, TournamentTeam | None, RegisteredCompetitors | None)
     for ttm in (TournamentTeamMember.objects
                 .filter(user=user, tournament_team__event__is_draft=False)
                 .exclude(status="rejected")
                 .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
                 .select_related("tournament_team", "tournament_team__event")):
-        candidates.append((ttm.tournament_team.event, ttm.tournament_team))
+        candidates.append((ttm.tournament_team.event, ttm.tournament_team, None))
     for rc in (RegisteredCompetitors.objects
                .filter(user=user, event__is_draft=False)
                .exclude(status__in=["rejected", "withdrawn", "left", "disqualified"])
                .select_related("event")):
-        candidates.append((rc.event, None))
+        # Keep the RegisteredCompetitors (rc) so the stage-over check below can read the solo
+        # entry's StageCompetitor rows (owner 2026-06-30).
+        candidates.append((rc.event, None, rc))
 
     if not candidates:
         return False
 
     # Events that already have an entered match result (one grouped query over all candidate events).
-    cand_event_ids = {ev.event_id for ev, _ in candidates}
+    cand_event_ids = {ev.event_id for ev, _, _ in candidates}
     events_with_results = set(
         Match.objects
             .filter(group__stage__event_id__in=cand_event_ids, result_inputted=True)
             .values_list("group__stage__event_id", flat=True)
     )
 
-    for ev, tt in candidates:
+    for ev, tt, rc in candidates:
         # STARTED? status flipped to ongoing, OR the start date has arrived even if the status lags.
         started = ev.event_status == "ongoing" or (ev.start_date and today >= ev.start_date)
         if not started:
@@ -2238,11 +2273,19 @@ def _has_active_event_registration(user) -> bool:
         # overrides the results freeze (owner 2026-06-24).
         if ev.roster_edit_open or (tt is not None and tt.roster_edit_open):
             continue
+        # STAGE-OVER RELEASE (owner 2026-06-30): even though the event itself is still running, if THIS
+        # competitor's stage/group is over and they did not advance, the event is effectively COMPLETED for
+        # them -> release the lock so they can edit roster/profile. Advancing teams keep an active
+        # StageCompetitor in the next stage (stays locked); a later recalc that flips qualification moves
+        # those rows, so a team that newly qualifies re-locks and the one now out reopens - exactly the
+        # owner's "lock back again / the other reopens" rule. Safe default keeps unknown/unseeded data locked.
+        if not _competitor_in_active_stage(ev, tt, rc):
+            continue
         # No window: editable only while registration is open AND no results exist yet (mirrors edit_roster).
         reg_open = bool(ev.registration_end_date) and today <= ev.registration_end_date
         if reg_open and ev.event_id not in events_with_results:
             continue
-        return True  # started, not released, no window, and (reg closed OR results exist) -> LOCKED
+        return True  # started, not released, still in an active stage, no window, reg closed/results -> LOCKED
     return False
 
 
