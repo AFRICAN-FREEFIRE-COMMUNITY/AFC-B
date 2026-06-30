@@ -152,13 +152,60 @@ def _active_market_ban(user):
     return None
 
 
-def _serialize_report(report):
+# ── Report evidence (multiple images + videos, owner 2026-06-30) ──────────────────────────────
+# A reporter may attach several screenshots AND screen-recording videos; moderators view/play them
+# all. Caps mirror the post-screenshot guard in views.py (10 MB/image) and add a larger video cap.
+MAX_REPORT_EVIDENCE = 6                       # at most 6 attachments per report
+MAX_REPORT_IMAGE_BYTES = 10 * 1024 * 1024     # 10 MB per image (a phone screenshot is well under)
+MAX_REPORT_VIDEO_BYTES = 50 * 1024 * 1024     # 50 MB per video (a short screen recording)
+
+
+def _evidence_media_type(f):
+    """"image" / "video" for an uploaded evidence file, or None if it is neither. Reads the
+    multipart content-type the browser set on the file (image/* or video/*)."""
+    ct = (getattr(f, "content_type", "") or "").lower()
+    if ct.startswith("image/"):
+        return "image"
+    if ct.startswith("video/"):
+        return "video"
+    return None
+
+
+def _validate_report_evidence(files):
+    """Validate the evidence batch: at most MAX_REPORT_EVIDENCE files, each an image or video within
+    its size cap. Returns an error message string, or None when the batch is clean."""
+    if len(files) > MAX_REPORT_EVIDENCE:
+        return f"You can attach at most {MAX_REPORT_EVIDENCE} evidence files."
+    for f in files:
+        kind = _evidence_media_type(f)
+        if kind is None:
+            return "Evidence must be an image or a video."
+        cap = MAX_REPORT_IMAGE_BYTES if kind == "image" else MAX_REPORT_VIDEO_BYTES
+        if f.size > cap:
+            return "Each image must be 10 MB or smaller." if kind == "image" else "Each video must be 50 MB or smaller."
+    return None
+
+
+def _save_report_evidence(report, files):
+    """Persist the evidence batch as MarketReportEvidence rows in attach order. Saved with
+    objects.create (not bulk_create) so each FileField writes its file to storage."""
+    from .models import MarketReportEvidence
+    for i, f in enumerate(files):
+        MarketReportEvidence.objects.create(
+            report=report, file=f, media_type=_evidence_media_type(f), order=i,
+        )
+
+
+def _serialize_report(report, request=None):
     """Canonical inline dict for one MarketReport.
 
     Reused by the admin list view and returned (singly) from admin_update so both
     surfaces hand back an identical record shape. Denormalises the reported subject's
-    name + the reporter username so the admin table never re-fetches the FKs. Image
-    field follows the codebase contract: (img.url if img else None).
+    name + the reporter username so the admin table never re-fetches the FKs. The legacy
+    single image follows the old contract (img.url if img else None); the multi-evidence
+    list returns ABSOLUTE urls (request.build_absolute_uri, mirroring _serialize_post_images)
+    so the admin gallery loads them cross-origin. `request` is optional only so old callers
+    don't break; both real callers pass it.
     """
     # Resolve a human label for the reported subject from whichever FK is set.
     if report.subject_type == "team":
@@ -176,7 +223,19 @@ def _serialize_report(report):
         "post_id": report.post_id,
         "category": report.category,
         "details": report.details,
+        # Legacy single evidence image (old rows + the first image of a new report). Kept so any
+        # existing reader still works; new admin UI prefers evidence_files below.
         "evidence": report.evidence.url if report.evidence else None,
+        # ALL attached evidence (images + videos), in attach order, so the moderator can view/play
+        # every item (owner 2026-06-30). Each: {url (ABSOLUTE so it loads cross-origin), media_type
+        # "image"|"video"}. Empty list for pre-feature rows (which still carry the single `evidence`).
+        "evidence_files": [
+            {
+                "url": request.build_absolute_uri(e.file.url) if request else e.file.url,
+                "media_type": e.media_type,
+            }
+            for e in report.evidence_files.all()
+        ],
         "status": report.status,
         "resolution_notes": report.resolution_notes,
         # reporter / reviewed_by are SET_NULL FKs — surface the username or None.
@@ -284,20 +343,29 @@ def file_market_report(request):
     if not details:
         return Response({"message": "Please describe what happened."}, status=400)
 
-    # ── REQUIRED evidence image (feature "J-market-rules", J4) ──
-    # Evidence is now COMPULSORY: a report cannot be filed without an uploaded image
-    # (a screenshot / screen-recording frame). This raises the bar for filing a report
-    # and discourages baseless / joke reports — which, if judged false, can get the
-    # REPORTER banned (J5). The model field stays null=True/blank=True so OLD rows that
-    # predate this rule remain valid; we enforce the requirement HERE at the view only.
-    # The FE report dialog (MarketReportDialog.tsx) mirrors this by disabling the submit
-    # button until an image is attached, so users see the rule before they hit this 400.
-    evidence = request.FILES.get("evidence")
-    if not evidence:
+    # ── REQUIRED evidence: one or more images AND/OR videos (owner 2026-06-30) ──
+    # Evidence is COMPULSORY (J4) and now supports MULTIPLE files of two kinds: screenshots AND
+    # screen-recording videos, so a reporter can fully document the abuse and a moderator can view/
+    # play all of it. Files arrive as the repeated multipart field `evidence_files`; the legacy single
+    # `evidence` field is still accepted (folded in) so an older client keeps working. At least one
+    # file is required — the FE disables submit until one is attached, mirroring this 400.
+    evidence_files = request.FILES.getlist("evidence_files")
+    legacy = request.FILES.get("evidence")
+    if legacy:
+        evidence_files = [legacy] + evidence_files
+    if not evidence_files:
         return Response({"message": "Evidence is required to file a report."}, status=400)
 
-    # ── create the report (always starts "open"; reporter is the caller) ──
-    MarketReport.objects.create(
+    evidence_err = _validate_report_evidence(evidence_files)
+    if evidence_err:
+        return Response({"message": evidence_err}, status=400)
+
+    # First image (if any) mirrors into the legacy single field so any reader of report.evidence still
+    # shows something; the full set (images + videos) lives in the MarketReportEvidence rows below.
+    first_image = next((f for f in evidence_files if _evidence_media_type(f) == "image"), None)
+
+    # ── create the report (always starts "open"; reporter is the caller) then save its evidence ──
+    report = MarketReport.objects.create(
         subject_type=subject_type,
         reported_team=reported_team,
         reported_player=reported_player,
@@ -305,9 +373,10 @@ def file_market_report(request):
         reporter=user,
         category=category,
         details=details,
-        evidence=evidence,
+        evidence=first_image,
         status="open",
     )
+    _save_report_evidence(report, evidence_files)
 
     return Response(
         {"message": "Report submitted. Thank you, AFC moderators will review it."},
@@ -341,6 +410,7 @@ def admin_list_market_reports(request):
         MarketReport.objects.select_related(
             "reported_team", "reported_player", "reporter", "reviewed_by"
         )
+        .prefetch_related("evidence_files")  # serializer reads each report's evidence list (no N+1)
         .all()
         .order_by("-created_at")
     )
@@ -366,7 +436,7 @@ def admin_list_market_reports(request):
         )
 
     page, total_count, has_more = _paginate(request, qs)
-    results = [_serialize_report(report) for report in page]
+    results = [_serialize_report(report, request) for report in page]
 
     return Response(
         {"results": results, "total_count": total_count, "has_more": has_more},
@@ -400,6 +470,7 @@ def admin_update_market_report(request, report_id):
         MarketReport.objects.select_related(
             "reported_team", "reported_player", "reporter", "reviewed_by"
         )
+        .prefetch_related("evidence_files")  # _serialize_report returns the evidence list
         .filter(pk=report_id)
         .first()
     )
@@ -423,7 +494,7 @@ def admin_update_market_report(request, report_id):
     report.save()
 
     return Response(
-        {"message": "Report updated.", "report": _serialize_report(report)},
+        {"message": "Report updated.", "report": _serialize_report(report, request)},
         status=200,
     )
 

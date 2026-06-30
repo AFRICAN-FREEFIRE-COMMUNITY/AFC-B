@@ -18685,18 +18685,23 @@ def upload_team_match_result(request):
 
         # §1i — RESTORE admin approvals across a re-upload. `prior` (snapshotted before the idempotent
         # clear) holds each (team, uid) -> count_kills the admin had set; re-apply it to the freshly
-        # re-derived flag so the re-upload does not silently discard the decision. Then recompute once
-        # (only if something was restored) so a restored approval re-adds its kills to the team total
-        # (the upload computed totals assuming all new flags pending). Skipped on dry_run.
-        restored_any = False
+        # re-derived flag so the re-upload does not silently discard the decision. Skipped on dry_run.
         if not dry_run and prior:
             for fl in MatchKillFlag.objects.filter(match=match):
                 pv = prior.get((fl.tournament_team_id, fl.uid))
                 if pv is not None and fl.count_kills != pv:
                     fl.count_kills = pv
                     fl.save(update_fields=["count_kills"])
-                    restored_any = True
-        if restored_any:
+
+        # ALWAYS recompute the event's team totals on a real upload (owner 2026-06-30 bug fix). The inline
+        # per-team totals above are computed from the IN-MEMORY flags BEFORE they are persisted; running
+        # the canonical _recompute_team_kills_for_event (the SAME function the "Count flagged players'
+        # kills" toggle calls) makes the STORED standings authoritative - rostered player_stats + the
+        # flagged kills that currently count per the event default (count_flagged_kills, True by default)
+        # and any per-flag override. This fixes the report that flagged (not-on-roster) kills only counted
+        # AFTER manually toggling that switch off then on: a fresh upload never ran the recompute before,
+        # so the default wasn't reliably applied to the saved totals until the toggle forced it.
+        if not dry_run:
             _recompute_team_kills_for_event(event)
 
         match.result_inputted = True

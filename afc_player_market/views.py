@@ -744,8 +744,27 @@ def get_recruitment_posts(request):
     return Response(data, status=200)
 
 
+def _optional_viewer(request):
+    """Resolve the signed-in user from the Authorization header WITHOUT requiring it.
+
+    The browse/list endpoints are public (anyone can read the market), but a logged-in viewer
+    needs to know which cards are THEIRS so the UI can show Edit/Delete on them. Returns the User
+    when a valid Bearer token is present, else None. The axios instance already forwards the token
+    for authenticated users (AuthContext interceptor), so this is set for them and None for guests.
+    Consumed by view_all_team_recruitment_post + view_all_player_availability_post (is_owner).
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None
+    return validate_token(auth.split(" ")[1])
+
+
 @api_view(["GET"])
 def view_all_team_recruitment_post(request):
+
+    # Optional viewer -> is_owner per card (owner 2026-06-30): drives the My Posts tab (both post types)
+    # and the inline Edit/Delete buttons on the "Teams looking" listing for posts the viewer created.
+    viewer = _optional_viewer(request)
 
     posts = RecruitmentPost.objects.filter(
         post_type="TEAM_RECRUITMENT"
@@ -762,6 +781,9 @@ def view_all_team_recruitment_post(request):
             "minimum_tier_required": post.minimum_tier_required,
             "commitment_type": post.commitment_type,
             "expiry": post.post_expiry_date,
+            # True only for the user who CREATED this post (matches edit_recruitment_post's
+            # created_by gate), so the FE shows Edit/Delete on exactly the posts they can change.
+            "is_owner": bool(viewer and post.created_by_id == viewer.user_id),
         })
 
     return Response(data, status=200)
@@ -769,6 +791,10 @@ def view_all_team_recruitment_post(request):
 
 @api_view(["GET"])
 def view_all_player_availability_post(request):
+
+    # Optional viewer -> is_owner per card (owner 2026-06-30): drives the My Posts tab (both post types)
+    # and the inline Edit/Delete buttons on the "Players open to join" listing for the viewer's own post.
+    viewer = _optional_viewer(request)
 
     posts = RecruitmentPost.objects.filter(
         post_type="PLAYER_AVAILABLE"
@@ -780,6 +806,8 @@ def view_all_player_availability_post(request):
         data.append({
             "id": post.id,
             "player": post.player.username if post.player else None,
+            # True only for the post's creator (matches edit_recruitment_post's created_by gate).
+            "is_owner": bool(viewer and post.created_by_id == viewer.user_id),
             "country": post.country.name if post.country else None,
             # Target countries (the restriction set). Returned so the FE can show "Open to: â€¦"
             # on the post card/dialog â€” previously omitted here, so the main market UI never
