@@ -148,18 +148,42 @@ TEMPLATES = [
         },
     },
 ]
-CORS_ORIGIN_ALLOW_ALL = True
+# ── CORS / CSRF (hardened 2026-06-28) ─────────────────────────────────────────
+# The browser frontend (africanfreefirecommunity.com) calls this API cross-origin, so CORS must
+# permit the FE origin. The OLD config (CORS_ORIGIN_ALLOW_ALL=True together with
+# CORS_ALLOW_CREDENTIALS=True) made django-cors-headers echo back ANY Origin with
+# Access-Control-Allow-Credentials:true, i.e. every site on the internet could make credentialed
+# cross-origin calls against this API. We now allow-all ONLY in local dev (DEBUG) and fall back to an
+# explicit allowlist in production. The list is env-overridable (CORS_ALLOWED_ORIGINS=comma,separated)
+# so the owner can add an origin without a code deploy.
+#
+# Note: the app authenticates with a Bearer SessionToken HEADER (not cookies), so "credentials" here
+# only matters for the Django admin session + any cookie flow; the allowlist below is the FE origins.
+# Consumed by corsheaders.middleware.CorsMiddleware (MIDDLEWARE above).
+_DEFAULT_CORS_ORIGINS = ",".join([
+    "https://africanfreefirecommunity.com",
+    "https://www.africanfreefirecommunity.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:5500",
+])
+CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", _DEFAULT_CORS_ORIGINS).split(",") if o.strip()]
 CORS_ALLOW_CREDENTIALS = True
+# Allow-all ONLY in dev; in prod (DEBUG=False) the explicit allowlist above is enforced. Mirrors the
+# `RANKINGS_RECALC_SYNC = DEBUG` env pattern used elsewhere in this file. (CORS_ALLOW_ALL_ORIGINS is
+# the modern name for the deprecated CORS_ORIGIN_ALLOW_ALL.)
+CORS_ALLOW_ALL_ORIGINS = DEBUG
 
-CORS_ALLOWED_ORIGINS = [
-    "http://127.0.0.1:5500",
+# CSRF trusted origins: required for the Django admin (session-cookie POSTs) over HTTPS and for any
+# cross-origin POST. Mirror the CORS allowlist plus the API's own HTTPS origin. Env-overridable
+# (CSRF_TRUSTED_ORIGINS=comma,separated). Read by django.middleware.csrf.CsrfViewMiddleware.
+_DEFAULT_CSRF_ORIGINS = ",".join([
+    "https://africanfreefirecommunity.com",
+    "https://www.africanfreefirecommunity.com",
+    "https://api.africanfreefirecommunity.com",
     "http://localhost:3000",
-]
-
-CSRF_TRUSTED_ORIGINS = [
     "http://127.0.0.1:5500",
-    "http://localhost:3000",
-]
+])
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.getenv("CSRF_TRUSTED_ORIGINS", _DEFAULT_CSRF_ORIGINS).split(",") if o.strip()]
 
 
 WSGI_APPLICATION = 'afc.wsgi.application'
@@ -274,14 +298,21 @@ CELERY_TASK_SERIALIZER = 'json'
 
 # Rankings recalc: run inline on commit in dev (no worker needed); set False + run
 # `celery -A afc worker -Q rankings_recalc` in production for async recalculation.
-RANKINGS_RECALC_SYNC = DEBUG
+# Independently env-overridable (2026-06-28) so prod can run DEBUG=False WITHOUT being forced into
+# async, which would silently no-op recalculation unless that worker is running. Defaults to DEBUG
+# (inline in dev, async in prod). If you flip DEBUG=False but have NOT started the worker, set
+# RANKINGS_RECALC_SYNC=True in the prod .env to keep recalculation inline.
+RANKINGS_RECALC_SYNC = os.getenv("RANKINGS_RECALC_SYNC", str(DEBUG)).strip().lower() == "true"
 
 # OCR ML retrain loop (Phase 4): same inline-in-dev pattern as RANKINGS_RECALC_SYNC.
 # When True (defaults to DEBUG) the afc_ocr tasks can be invoked inline without a Celery
 # worker (handy for local testing / management runs). In production set it False and run a
 # dedicated worker for the ocr_ml queue: `celery -A afc worker -Q ocr_ml` (+ `celery -A afc beat`
 # for the nightly autolabel / weekly retrain-trigger schedule wired in afc/celery_config.py).
-OCR_ML_SYNC = DEBUG
+# Independently env-overridable (2026-06-28), same rationale as RANKINGS_RECALC_SYNC above: flipping
+# DEBUG=False must not silently no-op the OCR ML tasks. Set OCR_ML_SYNC=True in prod .env to force
+# inline if the ocr_ml worker is not running.
+OCR_ML_SYNC = os.getenv("OCR_ML_SYNC", str(DEBUG)).strip().lower() == "true"
 
 # OCR inference routing (Phase 3). The upload path tries the self-hosted local student first
 # and only escalates to Gemini when the confidence gate is not satisfied (afc_ocr/services/
@@ -325,6 +356,41 @@ FRONTEND_URL_LOCAL = "http://localhost:3000"
 
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# ── Production security hardening (2026-06-28) ────────────────────────────────
+# These switch ON only when DEBUG is False (production), so local dev over plain http is unaffected.
+# The app runs behind nginx terminating TLS; SECURE_PROXY_SSL_HEADER (above) tells Django the original
+# request arrived over HTTPS, which makes the secure-cookie + redirect logic correct behind the proxy.
+# This block is what makes flipping DEBUG=False on prod yield a properly hardened deployment (it also
+# clears Django's `manage.py check --deploy` W012/W016 warnings). The remaining opt-in items
+# (SSL_REDIRECT, HSTS) are env-gated and default OFF on purpose, see the notes inline.
+if not DEBUG:
+    # Django admin SESSION cookie + CSRF cookie are sent only over HTTPS (the app's own auth is a
+    # Bearer token header, so this is about the admin/cookie surface). Clears W012 + W016.
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
+    # Stop browsers MIME-sniffing responses into a different content type (XSS hardening).
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+
+    # Clickjacking: never allow an AFC page to be framed. (XFrameOptionsMiddleware is already in
+    # MIDDLEWARE and defaults to DENY; set explicitly so intent is unambiguous.)
+    X_FRAME_OPTIONS = "DENY"
+
+    # Force plain-HTTP requests to redirect to HTTPS at the Django layer. Default OFF (opt-in via
+    # env) on purpose: nginx already redirects http->https, and a health check that hits the
+    # instance directly over HTTP *without* the X-Forwarded-Proto header would receive a 301 and
+    # could be marked unhealthy. Enable SECURE_SSL_REDIRECT=True in the prod .env once you've
+    # confirmed health checks go through HTTPS / carry the forwarded-proto header.
+    SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "False").strip().lower() == "true"
+
+    # HSTS tells browsers "always use HTTPS for this host for N seconds". It is SEMI-PERMANENT
+    # (browsers cache the directive), so enabling it carelessly can lock users out of any
+    # non-HTTPS subdomain. OFF by default (0); turn on via env once confident EVERY subdomain is
+    # HTTPS. Recommended when stable: SECURE_HSTS_SECONDS=31536000 + INCLUDE_SUBDOMAINS=True.
+    SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "0"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv("SECURE_HSTS_INCLUDE_SUBDOMAINS", "False").strip().lower() == "true"
+    SECURE_HSTS_PRELOAD = os.getenv("SECURE_HSTS_PRELOAD", "False").strip().lower() == "true"
 
 # GEOIP_PATH = "/home/ubuntu/geoip"
 GEOIP_PATH = "/home/ubuntu/ipinfo"
