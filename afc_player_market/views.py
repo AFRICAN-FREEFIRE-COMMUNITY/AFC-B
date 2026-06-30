@@ -546,6 +546,18 @@ def create_recruitment_post(request):
         # ---------------- PLAYER POST ----------------
         if post_type == "PLAYER_AVAILABLE":
             post.player = user
+            # A player who is ALREADY on a team can't advertise that they're "available" — they have
+            # a team (owner 2026-06-30: "it shouldn't allow those in a team create"). They must leave
+            # first. Mirrors the apply-to-post guard (which blocks in-team appliers). Returns a CLEAR
+            # 400 so the FE shows WHY instead of a generic "Failed to create post". Covers both a
+            # rostered member (TeamMembers.member) and a team owner.
+            if (TeamMembers.objects.filter(member=user).exists()
+                    or Team.objects.filter(team_owner=user).exists()):
+                return Response(
+                    {"message": "You're already in a team, so you can't post that you're available. "
+                                "Leave your team first, then create the post."},
+                    status=400,
+                )
             # COMPULSORY (owner 2026-06-12): the mobile device the player currently plays on.
             # Recruiters factor device performance into trial decisions, so a player post
             # without it is rejected outright. Shown on the post card + detail dialog.
