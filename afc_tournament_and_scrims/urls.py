@@ -67,6 +67,28 @@ urlpatterns = [
     # Mounted under events/ -> GET events/<event_id>/stages/<stage_id>/graphic/.
     path('<int:event_id>/stages/<int:stage_id>/graphic/', event_stage_graphic,
          name='event_stage_graphic'),
+    # ── Live OBS overlay + capture-client auth (owner 2026-07-01, live-leaderboard spec §2 + §4) ──
+    # overlay/token: Bearer, event-admin/organizer — ensure/rotate the public READ key (?regenerate=1).
+    # overlay/feed:  PUBLIC (?token=) — the design+standings feed the OBS Browser Source polls. Placed
+    #                before nothing int-shaped, so its literal "overlay/feed/" can't collide with the
+    #                "<int:event_id>/overlay/token/" pattern above/below. Views auto-imported via
+    #                `from .views import *`.
+    # upload/token:  Bearer, event-admin/organizer — create/rotate the revocable WRITE key the desktop
+    #                capture client authenticates result uploads with (upload_team_match_result token path).
+    # live/push:     upload-token only (?token= / X-Upload-Token) — the capture client's Tier-2 in-round
+    #                LIVE push; stashes a provisional standings snapshot in Redis under
+    #                overlay:live:<event>:<stage>:<group> (15s TTL) that overlay/feed serves when ?live=1.
+    path('<int:event_id>/overlay/token/', ensure_overlay_token, name='ensure_overlay_token'),
+    path('overlay/feed/', overlay_feed, name='overlay_feed'),
+    path('<int:event_id>/upload/token/', ensure_upload_token, name='ensure_upload_token'),
+    path('live/push/', live_push, name='live_push'),
+    # capture/resolve: upload-token only — "paste key -> auto-fill" for the desktop app: returns the
+    #                  token's event + stages/groups + the active one so the client fills them itself.
+    path('capture/resolve/', capture_resolve, name='capture_resolve'),
+    # broadcast control: which standings the "follow broadcast" overlay shows (group/stage/event/custom
+    #                    cumulative). Set from the FE BroadcastControl; read by overlay_feed each poll.
+    path('<int:event_id>/broadcast/', get_broadcast, name='get_broadcast'),
+    path('<int:event_id>/broadcast/set/', set_broadcast, name='set_broadcast'),
     path('create-event/', create_event, name='create_event'),
     path('edit-event/', edit_event, name='edit_event'),
     # Event duplication (feature "event-duplicate", 2026-06-10): clone an event's config +
@@ -126,6 +148,7 @@ urlpatterns = [
     path('get-total-tournaments-count/', get_total_tournaments_count, name='get_total_tournaments_count'),
     path('get-total-scrims-count/', get_total_scrims_count, name='get_total_scrims_count'),
     path('get-upcoming-events-count/', get_upcoming_events_count, name='get_upcoming_events_count'),
+    path('get-total-prize-pool/', get_total_prize_pool, name='get_total_prize_pool'),
     path('get-ongoing-events-count/', get_ongoing_events_count, name='get_ongoing_events_count'),
     path('get-completed-events-count/', get_completed_events_count, name='get_completed_events_count'),
     path('get-average-participants-per-event/', get_average_participants_per_event, name='get_average_participants_per_event'),

@@ -169,6 +169,42 @@ def update_event_and_stage_statuses():
     Stages.objects.filter(start_date__gt=today).exclude(stage_status="upcoming").update(stage_status="upcoming")
 
 
+# ── effective (display) event status — owner 2026-07-01 ──
+# WHY: the stored Event.event_status is only converged by the daily Celery sweep above
+# (update_event_and_stage_statuses), which compares DATES ONLY and runs on a beat schedule — so an
+# event that has actually begun (its start_date + event_start_time instant has passed) keeps reading
+# "upcoming" until the next sweep fires. The owner: "when an event has started it should show ongoing;
+# upcoming is only while registration is open and BEFORE the event date AND time is reached." So we
+# compute the badge status at READ time from the real start instant — a pure time comparison, no cron —
+# mirroring the roster_edit_until "auto-close, no cron" pattern already used elsewhere in this file.
+#
+# Rules:
+#   • "completed" is authoritative and never re-opened here — that state is owned by results-based
+#     auto-complete / manual complete / the date sweep (a reopened event is NOT "completed", so it
+#     correctly falls through to the time check below).
+#   • otherwise: "ongoing" once now >= start instant, else "upcoming".
+#   • event_start_time may be NULL (older events / time TBD) -> treat as start-of-day so a same-day
+#     event reads ongoing rather than being stuck on "upcoming" all day.
+# Built as an aware datetime with make_aware(..., get_current_timezone()) to match the existing
+# date+time combination pattern in this file (set_roster_edit_window, ~L19601).
+#
+# CONNECTS TO: consumed by the user-facing event serializers — get_all_events (tournaments list cards,
+# home, organizer/admin event lists), get_event_details and get_event_details_not_logged_in (the event
+# detail badge). The FE renders event_status directly (tournaments/page.tsx statusColors +
+# EventDetailsWrapper), so this makes the badge reflect reality without waiting on the sweep. Audit /
+# admin-edit surfaces (snapshot_event, get_event_details_for_admin) keep the raw stored value on purpose.
+def effective_event_status(event):
+    # A finished event stays finished — do not let a time comparison re-open it.
+    if event.event_status == "completed":
+        return "completed"
+    from datetime import datetime as _dt, time as _time
+    start_dt = timezone.make_aware(
+        _dt.combine(event.start_date, event.event_start_time or _time.min),
+        timezone.get_current_timezone(),
+    )
+    return "ongoing" if timezone.now() >= start_dt else "upcoming"
+
+
 # @api_view(["POST"])
 # def create_leaderboard(request):
 #     session_token = request.headers.get("Authorization")
@@ -252,7 +288,9 @@ def get_all_events(request):
             "event_id": event.event_id,
             "event_banner": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
             "event_date": event.start_date,
-            "event_status": event.event_status,
+            # Display status computed from the real start instant (not the sweep-lagged stored field)
+            # so a started event reads "ongoing" immediately. See effective_event_status.
+            "event_status": effective_event_status(event),
             "competition_type": event.competition_type,
             "number_of_participants": event.max_teams_or_players,
             "prizepool": event.prizepool,
@@ -3762,6 +3800,61 @@ def get_upcoming_events_count(request):
     upcoming_events = Event.objects.filter(event_status="upcoming", is_draft=False).count()
     return Response({"upcoming_events": upcoming_events}, status=status.HTTP_200_OK)
 
+
+# ── total prize pool across all hosted events (owner 2026-07-01) ──
+# The home page "Total Prize Pool" stat was a hardcoded "$5,750". The owner wants it DERIVED from the
+# real event prize pools AND shown in each viewer's own currency. This sums every published (non-draft)
+# event's prizepool_cash_value, NORMALISED to USD (the platform's FX base — afc_auth.FxRate stores
+# `rate` = units per 1 USD, and money is stored/served in USD). Each Event stores prizepool_cash_value
+# in prize_currency (USD|NGN, default NGN) plus a locked usd_to_ngn_rate (rankings §4/§7.2 lock the
+# award-date rate). NGN pools convert to USD via that locked rate, or the current FxRate NGN rate as a
+# fallback; USD pools add directly; events with no/zero cash value are skipped.
+# PUBLIC (no auth). CONSUMED BY: app/(user)/_components/HomeBoxes.tsx -> rendered with <Money from="USD"/>
+# so the number shows in the viewer's display currency (CurrencyContext).
+@api_view(["GET"])
+def get_total_prize_pool(request):
+    import re
+    from decimal import Decimal, InvalidOperation
+    from afc_auth.models import FxRate
+    fallback_ngn = FxRate.objects.filter(currency="NGN").values_list("rate", flat=True).first()
+
+    def _amount(cash, text):
+        # Prefer the STRUCTURED prizepool_cash_value; if it is 0/unset, fall back to the first number
+        # in the free-text `prizepool` (organizers often fill only that, e.g. "1750.0 WORTH OF PRIZES"
+        # -> 1750). Both are interpreted in the event's prize_currency below. Returns 0 for "TBD"/blank.
+        try:
+            if cash and Decimal(cash) > 0:
+                return Decimal(cash)
+        except (InvalidOperation, TypeError):
+            pass
+        m = re.search(r"\d[\d,]*(?:\.\d+)?", str(text or ""))
+        if not m:
+            return Decimal("0")
+        try:
+            return Decimal(m.group(0).replace(",", ""))
+        except InvalidOperation:
+            return Decimal("0")
+
+    total_usd = Decimal("0")
+    rows = Event.objects.filter(is_draft=False).values_list(
+        "prizepool_cash_value", "prizepool", "prize_currency", "usd_to_ngn_rate"
+    )
+    for cash, text, ccy, locked_rate in rows:
+        amt = _amount(cash, text)
+        if amt <= 0:
+            continue
+        if (ccy or "NGN").upper() == "USD":
+            total_usd += amt
+        else:  # NGN amount -> USD via the event's locked rate, else the current NGN rate
+            rate = locked_rate or fallback_ngn
+            if rate and Decimal(rate) > 0:
+                total_usd += amt / Decimal(rate)
+            # no usable rate -> skip (never guess a conversion)
+    return Response(
+        {"total_prize_pool_usd": float(round(total_usd, 2))},
+        status=status.HTTP_200_OK,
+    )
+
 @api_view(["GET"])
 def get_ongoing_events_count(request):
     ongoing_events = Event.objects.filter(event_status="ongoing", is_draft=False).count()
@@ -4401,7 +4494,9 @@ def get_event_details(request):
         # registration close + results (owner 2026-06-30 stage-over rule; consumed by EventDetailsWrapper).
         "your_team_stage_over": viewer_team_stage_over,
         "event_rules": event.event_rules,
-        "event_status": event.event_status,
+        # Read-time display status: "ongoing" once start_date+event_start_time has passed, else
+        # "upcoming" (completed stays completed). See effective_event_status.
+        "event_status": effective_event_status(event),
         "registration_link": event.registration_link,
         "tournament_tier": event.tournament_tier,
         # tier_overridden (owner 2026-06-30): True when a head/super admin pinned the tier (vs
@@ -5218,7 +5313,9 @@ def get_event_details_not_logged_in(request):
         # public Results/Structure view shows "Results not published yet". See results_hidden / set_results_visibility.
         "results_published": event.results_published,
         "event_rules": event.event_rules,
-        "event_status": event.event_status,
+        # Read-time display status (anon detail): mirror get_event_details so a started event shows
+        # "ongoing" without waiting on the sweep. See effective_event_status.
+        "event_status": effective_event_status(event),
         "registration_link": event.registration_link,
         "tournament_tier": event.tournament_tier,
         "event_banner_url": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
@@ -18030,6 +18127,584 @@ PLAYER_RE = re.compile(
 #     }, status=200)
 
 
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# LIVE OBS OVERLAY + CAPTURE-CLIENT AUTH (owner 2026-07-01, live-leaderboard spec §2 + §4)
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# Three endpoints power the live-leaderboard overlay + desktop capture client:
+#   • ensure_overlay_token  (POST events/<id>/overlay/token/)  — mint/rotate the public READ key.
+#   • overlay_feed          (GET  events/overlay/feed/)         — PUBLIC design+standings feed the
+#                                                                 OBS Browser Source polls.
+#   • ensure_upload_token   (POST events/<id>/upload/token/)    — mint/rotate the revocable WRITE key
+#                                                                 the capture client uploads with.
+# They reuse this file's helpers (_is_event_admin, effective_event_status, _org_hidden) plus
+# _resolve_event_design + the per-row field_type mapping from views_event_graphic, round_robin's
+# standings aggregators, and afc_organizers _serialize_design — so the overlay needs ONE public call.
+
+
+def _overlay_bearer_user(request):
+    """Resolve the Bearer user for the overlay/upload TOKEN-MINTING endpoints, mirroring the
+    validate_token pattern used across this file. Returns (user, error_response) — exactly one of
+    the two is non-None. Kept tiny + local so both token endpoints gate identically."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return None, Response({"message": "Invalid token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return None, Response({"message": "Unauthorized."}, status=403)
+    return user, None
+
+
+def _can_manage_overlay(user, event):
+    """Who may MINT/ROTATE an event's overlay + upload tokens (owner 2026-07-01): an AFC event admin
+    (super-admin role=="admin" is inside _is_event_admin) OR an organizer who can_edit_events on the
+    event's owning org. Native AFC events (no org) fall to the admin branch. Same gate for both the
+    read-key (overlay/token) and write-key (upload/token) endpoints per the spec access-control matrix."""
+    return _is_event_admin(user) or org_can_event(user, "can_edit_events", event)
+
+
+def _overlay_live_key(event_id, stage_id, group_id):
+    """The ONE Redis cache key for the Tier-2 in-round LIVE standings snapshot (owner 2026-07-01,
+    live-leaderboard spec §5). Exactly `overlay:live:<event_id>:<stage_id>:<group_id>` with a BLANK
+    segment when the stage or group is unset (a blank stage/group = the cumulative-stage / whole-event
+    slice, matching how overlay_feed builds it from ?stage=&group=).
+
+    Extracted so the WRITER (live_push) and the READER (overlay_feed) build the key IDENTICALLY — a
+    single source of truth prevents the two sides drifting (the exact bug the spec warns about). Each
+    segment is normalised: an int / digit-string passes through, None / "" / anything non-digit -> ""."""
+    def _seg(v):
+        if v is None:
+            return ""
+        s = str(v).strip()
+        return s if s.isdigit() else ""
+    return "overlay:live:{}:{}:{}".format(event_id, _seg(stage_id), _seg(group_id))
+
+
+def _resolve_event_upload_token(request):
+    """Resolve the revocable EventUploadToken the desktop capture client authenticates WRITEs with
+    (owner 2026-07-01, spec §4). Reads the token from ?token= (query) or the X-Upload-Token header —
+    the SAME two places upload_team_match_result accepts — so both write endpoints look it up
+    identically (single source of truth; the spec's "reuse the same lookup").
+
+    Returns (value, token):
+      • value = the raw token string presented, "" when none — lets a caller tell "no token given"
+        (fall back to Bearer, as upload_team_match_result does) apart from "given but invalid" (403).
+      • token = the matching non-revoked EventUploadToken row (select_related event + created_by),
+        or None when the string matched no active token.
+    CONNECTS TO: EventUploadToken (models.py); consumed by upload_team_match_result (Bearer-or-token)
+    and live_push (token-only)."""
+    from .models import EventUploadToken
+    value = (
+        request.query_params.get("token") or request.headers.get("X-Upload-Token") or ""
+    ).strip()
+    token = None
+    if value:
+        token = EventUploadToken.objects.select_related("event", "created_by").filter(
+            token=value, revoked=False).first()
+    return value, token
+
+
+# ── capture-client "paste key -> auto-fill" resolver (owner 2026-07-01) ──
+# The AFC Capture desktop app used to make the user TYPE event_id/stage_id/group_id. Instead, since the
+# capture KEY (EventUploadToken) is tied to ONE event, this returns that event + its stages/groups (+ a
+# best-guess ACTIVE stage/group) so the app fills them in as name dropdowns. No numeric IDs typed.
+# AUTH: the upload token IS the capability (?token= or X-Upload-Token) — 403 if missing/invalid/revoked.
+# CONSUMED BY: afc-capture config window "Fetch from key" (afc-capture/afc_capture/app.py).
+@api_view(["GET"])
+def capture_resolve(request):
+    value, token = _resolve_event_upload_token(request)
+    if not value:
+        return Response({"message": "No capture key provided."}, status=status.HTTP_400_BAD_REQUEST)
+    if not token:
+        return Response({"message": "Invalid or revoked capture key."}, status=status.HTTP_403_FORBIDDEN)
+    event = token.event
+    stages_out, active_stage_id, active_group_id = [], None, None
+    for st in Stages.objects.filter(event=event).order_by("stage_order", "start_date", "stage_id"):
+        groups = [
+            {"group_id": g.group_id, "group_name": g.group_name}
+            for g in st.groups.all().order_by("group_order", "playing_date", "playing_time", "group_id")
+        ]
+        stages_out.append({
+            "stage_id": st.stage_id, "stage_name": st.stage_name,
+            "stage_status": st.stage_status, "groups": groups,
+        })
+        # Active = the first stage currently 'ongoing' (the one being played); its first group.
+        if active_stage_id is None and st.stage_status == "ongoing":
+            active_stage_id = st.stage_id
+            active_group_id = groups[0]["group_id"] if groups else None
+    # Fallback active = the first stage/group when none is 'ongoing' yet.
+    if active_stage_id is None and stages_out:
+        active_stage_id = stages_out[0]["stage_id"]
+        first_groups = stages_out[0]["groups"]
+        active_group_id = first_groups[0]["group_id"] if first_groups else None
+    return Response({
+        "event_id": event.event_id,
+        "event_name": event.event_name,
+        "stages": stages_out,
+        "active_stage_id": active_stage_id,
+        "active_group_id": active_group_id,
+    }, status=status.HTTP_200_OK)
+
+
+def _overlay_rows_from_standings(standings, max_rows, request):
+    """Map an already-aggregated round_robin standings list -> the overlay feed's field_type rows
+    (team logos as ABSOLUTE URLs, the 8 live-only rich stats defaulted to 0/""). SHARED by the
+    per-group/stage path (_overlay_standings_rows) and the broadcast CUMULATIVE path
+    (_overlay_cumulative_rows), so every overlay standings surface emits identical row shapes."""
+    standings = standings[: max(1, max_rows)]
+
+    # Team logos in bulk -> absolute URLs (tournament_team_id -> URL). Mirrors event_stage_graphic's
+    # logo_by_tt, but returns .url (build_absolute_uri) instead of .path for the browser overlay.
+    tt_ids = [r["tournament_team_id"] for r in standings]
+    logo_by_tt = {}
+    for tt in TournamentTeam.objects.filter(
+        tournament_team_id__in=tt_ids).select_related("team"):
+        try:
+            if tt.team and tt.team.team_logo:
+                logo_by_tt[tt.tournament_team_id] = request.build_absolute_uri(tt.team.team_logo.url)
+        except Exception:
+            pass
+
+    # Per-row dicts keyed by field_type — the SAME keys the design's placed fields bind to, so the
+    # FE DesignBoard can render whichever columns the chosen design places (pos/team_name/team_logo/
+    # booyah/placement_points/kill_points/total_points/kills/matches/base_total/bonus/penalty).
+    rows = []
+    for i, r in enumerate(standings):
+        tt_id = r["tournament_team_id"]
+        rows.append({
+            "pos": i + 1,
+            "team_name": r.get("team_name") or "-",
+            "team_logo": logo_by_tt.get(tt_id),
+            "booyah": r.get("total_booyah", 0),
+            "placement_points": r.get("placement_sum", 0),
+            "kill_points": r.get("kill_sum", 0),
+            "total_points": r.get("effective_total", 0),
+            "kills": r.get("total_kills", 0),
+            "matches": r.get("games_played", 0),
+            "base_total": r.get("effective_total", 0),
+            "bonus": r.get("bonus_sum", 0),
+            "penalty": r.get("penalty_sum", 0),
+            # ── LIVE-ONLY rich stats (owner 2026-07-01, spec §12) ──────────────────────────────────
+            # These 8 exist ONLY in the Tier-2 debugger stream (the live_push snapshot); the OFFICIAL
+            # per-round standings do NOT carry them — MatchResult_*.log / round_robin standings are
+            # kills-only (see memory project_freefire_live_capture §2b). We still emit them here,
+            # defaulted to 0 (blank for the textual most_used_weapon), so a design column bound to one
+            # renders 0/"" rather than "undefined" in official mode. In LIVE mode the pushed snapshot
+            # already carries the real values as-is and this official mapping isn't used.
+            "deaths": 0,
+            "knockdowns": 0,
+            "headshots": 0,
+            "most_used_weapon": "",
+            "survival_time": 0,
+            "revives_received": 0,
+            "gloowall_used": 0,
+            "medkit_used": 0,
+        })
+    return rows
+
+
+def _overlay_standings_rows(event, stage, group, max_rows, request):
+    """Overlay standings for a single GROUP or a whole STAGE (the graphic-export slices): mirrors the
+    export EXACTLY so the overlay numbers match the site — round_robin.group_standings(group) when a
+    group is selected, else cumulative_standings(stage). [] when neither is given. Capped at max_rows."""
+    from . import round_robin  # local import: round_robin isn't loaded at this module's top level.
+    if group is not None:
+        standings = round_robin.group_standings(group)
+    elif stage is not None:
+        standings = round_robin.cumulative_standings(stage)
+    else:
+        return []
+    return _overlay_rows_from_standings(standings, max_rows, request)
+
+
+def _overlay_cumulative_rows(event, group_ids, max_rows, request):
+    """Overlay standings for the BROADCAST 'combine' scopes (owner 2026-07-01): sum every team across a
+    set of GROUPS. group_ids=None -> the WHOLE EVENT (all groups of all stages, scope='event');
+    group_ids=[...] -> exactly those groups (scope='custom', an arbitrary combination). Uses the same
+    round_robin aggregator every team-ranking surface uses (_aggregate_team_standings over the matched
+    TournamentTeamMatchStats), so a cumulative overlay agrees with the site's cumulative tables."""
+    from . import round_robin
+    from .models import TournamentTeamMatchStats
+    if group_ids is None:
+        qs = TournamentTeamMatchStats.objects.filter(match__group__stage__event=event)
+    else:
+        qs = TournamentTeamMatchStats.objects.filter(match__group_id__in=group_ids)
+    standings = round_robin._aggregate_team_standings(qs)
+    return _overlay_rows_from_standings(standings, max_rows, request)
+
+
+@api_view(["POST"])
+def ensure_overlay_token(request, event_id):
+    """POST events/<event_id>/overlay/token/  — ensure (create-if-null) + return the event's public
+    overlay READ key; ?regenerate=1 rotates it. (owner 2026-07-01, live-leaderboard spec §2.1.)
+
+    Auth: Bearer. Gate: _can_manage_overlay (AFC event admin — super-admin included — OR an organizer
+    who can_edit_events on the event's org). Response: {"overlay_token": "<token>"}.
+    CONNECTS TO: Event.overlay_token (models.py) + the public overlay_feed reader; consumed by the FE
+    "Copy OBS link" dialog on the event leaderboard page (organizer + admin) to build the Browser
+    Source URL and offer "Regenerate token"."""
+    user, err = _overlay_bearer_user(request)
+    if err:
+        return err
+    event = get_object_or_404(Event, event_id=event_id)
+    if not _can_manage_overlay(user, event):
+        return Response({"message": "You do not have permission to manage this overlay."}, status=403)
+
+    from .models import _gen_overlay_token
+    regenerate = _as_bool(request.query_params.get("regenerate"))
+    if regenerate or not event.overlay_token:
+        event.overlay_token = _gen_overlay_token()
+        event.save(update_fields=["overlay_token"])
+    return Response({"overlay_token": event.overlay_token})
+
+
+@api_view(["GET"])
+def overlay_feed(request):
+    """GET events/overlay/feed/?token=&stage=&group=&design=&size=&live=  — PUBLIC (no auth) data
+    source for the OBS live-leaderboard overlay (owner 2026-07-01, live-leaderboard spec §2.1).
+
+    Resolves the Event by its overlay_token (404 if none / the owning org is hidden), then returns the
+    chosen DESIGN (embedded via _serialize_design so the overlay needs only this one call) + the live
+    STANDINGS. The token authorizes the organizer's own broadcast, so the feed intentionally bypasses
+    results_published (results_hidden is always false) — a suspended-org event still 404s.
+
+    Params: token (required); stage / group (which standings slice, mirrors the graphic export —
+    group_standings if a group is given, else cumulative_standings for the stage); design (which
+    OrgLeaderboardDesign to render, else the library default); size (youtube|instagram, default
+    youtube); live (0/1 — when 1 and a Redis snapshot exists at overlay:live:<event>:<stage>:<group>,
+    that provisional in-round standings snapshot is returned with live=true).
+
+    Team events only for standings (mirrors event graphic); a solo event returns empty standings + a
+    note. Sends Access-Control-Allow-Origin: * (safe public read) so the feed loads cross-origin.
+    CONSUMED BY: the FE overlay route (frontend/app/overlay/leaderboard/[token]) polling this feed."""
+    token = (request.query_params.get("token") or "").strip()
+    if not token:
+        return Response({"message": "token is required."}, status=400)
+
+    # Resolve the event by its public overlay key. A hidden (suspended/deleted) org's event 404s so a
+    # leaked token can't surface it — same visibility rule as every public event surface (_org_hidden).
+    event = Event.objects.select_related("organization").filter(overlay_token=token).first()
+    if not event or _org_hidden(event):
+        return Response({"message": "Overlay not found."}, status=404)
+
+    size = (request.query_params.get("size") or "youtube").lower()
+    if size not in ("instagram", "youtube"):
+        size = "youtube"
+    live_requested = _as_bool(request.query_params.get("live"))
+
+    # Resolve the stage (scoped to this event) + group (scoped to that stage) the streamer picked.
+    stage = None
+    stage_raw = request.query_params.get("stage")
+    if stage_raw and str(stage_raw).isdigit():
+        stage = Stages.objects.filter(stage_id=int(stage_raw), event=event).first()
+    group = None
+    group_raw = request.query_params.get("group")
+    if group_raw and str(group_raw).isdigit():
+        # Scope the group to the resolved stage when present; else to any of this event's stages so a
+        # group-only request still resolves without leaking another event's group.
+        gq = StageGroups.objects.filter(group_id=int(group_raw))
+        gq = gq.filter(stage=stage) if stage is not None else gq.filter(stage__event=event)
+        group = gq.first()
+
+    # ── Broadcast follow (owner 2026-07-01) ──────────────────────────────────────────────────────
+    # A "follow broadcast" overlay link OMITS ?stage=/?group=. With neither pinned, use the event's
+    # saved BROADCAST selection so an organizer can switch what the overlay shows from the site
+    # (BroadcastControl -> events/<id>/broadcast/set/) WITHOUT touching the OBS link — the overlay
+    # self-polls, so it follows within one poll. Explicit ?stage=/?group= above OVERRIDE this.
+    #   group  -> that single group      | stage  -> that whole stage (cumulative_standings)
+    #   event  -> cumulative across ALL groups of ALL stages | custom -> across broadcast_group_ids.
+    broadcast_cumulative = False   # True => use _overlay_cumulative_rows (event / custom scopes)
+    broadcast_group_ids = None     # None + cumulative => whole event; [...] => exactly those groups
+    if stage is None and group is None:
+        scope = (event.broadcast_scope or "group").lower()
+        if scope == "group" and event.broadcast_group_id:
+            group = StageGroups.objects.filter(
+                group_id=event.broadcast_group_id, stage__event=event).first()
+        elif scope == "stage" and event.broadcast_stage_id:
+            stage = Stages.objects.filter(stage_id=event.broadcast_stage_id, event=event).first()
+        elif scope == "event":
+            broadcast_cumulative = True  # group_ids stays None => aggregate the whole event
+        elif scope == "custom":
+            valid = set(StageGroups.objects.filter(
+                stage__event=event).values_list("group_id", flat=True))
+            broadcast_cumulative = True
+            broadcast_group_ids = [g for g in (event.broadcast_group_ids or []) if g in valid]
+
+    # Resolve the design from the event org's library (or AFC-native), honouring ?design=<id>. Reuses
+    # the exact resolver the graphic export uses so the overlay + export pick the same design.
+    from .views_event_graphic import _resolve_event_design
+    from afc_organizers.views_leaderboard_design import _serialize_design
+    design = _resolve_event_design(event, request.query_params.get("design"))
+    max_rows = design.max_rows if design else 16
+
+    # ── STANDINGS ── team events only (mirrors the graphic export: standings are team-based). A solo
+    # event returns empty standings + a note field so the overlay can show a friendly message.
+    note = None
+    standings_rows = []
+    is_live = False
+    if event.participant_type == "solo":
+        note = "Live standings are available for team events only."
+    else:
+        # LIVE path (spec §5): when the streamer asked for live and the capture client has pushed a
+        # provisional in-round snapshot into Redis (Tier 2), return THAT with live=true; else the
+        # official per-round standings. Key: overlay:live:<event>:<stage>:<group> (blank when unset).
+        if live_requested:
+            from django.core.cache import cache
+            # Build the key via the SHARED helper so it matches live_push byte-for-byte (blank
+            # stage/group => the cumulative slice). Single source of truth = reader/writer can't drift.
+            live_key = _overlay_live_key(
+                event.event_id,
+                stage.stage_id if stage else None,
+                group.group_id if group else None,
+            )
+            snapshot = cache.get(live_key)
+            if isinstance(snapshot, list):
+                standings_rows = snapshot[: max(1, max_rows)]
+                is_live = True
+        if not is_live:
+            if broadcast_cumulative:
+                standings_rows = _overlay_cumulative_rows(
+                    event, broadcast_group_ids, max_rows, request)
+            else:
+                standings_rows = _overlay_standings_rows(event, stage, group, max_rows, request)
+
+    # board: the labels the overlay shows above the table. subtitle reflects the scope: the stage name
+    # for a group/stage slice, else a "cumulative" label for the combined (event/custom) broadcast.
+    if broadcast_cumulative:
+        subtitle = "Event cumulative" if broadcast_group_ids is None else "Cumulative"
+    else:
+        subtitle = (stage.stage_name if stage else "") or ""
+    board = {
+        "stage_id": stage.stage_id if stage else None,
+        "group_id": group.group_id if group else None,
+        "title": event.event_name,
+        "subtitle": subtitle,
+    }
+
+    payload = {
+        "event": {
+            "name": event.event_name,
+            # Display status from the real start instant (not the sweep-lagged stored field).
+            "status": effective_event_status(event),
+            "participant_type": event.participant_type,
+        },
+        "board": board,
+        "size": size,
+        # Full design spec (backgrounds as absolute URLs, colors, transparent_background, column
+        # groups, placed fields/texts/logos, max_rows, show_title/subtitle) so the overlay renders
+        # the design with ZERO extra calls. None when the library is empty.
+        "design": _serialize_design(design, request) if design else None,
+        "standings": standings_rows,
+        # The token IS the organizer's authorization to broadcast, so standings are never withheld
+        # here even if the public results are still hidden (results_published) elsewhere.
+        "results_hidden": False,
+        "live": is_live,
+        "updated_at": timezone.now().isoformat(),
+    }
+    if note is not None:
+        payload["note"] = note
+
+    resp = Response(payload)
+    # Safe public read: allow the overlay to fetch this cross-origin from any OBS/browser context.
+    resp["Access-Control-Allow-Origin"] = "*"
+    return resp
+
+
+# ── Broadcast control (owner 2026-07-01) ──────────────────────────────────────────────────────────
+# The organizer/admin picks WHICH standings the live overlay shows — a single group, a whole stage
+# cumulative, a whole event cumulative, or a custom combination of groups — from the WEBSITE, and a
+# "follow broadcast" overlay link (no ?stage=/?group=) follows it live (overlay_feed reads the saved
+# Event.broadcast_* each poll). CONSUMED BY: the FE BroadcastControl on the event leaderboard pages.
+def _broadcast_gate(request, event_id):
+    """Shared auth for the broadcast endpoints: Bearer + (AFC event admin OR an organizer who can edit
+    this event's org). Returns (event, error_response). Mirrors ensure_overlay_token's gate."""
+    user = validate_token(request.headers.get("Authorization"))
+    if not user:
+        return None, Response({"message": "Invalid or expired session token."}, status=401)
+    event = Event.objects.select_related("organization").filter(event_id=event_id).first()
+    if not event:
+        return None, Response({"message": "Event not found."}, status=404)
+    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+        return None, Response({"message": "You do not have permission for this event."}, status=403)
+    return event, None
+
+
+def _event_stage_structure(event):
+    """The event's stages + their groups (id + name), the shape the FE BroadcastControl picker needs.
+    Same structure capture_resolve returns, kept here so both stay in sync if the picker shape grows."""
+    out = []
+    for st in Stages.objects.filter(event=event).order_by("stage_order", "start_date", "stage_id"):
+        out.append({
+            "stage_id": st.stage_id,
+            "stage_name": st.stage_name,
+            "groups": [
+                {"group_id": g.group_id, "group_name": g.group_name}
+                for g in st.groups.all().order_by(
+                    "group_order", "playing_date", "playing_time", "group_id")
+            ],
+        })
+    return out
+
+
+@api_view(["GET"])
+def get_broadcast(request, event_id):
+    """GET events/<event_id>/broadcast/ — the event's current broadcast selection + its stage/group
+    structure, so the FE BroadcastControl can render the picker + preselect the live scope."""
+    event, err = _broadcast_gate(request, event_id)
+    if err:
+        return err
+    return Response({
+        "scope": event.broadcast_scope or "group",
+        "stage_id": event.broadcast_stage_id,
+        "group_id": event.broadcast_group_id,
+        "group_ids": event.broadcast_group_ids or [],
+        "stages": _event_stage_structure(event),
+    }, status=200)
+
+
+@api_view(["POST"])
+def set_broadcast(request, event_id):
+    """POST events/<event_id>/broadcast/set/  body {scope, stage_id?, group_id?, group_ids?} — save
+    which standings the live overlay follows. Validates that any ids belong to THIS event, so a bad id
+    can't point the overlay at another event's data. The overlay picks the change up on its next poll."""
+    event, err = _broadcast_gate(request, event_id)
+    if err:
+        return err
+    data = request.data or {}
+    scope = str(data.get("scope") or "group").lower()
+    if scope not in ("group", "stage", "event", "custom"):
+        return Response({"message": "scope must be group, stage, event or custom."}, status=400)
+
+    # Valid stage/group ids for THIS event (guard against cross-event ids).
+    valid_stage_ids = set(Stages.objects.filter(event=event).values_list("stage_id", flat=True))
+    valid_group_ids = set(
+        StageGroups.objects.filter(stage__event=event).values_list("group_id", flat=True))
+
+    stage_id = data.get("stage_id")
+    group_id = data.get("group_id")
+    group_ids = data.get("group_ids") or []
+    stage_id = int(stage_id) if str(stage_id).isdigit() else None
+    group_id = int(group_id) if str(group_id).isdigit() else None
+    group_ids = [int(g) for g in group_ids if str(g).isdigit() and int(g) in valid_group_ids]
+
+    if scope == "group" and group_id not in valid_group_ids:
+        return Response({"message": "group_id does not belong to this event."}, status=400)
+    if scope == "stage" and stage_id not in valid_stage_ids:
+        return Response({"message": "stage_id does not belong to this event."}, status=400)
+
+    event.broadcast_scope = scope
+    event.broadcast_stage_id = stage_id if scope == "stage" else (
+        stage_id if scope == "group" else None)
+    event.broadcast_group_id = group_id if scope == "group" else None
+    event.broadcast_group_ids = group_ids if scope == "custom" else []
+    event.save(update_fields=[
+        "broadcast_scope", "broadcast_stage_id", "broadcast_group_id", "broadcast_group_ids"])
+    return Response({
+        "scope": event.broadcast_scope,
+        "stage_id": event.broadcast_stage_id,
+        "group_id": event.broadcast_group_id,
+        "group_ids": event.broadcast_group_ids,
+    }, status=200)
+
+
+@api_view(["POST", "PUT"])
+def live_push(request):
+    """POST|PUT events/live/push/?token=<upload-token>  — the desktop capture client's Tier-2 (true
+    in-round LIVE) channel (owner 2026-07-01, live-leaderboard spec §5).
+
+    Accepts BOTH POST and PUT: the capture client's LivePusher (afc-capture/uploader.py) sends PUT
+    (an idempotent upsert of the current live snapshot); POST is allowed too for parity with the other
+    upload endpoints + manual/curl callers. Both take the identical body + do the identical cache write.
+
+    The observer-PC capture client tails the Free Fire debugger log, reconstructs PROVISIONAL per-team
+    standings (with the rich live stats the debugger stream exposes — kills/deaths/knockdowns/headshots/
+    most_used_weapon/survival_time/revives_received/gloowall_used/medkit_used; see memory
+    project_freefire_live_capture §2b), and PUSHes a snapshot here every ~2s / on change. We stash the
+    standings list in the Redis CACHE under EXACTLY overlay:live:<event>:<stage>:<group> (the SAME key
+    overlay_feed reads when ?live=1, built by the shared _overlay_live_key) with a short 15s TTL so a
+    stale snapshot self-clears the moment the client stops pushing (round end / app closed). overlay_feed
+    then serves it with live=true until it expires or the authoritative Tier-1 MatchResult upload lands.
+
+    Auth: an EventUploadToken via ?token= or the X-Upload-Token header — the SAME revocable WRITE key the
+    capture client uploads MatchResult files with (NOT Bearer; the client can't do an interactive login),
+    resolved by the shared _resolve_event_upload_token. 403 when the token is missing / invalid / revoked,
+    or when it was minted for a DIFFERENT event than the pushed event_id (a token is scoped to ONE event,
+    so it can never write another event's live key).
+
+    Body (application/json):
+      { event_id:int, stage_id, group_id,
+        standings: [ {pos, team_name, kills, deaths, knockdowns, headshots, most_used_weapon,
+                      survival_time, revives_received, gloowall_used, medkit_used, placement_points,
+                      kill_points, total_points, booyah, ...} ],
+        updated_at }
+    The standings rows are stored AS-IS (they already carry the live values); overlay_feed caps them to
+    the chosen design's max_rows on read. Blank/absent stage_id or group_id => the cumulative slice.
+    Returns 200 {"ok": true}.
+    CONNECTS TO: EventUploadToken + _resolve_event_upload_token (auth), _overlay_live_key (shared key),
+    overlay_feed (the reader). CONSUMED BY: the afc-capture desktop client's debugger tailer (Tier 2)."""
+    # ── AUTH: event-scoped upload token ONLY (no Bearer path — this is a machine client) ──
+    token_value, upload_token = _resolve_event_upload_token(request)
+    if not token_value or not upload_token:
+        # Covers missing (no ?token=/header), unknown, and revoked keys — all a flat 403.
+        return Response({"message": "Invalid or revoked upload token."}, status=403)
+
+    # event_id is required and must be an int so it can be compared to the token's scope + used in the key.
+    event_id = request.data.get("event_id")
+    if event_id in (None, ""):
+        return Response({"message": "event_id is required."}, status=400)
+    try:
+        event_id = int(event_id)
+    except (TypeError, ValueError):
+        return Response({"message": "event_id must be an integer."}, status=400)
+
+    # Scope check: the token is bound to ONE event; it may only write THAT event's live snapshot. A token
+    # minted for event A can never push a live key for event B (mirrors upload_team_match_result's guard).
+    if upload_token.event_id != event_id:
+        return Response({"message": "This upload token is not valid for this event."}, status=403)
+
+    standings = request.data.get("standings")
+    if not isinstance(standings, list):
+        return Response({"message": "standings must be a list."}, status=400)
+
+    # Stash under the EXACT key overlay_feed reads. Short 15s TTL bounds staleness: when the client stops
+    # pushing (round ends / app closed) the snapshot evaporates and the feed falls back to official.
+    from django.core.cache import cache
+    live_key = _overlay_live_key(event_id, request.data.get("stage_id"), request.data.get("group_id"))
+    cache.set(live_key, standings, timeout=15)
+    return Response({"ok": True})
+
+
+@api_view(["POST"])
+def ensure_upload_token(request, event_id):
+    """POST events/<event_id>/upload/token/  — create-or-return a non-revoked EventUploadToken for the
+    event; ?regenerate=1 revokes every existing token + issues a fresh one (owner 2026-07-01, spec §4).
+
+    Auth: Bearer. Gate: _can_manage_overlay (same as the overlay token — AFC event admin OR an
+    organizer who can_edit_events). Optional body `label` (a human note like "Observer PC 1").
+    Response: {"upload_token": "<token>"}.
+    CONNECTS TO: EventUploadToken (models.py) + upload_team_match_result's token-auth branch; consumed
+    by the FE "Capture client key" control on the event leaderboard page (organizer + admin)."""
+    user, err = _overlay_bearer_user(request)
+    if err:
+        return err
+    event = get_object_or_404(Event, event_id=event_id)
+    if not _can_manage_overlay(user, event):
+        return Response({"message": "You do not have permission to manage this upload key."}, status=403)
+
+    from .models import EventUploadToken
+    label = (request.data.get("label") or "").strip()[:120]
+    regenerate = _as_bool(request.query_params.get("regenerate"))
+    if regenerate:
+        # Rotate = revoke every current key for this event (retire the leaked/old one) then mint a new
+        # one, so the previously distributed key stops working immediately.
+        EventUploadToken.objects.filter(event=event, revoked=False).update(revoked=True)
+        tok = EventUploadToken.objects.create(event=event, created_by=user, label=label)
+    else:
+        tok = EventUploadToken.objects.filter(event=event, revoked=False).order_by("-created_at").first()
+        if tok is None:
+            tok = EventUploadToken.objects.create(event=event, created_by=user, label=label)
+    return Response({"upload_token": tok.token})
+
+
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
 def upload_team_match_result(request):
@@ -18076,16 +18751,34 @@ def upload_team_match_result(request):
     """
 
     # -------- AUTH --------
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+    # Two accepted auth modes (owner 2026-07-01, live-capture spec §4):
+    #   (1) Bearer token — the interactive admin/organizer web upload (the original flow, unchanged).
+    #   (2) Event UPLOAD TOKEN — the desktop capture client on the observer PC can't do an interactive
+    #       login, so it presents a revocable EventUploadToken via ?token= (query) or the X-Upload-Token
+    #       header. A valid, non-revoked token authorizes AS its granting user (created_by) but ONLY to
+    #       upload a result to ITS OWN event (verified once the match's event is resolved below); it
+    #       bypasses the Bearer requirement + the manager gate, and authorizes nothing else. See
+    #       EventUploadToken (models.py) + ensure_upload_token (this file).
+    # Look the token up via the SHARED resolver (same lookup live_push uses) so both write paths agree.
+    upload_token_value, upload_token = _resolve_event_upload_token(request)
+    if upload_token_value:
+        if not upload_token:
+            return Response({"message": "Invalid or revoked upload token."}, status=403)
+        # Act as the granting user; may be None if that user was deleted (SET_NULL) — harmless because
+        # the token path skips every `admin`-based gate and `admin` is not read after the auth block.
+        admin = upload_token.created_by
+    else:
+        auth = request.headers.get("Authorization")
+        if not auth or not auth.startswith("Bearer "):
+            return Response({"message": "Invalid token."}, status=400)
 
-    admin = validate_token(auth.split(" ")[1])
-    if not admin:
-        return Response({"message": "Unauthorized."}, status=403)
+        admin = validate_token(auth.split(" ")[1])
+        if not admin:
+            return Response({"message": "Unauthorized."}, status=403)
 
     # NOTE: permission is finalised below, after the owning event is resolved — org members
-    # with can_upload_results may upload for THEIR org's events.
+    # with can_upload_results may upload for THEIR org's events (Bearer path); an upload token is
+    # instead verified to belong to that exact event.
 
     match_id = request.data.get("match_id")
     if not match_id:
@@ -18124,10 +18817,18 @@ def upload_team_match_result(request):
 
     event = match.group.stage.event
 
-    # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
-    # holding can_upload_results on the event's owning org (native events stay admin-only).
-    if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "Unauthorized."}, status=403)
+    # ── AUTH (event-scoped) ──
+    if upload_token is not None:
+        # Capture-client token path: the token is scoped to ONE event, so it may only write results
+        # for that event. A token minted for event A can never upload for a match belonging to event B.
+        if upload_token.event_id != event.event_id:
+            return Response({"message": "This upload token is not valid for this event."}, status=403)
+        # Authorized: the token itself is the grant (WRITE-limited to this event's result upload).
+    else:
+        # Bearer path: AFC event admins always pass; otherwise allow org members holding
+        # can_upload_results on the event's owning org (native events stay admin-only).
+        if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
+            return Response({"message": "Unauthorized."}, status=403)
 
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for TEAM events only."}, status=400)

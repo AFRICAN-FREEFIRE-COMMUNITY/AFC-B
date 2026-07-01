@@ -171,6 +171,10 @@ def _serialize_design(d, request=None):
         "name": d.name,
         "background_instagram": _abs_url(request, d.background_instagram),
         "background_youtube": _abs_url(request, d.background_youtube),
+        # Transparent overlay flag (owner 2026-07-01): when true the overlay/PNG render skips the
+        # opaque background so only the placed columns show. Read by the overlay feed (DesignBoard)
+        # + wired through the graphic export. See OrgLeaderboardDesign.transparent_background.
+        "transparent_background": d.transparent_background,
         "text_color": d.text_color,
         "accent_color": d.accent_color,
         "show_title": d.show_title,
@@ -361,8 +365,10 @@ def _apply_fields(d, data):
         d.text_color = (data.get("text_color") or "#FFFFFF").strip()
     if "accent_color" in data:
         d.accent_color = (data.get("accent_color") or "#34d27b").strip()
-    # Booleans arrive as "true"/"false" strings over multipart.
-    for flag in ("show_title", "show_subtitle"):
+    # Booleans arrive as "true"/"false" strings over multipart. transparent_background (owner
+    # 2026-07-01) rides the same coercion so the editor's "Transparent background (for live overlay)"
+    # toggle persists — without it here the flag could never be set off its False default.
+    for flag in ("show_title", "show_subtitle", "transparent_background"):
         if flag in data:
             v = data.get(flag)
             d.__setattr__(flag, str(v).lower() in ("true", "1", "yes", "on", "true"))

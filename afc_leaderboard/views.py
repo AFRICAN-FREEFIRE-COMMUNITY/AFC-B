@@ -675,6 +675,8 @@ def leaderboard_graphic(request, lb_id):
                 show_title=(design.show_title if design else True),
                 show_subtitle=(design.show_subtitle if design else True),
                 logo_path=logo_path,
+                # Transparent overlay design (owner 2026-07-01) -> transparent PNG (see graphic.py).
+                transparent_background=(design.transparent_background if design else False),
             )
             safe_name = (lb.name or "leaderboard").replace('"', "").replace("\n", " ")
             resp = HttpResponse(pngs[0], content_type="image/png")
@@ -698,6 +700,8 @@ def leaderboard_graphic(request, lb_id):
                 show_title=(design.show_title if design else True),
                 show_subtitle=(design.show_subtitle if design else True),
                 logo_path=logo_path,
+                # Transparent overlay design (owner 2026-07-01) -> transparent PNG (see graphic.py).
+                transparent_background=(design.transparent_background if design else False),
             )
             zip_buf = io.BytesIO()
             safe_name = (lb.name or "leaderboard").replace('"', "").replace("\n", " ")
@@ -726,6 +730,8 @@ def leaderboard_graphic(request, lb_id):
         show_subtitle=(design.show_subtitle if design else True),
         field_layout=field_layout,
         rows=rows,
+        # Transparent overlay design (owner 2026-07-01) -> transparent PNG (see graphic.py).
+        transparent_background=(design.transparent_background if design else False),
     )
 
     resp = HttpResponse(png, content_type="image/png")
