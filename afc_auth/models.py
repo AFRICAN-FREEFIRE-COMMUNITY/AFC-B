@@ -202,11 +202,13 @@ class SessionToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 
-    # Idle-timeout window: users are auto-logged-out after 3 HOURS OF INACTIVITY (owner
-    # 2026-06-14). It is a SLIDING window, not absolute-from-login: every authed request
-    # calls touch() to push expires_at forward, so an active user never gets logged out,
-    # but 3h with no request expires the session. The frontend slides the auth_token cookie
-    # the same way (AuthContext, on each successful API call). Keep these in sync.
+    # Idle-timeout window: users are auto-logged-out after 3 HOURS OF INACTIVITY (owner 2026-06-14,
+    # kept at 3h 2026-07-01). SLIDING, not absolute-from-login: every authed request calls touch() to
+    # push expires_at forward, so an active user never gets logged out, but 3h with no request expires
+    # the session. MUST stay in sync with the frontend auth_token cookie window (AuthContext
+    # COOKIE_OPTIONS.expires, also 3h): if the FE cookie outlives this, the user still LOOKS logged in
+    # after the backend token expires and every action 401s "Invalid or expired session token". Both at
+    # 3h => on a >3h idle gap the cookie ALSO expires, so the FE cleanly shows logged-out (re-login).
     SESSION_LIFETIME = timedelta(hours=3)
     # Only persist a slide when it moves the expiry by more than this, so we do at most one
     # DB write per ~5 min of activity instead of one per request.

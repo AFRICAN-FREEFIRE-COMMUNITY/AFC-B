@@ -1594,6 +1594,15 @@ def create_event(request):
     except Exception:
         return Response({"message": "prizepool_cash_value must be a number."}, status=400)
 
+    # Prize currency (owner 2026-07-01): AFC enters prize pools in USD (the platform's base currency
+    # for the multi-currency <Money> layer), so DEFAULT to USD instead of the model's legacy NGN
+    # default that left every event's prizepool mis-tagged NGN (a $1750 pool read as ~$1.27 in the
+    # home total). Organizers may still pass an explicit prize_currency. Read by get_total_prize_pool
+    # and the <Money from={prize_currency}> displays.
+    prize_currency = (request.data.get("prize_currency") or "USD").upper()
+    if prize_currency not in ("USD", "NGN"):
+        prize_currency = "USD"
+
     # ---------------- PRIZE DISTRIBUTION ----------------
     prize_distribution = _maybe_json(request.data.get("prize_distribution"), default={})
     if not isinstance(prize_distribution, dict):
@@ -1755,6 +1764,7 @@ def create_event(request):
             registration_end_date=close_date,
             prizepool=str(prizepool),  # your model uses CharField
             prizepool_cash_value=prizepool_cash_value,
+            prize_currency=prize_currency,  # default USD (owner 2026-07-01)
             prize_distribution=prize_distribution,
             event_rules=request.data.get("event_rules", ""),
             event_status=request.data.get("event_status", "upcoming"),
@@ -2985,6 +2995,14 @@ def edit_event(request):
             event.prizepool_cash_value = float(request.data.get("prizepool_cash_value"))
         except:
             return Response({"message": "prizepool_cash_value must be a number."}, status=400)
+
+    # Prize currency (owner 2026-07-01): keep it explicit + default USD (AFC enters prizes in USD).
+    # Prevents the legacy NGN default from mis-tagging an edited prizepool. See create_event + models.
+    if "prize_currency" in request.data:
+        _pc = (request.data.get("prize_currency") or "USD").upper()
+        event.prize_currency = _pc if _pc in ("USD", "NGN") else "USD"
+    elif "prizepool" in request.data and not event.prize_currency:
+        event.prize_currency = "USD"
 
     if "prize_distribution" in request.data:
         pd = maybe_json(request.data.get("prize_distribution"))
