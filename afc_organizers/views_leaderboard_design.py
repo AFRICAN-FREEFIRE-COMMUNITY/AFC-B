@@ -199,7 +199,7 @@ def _serialize_design(d, request=None):
     }
 
 
-def build_field_layout(design, size="instagram"):
+def build_field_layout(design, size="instagram", page_number=None):
     """Convert a design's placed fields + freeform texts + column groups into the `field_layout`
     dict the renderer (afc_leaderboard.graphic.render_leaderboard_graphic) consumes, resolving each
     element's font FK to a filesystem PATH. Returns None when the design has no fields placed, so
@@ -209,11 +209,16 @@ def build_field_layout(design, size="instagram"):
     `size` ("instagram"|"youtube") selects which independent layout to render (owner 2026-06-15: IG
     and YT positions/geometry are stored separately). For YouTube we use the *_youtube columns,
     FALLING BACK to the Instagram values whenever a YT value is unset (NULL field x / empty column
-    groups), so a design that only has an IG layout renders identically on both sizes."""
-    fields = list(design.fields.all())
-    if not fields:
-        return None
+    groups), so a design that only has an IG layout renders identically on both sizes.
 
+    MULTI-PAGE (owner 2026-07-01 FIX): when a design has explicit pages, the column-group GEOMETRY
+    (incl. the 2nd/right column) and the placed FIELDS live on the PAGE, not the design. The old code
+    read the design-level column_groups here, so a single-PNG export of a multi-page design rendered
+    only the legacy 1st column and ignored the page's extra columns + fonts (owner: "2nd column empty,
+    font/size not applied"). This builder now renders ONE page (page_number, default the FIRST page)
+    using that page's column_groups(_youtube) + the fields/texts assigned to it. A legacy (page-less)
+    design is unchanged: design-level groups + all fields. For the ALL-pages ZIP export see
+    build_pages_for_export (which already renders each page)."""
     yt = size == "youtube"
 
     def _font_path(elem):
@@ -231,8 +236,35 @@ def build_field_layout(design, size="instagram"):
     def _ty(t):
         return t.y_pct_youtube if (yt and t.y_pct_youtube is not None) else t.y_pct
 
-    groups = ((design.column_groups_youtube or design.column_groups) if yt
-              else design.column_groups) or []
+    all_fields = list(design.fields.all())
+    all_texts = list(design.texts.all())
+
+    pages_qs = list(design.pages.order_by("page_number"))
+    if pages_qs:
+        # Render a specific page (default the first). page_id==None counts as page 1 (legacy), so a
+        # design that grew pages but never re-homed its original fields still renders them on page 1.
+        page = None
+        if page_number is not None:
+            page = next((p for p in pages_qs if p.page_number == int(page_number)), None)
+        page = page or pages_qs[0]
+        groups = ((page.column_groups_youtube or page.column_groups) if yt
+                  else page.column_groups) or []
+        # Prefer the page's OWN placed elements; only fall back to legacy null-page elements when this
+        # page has none of its own (avoids double-drawing a legacy left column over the page's columns).
+        fields = [f for f in all_fields if f.page_id == page.id]
+        texts = [t for t in all_texts if t.page_id == page.id]
+        if not fields and page is pages_qs[0]:
+            fields = [f for f in all_fields if f.page_id is None]
+        if not texts and page is pages_qs[0]:
+            texts = [t for t in all_texts if t.page_id is None]
+    else:
+        groups = ((design.column_groups_youtube or design.column_groups) if yt
+                  else design.column_groups) or []
+        fields = all_fields
+        texts = all_texts
+
+    if not fields:
+        return None
 
     return {
         "column_groups": groups,
@@ -253,7 +285,7 @@ def build_field_layout(design, size="instagram"):
             "font_path": _font_path(t),
             "font_size_pct": t.font_size_pct,
             "color": t.color,
-        } for t in design.texts.all()],
+        } for t in texts],
     }
 
 

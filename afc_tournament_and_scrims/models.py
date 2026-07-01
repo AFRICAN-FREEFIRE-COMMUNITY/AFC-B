@@ -100,7 +100,7 @@ class Event(models.Model):
     # TeamQuarterlyScore.tier_overridden pattern (a manual lock the recalc respects).
     tier_overridden = models.BooleanField(default=False)
     # rankings §4/§7.2 — prize money conversion locked at award date
-    prize_currency = models.CharField(max_length=3, default="NGN")  # USD | NGN
+    prize_currency = models.CharField(max_length=3, default="USD")  # USD | NGN (owner 2026-07-01: AFC enters prizes in USD, the platform base currency)
     usd_to_ngn_rate = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
     prizepool_ngn_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     event_banner = models.ImageField(upload_to='event_banner/', null=True)

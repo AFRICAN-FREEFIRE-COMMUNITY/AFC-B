@@ -56,6 +56,32 @@ def _resolve_event_design(event, design_id):
     return design
 
 
+def _design_max_rank(design, size):
+    """How many ranked rows a design actually displays = the HIGHEST rank any of its column groups
+    references (start_rank + row_count - 1), scanned across the design-level groups AND every page's
+    groups for this size. A single-column board returns ~8; a 2-column board returns 16 (8 per column);
+    a multi-page board returns the deepest rank across pages. Used to size how many standings rows to
+    fetch so NO column/page is left with empty rows (owner 2026-07-01: the 2-column export showed an
+    empty right column because standings were capped at the single design.max_rows = 8)."""
+    yt = size == "youtube"
+
+    def _rank(groups):
+        m = 0
+        for g in (groups or []):
+            try:
+                m = max(m, int(g.get("start_rank", 1) or 1) + int(g.get("row_count", 0) or 0) - 1)
+            except Exception:
+                pass
+        return m
+
+    ranks = [_rank((design.column_groups_youtube or design.column_groups) if yt
+                   else design.column_groups)]
+    for p in design.pages.all():
+        ranks.append(_rank((p.column_groups_youtube or p.column_groups) if yt
+                           else p.column_groups))
+    return max(ranks) if ranks else 0
+
+
 @api_view(["GET"])
 def event_stage_graphic(request, event_id, stage_id):
     """Render `stage`'s cumulative standings onto a chosen design and return a PNG download."""
@@ -83,7 +109,9 @@ def event_stage_graphic(request, event_id, stage_id):
         size = "youtube"
 
     design = _resolve_event_design(event, request.query_params.get("design_id"))
-    max_rows = design.max_rows if design else 16
+    # Fetch enough standings for EVERY column/page the design shows (a 2-column board needs 16, not the
+    # single design.max_rows=8), so no column is left with empty rows. Falls back to design.max_rows.
+    max_rows = (_design_max_rank(design, size) if design else 0) or (design.max_rows if design else 16)
 
     # Standings source (owner 2026-06-16 fix): the event leaderboard PAGE shows a single GROUP's
     # "Overall Leaderboard" (TTMS filtered by match__group=group). The export must mirror EXACTLY
