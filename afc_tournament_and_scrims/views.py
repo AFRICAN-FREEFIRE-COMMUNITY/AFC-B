@@ -295,6 +295,7 @@ def get_all_events(request):
             "number_of_participants": event.max_teams_or_players,
             "prizepool": event.prizepool,
             "prizepool_cash_value": event.prizepool_cash_value,
+            "prize_currency": event.prize_currency,  # so the edit form preselects the real currency
             "prize_distribution": event.prize_distribution,
             # Paid-registration: cards can show a "Paid" badge + the fee.
             "registration_type": event.registration_type,
@@ -359,6 +360,7 @@ def get_all_events_paginated(request):
         "number_of_participants": event.max_teams_or_players,
         "prizepool": event.prizepool,
         "prizepool_cash_value": event.prizepool_cash_value,
+        "prize_currency": event.prize_currency,  # so the edit form preselects the real currency
         "prize_distribution": event.prize_distribution,
         "total_registered_competitors": RegisteredCompetitors.objects.filter(event=event).count(),
         # organizer context: null for native AFC events, populated for org-owned events.
@@ -1599,8 +1601,11 @@ def create_event(request):
     # default that left every event's prizepool mis-tagged NGN (a $1750 pool read as ~$1.27 in the
     # home total). Organizers may still pass an explicit prize_currency. Read by get_total_prize_pool
     # and the <Money from={prize_currency}> displays.
-    prize_currency = (request.data.get("prize_currency") or "USD").upper()
-    if prize_currency not in ("USD", "NGN"):
+    prize_currency = (request.data.get("prize_currency") or "USD").upper()[:3]
+    # Accept any FxRate-supported currency (USD is the base, always valid). An unknown code falls back
+    # to USD so get_total_prize_pool can always convert it.
+    from afc_auth.models import FxRate
+    if prize_currency != "USD" and not FxRate.objects.filter(currency=prize_currency).exists():
         prize_currency = "USD"
 
     # ---------------- PRIZE DISTRIBUTION ----------------
@@ -2999,8 +3004,11 @@ def edit_event(request):
     # Prize currency (owner 2026-07-01): keep it explicit + default USD (AFC enters prizes in USD).
     # Prevents the legacy NGN default from mis-tagging an edited prizepool. See create_event + models.
     if "prize_currency" in request.data:
-        _pc = (request.data.get("prize_currency") or "USD").upper()
-        event.prize_currency = _pc if _pc in ("USD", "NGN") else "USD"
+        from afc_auth.models import FxRate
+        _pc = (request.data.get("prize_currency") or "USD").upper()[:3]
+        event.prize_currency = _pc if (
+            _pc == "USD" or FxRate.objects.filter(currency=_pc).exists()
+        ) else "USD"
     elif "prizepool" in request.data and not event.prize_currency:
         event.prize_currency = "USD"
 
@@ -3834,7 +3842,9 @@ def get_total_prize_pool(request):
     import re
     from decimal import Decimal, InvalidOperation
     from afc_auth.models import FxRate
-    fallback_ngn = FxRate.objects.filter(currency="NGN").values_list("rate", flat=True).first()
+    # Rate map: currency -> units per 1 USD (FxRate). Lets the loop convert ANY event's prize currency
+    # (all FxRate-supported currencies, not just NGN) to USD. Fetched once (no N+1).
+    rate_map = {f.currency: f.rate for f in FxRate.objects.all()}
 
     def _amount(cash, text):
         # Prefer the STRUCTURED prizepool_cash_value; if it is 0/unset, fall back to the first number
@@ -3861,13 +3871,16 @@ def get_total_prize_pool(request):
         amt = _amount(cash, text)
         if amt <= 0:
             continue
-        if (ccy or "NGN").upper() == "USD":
+        ccy = (ccy or "USD").upper()
+        if ccy == "USD":
             total_usd += amt
-        else:  # NGN amount -> USD via the event's locked rate, else the current NGN rate
-            rate = locked_rate or fallback_ngn
-            if rate and Decimal(rate) > 0:
-                total_usd += amt / Decimal(rate)
-            # no usable rate -> skip (never guess a conversion)
+            continue
+        # Convert the amount in `ccy` -> USD via its FxRate (amt / units-per-USD). NGN may use the
+        # event's locked rate (rankings prize-lock) when set; any other currency uses the current rate.
+        rate = locked_rate if (ccy == "NGN" and locked_rate) else rate_map.get(ccy)
+        if rate and Decimal(rate) > 0:
+            total_usd += amt / Decimal(rate)
+        # no usable rate -> skip (never guess a conversion)
     return Response(
         {"total_prize_pool_usd": float(round(total_usd, 2))},
         status=status.HTTP_200_OK,
