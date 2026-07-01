@@ -199,3 +199,42 @@ class TeamAttributionTests(TestCase):
         )
         self.assertEqual(a2.status_code, 200, a2.content)
         self.assertIsNone(self._team_stat(target))
+
+    # ── 4. MULTI-MAP: each map's flagged (off-roster) kills count on a fresh upload, NO toggle ─────
+    # Reproduces the owner report "after deploy it still under-counted until I toggled count-flagged-
+    # kills off/on". Three maps uploaded one after another (the multi-map flow) for a name-adopted team
+    # whose players are all off-roster -> with count_flagged_kills True (default) every map must count
+    # immediately, no toggle.
+    def test_multimap_offroster_kills_count_without_toggle(self):
+        from afc_tournament_and_scrims.models import Match, TournamentTeamMatchStats
+        self.assertTrue(self.event.count_flagged_kills)  # default ON
+        saints = self._register("The saints", ["7001", "7002", "7003", "7004"])
+        lb = self.match.leaderboard
+        m2 = Match.objects.create(leaderboard=lb, group=self.group, match_number=2, match_map="kalahari",
+                                  scoring_settings={"placement_points": {"1": 12, "2": 9}, "kill_point": 1})
+        m3 = Match.objects.create(leaderboard=lb, group=self.group, match_number=3, match_map="purgatory",
+                                  scoring_settings={"placement_points": {"1": 12, "2": 9}, "kill_point": 1})
+
+        def _log(kills):
+            return (
+                f"TeamName: the saint  Rank: 1  KillScore: {kills}  RankScore: 12  TotalScore: {kills + 12}\n"
+                f"NAME: ts.alpha  ID: 9001  KILL: {kills}\n"
+                f"NAME: ts.bravo  ID: 9002  KILL: 0\n"
+                f"NAME: ts.charlie  ID: 9003  KILL: 0\n"
+                f"NAME: ts.delta  ID: 9004  KILL: 0\n"
+            )
+
+        for m, k in [(self.match, 9), (m2, 23), (m3, 25)]:
+            f = SimpleUploadedFile("m.log", _log(k).encode("utf-8"), content_type="text/plain")
+            r = self.client.post(
+                "/events/upload-team-match-result/",
+                data={"match_id": m.match_id, "file": f},
+                HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+            )
+            self.assertEqual(r.status_code, 200, r.content)
+
+        by_match = {s.match_id: s.kills for s in
+                    TournamentTeamMatchStats.objects.filter(tournament_team=saints)}
+        self.assertEqual(by_match.get(self.match.match_id), 9)
+        self.assertEqual(by_match.get(m2.match_id), 23)
+        self.assertEqual(by_match.get(m3.match_id), 25)
