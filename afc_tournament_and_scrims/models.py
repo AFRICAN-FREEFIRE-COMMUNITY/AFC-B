@@ -1,9 +1,22 @@
+import secrets
 import uuid
 from django.db import models
 from afc_team.models import Team, TeamMembers
 from django.conf import settings
 from django.utils import timezone
 from django.utils.text import slugify
+
+
+# ── live overlay / capture-client token generator (owner 2026-07-01) ──────────────────────────────
+# Single source of truth for minting the opaque, URL-safe keys used by the OBS live-leaderboard
+# overlay (Event.overlay_token, a READ-only public key) AND the desktop capture client
+# (EventUploadToken.token, a revocable WRITE key). secrets.token_urlsafe(32) yields ~43 URL-safe
+# chars (well under the 64-char columns) with 256 bits of entropy, so a token can't be guessed.
+# Used as the DEFAULT for EventUploadToken.token, and called explicitly by the overlay/upload token
+# endpoints (afc_tournament_and_scrims.views) that ensure/rotate Event.overlay_token.
+def _gen_overlay_token():
+    return secrets.token_urlsafe(32)
+
 
 # ---------------- Event ----------------
 class Event(models.Model):
@@ -124,6 +137,30 @@ class Event(models.Model):
     # can still enter/manage results. Flipped via the set_results_visibility endpoint, surfaced by
     # the shared Event Actions tab (ActionsTab) on both the admin + organizer event-edit pages.
     results_published = models.BooleanField(default=True)
+    # ── Live OBS overlay READ key (owner 2026-07-01) ──────────────────────────────────────────────
+    # A public, read-only, rotatable key that authorizes the live-leaderboard OVERLAY feed
+    # (events/overlay/feed/?token=...). Null until an organizer/admin first mints it via
+    # events/<id>/overlay/token/ (see ensure_overlay_token). Because the token itself proves the
+    # organizer chose to broadcast this event, the feed intentionally bypasses results_published
+    # (the organizer's own stream shows their standings even before the public reveal) — but a
+    # suspended-org event still 404s (_org_hidden). Generated with _gen_overlay_token (256-bit,
+    # url-safe). CONNECTS TO: the overlay_feed endpoint (reader) + the FE OBS Browser Source URL.
+    overlay_token = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True)
+    # ── Live overlay BROADCAST selection (owner 2026-07-01) ───────────────────────────────────────
+    # Lets an organizer choose, ON THE WEBSITE, WHICH standings the live overlay shows, and COMBINE
+    # groups/stages into a cumulative — WITHOUT touching OBS. A "follow broadcast" overlay link omits
+    # ?stage=/?group=, so overlay_feed reads this selection each poll: switch it here and the overlay
+    # updates within one poll. broadcast_scope drives which standings the feed builds:
+    #   "group" -> broadcast_group_id's group standings (default, single lobby)
+    #   "stage" -> CUMULATIVE across every group of broadcast_stage_id
+    #   "event" -> CUMULATIVE across every group of every stage
+    #   "custom"-> CUMULATIVE across the broadcast_group_ids list (arbitrary combination)
+    # Explicit ?stage=/?group= in the overlay URL still OVERRIDE this (per-link pinning). Set via
+    # events/<id>/broadcast/set/, read by events/<id>/broadcast/ (FE BroadcastControl) + overlay_feed.
+    broadcast_scope = models.CharField(max_length=10, default="group")  # group|stage|event|custom
+    broadcast_stage_id = models.PositiveIntegerField(null=True, blank=True)
+    broadcast_group_id = models.PositiveIntegerField(null=True, blank=True)
+    broadcast_group_ids = models.JSONField(default=list, blank=True)  # for scope="custom"
     registration_restriction = models.CharField(
         max_length=20,
         choices=REG_RESTRICTION_CHOICES,
@@ -797,6 +834,39 @@ class UnmatchedTeamBlock(models.Model):
 
     def __str__(self):
         return f"UnmatchedTeamBlock({self.team_name!r} m={self.match_id} -> {self.attributed_team_id})"
+
+
+class EventUploadToken(models.Model):
+    """A revocable, event-scoped WRITE key for the desktop capture client (owner 2026-07-01, live
+    leaderboard spec §4). The capture app runs on the tournament observer PC and can't do an
+    interactive Bearer login, so it authenticates result uploads with one of these tokens instead.
+
+    Unlike the read-only Event.overlay_token (public, single, rotate-in-place), an upload token is:
+      • WRITE-scoped — it ONLY authorizes upload_team_match_result for THIS event (see that view's
+        alternative-auth branch), never any other endpoint or event.
+      • Revocable + auditable — created_by records who granted it; `revoked` retires a leaked key
+        without deleting the row (a rotate REVOKES the old + issues a new one), so the audit trail
+        of who-issued-what survives.
+    A request presenting the token acts AS created_by (the granting user's upload permission), so the
+    event admin / organizer who minted it is accountable for what the capture PC posts.
+
+    CONNECTS TO: minted/rotated by ensure_upload_token (events/<id>/upload/token/, gated like the
+    overlay token — event admin OR org_can_event can_edit_events); consumed by
+    upload_team_match_result (afc_tournament_and_scrims.views) which resolves ?token= / X-Upload-Token
+    to a non-revoked row and authorizes as created_by.
+    """
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="upload_tokens")
+    token = models.CharField(max_length=64, unique=True, db_index=True, default=_gen_overlay_token)
+    # Who granted this key (for audit); SET_NULL so removing the user keeps the token's history.
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name="event_upload_tokens")
+    label = models.CharField(max_length=120, blank=True)   # optional human note ("Observer PC 1")
+    revoked = models.BooleanField(default=False)           # retire a leaked/rotated key in place
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        state = "revoked" if self.revoked else "active"
+        return f"EventUploadToken(event={self.event_id}, {state})"
 
 
 class EventPageView(models.Model):

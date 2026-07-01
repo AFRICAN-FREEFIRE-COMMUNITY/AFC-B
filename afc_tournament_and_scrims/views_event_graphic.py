@@ -143,6 +143,9 @@ def event_stage_graphic(request, event_id, stage_id):
     bg = None
     logos = []
     text_color, accent_color, show_title, show_subtitle = "#FFFFFF", "#34d27b", True, True
+    # Transparent-overlay flag (owner 2026-07-01): a design flagged transparent_background renders on a
+    # transparent RGBA canvas (no dark fill) so the exported PNG matches the live overlay. Default False.
+    transparent_bg = False
     if design:
         f = design.background_youtube if size == "youtube" else design.background_instagram
         try:
@@ -156,6 +159,7 @@ def event_stage_graphic(request, event_id, stage_id):
                 pass
         text_color, accent_color = design.text_color, design.accent_color
         show_title, show_subtitle = design.show_title, design.show_subtitle
+        transparent_bg = design.transparent_background
 
     title = request.query_params.get("title") or event.event_name
     subtitle = request.query_params.get("subtitle")
@@ -181,6 +185,7 @@ def event_stage_graphic(request, event_id, stage_id):
                 logos=logos, title=title, subtitle=subtitle,
                 text_color=text_color, accent_color=accent_color,
                 max_rows=max_rows, show_title=show_title, show_subtitle=show_subtitle,
+                transparent_background=transparent_bg,
             )
             resp = HttpResponse(pngs[0], content_type="image/png")
             fname = f"{event.event_name}-{stage.stage_name or 'stage'}-{size}-page{n}.png".replace(" ", "_")
@@ -196,6 +201,7 @@ def event_stage_graphic(request, event_id, stage_id):
                 logos=logos, title=title, subtitle=subtitle,
                 text_color=text_color, accent_color=accent_color,
                 max_rows=max_rows, show_title=show_title, show_subtitle=show_subtitle,
+                transparent_background=transparent_bg,
             )
             zip_buf = io.BytesIO()
             safe_name = f"{event.event_name}-{stage.stage_name or 'stage'}".replace(" ", "_")
@@ -212,7 +218,7 @@ def event_stage_graphic(request, event_id, stage_id):
         legacy, size=size, background_path=bg, logos=logos, title=title, subtitle=subtitle,
         text_color=text_color, accent_color=accent_color, max_rows=max_rows,
         show_title=show_title, show_subtitle=show_subtitle,
-        field_layout=field_layout, rows=rows,
+        field_layout=field_layout, rows=rows, transparent_background=transparent_bg,
     )
     resp = HttpResponse(png, content_type="image/png")
     fname = f"{event.event_name}-{stage.stage_name or 'stage'}-{size}.png".replace(" ", "_")

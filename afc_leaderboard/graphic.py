@@ -238,13 +238,17 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
                                logo_path=None, logos=None, title="", subtitle="",
                                text_color=DEFAULT_TEXT, accent_color=DEFAULT_ACCENT,
                                max_rows=16, show_title=True, show_subtitle=True,
-                               field_layout=None, rows=None):
+                               field_layout=None, rows=None, transparent_background=False):
     """Composite `standings` (the standalone_standings list) onto a branded canvas and return
     PNG bytes.
 
     size            : "instagram" (1080x1350) or "youtube" (1920x1080).
     background_path : a filesystem path to the org design's background for this size, or None
                       -> a plain dark AFC background.
+    transparent_background : when True (owner 2026-07-01, live-overlay designs) the canvas is a
+                      fully-transparent RGBA image and the dark default fill is SKIPPED, so only the
+                      placed fields/logos/texts are drawn — the PNG can overlay an OBS scene. Wired
+                      from event_stage_graphic + leaderboard_graphic (design.transparent_background).
     logos           : the design's positioned logos, a list of
                       {"path": <fs path>, "x_pct": 0..100, "y_pct": 0..100, "size": s|m|l}.
                       Each is drawn CENTRED at (x_pct% of W, y_pct% of H) and scaled per size band.
@@ -261,7 +265,13 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
     muted_rgb = (155, 179, 166)
 
     # ── base ──
-    if background_path:
+    # Transparent overlay designs (owner 2026-07-01) skip the background entirely: a fully-transparent
+    # RGBA canvas so the placed columns float over whatever the streamer composites behind them in OBS.
+    # Everything below (field-layout draw, positioned logos, texts) works on RGBA, and PNG preserves
+    # the alpha; the legacy auto-table path is guarded to NOT flatten it (see the scrim block below).
+    if transparent_background:
+        base = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    elif background_path:
         try:
             bg = Image.open(background_path).convert("RGB")
             base = _cover(bg, canvas_size)
@@ -284,10 +294,16 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
         return buf.getvalue()
 
     # A subtle dark scrim over the lower 2/3 keeps standings text legible on any background.
-    scrim = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
-    sd = ImageDraw.Draw(scrim)
-    sd.rectangle([0, int(H * 0.20), W, H], fill=(0, 0, 0, 110))
-    base = Image.alpha_composite(base.convert("RGBA"), scrim).convert("RGB")
+    # SKIP it for a transparent overlay (owner 2026-07-01): the dark scrim + convert("RGB") would
+    # re-introduce an opaque fill and defeat the transparency. We instead keep the RGBA canvas so the
+    # auto-table rows draw straight onto transparency and the PNG stays overlay-ready.
+    if transparent_background:
+        base = base.convert("RGBA")
+    else:
+        scrim = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+        sd = ImageDraw.Draw(scrim)
+        sd.rectangle([0, int(H * 0.20), W, H], fill=(0, 0, 0, 110))
+        base = Image.alpha_composite(base.convert("RGBA"), scrim).convert("RGB")
 
     draw = ImageDraw.Draw(base)
     pad = int(W * 0.06)
@@ -404,7 +420,7 @@ def render_design_all_pages(rows, pages_spec, size="instagram", *,
                             logos=None, title="", subtitle="",
                             text_color=DEFAULT_TEXT, accent_color=DEFAULT_ACCENT,
                             max_rows=16, show_title=True, show_subtitle=True,
-                            logo_path=None):
+                            logo_path=None, transparent_background=False):
     """Render ALL pages of a multi-page design and return a list of PNG byte strings.
 
     pages_spec : list of per-page dicts as returned by
@@ -449,6 +465,7 @@ def render_design_all_pages(rows, pages_spec, size="instagram", *,
             show_subtitle=show_subtitle,
             field_layout=page_spec.get("field_layout"),
             rows=rows,
+            transparent_background=transparent_background,
         )
         result_pngs.append(png)
     return result_pngs

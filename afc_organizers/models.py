@@ -199,6 +199,15 @@ class OrgLeaderboardDesign(models.Model):
         upload_to="org_leaderboard_designs/", null=True, blank=True)
     background_youtube = models.ImageField(
         upload_to="org_leaderboard_designs/", null=True, blank=True)
+    # ── Transparent background for the LIVE OVERLAY (owner 2026-07-01, live-leaderboard spec §3) ──
+    # When True the design has NO opaque background fill: the PNG renderer
+    # (afc_leaderboard.graphic) draws the placed fields/logos/texts onto a fully-transparent RGBA
+    # canvas instead of the dark AFC default, and the DOM overlay (FE DesignBoard) renders with a
+    # transparent page — so the design can sit over an OBS scene / game capture with only its
+    # columns showing. Defaults False so every EXISTING design keeps its current opaque render.
+    # Toggled in the design editor; wired through event_stage_graphic + leaderboard_graphic and
+    # echoed to the overlay feed via _serialize_design.
+    transparent_background = models.BooleanField(default=False)
     # Hex colours the renderer draws the standings text + accents in.
     text_color = models.CharField(max_length=9, default="#FFFFFF")
     accent_color = models.CharField(max_length=9, default="#34d27b")
@@ -362,6 +371,18 @@ class OrgLeaderboardDesignField(models.Model):
         ("kill_points", "Kill points"), ("total_points", "Total points"),
         ("rush_points", "Rush points"), ("kills", "Kills (raw)"), ("matches", "Matches played"),
         ("base_total", "Base total (pre-rush)"), ("bonus", "Bonus"), ("penalty", "Penalty"),
+        # ── LIVE-only rich stats (owner 2026-07-01, live-leaderboard spec §12) ─────────────────────
+        # Verified available in the Free Fire debugger stream (memory project_freefire_live_capture
+        # §2b) and pushed to the overlay via events/live/push/ -> overlay_feed's live snapshot. These
+        # bind exactly like the columns above, but a design column using one shows a real value ONLY
+        # in LIVE mode: the OFFICIAL per-round feed (MatchResult .log = kills only) has no such data,
+        # so _overlay_standings_rows emits them defaulted to 0 / "" (that is expected + documented).
+        # Only the VERIFIED-available stats are offered here; damage / grenades-thrown / revive-giver
+        # are intentionally NOT choices because the client logs don't expose them.
+        ("deaths", "Deaths (live)"), ("knockdowns", "Knockdowns (live)"),
+        ("headshots", "Headshots (live)"), ("most_used_weapon", "Most-used weapon (live)"),
+        ("survival_time", "Survival time (live)"), ("revives_received", "Revives received (live)"),
+        ("gloowall_used", "Gloo walls used (live)"), ("medkit_used", "Medkits used (live)"),
     ]
     ALIGN_CHOICES = [("left", "Left"), ("center", "Center"), ("right", "Right")]
 
