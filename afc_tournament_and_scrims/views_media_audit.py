@@ -200,3 +200,58 @@ def media_opt_out(request, event_id):
         return Response({"message": "Suppression removed - the media shows again."}, status=200)
     EventMediaOptOut.objects.get_or_create(event=event, kind=kind, team=team, user=user)
     return Response({"message": "Suppressed for this event."}, status=201)
+
+
+# ── UPLOAD (owner 2026-07-02: "admins can add esport images and team logos for teams/players") ──
+# AFC ADMINS ONLY (is_stats_admin: role admin/moderator/support or granular platform-admin role):
+# organizers keep flag/hide but cannot overwrite another team's media. Writes the SAME fields the
+# audit reads (Team.team_logo / UserProfile.esports_pic), so the panel + overlays + exports pick
+# the new file up immediately. Consumed by MediaAuditCard.tsx's per-row Upload button.
+#
+# POST events/<event_id>/media-upload/   multipart form:
+#   kind = "team_logo" (+ team_id = Team pk)  |  "player_image" (+ user_id = User pk)
+#   file = the image (normalized/re-encoded via afc_auth.image_utils.normalize_image_upload)
+# Response: {message, url} — url = the new absolute media URL.
+@api_view(["POST"])
+def media_upload(request, event_id):
+    event, err = _broadcast_gate(request, event_id)
+    if err:
+        return err
+    from afc_auth.views import is_stats_admin, validate_token
+    auth = request.headers.get("Authorization", "")
+    viewer = validate_token(auth.split(" ")[1]) if " " in auth else None
+    if viewer is None or not is_stats_admin(viewer):
+        return Response({"message": "Only AFC admins can upload media for teams or players."},
+                        status=403)
+
+    kind = (request.data.get("kind") or "").strip()
+    upload = request.FILES.get("file")
+    if kind not in ("team_logo", "player_image") or not upload:
+        return Response({"message": "kind (team_logo|player_image) and file are required."},
+                        status=400)
+
+    from afc_auth.image_utils import normalize_image_upload
+    upload = normalize_image_upload(upload)
+    if upload is None:
+        return Response({"message": "The uploaded file is not a valid image."}, status=400)
+
+    if kind == "team_logo":
+        from afc_team.models import Team
+        try:
+            team = Team.objects.get(team_id=request.data.get("team_id"))
+        except (Team.DoesNotExist, ValueError, TypeError):
+            return Response({"message": "Team not found."}, status=404)
+        team.team_logo = upload
+        team.save(update_fields=["team_logo"])
+        url = request.build_absolute_uri(team.team_logo.url)
+    else:
+        from afc_auth.models import UserProfile
+        try:
+            profile, _ = UserProfile.objects.get_or_create(user_id=request.data.get("user_id"))
+        except (ValueError, TypeError):
+            return Response({"message": "Player not found."}, status=404)
+        profile.esports_pic = upload
+        profile.save()
+        url = request.build_absolute_uri(profile.esports_pic.url)
+
+    return Response({"message": "Media updated.", "url": url})

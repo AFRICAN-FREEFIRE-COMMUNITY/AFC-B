@@ -1503,6 +1503,18 @@ def get_team_details(request):
         val = getattr(prof, field, None) if prof else None
         return bool(val and str(val) != "")
 
+    # ── Esport-image visibility (owner 2026-07-02): "members of a team and admins should see the
+    # esport images of all players on the team's profile". TIGHTER than stats_visible (which a
+    # team can opt into publicly): only CURRENT members of THIS team and AFC stats admins get the
+    # actual image URLs; everyone else keeps just the has_esports_image boolean marker.
+    _can_see_esport_images = bool(
+        viewer is not None and (
+            is_stats_admin(viewer)
+            or TeamMembers.objects.filter(team=team, member=viewer).exists()
+        )
+    )
+    from afc_auth.models import esports_pic_url
+
     members_data = [
         {
             "id": m.member.user_id,
@@ -1531,6 +1543,10 @@ def get_team_details(request):
             "has_letter_avatars": bool(
                 _normalize_letters(getattr(m.member, "letter_avatars", None))
             ),
+            # The actual esport image URL, members-of-this-team + admins ONLY (see gate above).
+            # None for other viewers AND when the player has not uploaded one. Rendered on the
+            # team page roster (frontend app/(user)/teams/[id]).
+            "esport_image": (esports_pic_url(m.member, request) if _can_see_esport_images else None),
         }
         for m in members_qs
     ]
