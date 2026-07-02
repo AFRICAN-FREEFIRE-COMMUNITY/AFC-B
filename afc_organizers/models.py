@@ -208,6 +208,14 @@ class OrgLeaderboardDesign(models.Model):
     # Toggled in the design editor; wired through event_stage_graphic + leaderboard_graphic and
     # echoed to the overlay feed via _serialize_design.
     transparent_background = models.BooleanField(default=False)
+    # How the background art behaves on the live overlay (owner 2026-07-02):
+    #   "persistent" (default) - the bg is ALWAYS on: painted before the rows reveal and never
+    #                            animates, so the screen never flashes dark (the v7.0.84 behaviour).
+    #   "animate"    - the bg itself animates IN with the content on every load/refresh of the
+    #                  overlay page (OBS refresh, studio edit remount).
+    # CharField (not bool) so more behaviours can be added without a schema change. Echoed by
+    # _serialize_design; honoured by the FE DesignBoard bg <img>; PNG export unaffected.
+    background_behavior = models.CharField(max_length=12, default="persistent")
     # Hex colours the renderer draws the standings text + accents in.
     text_color = models.CharField(max_length=9, default="#FFFFFF")
     accent_color = models.CharField(max_length=9, default="#34d27b")
@@ -367,6 +375,11 @@ class OrgLeaderboardDesignField(models.Model):
     builds (standalone or event group)."""
     FIELD_CHOICES = [
         ("pos", "Position"), ("team_name", "Team name"), ("team_logo", "Team logo"),
+        # Player ESPORT IMAGE (owner 2026-07-02): the player's esports photo (User.esports_pic) as a
+        # placeable image column. Meaningful on PLAYER-scoped renders (solo standings, the upcoming
+        # "versus"/H2H designs, MVP displays); on TEAM standings rows it is emitted as None (blank).
+        # The FE DesignBoard already renders any *image* field as an <img> (same path as team_logo).
+        ("esports_image", "Player esport image"),
         ("booyah", "Booyah"), ("placement_points", "Placement points"),
         ("kill_points", "Kill points"), ("total_points", "Total points"),
         ("rush_points", "Rush points"), ("kills", "Kills (raw)"), ("matches", "Matches played"),

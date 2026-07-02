@@ -18311,6 +18311,10 @@ def _overlay_rows_from_standings(standings, max_rows, request):
             "pos": i + 1,
             "team_name": r.get("team_name") or "-",
             "team_logo": logo_by_tt.get(tt_id),
+            # Player esport image (owner 2026-07-02): a PLAYER-scoped column — TEAM standings rows
+            # have no single player, so it's None here (blank cell). Solo standings + the versus/H2H
+            # feeds populate it with User.esports_pic.
+            "esports_image": None,
             "booyah": r.get("total_booyah", 0),
             "placement_points": r.get("placement_sum", 0),
             "kill_points": r.get("kill_sum", 0),
