@@ -6950,7 +6950,7 @@ def check_and_activate_team(tournament_team):
               <table width="100%">
                 <tr>
                   <td style="color:#888;font-size:12px;">
-                    <strong>African Freefire Community</strong><br>
+                    <strong>African Free Fire Community</strong><br>
                     <a href="https://www.africanfreefirecommunity.com" style="color:#f5a623;">
                       Visit Website
                     </a>
@@ -7239,11 +7239,11 @@ def confirm_player(request):
 # We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
 
 # If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
-# Thank you for your continued participation in the African Freefire Community.
+# Thank you for your continued participation in the African Free Fire Community.
 
 # Best regards,
 # AFC Management Board
-# African Freefire Community (AFC)
+# African Free Fire Community (AFC)
 # Website: www.africanfreefirecommunity.com
 # Discord: [Join AFC Discord]
 #         '''
@@ -7260,11 +7260,11 @@ def confirm_player(request):
 # We strongly encourage you to prepare and stay updated. All confirmed players are processed on a first-come, first-served basis for future stages.
 # If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
 
-# We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon!
+# We appreciate your interest in the African Free Fire Community and look forward to seeing you compete soon!
 
 # Best regards,
 # AFC Management Board
-# African Freefire Community (AFC)
+# African Free Fire Community (AFC)
 # Website: www.africanfreefirecommunity.com
 # Discord: [Join AFC Discord]
 #         '''
@@ -7525,11 +7525,11 @@ def reject_player(request):
 # We strongly encourage the player to correct any issues and re-submit if needed. All registrations are processed on a first-come, first-served basis.
 
 # If you have any questions, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
-# Thank you for your continued participation in the African Freefire Community.
+# Thank you for your continued participation in the African Free Fire Community.
 
 # Best regards,
 # AFC Management Board
-# African Freefire Community (AFC)
+# African Free Fire Community (AFC)
 # Website: www.africanfreefirecommunity.com
 # Discord: [Join AFC Discord]
 #         '''
@@ -7551,11 +7551,11 @@ def reject_player(request):
 
 # If you have any questions or need clarification on the required documents, please contact the support team at info@africanfreefirecommunity.com or visit the support channels on our Discord server.
 
-# We appreciate your interest in the African Freefire Community and look forward to seeing you compete soon.
+# We appreciate your interest in the African Free Fire Community and look forward to seeing you compete soon.
 
 # Best regards,
 # AFC Management Board
-# African Freefire Community (AFC)
+# African Free Fire Community (AFC)
 # Website: www.africanfreefirecommunity.com
 # Discord: [Join AFC Discord]
 #         '''
@@ -22690,6 +22690,15 @@ def broadcast_match_room_details(request):
         stage_id=group.stage_id, stage_name=group.stage.stage_name,
         group_id=group.group_id, group_name=group.group_name,
     )
+    # ── WhatsApp room details via Zernio (owner 2026-07-02): opted-in players ALSO get the room
+    # ID/password straight on WhatsApp. Inert until ZERNIO_API_KEY/ACCOUNT_ID are set; best-effort
+    # (a WhatsApp hiccup never blocks the site notification above). ──
+    whatsapped = 0
+    try:
+        from .whatsapp_zernio import send_room_details
+        whatsapped = send_room_details(recipients, event, match)
+    except Exception:
+        pass
     remaining = record_broadcast_send(user)
 
     AdminHistory.objects.create(

@@ -70,14 +70,16 @@ def _player_rows(event, request):
         if u is None or u.user_id in seen:
             continue
         seen.add(u.user_id)
-        has_img = bool(getattr(u, "esports_pic", None))
+        # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
+        from afc_auth.models import esports_pic_url
+        img_url = esports_pic_url(u, request)
         rows.append({
             "user_id": u.user_id,
             "username": u.username,
             "in_game_name": getattr(u, "in_game_name", "") or u.username,
             "team_name": m.tournament_team.team.team_name if m.tournament_team.team else None,
-            "has_image": has_img,
-            "image_url": request.build_absolute_uri(u.esports_pic.url) if has_img else None,
+            "has_image": bool(img_url),
+            "image_url": img_url,
             "suppressed": u.user_id in opt_user_ids,
             "flagged": u.user_id in flags,
         })

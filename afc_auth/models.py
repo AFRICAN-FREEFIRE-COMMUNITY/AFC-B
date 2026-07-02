@@ -236,6 +236,22 @@ class SessionToken(models.Model):
         return f"{self.user.username} - {self.token}"
 
 
+def profile_of(user):
+    """The user's UserProfile row (or None). esports_pic/profile_pic/whatsapp_* live HERE, not on
+    User - every consumer must go through this (bug found 2026-07-02: overlay/MVP/media surfaces
+    read user.esports_pic, which does not exist, so esport images never showed)."""
+    return user.userprofile_set.first() if user else None
+
+
+def esports_pic_url(user, request=None):
+    """Absolute URL of the user's esport image, or None."""
+    prof = profile_of(user)
+    pic = getattr(prof, "esports_pic", None) if prof else None
+    if not pic:
+        return None
+    return request.build_absolute_uri(pic.url) if request is not None else pic.url
+
+
 class UserProfile(models.Model):
     profile_id = models.AutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -243,6 +259,11 @@ class UserProfile(models.Model):
     state = models.CharField(max_length=40, null=True)
     profile_pic = models.ImageField(upload_to='profile_pictures/', null=True)
     esports_pic = models.ImageField(upload_to='esports_pictures/', null=True)
+    # ── WhatsApp notifications (owner 2026-07-02, Zernio integration): the number room details are
+    #    sent to (E.164, e.g. +2348012345678) + explicit OPT-IN (Meta policy requires consent).
+    #    Set on the profile settings page; consumed by whatsapp_zernio.send_room_details. ──
+    whatsapp_number = models.CharField(max_length=20, blank=True, default="")
+    whatsapp_opt_in = models.BooleanField(default=False)
 
 
 class LoginHistory(models.Model):
