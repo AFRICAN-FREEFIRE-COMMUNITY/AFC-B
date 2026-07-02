@@ -4513,6 +4513,11 @@ def get_event_details(request):
         "roster_edit_until": event.roster_edit_until,
         "roster_edit_open": event.roster_edit_open,
         "prizepool": event.prizepool,
+        # Echo the cash value + currency (owner bug 2026-07-02): the edit form seeds from this
+        # payload; without these keys a saved cash value came back undefined and the field looked
+        # like it "disappeared" after every save/reload.
+        "prizepool_cash_value": event.prizepool_cash_value,
+        "prize_currency": getattr(event, "prize_currency", None),
         "prize_distribution": event.prize_distribution,
         # Paid registration (feature "paid-events"): the event page decides free vs paid + fee.
         "registration_type": event.registration_type,
@@ -5337,6 +5342,11 @@ def get_event_details_not_logged_in(request):
         "roster_edit_until": event.roster_edit_until,
         "roster_edit_open": event.roster_edit_open,
         "prizepool": event.prizepool,
+        # Echo the cash value + currency (owner bug 2026-07-02): the edit form seeds from this
+        # payload; without these keys a saved cash value came back undefined and the field looked
+        # like it "disappeared" after every save/reload.
+        "prizepool_cash_value": event.prizepool_cash_value,
+        "prize_currency": getattr(event, "prize_currency", None),
         "prize_distribution": event.prize_distribution,
         # Paid registration (feature "paid-events"): the event page decides free vs paid + fee.
         "registration_type": event.registration_type,
@@ -7571,8 +7581,34 @@ def reject_player(request):
 
 @api_view(["POST"])
 def get_all_competitors_and_their_sponsor_id(request):
+    """POST /events/get-all-competitors-and-their-sponsor-id/  { event_id }
+
+    Full roster dump for ONE event: every TournamentTeamMember with user id/username, team,
+    per-event sponsor id and status. Consumed by the admin EditRosterModal.tsx, the admin
+    event sponsors page (app/(a)/a/events/[slug]/sponsors/page.tsx) and, best-effort, the
+    user-side EventDetailsWrapper.tsx legacy sponsor-ID duplicate pre-check (that caller
+    swallows failures, so gating here is non-breaking for players).
+
+    Auth (SECURITY FIX + organizer parity, owner 2026-07-02): this endpoint previously had
+    NO auth at all - it leaked every competitor's user_id/username/sponsor_id to anyone.
+    Now Bearer-token gated: AFC event admins (_is_event_admin) for any event, OR organizers
+    holding can_manage_registrations on the event's owning org (org_can_event; native AFC
+    events stay admin-only via org_can_event's own rule).
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
     event_id = request.data.get("event_id")
     event = get_object_or_404(Event, event_id=event_id)
+
+    # ── access gate (org-aware, resolved after we have the event) ──
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to view competitors for this event."}, status=403)
+
     competitors = TournamentTeamMember.objects.filter(event=event).select_related("user", "tournament_team__team").all()
 
     data = []
@@ -9369,6 +9405,23 @@ from django.utils import timezone
 
 @api_view(["POST"])
 def get_event_details_for_admin(request):
+    """POST /events/get-event-details-for-admin/  { slug }
+
+    The full staff-side event payload: registration metrics (percentage, per-day timeseries,
+    peak), stage/group detail with room + Discord config echoes, team status counts, and the
+    edit-form echoes (Discord gate, invite link, payment rules). Consumed by the admin event
+    detail page (app/(a)/a/events/[slug]/page.tsx), the admin edit page
+    (app/(a)/a/events/[slug]/edit/page.tsx) and the admin leaderboards BasicInfoStep.tsx.
+
+    Auth (organizer parity, owner 2026-07-02): the AFC platform-admin path is UNCHANGED
+    (User.role == "admin" sees any event). NEW organizer branch: org members get the SAME
+    payload for THEIR OWN event when they hold can_view_metrics (this is the event's
+    metrics/analytics payload) OR can_edit_events (the edit form prefills from this
+    endpoint's echoes - previously the organizer edit page had to fall back to the public
+    detail because this endpoint hard-rejected non-platform-admins). org_can_event keeps
+    native AFC events (no organization) admin-only. The gate runs AFTER the event is
+    resolved because the org check is event-scoped.
+    """
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
@@ -9377,8 +9430,6 @@ def get_event_details_for_admin(request):
     admin = validate_token(token)
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to access this data."}, status=status.HTTP_403_FORBIDDEN)
 
     # event_id = request.data.get("event_id")
     slug = request.data.get("slug")
@@ -9386,6 +9437,16 @@ def get_event_details_for_admin(request):
         return Response({"message": "slug is required."}, status=400)
 
     event = get_object_or_404(Event, slug=slug)
+
+    # ── access gate (organizer parity, owner 2026-07-02) ──
+    # Platform admins keep the exact pre-existing rule (role == "admin"); organizers need
+    # can_view_metrics or can_edit_events on the event's owning org (see docstring).
+    if admin.role != "admin" and not (
+        org_can_event(admin, "can_view_metrics", event)
+        or org_can_event(admin, "can_edit_events", event)
+    ):
+        return Response({"message": "You do not have permission to access this data."}, status=status.HTTP_403_FORBIDDEN)
+
     today = timezone.localdate()
 
     reg_qs = RegisteredCompetitors.objects.filter(event=event, status="registered")
@@ -10415,12 +10476,23 @@ from django.shortcuts import get_object_or_404
 
 @api_view(["POST"])
 def seed_solo_players_to_stage(request):
+    """POST /events/seed-solo-players-to-stage/  { event_id, stage_id }
+
+    Seed every registered SOLO player into a stage's competitor pool (StageCompetitor) and
+    queue their stage Discord roles, then flip the stage to ongoing. Consumed by the
+    admin/organizer ConfirmStartTournamentModal.tsx (solo path).
+
+    Auth (organizer parity, owner 2026-07-02): was hard super-admin-only (role == "admin").
+    Now: AFC event admins (_is_event_admin) for any event, OR organizers holding
+    can_manage_registrations on the event's owning org (org_can_event) - the same rule as
+    seeding_management._seeding_gate. Native AFC events stay admin-only.
+    """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized"}, status=403)
 
     event_id = request.data.get("event_id")
@@ -10430,6 +10502,10 @@ def seed_solo_players_to_stage(request):
 
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+    # ── seeding gate (org-aware, resolved after we have the event) ──
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "Unauthorized"}, status=403)
 
     if event.participant_type != "solo":
         return Response({"message": "This event is not a solo event."}, status=400)
@@ -17215,18 +17291,32 @@ def get_total_kills(request):
 
 @api_view(["POST"])
 def generate_single_use_invite_link_for_private_event(request):
+    """POST /events/generate-single-use-invite-link-for-private-event/
+    { event_id, is_shared?, expires_in_days? }
+
+    Mint ONE invite link for a private event (single-use, or a reusable FCFS link when
+    is_shared). Consumed by the admin/organizer event detail page (invite-links panel,
+    app/(a)/a/events/[slug]/page.tsx).
+
+    Auth (organizer parity, owner 2026-07-02): was hard super-admin-only (role == "admin").
+    Now: AFC event admins (_is_event_admin) for any event, OR organizers holding
+    can_manage_registrations on the event's owning org (org_can_event) - invite links are a
+    registration surface, so they share the registrations grant. Native AFC events stay
+    admin-only. Gate runs AFTER the event is resolved (the org check is event-scoped).
+    """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
+    # ── registration gate (org-aware, resolved after we have the event) ──
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission."}, status=403)
     if event.is_draft:
         return Response({"message": "Cannot generate invite link for draft event."}, status=400
     )
@@ -17284,14 +17374,23 @@ def generate_single_use_invite_link_for_private_event(request):
 
 @api_view(["POST"])
 def generate_multiple_single_use_invite_links_for_private_event(request):
+    """POST /events/generate-multiple-single-use-invite-links-for-private-event/
+    { event_id, count (1-100) }
+
+    Mint a BATCH of single-use invite links for a private event. Consumed by the
+    admin/organizer event detail page (invite-links panel, app/(a)/a/events/[slug]/page.tsx).
+
+    Auth (organizer parity, owner 2026-07-02): was hard super-admin-only (role == "admin").
+    Now: AFC event admins (_is_event_admin) for any event, OR organizers holding
+    can_manage_registrations on the event's owning org (org_can_event). Native AFC events
+    stay admin-only. Gate runs AFTER the event is resolved.
+    """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
     event_id = request.data.get("event_id")
     count = request.data.get("count", 1)
     if not event_id:
@@ -17299,6 +17398,9 @@ def generate_multiple_single_use_invite_links_for_private_event(request):
     if not isinstance(count, int) or count < 1 or count > 100:
         return Response({"message": "count must be an integer between 1 and 100."}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
+    # ── registration gate (org-aware, resolved after we have the event) ──
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission."}, status=403)
     if event.is_draft:
         return Response({"message": "Cannot generate invite links for draft event."}, status=400)
     if event.is_public:
@@ -17320,18 +17422,30 @@ def generate_multiple_single_use_invite_links_for_private_event(request):
 
 @api_view(["POST"])
 def get_all_invite_links_for_private_event(request):
+    """POST /events/get-all-invite-links-for-private-event/  { event_id }
+
+    List every invite link minted for a private event (used/unused, shared/single-use,
+    expiry). Consumed by the admin/organizer event detail page (invite-links panel,
+    app/(a)/a/events/[slug]/page.tsx, including its live background refresh).
+
+    Auth (organizer parity, owner 2026-07-02): was hard super-admin-only (role == "admin").
+    Now: AFC event admins (_is_event_admin) for any event, OR organizers holding
+    can_manage_registrations on the event's owning org (org_can_event). Native AFC events
+    stay admin-only. Gate runs AFTER the event is resolved.
+    """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid or missing Authorization token."}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
+    # ── registration gate (org-aware, resolved after we have the event) ──
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission."}, status=403)
     if event.is_draft:
         return Response({"message": "Draft event does not have invite links."}, status=400)
     if event.is_public:
@@ -17560,6 +17674,18 @@ def check_invite_token_status(request):
 
 @api_view(["POST"])
 def seed_event_competitors_to_stage(request):
+    """POST /events/seed-event-competitors-to-stage/  { stage_id, clear_existing? }
+
+    Seed every registered competitor (solo players or active TournamentTeams) into a stage's
+    competitor pool (StageCompetitor), then queue the stage Discord roles. Consumed by the
+    admin/organizer ConfirmStartTournamentModal.tsx (squad path).
+
+    Auth (organizer parity, owner 2026-07-02): was hard super-admin-only (role == "admin").
+    Now: AFC event admins (_is_event_admin) for any event, OR organizers holding
+    can_manage_registrations on the OWNING event's org (org_can_event) - the same rule as
+    seeding_management._seeding_gate, so all seeding surfaces agree. Native AFC events stay
+    admin-only.
+    """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token"}, status=400)
@@ -17567,9 +17693,6 @@ def seed_event_competitors_to_stage(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid session"}, status=401)
-
-    if admin.role != "admin":
-        return Response({"message": "No permission"}, status=403)
 
     stage_id = request.data.get("stage_id")
     clear_existing = request.data.get("clear_existing", False)
@@ -17580,11 +17703,23 @@ def seed_event_competitors_to_stage(request):
     stage = get_object_or_404(Stages, stage_id=stage_id)
     event = stage.event
 
+    # ── seeding gate (org-aware, mirrors seeding_management._seeding_gate) ──
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "No permission"}, status=403)
+
     # Check the registration end date, and prevent seeding if registration has not closed.
+    # OVERRIDE (owner 2026-07-02): admins/organizers may start anyway by sending
+    # force_before_registration_end=true - the FE Start dialog offers this after showing WHY
+    # (finals/linked events often start while the nominal registration window is still open).
     today = timezone.now().date()
-    if today < event.registration_end_date:
+    if today < event.registration_end_date and not str(
+        request.data.get("force_before_registration_end", "")
+    ).lower() in ("true", "1", "yes"):
         return Response(
-            {"message": "Cannot seed competitors to stage until registration period has ended."},
+            {"message": f"Registration for this event is open until {event.registration_end_date}. "
+                        "Starting now will seed only the currently registered competitors.",
+             "requires_force": True,
+             "force_param": "force_before_registration_end"},
             status=400
         )
 
@@ -17932,14 +18067,23 @@ def reconcile_group_roles_for_stage(stage):
 
 @api_view(["POST"])
 def add_teams_to_stage(request):
+    """POST /events/add-teams-to-stage/  { stage_id, team_ids: [int] }
+
+    Place already-registered TournamentTeams into a stage's competitor pool (StageCompetitor),
+    then auto-distribute them into the stage's groups. Consumed by the admin/organizer
+    AddTeamsModal.tsx ("stage" scope).
+
+    Auth (organizer parity, owner 2026-07-02): was hard super-admin-only (role == "admin").
+    Now: AFC event admins (_is_event_admin) for any event, OR organizers holding
+    can_manage_registrations on the OWNING event's org (org_can_event; the event is resolved
+    from the stage, native AFC events stay admin-only).
+    """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid session"}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "No permission"}, status=403)
     stage_id = request.data.get("stage_id")
     team_ids = request.data.get("team_ids", [])
     if not stage_id:
@@ -17948,6 +18092,9 @@ def add_teams_to_stage(request):
         return Response({"message": "team_ids must be a list of integers"}, status=400)
     stage = get_object_or_404(Stages, stage_id=stage_id)
     event = stage.event
+    # ── registration gate (org-aware, resolved from the stage's event) ──
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "No permission"}, status=403)
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
     teams = TournamentTeam.objects.filter(team_id__in=team_ids, event=event, status="active")
@@ -19704,13 +19851,24 @@ def notify_watchlist_on_register(event, *, team=None, player=None):
 
 @api_view(["POST"])
 def add_teams_to_event(request):
+    """POST /events/add-teams-to-event/  { event_id, team_ids: [int] }
 
+    Force-register existing Teams into a squad event (RegisteredCompetitors + TournamentTeam +
+    members), then auto-seed them into the entry stage. Consumed by the admin/organizer
+    AddTeamsModal.tsx ("event" scope).
+
+    Auth (organizer parity, owner 2026-07-02): was hard super-admin-only (role == "admin").
+    Now: AFC event admins (_is_event_admin) for any event, OR organizers holding
+    can_manage_registrations on the event's owning org (org_can_event; native AFC events with
+    no organization stay admin-only via org_can_event's own rule). The gate runs AFTER the
+    event is resolved because the org check is event-scoped.
+    """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token."}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
 
     event_id = request.data.get("event_id")
@@ -19723,6 +19881,12 @@ def add_teams_to_event(request):
         return Response({"message": "team_ids must be a list of integers"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+
+    # ── registration gate (org-aware, resolved after we have the event) ──
+    # AFC event admins manage any event; organizers need can_manage_registrations on the
+    # event's owning org (native AFC events stay admin-only).
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "Unauthorized."}, status=403)
 
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
@@ -19822,11 +19986,22 @@ def add_teams_to_event(request):
 
 @api_view(["POST"])
 def add_teams_to_group(request):
+    """POST /events/add-teams-to-group/  { group_id, team_ids: [int] }
+
+    Place already-registered TournamentTeams directly into ONE stage group
+    (StageGroupCompetitor + the stage-level StageCompetitor pool row). Consumed by the
+    admin/organizer AddTeamsModal.tsx ("group" scope).
+
+    Auth (organizer parity, owner 2026-07-02): was hard super-admin-only (role == "admin").
+    Now: AFC event admins (_is_event_admin) for any event, OR organizers holding
+    can_manage_registrations on the OWNING event's org (org_can_event; the event is resolved
+    group -> stage -> event, native AFC events stay admin-only).
+    """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token."}, status=400)
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
+    if not admin:
         return Response({"message": "Unauthorized."}, status=403)
     group_id = request.data.get("group_id")
     team_ids = request.data.get("team_ids", [])
@@ -19835,6 +20010,9 @@ def add_teams_to_group(request):
     if not isinstance(team_ids, list) or not all(isinstance(tid, int) for tid in team_ids):
         return Response({"message": "team_ids must be a list of integers"}, status=400)
     group = get_object_or_404(StageGroups, group_id=group_id)
+    # ── registration gate (org-aware, event resolved group -> stage -> event) ──
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", group.stage.event):
+        return Response({"message": "Unauthorized."}, status=403)
     if group.stage.event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
     teams = TournamentTeam.objects.filter(team_id__in=team_ids, event=group.stage.event,
