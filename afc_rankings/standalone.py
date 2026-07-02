@@ -435,6 +435,8 @@ def _season_for(day):
     (kept here so this module has no dependency on signals.py, which imports tasks). Used by
     recompute_for_leaderboard to pick the season a standalone LB's results belong to."""
     if day:
+        from .models import auto_rollover_seasons
+        auto_rollover_seasons()  # calendar-driven activation (owner 2026-07-02)
         s = Season.objects.filter(is_active=True, start_date__lte=day, end_date__gte=day).first()
         if s:
             return s

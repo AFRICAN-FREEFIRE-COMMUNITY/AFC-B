@@ -1174,6 +1174,11 @@ class EventPrizePayout(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
     tournament_team = models.ForeignKey(TournamentTeam, null=True, blank=True, on_delete=models.CASCADE)
     amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    # AUTO-SYNCED payouts (owner 2026-07-02): derived from the event's prize_distribution + final
+    # standings when the event completes (sync_event_prize_payouts), so the season's Prize Money
+    # page + evaluation fill themselves. Manual rows (Add prize / an edited row) keep this False
+    # and are NEVER touched by a re-sync; editing an auto row flips it manual.
+    auto_synced = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

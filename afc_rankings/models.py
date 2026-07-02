@@ -16,6 +16,31 @@ from django.utils import timezone
 
 
 # ───────────────────────────── §19.1 Season ─────────────────────────────
+def auto_rollover_seasons():
+    """AUTO season rollover (owner 2026-07-02: "seasons should have changed automatically").
+
+    Derives the active season from the calendar instead of waiting for a manual edit: when TODAY
+    falls inside a season whose is_active flag is off (e.g. Q3 started overnight), that season is
+    activated and every other one deactivated - so its settings (transfer window etc., all
+    date-driven) take effect the moment its start_date arrives. Idempotent + one cheap query when
+    nothing changed; called from every "current season" getter and the admin seasons list, the same
+    on-read sweep idiom the events date auto-complete uses."""
+    from django.utils import timezone
+    from django.db import transaction
+    today = timezone.localdate()
+    due = (Season.objects
+           .filter(start_date__lte=today, end_date__gte=today, is_active=False)
+           .order_by("-year", "-quarter")
+           .first())
+    if not due:
+        return None
+    with transaction.atomic():
+        Season.objects.filter(is_active=True).exclude(pk=due.pk).update(is_active=False)
+        due.is_active = True
+        due.save(update_fields=["is_active"])
+    return due
+
+
 class Season(models.Model):
     QUARTER_CHOICES = [(1, "Q1"), (2, "Q2"), (3, "Q3"), (4, "Q4")]
 
