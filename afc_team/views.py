@@ -2358,6 +2358,34 @@ def manage_team_roster(request):
                     if new_m_role in STAFF_ROLES and tm.in_game_role:
                         tm.in_game_role = None
                         existing_in_game_count = max(0, existing_in_game_count - 1)
+                    # Player -> staff ALSO clears the person out of every ACTIVE event roster this
+                    # team registered them on (owner 2026-07-02: "if they turn that player to a
+                    # coach, that player should be automatically removed from all events"). Only
+                    # upcoming/ongoing events are touched - completed/cancelled event history stays.
+                    # Best-effort: a roster hiccup must not block the role change itself.
+                    if new_m_role in STAFF_ROLES and tm.management_role not in STAFF_ROLES:
+                        try:
+                            from afc_tournament_and_scrims.models import TournamentTeamMember
+                            removed = TournamentTeamMember.objects.filter(
+                                tournament_team__team=team,
+                                user=tm.member,
+                            ).exclude(
+                                tournament_team__event__event_status__in=["completed", "cancelled"],
+                            ).delete()[0]
+                            if removed:
+                                from afc_auth.models import Notifications
+                                Notifications.objects.create(
+                                    user=tm.member,
+                                    title="Removed from event rosters",
+                                    message=(
+                                        f"You were moved to a staff role ({new_m_role.replace('_', ' ')}) "
+                                        f"in {team.team_name}, so you were removed from {removed} active "
+                                        "event roster(s). Staff cannot play in events."
+                                    ),
+                                    notification_type="team_update",
+                                )
+                        except Exception:
+                            pass
                     tm.management_role = new_m_role
 
             # In-game role — None means skip, "" means clear
