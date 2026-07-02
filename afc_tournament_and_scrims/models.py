@@ -161,6 +161,11 @@ class Event(models.Model):
     broadcast_stage_id = models.PositiveIntegerField(null=True, blank=True)
     broadcast_group_id = models.PositiveIntegerField(null=True, blank=True)
     broadcast_group_ids = models.JSONField(default=list, blank=True)  # for scope="custom"
+    # ── Event MVP config (owner 2026-07-02): {"criteria": ["kills","damage",...], "scope":
+    #    "overall"|"winning_team"}. The ORDERED criteria act like tie-breakers (compare players on
+    #    the 1st, ties fall to the 2nd, ...); scope picks the candidate pool (everyone vs only the
+    #    event-winning team). Saved from the leaderboard "MVPs" tab; computed by views_mvp.event_mvp. ──
+    mvp_config = models.JSONField(default=dict, blank=True)
     registration_restriction = models.CharField(
         max_length=20,
         choices=REG_RESTRICTION_CHOICES,
@@ -1387,3 +1392,38 @@ class NoShowRecord(models.Model):
         who = (self.team.team_name if self.team_id else
                (self.user.username if self.user_id else "?"))
         return f"NoShow {who} @ {self.event_id} ({'cleared' if self.cleared_at else 'standing'})"
+
+
+class EventOverlay(models.Model):
+    """One SAVED, NAMED broadcast overlay of an event (owner 2026-07-02, overlay studio v2).
+
+    The owner's model: an "overlay" is a persistent entity you CREATE from a design (or as a scene
+    like the countdown timer), NAME/RENAME, DUPLICATE, DELETE — and whose public link NEVER changes.
+    The link (/overlay/view/<Event.overlay_token>/<id>) polls the public config feed, so editing the
+    overlay's design/stage/group/animations from the studio updates what the SAME link renders live —
+    the operator never re-copies a URL into OBS.
+
+    kind:   "leaderboard" (renders a design + live standings) | "timer" (countdown scene).
+    config: freeform per kind —
+      leaderboard: {design_id, follow (bool), stage_id, group_id, anim, reveal, interval, size, live}
+      timer:       {end_at (ISO), label}
+    active: scenes (timer) toggle visibility with it; leaderboard overlays ignore it (always render).
+
+    CONNECTS TO: views_overlays.py (CRUD via the broadcast gate + the public config feed) <-
+    FE studio app/(a)/a/overlays/[eventId] (cards) + renderer app/overlay/view/[token]/[overlayId].
+    """
+    KINDS = (("leaderboard", "Leaderboard"), ("timer", "Timer"))
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="overlays")
+    name = models.CharField(max_length=80)
+    kind = models.CharField(max_length=20, choices=KINDS, default="leaderboard")
+    config = models.JSONField(default=dict, blank=True)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.event_id}:{self.name} ({self.kind})"

@@ -175,6 +175,9 @@ def _serialize_design(d, request=None):
         # opaque background so only the placed columns show. Read by the overlay feed (DesignBoard)
         # + wired through the graphic export. See OrgLeaderboardDesign.transparent_background.
         "transparent_background": d.transparent_background,
+        # BG behaviour on the live overlay (owner 2026-07-02): persistent (always on) | animate
+        # (animates in on load/refresh). See OrgLeaderboardDesign.background_behavior.
+        "background_behavior": getattr(d, "background_behavior", "persistent") or "persistent",
         "text_color": d.text_color,
         "accent_color": d.accent_color,
         "show_title": d.show_title,
@@ -404,6 +407,11 @@ def _apply_fields(d, data):
         if flag in data:
             v = data.get(flag)
             d.__setattr__(flag, str(v).lower() in ("true", "1", "yes", "on", "true"))
+    # Background behaviour on the live overlay (owner 2026-07-02): "persistent" (always on) or
+    # "animate" (bg animates in on load/refresh). Unknown values fall back to persistent.
+    if "background_behavior" in data:
+        bb = str(data.get("background_behavior") or "").strip().lower()
+        d.background_behavior = bb if bb in ("persistent", "animate") else "persistent"
     if "max_rows" in data:
         try:
             d.max_rows = max(1, min(50, int(data.get("max_rows"))))

@@ -56,6 +56,14 @@ from .seeding_management import (
 # legacy advance endpoints below are untouched and still serve rule-less stages.
 from .advancement_routing import advance_stage_by_rules
 from .views_event_graphic import event_stage_graphic
+# EVENT OVERLAYS (owner 2026-07-02, studio v2): saved/named overlays (leaderboard-from-design +
+# timer scene) with CRUD + the public config feed their STABLE links poll.
+# Event MVP (owner 2026-07-02): criteria-arranged MVP compute + config save ("MVPs" tab).
+from .views_mvp import event_mvp
+from .views_overlays import (
+    list_overlays, create_overlay, update_overlay,
+    duplicate_overlay, delete_overlay, overlay_config,
+)
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -89,6 +97,18 @@ urlpatterns = [
     #                    cumulative). Set from the FE BroadcastControl; read by overlay_feed each poll.
     path('<int:event_id>/broadcast/', get_broadcast, name='get_broadcast'),
     path('<int:event_id>/broadcast/set/', set_broadcast, name='set_broadcast'),
+    # EVENT OVERLAYS (owner 2026-07-02, studio v2): saved/named overlays. CRUD is gated like the
+    # broadcast control; overlay/config is the PUBLIC poll (?token=&overlay=) behind every overlay's
+    # STABLE /overlay/view/<token>/<id> link. See views_overlays.py.
+    path('<int:event_id>/overlays/', list_overlays, name='list_overlays'),
+    path('<int:event_id>/overlays/create/', create_overlay, name='create_overlay'),
+    path('<int:event_id>/overlays/<int:overlay_id>/update/', update_overlay, name='update_overlay'),
+    path('<int:event_id>/overlays/<int:overlay_id>/duplicate/', duplicate_overlay, name='duplicate_overlay'),
+    path('<int:event_id>/overlays/<int:overlay_id>/delete/', delete_overlay, name='delete_overlay'),
+    path('overlay/config/', overlay_config, name='overlay_config'),
+    # Event MVP (owner 2026-07-02): GET computes with the saved config; POST saves {criteria, scope}
+    # then returns the recomputed ranking. Consumed by the leaderboard "MVPs" tab. See views_mvp.py.
+    path('<int:event_id>/mvp/', event_mvp, name='event_mvp'),
     path('create-event/', create_event, name='create_event'),
     path('edit-event/', edit_event, name='edit_event'),
     # Event duplication (feature "event-duplicate", 2026-06-10): clone an event's config +
