@@ -390,6 +390,14 @@ def get_public_player_stats(request):
         "registered_events": compute_registered_events(player),
     }
 
+    # ── Esport image for ADMINS (owner 2026-07-02: "if I go to a person's profile as an admin I
+    # should see their esport image"). Broadcast-media asset, not public PII - exposed ONLY to
+    # stats admins (same gate the sensitive stats use for staff). Rendered by PlayerClient.tsx
+    # next to the avatar when present. esports_pic lives on UserProfile (see afc_auth.models).
+    if viewer is not None and is_stats_admin(viewer):
+        from afc_auth.models import esports_pic_url
+        payload["esport_image"] = esports_pic_url(player, request)
+
     if stats_visible:
         # Full stat block (scalars + per_event + recent_matches), exactly as before.
         stats = compute_player_stats(player, include_breakdown=True)

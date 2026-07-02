@@ -64,7 +64,7 @@ from .views_mvp import event_mvp, event_tie_breakers
 # revives/survival) from the 3D-room client's persisted debugger-*.log. See debugger_ingest.py.
 from .debugger_ingest import debugger_backfill
 # Media audit/flags/opt-outs (owner 2026-07-02): broadcast-media hygiene. See views_media_audit.py.
-from .views_media_audit import media_audit, media_flag, media_flag_resolve, media_opt_out
+from .views_media_audit import media_audit, media_flag, media_flag_resolve, media_opt_out, media_upload
 from .views_overlays import (
     list_overlays, create_overlay, update_overlay,
     duplicate_overlay, delete_overlay, overlay_config,
@@ -124,6 +124,8 @@ urlpatterns = [
     path('<int:event_id>/debugger-backfill/', debugger_backfill, name='debugger_backfill'),
     # Media hygiene (owner 2026-07-02): audit + flag-and-notify + per-event logo/image opt-outs.
     path('<int:event_id>/media-audit/', media_audit, name='media_audit'),
+    # Admin media upload (owner 2026-07-02): set a team's logo / a player's esport image in place.
+    path('<int:event_id>/media-upload/', media_upload, name='media_upload'),
     path('<int:event_id>/media-flags/', media_flag, name='media_flag'),
     path('<int:event_id>/media-flags/<int:flag_id>/resolve/', media_flag_resolve, name='media_flag_resolve'),
     path('<int:event_id>/media-opt-outs/', media_opt_out, name='media_opt_out'),
