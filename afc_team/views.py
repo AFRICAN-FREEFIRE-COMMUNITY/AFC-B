@@ -1625,12 +1625,21 @@ def get_team_details(request):
         # Last 10 match stats
         recent_stat_qs = (
             TournamentTeamMatchStats.objects.filter(tournament_team__team=team)
-            .select_related("match", "tournament_team__event")
+            .select_related(
+                "match", "match__group", "match__group__stage", "tournament_team__event"
+            )
             .order_by("-match__match_date")[:10]
         )
         recent_matches = [
             {
                 "event_name": s.tournament_team.event.event_name,
+                # Stage + group of THIS match (owner 2026-07-02): a multi-stage event has separate
+                # leaderboards per stage/group, so the profile must break the per-match list down by
+                # them instead of lumping "Match 1" from the Group Stage and "Match 1" from the Finals
+                # into one flat list. match -> group (StageGroups) -> stage (Stages). Null on a
+                # legacy match with no group.
+                "stage_name": s.match.group.stage.stage_name if (s.match.group and s.match.group.stage) else None,
+                "group_name": s.match.group.group_name if s.match.group else None,
                 "match_number": s.match.match_number,
                 "match_map": s.match.match_map,
                 "placement": s.placement,

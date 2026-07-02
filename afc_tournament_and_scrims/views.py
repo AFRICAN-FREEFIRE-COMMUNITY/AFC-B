@@ -1879,12 +1879,18 @@ def create_event(request):
 
             # ── BR Round-Robin (sub-project B, Task 4): a round-robin stage sends BASE
             # groups (round_robin_groups) instead of plain `groups`, and we build the base
-            # groups + game-day lobbies from them. The normal `groups` loop below then runs
-            # over an empty list, so the two paths don't collide. ──
-            if stage_data.get("stage_format") == ROUND_ROBIN_FORMAT:
+            # groups + game-day lobbies from them. ──
+            _is_round_robin_stage = stage_data.get("stage_format") == ROUND_ROBIN_FORMAT
+            if _is_round_robin_stage:
                 _build_round_robin_stage(stage, event, user, stage_data)
 
-            for group_data in stage_data.get("groups", []):
+            # NEVER materialise the plain `groups` for a round-robin stage — its lobbies are the
+            # base groups + game-day meetings built above. If we also looped `groups` here, any
+            # values the FE sent (the number_of_groups placeholders, or the schedule-backfill the
+            # create wizard adds so validation passes) would create PHANTOM "Group 1/2" lobbies
+            # sitting next to the real "Day N" meetings (owner 2026-07-02 bug). Mirror edit_event,
+            # which already guards with `[] if _is_round_robin_stage`.
+            for group_data in ([] if _is_round_robin_stage else stage_data.get("groups", [])):
                 group = StageGroups.objects.create(
                     stage=stage,
                     group_name=group_data["group_name"],
@@ -18548,7 +18554,12 @@ def overlay_feed(request):
 def _broadcast_gate(request, event_id):
     """Shared auth for the broadcast endpoints: Bearer + (AFC event admin OR an organizer who can edit
     this event's org). Returns (event, error_response). Mirrors ensure_overlay_token's gate."""
-    user = validate_token(request.headers.get("Authorization"))
+    # validate_token expects the BARE token; the header is "Bearer <token>". Passing the raw header
+    # straight in made EVERY broadcast call fail with "Invalid or expired session token" (the Set-live
+    # picker also fell back to just "Whole event" because the GET 401'd). Strip the scheme, exactly
+    # like _overlay_bearer_user + the file-wide idiom. (bug fix 2026-07-02)
+    auth = request.headers.get("Authorization") or ""
+    user = validate_token(auth.split(" ")[1]) if auth.startswith("Bearer ") else None
     if not user:
         return None, Response({"message": "Invalid or expired session token."}, status=401)
     event = Event.objects.select_related("organization").filter(event_id=event_id).first()
