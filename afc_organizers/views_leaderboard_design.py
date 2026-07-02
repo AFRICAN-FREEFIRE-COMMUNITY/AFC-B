@@ -31,6 +31,7 @@ from django.urls import reverse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+import json as _json
 from rest_framework import status
 
 from afc_organizers.models import (
@@ -178,6 +179,13 @@ def _serialize_design(d, request=None):
         # BG behaviour on the live overlay (owner 2026-07-02): persistent (always on) | animate
         # (animates in on load/refresh). See OrgLeaderboardDesign.background_behavior.
         "background_behavior": getattr(d, "background_behavior", "persistent") or "persistent",
+        # Versus designs (owner 2026-07-02): type + which stat rows an H2H rendered with this
+        # design shows. See OrgLeaderboardDesign.design_type / versus_config.
+        "design_type": getattr(d, "design_type", "leaderboard") or "leaderboard",
+        "versus_config": getattr(d, "versus_config", {}) or {},
+        # Title/subtitle styling (owner 2026-07-02): {} = legacy fixed header. See the model comment.
+        "title_style": getattr(d, "title_style", {}) or {},
+        "subtitle_style": getattr(d, "subtitle_style", {}) or {},
         "text_color": d.text_color,
         "accent_color": d.accent_color,
         "show_title": d.show_title,
@@ -412,6 +420,29 @@ def _apply_fields(d, data):
     if "background_behavior" in data:
         bb = str(data.get("background_behavior") or "").strip().lower()
         d.background_behavior = bb if bb in ("persistent", "animate") else "persistent"
+    # Design type + versus stat rows (owner 2026-07-02). versus_config arrives as a JSON string
+    # over multipart; malformed values are ignored (keep the existing config).
+    if "design_type" in data:
+        dt = str(data.get("design_type") or "").strip().lower()
+        d.design_type = dt if dt in ("leaderboard", "versus") else "leaderboard"
+    if "versus_config" in data:
+        raw = data.get("versus_config")
+        try:
+            cfg = _json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(cfg, dict):
+                d.versus_config = cfg
+        except Exception:
+            pass
+    # Title/subtitle styling (owner 2026-07-02): JSON over multipart; malformed = keep existing.
+    for _sk in ("title_style", "subtitle_style"):
+        if _sk in data:
+            raw = data.get(_sk)
+            try:
+                cfg = _json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(cfg, dict):
+                    setattr(d, _sk, cfg)
+            except Exception:
+                pass
     if "max_rows" in data:
         try:
             d.max_rows = max(1, min(50, int(data.get("max_rows"))))
@@ -1121,3 +1152,77 @@ def font_file(request, font_id):
     # Font bytes are immutable for a given id, and the FE loads each once per session, so cache hard.
     resp["Cache-Control"] = "public, max-age=31536000, immutable"
     return resp
+
+
+@api_view(["POST"])
+def design_duplicate(request, design_id):
+    """POST organizers/leaderboard-designs/by-id/<design_id>/duplicate/ — full copy of a design
+    (owner 2026-07-02: "users should be able to duplicate a design"): scalars + configs + logos +
+    placed fields + freeform texts + pages (page fields/texts re-parented to the copied pages).
+    Same write gate as editing the library. Returns the new design serialized. Name gets " copy"."""
+    user, err = _authenticate(request)
+    if err:
+        return err
+    request._afc_user = user
+    src = OrgLeaderboardDesign.objects.filter(id=design_id).first()
+    if not src:
+        return Response({"message": "Design not found."}, status=404)
+    _org, can_write, gate_err = _resolve_library(
+        request, src.organization_id if src.organization_id else None)
+    if gate_err:
+        return gate_err
+    if not can_write:
+        return Response({"message": "You cannot modify this design library."}, status=403)
+
+    # ── 1. The design row itself (never the default; images shared by reference). ──
+    copy = OrgLeaderboardDesign.objects.create(
+        organization=src.organization,
+        name=f"{src.name} copy"[:120] if hasattr(src, "name") else "copy",
+        background_instagram=src.background_instagram,
+        background_youtube=src.background_youtube,
+        transparent_background=src.transparent_background,
+        background_behavior=getattr(src, "background_behavior", "persistent"),
+        design_type=getattr(src, "design_type", "leaderboard"),
+        versus_config=dict(getattr(src, "versus_config", {}) or {}),
+        title_style=dict(getattr(src, "title_style", {}) or {}),
+        subtitle_style=dict(getattr(src, "subtitle_style", {}) or {}),
+        text_color=src.text_color,
+        accent_color=src.accent_color,
+        show_title=src.show_title,
+        show_subtitle=src.show_subtitle,
+        max_rows=src.max_rows,
+        is_default=False,
+        column_groups=list(src.column_groups or []),
+        column_groups_youtube=list(getattr(src, "column_groups_youtube", None) or []),
+    )
+    # ── 2. Pages first (so fields/texts can re-parent), keyed old->new. ──
+    page_map = {}
+    for p in src.pages.all():
+        np = OrgLeaderboardDesignPage.objects.create(
+            design=copy, page_number=p.page_number,
+            background_instagram=p.background_instagram,
+            background_youtube=p.background_youtube,
+            column_groups=list(p.column_groups or []),
+            column_groups_youtube=list(getattr(p, "column_groups_youtube", None) or []),
+        )
+        page_map[p.id] = np
+    # ── 3. Logos / fields / texts (page_id remapped through page_map; None stays None). ──
+    for lg in src.logos.all():
+        OrgLeaderboardDesignLogo.objects.create(
+            design=copy, image=lg.image, x_pct=lg.x_pct, y_pct=lg.y_pct, size=lg.size,
+        )
+    for f in src.fields.all():
+        OrgLeaderboardDesignField.objects.create(
+            design=copy, field_type=f.field_type, column_group=f.column_group,
+            x_pct=f.x_pct, x_pct_youtube=f.x_pct_youtube, align=f.align,
+            font_id=f.font_id, font_size_pct=f.font_size_pct, color=f.color,
+            order=f.order, page=page_map.get(f.page_id),
+        )
+    for t in src.texts.all():
+        OrgLeaderboardDesignText.objects.create(
+            design=copy, text=t.text, x_pct=t.x_pct, y_pct=t.y_pct,
+            x_pct_youtube=t.x_pct_youtube, y_pct_youtube=t.y_pct_youtube,
+            align=t.align, font_id=t.font_id, font_size_pct=t.font_size_pct,
+            color=t.color, order=t.order, page=page_map.get(t.page_id),
+        )
+    return Response(_serialize_design(copy, request), status=201)

@@ -104,6 +104,9 @@ urlpatterns = [
     path("leaderboard-designs/by-id/<int:design_id>/logos/<int:logo_id>/",
          views_leaderboard_design.design_logo_item,
          name="organizers_leaderboard_design_logo_item"),  # PATCH (move/resize) / DELETE
+    # Duplicate a design wholesale (owner 2026-07-02): scalars+logos+fields+texts+pages.
+    path("leaderboard-designs/by-id/<int:design_id>/duplicate/",
+         views_leaderboard_design.design_duplicate, name="organizers_leaderboard_design_duplicate"),
     path("leaderboard-designs/by-id/<int:design_id>/logos/",
          views_leaderboard_design.design_logos,
          name="organizers_leaderboard_design_logos"),       # POST (add, multipart)

@@ -13345,6 +13345,14 @@ def get_all_leaderboard_details_for_event(request):
                     int(r.get("last_match_placement", 999)),
                     r.get(name_key) or "",
                 ))
+            # ── Config-driven TIE-BREAKERS (owner 2026-07-02): when the event has an arranged
+            # chain for this group/stage/event, re-order EQUAL-POINT teams by it. Runs AFTER the
+            # carry-over re-sort (so it sees final effective totals) and BEFORE the champion pin.
+            # Team events only (the criteria are team stats); no config -> untouched legacy order.
+            if event.participant_type != "solo":
+                from .round_robin import apply_tie_breakers as _apply_tb, _resolve_tie_breakers as _res_tb
+                if _res_tb(event, stage, group):
+                    overall = _apply_tb(overall, event, stage, group)
             # Pin the champion to #0 if one exists — the FE renders server order verbatim
             # (qualified/eliminated badges are positional), so the champion must physically lead
             # the list, not just be flagged. Stable sort preserves the tiebreaker order above for
@@ -18293,10 +18301,18 @@ def _overlay_rows_from_standings(standings, max_rows, request):
     # logo_by_tt, but returns .url (build_absolute_uri) instead of .path for the browser overlay.
     tt_ids = [r["tournament_team_id"] for r in standings]
     logo_by_tt = {}
+    # Per-event logo opt-outs (owner 2026-07-02): a suppressed team renders NO logo on this event's
+    # overlays (EventMediaOptOut, managed from the studio's media audit). Upload untouched.
+    from .models import EventMediaOptOut
+    _suppressed_team_ids = set()
+    for tt0 in TournamentTeam.objects.filter(tournament_team_id__in=tt_ids).values_list(
+            "event_id", flat=True)[:1]:
+        _suppressed_team_ids = set(EventMediaOptOut.objects.filter(
+            event_id=tt0, kind="team_logo").values_list("team_id", flat=True))
     for tt in TournamentTeam.objects.filter(
         tournament_team_id__in=tt_ids).select_related("team"):
         try:
-            if tt.team and tt.team.team_logo:
+            if tt.team and tt.team.team_logo and tt.team.team_id not in _suppressed_team_ids:
                 logo_by_tt[tt.tournament_team_id] = request.build_absolute_uri(tt.team.team_logo.url)
         except Exception:
             pass
@@ -18369,7 +18385,9 @@ def _overlay_cumulative_rows(event, group_ids, max_rows, request):
         qs = TournamentTeamMatchStats.objects.filter(match__group__stage__event=event)
     else:
         qs = TournamentTeamMatchStats.objects.filter(match__group_id__in=group_ids)
-    standings = round_robin._aggregate_team_standings(qs)
+    # event-level tie-breakers apply to the cumulative scopes (owner 2026-07-02); the per-group and
+    # per-stage overlay slices go through group_standings/cumulative_standings which resolve their own.
+    standings = round_robin._aggregate_team_standings(qs, event=event)
     return _overlay_rows_from_standings(standings, max_rows, request)
 
 
@@ -19562,6 +19580,34 @@ def upload_team_match_result(request):
     if not dry_run:
         try:
             maybe_autocomplete_event(event, admin)
+        except Exception:
+            pass
+        # ── BOOYAH BANNER auto-trigger (owner 2026-07-02): when this upload lands, any of the
+        # event's booyah-scene overlays with config.auto=true fires for the map's WINNING team
+        # (placement 1). NO auto-hide (owner): the banner stays until the operator hits Hide or
+        # the next booyah replaces it; shown_at just re-keys the pop-in animation. Best-effort:
+        # a failure here must never break the upload.
+        try:
+            from django.utils import timezone as _tz
+            from .models import EventOverlay as _EO
+            _winner = next((td for td in parsed_teams
+                            if td.get("_team_obj") and int(td.get("placement") or 0) == 1), None)
+            if _winner:
+                _team = _winner["_team_obj"].team
+                for _ov in _EO.objects.filter(event=event, kind="booyah"):
+                    if not (_ov.config or {}).get("auto"):
+                        continue
+                    _cfg = dict(_ov.config or {})
+                    _cfg.update({
+                        "team_name": _team.team_name if _team else "",
+                        "team_logo": (request.build_absolute_uri(_team.team_logo.url)
+                                      if (_team and _team.team_logo) else None),
+                        "match_map": match.match_map,
+                        "shown_at": _tz.now().isoformat(),
+                    })
+                    _ov.config = _cfg
+                    _ov.active = True
+                    _ov.save(update_fields=["config", "active"])
         except Exception:
             pass
 

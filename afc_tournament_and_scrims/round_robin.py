@@ -77,7 +77,89 @@ def round_robin_schedule(group_ids, games_per_day=1, maps=None):
     return specs
 
 
-def _aggregate_team_standings(stats_qs):
+# ── Config-driven TIE-BREAKERS (owner 2026-07-02) ───────────────────────────────
+# The hardcoded chain (points -> booyahs -> kills) becomes ARRANGEABLE, exactly like the MVP
+# criteria: the admin/organizer orders team criteria and they apply to the whole event, one stage,
+# or one group (group > stage > event default; nothing configured = the legacy chain, so every
+# existing leaderboard is unchanged). effective_total ALWAYS ranks first - tie-breakers only order
+# equal-point teams. "mvp_count" counts how many per-map MVPs a team's players won (views_mvp
+# semantics), computed lazily only when the criterion is actually configured.
+TIE_BREAKER_KEYS = (
+    "booyahs", "kills", "placement_points", "kill_points",
+    "bonus", "fewest_penalties", "matches_played", "mvp_count",
+)
+_ROW_FIELD = {
+    "booyahs": "total_booyah", "kills": "total_kills", "placement_sum": "placement_sum",
+    "placement_points": "placement_sum", "kill_points": "kill_sum", "bonus": "bonus_sum",
+    "fewest_penalties": "penalty_sum", "matches_played": "games_played",
+}
+
+
+def _resolve_tie_breakers(event, stage=None, group=None):
+    """group > stage > event default. Returns [] when nothing configured (legacy chain)."""
+    cfg = (getattr(event, "tie_breakers", None) or {}) if event else {}
+    if group is not None:
+        v = (cfg.get("groups") or {}).get(str(getattr(group, "group_id", group)))
+        if v:
+            return [c for c in v if c in TIE_BREAKER_KEYS]
+    if stage is not None:
+        v = (cfg.get("stages") or {}).get(str(getattr(stage, "stage_id", stage)))
+        if v:
+            return [c for c in v if c in TIE_BREAKER_KEYS]
+    return [c for c in (cfg.get("default") or []) if c in TIE_BREAKER_KEYS]
+
+
+def _team_mvp_counts(event):
+    """{tournament_team_id: per-map MVP wins by that team's players} - the owner's "mvp is a
+    tie-breaker criterion". Mirrors views_mvp: per MATCH, the best player line by the event's MVP
+    criteria; the winner's TEAM gets the count."""
+    from .views_mvp import CRITERIA_META, DEFAULT_CRITERIA, _crit_key
+    from .models import TournamentPlayerMatchStats
+    cfg = (getattr(event, "mvp_config", None) or {})
+    rankable = [c for c in (cfg.get("criteria") or DEFAULT_CRITERIA)
+                if c in CRITERIA_META and CRITERIA_META[c][1]] or DEFAULT_CRITERIA
+    best_by_match = {}
+    for s in TournamentPlayerMatchStats.objects.filter(
+        team_stats__match__group__stage__event=event
+    ).select_related("team_stats"):
+        line = {"kills": s.kills or 0, "damage": s.damage or 0, "assists": s.assists or 0}
+        key = _crit_key(line, rankable)
+        cur = best_by_match.get(s.team_stats.match_id)
+        if cur is None or key > cur[0]:
+            best_by_match[s.team_stats.match_id] = (key, s.team_stats.tournament_team_id)
+    counts = {}
+    for _k, tt in best_by_match.values():
+        counts[tt] = counts.get(tt, 0) + 1
+    return counts
+
+
+def apply_tie_breakers(rows, event, stage=None, group=None):
+    """Re-sort aggregated standings rows by effective_total then the CONFIGURED criteria chain.
+    No config -> rows unchanged (the aggregator's legacy DB sort already applied)."""
+    criteria = _resolve_tie_breakers(event, stage, group)
+    if not criteria or not rows:
+        return rows
+    mvp_counts = _team_mvp_counts(event) if "mvp_count" in criteria else {}
+
+    def key(r):
+        parts = [-(r.get("effective_total") or 0)]
+        for c in criteria:
+            if c == "mvp_count":
+                parts.append(-(mvp_counts.get(r.get("tournament_team_id"), 0)))
+            elif c == "fewest_penalties":
+                parts.append(r.get("penalty_sum") or 0)   # fewer penalties = better (ascending)
+            else:
+                # games_played (aggregator rows) vs matches_played (the event-leaderboard endpoint's
+                # rows) name the same stat - accept either.
+                f = _ROW_FIELD.get(c, c)
+                parts.append(-((r.get(f) if r.get(f) is not None else r.get("matches_played")) or 0))
+        parts.append(r.get("team_name") or "")
+        return tuple(parts)
+
+    return sorted(rows, key=key)
+
+
+def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
     """Fold a TournamentTeamMatchStats queryset into a per-team points table.
 
     Shared core of `cumulative_standings` (whole stage) and `day_standings` (one game
@@ -137,7 +219,9 @@ def _aggregate_team_standings(stats_qs):
         # name for a stable final order.
         .order_by("-effective_total", "-total_booyah", "-total_kills", "team_name")
     )
-    return list(rows)
+    # Config-driven tie-breakers (owner 2026-07-02): when the event has an arrangement for this
+    # scope, re-sort equal-point teams by it; otherwise the DB order above stands (legacy chain).
+    return apply_tie_breakers(list(rows), event, stage, group)
 
 
 def cumulative_standings(stage):
@@ -150,7 +234,7 @@ def cumulative_standings(stage):
     lobby of the stage regardless of game day.
     """
     qs = TournamentTeamMatchStats.objects.filter(match__group__stage=stage)
-    return _aggregate_team_standings(qs)
+    return _aggregate_team_standings(qs, event=stage.event, stage=stage)
 
 
 def group_standings(group):
@@ -164,7 +248,7 @@ def group_standings(group):
     query missed the data the per-group page view was showing).
     """
     qs = TournamentTeamMatchStats.objects.filter(match__group=group)
-    return _aggregate_team_standings(qs)
+    return _aggregate_team_standings(qs, event=group.stage.event, stage=group.stage, group=group)
 
 
 def day_standings(stage, game_day):
@@ -176,4 +260,4 @@ def day_standings(stage, game_day):
     """
     qs = TournamentTeamMatchStats.objects.filter(
         match__group__stage=stage, match__group__game_day=game_day)
-    return _aggregate_team_standings(qs)
+    return _aggregate_team_standings(qs, event=stage.event, stage=stage)
