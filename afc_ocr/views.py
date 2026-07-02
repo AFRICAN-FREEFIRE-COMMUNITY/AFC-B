@@ -1,9 +1,11 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from django.db.models import Q  # org-scoped session filter in list_ocr_sessions
+
 from afc_auth.views import validate_token
 from afc_organizers.permissions import org_can_event, is_platform_org_admin
-from afc_tournament_and_scrims.models import Match, MatchResultImage
+from afc_tournament_and_scrims.models import Event, Match, MatchResultImage
 
 from .models import OCRSession
 from .services.gemini import call_gemini, get_prompt_context
@@ -39,10 +41,15 @@ def _auth(request):
 
 
 def _require_admin(user):
+    # NOTE (fix, owner 2026-07-02 organizer parity): UserRoles has no `role_name` field - the
+    # granular role name lives on the related Roles row, so the correct lookup is
+    # `role__role_name__in` (same fix as afc_tournament_and_scrims.views._is_event_admin).
+    # The old `role_name__in` lookup raised FieldError (a 500) for EVERY non-staff caller,
+    # which also meant granular-only event_admins could never pass this gate.
     if not (
         getattr(user, "role", None) in ["admin", "moderator", "support"]
         or (hasattr(user, "userroles") and user.userroles.filter(
-            role_name__in=["event_admin", "head_admin"]
+            role__role_name__in=["event_admin", "head_admin"]
         ).exists())
     ):
         return Response({"message": "Unauthorized. Admins only."}, status=403)
@@ -549,16 +556,41 @@ def ocr_from_stored_image(request):
 @api_view(["GET"])
 def list_ocr_sessions(request):
     """
-    GET /events/ocr-sessions/?match_id=<id>
-    List all OCR sessions, optionally filtered by match.
+    GET /events/ocr-sessions/?match_id=<id>&event_id=<id>
+    List OCR sessions, optionally filtered by match. Consumed by the admin OCR page
+    (app/(a)/a/events/[slug]/ocr/page.tsx) via lib/api/ocr.ts listSessions().
+
+    Auth (organizer parity, owner 2026-07-02):
+      - AFC admins (_require_admin): UNCHANGED - the unscoped list, optional match_id filter.
+      - Organizers: NEW branch - allowed when they hold can_upload_results on the event's
+        owning org (org_can_event, same grant as every other OCR surface, see
+        _require_results_access above). An organizer MUST pass event_id and only ever gets
+        THAT event's sessions back (org-scoped, never the platform-wide list); match_id then
+        narrows within it. Native (org=None) events stay admin-only via org_can_event.
     """
     user, err = _auth(request)
     if err:
         return err
-    if (deny := _require_admin(user)):
-        return deny
 
     qs = OCRSession.objects.select_related("match", "created_by").order_by("-created_at")
+
+    if _require_admin(user) is not None:
+        # Not an AFC admin -> organizer branch. Sessions hang off matches, and a match's
+        # event resolves via either a standalone leaderboard or a stage group (same paths
+        # as _get_event above), so the event scope filter must cover both FKs.
+        event_id = request.query_params.get("event_id")
+        if not event_id:
+            return Response({"message": "event_id is required."}, status=400)
+        try:
+            event = Event.objects.get(event_id=event_id)
+        except Event.DoesNotExist:
+            return Response({"message": "Event not found."}, status=404)
+        if not org_can_event(user, "can_upload_results", event):
+            return Response({"message": "Unauthorized. Admins only."}, status=403)
+        qs = qs.filter(
+            Q(match__leaderboard__event=event) | Q(match__group__stage__event=event)
+        )
+
     match_id = request.query_params.get("match_id")
     if match_id:
         qs = qs.filter(match_id=match_id)
