@@ -2458,7 +2458,10 @@ def edit_profile(request):
 
     if profile_pic:
         user_profile.profile_pic = profile_pic
-        user_profile.save()
+        # update_fields: write ONLY this column (owner bug 2026-07-02: a full-row save 500s the
+        # moment the code knows a column prod hasn't migrated yet - uploads must never depend on
+        # unrelated columns).
+        user_profile.save(update_fields=["profile_pic"])
 
     # ── WhatsApp notifications (owner 2026-07-02, Zernio): number + explicit opt-in, stored on the
     # profile (same home as the pics). Absent keys = unchanged, so partial saves can't wipe them.
@@ -2952,6 +2955,13 @@ def upload_esport_image(request):
     if not esport_image:
         return Response({"message": "esport_image file is required."},
                         status=status.HTTP_400_BAD_REQUEST)
+    # Clear size error (owner 2026-07-02: "make people know WHY images are not uploading").
+    # 15MB ceiling here; the frontend also downscales before sending so normal phone photos
+    # never hit this.
+    if getattr(esport_image, "size", 0) > 15 * 1024 * 1024:
+        return Response({"message": "That image is too large (over 15MB). Please upload a "
+                                    "smaller photo - a normal phone picture works fine."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
     # HEIC/HEIF (iPhone default) -> JPEG before anything else (owner 2026-06-21): browsers
     # can't render HEIC and OpenCV can't decode it, so without this the image neither
@@ -2978,7 +2988,7 @@ def upload_esport_image(request):
 
     profile, _created = UserProfile.objects.get_or_create(user=user)
     profile.esports_pic = esport_image  # replace-only: the old file reference is overwritten
-    profile.save()
+    profile.save(update_fields=["esports_pic"])  # column-scoped write (see edit_profile note)
 
     return Response({
         "status": "ok",

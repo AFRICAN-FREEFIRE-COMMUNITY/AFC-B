@@ -251,7 +251,7 @@ def media_upload(request, event_id):
         except (ValueError, TypeError):
             return Response({"message": "Player not found."}, status=404)
         profile.esports_pic = upload
-        profile.save()
+        profile.save(update_fields=["esports_pic"])  # column-scoped write
         url = request.build_absolute_uri(profile.esports_pic.url)
 
     return Response({"message": "Media updated.", "url": url})
