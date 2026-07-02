@@ -34,6 +34,8 @@ def _resolve_season(request):
         s = Season.objects.filter(pk=sid).first()
         if s:
             return s
+    from .models import auto_rollover_seasons
+    auto_rollover_seasons()  # calendar-driven activation (owner 2026-07-02)
     return Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
 
 
@@ -195,11 +197,17 @@ def player_score_detail(request, player_id):
 # ───────────────────────── SEASONS ─────────────────────────
 @api_view(["GET"])
 def seasons_list(request):
+    # Calendar-driven activation sweep (owner 2026-07-02): the admin Seasons page always shows the
+    # TRUE current season without a manual edit - Q rollover applies the moment its start date hits.
+    from .models import auto_rollover_seasons
+    auto_rollover_seasons()
     qs = Season.objects.all().order_by("-year", "-quarter")
     return _envelope(request, qs, S.season)
 
 
 @api_view(["GET"])
 def season_current(request):
+    from .models import auto_rollover_seasons
+    auto_rollover_seasons()  # calendar-driven activation (owner 2026-07-02)
     s = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
     return Response(S.season(s) if s else None)

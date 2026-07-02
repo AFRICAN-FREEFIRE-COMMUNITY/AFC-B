@@ -24,6 +24,8 @@ from .aggregation import _match_day
 
 def _season_for(day):
     if day:
+        from .models import auto_rollover_seasons
+        auto_rollover_seasons()  # calendar-driven activation (owner 2026-07-02)
         s = Season.objects.filter(is_active=True, start_date__lte=day, end_date__gte=day).first()
         if s:
             return s

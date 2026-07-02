@@ -38,6 +38,8 @@ def current_month() -> datetime.date:
 
 
 def current_season():
+    from .models import auto_rollover_seasons
+    auto_rollover_seasons()  # calendar-driven activation (owner 2026-07-02)
     return Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
 
 

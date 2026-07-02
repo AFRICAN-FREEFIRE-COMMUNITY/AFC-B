@@ -21918,6 +21918,14 @@ def complete_event_core(event, by_user, *, source="manual"):
         fire_links_for_event(event, by_user)
     except Exception:
         pass
+    # Auto-sync the event's prize pool into the season's Prize Money (owner 2026-07-02): derive
+    # EventPrizePayout rows from prize_distribution + the final standings so the rankings page +
+    # evaluation fill themselves. Best-effort - a sync hiccup must not block completion.
+    try:
+        from .prize_sync import sync_event_prize_payouts
+        sync_event_prize_payouts(event)
+    except Exception:
+        pass
     # Notify everyone registered that the tournament has concluded.
     try:
         _notify_all_registered(

@@ -139,6 +139,8 @@ def serialize_prize(p):
         "team_name": (tt.team.team_name if tt and tt.team_id else None),
         "amount": str(p.amount),                                   # NGN, already converted
         "awarded_at": p.created_at.isoformat() if p.created_at else None,
+        # Auto-synced from the event's prize pool (owner 2026-07-02); manual rows show False.
+        "auto_synced": bool(getattr(p, "auto_synced", False)),
     }
 
 
@@ -256,6 +258,15 @@ def tournament_prizes_list(request):
     user, err = _auth(request, roles=PRIZE_ADMIN_ROLES)
     if err:
         return err
+
+    # ── AUTO-SYNC sweep (owner 2026-07-02): prize pools are entered on the EVENT, so completed
+    # events backfill their payouts here automatically (event prize_distribution + final standings,
+    # NGN-converted). Manual rows are never touched; see prize_sync.sync_completed_events.
+    try:
+        from afc_tournament_and_scrims.prize_sync import sync_completed_events
+        sync_completed_events()
+    except Exception:
+        pass  # the list must render even if a sync hiccups
 
     qs = (EventPrizePayout.objects
           .select_related("event", "tournament_team", "tournament_team__team")
@@ -392,7 +403,10 @@ def prize_update(request, payout_id):
     with transaction.atomic():
         before = serialize_prize(payout)
         payout.amount = amount
-        payout.save(update_fields=["amount"])
+        # An admin edit turns an auto-synced row MANUAL (owner 2026-07-02): the event re-sync will
+        # no longer clobber it, so manual corrections stick for the evaluation.
+        payout.auto_synced = False
+        payout.save(update_fields=["amount", "auto_synced"])
         # Re-derive each player's PlayerWinning share from the new amount (idempotent by payout:
         # _distribute_payout deletes this payout's prior rows then recreates them). Keeps player
         # history/stats accurate when an admin edits a prize, not only on first creation.
