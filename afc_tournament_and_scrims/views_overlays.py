@@ -220,10 +220,11 @@ def _h2h_payload(event, config, request):
                    .aggregate(kills=Sum("kills"), damage=Sum("damage"), assists=Sum("assists"),
                               deaths=Sum("deaths"), headshots=Sum("headshots"),
                               survival=Sum("survival_seconds"), matches=Count("player_stats_id")))
+            from afc_auth.models import esports_pic_url
             competitors.append({
                 "name": getattr(u, "in_game_name", "") or u.username,
-                "image": (request.build_absolute_uri(u.esports_pic.url)
-                          if getattr(u, "esports_pic", None) else None),
+                # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
+                "image": esports_pic_url(u, request),
                 "stats": {
                     "kills": agg["kills"] or 0, "damage": agg["damage"] or 0,
                     "assists": agg["assists"] or 0, "deaths": agg["deaths"] or 0,
@@ -296,10 +297,11 @@ def _booyah_payload(event, config, request):
                 u = m.user
                 if not u:
                     continue
+                from afc_auth.models import esports_pic_url
                 roster.append({
                     "name": getattr(u, "in_game_name", "") or u.username,
-                    "image": (request.build_absolute_uri(u.esports_pic.url)
-                              if getattr(u, "esports_pic", None) else None),
+                    # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
+                    "image": esports_pic_url(u, request),
                 })
     return {"design": _design_look(config.get("design_id"), request), "roster": roster}
 

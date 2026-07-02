@@ -2460,6 +2460,18 @@ def edit_profile(request):
         user_profile.profile_pic = profile_pic
         user_profile.save()
 
+    # ── WhatsApp notifications (owner 2026-07-02, Zernio): number + explicit opt-in, stored on the
+    # profile (same home as the pics). Absent keys = unchanged, so partial saves can't wipe them.
+    _wa_changed = False
+    if "whatsapp_number" in request.data:
+        user_profile.whatsapp_number = (request.data.get("whatsapp_number") or "").strip()[:20]
+        _wa_changed = True
+    if "whatsapp_opt_in" in request.data:
+        user_profile.whatsapp_opt_in = str(request.data.get("whatsapp_opt_in")).lower() in ("true", "1", "yes", "on")
+        _wa_changed = True
+    if _wa_changed:
+        user_profile.save(update_fields=["whatsapp_number", "whatsapp_opt_in"])
+
     return Response({
         "message": "Profile updated successfully.",
         "user_id": user.user_id,
@@ -2572,6 +2584,7 @@ def get_user_profile(request):
     # ---------------- PROFILE PIC + ESPORT IMAGE ----------------
     profile_pic_url = None
     esport_image_url = None
+    profile = None  # stays None when the user has no UserProfile row (whatsapp echo guards on it)
     try:
         profile = UserProfile.objects.get(user=user)
         profile_pic_url = request.build_absolute_uri(profile.profile_pic.url) if profile.profile_pic else None
@@ -2731,6 +2744,10 @@ def get_user_profile(request):
         "profile_pic": profile_pic_url,
         # The separate esport image (see upload_esport_image): null until the player uploads one.
         "esport_image_url": esport_image_url,
+        # WhatsApp notifications (owner 2026-07-02, Zernio): echo so the profile edit page can
+        # prefill the number + opt-in switch. Lives on UserProfile like the pics.
+        "whatsapp_number": getattr(profile, "whatsapp_number", "") if profile else "",
+        "whatsapp_opt_in": bool(getattr(profile, "whatsapp_opt_in", False)) if profile else False,
         "roles": list(UserRoles.objects.filter(user=user).values_list("role__role_name", flat=True)),
         "is_banned": BannedPlayer.objects.filter(banned_player=user, is_active=True).exists(),
         "is_vendor": is_vendor,
