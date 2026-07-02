@@ -59,10 +59,16 @@ from .views_event_graphic import event_stage_graphic
 # EVENT OVERLAYS (owner 2026-07-02, studio v2): saved/named overlays (leaderboard-from-design +
 # timer scene) with CRUD + the public config feed their STABLE links poll.
 # Event MVP (owner 2026-07-02): criteria-arranged MVP compute + config save ("MVPs" tab).
-from .views_mvp import event_mvp
+from .views_mvp import event_mvp, event_tie_breakers
+# Debugger-log backfill (owner 2026-07-02): post-hoc rich stats (deaths/knockdowns/headshots/
+# revives/survival) from the 3D-room client's persisted debugger-*.log. See debugger_ingest.py.
+from .debugger_ingest import debugger_backfill
+# Media audit/flags/opt-outs (owner 2026-07-02): broadcast-media hygiene. See views_media_audit.py.
+from .views_media_audit import media_audit, media_flag, media_flag_resolve, media_opt_out
 from .views_overlays import (
     list_overlays, create_overlay, update_overlay,
     duplicate_overlay, delete_overlay, overlay_config,
+    capture_version, capture_config,
 )
 from django.conf import settings
 from django.conf.urls.static import static
@@ -93,6 +99,9 @@ urlpatterns = [
     # capture/resolve: upload-token only — "paste key -> auto-fill" for the desktop app: returns the
     #                  token's event + stages/groups + the active one so the client fills them itself.
     path('capture/resolve/', capture_resolve, name='capture_resolve'),
+    # Capture remote update + config (owner 2026-07-02): the thin launcher polls these. PUBLIC.
+    path('capture/version/', capture_version, name='capture_version'),
+    path('capture/config/', capture_config, name='capture_config'),
     # broadcast control: which standings the "follow broadcast" overlay shows (group/stage/event/custom
     #                    cumulative). Set from the FE BroadcastControl; read by overlay_feed each poll.
     path('<int:event_id>/broadcast/', get_broadcast, name='get_broadcast'),
@@ -109,6 +118,15 @@ urlpatterns = [
     # Event MVP (owner 2026-07-02): GET computes with the saved config; POST saves {criteria, scope}
     # then returns the recomputed ranking. Consumed by the leaderboard "MVPs" tab. See views_mvp.py.
     path('<int:event_id>/mvp/', event_mvp, name='event_mvp'),
+    # Leaderboard tie-breakers (owner 2026-07-02): arranged criteria, apply-to-all|stage|group.
+    path('<int:event_id>/tie-breakers/', event_tie_breakers, name='event_tie_breakers'),
+    # Debugger-log backfill: dry-run parse + apply (round->match mapping). See debugger_ingest.py.
+    path('<int:event_id>/debugger-backfill/', debugger_backfill, name='debugger_backfill'),
+    # Media hygiene (owner 2026-07-02): audit + flag-and-notify + per-event logo/image opt-outs.
+    path('<int:event_id>/media-audit/', media_audit, name='media_audit'),
+    path('<int:event_id>/media-flags/', media_flag, name='media_flag'),
+    path('<int:event_id>/media-flags/<int:flag_id>/resolve/', media_flag_resolve, name='media_flag_resolve'),
+    path('<int:event_id>/media-opt-outs/', media_opt_out, name='media_opt_out'),
     path('create-event/', create_event, name='create_event'),
     path('edit-event/', edit_event, name='edit_event'),
     # Event duplication (feature "event-duplicate", 2026-06-10): clone an event's config +

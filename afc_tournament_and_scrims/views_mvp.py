@@ -70,7 +70,14 @@ def event_mvp(request, event_id):
     cfg = event.mvp_config or {}
     criteria = [c for c in (cfg.get("criteria") or DEFAULT_CRITERIA) if c in CRITERIA_META]
     scope = cfg.get("scope") if cfg.get("scope") in ("overall", "winning_team") else DEFAULT_SCOPE
-    rankable = [c for c in criteria if CRITERIA_META[c][1]] or DEFAULT_CRITERIA
+    # The 3D-room criteria become RANKABLE once this event has debugger-backfilled rows
+    # (rich_stats_filled — see debugger_ingest.py). Until then they stay tagged/pending.
+    has_rich = TournamentPlayerMatchStats.objects.filter(
+        team_stats__match__group__stage__event=event, rich_stats_filled=True
+    ).exists()
+    def _avail(c):
+        return CRITERIA_META[c][1] or has_rich
+    rankable = [c for c in criteria if _avail(c)] or DEFAULT_CRITERIA
 
     # ── Every player line of the event, grouped per MATCH (map). ──
     qs = (
@@ -94,6 +101,11 @@ def event_mvp(request, event_id):
             "kills": s.kills or 0,
             "damage": s.damage or 0,
             "assists": s.assists or 0,
+            # 3D-room rich stats (0 until the debugger backfill fills them).
+            "deaths": s.deaths or 0,
+            "survival_time": s.survival_seconds or 0,
+            "headshots": s.headshots or 0,
+            "kdr": round((s.kills or 0) / max(1, s.deaths or 0), 2),
             # The team line's placement decides the map's WINNING team (placement 1 = booyah).
             "team_placement": s.team_stats.placement,
         }
@@ -112,10 +124,14 @@ def event_mvp(request, event_id):
                     if getattr(p, "esports_pic", None) else None
                 ),
                 "kills": 0, "damage": 0, "assists": 0, "matches": 0, "mvp_count": 0,
+                "deaths": 0, "survival_time": 0, "headshots": 0,
             }
         row["kills"] += line["kills"]
         row["damage"] += line["damage"]
         row["assists"] += line["assists"]
+        row["deaths"] += line["deaths"]
+        row["survival_time"] += line["survival_time"]
+        row["headshots"] += line["headshots"]
         row["matches"] += 1
 
     # ── One MVP per MAP: rank that map's pool by the criteria; winning_team scope restricts the
@@ -143,6 +159,9 @@ def event_mvp(request, event_id):
         })
 
     # ── Event ranking: most per-map MVPs first; count ties fall to the criteria on event totals. ──
+    for r in players.values():
+        # Event-level KDR for the count tie-break (per-map lines carry their own).
+        r["kdr"] = round(r["kills"] / max(1, r["deaths"]), 2)
     ranked = sorted(
         players.values(),
         key=lambda r: (r["mvp_count"],) + _crit_key(r, rankable),
@@ -154,7 +173,7 @@ def event_mvp(request, event_id):
         "rankable_criteria": rankable,
         "scope": scope,
         "criteria_meta": [
-            {"key": k, "label": v[0], "available": v[1]} for k, v in CRITERIA_META.items()
+            {"key": k, "label": v[0], "available": _avail(k)} for k, v in CRITERIA_META.items()
         ],
         # Per-map winners (ordered by stage/group/match number for a stable display).
         "map_mvps": sorted(
@@ -163,4 +182,62 @@ def event_mvp(request, event_id):
         ),
         "players": ranked[:50],
         "mvp": ranked[0] if ranked else None,
+    }, status=200)
+
+
+# ── LEADERBOARD TIE-BREAKERS config (owner 2026-07-02) ──────────────────────────
+# Kept in this module because the two features are siblings (both are "arranged criteria"; the MVP
+# count is itself a tie-breaker criterion). Engine + resolution: round_robin.apply_tie_breakers
+# (group > stage > event default > legacy booyahs->kills chain).
+#
+#   GET  events/<event_id>/tie-breakers/  -> the saved config + the criteria catalog
+#   POST events/<event_id>/tie-breakers/  -> {criteria: [...], scope: "all"|"stage"|"group",
+#                                             stage_id?, group_id?}  ("all" clears per-scope
+#                                             overrides ONLY when body has replace_all=true)
+# Consumed by the TieBreakersPanel on the leaderboard edit Scoring Config tab.
+
+TIE_BREAKER_LABELS = {
+    "booyahs": "Booyahs",
+    "kills": "Kills",
+    "placement_points": "Placement points",
+    "kill_points": "Kill points",
+    "bonus": "Bonus points",
+    "fewest_penalties": "Fewest penalties",
+    "matches_played": "Matches played",
+    "mvp_count": "Map MVPs won",
+}
+
+
+@api_view(["GET", "POST"])
+def event_tie_breakers(request, event_id):
+    """GET/POST events/<event_id>/tie-breakers/ — read/save the arranged tie-breaker criteria for
+    the whole event, one stage, or one group (like maps: apply to all, or per stage/group)."""
+    from .round_robin import TIE_BREAKER_KEYS
+    event, err = _broadcast_gate(request, event_id)
+    if err:
+        return err
+
+    if request.method == "POST":
+        raw = request.data.get("criteria")
+        criteria = [c for c in raw if c in TIE_BREAKER_KEYS] if isinstance(raw, list) else []
+        scope = (request.data.get("scope") or "all").strip()
+        cfg = dict(event.tie_breakers or {})
+        cfg.setdefault("stages", {})
+        cfg.setdefault("groups", {})
+        if scope == "stage" and request.data.get("stage_id"):
+            cfg["stages"][str(request.data["stage_id"])] = criteria
+        elif scope == "group" and request.data.get("group_id"):
+            cfg["groups"][str(request.data["group_id"])] = criteria
+        else:
+            cfg["default"] = criteria
+            # "Apply to all" wipes per-stage/group overrides when explicitly asked, so one save can
+            # reset the whole event to a single chain (mirrors the maps "apply to all" behaviour).
+            if request.data.get("replace_all"):
+                cfg["stages"], cfg["groups"] = {}, {}
+        event.tie_breakers = cfg
+        event.save(update_fields=["tie_breakers"])
+
+    return Response({
+        "tie_breakers": event.tie_breakers or {},
+        "catalog": [{"key": k, "label": v} for k, v in TIE_BREAKER_LABELS.items()],
     }, status=200)

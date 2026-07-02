@@ -216,6 +216,20 @@ class OrgLeaderboardDesign(models.Model):
     # CharField (not bool) so more behaviours can be added without a schema change. Echoed by
     # _serialize_design; honoured by the FE DesignBoard bg <img>; PNG export unaffected.
     background_behavior = models.CharField(max_length=12, default="persistent")
+    # ── Design TYPE (owner 2026-07-02, versus designs): "leaderboard" (default - standings rows,
+    #    the whole editor canvas) or "versus" - a HEAD-TO-HEAD look: 2-3 competitor slots (photo/
+    #    logo + name + the stat rows picked in versus_config) over this design's background/colors.
+    #    A versus design is what the studio's H2H overlays render with; versus_config:
+    #    {"stat_keys": ["kills","damage",...]} (order = display order; empty = the H2H defaults).
+    #    Rendered by the FE H2HView (overlay/view) via views_overlays._h2h_payload. ──
+    design_type = models.CharField(max_length=12, default="leaderboard")
+    versus_config = models.JSONField(default=dict, blank=True)
+    # ── Title/subtitle STYLING (owner 2026-07-02): when show_title/show_subtitle are on, the design
+    #    can restyle them like a freeform text: {x_pct, y_pct, font_size_pct, color, font_id, align}.
+    #    {} = the legacy fixed header spot/size, so existing designs render unchanged. Edited as
+    #    draggable pseudo-items in DesignFieldsEditor; honored by DesignBoard + the PNG export. ──
+    title_style = models.JSONField(default=dict, blank=True)
+    subtitle_style = models.JSONField(default=dict, blank=True)
     # Hex colours the renderer draws the standings text + accents in.
     text_color = models.CharField(max_length=9, default="#FFFFFF")
     accent_color = models.CharField(max_length=9, default="#34d27b")

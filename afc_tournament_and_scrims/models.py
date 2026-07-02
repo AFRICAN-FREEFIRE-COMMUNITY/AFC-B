@@ -166,6 +166,13 @@ class Event(models.Model):
     #    the 1st, ties fall to the 2nd, ...); scope picks the candidate pool (everyone vs only the
     #    event-winning team). Saved from the leaderboard "MVPs" tab; computed by views_mvp.event_mvp. ──
     mvp_config = models.JSONField(default=dict, blank=True)
+    # ── Leaderboard TIE-BREAKERS (owner 2026-07-02): {"default": ["booyahs","kills",...],
+    #    "stages": {"<stage_id>": [...]}, "groups": {"<group_id>": [...]}}. Ordered criteria applied
+    #    AFTER effective_total when ranking teams — like maps, they apply to ALL, or per stage, or
+    #    per group (group overrides stage overrides default; empty = the legacy hardcoded chain
+    #    booyahs -> kills). Criteria keys: booyahs, kills, placement_points, kill_points, bonus,
+    #    fewest_penalties, matches_played, mvp_count. Resolved by round_robin.apply_tie_breakers. ──
+    tie_breakers = models.JSONField(default=dict, blank=True)
     registration_restriction = models.CharField(
         max_length=20,
         choices=REG_RESTRICTION_CHOICES,
@@ -743,6 +750,18 @@ class TournamentPlayerMatchStats(models.Model):
     damage = models.PositiveIntegerField(default=0)
     assists = models.PositiveIntegerField(default=0)
     played = models.BooleanField(default=True)
+    # ── 3D-room rich stats (owner 2026-07-02, debugger-log ingest). ─────────────────────────────
+    # Filled ONLY by the debugger-log backfill (debugger_ingest.py) or a future live-capture write —
+    # the normal MatchResult upload has no such data, so these stay 0 for upload-only matches.
+    # rich_stats_filled marks a row whose values REALLY came from a debugger log, so consumers (MVP
+    # criteria, design columns, KDR) can tell "0 deaths" apart from "no data". Feeds the MVP
+    # deaths/survival_time/headshots/kdr criteria + the design columns of the same names.
+    deaths = models.PositiveIntegerField(default=0)
+    knockdowns = models.PositiveIntegerField(default=0)
+    headshots = models.PositiveIntegerField(default=0)
+    revives_received = models.PositiveIntegerField(default=0)
+    survival_seconds = models.PositiveIntegerField(default=0)
+    rich_stats_filled = models.BooleanField(default=False)
 
 
 class MatchKillFlag(models.Model):
@@ -1412,7 +1431,7 @@ class EventOverlay(models.Model):
     CONNECTS TO: views_overlays.py (CRUD via the broadcast gate + the public config feed) <-
     FE studio app/(a)/a/overlays/[eventId] (cards) + renderer app/overlay/view/[token]/[overlayId].
     """
-    KINDS = (("leaderboard", "Leaderboard"), ("timer", "Timer"))
+    KINDS = (("leaderboard", "Leaderboard"), ("timer", "Timer"), ("booyah", "Booyah banner"), ("h2h", "Head to head"))
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="overlays")
     name = models.CharField(max_length=80)
@@ -1427,3 +1446,39 @@ class EventOverlay(models.Model):
 
     def __str__(self):
         return f"{self.event_id}:{self.name} ({self.kind})"
+
+
+class EventMediaOptOut(models.Model):
+    """Per-EVENT broadcast-media suppression (owner 2026-07-02): a team can remove its LOGO, or a
+    player their ESPORT IMAGE, from one event's overlays/graphics without deleting the upload.
+    One row = one suppression. CONNECTS TO: views_media_audit.py (created/removed there; the audit
+    lists them) -> _overlay_rows_from_standings + future versus/H2H feeds skip suppressed media."""
+    KINDS = (("team_logo", "Team logo"), ("esports_image", "Player esport image"))
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="media_opt_outs")
+    kind = models.CharField(max_length=20, choices=KINDS)
+    team = models.ForeignKey("afc_team.Team", null=True, blank=True, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("event", "kind", "team", "user")
+
+
+class MediaFlag(models.Model):
+    """A 'bad media' flag (owner 2026-07-02): an admin/organizer tags a team logo or a player's
+    esport image as needing replacement; the owner is notified (afc_auth.Notifications) and the flag
+    stays open until resolved. CONNECTS TO: views_media_audit.py (create/list/resolve) -> the
+    media-audit card on the overlay studio; notification deep-links via target_type/target_id."""
+    KINDS = (("team_logo", "Team logo"), ("esports_image", "Player esport image"))
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="media_flags")
+    kind = models.CharField(max_length=20, choices=KINDS)
+    team = models.ForeignKey("afc_team.Team", null=True, blank=True, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                             on_delete=models.CASCADE, related_name="media_flags_received")
+    reason = models.CharField(max_length=200, blank=True, default="")
+    flagged_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                   null=True, related_name="media_flags_raised")
+    resolved = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
