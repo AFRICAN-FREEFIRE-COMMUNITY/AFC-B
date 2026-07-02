@@ -91,6 +91,10 @@ def compute_player_stats(player, *, include_breakdown=True):
         .select_related(
             "team_stats",
             "team_stats__match",
+            # match -> group -> stage: so the per-match breakdown can be split by stage/group (owner
+            # 2026-07-02). One query, not N, thanks to select_related.
+            "team_stats__match__group",
+            "team_stats__match__group__stage",
             "team_stats__match__leaderboard",
             "team_stats__match__leaderboard__event",
         )
@@ -149,10 +153,16 @@ def compute_player_stats(player, *, include_breakdown=True):
 
             # ── per-match line ──
             match = getattr(team_stats, "match", None)
+            _grp = getattr(match, "group", None) if match else None
+            _stg = getattr(_grp, "stage", None) if _grp else None
             match_breakdown.append({
                 "event_id": event.event_id,
                 "event_name": event.event_name,
                 "competition_type": event.competition_type,
+                # Stage + group of THIS match so the profile splits a multi-stage event's per-match list
+                # by its separate leaderboards instead of one flat list (owner 2026-07-02).
+                "stage_name": getattr(_stg, "stage_name", None),
+                "group_name": getattr(_grp, "group_name", None),
                 "match_number": getattr(match, "match_number", None),
                 "match_map": getattr(match, "match_map", None),
                 "match_date": match.match_date.isoformat() if match and match.match_date else None,

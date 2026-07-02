@@ -704,7 +704,12 @@ def create_recruitment_post(request):
 @api_view(["GET"])
 def get_recruitment_posts(request):
 
-    posts = RecruitmentPost.objects.all().order_by("-created_at")
+    # Expired posts simply disappear from the market (owner 2026-07-02) - both team + player posts.
+    # post_expiry_date is a DateField; keep posts whose expiry is today or later. The owner's "My Posts"
+    # (get_posts_related_to_me) is NOT filtered so they can still see + renew their own expired post.
+    posts = RecruitmentPost.objects.filter(
+        post_expiry_date__gte=timezone.localdate()
+    ).order_by("-created_at")
 
     data = []
 
@@ -767,7 +772,8 @@ def view_all_team_recruitment_post(request):
     viewer = _optional_viewer(request)
 
     posts = RecruitmentPost.objects.filter(
-        post_type="TEAM_RECRUITMENT"
+        post_type="TEAM_RECRUITMENT",
+        post_expiry_date__gte=timezone.localdate(),  # expired posts disappear from the market
     ).order_by("-created_at")
 
     data = []
@@ -797,7 +803,8 @@ def view_all_player_availability_post(request):
     viewer = _optional_viewer(request)
 
     posts = RecruitmentPost.objects.filter(
-        post_type="PLAYER_AVAILABLE"
+        post_type="PLAYER_AVAILABLE",
+        post_expiry_date__gte=timezone.localdate(),  # expired posts disappear from the market
     ).order_by("-created_at")
 
     data = []
