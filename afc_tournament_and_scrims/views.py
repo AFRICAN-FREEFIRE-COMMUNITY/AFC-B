@@ -1385,13 +1385,20 @@ def _round_robin_stage_echo(stage):
         # base-group team picker matches them against availableTeams (which carry Team PKs) and
         # _resolve_round_robin_team_ids resolves them as Team PKs on save. Echoing tournament_team_id
         # here left every checkbox unticked AND scrambled group membership on the next edit-save.
-        teams = list(grp.teams.values("team_id", "team__team_name"))
+        # Pull team__country in the SAME queryset row as team__team_name so team_names[i] and
+        # team_countries[i] stay index-aligned (owner 2026-07-03: a team's country flag shows
+        # everywhere its name shows within an event). Team.country is a non-null blank CharField
+        # (afc_team/models.py, auto-derived in _derive_team_country), so it is always a string.
+        teams = list(grp.teams.values("team_id", "team__team_name", "team__country"))
         groups_echo.append({
             "group_id": grp.group_id,
             "label": grp.label,
             "order": grp.order,
             "team_ids": [t["team_id"] for t in teams],
             "team_names": [t["team__team_name"] for t in teams],
+            # Parallel to team_names (same index == same team); "" when a team has no resolvable
+            # country. Consumed by the FE TournamentStructure round-robin group chips (CountryFlag).
+            "team_countries": [t["team__country"] for t in teams],
         })
 
     # Lobbies bucketed by game day, each with the base-group ids it merged.
@@ -4675,6 +4682,11 @@ def get_event_details(request):
                 "tournament_team_id": tt.tournament_team_id,
                 "team_id": tt.team.team_id,
                 "team_name": tt.team.team_name,
+                # team_country (owner 2026-07-03): the registered team's auto-derived country so the
+                # RegisteredTeamsTab / TeamLink can render its flag beside the name. Team.country is a
+                # non-null blank CharField ("" == no resolvable country); tt.team is always present
+                # here (same object the team_id/team_name lines above dereference unguarded).
+                "team_country": tt.team.country,
                 "status": tt.status,
                 # F1 (owner 2026-06-19): no-show flag drives the RegisteredTeamsTab toggle + clear path
                 # (see the solo dict above for why this is required).
@@ -4748,6 +4760,9 @@ def get_event_details(request):
                 "team_id": tt.team_id,
                 "name": tt.team.team_name if tt.team_id else "",
                 "team_name": tt.team.team_name if tt.team_id else "",
+                # team_country (owner 2026-07-03): flag beside the waitlisted team's name. Guarded on
+                # tt.team_id (mirrors the team_name guard) so a team-less row stays "".
+                "team_country": tt.team.country if tt.team_id else "",
                 "position": i,
                 "registration_date": tt.registration_date,
                 "status": tt.status,
@@ -4814,6 +4829,11 @@ def get_event_details(request):
                             "placement_points",
                             "kill_points",
                             "total_points",
+                            # team_country (owner 2026-07-03): aliased LAST (keyword expressions must
+                            # follow the positional field names) so every event payload exposes the
+                            # flag under the SAME key `team_country`. F() reads the joined Team's
+                            # non-null blank country column. Consumed by the FE per-match stats table.
+                            team_country=F("tournament_team__team__country"),
                         )
                         .order_by("-total_points", "-kills", "tournament_team__team__team_name")
                     )
@@ -4859,7 +4879,12 @@ def get_event_details(request):
                     .filter(match__group=group)
                     .values(
                         "tournament_team_id",
-                        "tournament_team__team__team_name"
+                        "tournament_team__team__team_name",
+                        # team_country (owner 2026-07-03): flag beside each standings row's team name.
+                        # A .values() keyword expression, so it just joins another GROUP BY column
+                        # (country is functionally determined by tournament_team_id, already grouped,
+                        # so no row is split). Emitted under the uniform `team_country` key.
+                        team_country=F("tournament_team__team__country"),
                     )
                     .annotate(
                         matches_played=Count("match_id", distinct=True),
@@ -4904,6 +4929,11 @@ def get_event_details(request):
                         "tournament_team_id": _sc.tournament_team_id,
                         "tournament_team__team__team_name": (
                             _sc.tournament_team.team.team_name
+                            if _sc.tournament_team and _sc.tournament_team.team else ""
+                        ),
+                        # Mirror the queryset's team_country key so seeded 0-rows carry the flag too.
+                        "team_country": (
+                            _sc.tournament_team.team.country
                             if _sc.tournament_team and _sc.tournament_team.team else ""
                         ),
                         "matches_played": 0, "total_kills": 0, "placement_sum": 0, "total_points": 0,
@@ -5470,6 +5500,10 @@ def get_event_details_not_logged_in(request):
                     "registered_competitor_id": reg.id,
                     "team_id": reg.team.team_id,
                     "team_name": reg.team.team_name,
+                    # team_country (owner 2026-07-03): flag beside the team name on the anonymous
+                    # (not-logged-in) event page. reg.team is present in this branch (guarded by
+                    # `if reg.team:` above); country is a non-null blank CharField.
+                    "team_country": reg.team.country,
                     "status": reg.status,
                     "members": [
                         {"player_id": m.member.user_id, "username": m.member.username, "role": m.in_game_role}
@@ -5485,6 +5519,9 @@ def get_event_details_not_logged_in(request):
             "tournament_team_id": tt.tournament_team_id,
             "team_id": tt.team.team_id,
             "team_name": tt.team.team_name,
+            # team_country (owner 2026-07-03): flag beside the accepted team's name on the anonymous
+            # event page. tt.team is present (same object team_id/team_name dereference above).
+            "team_country": tt.team.country,
             "members": [{"player_id": m.user.user_id, "username": m.user.username} for m in tt.members.all()]
         })
     event_data["tournament_teams"] = tournament_teams_list
@@ -5535,6 +5572,9 @@ def get_event_details_not_logged_in(request):
                                  "placement_points",
                                  "kill_points",
                                  "total_points",
+                                 # team_country (owner 2026-07-03): flag on the anonymous per-match
+                                 # stats table. Keyword expression goes last; uniform `team_country`.
+                                 team_country=F("tournament_team__team__country"),
                              )
                              .order_by("-total_points", "-kills", "tournament_team__team__team_name"))
 
@@ -5571,7 +5611,14 @@ def get_event_details_not_logged_in(request):
             else:
                 overall = (TournamentTeamMatchStats.objects
                            .filter(match__group=group)
-                           .values("tournament_team_id", "tournament_team__team__team_name")
+                           .values(
+                               "tournament_team_id",
+                               "tournament_team__team__team_name",
+                               # team_country (owner 2026-07-03): flag on each anonymous standings row.
+                               # Extra GROUP BY column functionally determined by the already-grouped
+                               # tournament_team_id, so no row splits. Uniform `team_country` key.
+                               team_country=F("tournament_team__team__country"),
+                           )
                            .annotate(
                                matches_played=Count("match_id", distinct=True),
                                total_kills=Sum("kills"),
@@ -13158,6 +13205,10 @@ def get_all_leaderboard_details_for_event(request):
                         .select_related("tournament_team__team")
                         .annotate(
                             team_name=F("tournament_team__team__team_name"),
+                            # team_country (owner 2026-07-03): flag beside the team name in the admin/
+                            # organizer results editor. Aliased alongside team_name; read off the
+                            # annotated object below. Team.country is non-null blank ("" == unknown).
+                            team_country=F("tournament_team__team__country"),
                             # effective_total = the stored per-match total_points (placement + kill +
                             # ASSIST + DAMAGE + bonus - penalty), NOT a re-derived placement+kill+
                             # bonus-penalty (which dropped assist/damage and disagreed with the public
@@ -13190,6 +13241,8 @@ def get_all_leaderboard_details_for_event(request):
                         match_stats.append({
                             "tournament_team_id": team_stat.tournament_team_id,
                             "team_name": team_stat.team_name,
+                            # Flag beside the team name (see the team_country annotation above).
+                            "team_country": team_stat.team_country,
                             "placement": team_stat.placement,
                             "kills": team_stat.kills,
                             "placement_points": team_stat.placement_points,
@@ -13279,6 +13332,10 @@ def get_all_leaderboard_details_for_event(request):
                     .values(
                         "tournament_team_id",
                         team_name=F("tournament_team__team__team_name"),
+                        # team_country (owner 2026-07-03): flag on each results-editor standings row.
+                        # Aliased like team_name; joins another GROUP BY column that is functionally
+                        # determined by the already-grouped tournament_team_id (no row splits).
+                        team_country=F("tournament_team__team__country"),
                     )
                     .annotate(
                         matches_played=Count("match_id"),
@@ -13365,6 +13422,11 @@ def get_all_leaderboard_details_for_event(request):
                         "tournament_team_id": _sc.tournament_team_id,
                         "team_name": (
                             _sc.tournament_team.team.team_name
+                            if _sc.tournament_team and _sc.tournament_team.team else ""
+                        ),
+                        # Mirror the queryset's team_country key so seeded 0-rows carry the flag too.
+                        "team_country": (
+                            _sc.tournament_team.team.country
                             if _sc.tournament_team and _sc.tournament_team.team else ""
                         ),
                         "matches_played": 0, "total_kills": 0, "total_booyah": 0,
@@ -13616,6 +13678,9 @@ def get_event_group_rosters(request):
             "tournament_team_id": tournament_team.tournament_team_id,
             "team_id": team.team_id,
             "team_name": team.team_name,
+            # team_country (owner 2026-07-03): flag beside the team name in the group-roster tree
+            # (admin "Group Rosters" tab + organizer groups page). Non-null blank CharField.
+            "team_country": team.country,
             "team_tag": team.team_tag,
             "competitor_status": competitor_status,
             "players": members_by_team.get(tournament_team.tournament_team_id, []),
@@ -13817,15 +13882,17 @@ def get_round_robin_standings(request):
 
     # (1) Base-group structure (A/B/C…). RoundRobinGroup has Meta.ordering = ["order"], so
     # `round_robin_groups.all()` is already A→B→C; we just echo label + member team names.
-    groups_payload = [
-        {
+    # team_names + team_countries pulled from ONE queryset per group so index i lines up (same row
+    # == same team). team_countries is parallel to team_names (owner 2026-07-03: round-robin table
+    # shows each team's flag). Team.country is a non-null blank CharField ("" when unresolved).
+    groups_payload = []
+    for grp in stage.round_robin_groups.all():
+        _rows = list(grp.teams.values("team__team_name", "team__country"))
+        groups_payload.append({
             "label": grp.label,
-            "team_names": list(
-                grp.teams.values_list("team__team_name", flat=True)
-            ),
-        }
-        for grp in stage.round_robin_groups.all()
-    ]
+            "team_names": [r["team__team_name"] for r in _rows],
+            "team_countries": [r["team__country"] for r in _rows],
+        })
 
     # (2) Game-day map: each day → the lobby (StageGroups) ids that fall on it. A day can
     # hold MULTIPLE lobbies (multiple group-merges per day), so we bucket by game_day.
@@ -21508,6 +21575,9 @@ def get_roster_details(request):
         "event_name": event.event_name,
         "team_id": team.team_id,
         "team_name": team.team_name,
+        # team_country (owner 2026-07-03): flag beside the team name on the user's own event-roster
+        # view. Team.country is a non-null blank CharField; `team` is guaranteed present here.
+        "team_country": team.country,
         "roster": roster
     }, status=200)
 

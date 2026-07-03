@@ -188,13 +188,14 @@ def build_broadcast_kit(event, stage=None, caster_name="", caster_uid=None,
             except (ValueError, TypeError):
                 pass
 
-        # PlayerNameList ONLY (owner 2026-07-03): TeamRegionList is keyed by the in-ROOM team slot
-        # (TeamID), which we cannot know ahead of the room seating, so a fixed 1..N numbering
-        # mislabels the scoreboard team header (a SPACE X slot showed "ALPHA WOLVES"). Each player's
-        # PlayerNation already carries the correct team label keyed by uid, so we drop TeamRegionList
-        # entirely - the proven caster-file format is PlayerNameList-only.
+        # TeamRegionList MUST be present but EMPTY (owner 2026-07-03): the client parser REQUIRES the
+        # TeamRegionList key - omitting it entirely stops the client loading at all. But its TeamID is
+        # the in-ROOM team slot, which we cannot know before seating, so a fixed 1..N numbering
+        # mislabels the scoreboard header (a SPACE X slot showed "ALPHA WOLVES"). Empty list = the
+        # key exists (loads fine) AND no wrong slot labels; each player's PlayerNation already carries
+        # the correct team label keyed by uid.
         _ = team_list  # (kept for the readiness summary; intentionally not written to the JSON)
-        payload = {"PlayerNameList": player_list}
+        payload = {"PlayerNameList": player_list, "TeamRegionList": []}
         if caster_name and not caster_uid:
             payload["_CasterName"] = caster_name  # informational; the game ignores unknown keys
         z.writestr("PlayerNameOverwrite.json", json.dumps(payload, indent=2, ensure_ascii=False))

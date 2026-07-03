@@ -119,6 +119,11 @@ def event_mvp(request, event_id):
                 "username": p.username,
                 "in_game_name": getattr(p, "in_game_name", "") or p.username,
                 "team_name": team.team_name if team else None,
+                # Team FLAG source (owner 2026-07-03): the country beside the player's team name in the
+                # MVP list, so the FE CountryFlag can render wherever this team_name is shown. Team.country
+                # is auto-derived (afc_team.views._derive_team_country); team is select_related above, so
+                # this adds no query. Purely additive - the ranked sort (mvp_count + criteria) is untouched.
+                "team_country": (team.country or None) if team else None,
                 # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
                 "esports_image": __import__("afc_auth.models", fromlist=["esports_pic_url"]).esports_pic_url(p, request),
                 "kills": 0, "damage": 0, "assists": 0, "matches": 0, "mvp_count": 0,
