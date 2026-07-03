@@ -13659,14 +13659,38 @@ def get_event_group_rosters(request):
                     "teams": teams_payload,
                 })
 
+            # ── "Unassigned" pool (owner 2026-07-03: "SEMI FINALS isn't showing" in the move
+            # panel): stage competitors NOT yet in any base group. Rendered as a source zone in
+            # GroupTeamMover so seeded teams are visible and can be dragged into A/B/C. The pseudo
+            # group_id "rr-unassigned-<stage_id>" is understood by seeding move-team's RR branch.
+            assigned_ids = set(
+                RoundRobinGroup.objects.filter(stage=stage)
+                .values_list("teams__tournament_team_id", flat=True)
+            )
+            pool_payload = []
+            for sc in (StageCompetitor.objects
+                       .filter(stage=stage, tournament_team__isnull=False)
+                       .select_related("tournament_team__team")):
+                if sc.tournament_team_id not in assigned_ids:
+                    pool_payload.append(_team_payload(sc.tournament_team, "active"))
+            groups_payload.append({
+                "group_id": f"rr-unassigned-{stage.stage_id}",
+                "group_name": "Unassigned",
+                "teams_qualifying": None,
+                "team_count": len(pool_payload),
+                "player_count": sum(len(t["players"]) for t in pool_payload),
+                "total_in_group": len(pool_payload),
+                "teams": pool_payload,
+            })
+
             stages_payload.append({
                 "stage_id": stage.stage_id,
                 "stage_name": stage.stage_name,
                 "stage_format": stage.stage_format,
                 "stage_status": stage.stage_status,
-                # Authoritative RR flag (not a stage_format string heuristic) so the GroupTeamMover
-                # can hide RR stages — their teams live on the RR M2M, not StageGroupCompetitor, so a
-                # DnD move there is unsupported (the move endpoint fail-safes it). (Owner 2026-06-19.)
+                # Authoritative RR flag. Historically GroupTeamMover HID RR stages; since
+                # 2026-07-03 it renders them (base groups + the Unassigned pool) and the move
+                # endpoint has a real RR branch, so this flag now just labels the stage.
                 "is_round_robin": True,
                 "groups": groups_payload,
             })

@@ -607,11 +607,82 @@ def move_team_between_groups(request):
     # Detecting the id against RoundRobinGroup first closes that collision. (Adversarial-review fix,
     # owner 2026-06-19.) RR teams live on RoundRobinGroup.teams (M2M) + drive generated lobbies, so a
     # DnD move there is not supported — fail SAFE (use Reseed).
-    from .models import RoundRobinGroup
+    from .models import RoundRobinGroup, StageCompetitor
+
+    # ── ROUND-ROBIN branch (owner 2026-07-03: RR stages now appear in the move panel) ──────────
+    # RR teams live on RoundRobinGroup.teams (M2M); game-day lobbies DERIVE from base groups, so a
+    # base-group move automatically reshapes future lobbies. Supported moves:
+    #   • base group -> base group        (both ids are RoundRobinGroup pks)
+    #   • "rr-unassigned-<stage_id>" -> base group   (assign from the stage's seeded pool)
+    #   • base group -> "rr-unassigned-<stage_id>"   (unassign back to the pool)
+    # Guard: when any lobby fed by the touched base group(s) already has entered results, we warn +
+    # require force (mirrors the standard-stage results guard; past lobby results stay untouched).
+    def _rr_ref(gid):
+        """Resolve a mover group id to ('pool', stage_id) | ('group', RoundRobinGroup) | None."""
+        if isinstance(gid, str) and gid.startswith("rr-unassigned-"):
+            try:
+                return ("pool", int(gid.rsplit("-", 1)[1]))
+            except ValueError:
+                return None
+        try:
+            rr = RoundRobinGroup.objects.select_related("stage__event").get(group_id=gid)
+            return ("group", rr)
+        except (RoundRobinGroup.DoesNotExist, ValueError, TypeError):
+            return None
+
+    _from_rr = _rr_ref(_from_id)
+    _to_rr = _rr_ref(_to_id)
+    if _from_rr or _to_rr:
+        # Mixed RR/standard ids are invalid; a pool-to-pool move is a no-op.
+        if not (_from_rr and _to_rr):
+            return Response({"message": "Round-robin groups can only be moved within their own stage."}, status=400)
+        rr_stage = (_from_rr[1].stage if _from_rr[0] == "group" else None) or (_to_rr[1].stage if _to_rr[0] == "group" else None)
+        if rr_stage is None:
+            return Response({"message": "Source and target groups are the same."}, status=400)
+        for ref in (_from_rr, _to_rr):
+            sid = ref[1] if ref[0] == "pool" else ref[1].stage_id
+            if sid != rr_stage.stage_id:
+                return Response({"message": "Both groups must be in the same stage."}, status=400)
+        event = rr_stage.event
+        if not _seeding_gate(user, event):
+            return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        tt_id = request.data.get("tournament_team_id")
+        if not tt_id:
+            return Response({"message": "tournament_team_id is required."}, status=400)
+        force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
+        # The team must be a competitor of this stage (the pool + base groups both draw from it).
+        if not StageCompetitor.objects.filter(stage=rr_stage, tournament_team_id=tt_id).exists():
+            return Response({"message": "That team is not a competitor of this stage."}, status=404)
+        # Played-lobby guard: any result-entered lobby sourced from a touched base group -> force.
+        touched = [r[1] for r in (_from_rr, _to_rr) if r[0] == "group"]
+        if not force:
+            for rr in touched:
+                for lobby in rr_stage.groups.filter(source_groups=rr):
+                    if lobby.matches.filter(result_inputted=True).exists():
+                        return Response(
+                            {"message": f"Lobbies fed by base group {rr.label} already have entered "
+                                        "results. Past results stay with those lobbies; future "
+                                        "lobbies will use the new grouping. Move anyway?",
+                             "requires_force": True},
+                            status=409)
+        # Apply: remove from the source base group (pool = nothing to remove), add to the target.
+        if _from_rr[0] == "group":
+            if not _from_rr[1].teams.filter(tournament_team_id=tt_id).exists():
+                return Response({"message": "That competitor is not in the source group."}, status=404)
+            _from_rr[1].teams.remove(tt_id)
+        else:
+            # Pool source: the team must not already sit in a base group of this stage.
+            existing = RoundRobinGroup.objects.filter(stage=rr_stage, teams__tournament_team_id=tt_id).first()
+            if existing is not None:
+                return Response({"message": f"That team is already in base group {existing.label}."}, status=400)
+        if _to_rr[0] == "group":
+            if _to_rr[1].teams.filter(tournament_team_id=tt_id).exists():
+                return Response({"message": "That competitor is already in the target group."}, status=400)
+            _to_rr[1].teams.add(tt_id)
+        return Response({"message": "Team moved.", "from_group_id": _from_id, "to_group_id": _to_id})
+
     _rr_msg = ("This is a round-robin stage; teams there are managed on the base groups. "
                "Use Reseed to reorganise round-robin teams.")
-    if RoundRobinGroup.objects.filter(group_id__in=[i for i in (_from_id, _to_id) if i]).exists():
-        return Response({"message": _rr_msg}, status=400)
 
     from_group = get_object_or_404(StageGroups, group_id=_from_id)
     to_group = get_object_or_404(StageGroups, group_id=_to_id)
