@@ -188,7 +188,13 @@ def build_broadcast_kit(event, stage=None, caster_name="", caster_uid=None,
             except (ValueError, TypeError):
                 pass
 
-        payload = {"PlayerNameList": player_list, "TeamRegionList": team_list}
+        # PlayerNameList ONLY (owner 2026-07-03): TeamRegionList is keyed by the in-ROOM team slot
+        # (TeamID), which we cannot know ahead of the room seating, so a fixed 1..N numbering
+        # mislabels the scoreboard team header (a SPACE X slot showed "ALPHA WOLVES"). Each player's
+        # PlayerNation already carries the correct team label keyed by uid, so we drop TeamRegionList
+        # entirely - the proven caster-file format is PlayerNameList-only.
+        _ = team_list  # (kept for the readiness summary; intentionally not written to the JSON)
+        payload = {"PlayerNameList": player_list}
         if caster_name and not caster_uid:
             payload["_CasterName"] = caster_name  # informational; the game ignores unknown keys
         z.writestr("PlayerNameOverwrite.json", json.dumps(payload, indent=2, ensure_ascii=False))

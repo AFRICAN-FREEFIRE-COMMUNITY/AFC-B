@@ -158,13 +158,29 @@ def _elem_size_px(elem, H, frac):
 
 
 def _paste_row_logo(base, path, cx, cy, H, edge_px):
-    """Paste a team logo centred at (cx, cy), longest edge `edge_px`. Silent no-op on a bad path."""
+    """Paste a team logo centred at (cx, cy), normalised so EVERY logo occupies the same visual
+    footprint regardless of its source aspect/padding (owner 2026-07-03: "uniformity in size for all
+    logos"). Two steps: (1) auto-trim the logo's transparent border so baked-in padding doesn't make
+    one mark look tiny next to a full-bleed square; (2) scale the trimmed mark to FILL a fixed
+    edge_px x edge_px box (contain: the longest side hits edge_px), centred. Silent no-op on a bad
+    path."""
     if not path:
         return
     try:
         limg = Image.open(path).convert("RGBA")
     except Exception:
         return
+    # (1) Trim fully-transparent margins so logos with lots of alpha padding scale up to match
+    # full-bleed ones. getbbox() on the alpha channel is the tight content box; skip if the logo is
+    # opaque (no alpha to trim) or the bbox read fails.
+    try:
+        bbox = limg.split()[3].getbbox()
+        if bbox and bbox != (0, 0, limg.width, limg.height):
+            limg = limg.crop(bbox)
+    except Exception:
+        pass
+    # (2) Contain into the fixed box. thumbnail preserves aspect; after the trim every mark now
+    # fills the box to its longest side, so footprints are uniform.
     limg.thumbnail((edge_px, edge_px), Image.LANCZOS)
     base.paste(limg, (cx - limg.width // 2, cy - limg.height // 2), limg)
 
