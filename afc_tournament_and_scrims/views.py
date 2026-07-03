@@ -19084,7 +19084,28 @@ def upload_team_match_result(request):
 
     match_id = request.data.get("match_id")
     if not match_id:
-        return Response({"message": "match_id required."}, status=400)
+        # ── Live auto-capture path (owner 2026-07-03): the AFC Capture client posts stage + group
+        # but NO match_id (it only knows the FF match id, not the AFC Match slot). Resolve the NEXT
+        # unscored match in that group so each map auto-fills the next slot; if every slot already
+        # has a result, CREATE the next one so live capture never stalls after the last map (the
+        # "failed to capture: match_id required" the operator hit). Event scoping is unchanged: the
+        # resolved match's event is checked against the upload token below, so a token for event A
+        # still cannot write into event B via a group id. Falls through to 400 only when no group
+        # is given (a genuinely malformed request).
+        group_id = request.data.get("group") or request.data.get("group_id")
+        if group_id:
+            try:
+                _grp = StageGroups.objects.select_related("stage__event").get(group_id=group_id)
+            except (StageGroups.DoesNotExist, ValueError, TypeError):
+                return Response({"message": "Group not found."}, status=404)
+            _next = (_grp.matches.filter(result_inputted=False)
+                     .order_by("match_number", "match_id").first())
+            if _next is None:
+                _num = (_grp.matches.aggregate(m=Max("match_number"))["m"] or 0) + 1
+                _next = Match.objects.create(group=_grp, match_number=_num)
+            match_id = _next.match_id
+        else:
+            return Response({"message": "match_id required."}, status=400)
 
     uploaded_file = request.FILES.get("file")
     if not uploaded_file:
