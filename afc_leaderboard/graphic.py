@@ -29,7 +29,11 @@ LOGO_SIZE_FRAC = {"small": 0.07, "medium": 0.11, "large": 0.16}
 # Default sizes for the FIELD-LAYOUT path (owner 2026-06-14), as a fraction of canvas HEIGHT,
 # used when a field/text has no explicit font_size_pct. A field row (~3.6% of H) reads cleanly in
 # a standings box; freeform text defaults larger (~5%). Both are overridable per element.
-FIELD_SIZE_FRAC = 0.036
+# 0.021 = 2.1% of canvas height, matching the DesignBoard/overlay default
+# (`field.font_size_pct ?? 2.1` in DesignBoard.tsx). Was 0.036, which rendered every unset field
+# ~1.7x bigger in the PNG export than the editor preview + live overlay showed (owner 2026-07-03:
+# "download didn't follow the sizes set in design"). The editor/overlay are the source of truth.
+FIELD_SIZE_FRAC = 0.021
 TEXT_SIZE_FRAC = 0.05
 
 # Cache loaded truetype fonts by (path, size) so a 16-row x 6-field render does not re-open the
