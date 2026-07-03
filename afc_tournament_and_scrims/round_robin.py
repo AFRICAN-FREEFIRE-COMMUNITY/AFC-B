@@ -183,7 +183,18 @@ def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
     rows = (
         stats_qs
         # Group by team; surface the human name via F() so the dict is UI-ready.
-        .values("tournament_team_id", team_name=F("tournament_team__team__team_name"))
+        # team_country rides along (owner 2026-07-03: a team's FLAG must show EVERYWHERE its name shows
+        # within an event). Team.country is auto-derived (afc_team.views._derive_team_country) and is
+        # single-valued per team, so adding it to .values() does NOT split the GROUP BY nor change any
+        # score/order — grouping stays effectively by tournament_team. Every standings row this core
+        # emits (cumulative_standings / group_standings / day_standings, and the overlay feed +
+        # advancement/event_links readers built from these rows) now carries the ISO-2-or-name string
+        # the FE CountryFlag/TeamLink (@/lib/countryFlag) renders beside team_name.
+        .values(
+            "tournament_team_id",
+            team_name=F("tournament_team__team__team_name"),
+            team_country=F("tournament_team__team__country"),
+        )
         .annotate(
             # games_played = matches this team has stats in within the fed-in slice.
             games_played=Count("match_id"),
