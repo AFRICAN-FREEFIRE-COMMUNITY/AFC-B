@@ -1777,238 +1777,248 @@ def create_event(request):
         _wl_mode = "first_registered"
 
     # ---------------- CREATE EVERYTHING ----------------
-    with transaction.atomic():
-        event = Event.objects.create(
-            is_waitlist_enabled=_wl_enabled,
-            waitlist_capacity=_wl_capacity,
-            waitlist_discord_role_id=request.data.get("waitlist_discord_role_id") or None,
-            waitlist_mode=_wl_mode,
-            registration_type=registration_type,
-            registration_fee=registration_fee,
-            registration_fee_currency=registration_fee_currency,
-            country_payment_rules=country_payment_rules,
-            competition_type=request.data.get("competition_type"),
-            participant_type=request.data.get("participant_type"),
-            # event_type "external" (off-platform registration link) is an AFC-admin-only
-            # concept. Organizer events (org is not None) are ALWAYS "internal" so the
-            # user-facing page uses on-platform registration, never a "Register (External
-            # Link)" button. This is the source of truth even if the FE sends "external".
-            event_type=("internal" if org else request.data.get("event_type")),
-            max_teams_or_players=int(request.data.get("max_teams_or_players")),
-            event_name=request.data.get("event_name"),
-            event_mode=request.data.get("event_mode"),
-            start_date=start_date,
-            end_date=end_date,
-            registration_open_date=open_date,
-            registration_end_date=close_date,
-            prizepool=str(prizepool),  # your model uses CharField
-            prizepool_cash_value=prizepool_cash_value,
-            prize_currency=prize_currency,  # default USD (owner 2026-07-01)
-            prize_distribution=prize_distribution,
-            event_rules=request.data.get("event_rules", ""),
-            event_status=request.data.get("event_status", "upcoming"),
-            registration_link=request.data.get("registration_link", ""),
-            tournament_tier=request.data.get("tournament_tier", "tier_3"),
-            event_banner=request.FILES.get("event_banner"),
-            number_of_stages=int(request.data.get("number_of_stages")),
-            uploaded_rules=request.FILES.get("uploaded_rules"),
-            is_draft=is_draft,
-            creator = user,
-            organization=org,  # owning org for organizer-created events; None for native AFC events
+    try:
+        with transaction.atomic():
+            event = Event.objects.create(
+                is_waitlist_enabled=_wl_enabled,
+                waitlist_capacity=_wl_capacity,
+                waitlist_discord_role_id=request.data.get("waitlist_discord_role_id") or None,
+                waitlist_mode=_wl_mode,
+                registration_type=registration_type,
+                registration_fee=registration_fee,
+                registration_fee_currency=registration_fee_currency,
+                country_payment_rules=country_payment_rules,
+                competition_type=request.data.get("competition_type"),
+                participant_type=request.data.get("participant_type"),
+                # event_type "external" (off-platform registration link) is an AFC-admin-only
+                # concept. Organizer events (org is not None) are ALWAYS "internal" so the
+                # user-facing page uses on-platform registration, never a "Register (External
+                # Link)" button. This is the source of truth even if the FE sends "external".
+                event_type=("internal" if org else request.data.get("event_type")),
+                max_teams_or_players=int(request.data.get("max_teams_or_players")),
+                event_name=request.data.get("event_name"),
+                event_mode=request.data.get("event_mode"),
+                start_date=start_date,
+                end_date=end_date,
+                registration_open_date=open_date,
+                registration_end_date=close_date,
+                prizepool=str(prizepool),  # your model uses CharField
+                prizepool_cash_value=prizepool_cash_value,
+                prize_currency=prize_currency,  # default USD (owner 2026-07-01)
+                prize_distribution=prize_distribution,
+                event_rules=request.data.get("event_rules", ""),
+                event_status=request.data.get("event_status", "upcoming"),
+                registration_link=request.data.get("registration_link", ""),
+                tournament_tier=request.data.get("tournament_tier", "tier_3"),
+                event_banner=request.FILES.get("event_banner"),
+                number_of_stages=int(request.data.get("number_of_stages")),
+                uploaded_rules=request.FILES.get("uploaded_rules"),
+                is_draft=is_draft,
+                creator = user,
+                organization=org,  # owning org for organizer-created events; None for native AFC events
 
-            # ✅ restriction fields
-            registration_restriction=registration_restriction,
-            restriction_mode=restriction_mode,
-            # restricted_regions=restricted_regions,
-            restricted_countries=restricted_countries,
-            is_public = is_public,
-            require_discord=require_discord,
-            discord_server_id=discord_server_id,
-            discord_invite_link=discord_invite_link,
-            is_sponsored=is_sponsored,
-            sponsor_name=sponsor_name,
-            sponsor_field_label=sponsor_field_label,
-            sponsor_requirement_description=sponsor_requirement_description,
-            event_start_time=request.data.get("event_start_time") or None,
-            event_end_time=request.data.get("event_end_time") or None,
-            registration_start_time=request.data.get("registration_start_time") or None,
-            registration_end_time=request.data.get("registration_end_time") or None,
-            # IANA tz of the creator's browser (owner 2026-06-21) so the times above can
-            # be shown in both the viewer's local tz and the host's tz on the public page.
-            timezone=request.data.get("timezone") or None,
+                # ✅ restriction fields
+                registration_restriction=registration_restriction,
+                restriction_mode=restriction_mode,
+                # restricted_regions=restricted_regions,
+                restricted_countries=restricted_countries,
+                is_public = is_public,
+                require_discord=require_discord,
+                discord_server_id=discord_server_id,
+                discord_invite_link=discord_invite_link,
+                is_sponsored=is_sponsored,
+                sponsor_name=sponsor_name,
+                sponsor_field_label=sponsor_field_label,
+                sponsor_requirement_description=sponsor_requirement_description,
+                event_start_time=request.data.get("event_start_time") or None,
+                event_end_time=request.data.get("event_end_time") or None,
+                registration_start_time=request.data.get("registration_start_time") or None,
+                registration_end_time=request.data.get("registration_end_time") or None,
+                # IANA tz of the creator's browser (owner 2026-06-21) so the times above can
+                # be shown in both the viewer's local tz and the host's tz on the public page.
+                timezone=request.data.get("timezone") or None,
 
-            # ── Media registration criteria (owner 2026-06-12) ── booleans arrive as
-            # "true"/"1"/bool from the wizard toggles; enforced in register_for_event.
-            require_team_logo=_as_bool(request.data.get("require_team_logo")),
-            require_esport_images=_as_bool(request.data.get("require_esport_images")),
-            # F3 extra registration requirements (owner 2026-06-19) — same parse pattern.
-            require_player_uid=_as_bool(request.data.get("require_player_uid")),
-            require_player_profile_image=_as_bool(request.data.get("require_player_profile_image")),
-            # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars required to
-            # register (0 = off). Clamped 0-26 by the shared parser so a bad payload can't store an
-            # impossible threshold. Enforced in register_for_event; toggled in Step1EventDetails.
-            min_letter_avatars=_parse_min_letter_avatars(request.data.get("min_letter_avatars")),
-        )
-
-        # Set the tournament tier: a head/super admin's explicit pick overrides, otherwise
-        # auto-classify from the Tournament Tiers rules (owner 2026-06-30). Runs after create so
-        # the classifier sees the event's final prize/teams/format.
-        apply_event_tier(event, user, request.data)
-
-        # change sponsor_usernames to a list
-        sponsor_usernames = _as_list(sponsor_usernames)
-        for sponsor_username in sponsor_usernames:
-            try:
-                sponsor_user = User.objects.get(username=sponsor_username)
-                SponsorEvent.objects.create(
-                    event=event,
-                    sponsor=sponsor_user
-                )
-            except User.DoesNotExist:
-                return Response({"message": f"Sponsor user '{sponsor_username}' not found."}, status=400)
-
-        # stream channels
-        if stream_channels:
-            StreamChannel.objects.bulk_create(
-                [StreamChannel(event=event, channel_url=url) for url in stream_channels if url],
-                batch_size=200
+                # ── Media registration criteria (owner 2026-06-12) ── booleans arrive as
+                # "true"/"1"/bool from the wizard toggles; enforced in register_for_event.
+                require_team_logo=_as_bool(request.data.get("require_team_logo")),
+                require_esport_images=_as_bool(request.data.get("require_esport_images")),
+                # F3 extra registration requirements (owner 2026-06-19) — same parse pattern.
+                require_player_uid=_as_bool(request.data.get("require_player_uid")),
+                require_player_profile_image=_as_bool(request.data.get("require_player_profile_image")),
+                # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars required to
+                # register (0 = off). Clamped 0-26 by the shared parser so a bad payload can't store an
+                # impossible threshold. Enforced in register_for_event; toggled in Step1EventDetails.
+                min_letter_avatars=_parse_min_letter_avatars(request.data.get("min_letter_avatars")),
             )
 
-        # stages + groups + matches
-        # Track every created Stages row in submit order so we can wire Point-Rush
-        # carry-over targets in a SECOND PASS below (a stage may point at a LATER stage
-        # that does not exist yet while we are still building this one).
-        created_stages = []
-        # Branching advancement (feature #9): track each stage's created GROUPS in submit order so
-        # a rule's source_group_index (0-based into the stage's `groups` array) resolves to the
-        # right StageGroups row in the advancement second pass. Aligned 1:1 with created_stages.
-        created_stage_groups = []
-        for stage_data in stages_data:
-            stage = Stages.objects.create(
-                event=event,
-                stage_name=stage_data["stage_name"],
-                start_date=parse_date(stage_data["start_date"]),
-                end_date=parse_date(stage_data["end_date"]),
-                number_of_groups=int(stage_data["number_of_groups"]),
-                stage_format=stage_data["stage_format"],
-                teams_qualifying_from_stage=int(stage_data["teams_qualifying_from_stage"]),
-                stage_discord_role_id=stage_data.get("stage_discord_role_id"),
-                prizepool=stage_data.get("prizepool"),
-                prizepool_cash_value=stage_data.get("prizepool_cash_value") if stage_data.get("prizepool_cash_value") else 0,
-                prize_distribution=stage_data.get("prize_distribution", {}),
-                # ── Scoring-mode config (scoring-modes sub-project A). The 4 scalars store
-                # directly; point_rush_target_stage is resolved in the second pass below. ──
-                champion_point_enabled=bool(stage_data.get("champion_point_enabled", False)),
-                champion_point_threshold=stage_data.get("champion_point_threshold") or None,
-                point_rush_enabled=bool(stage_data.get("point_rush_enabled", False)),
-                point_rush_reward=stage_data.get("point_rush_reward") or {},
-                # Manual display order (reorder feature, owner 2026-06-15): persist if the payload
-                # carries one, else 0. 0 means "auto-arrange by date" — we do NOT force submit-index
-                # ordering here, so new events default to the date sort until someone drags to reorder.
-                stage_order=int(stage_data.get("stage_order", 0) or 0),
-            )
-            created_stages.append(stage)
-            # The groups created for THIS stage, in submit order (for advancement source_group_index).
-            stage_groups_in_order = []
+            # Set the tournament tier: a head/super admin's explicit pick overrides, otherwise
+            # auto-classify from the Tournament Tiers rules (owner 2026-06-30). Runs after create so
+            # the classifier sees the event's final prize/teams/format.
+            apply_event_tier(event, user, request.data)
 
-            # ── BR Round-Robin (sub-project B, Task 4): a round-robin stage sends BASE
-            # groups (round_robin_groups) instead of plain `groups`, and we build the base
-            # groups + game-day lobbies from them. ──
-            _is_round_robin_stage = stage_data.get("stage_format") == ROUND_ROBIN_FORMAT
-            if _is_round_robin_stage:
-                _build_round_robin_stage(stage, event, user, stage_data)
+            # change sponsor_usernames to a list
+            sponsor_usernames = _as_list(sponsor_usernames)
+            for sponsor_username in sponsor_usernames:
+                try:
+                    sponsor_user = User.objects.get(username=sponsor_username)
+                    SponsorEvent.objects.create(
+                        event=event,
+                        sponsor=sponsor_user
+                    )
+                except User.DoesNotExist:
+                    return Response({"message": f"Sponsor user '{sponsor_username}' not found."}, status=400)
 
-            # NEVER materialise the plain `groups` for a round-robin stage — its lobbies are the
-            # base groups + game-day meetings built above. If we also looped `groups` here, any
-            # values the FE sent (the number_of_groups placeholders, or the schedule-backfill the
-            # create wizard adds so validation passes) would create PHANTOM "Group 1/2" lobbies
-            # sitting next to the real "Day N" meetings (owner 2026-07-02 bug). Mirror edit_event,
-            # which already guards with `[] if _is_round_robin_stage`.
-            for group_data in ([] if _is_round_robin_stage else stage_data.get("groups", [])):
-                group = StageGroups.objects.create(
-                    stage=stage,
-                    group_name=group_data["group_name"],
-                    playing_date=parse_date(group_data["playing_date"]),
-                    playing_time=group_data["playing_time"],
-                    teams_qualifying=int(group_data["teams_qualifying"]),
-                    group_discord_role_id=group_data.get("group_discord_role_id"),
-                    match_count=int(group_data.get("match_count", 0)),
-                    match_maps=group_data.get("match_maps", []),
-                    prizepool=group_data.get("prizepool"),
-                    prizepool_cash_value=group_data.get("prizepool_cash_value"),
-                    prize_distribution=group_data.get("prize_distribution", {}),
-                    # Manual display order (reorder feature, owner 2026-06-15): persist if present,
-                    # else 0 = "auto-arrange by date/time" (no forced submit-index ordering).
-                    group_order=int(group_data.get("group_order", 0) or 0),
+            # stream channels
+            if stream_channels:
+                StreamChannel.objects.bulk_create(
+                    [StreamChannel(event=event, channel_url=url) for url in stream_channels if url],
+                    batch_size=200
                 )
-                stage_groups_in_order.append(group)  # advancement source_group_index resolution
 
-                # Auto-create a leaderboard for this group
-                leaderboard = Leaderboard.objects.create(
-                    leaderboard_name=f"{stage.stage_name} - {group.group_name}",
+            # stages + groups + matches
+            # Track every created Stages row in submit order so we can wire Point-Rush
+            # carry-over targets in a SECOND PASS below (a stage may point at a LATER stage
+            # that does not exist yet while we are still building this one).
+            created_stages = []
+            # Branching advancement (feature #9): track each stage's created GROUPS in submit order so
+            # a rule's source_group_index (0-based into the stage's `groups` array) resolves to the
+            # right StageGroups row in the advancement second pass. Aligned 1:1 with created_stages.
+            created_stage_groups = []
+            for stage_data in stages_data:
+                stage = Stages.objects.create(
                     event=event,
-                    stage=stage,
-                    group=group,
-                    creator=user,
-                    leaderboard_method="manual",
-                    placement_points={},
-                    kill_point=1.0,
+                    stage_name=stage_data["stage_name"],
+                    start_date=parse_date(stage_data["start_date"]),
+                    end_date=parse_date(stage_data["end_date"]),
+                    number_of_groups=int(stage_data["number_of_groups"]),
+                    stage_format=stage_data["stage_format"],
+                    teams_qualifying_from_stage=int(stage_data["teams_qualifying_from_stage"]),
+                    stage_discord_role_id=stage_data.get("stage_discord_role_id"),
+                    prizepool=stage_data.get("prizepool"),
+                    prizepool_cash_value=stage_data.get("prizepool_cash_value") if stage_data.get("prizepool_cash_value") else 0,
+                    prize_distribution=stage_data.get("prize_distribution", {}),
+                    # ── Scoring-mode config (scoring-modes sub-project A). The 4 scalars store
+                    # directly; point_rush_target_stage is resolved in the second pass below. ──
+                    champion_point_enabled=bool(stage_data.get("champion_point_enabled", False)),
+                    champion_point_threshold=stage_data.get("champion_point_threshold") or None,
+                    point_rush_enabled=bool(stage_data.get("point_rush_enabled", False)),
+                    point_rush_reward=stage_data.get("point_rush_reward") or {},
+                    # Manual display order (reorder feature, owner 2026-06-15): persist if the payload
+                    # carries one, else 0. 0 means "auto-arrange by date" — we do NOT force submit-index
+                    # ordering here, so new events default to the date sort until someone drags to reorder.
+                    stage_order=int(stage_data.get("stage_order", 0) or 0),
                 )
+                created_stages.append(stage)
+                # The groups created for THIS stage, in submit order (for advancement source_group_index).
+                stage_groups_in_order = []
 
-                # Create exactly match_count matches, cycle maps if provided
-                match_count = group.match_count or 0
-                match_maps = group.match_maps or []
-                default_map = match_maps[0] if match_maps else "bermuda"
+                # ── BR Round-Robin (sub-project B, Task 4): a round-robin stage sends BASE
+                # groups (round_robin_groups) instead of plain `groups`, and we build the base
+                # groups + game-day lobbies from them. ──
+                _is_round_robin_stage = stage_data.get("stage_format") == ROUND_ROBIN_FORMAT
+                if _is_round_robin_stage:
+                    _build_round_robin_stage(stage, event, user, stage_data)
 
-                matches_to_create = []
-                for num in range(1, match_count + 1):
-                    chosen_map = match_maps[(num - 1) % len(match_maps)] if match_maps else default_map
-                    matches_to_create.append(Match(
-                        leaderboard=leaderboard,
+                # NEVER materialise the plain `groups` for a round-robin stage — its lobbies are the
+                # base groups + game-day meetings built above. If we also looped `groups` here, any
+                # values the FE sent (the number_of_groups placeholders, or the schedule-backfill the
+                # create wizard adds so validation passes) would create PHANTOM "Group 1/2" lobbies
+                # sitting next to the real "Day N" meetings (owner 2026-07-02 bug). Mirror edit_event,
+                # which already guards with `[] if _is_round_robin_stage`.
+                for group_data in ([] if _is_round_robin_stage else stage_data.get("groups", [])):
+                    group = StageGroups.objects.create(
+                        stage=stage,
+                        group_name=group_data["group_name"],
+                        playing_date=parse_date(group_data["playing_date"]),
+                        playing_time=group_data["playing_time"],
+                        teams_qualifying=int(group_data["teams_qualifying"]),
+                        group_discord_role_id=group_data.get("group_discord_role_id"),
+                        match_count=int(group_data.get("match_count", 0)),
+                        match_maps=group_data.get("match_maps", []),
+                        prizepool=group_data.get("prizepool"),
+                        prizepool_cash_value=group_data.get("prizepool_cash_value"),
+                        prize_distribution=group_data.get("prize_distribution", {}),
+                        # Manual display order (reorder feature, owner 2026-06-15): persist if present,
+                        # else 0 = "auto-arrange by date/time" (no forced submit-index ordering).
+                        group_order=int(group_data.get("group_order", 0) or 0),
+                    )
+                    stage_groups_in_order.append(group)  # advancement source_group_index resolution
+
+                    # Auto-create a leaderboard for this group
+                    leaderboard = Leaderboard.objects.create(
+                        leaderboard_name=f"{stage.stage_name} - {group.group_name}",
+                        event=event,
+                        stage=stage,
                         group=group,
-                        match_map=chosen_map,
-                        match_number=num
-                    ))
-                if matches_to_create:
-                    Match.objects.bulk_create(matches_to_create, batch_size=500)
+                        creator=user,
+                        leaderboard_method="manual",
+                        placement_points={},
+                        kill_point=1.0,
+                    )
 
-            # Done with this stage's groups — record them (in submit order) for the advancement pass.
-            created_stage_groups.append(stage_groups_in_order)
+                    # Create exactly match_count matches, cycle maps if provided
+                    match_count = group.match_count or 0
+                    match_maps = group.match_maps or []
+                    default_map = match_maps[0] if match_maps else "bermuda"
 
-        # ── Second pass: wire Point-Rush carry-over targets now that every Stages row
-        # exists. The FE sends point_rush_target_index = the 0-based position of the target
-        # stage in the submitted `stages` array, so we zip created_stages (built in submit
-        # order above) against stages_data. (Self-target / out-of-range were already rejected
-        # by _validate_scoring_modes before the transaction.) ──
-        for src_stage, stage_data in zip(created_stages, stages_data):
-            tgt_idx = stage_data.get("point_rush_target_index")
-            if src_stage.point_rush_enabled and tgt_idx is not None and tgt_idx != "":
-                tgt_idx = int(tgt_idx)
-                if 0 <= tgt_idx < len(created_stages):
-                    src_stage.point_rush_target_stage = created_stages[tgt_idx]
-                    src_stage.save(update_fields=["point_rush_target_stage"])
+                    matches_to_create = []
+                    for num in range(1, match_count + 1):
+                        chosen_map = match_maps[(num - 1) % len(match_maps)] if match_maps else default_map
+                        matches_to_create.append(Match(
+                            leaderboard=leaderboard,
+                            group=group,
+                            match_map=chosen_map,
+                            match_number=num
+                        ))
+                    if matches_to_create:
+                        Match.objects.bulk_create(matches_to_create, batch_size=500)
 
-        # ── Second pass: wire BRANCHING ADVANCEMENT rules now that every stage + group exists
-        # (feature #9). The FE sends, per stage, advancement_rules=[{position_from, position_to,
-        # source_group_index|null, target_stage_index}]. target_stage_index is the 0-based position
-        # in `stages_data` (resolved against created_stages, exactly like point_rush_target_index);
-        # source_group_index is the 0-based index into THIS stage's submit-ordered groups
-        # (created_stage_groups), or null = stage-wide. _validate_advancement_rules already rejected
-        # cycles / overlaps / out-of-range indices, so here we just create the resolved rows. The
-        # engine that runs them is advancement_routing.route_stage_advancement. ──
-        _wire_advancement_rules(created_stages, created_stage_groups, stages_data)
+                # Done with this stage's groups — record them (in submit order) for the advancement pass.
+                created_stage_groups.append(stage_groups_in_order)
 
-        AdminHistory.objects.create(
-            admin_user=user,
-            action="create_event",
-            description=f"Created event {event.event_name} (ID: {event.event_id})"
-        )
-        set_audit(request, f"Created the event {event.event_name}")
+            # ── Second pass: wire Point-Rush carry-over targets now that every Stages row
+            # exists. The FE sends point_rush_target_index = the 0-based position of the target
+            # stage in the submitted `stages` array, so we zip created_stages (built in submit
+            # order above) against stages_data. (Self-target / out-of-range were already rejected
+            # by _validate_scoring_modes before the transaction.) ──
+            for src_stage, stage_data in zip(created_stages, stages_data):
+                tgt_idx = stage_data.get("point_rush_target_index")
+                if src_stage.point_rush_enabled and tgt_idx is not None and tgt_idx != "":
+                    tgt_idx = int(tgt_idx)
+                    if 0 <= tgt_idx < len(created_stages):
+                        src_stage.point_rush_target_stage = created_stages[tgt_idx]
+                        src_stage.save(update_fields=["point_rush_target_stage"])
 
-    return Response({
-        "message": "Event created successfully.",
-        "event_id": event.event_id
-    }, status=201)
+            # ── Second pass: wire BRANCHING ADVANCEMENT rules now that every stage + group exists
+            # (feature #9). The FE sends, per stage, advancement_rules=[{position_from, position_to,
+            # source_group_index|null, target_stage_index}]. target_stage_index is the 0-based position
+            # in `stages_data` (resolved against created_stages, exactly like point_rush_target_index);
+            # source_group_index is the 0-based index into THIS stage's submit-ordered groups
+            # (created_stage_groups), or null = stage-wide. _validate_advancement_rules already rejected
+            # cycles / overlaps / out-of-range indices, so here we just create the resolved rows. The
+            # engine that runs them is advancement_routing.route_stage_advancement. ──
+            _wire_advancement_rules(created_stages, created_stage_groups, stages_data)
+
+            AdminHistory.objects.create(
+                admin_user=user,
+                action="create_event",
+                description=f"Created event {event.event_name} (ID: {event.event_id})"
+            )
+            set_audit(request, f"Created the event {event.event_name}")
+
+        return Response({
+            "message": "Event created successfully.",
+            "event_id": event.event_id
+        }, status=201)
+    except Exception as exc:
+        # Never return a non-JSON 500 (owner 2026-07-04): create_event used to let an unhandled
+        # exception bubble to Django's HTML 500 page, which the FE reads as "Received unexpected
+        # response format" - an organizer hit this on prod (most likely a NOT-YET-MIGRATED column
+        # for a newer Event field). Catch here so the caller gets the REAL reason as JSON and the
+        # atomic block has already rolled back any partial write.
+        import traceback as _tb
+        print('create_event failed:', _tb.format_exc())
+        return Response({"message": f"Could not create the event: {exc}"}, status=500)
 
 
 # ── EVENT DUPLICATION (feature "event-duplicate", 2026-06-10) ──────────────────────────
