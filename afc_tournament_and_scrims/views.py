@@ -211,6 +211,25 @@ def update_event_and_stage_statuses():
     except Exception:
         pass
 
+    # ── Fully-automatic events (owner 2026-07-04) ──────────────────────────────────────────────
+    # Once an auto-seed event's START instant passes, seed its available teams into the entry stage's
+    # groups (once - guarded by auto_seeded_at). run_auto_seed is idempotent + never clobbers an
+    # existing seed, so a stray double-run is safe.
+    try:
+        from .views_autoseed import run_auto_seed
+        from datetime import datetime as _dt2, time as _time2
+        _tz2 = timezone.get_current_timezone()
+        _now3 = timezone.now()
+        for _ev in Event.objects.filter(is_draft=False, auto_seed_on_start=True, auto_seeded_at__isnull=True):
+            try:
+                _start = timezone.make_aware(_dt2.combine(_ev.start_date, _ev.event_start_time or _time2.min), _tz2)
+            except Exception:
+                continue
+            if _now3 >= _start:
+                run_auto_seed(_ev)
+    except Exception:
+        pass
+
 
 # ── effective (display) event status — owner 2026-07-01 ──
 # WHY: the stored Event.event_status is only converged by the daily Celery sweep above
@@ -1796,6 +1815,7 @@ def create_event(request):
     try:
         with transaction.atomic():
             event = Event.objects.create(
+                auto_seed_on_start=_as_bool(request.data.get("auto_seed_on_start")),
                 is_waitlist_enabled=_wl_enabled,
                 waitlist_capacity=_wl_capacity,
                 waitlist_discord_role_id=request.data.get("waitlist_discord_role_id") or None,
@@ -3200,6 +3220,8 @@ def edit_event(request):
 
     # ── Media registration criteria (owner 2026-06-12) ── editable like the other toggles;
     # enforcement lives in register_for_event so changing them only affects FUTURE registrations.
+    if "auto_seed_on_start" in request.data:
+        event.auto_seed_on_start = _as_bool(request.data.get("auto_seed_on_start"))
     if "require_team_logo" in request.data:
         event.require_team_logo = _as_bool(request.data.get("require_team_logo"))
     if "require_esport_images" in request.data:
@@ -4636,6 +4658,7 @@ def get_event_details(request):
         # clean snake_case keys the EventDetails interface can consume.
         "is_waitlist_enabled": event.is_waitlist_enabled,
         # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
+        "auto_seed_on_start": event.auto_seed_on_start,
         "require_team_logo": event.require_team_logo,
         "require_esport_images": event.require_esport_images,
         "require_player_uid": event.require_player_uid,

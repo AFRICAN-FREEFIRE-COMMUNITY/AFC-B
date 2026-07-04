@@ -138,6 +138,11 @@ urlpatterns = [
          name="organizers_leaderboard_design_apply_bg_all"),  # POST (multipart bg -> all pages)
     path("leaderboard-designs/by-id/<int:design_id>/", views_leaderboard_design.design_item,
          name="organizers_leaderboard_design_item"),       # PATCH / DELETE
+    # One-click "Create default AFC design" generator (owner 2026-07-04): builds a ready-to-use
+    # design (AFC theme + standard columns) for a 12 / 15 / 24 team size preset. Listed BEFORE the
+    # bare collection path so "create-default/" is not swallowed by it. See create_default_design.
+    path("leaderboard-designs/create-default/", views_leaderboard_design.create_default_design,
+         name="organizers_leaderboard_design_create_default"),  # POST (preset=12|15|24)
     path("leaderboard-designs/", views_leaderboard_design.designs_collection,
          name="organizers_leaderboard_designs"),           # GET (?organization_id=) / POST
     # Uploaded FONT library (TTF/OTF), org-scoped or AFC-native.

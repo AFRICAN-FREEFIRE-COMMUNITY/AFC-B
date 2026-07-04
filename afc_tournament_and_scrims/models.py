@@ -248,6 +248,15 @@ class Event(models.Model):
     checkin_start = models.DateTimeField(null=True, blank=True)
     checkin_end = models.DateTimeField(null=True, blank=True)
 
+    # ── Fully-automatic events (owner 2026-07-04) ──────────────────────────────────────────────
+    # When auto_seed_on_start is on, the daily status sweep AUTO-SEEDS the event's AVAILABLE teams
+    # (registered + not waitlisted; and, if check-in is on, only checked-in-eligible squads) into the
+    # entry stage's groups the moment the event's start instant passes - so the organizer only has to
+    # enter each group's room ID + PASS. auto_seeded_at stamps when that ran so it never re-seeds (and
+    # it is skipped if the stage was already seeded manually). See views_autoseed.run_auto_seed.
+    auto_seed_on_start = models.BooleanField(default=False)
+    auto_seeded_at = models.DateTimeField(null=True, blank=True)
+
     # IANA timezone of the person who created/last set the event's times (e.g.
     # "Africa/Lagos"), captured from the browser on create/edit (owner 2026-06-21).
     # The date/time fields above are stored as the HOST's wall-clock; pairing them
