@@ -1,5 +1,6 @@
 from django.urls import path, include
 from .views import *
+from .views_checkin import (set_event_checkin, player_checkin, get_event_checkin_status, checkin_relegate_now)
 # Paid-event registration payments (feature "paid-events", Phase 1): Stripe Checkout init/verify,
 # the webhook backstop, and the admin escrow (list/release/refund). Kept in its own module so the
 # money-handling code is isolated from the big views.py.
@@ -347,6 +348,11 @@ urlpatterns = [
     # Consumed by the FlaggedKillsPanel on the event leaderboard editor (admin + organizer).
     path("flagged-kills/", get_event_flagged_kills, name="get_event_flagged_kills"),
     path("flagged-kills/set/", set_event_flagged_kills, name="set_event_flagged_kills"),
+    # Check-in (owner 2026-07-04): admin/org settings + user tap + status + force-relegate.
+    path("checkin/settings/", set_event_checkin, name="set_event_checkin"),
+    path("checkin/", player_checkin, name="player_checkin"),
+    path("checkin/status/", get_event_checkin_status, name="get_event_checkin_status"),
+    path("checkin/relegate/", checkin_relegate_now, name="checkin_relegate_now"),
     path("flagged-kills/flag/", set_match_kill_flag, name="set_match_kill_flag"),
     # Attribute one unmatched in-game team block to a registered team (or clear it). owner 2026-06-30.
     path("flagged-kills/unmatched-team/", attribute_unmatched_team, name="attribute_unmatched_team"),

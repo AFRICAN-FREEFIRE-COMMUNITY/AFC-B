@@ -195,6 +195,22 @@ def update_event_and_stage_statuses():
     Stages.objects.filter(start_date__lte=today, end_date__gte=today).exclude(stage_status="ongoing").update(stage_status="ongoing")
     Stages.objects.filter(start_date__gt=today).exclude(stage_status="upcoming").update(stage_status="upcoming")
 
+    # ── Check-in relegation (owner 2026-07-04) ─────────────────────────────────────────────────
+    # Once an event's check-in window CLOSES, competitors who did not check in (or squads missing any
+    # roster member) are relegated to the waitlist. relegate_unchecked_competitors is idempotent
+    # (already-waitlisted are skipped, so no writes after the first pass); we bound the scan to
+    # windows that closed in the last day so old events aren't re-walked on every sweep. Admins can
+    # also force it immediately via checkin_relegate_now.
+    from datetime import timedelta as _td
+    try:
+        from .views_checkin import relegate_unchecked_competitors
+        _now2 = timezone.now()
+        for _ev in Event.objects.filter(checkin_enabled=True, checkin_end__lt=_now2,
+                                        checkin_end__gte=_now2 - _td(days=1)):
+            relegate_unchecked_competitors(_ev)
+    except Exception:
+        pass
+
 
 # ── effective (display) event status — owner 2026-07-01 ──
 # WHY: the stored Event.event_status is only converged by the daily Celery sweep above
