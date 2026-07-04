@@ -25,7 +25,9 @@ ENDPOINTS (mounted under organizers/ via afc_organizers/urls.py)
 Consumed by: the organizer + admin "Leaderboard designs" page + the leaderboard export picker.
 """
 import json
+import os
 
+from django.core.files.base import ContentFile
 from django.http import FileResponse, Http404
 from django.urls import reverse
 from rest_framework.decorators import api_view, permission_classes
@@ -33,6 +35,10 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 import json as _json
 from rest_framework import status
+# Pillow (pillow==10.4.0, a declared backend dep — same one afc_leaderboard.graphic uses) generates
+# the AFC-branded default background PNGs for create_default_design below. Imported at module top to
+# mirror graphic.py; the pieces are only touched by the default-design generator.
+from PIL import Image, ImageDraw, ImageFilter
 
 from afc_organizers.models import (
     Organization, OrganizationMember, OrgLeaderboardDesign, OrgLeaderboardDesignLogo,
@@ -1231,10 +1237,13 @@ def design_duplicate(request, design_id):
 # ═══════════ One-click "Create default AFC design" generator (owner 2026-07-04) ═══════════
 #
 # WHAT THIS IS: a single endpoint that builds a READY-TO-USE leaderboard design in the target
-# library (an org's, or the AFC-native one) with the AFC dark/green theme, the standard AFC columns
-# already placed (POS, TEAM logo + name, KILLS, PLACEMENT POINTS, BOOYAHS, TOTAL POINTS), and the
-# correct row geometry for the chosen size preset. It saves the operator from hand-building a design
-# in the drag editor for the common cases.
+# library (an org's, or the AFC-native one) that is COMPLETE the moment it is created: a real
+# AFC-branded background image SET on both sizes, the AFC logo placed top-left as a real IMAGE, the
+# organizer's logo top-right (opposite) when the org has one, the AFC dark/green theme, and the
+# standard AFC columns already placed (POS, TEAM logo + name, KILLS, PLACEMENT POINTS, BOOYAHS, TOTAL
+# POINTS) at the correct row geometry for the chosen size preset. It saves the operator from
+# hand-building a design in the drag editor for the common cases. See the branding assets +
+# generators (_generate_afc_background / _afc_logo_bytes) defined just below.
 #
 # PRESETS (team capacity):
 #   12 -> ONE column group of 12 rows        (single-column / single page)
@@ -1253,6 +1262,82 @@ def design_duplicate(request, design_id):
 # AFC dark/green theme (mirrors graphic.DEFAULT_TEXT/DEFAULT_ACCENT + the FE EMPTY_FORM colours).
 AFC_DEFAULT_TEXT_COLOR = "#FFFFFF"
 AFC_DEFAULT_ACCENT_COLOR = "#34d27b"
+
+# ── Branded default ASSETS (owner 2026-07-04) ───────────────────────────────────────────────────
+# The default design must ship LOOKING finished: a real AFC background image SET on the design (not
+# the renderer's plain-dark fallback) and the AFC logo as a real IMAGE (not editable "AFC" text). Both
+# assets live under afc_organizers/assets/ (app code, version-controlled) so they are guaranteed
+# present on every deploy — unlike a media/ file, which is not committed and may be absent on a fresh
+# server. They are copied into the design's own ImageFields (via ContentFile) at create time so each
+# design serialises with a proper /media/ URL that the FE editor + the PNG renderer both resolve.
+_ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
+# The bundled AFC logo (a green mark on transparency, so it reads on the dark background).
+_AFC_LOGO_ASSET = os.path.join(_ASSETS_DIR, "afc-logo.png")
+# Filename + canvas size for each generated background. Sizes match the renderer's CANVAS map
+# (afc_leaderboard.graphic): Instagram is the portrait 1080x1350, YouTube the landscape 1920x1080.
+_AFC_BG_ASSETS = {
+    "instagram": ("afc_default_bg_instagram.png", (1080, 1350)),
+    "youtube": ("afc_default_bg_youtube.png", (1920, 1080)),
+}
+
+# AFC site background palette (mirrors WEBSITE/CLAUDE.md "AFC Design Constants"):
+#   base   = the dark page colour oklch(0.141 0.005 285.823) ~= RGB(18,18,20)
+#   green  = AFC primary #34d27b = RGB(52,210,123)  -> top-left corner glow
+#   gold   = a warm AFC gold #d4af37 = RGB(212,175,55) -> bottom-right corner glow
+# This mirrors the site's `bg-gradient-to-br from-primary/20 via-transparent to-gold/20`: primary in
+# the top-left corner, gold in the opposite bottom-right corner, and a dark near-transparent middle.
+_BG_BASE_RGB = (18, 18, 20)
+_BG_GREEN_RGB = (52, 210, 123)
+_BG_GOLD_RGB = (212, 175, 55)
+
+
+def _generate_afc_background(w, h):
+    """Build one AFC-branded background as a PIL Image (RGB, size w x h).
+
+    The look is intentionally SUBTLE so the white standings text stays readable: a dark base with a
+    soft GREEN glow anchored in the top-left corner and a soft GOLD glow in the opposite bottom-right
+    corner, both heavily blurred so the centre of the canvas (where the rows sit) stays near-black.
+    This is the corner-glow reading of the site's diagonal `from-primary via-transparent to-gold`
+    gradient. Called by _afc_default_background_bytes (which caches the PNG); the result is composited
+    behind the placed columns by afc_leaderboard.graphic on export."""
+    base = Image.new("RGB", (w, h), _BG_BASE_RGB)
+    # Corner glows on a transparent layer, then one big Gaussian blur to spread them softly.
+    glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    span = int(max(w, h) * 0.85)          # glow diameter ~ the long edge, so it fills a corner
+    r = span // 2
+    # Green glow centred on the TOP-LEFT corner (mostly off-canvas, so only the corner is lit).
+    gd.ellipse([-r, -r, r, r], fill=_BG_GREEN_RGB + (120,))
+    # Gold glow centred on the BOTTOM-RIGHT corner (opposite side).
+    gd.ellipse([w - r, h - r, w + r, h + r], fill=_BG_GOLD_RGB + (95,))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=int(max(w, h) * 0.16)))
+    return Image.alpha_composite(base.convert("RGBA"), glow).convert("RGB")
+
+
+def _afc_default_background_bytes(size):
+    """Return PNG bytes for the AFC-branded default background of `size` ("instagram"|"youtube").
+
+    Idempotent + reusable: the PNG is generated ONCE into afc_organizers/assets/ and re-read on every
+    later call (so every generated default design shares the identical background art without
+    re-rendering). Copied into the design's background_instagram / background_youtube ImageField by
+    create_default_design."""
+    fname, (w, h) = _AFC_BG_ASSETS.get(size, _AFC_BG_ASSETS["instagram"])
+    path = os.path.join(_ASSETS_DIR, fname)
+    if not os.path.exists(path):
+        os.makedirs(_ASSETS_DIR, exist_ok=True)
+        _generate_afc_background(w, h).save(path, format="PNG")
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _afc_logo_bytes():
+    """Return the bundled AFC logo PNG bytes (afc_organizers/assets/afc-logo.png), or None if the
+    asset is somehow missing. Copied into a top-left OrgLeaderboardDesignLogo by create_default_design
+    so the AFC brand shows as a real IMAGE (owner 2026-07-04), not editable text."""
+    if os.path.exists(_AFC_LOGO_ASSET):
+        with open(_AFC_LOGO_ASSET, "rb") as fh:
+            return fh.read()
+    return None
 
 # The standard AFC column set, placed once per column group. Each tuple is (field_type, x_pct, align)
 # where x_pct is the CENTRE X as a percent of canvas WIDTH (Instagram/portrait is the canonical
@@ -1339,12 +1424,18 @@ def create_default_design(request):
     create response shape the FE LeaderboardDesignsManager already consumes, so the new design drops
     straight into its list on reload.
 
-    BRANDING: the AFC dark/green theme is applied via text_color/accent_color. There is NO AFC logo
-    asset file in the repo (the only reference is a remote blob URL in the FE components/Logo.tsx,
-    which we must not hardcode as an image path), so the AFC logo slot is placed as an editable "AFC"
-    brand TEXT the operator can restyle or replace with the real logo in the designer. When the target
-    is an ORG library and the org has an uploaded logo, that logo is added as a positioned logo
-    (top-right), sharing the org's stored image by reference (same idiom as design_duplicate).
+    BRANDING (owner 2026-07-04, "the default design should be there with a default background and
+    already set as a design"): the design ships FINISHED, not as a bare theme.
+      * A real AFC-branded BACKGROUND is generated + SET on both sizes (background_instagram 1080x1350
+        + background_youtube 1920x1080): a dark base with subtle green/gold corner glows matching the
+        AFC site. See _generate_afc_background. So it renders on its own art, not the plain-dark
+        renderer fallback.
+      * The AFC LOGO is placed TOP-LEFT as a real IMAGE (OrgLeaderboardDesignLogo pointing at the
+        bundled afc_organizers/assets/afc-logo.png), NOT editable text.
+      * The AFC dark/green theme is also applied via text_color/accent_color.
+    When the target is an ORG library and the org has an uploaded logo, that logo is added as a
+    positioned logo TOP-RIGHT (opposite the AFC logo), sharing the org's stored image by reference
+    (same idiom as design_duplicate). So the two brands bookend the header: AFC left, organizer right.
 
     CONSUMED BY: LeaderboardDesignsManager.tsx "Create default AFC design" 12/15/24 buttons via
     leaderboardDesignsApi.createDefault (frontend/lib/leaderboardDesigns.ts).
@@ -1383,6 +1474,18 @@ def create_default_design(request):
         created_by=user,
     )
 
+    # ── Branded background (owner 2026-07-04): SET the AFC background PNG on BOTH sizes so the design
+    #    renders on its own art, not the renderer's plain-dark fallback. The bytes come from the cached
+    #    assets/ PNGs (generated once) and are copied into this design's OWN ImageFields so each
+    #    serialises with a /media/ URL. save=False sets the field on the instance; d.save() persists. ──
+    d.background_instagram.save(
+        f"afc-default-{spec['label']}-instagram.png",
+        ContentFile(_afc_default_background_bytes("instagram")), save=False)
+    d.background_youtube.save(
+        f"afc-default-{spec['label']}-youtube.png",
+        ContentFile(_afc_default_background_bytes("youtube")), save=False)
+    d.save(update_fields=["background_instagram", "background_youtube"])
+
     # Placed data columns — one full set per column group. Placing >=1 field switches the renderer
     # to its field-layout path (the built-in auto-table is skipped), so these ARE the leaderboard.
     order = 0
@@ -1394,24 +1497,33 @@ def create_default_design(request):
             )
             order += 1
 
-    # ── AFC logo slot: an editable brand TEXT (no AFC logo asset ships in the repo — see docstring). ──
-    OrgLeaderboardDesignText.objects.create(
-        design=d, text="AFC", x_pct=6.0, y_pct=6.0, align="left",
-        color=AFC_DEFAULT_ACCENT_COLOR, font_size_pct=4.5, order=0,
-    )
+    # Build the branding note as we attach each piece, so the FE toast states exactly what landed.
+    note_parts = [
+        "The AFC dark/green background was set on both the Instagram and YouTube sizes."
+    ]
 
-    # ── Organizer logo: added top-right when this is an org library and the org has a logo. ──
-    logo_note = (
-        "No AFC logo asset ships in the repo, so the AFC logo slot was placed as an editable "
-        "'AFC' brand text (top-left). Replace it with the AFC logo image in the designer if wanted."
-    )
+    # ── AFC logo, TOP-LEFT, as a real IMAGE (owner 2026-07-04: "the actual AFC logo", not text). The
+    #    logo asset ships in afc_organizers/assets/ and is copied into the logo's own ImageField
+    #    (upload_to org_leaderboard_logos/). It sits top-LEFT, opposite the organizer logo top-RIGHT
+    #    below, so the two brands bookend the header. ──
+    afc_logo = _afc_logo_bytes()
+    if afc_logo:
+        afc_logo_row = OrgLeaderboardDesignLogo(design=d, x_pct=8.0, y_pct=8.0, size="medium")
+        afc_logo_row.image.save("afc-logo.png", ContentFile(afc_logo), save=False)
+        afc_logo_row.save()
+        note_parts.append("The AFC logo image was placed top-left.")
+
+    # ── Organizer logo: added top-right (opposite the AFC logo) when this is an org library and the
+    #    org has a logo. Shares the org's stored image by reference (same idiom as design_duplicate). ──
     if org is not None and org.logo:
         OrgLeaderboardDesignLogo.objects.create(
             design=d, image=org.logo, x_pct=90.0, y_pct=8.0, size="medium",
         )
-        logo_note += " The organizer's logo was added top-right."
+        note_parts.append("The organizer's logo was added top-right, opposite the AFC logo.")
     else:
-        logo_note += " No organizer logo was added (AFC-native library, or the org has no logo)."
+        note_parts.append("No organizer logo was added (AFC-native library, or the org has no logo).")
+
+    logo_note = " ".join(note_parts)
 
     if d.is_default:
         _unset_other_defaults(org, d.id)
