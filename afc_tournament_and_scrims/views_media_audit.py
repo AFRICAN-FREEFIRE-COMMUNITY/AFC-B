@@ -246,6 +246,22 @@ def media_upload(request, event_id):
         url = request.build_absolute_uri(team.team_logo.url)
     else:
         from afc_auth.models import UserProfile
+        # Face check on the admin/organizer player-image REPLACE path too (owner 2026-07-04): the
+        # self-serve user upload (afc_auth.upload_esport_image) already rejects non-face images, but
+        # this admin path saved anything - which is how a TEAM LOGO ended up in a player's esport-image
+        # slot ("how did this get past the face recognition"). Reject an image with no detectable face,
+        # UNLESS the operator explicitly passes force=true (a trusted admin may knowingly place a
+        # placeholder). Fail-open inside image_has_human_face keeps a broken detector from blocking.
+        force = str(request.data.get("force") or "").strip().lower() in ("1", "true", "yes")
+        if not force:
+            from afc_auth.face_check import image_has_human_face
+            has_face, _reason = image_has_human_face(upload)
+            if not has_face:
+                return Response({
+                    "message": "This image has no detectable face. A player esport image should be a "
+                               "photo of the player, not a logo. Re-upload with force to override.",
+                    "code": "no_face",
+                }, status=400)
         try:
             profile, _ = UserProfile.objects.get_or_create(user_id=request.data.get("user_id"))
         except (ValueError, TypeError):
