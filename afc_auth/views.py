@@ -742,7 +742,12 @@ def login(request):
 
 
         # 🔥 CLEAR OLD SESSIONS
-        SessionToken.objects.filter(user=user).delete()
+        # Multi-session (owner 2026-07-04): do NOT delete the user's OTHER active sessions on
+        # login - that logged users/admins out of their other tabs + devices at random (any new
+        # login for the account nuked every token, so a still-open tab's next request 401'd ->
+        # forced re-login). Prune only EXPIRED tokens for housekeeping; the fresh token is added
+        # alongside any still-valid ones, so multiple tabs/devices stay logged in concurrently.
+        SessionToken.objects.filter(user=user, expires_at__lt=timezone.now()).delete()
 
         # Generate a session token
         session_token = generate_session_token()
@@ -990,7 +995,12 @@ def google_auth(request):
                         status=status.HTTP_403_FORBIDDEN)
 
     # ── issue our SessionToken (mirrors the password login view) ────────────────
-    SessionToken.objects.filter(user=user).delete()
+    # Multi-session (owner 2026-07-04): do NOT delete the user's OTHER active sessions on
+    # login - that logged users/admins out of their other tabs + devices at random (any new
+    # login for the account nuked every token, so a still-open tab's next request 401'd ->
+    # forced re-login). Prune only EXPIRED tokens for housekeeping; the fresh token is added
+    # alongside any still-valid ones, so multiple tabs/devices stay logged in concurrently.
+    SessionToken.objects.filter(user=user, expires_at__lt=timezone.now()).delete()
     session_token = generate_session_token()
     SessionToken.objects.create(user=user, token=session_token)
     user.last_login = timezone.now()
@@ -4967,7 +4977,12 @@ def discord_sso_callback(request):
         pass
 
     # ── issue our SessionToken (mirrors login/google_auth) ──
-    SessionToken.objects.filter(user=user).delete()
+    # Multi-session (owner 2026-07-04): do NOT delete the user's OTHER active sessions on
+    # login - that logged users/admins out of their other tabs + devices at random (any new
+    # login for the account nuked every token, so a still-open tab's next request 401'd ->
+    # forced re-login). Prune only EXPIRED tokens for housekeeping; the fresh token is added
+    # alongside any still-valid ones, so multiple tabs/devices stay logged in concurrently.
+    SessionToken.objects.filter(user=user, expires_at__lt=timezone.now()).delete()
     session_token = generate_session_token()
     SessionToken.objects.create(user=user, token=session_token)
     user.last_login = timezone.now()
