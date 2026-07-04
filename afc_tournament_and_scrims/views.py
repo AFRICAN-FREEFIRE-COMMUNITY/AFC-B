@@ -20236,6 +20236,44 @@ def add_teams_to_group(request):
         return Response({"message": "group_id required."}, status=400)
     if not isinstance(team_ids, list) or not all(isinstance(tid, int) for tid in team_ids):
         return Response({"message": "team_ids must be a list of integers"}, status=400)
+
+    # ── ROUND-ROBIN branch (owner 2026-07-04 bug fix) ─────────────────────────────────────────────
+    # RR stages store group membership on RoundRobinGroup.teams (M2M), NOT StageGroupCompetitor, and
+    # RoundRobinGroup.group_id is a SEPARATE id space from StageGroups.group_id. So for an RR group id
+    # the StageGroups lookup below would 404 or - worse - match a same-numbered NON-RR group and write
+    # StageGroupCompetitor rows the RR group-roster read (get_event_group_rosters) never shows. THAT is
+    # why an organizer's "add teams to group" said success but nothing appeared. Detect an RR target
+    # first and add to its teams M2M (mirrors seeding.move_team's RR branch); the game-day lobbies
+    # derive from the base groups automatically.
+    from .models import RoundRobinGroup
+    rr_group = RoundRobinGroup.objects.select_related("stage__event").filter(group_id=group_id).first()
+    if rr_group is not None:
+        rr_event = rr_group.stage.event
+        if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", rr_event):
+            return Response({"message": "Unauthorized."}, status=403)
+        if rr_event.participant_type == "solo":
+            return Response({"message": "This endpoint is for team events only."}, status=400)
+        rr_teams = TournamentTeam.objects.filter(team_id__in=team_ids, event=rr_event, status="active")
+        if not rr_teams.exists():
+            return Response({"message": "No valid teams found for the provided team_ids."}, status=400)
+        added = []
+        for team in rr_teams:
+            # The team must be a stage competitor (the pool + base groups draw from it).
+            StageCompetitor.objects.get_or_create(stage=rr_group.stage, tournament_team=team)
+            # Skip a team already sitting in ANOTHER base group of this stage (move-team relocates those).
+            in_other = (RoundRobinGroup.objects.filter(stage=rr_group.stage, teams=team)
+                        .exclude(group_id=rr_group.group_id).exists())
+            if in_other:
+                continue
+            if not rr_group.teams.filter(tournament_team_id=team.tournament_team_id).exists():
+                rr_group.teams.add(team)
+                added.append(team.team_id)
+        return Response({
+            "message": f"{len(added)} teams added to group {rr_group.label}.",
+            "group_id": rr_group.group_id,
+            "added_team_ids": added,
+        }, status=200)
+
     group = get_object_or_404(StageGroups, group_id=group_id)
     # ── registration gate (org-aware, event resolved group -> stage -> event) ──
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", group.stage.event):
