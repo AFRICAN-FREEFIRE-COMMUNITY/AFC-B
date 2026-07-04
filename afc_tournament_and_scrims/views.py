@@ -18528,6 +18528,28 @@ def capture_resolve(request):
     }, status=status.HTTP_200_OK)
 
 
+def _design_row_capacity(design, size):
+    """Total standings rows a design can DISPLAY = sum of its column groups' row_count for the
+    active size (owner 2026-07-04). A 2-column leaderboard has two groups (8 + 8 = 16), so the
+    overlay feed must send up to 16 rows or the 2nd column stays empty. The overlay renders page 1
+    of a multi-page design, so we read that page's groups (youtube -> column_groups_youtube, else
+    column_groups); a page-less design reads the design-level groups. Falls back to max_rows when a
+    design has no explicit column groups."""
+    try:
+        pages = list(design.pages.all())
+        if pages:
+            p = next((x for x in pages if x.page_number == 1), pages[0])
+            groups = ((p.column_groups_youtube if size == "youtube" and p.column_groups_youtube
+                       else p.column_groups) or [])
+        else:
+            groups = ((design.column_groups_youtube if size == "youtube" and design.column_groups_youtube
+                       else design.column_groups) or [])
+        total = sum(int(g.get("row_count", 0) or 0) for g in groups)
+        return total if total > 0 else (design.max_rows or 16)
+    except Exception:
+        return design.max_rows or 16
+
+
 def _overlay_rows_from_standings(standings, max_rows, request):
     """Map an already-aggregated round_robin standings list -> the overlay feed's field_type rows
     (team logos as ABSOLUTE URLs, the 8 live-only rich stats defaulted to 0/""). SHARED by the
@@ -18731,7 +18753,12 @@ def overlay_feed(request):
     from .views_event_graphic import _resolve_event_design
     from afc_organizers.views_leaderboard_design import _serialize_design
     design = _resolve_event_design(event, request.query_params.get("design"))
-    max_rows = design.max_rows if design else 16
+    # Cap standings at the design's TOTAL row capacity, NOT its single max_rows field (owner
+    # 2026-07-04): a 2-column design has two column groups (e.g. 8 + 8 = 16 slots), but max_rows was
+    # 8, so the feed only ever sent 8 rows and the 2nd column stayed EMPTY on the overlay. Sum the
+    # active page's column groups (youtube uses column_groups_youtube) for the real capacity; fall
+    # back to max_rows only when a design has no explicit column groups.
+    max_rows = _design_row_capacity(design, size) if design else 16
 
     # ── STANDINGS ── team events only (mirrors the graphic export: standings are team-based). A solo
     # event returns empty standings + a note field so the overlay can show a friendly message.
