@@ -24147,6 +24147,117 @@ def download_esport_media(request):
     return response
 
 
+@api_view(["POST"])
+def download_single_media(request):
+    """
+    POST events/download-single-media/  - download ONE team logo or player esport image as a single
+    image file (NOT a zip), with a caller-chosen FILE NAME and an arbitrary target SIZE (owner
+    2026-07-04: "download individual team logos or player esport images and set the naming and size").
+
+    AUTH: Bearer SessionToken; AFC event admins (_is_event_admin) OR any user with the platform
+    `organizer` role - same allow-list as download_esport_media (the bulk ZIP sibling).
+
+    REQUEST (JSON):
+      kind      : "team_logo" | "player_image"   (required)
+      team_id   : int   (required when kind == team_logo)
+      user_id   : int   (required when kind == player_image)
+      filename  : str   (optional) desired base name, sanitised; defaults to the team/player name
+      width     : int   (optional) target px; with height, cover-crops to exactly width x height
+      height    : int   (optional) target px
+      format    : "png" | "jpg"  (optional) default png (keeps transparency for logos)
+
+    RESPONSE: 200 image/png|jpeg attachment; 400 bad input / no asset; 401/403 auth. Resizing reuses
+    ImageOps.fit (scale + centre-crop, no distortion). CONNECTS TO: Team.team_logo (afc_team) +
+    UserProfile.esports_pic (afc_auth); consumed by the per-item Download control on
+    frontend/components/overlay/MediaAuditCard.tsx.
+    """
+    import io
+    import os
+    import re as _re
+
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    is_organizer = UserRoles.objects.filter(user=user, role__role_name="organizer").exists()
+    if not _is_event_admin(user) and not is_organizer:
+        return Response({"message": "Only admins and organizers can download media."}, status=403)
+
+    kind = (request.data.get("kind") or "").strip()
+    fmt = (request.data.get("format") or "png").lower()
+    fmt = "jpg" if fmt in ("jpg", "jpeg") else "png"
+
+    def _to_int(v):
+        try:
+            n = int(v)
+            return n if n > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    w, h = _to_int(request.data.get("width")), _to_int(request.data.get("height"))
+    target = (w, h) if (w and h) else None
+
+    # Resolve the source image + a default base name from the entity.
+    raw, default_name = None, None
+    if kind == "team_logo":
+        team = Team.objects.filter(team_id=request.data.get("team_id")).first()
+        if not team:
+            return Response({"message": "Team not found."}, status=400)
+        default_name = team.team_name or f"team-{team.team_id}"
+        if team.team_logo:
+            try:
+                raw = team.team_logo.read()
+            except Exception:
+                raw = None
+    elif kind == "player_image":
+        from afc_auth.models import UserProfile
+        u = User.objects.filter(user_id=request.data.get("user_id")).first()
+        if not u:
+            return Response({"message": "Player not found."}, status=400)
+        default_name = u.username or f"player-{u.user_id}"
+        prof = UserProfile.objects.filter(user_id=u.user_id).first()
+        if prof and prof.esports_pic:
+            try:
+                raw = prof.esports_pic.read()
+            except Exception:
+                raw = None
+    else:
+        return Response({"message": "kind must be team_logo or player_image."}, status=400)
+
+    if not raw:
+        return Response({"message": "That team/player has no uploaded image."}, status=400)
+
+    # Resize (cover-crop to exact target) + encode. Fail-safe: original bytes if anything breaks.
+    ext = ".png"
+    content_type = "image/png"
+    try:
+        from PIL import Image, ImageOps
+        im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
+        if target:
+            im = ImageOps.fit(im, target, Image.LANCZOS)
+        out = io.BytesIO()
+        if fmt == "jpg":
+            im.convert("RGB").save(out, format="JPEG", quality=92)
+            raw, ext, content_type = out.getvalue(), ".jpg", "image/jpeg"
+        else:
+            im.save(out, format="PNG", optimize=True)
+            raw, ext, content_type = out.getvalue(), ".png", "image/png"
+    except Exception:
+        pass  # keep original bytes; ext stays .png (browser still saves the file)
+
+    base = (request.data.get("filename") or "").strip() or default_name
+    safe = _re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("_") or "media"
+    if safe.lower().endswith((".png", ".jpg", ".jpeg")):
+        safe = os.path.splitext(safe)[0]
+
+    from django.http import HttpResponse
+    resp = HttpResponse(raw, content_type=content_type)
+    resp["Content-Disposition"] = f'attachment; filename="{safe}{ext}"'
+    return resp
+
+
 # ════════════════════════════════════════════════════════════════════════════════════════════════
 # REORDER STAGES + GROUPS (manual drag-to-arrange, owner feature 2026-06-15)
 # ════════════════════════════════════════════════════════════════════════════════════════════════

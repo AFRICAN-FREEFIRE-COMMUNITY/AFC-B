@@ -374,6 +374,7 @@ urlpatterns = [
     # ZIP of team logos + player esport images (sets of teams/players, or everything registered
     # for an event). Admins + organizers. Consumed by the "Download media" buttons.
     path("download-esport-media/", download_esport_media, name="download_esport_media"),
+    path("download-single-media/", download_single_media, name="download_single_media"),
     # organizers: toggle Event.rankings_verified (platform org admins only).
     path("verify-event/", verify_event, name="verify_event"),
     # Per-player Discord readiness for the sponsor join_group(discord) engagement:
