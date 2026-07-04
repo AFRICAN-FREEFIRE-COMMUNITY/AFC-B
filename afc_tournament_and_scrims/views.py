@@ -11710,17 +11710,14 @@ def send_match_room_details_notification_to_competitor(request):
                      .filter(stage_group=group, tournament_team__isnull=False))
 
             for sgc in teams:
-                # Exclude rejected/removed roster members (owner 2026-07-04 leak fix): a dropped player
-                # keeps a member row and must not receive the room ID+PASS.
-                members = sgc.tournament_team.members.exclude(status="rejected").select_related("user").all()
-                for m in members:
-                    if not m.user:
-                        continue
-
+                # Registered event players + team management only (owner 2026-07-04): unregistered club
+                # players never get the room ID+PASS; managers/coaches always do. See
+                # _event_team_recipient_users.
+                for u in _event_team_recipient_users(sgc.tournament_team):
                     Notifications.objects.create(
-                        user=m.user,
+                        user=u,
                         message=(
-                            f"Hello {m.user.username}, your match details for '{event.event_name}'\n"
+                            f"Hello {u.username}, your match details for '{event.event_name}'\n"
                             f"Stage: {group.stage.stage_name}\n"
                             f"Group: {group.group_name}\n"
                             f"Match: {match.match_number}\n\n"
@@ -23036,11 +23033,43 @@ def broadcast_announcement(request):
 # Consumed by: frontend app/(a)/a/events/_components/SendNotificationModal.tsx
 #   (rendered inside StagesGroupsTab on /a/events/<slug>/edit and
 #    /organizer/events/<slug>/edit).
+def _event_team_recipient_users(tournament_team):
+    """Users who should receive an EVENT team broadcast (room details / group message) for ONE team
+    (owner 2026-07-04): the players REGISTERED for THIS event (the active tournament roster) PLUS the
+    team's MANAGEMENT (owner, captain, vice-captain, manager, coach) - and nobody else. A player who
+    belongs to the club team but was NOT registered in this event's lineup is deliberately excluded;
+    a manager/coach is included even when they are not a playing member. Callers: _group_recipient_users
+    (below), send_match_room_details_notification_to_competitor, and views_room_release._team_users.
+    Connects: TournamentTeamMember (event roster, afc_tournament) + afc_team.Team/TeamMembers (club
+    roster + roles)."""
+    from afc_team.models import TeamMembers
+    users = {}
+    # 1) Registered event players = the CONFIRMED tournament roster for THIS event (active/approved;
+    #    pending never confirmed, rejected was dropped -> both excluded).
+    for m in (tournament_team.members.filter(status__in=["active", "approved"])
+              .select_related("user")):
+        if m.user:
+            users[m.user.user_id] = m.user
+    # 2) Team management: owner + captain + anyone holding a management role. Included regardless of
+    #    whether they are in the event lineup, so the people running the team always get room details.
+    team = tournament_team.team
+    if getattr(team, "team_owner_id", None):
+        users.setdefault(team.team_owner_id, team.team_owner)
+    if getattr(team, "team_captain_id", None) and team.team_captain:
+        users.setdefault(team.team_captain_id, team.team_captain)
+    for tm in (TeamMembers.objects
+               .filter(team=team, management_role__in=["manager", "coach", "team_captain", "vice_captain"])
+               .select_related("member")):
+        if tm.member:
+            users.setdefault(tm.member.user_id, tm.member)
+    return list(users.values())
+
+
 def _group_recipient_users(event, group):
     """Deduped list of Users in a StageGroup. Solo -> each competitor's user;
-    team/squad -> each member of each team in the group. Mirrors the recipient
-    resolution in send_match_room_details_notification_to_competitor but returns a
-    de-duplicated set so a custom broadcast lands once per person."""
+    team/squad -> registered event players + team management per team in the group
+    (via _event_team_recipient_users). Returns a de-duplicated set so a custom
+    broadcast lands once per person."""
     users = {}
     if event.participant_type == "solo":
         competitors = (StageGroupCompetitor.objects
@@ -23052,16 +23081,15 @@ def _group_recipient_users(event, group):
                 users[u.user_id] = u
     else:
         teams = (StageGroupCompetitor.objects
-                 .select_related("tournament_team")
+                 .select_related("tournament_team__team")
                  .filter(stage_group=group, tournament_team__isnull=False))
         for sgc in teams:
-            # EXCLUDE rejected/removed roster members (owner 2026-07-04 leak fix): a player the team
-            # dropped keeps a TournamentTeamMember row with status="rejected"; iterating .all() sent
-            # them the room ID+PASS even though they are not part of the registered team. Only current
-            # roster members (not rejected) may receive a group broadcast.
-            for m in sgc.tournament_team.members.exclude(status="rejected").select_related("user").all():
-                if m.user and m.user.user_id not in users:
-                    users[m.user.user_id] = m.user
+            # Registered event players + team management only (owner 2026-07-04): unregistered club
+            # players never get the room ID+PASS; managers/coaches always do. See
+            # _event_team_recipient_users.
+            for u in _event_team_recipient_users(sgc.tournament_team):
+                if u.user_id not in users:
+                    users[u.user_id] = u
     return list(users.values())
 
 

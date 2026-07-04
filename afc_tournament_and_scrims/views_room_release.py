@@ -20,7 +20,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from .models import Match, TournamentTeam, Event
-from .views import _is_event_admin, org_can_event
+from .views import _is_event_admin, org_can_event, _event_team_recipient_users
 from afc_auth.views import validate_token, deliver_broadcast
 
 
@@ -36,13 +36,10 @@ def _can_manage(user, event):
 
 
 def _team_users(tt):
-    """Deduped current Users on a TournamentTeam's roster. EXCLUDES rejected/removed members (leak
-    fix owner 2026-07-04): a dropped player keeps a member row and must NOT receive the room ID+PASS."""
-    out = {}
-    for m in tt.members.exclude(status="rejected").select_related("user").all():
-        if m.user and m.user.user_id not in out:
-            out[m.user.user_id] = m.user
-    return list(out.values())
+    """Recipients for a waitlist team's room release: the registered event players + team management
+    only (owner 2026-07-04). Delegates to the shared _event_team_recipient_users so the waitlist
+    release, the group broadcast, and the legacy room-details send all target the exact same people."""
+    return _event_team_recipient_users(tt)
 
 
 @api_view(["POST"])
