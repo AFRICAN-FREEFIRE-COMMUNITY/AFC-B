@@ -131,12 +131,15 @@ def event_stage_graphic(request, event_id, stage_id):
     # Team logos in bulk (tournament_team_id -> team_logo filesystem path).
     tt_ids = [r["tournament_team_id"] for r in standings]
     logo_by_tt = {}
+    country_by_tt = {}  # country flag column (owner 2026-07-04)
     for tt in TournamentTeam.objects.filter(tournament_team_id__in=tt_ids).select_related("team"):
         try:
             if tt.team and tt.team.team_logo:
                 logo_by_tt[tt.tournament_team_id] = tt.team.team_logo.path
         except Exception:
             pass
+        if tt.team:
+            country_by_tt[tt.tournament_team_id] = tt.team.country or ""
 
     # Per-row dicts keyed by field_type (the field-layout path reads these); also a legacy-shaped
     # list so a design with NO placed fields still renders via the built-in auto-table.
@@ -148,6 +151,7 @@ def event_stage_graphic(request, event_id, stage_id):
             "pos": i + 1,
             "team_name": name,
             "team_logo": logo_by_tt.get(tt_id),
+            "team_country": country_by_tt.get(tt_id, ""),
             "booyah": r.get("total_booyah", 0),
             "placement_points": r.get("placement_sum", 0),
             "kill_points": r.get("kill_sum", 0),
