@@ -1,6 +1,7 @@
 from django.urls import path, include
 from .views import *
 from .views_checkin import (set_event_checkin, player_checkin, get_event_checkin_status, checkin_relegate_now)
+from .views_room_release import release_room_details_to_waitlist
 # Paid-event registration payments (feature "paid-events", Phase 1): Stripe Checkout init/verify,
 # the webhook backstop, and the admin escrow (list/release/refund). Kept in its own module so the
 # money-handling code is isolated from the big views.py.
@@ -353,6 +354,8 @@ urlpatterns = [
     path("checkin/", player_checkin, name="player_checkin"),
     path("checkin/status/", get_event_checkin_status, name="get_event_checkin_status"),
     path("checkin/relegate/", checkin_relegate_now, name="checkin_relegate_now"),
+    # No-show room release (owner 2026-07-04): send ID+PASS to the waitlist (per mode) or a chosen team.
+    path("room/release-to-waitlist/", release_room_details_to_waitlist, name="release_room_details_to_waitlist"),
     path("flagged-kills/flag/", set_match_kill_flag, name="set_match_kill_flag"),
     # Attribute one unmatched in-game team block to a registered team (or clear it). owner 2026-06-30.
     path("flagged-kills/unmatched-team/", attribute_unmatched_team, name="attribute_unmatched_team"),
