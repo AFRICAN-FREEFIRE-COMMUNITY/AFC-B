@@ -552,13 +552,18 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
     # First target backfills the single-link columns (back-compat with old readers + single "Take me there").
     first = targets_list[0] if targets_list else {"target_type": target_type, "target_id": target_id}
 
+    # Per-recipient time/money tokens (owner 2026-07-04): {{time:iso}}/{{money:amt:cur}} in the message
+    # are rendered in EACH recipient's own timezone + currency (afc_auth.broadcast_tokens). No-op when
+    # the message has no tokens.
+    from .broadcast_tokens import resolve_broadcast_tokens
+
     pushed = 0
     if want_push:
         Notifications.objects.bulk_create([
             Notifications(
                 user=r,
                 title=title or None,
-                message=message,
+                message=resolve_broadcast_tokens(message, r),
                 notification_type=notification_type,
                 related_event=related_event,
                 target_type=first.get("target_type", ""),
@@ -576,19 +581,20 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
         # TranslationCache makes the second+ recipient in a given language a free cache hit). We carry
         # (address, language) pairs instead of bare addresses so the daemon thread has what it needs.
         targets = [
-            (r.email, (getattr(r, "language", "") or "en"))
+            (r.email, (getattr(r, "language", "") or "en"), r)
             for r in recipients
             if getattr(r, "email", None)
         ]
         emailed = len(targets)
         if targets:
-            # Build the English body ONCE; send_email translates it per recipient (cache-backed).
-            html = broadcast_message_email_html(title, message)
             subject = (title or "").strip() or "A message from African Free Fire Community"
-
+            # Resolve time/money tokens PER recipient (owner 2026-07-04), then build+translate that
+            # recipient's body. A message with NO tokens resolves unchanged, so it stays one cached
+            # body for everyone; only token-bearing broadcasts vary per person.
             def _send():
-                for addr, lang in targets:
+                for addr, lang, _user in targets:
                     try:
+                        html = broadcast_message_email_html(title, resolve_broadcast_tokens(message, _user))
                         send_email(addr, subject, html, language=lang)
                     except Exception:
                         pass  # one bad address never blocks the rest; push is the sure channel
