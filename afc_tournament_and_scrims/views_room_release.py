@@ -36,9 +36,10 @@ def _can_manage(user, event):
 
 
 def _team_users(tt):
-    """Deduped Users on a TournamentTeam's roster."""
+    """Deduped current Users on a TournamentTeam's roster. EXCLUDES rejected/removed members (leak
+    fix owner 2026-07-04): a dropped player keeps a member row and must NOT receive the room ID+PASS."""
     out = {}
-    for m in tt.members.select_related("user").all():
+    for m in tt.members.exclude(status="rejected").select_related("user").all():
         if m.user and m.user.user_id not in out:
             out[m.user.user_id] = m.user
     return list(out.values())

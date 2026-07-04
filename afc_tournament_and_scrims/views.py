@@ -11710,7 +11710,9 @@ def send_match_room_details_notification_to_competitor(request):
                      .filter(stage_group=group, tournament_team__isnull=False))
 
             for sgc in teams:
-                members = sgc.tournament_team.members.select_related("user").all()
+                # Exclude rejected/removed roster members (owner 2026-07-04 leak fix): a dropped player
+                # keeps a member row and must not receive the room ID+PASS.
+                members = sgc.tournament_team.members.exclude(status="rejected").select_related("user").all()
                 for m in members:
                     if not m.user:
                         continue
@@ -23040,7 +23042,11 @@ def _group_recipient_users(event, group):
                  .select_related("tournament_team")
                  .filter(stage_group=group, tournament_team__isnull=False))
         for sgc in teams:
-            for m in sgc.tournament_team.members.select_related("user").all():
+            # EXCLUDE rejected/removed roster members (owner 2026-07-04 leak fix): a player the team
+            # dropped keeps a TournamentTeamMember row with status="rejected"; iterating .all() sent
+            # them the room ID+PASS even though they are not part of the registered team. Only current
+            # roster members (not rejected) may receive a group broadcast.
+            for m in sgc.tournament_team.members.exclude(status="rejected").select_related("user").all():
                 if m.user and m.user.user_id not in users:
                     users[m.user.user_id] = m.user
     return list(users.values())
