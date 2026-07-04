@@ -159,9 +159,36 @@ def update_event_and_stage_statuses():
     # (reopen_event) is NOT silently re-completed by this date sweep just because its end_date is in
     # the past. Such events stay active until results-based auto-complete or a manual complete closes
     # them again. (owner 2026-06-25)
+    # Events whose date window is entirely in the PAST/FUTURE update in bulk (no time nuance needed).
     Event.objects.filter(is_draft=False, end_date__lt=today).exclude(event_status="completed").exclude(auto_complete_suppressed=True).update(event_status="completed")
-    Event.objects.filter(is_draft=False, start_date__lte=today, end_date__gte=today).exclude(event_status="ongoing").update(event_status="ongoing")
     Event.objects.filter(is_draft=False, start_date__gt=today).exclude(event_status="upcoming").update(event_status="upcoming")
+
+    # ── TIME-AWARE window (owner 2026-07-04) ───────────────────────────────────────────────────
+    # The date-only bulk sweep ignored event_start_time / event_end_time, so an event whose window
+    # includes today was mishandled: e.g. a same-day event (start_date == end_date == today) flipped
+    # to "ongoing" at midnight and "completed" at the date boundary regardless of the times set. The
+    # date-window set is now walked WITH the clock (NOT bulk-set to ongoing, which would thrash
+    # against this loop): before its start instant => upcoming, past its end instant => completed,
+    # otherwise ongoing. Only this small "touches today" set is iterated, so the sweep stays cheap.
+    # auto_complete_suppressed (a manually reopened event) is never re-completed here.
+    from datetime import datetime as _dt, time as _time
+    _tz = timezone.get_current_timezone()
+    _now = timezone.now()
+    for _ev in Event.objects.filter(is_draft=False, start_date__lte=today, end_date__gte=today).exclude(event_status="completed"):
+        try:
+            start_dt = timezone.make_aware(_dt.combine(_ev.start_date, _ev.event_start_time or _time.min), _tz)
+            end_dt = timezone.make_aware(_dt.combine(_ev.end_date, _ev.event_end_time or _time.max), _tz)
+        except Exception:
+            continue
+        if _now < start_dt:
+            _new = "upcoming"
+        elif _now > end_dt and not _ev.auto_complete_suppressed:
+            _new = "completed"
+        else:
+            _new = "ongoing"
+        if _new != _ev.event_status:
+            _ev.event_status = _new
+            _ev.save(update_fields=["event_status"])
 
     # STAGES
     Stages.objects.filter(end_date__lt=today).exclude(stage_status="completed").update(stage_status="completed")
