@@ -70,6 +70,22 @@ MAX_VIDEO_BYTES = 50 * 1024 * 1024       # 50 MB per product video
 ALLOWED_IMAGE_PREFIX = "image/"
 ALLOWED_VIDEO_PREFIX = "video/"
 
+# ── Vendor selling currency (owner 2026-07-04) ──────────────────────────────────────────────────
+# Multi-currency ROUTE only. The store charges + pays out in ONE currency (SHOP_CURRENCY = NGN), and
+# shipping is Nigeria-only, so today NGN is the ONLY chargeable selling currency. To switch on more
+# later: add the codes here AND make the checkout/payout path (verify_paystack_payment, the Stripe
+# path, and the vendor payout) handle a non-NGN charge (route those through a gateway that supports
+# the currency). Until then _normalize_sell_currency folds any other value back to NGN so a product
+# can never be priced in a currency checkout cannot take.
+_SUPPORTED_SELL_CURRENCIES = {"NGN"}
+
+
+def _normalize_sell_currency(raw):
+    """Uppercase + validate a vendor selling-currency code against the currently-chargeable set;
+    anything unknown/unsupported falls back to NGN (see _SUPPORTED_SELL_CURRENCIES)."""
+    code = (str(raw or "").strip().upper())[:3]
+    return code if code in _SUPPORTED_SELL_CURRENCIES else "NGN"
+
 
 def _abs_url(request, file_field):
     """
@@ -201,6 +217,12 @@ def add_product(request):
     # separately via add_product_media after the product exists.
     image = request.FILES.get("image")
 
+    # Selling currency (owner 2026-07-04): multi-currency ROUTE only - normalised + validated against
+    # the currently-chargeable set. Today that is NGN only (shipping is Nigeria-only, and the store
+    # charges/pays out in one SHOP_CURRENCY); an unknown/non-chargeable value falls back to NGN rather
+    # than erroring, so nothing can be priced in a currency checkout can't take.
+    currency = _normalize_sell_currency(request.data.get("currency"))
+
     product = Product.objects.create(
         name=name,
         description=description,
@@ -208,7 +230,8 @@ def add_product(request):
         category=category,
         image=image,
         is_limited_stock=is_limited_stock,
-        status=status_val
+        status=status_val,
+        currency=currency,
     )
 
     created_variants = []
@@ -274,6 +297,7 @@ def view_all_products(request):
             "type": p.product_type,           # legacy slug string (back-compat)
             "category": _serialize_category(p.category),  # structured category or None
             "description": p.description,
+            "currency": getattr(p, "currency", "NGN"),
             "status": p.status,
             "is_limited_stock": p.is_limited_stock,
             "image": _abs_url(request, p.image),          # primary card thumbnail
@@ -354,6 +378,7 @@ def view_active_products(request):
             "type": p.product_type,
             "category": _serialize_category(p.category),
             "description": p.description,
+            "currency": getattr(p, "currency", "NGN"),
             "status": p.status,
             "is_limited_stock": p.is_limited_stock,
             "image": _abs_url(request, p.image),
@@ -411,6 +436,9 @@ def edit_product(request):
     }
 
     # plain text product fields (skip is_limited_stock — coerced below)
+    # Selling currency (owner 2026-07-04 route): normalise + persist when provided (NGN-only today).
+    if "currency" in request.data:
+        product.currency = _normalize_sell_currency(request.data.get("currency"))
     for field in ["name", "description", "product_type", "status"]:
         if field in request.data:
             setattr(product, field, request.data.get(field))
