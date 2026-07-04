@@ -11,8 +11,63 @@ Pure rendering: standings in (from standings.standalone_standings), PNG bytes ou
 writes. Called by afc_leaderboard.views.leaderboard_graphic (the download endpoint).
 """
 import io
+import os
 
 from PIL import Image, ImageDraw, ImageFont
+
+
+# ── Country flag resolver for the "team_flag" design column (owner 2026-07-04) ──────────────────
+# A design can place a TEAM FLAG column; the renderer turns each row's team_country (ISO-2 or a full
+# country name) into that country's flag PNG. Flags are downloaded ONCE from flagcdn.com and cached
+# on disk (MEDIA_ROOT/flag_cache/<iso2>.png), so an export/overlay render never blocks on the
+# network after the first time a country is seen. Returns None (no flag drawn) on any failure -
+# unknown country, offline first-fetch, etc. - so a missing flag never breaks the graphic.
+_FLAG_CACHE_MEM: dict = {}  # iso2 -> path | None, per-process memo
+
+
+def _country_iso2(country):
+    """Normalise a country string (ISO-2 like 'NG' or a full name like 'Nigeria') to lowercase
+    ISO-2, or None. Uses pycountry (already a dependency) for the name lookup."""
+    if not country:
+        return None
+    c = str(country).strip()
+    if len(c) == 2 and c.isalpha():
+        return c.lower()
+    try:
+        import pycountry
+        hit = pycountry.countries.get(name=c) or (pycountry.countries.search_fuzzy(c) or [None])[0]
+        return hit.alpha_2.lower() if hit else None
+    except Exception:
+        return None
+
+
+def _country_flag_path(country):
+    """Return a filesystem path to the country's flag PNG (cached), or None. Downloads from
+    flagcdn.com on first use per country; memoised in-process + on disk."""
+    iso2 = _country_iso2(country)
+    if not iso2:
+        return None
+    if iso2 in _FLAG_CACHE_MEM:
+        return _FLAG_CACHE_MEM[iso2]
+    try:
+        from django.conf import settings
+        cache_dir = os.path.join(settings.MEDIA_ROOT, "flag_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        path = os.path.join(cache_dir, f"{iso2}.png")
+        if not os.path.exists(path):
+            import requests
+            # w320 = a crisp, small flag (flags are wide; the renderer fits it into the cell).
+            resp = requests.get(f"https://flagcdn.com/w320/{iso2}.png", timeout=8)
+            if resp.status_code != 200 or not resp.content:
+                _FLAG_CACHE_MEM[iso2] = None
+                return None
+            with open(path, "wb") as fh:
+                fh.write(resp.content)
+        _FLAG_CACHE_MEM[iso2] = path
+        return path
+    except Exception:
+        _FLAG_CACHE_MEM[iso2] = None
+        return None
 
 # Output canvases. IG = portrait feed post; YT = 16:9 thumbnail / stream card.
 CANVAS = {
@@ -213,6 +268,12 @@ def _render_fields(base, field_layout, rows, W, H, default_rgb):
                 ft = f.get("field_type")
                 if ft == "team_logo":
                     _paste_row_logo(base, r.get("team_logo"), x, y, H, _elem_size_px(f, H, 0.06))
+                    continue
+                if ft == "team_flag":
+                    # Country flag column (owner 2026-07-04): resolve the row's team_country to a
+                    # cached flag PNG and paste it in the cell, sized like a logo.
+                    _paste_row_logo(base, _country_flag_path(r.get("team_country")), x, y, H,
+                                    _elem_size_px(f, H, 0.05))
                     continue
                 val = r.get(ft)
                 if val is None or val == "":

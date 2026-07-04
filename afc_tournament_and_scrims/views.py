@@ -18569,6 +18569,7 @@ def _overlay_rows_from_standings(standings, max_rows, request):
             "event_id", flat=True)[:1]:
         _suppressed_team_ids = set(EventMediaOptOut.objects.filter(
             event_id=tt0, kind="team_logo").values_list("team_id", flat=True))
+    country_by_tt = {}  # country flag column (owner 2026-07-04)
     for tt in TournamentTeam.objects.filter(
         tournament_team_id__in=tt_ids).select_related("team"):
         try:
@@ -18576,6 +18577,8 @@ def _overlay_rows_from_standings(standings, max_rows, request):
                 logo_by_tt[tt.tournament_team_id] = request.build_absolute_uri(tt.team.team_logo.url)
         except Exception:
             pass
+        if tt.team:
+            country_by_tt[tt.tournament_team_id] = tt.team.country or ""
 
     # Per-row dicts keyed by field_type — the SAME keys the design's placed fields bind to, so the
     # FE DesignBoard can render whichever columns the chosen design places (pos/team_name/team_logo/
@@ -18587,6 +18590,8 @@ def _overlay_rows_from_standings(standings, max_rows, request):
             "pos": i + 1,
             "team_name": r.get("team_name") or "-",
             "team_logo": logo_by_tt.get(tt_id),
+            # Country flag column (owner 2026-07-04): DesignBoard resolves this to a flag.
+            "team_country": country_by_tt.get(tt_id, ""),
             # Player esport image (owner 2026-07-02): a PLAYER-scoped column — TEAM standings rows
             # have no single player, so it's None here (blank cell). Solo standings + the versus/H2H
             # feeds populate it with User.esports_pic.
