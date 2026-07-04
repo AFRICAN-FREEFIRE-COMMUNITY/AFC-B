@@ -236,6 +236,18 @@ class Event(models.Model):
     registration_start_time = models.TimeField(null=True, blank=True)
     registration_end_time = models.TimeField(null=True, blank=True)
 
+    # ── Check-in (owner 2026-07-04) ────────────────────────────────────────────────────────────
+    # When enabled, every registered competitor must LOG IN and tap "check in" inside the window to
+    # stay eligible; a squad is eligible only when ALL its registered players check in. Competitors
+    # (or squads with any missing player) who do not check in by checkin_end are RELEGATED to the
+    # waitlist (is_waitlisted=True) - see relegate_unchecked_competitors. The window must open AFTER
+    # registration ends and close BEFORE the event starts (validated in set_event_checkin). Consumed
+    # by: player_checkin (user taps), get_event_checkin_status (status), the admin/organizer event
+    # edit Check-in settings, and the user event page's Check-in button. Records live in EventCheckIn.
+    checkin_enabled = models.BooleanField(default=False)
+    checkin_start = models.DateTimeField(null=True, blank=True)
+    checkin_end = models.DateTimeField(null=True, blank=True)
+
     # IANA timezone of the person who created/last set the event's times (e.g.
     # "Africa/Lagos"), captured from the browser on create/edit (owner 2026-06-21).
     # The date/time fields above are stored as the HOST's wall-clock; pairing them
@@ -524,6 +536,25 @@ class RegisteredCompetitors(models.Model):
     # slot a waitlisted competitor can take. Set via mark_no_show; excluded from active counts so the
     # waitlist promotion has room. Cleared if the team turns up after all (undo).
     is_no_show = models.BooleanField(default=False)
+
+
+class EventCheckIn(models.Model):
+    """One "I'm here" record: a registered user tapped Check-in for an event inside its check-in
+    window (owner 2026-07-04). Presence of a row = that user is checked in. Written by
+    views.player_checkin; read by get_event_checkin_status + relegate_unchecked_competitors (a squad
+    counts as checked-in only when EVERY registered roster member has a row). One row per (event,
+    user); the unique constraint also makes a double-tap idempotent."""
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="checkins")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="event_checkins")
+    # The squad this user checked in FOR (null for a solo event), so the status view can group by team
+    # without re-deriving the roster.
+    tournament_team = models.ForeignKey(
+        "TournamentTeam", on_delete=models.CASCADE, null=True, blank=True, related_name="checkins")
+    checked_in_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("event", "user")
+        indexes = [models.Index(fields=["event", "user"])]
 
 
 # ---------------- Leaderboard ----------------
