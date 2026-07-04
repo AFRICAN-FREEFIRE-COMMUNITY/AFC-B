@@ -196,6 +196,16 @@ class Product(models.Model):
 
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+
+    # ── Selling currency (owner 2026-07-04) ─────────────────────────────────────────────────────
+    # The currency the vendor priced this product's variants in. Multi-currency ROUTE only for now:
+    # the field exists + is serialized + settable in the product form + read at checkout, but the
+    # store charges + pays out in ONE SHOP_CURRENCY (NGN) - so today this MUST stay "NGN" (shipping is
+    # Nigeria-only). When multi-currency is switched on later, expand the vendor form's options and
+    # make the checkout/payout route non-NGN charges through a gateway that supports them (Stripe);
+    # the checkout guard in afc_shop.views enforces NGN-only until then. See _SUPPORTED_SELL_CURRENCIES.
+    currency = models.CharField(max_length=3, default="NGN")
+
     # Legacy string category. Still written (kept in sync with `category.slug`)
     # so existing reads — e.g. the diamond-only frontend filter — never break.
     product_type = models.CharField(max_length=40, choices=PRODUCT_TYPES)
@@ -480,6 +490,17 @@ class Order(models.Model):
     )
 
     tax = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+
+    # ── Shipping fee (provider-agnostic delivery cost) ──────────────────────────────
+    # The live courier-quoted delivery fee for a PHYSICAL order, charged on top of
+    # subtotal + tax. Default 0.00 so digital orders (diamond topups) and any order
+    # placed while shipping is DISABLED (no SHIPPING_PROVIDER configured) are charged
+    # exactly as before — this field is inert until a shipping provider is wired.
+    # Set by the checkout views from the courier the buyer picked at /shop/shipping/quote/
+    # (see afc_shop/services/shipping/). The chosen courier + tracking live on the
+    # related `Shipment` row (below), not here; this is only the money line so the
+    # grand total math has a single place to read it.
+    shipping_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
 
     # ── Payment provider (which gateway took the money for THIS order) ──────────────
     # The shop now supports TWO checkout providers side by side: Paystack (the original,
@@ -854,3 +875,62 @@ class Wishlist(models.Model):
 
     def __str__(self):
         return f"{self.user.username} saved {self.product.name}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shipment — provider-AGNOSTIC delivery record for one physical order.
+#
+# WHY this exists (shipping integration, owner 2026-06-29):
+#   AFC holds no couriers of its own. At checkout the buyer picks a live-quoted
+#   courier (DHL/GIGL/Fez/... via an aggregator like Terminal Africa or Shipbubble,
+#   or a single carrier), and on successful payment we book the shipment with that
+#   provider and store the booking + tracking here. This model is deliberately
+#   provider-agnostic: `provider` names which courier API booked it, and
+#   `provider_payload` keeps the raw response, so swapping Shipbubble <-> Terminal
+#   <-> GIGL is one isolated service module (afc_shop/services/shipping/) and never
+#   a schema change.
+#
+# HOW it connects:
+#   - `order` OneToOne (related_name="shipment"): at most one shipment per order; the
+#     money line lives on Order.shipping_fee (above), the courier identity lives here.
+#   - WRITTEN by the post-payment dispatch hook (book_shipment in
+#     afc_shop/services/shipping/__init__.py) called from the payment-success points
+#     (verify_paystack_payment / paystack_webhook / stripe _mark_paid_and_fulfil),
+#     idempotent like the voucher fulfilment beside it.
+#   - `request_token` is the aggregator's rate-quote token from /shop/shipping/quote/
+#     (Shipbubble/Terminal hand one out with the rates; reused to book the chosen
+#     courier). `tracking_url` + `status` are surfaced on the buyer's order page +
+#     admin order detail. Mirrors the structure of Fulfillment / VendorPayout above.
+# ─────────────────────────────────────────────────────────────────────────────
+class Shipment(models.Model):
+    STATUS = (
+        ("pending", "Pending"),       # order paid, label not booked yet
+        ("booked", "Booked"),         # provider accepted, label/tracking issued
+        ("in_transit", "In transit"),
+        ("delivered", "Delivered"),
+        ("failed", "Failed"),         # provider rejected / booking error
+    )
+
+    order = models.OneToOneField("Order", on_delete=models.CASCADE, related_name="shipment")
+
+    # Which courier API booked this (e.g. "shipbubble", "terminal", "gigl"). Free-text
+    # rather than a fixed choice so adding a provider needs no migration.
+    provider = models.CharField(max_length=40, blank=True)
+    # The aggregator courier/service id the buyer picked at quote time.
+    courier_id = models.CharField(max_length=120, blank=True)
+    courier_name = models.CharField(max_length=120, blank=True)
+    # The rate-quote token the aggregator returned with the rates (reused to book).
+    request_token = models.CharField(max_length=255, blank=True)
+    # The provider's own shipment/order id once booked.
+    provider_shipment_id = models.CharField(max_length=120, blank=True)
+    tracking_url = models.URLField(blank=True)
+
+    status = models.CharField(max_length=20, choices=STATUS, default="pending")
+    # Raw provider response(s) for debugging / re-tries (mirrors Fulfillment.provider_payload).
+    provider_payload = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Shipment {self.id} - Order {self.order_id} - {self.provider or 'unbooked'} - {self.status}"
