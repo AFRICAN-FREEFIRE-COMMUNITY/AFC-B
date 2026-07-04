@@ -17947,12 +17947,25 @@ def seed_event_competitors_to_stage(request):
         StageCompetitor.objects.bulk_create(new_entries)
         seeded = len(new_entries)
 
+        # Auto-distribute into groups on start (owner 2026-07-04): for BR/CS-normal stages, place the
+        # just-seeded pool into the stage's groups too, so STARTING an event lands teams in groups in
+        # one step. Previously Start seeded only the StageCompetitor POOL and every group stayed empty
+        # until a separate "Seed to groups" run - the source of "teams show in the stage but not the
+        # group". only_ungrouped=True never duplicates/moves an already-placed competitor, and RR /
+        # CS-bracket formats are excluded (GROUP_DISTRIBUTABLE_FORMATS) since they seed via their own
+        # tools (RoundRobinPanel / bracket). No-op when the stage has no StageGroups yet.
+        from .seeding_management import _distribute_into_groups, GROUP_DISTRIBUTABLE_FORMATS
+        grouped = 0
+        if stage.stage_format in GROUP_DISTRIBUTABLE_FORMATS:
+            grouped = _distribute_into_groups(stage, only_ungrouped=True)
+
         created, skipped = reconcile_stage_roles(stage.stage_id)
 
     return Response({
         "message": "Event competitors seeded to stage successfully.",
         "stage_id": stage.stage_id,
         "total_seeded": seeded,
+        "seeded_into_groups": grouped,
         "stage_roles_created": created,
         "stage_roles_skipped": skipped,
     }, status=200)
