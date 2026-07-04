@@ -11179,14 +11179,15 @@ def seed_stage_competitors_to_groups(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
 
     stage_id = request.data.get("stage_id")
     if not stage_id:
         return Response({"message": "stage_id is required."}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
+    # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", stage.event):
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
     groups = list(stage.groups.all().order_by("group_id"))
     if not groups:
         return Response({"message": "No groups found for this stage."}, status=400)
@@ -11734,14 +11735,15 @@ def delete_stage(request):
             {"message": "Invalid or expired session token."},
             status=status.HTTP_401_UNAUTHORIZED
         )
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
     
     stage_id = request.data.get("stage_id")
     if not stage_id:
         return Response({"message": "stage_id is required."}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
+    # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", stage.event):
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
 
     # Remove all group roles from competitors
     groups = stage.groups.all()
@@ -11772,14 +11774,15 @@ def delete_group(request):
             {"message": "Invalid or expired session token."},
             status=status.HTTP_401_UNAUTHORIZED
         )
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
     
     group_id = request.data.get("group_id")
     if not group_id:
         return Response({"message": "group_id is required."}, status=400)
 
     group = get_object_or_404(StageGroups, group_id=group_id)
+    # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", group.stage.event):
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
 
     # Remove all group roles from competitors
     competitors = StageGroupCompetitor.objects.filter(stage_group=group)
@@ -14333,8 +14336,6 @@ def advance_group_competitors_to_next_stage(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission."}, status=403)
 
     event_id = request.data.get("event_id")
     group_id = request.data.get("group_id")
@@ -14344,6 +14345,10 @@ def advance_group_competitors_to_next_stage(request):
     event = get_object_or_404(Event, event_id=event_id)
     group = get_object_or_404(StageGroups, group_id=group_id, stage__event=event)
     stage = group.stage
+    # Organizer parity (owner 2026-07-04): the owning organizer (can_manage_registrations) advances
+    # their OWN event, matching advance_stage_by_rules / _seeding_gate. Native events stay admin-only.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission."}, status=403)
 
     # 1) Ensure all match results uploaded
     matches = Match.objects.filter(group=group).order_by("match_number")
@@ -14550,10 +14555,6 @@ def advance_round_robin(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    # Admin-gated via _is_event_admin (correct role__role_name__in path; never role_name__in).
-    if not _is_event_admin(user):
-        return Response({"message": "You do not have permission."}, status=403)
-
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
     if not event_id or not stage_id:
@@ -14565,6 +14566,11 @@ def advance_round_robin(request):
         return Response({"message": "mode must be 'overall' or 'per_group'."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+    # Organizer parity (owner 2026-07-04): the owning organizer (can_manage_registrations) advances
+    # top-N from their OWN event's round-robin table, matching advance_stage_by_rules / _advance_gate.
+    # Native (org=None) events stay admin-only via org_can_event.
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission."}, status=403)
     # Scope the stage to the event so a mismatched pair can't advance another event's stage.
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
     if stage.stage_format != "br - round robin":
@@ -17912,8 +17918,6 @@ def seed_stage_competitors_to_groups_team(request):
     if not admin:
         return Response({"message": "Invalid session"}, status=401)
 
-    if admin.role != "admin":
-        return Response({"message": "No permission"}, status=403)
 
     stage_id = request.data.get("stage_id")
     shuffle = request.data.get("shuffle", True)
@@ -17923,6 +17927,9 @@ def seed_stage_competitors_to_groups_team(request):
         return Response({"message": "stage_id required"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
+    # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
+    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", stage.event):
+        return Response({"message": "You do not have permission to perform this action."}, status=403)
     groups = StageGroups.objects.filter(stage=stage).order_by("group_id")
 
     if not groups.exists():
@@ -22149,8 +22156,16 @@ def delete_match_result_image(request):
 
 # ── Event Actions ──────────────────────────────────────────────────────────────
 
-def _get_event_action_user(request):
-    """Validate auth and return (user, error_response)."""
+def _get_event_action_user(request, event=None, org_perm=None):
+    """Validate auth and return (user, error_response).
+
+    Base allow-list: AFC staff (admin/moderator/support) or a granular event_admin/head_admin.
+    When `event` + `org_perm` are supplied (owner 2026-07-04 organizer parity), an ORGANIZER holding
+    that permission on the event's OWNING org also passes - so organizers can run cancel/complete/
+    export on THEIR OWN events. org_can_event keeps native (org=None) events admin-only, so no
+    external-event surface is opened. BUG FIX: the granular check used `role_name__in`, but UserRoles
+    has no `role_name` field (it's role.role_name), so a granular-only event_admin raised FieldError
+    -> 500; corrected to `role__role_name__in`."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
@@ -22159,7 +22174,9 @@ def _get_event_action_user(request):
         return None, Response({"message": "Invalid or expired session token."}, status=401)
     allowed = user.role in ["admin", "moderator", "support"]
     if not allowed:
-        allowed = user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists()
+        allowed = user.userroles.filter(role__role_name__in=["event_admin", "head_admin"]).exists()
+    if not allowed and event is not None and org_perm:
+        allowed = org_can_event(user, org_perm, event)
     if not allowed:
         return None, Response({"message": "You do not have permission to perform this action."}, status=403)
     return user, None
@@ -22212,15 +22229,15 @@ def _notify_all_registered(event, title, message):
 
 @api_view(["POST"])
 def cancel_event(request):
-    user, err = _get_event_action_user(request)
-    if err:
-        return err
-
+    # Resolve the event FIRST so the auth check can allow the owning organizer (can_edit_events),
+    # not just AFC staff (owner 2026-07-04 organizer parity).
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
-
     event = get_object_or_404(Event, event_id=event_id)
+    user, err = _get_event_action_user(request, event=event, org_perm="can_edit_events")
+    if err:
+        return err
 
     if event.event_status in ["cancelled", "completed"]:
         return Response({"message": f"Event is already {event.event_status}."}, status=400)
@@ -23851,12 +23868,8 @@ def export_participants(request):
     # raw bytes under text/csv). JsonResponse sidesteps DRF content negotiation
     # entirely, so every bad-input branch returns clean JSON with the right status.
 
-    user, err = _get_event_action_user(request)
-    if err:
-        # err is a DRF Response built by the auth helper; re-emit it as JSON so the
-        # csv/xlsx passthrough renderer cannot mangle the 400/401/403 body.
-        return JsonResponse(err.data, status=err.status_code)
-
+    # Resolve the event BEFORE the auth check so the owning organizer (can_manage_registrations)
+    # passes, not just AFC staff (owner 2026-07-04 organizer parity).
     event_id = request.query_params.get("event_id")
     fmt = request.query_params.get("format", "csv").lower()
 
@@ -23871,6 +23884,12 @@ def export_participants(request):
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
         return JsonResponse({"message": "Event not found."}, status=404)
+
+    user, err = _get_event_action_user(request, event=event, org_perm="can_manage_registrations")
+    if err:
+        # err is a DRF Response built by the auth helper; re-emit it as JSON so the
+        # csv/xlsx passthrough renderer cannot mangle the 400/401/403 body.
+        return JsonResponse(err.data, status=err.status_code)
 
     rows = []
     if event.participant_type == "solo":
