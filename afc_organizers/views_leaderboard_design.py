@@ -1226,3 +1226,200 @@ def design_duplicate(request, design_id):
             color=t.color, order=t.order, page=page_map.get(t.page_id),
         )
     return Response(_serialize_design(copy, request), status=201)
+
+
+# ═══════════ One-click "Create default AFC design" generator (owner 2026-07-04) ═══════════
+#
+# WHAT THIS IS: a single endpoint that builds a READY-TO-USE leaderboard design in the target
+# library (an org's, or the AFC-native one) with the AFC dark/green theme, the standard AFC columns
+# already placed (POS, TEAM logo + name, KILLS, PLACEMENT POINTS, BOOYAHS, TOTAL POINTS), and the
+# correct row geometry for the chosen size preset. It saves the operator from hand-building a design
+# in the drag editor for the common cases.
+#
+# PRESETS (team capacity):
+#   12 -> ONE column group of 12 rows        (single-column / single page)
+#   15 -> ONE column group of 15 rows        (single-column / single page)
+#   24 -> TWO side-by-side column groups of 12 rows each = 24 capacity (2-column layout)
+#
+# HOW IT CONNECTS: it reuses the SAME model rows the drag editor persists — OrgLeaderboardDesign +
+# its OrgLeaderboardDesignField (placed columns) / OrgLeaderboardDesignText (freeform brand text) /
+# OrgLeaderboardDesignLogo (positioned org logo). Because it places its own fields, the export
+# renderer (afc_leaderboard.graphic.render_leaderboard_graphic) takes its FIELD-LAYOUT path: it tiles
+# the standings down each column group and draws each field at its x_pct (see _render_fields +
+# build_field_layout above). The generated design is fully editable afterwards in DesignFieldsEditor.
+# Called by the FE LeaderboardDesignsManager "Create default AFC design" control
+# (leaderboardDesignsApi.createDefault in lib/leaderboardDesigns.ts).
+
+# AFC dark/green theme (mirrors graphic.DEFAULT_TEXT/DEFAULT_ACCENT + the FE EMPTY_FORM colours).
+AFC_DEFAULT_TEXT_COLOR = "#FFFFFF"
+AFC_DEFAULT_ACCENT_COLOR = "#34d27b"
+
+# The standard AFC column set, placed once per column group. Each tuple is (field_type, x_pct, align)
+# where x_pct is the CENTRE X as a percent of canvas WIDTH (Instagram/portrait is the canonical
+# layout; YouTube falls back to it until edited). field_type values mirror
+# OrgLeaderboardDesignField.FIELD_CHOICES. team_name is left-aligned (it starts at its x and reads
+# rightwards); numeric columns are centred; team_logo is an image cell drawn centred.
+#
+# _SC_COLUMNS = the SINGLE-COLUMN layout across the full canvas width (presets 12 + 15).
+_SC_COLUMNS = [
+    ("pos", 5.0, "center"),
+    ("team_logo", 10.0, "center"),
+    ("team_name", 14.5, "left"),
+    ("kills", 57.0, "center"),
+    ("placement_points", 68.0, "center"),
+    ("booyah", 79.0, "center"),
+    ("total_points", 91.0, "center"),
+]
+# _LEFT_COLUMNS / _RIGHT_COLUMNS = the TWO-COLUMN layout (preset 24): the same columns compressed
+# into the left half (0..50%), then mirrored into the right half (+50%). Group 0 uses the left set,
+# group 1 the right set — matching the two column_groups in _afc_default_spec("24").
+_LEFT_COLUMNS = [
+    ("pos", 3.0, "center"),
+    ("team_logo", 6.5, "center"),
+    ("team_name", 9.5, "left"),
+    ("kills", 30.0, "center"),
+    ("placement_points", 36.0, "center"),
+    ("booyah", 42.0, "center"),
+    ("total_points", 47.5, "center"),
+]
+_RIGHT_COLUMNS = [(ft, x + 50.0, al) for (ft, x, al) in _LEFT_COLUMNS]
+
+
+def _afc_default_spec(preset):
+    """Return the geometry spec for a preset: max_rows, the column_groups row tiling
+    (OrgLeaderboardDesign.column_groups shape {row_start_pct,row_height_pct,row_count,start_rank}),
+    and the placed-column layout per group. Kept as a pure helper so the endpoint stays declarative
+    and the numbers are easy to eyeball/tune. `preset` is pre-validated to "12"|"15"|"24"."""
+    if preset == "12":
+        return {
+            "label": "12",
+            "max_rows": 12,
+            # One column, 12 rows, spanning ~31%..88% of canvas height.
+            "column_groups": [
+                {"row_start_pct": 31.0, "row_height_pct": 5.2, "row_count": 12, "start_rank": 1},
+            ],
+            "columns_by_group": [_SC_COLUMNS],
+        }
+    if preset == "15":
+        return {
+            "label": "15",
+            "max_rows": 15,
+            # One column, 15 rows, slightly tighter to fit (~27%..90%).
+            "column_groups": [
+                {"row_start_pct": 27.0, "row_height_pct": 4.5, "row_count": 15, "start_rank": 1},
+            ],
+            "columns_by_group": [_SC_COLUMNS],
+        }
+    # "24" -> two 12-row columns side by side (ranks 1-12 left, 13-24 right) = 24 capacity.
+    return {
+        "label": "24",
+        "max_rows": 24,
+        "column_groups": [
+            {"row_start_pct": 31.0, "row_height_pct": 5.2, "row_count": 12, "start_rank": 1},
+            {"row_start_pct": 31.0, "row_height_pct": 5.2, "row_count": 12, "start_rank": 13},
+        ],
+        "columns_by_group": [_LEFT_COLUMNS, _RIGHT_COLUMNS],
+    }
+
+
+@api_view(["POST"])
+def create_default_design(request):
+    """POST organizers/leaderboard-designs/create-default/ — one-click AFC default design.
+
+    Request (multipart or JSON):
+        preset            "12" | "15" | "24" (required) — the team-capacity size preset.
+        organization_id   optional. Absent/blank => the AFC-native library (AFC admins). Present =>
+                          that org's library.
+
+    Auth/gate: IDENTICAL to designs_collection POST — org_can(can_submit_designs) for an org
+    library (owner / granted sub-organizer / AFC platform-admin bypass), AFC staff admin
+    (user.role == "admin") for the AFC-native one. Resolved by _resolve_library.
+
+    Response 201: {"design": <serialized design>, "note": <branding note string>}, matching the
+    create response shape the FE LeaderboardDesignsManager already consumes, so the new design drops
+    straight into its list on reload.
+
+    BRANDING: the AFC dark/green theme is applied via text_color/accent_color. There is NO AFC logo
+    asset file in the repo (the only reference is a remote blob URL in the FE components/Logo.tsx,
+    which we must not hardcode as an image path), so the AFC logo slot is placed as an editable "AFC"
+    brand TEXT the operator can restyle or replace with the real logo in the designer. When the target
+    is an ORG library and the org has an uploaded logo, that logo is added as a positioned logo
+    (top-right), sharing the org's stored image by reference (same idiom as design_duplicate).
+
+    CONSUMED BY: LeaderboardDesignsManager.tsx "Create default AFC design" 12/15/24 buttons via
+    leaderboardDesignsApi.createDefault (frontend/lib/leaderboardDesigns.ts).
+    """
+    user, err = _authenticate(request)
+    if err:
+        return err
+    request._afc_user = user
+
+    preset = str(request.data.get("preset") or "").strip()
+    if preset not in ("12", "15", "24"):
+        return Response({"message": "Choose a preset: 12, 15, or 24 teams."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    # Resolve which library this targets + whether the caller may write to it (same as create).
+    org, can_write, err = _resolve_library(request, request.data.get("organization_id"))
+    if err:
+        return err
+    if not can_write:
+        return Response({"message": "You do not have permission to manage these designs."},
+                        status=status.HTTP_403_FORBIDDEN)
+
+    spec = _afc_default_spec(preset)
+
+    # First design in the library auto-becomes the default (mirrors designs_collection POST).
+    is_first = not _library_qs(org).exists()
+
+    d = OrgLeaderboardDesign.objects.create(
+        organization=org,
+        name=f"AFC Default ({spec['label']})",
+        text_color=AFC_DEFAULT_TEXT_COLOR,
+        accent_color=AFC_DEFAULT_ACCENT_COLOR,
+        max_rows=spec["max_rows"],
+        column_groups=spec["column_groups"],
+        is_default=is_first,
+        created_by=user,
+    )
+
+    # Placed data columns — one full set per column group. Placing >=1 field switches the renderer
+    # to its field-layout path (the built-in auto-table is skipped), so these ARE the leaderboard.
+    order = 0
+    for gi, columns in enumerate(spec["columns_by_group"]):
+        for (field_type, x_pct, align) in columns:
+            OrgLeaderboardDesignField.objects.create(
+                design=d, field_type=field_type, column_group=gi,
+                x_pct=x_pct, align=align, order=order,
+            )
+            order += 1
+
+    # ── AFC logo slot: an editable brand TEXT (no AFC logo asset ships in the repo — see docstring). ──
+    OrgLeaderboardDesignText.objects.create(
+        design=d, text="AFC", x_pct=6.0, y_pct=6.0, align="left",
+        color=AFC_DEFAULT_ACCENT_COLOR, font_size_pct=4.5, order=0,
+    )
+
+    # ── Organizer logo: added top-right when this is an org library and the org has a logo. ──
+    logo_note = (
+        "No AFC logo asset ships in the repo, so the AFC logo slot was placed as an editable "
+        "'AFC' brand text (top-left). Replace it with the AFC logo image in the designer if wanted."
+    )
+    if org is not None and org.logo:
+        OrgLeaderboardDesignLogo.objects.create(
+            design=d, image=org.logo, x_pct=90.0, y_pct=8.0, size="medium",
+        )
+        logo_note += " The organizer's logo was added top-right."
+    else:
+        logo_note += " No organizer logo was added (AFC-native library, or the org has no logo)."
+
+    if d.is_default:
+        _unset_other_defaults(org, d.id)
+
+    # Re-fetch with related rows so the serialized design carries its fields/logos/texts (no N+1).
+    d_fresh = (OrgLeaderboardDesign.objects.select_related("organization")
+               .prefetch_related("logos", "fields", "texts", "pages").get(id=d.id))
+    return Response(
+        {"design": _serialize_design(d_fresh, request), "note": logo_note},
+        status=status.HTTP_201_CREATED,
+    )
