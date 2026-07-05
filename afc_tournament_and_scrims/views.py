@@ -11660,8 +11660,6 @@ def send_match_room_details_notification_to_competitor(request):
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
 
     event_id = request.data.get("event_id")
     group_id = request.data.get("group_id")
@@ -11670,6 +11668,13 @@ def send_match_room_details_notification_to_competitor(request):
 
     event = get_object_or_404(Event, event_id=event_id)
     group = get_object_or_404(StageGroups, group_id=group_id)
+
+    # Organizer parity (owner 2026-07-05): the owning organizer (can_upload_results) may push this map's
+    # room details for THEIR OWN event. Was role != "admin" = AFC-staff-only, so an organizer got 403.
+    # Resolved the event first (mirrors complete_event) so org_can_event can check the owning org; native
+    # (org=None) events stay admin-only. Matches the current broadcast_to_group room-details gate.
+    if not (_is_event_admin(admin) or org_can_event(admin, "can_upload_results", event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
     matches = Match.objects.filter(group=group).order_by("match_number")
     if not matches.exists():
@@ -23986,7 +23991,10 @@ def _waitlist_gate(request):
     if not event_id:
         return None, None, Response({"message": "event_id is required."}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
-    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+    # Waitlist promotion / no-show are REGISTRATION actions, so gate on can_manage_registrations (owner
+    # 2026-07-05) to match every other add/remove/seed registration endpoint. The org OWNER passes either
+    # way (holds all perms); this correctly lets a registrations-only sub-organizer promote/no-show too.
+    if not (_is_event_admin(user) or org_can_event(user, "can_manage_registrations", event)):
         return None, None, Response({"message": "You do not have permission to manage this event's waitlist."}, status=403)
     return user, event, None
 
