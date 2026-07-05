@@ -154,6 +154,17 @@ def overlay_config(request):
         "event_id": event.event_id,
         "server_time": timezone.now(),
     }
+    # LEADERBOARD overlays bundle their RESOLVED standings with the config poll (owner 2026-07-05,
+    # complaint C), mirroring how h2h/booyah bundle their data below. This is where the per-overlay
+    # COMBINE spec (config {scope:"combine", group_ids, stage_ids}) is honoured: a combine config
+    # returns the merged cumulative rows spanning every chosen group/stage, a single-scope config just
+    # that group/stage, and a follow config the event's live broadcast selection — the SAME numbers the
+    # stable link's inner /overlay/leaderboard iframe pulls from overlay_feed, so the two never drift.
+    # The STABLE link is unchanged by any of this: editing the card re-saves config and this poll
+    # re-resolves, so the one link always renders the overlay's current combination.
+    if row.kind == "leaderboard":
+        from .views import _overlay_config_leaderboard_standings
+        payload["standings"] = _overlay_config_leaderboard_standings(event, row.config or {}, request)
     # H2H overlays ship their RESOLVED competitor stats + design look with the config poll, so the
     # public page needs exactly one request per poll (mirrors overlay_feed bundling design+standings).
     if row.kind == "h2h":

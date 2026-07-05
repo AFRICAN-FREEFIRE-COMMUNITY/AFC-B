@@ -30,7 +30,8 @@ from django.http import HttpResponse
 from afc.api_utils import authenticate as _authenticate
 from afc_organizers.permissions import org_can_event
 from afc_organizers.models import OrgLeaderboardDesign
-from afc_organizers.views_leaderboard_design import build_field_layout, build_pages_for_export
+from afc_organizers.views_leaderboard_design import (
+    build_field_layout, build_pages_for_export, build_ephemeral_afc_default)
 from afc_leaderboard.graphic import render_leaderboard_graphic, render_design_all_pages
 
 from afc_tournament_and_scrims.models import Event, Stages, StageGroups, TournamentTeam
@@ -126,7 +127,14 @@ def event_stage_graphic(request, event_id, stage_id):
     standings = (
         round_robin.group_standings(group) if group
         else round_robin.cumulative_standings(stage)
-    )[: max(1, max_rows)]
+    )
+    # A SAVED design shows a fixed number of rows, so we cap the fetched standings to what it displays.
+    # The branded-default FALLBACK (design is None, ?plain not set) instead paginates ALL rows by its
+    # row->page rule, so it must NOT be capped here (owner 2026-07-05, complaint J: auto row detection
+    # off the real standings length, not the hardcoded 16). ?plain=1 keeps the legacy capped table.
+    plain = str(request.query_params.get("plain") or "").strip().lower() in ("1", "true", "yes", "on")
+    if not (design is None and not plain):
+        standings = standings[: max(1, max_rows)]
 
     # Team logos in bulk (tournament_team_id -> team_logo filesystem path).
     tt_ids = [r["tournament_team_id"] for r in standings]
@@ -204,6 +212,47 @@ def event_stage_graphic(request, event_id, stage_id):
     # >1 page. build_pages_for_export returns 1 entry for a single-page (legacy) design, N otherwise.
     page_param = (request.query_params.get("page") or "").strip().lower()
     want_all_pages = (page_param == "all") and design is not None
+
+    # ══ Branded AFC default FALLBACK (owner 2026-07-05, audit complaint J) ═══════════════════════
+    # When the event's design library is EMPTY (design is None), do NOT drop to the legacy bare dark
+    # auto-table below. Build an EPHEMERAL AFC-branded default (identical look to create_default_design)
+    # sized to the ACTUAL standings length and render THROUGH it. Nothing is persisted to the library.
+    #   row->page rule (see build_ephemeral_afc_default): n<=12 -> one 12-row page; n<=15 -> one 15-row
+    #   page; n>15 -> pages of 24 (two 12-row columns), ceil(n/24) pages. AUTO row detection = len(rows).
+    # ?page=all zips every page; ?page=<N> renders that page; no ?page renders page 1. ?plain=1 keeps
+    # the legacy bare table (falls through to the single-PNG path below with field_layout=None).
+    if design is None and not plain and rows:
+        eph = build_ephemeral_afc_default(
+            len(rows), org=(event.organization if event.organization_id else None))
+        safe_name = f"{event.event_name}-{stage.stage_name or 'stage'}".replace(" ", "_")
+        # page=all -> ZIP of every page (only when >1 page; a 1-page default falls to the single return).
+        if page_param == "all" and eph.page_count > 1:
+            pngs = render_design_all_pages(
+                rows, eph.pages_spec, size=size, logos=eph.logos, title=title, subtitle=subtitle,
+                text_color=eph.text_color, accent_color=eph.accent_color, max_rows=eph.max_rows,
+                show_title=eph.show_title, show_subtitle=eph.show_subtitle,
+                transparent_background=eph.transparent_background)
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for i, png in enumerate(pngs, start=1):
+                    zf.writestr(f"{safe_name}-{size}-page{i}.png", png)
+            zip_buf.seek(0)
+            resp = HttpResponse(zip_buf.read(), content_type="application/zip")
+            resp["Content-Disposition"] = f'attachment; filename="{safe_name}-{size}-all-pages.zip"'
+            return resp
+        # page=<N> -> that page only (1-based, clamped to range); anything else -> page 1.
+        idx = int(page_param) - 1 if (page_param.isdigit()
+                                      and 1 <= int(page_param) <= eph.page_count) else 0
+        pngs = render_design_all_pages(
+            rows, [eph.pages_spec[idx]], size=size, logos=eph.logos, title=title, subtitle=subtitle,
+            text_color=eph.text_color, accent_color=eph.accent_color, max_rows=eph.max_rows,
+            show_title=eph.show_title, show_subtitle=eph.show_subtitle,
+            transparent_background=eph.transparent_background)
+        resp = HttpResponse(pngs[0], content_type="image/png")
+        suffix = f"-page{idx + 1}" if eph.page_count > 1 else ""
+        fname = f"{safe_name}-{size}{suffix}.png"
+        resp["Content-Disposition"] = f'attachment; filename="{fname}"'
+        return resp
 
     # ?page=<N> (owner 2026-06-16): render ONLY page N of a multi-page design as a single PNG, so the
     # FE can download each page as a SEPARATE image instead of one ZIP (owner prefers multiple images).
