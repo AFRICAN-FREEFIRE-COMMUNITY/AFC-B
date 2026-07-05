@@ -78,11 +78,19 @@ def _is_event_admin(user):
     ).exists()
 
 
+def _is_event_creator(user, event):
+    """The user who CREATED this event (Bug D). Local copy of the views.py helper — we deliberately do
+    NOT import the 24k-line views module here (load-time cost / circular import). Lets an event's own
+    creator reorganise its seeding even for native/legacy events with no organization, or when a
+    sub_organizer can create but not manage registrations."""
+    return bool(user) and bool(event.creator_id) and event.creator_id == user.pk
+
+
 def _seeding_gate(user, event):
-    """Who may reorganise seeding for this event: AFC event admins always; organizers with
-    can_manage_registrations on the owning org. Native (org=None) events are admin-only (handled
-    inside org_can_event, which returns the platform-admin check when event.organization is None)."""
-    return _is_event_admin(user) or org_can_event(user, "can_manage_registrations", event)
+    """Who may reorganise seeding for this event: AFC event admins always; the event's own creator
+    (Bug D); organizers with can_manage_registrations on the owning org. Native (org=None) events are
+    admin-only via org_can_event (it returns the platform-admin check when event.organization is None)."""
+    return _is_event_admin(user) or _is_event_creator(user, event) or org_can_event(user, "can_manage_registrations", event)
 
 
 # ── Discord (best-effort; never raises into the request path) ────────────────────────────────────
