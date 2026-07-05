@@ -259,6 +259,35 @@ def _row_image_box_px(f, H):
     return max(1, int(pct / 100.0 * H * ROW_LOGO_SCALE))
 
 
+def _local_media_path(src):
+    """Resolve an in-row image SOURCE that may be a filesystem PATH or a /media/... URL (absolute or
+    relative) to a local file under MEDIA_ROOT, or return it unchanged when it already points at a
+    readable file. None when it cannot be resolved. Lets the SAME rows the overlay serves (where
+    esports_image / team_logo are absolute URLs) also render in the downloadable PNG: team logos + flags
+    already pass filesystem paths (they fall straight through the os.path.exists check), while a player
+    PHOTO URL from the MVP/top-killers payload is mapped back onto the local media file. Never raises."""
+    if not src:
+        return None
+    try:
+        s = str(src)
+        if os.path.exists(s):                       # already a real filesystem path (logo/flag/export)
+            return s
+        from django.conf import settings
+        # Try the configured MEDIA_URL first, then the conventional "/media/" marker, so a URL like
+        # https://host/media/esports_pictures/x.png -> MEDIA_ROOT/esports_pictures/x.png.
+        media_url = (getattr(settings, "MEDIA_URL", "") or "").rstrip("/")
+        for marker in [m for m in (media_url, "/media") if m]:
+            idx = s.find(marker + "/")
+            if idx != -1:
+                rel = s[idx + len(marker) + 1:].split("?", 1)[0].split("#", 1)[0]
+                cand = os.path.join(settings.MEDIA_ROOT, rel.replace("/", os.sep))
+                if os.path.exists(cand):
+                    return cand
+    except Exception:
+        return None
+    return None
+
+
 def _paste_row_logo(base, path, cx, cy, edge_px):
     """Paste an in-row team logo / flag / player photo centred at (cx, cy), contained into a fixed
     edge_px x edge_px box (aspect preserved, longest side = edge_px), matching the design editor.
@@ -268,7 +297,12 @@ def _paste_row_logo(base, path, cx, cy, edge_px):
     and NO trimming (DesignFieldsEditor.tsx ~L2148, DesignBoard.tsx CellValue ~L215). Trimming here
     made a padded logo fill the box MORE than the editor showed, so the download looked bigger than the
     sample. Dropping the trim + using _contain_resize (same box math as the editor, incl. upscale)
-    makes the rendered footprint equal the editor's box. Silent no-op on a bad path."""
+    makes the rendered footprint equal the editor's box. Silent no-op on a bad path.
+
+    `path` may be a filesystem path OR a /media/... URL — _local_media_path resolves either (owner
+    2026-07-05, complaints G+H: the MVP/top-killers overlay rows carry esports_image as a URL, so the
+    export renders the SAME rows by mapping the URL onto the local media file)."""
+    path = _local_media_path(path)
     if not path:
         return
     try:
@@ -283,10 +317,14 @@ def _paste_row_logo(base, path, cx, cy, edge_px):
 
 def _render_fields(base, field_layout, rows, W, H, default_rgb):
     """FIELD-LAYOUT path: tile the standings `rows` down per column group and draw each placed
-    field at its x_pct. `rows` is a list of dicts keyed by field_type (pos/team_name/team_logo/
-    booyah/placement_points/kill_points/total_points/rush_points/kills/matches/base_total/bonus/
-    penalty); team_logo carries a filesystem path. Y for row i of group g comes from the group's
-    row_start_pct + i*row_height_pct."""
+    field at its x_pct. `rows` is a list of dicts keyed by field_type. For a TEAM leaderboard board:
+    pos/team_name/team_logo/team_flag/booyah/placement_points/kill_points/total_points/rush_points/
+    kills/matches/base_total/bonus/penalty. For a PLAYER board (MVP / top-killers, owner 2026-07-05):
+    pos (player rank)/player_name/esports_image (photo)/kills/damage/assists/mvp_count/team_name/
+    team_country. IMAGE cells (team_logo, team_flag, esports_image) are pasted via _paste_row_logo;
+    esports_image accepts a URL or a filesystem path. Every other key is drawn as TEXT. A key a given
+    board doesn't carry is simply skipped (blank cell), so team + player boards share this one path.
+    Y for row i of group g comes from the group's row_start_pct + i*row_height_pct."""
     draw = ImageDraw.Draw(base)
     groups = field_layout.get("column_groups") or [
         {"row_start_pct": 33.0, "row_height_pct": 7.0, "row_count": len(rows), "start_rank": 1}
@@ -318,6 +356,16 @@ def _render_fields(base, field_layout, rows, W, H, default_rgb):
                     # renders team_flag through the identical image cell), so the flag matches too.
                     _paste_row_logo(base, _country_flag_path(r.get("team_country")), x, y,
                                     _row_image_box_px(f, H))
+                    continue
+                if ft == "esports_image":
+                    # Player PHOTO cell (owner 2026-07-05, complaints G+H): the MVP / top-killers boards
+                    # place the player's esport image. Render it as an IMAGE (object-contain box) exactly
+                    # like team_logo / team_flag — previously it fell through to the TEXT path and drew
+                    # the raw URL. Same box math (_row_image_box_px) so a player photo is sized WYSIWYG
+                    # with the editor. The value may be a URL (overlay payload rows) OR a local path
+                    # (export rows); _paste_row_logo -> _local_media_path resolves either. Blank when the
+                    # player has no photo (None), and absent (blank) on TEAM leaderboard rows.
+                    _paste_row_logo(base, r.get("esports_image"), x, y, _row_image_box_px(f, H))
                     continue
                 val = r.get(ft)
                 if val is None or val == "":

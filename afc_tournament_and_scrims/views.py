@@ -18695,6 +18695,15 @@ def capture_context(request):
     teams_out, roster_source = _capture_expected_teams(event, stage, group)
     maps_out = _capture_expected_maps(stage, group)
 
+    # ── complaint D extension: existing match slots + expected map count for the resolved group ──────
+    # The capture client (and the mid-series START flow) needs to know WHICH map slots already exist in
+    # this group and which are scored, so it can (a) tell the operator "maps 1-2 already recorded, the
+    # next capture fills map 3", and (b) build the REPLACE dropdown in the attribution prompt. F's shape
+    # was designed to be extended with exactly this — F reads only teams[]/team_name/uid/username/maps,
+    # so adding these keys is backwards-compatible. See _capture_group_match_slots.
+    match_slots = _capture_group_match_slots(group)
+    expected_map_count = _capture_expected_map_count(group)
+
     player_count = sum(len(t["players"]) for t in teams_out)
     uid_count = sum(1 for t in teams_out for p in t["players"] if p["uid"])
     return Response({
@@ -18712,6 +18721,11 @@ def capture_context(request):
         "team_count": len(teams_out),
         "player_count": player_count,
         "uid_count": uid_count,
+        # complaint D: the group's existing Match slots [{match_id, map, scored}] (order = play order)
+        # and how many maps the group is EXPECTED to have (configured maps, else current slot count).
+        # Used by the client's mid-series-start awareness + the "replace an existing map" prompt option.
+        "match_slots": match_slots,
+        "expected_map_count": expected_map_count,
         # Provenance of the team list: "group" (group-seeded) / "stage" (stage-seeded) / "event"
         # (fallback to all active event teams). Lets the client + complaint D tell a precisely-seeded
         # group apart from the whole-event fallback.
@@ -18797,6 +18811,35 @@ def _capture_expected_maps(stage, group):
                     ordered.append(mp)
         raw = ordered
     return [str(m).strip() for m in raw if str(m).strip()]
+
+
+def _capture_group_match_slots(group):
+    """The existing Match slots for one group, oldest-first, as [{match_id, map, scored}] (complaint D).
+    `scored` = Match.result_inputted (a slot that already has a result). Returns [] for a None group or a
+    group with no matches yet. SHARED by capture_context (so the client + mid-series start know the state)
+    and the 409 needs_attribution response upload_team_match_result returns when every slot is scored."""
+    if group is None:
+        return []
+    out = []
+    for m in group.matches.all().order_by("match_number", "match_id"):
+        out.append({
+            "match_id": m.match_id,
+            "map": m.match_map or "",
+            "scored": bool(m.result_inputted),
+        })
+    return out
+
+
+def _capture_expected_map_count(group):
+    """How many maps a group is EXPECTED to have (complaint D). Prefer the author-configured maps
+    (StageGroups.match_maps); when none are configured, fall back to the count of Match slots that
+    already exist (so the client still has a sensible "N of M" to show). None group -> 0."""
+    if group is None:
+        return 0
+    configured = [str(m).strip() for m in (group.match_maps or []) if str(m).strip()]
+    if configured:
+        return len(configured)
+    return group.matches.count()
 
 
 def _design_row_capacity(design, size):
@@ -19510,30 +19553,88 @@ def upload_team_match_result(request):
     # with can_upload_results may upload for THEIR org's events (Bearer path); an upload token is
     # instead verified to belong to that exact event.
 
+    # ── ATTRIBUTION CONTRACT (owner 2026-07-05, complaint D) ─────────────────────────────────────────
+    # The desktop AFC Capture client posts each round with a stage + group but NO match_id (it only knows
+    # the Free Fire match id, not the AFC Match slot). Historically the backend filled the next UNSCORED
+    # slot and, once every slot was scored, SILENTLY created a brand-new slot — so an accidental extra
+    # game (a re-run, or capture left running on the wrong event) quietly became a phantom "map". That
+    # silent auto-create is the complaint-D bug and is now GATED. The optional `attribution` form field
+    # lets the client say what to do with an extra game. The gate must NEVER drop a real result — worst
+    # case it is PARKED to the pending bucket for a human to resolve on the website:
+    #   • (absent)        -> fill the next unscored slot (UNCHANGED normal mid-series path). If EVERY slot
+    #                        is already scored, DO NOT create one — return 409 {needs_attribution:true,...}
+    #                        so the operator is asked to decide (desktop prompt).
+    #   • "new"           -> create AND score a brand-new extra map slot (the ONLY path that auto-makes a
+    #                        slot now).
+    #   • "replace:<mid>" -> overwrite match <mid>'s result (the idempotent clear below re-derives it).
+    #   • "pending"       -> park the raw upload in PendingCaptureUpload ("decide later"); score NOTHING.
+    # An explicit match_id (the web FileUploadStep upload) bypasses all of this and scores that exact slot.
+    attribution = str(request.data.get("attribution") or "").strip().lower()
+
     match_id = request.data.get("match_id")
+    # "replace:<id>" resolves to an explicit match_id and then flows the normal (overwrite) path below.
+    if not match_id and attribution.startswith("replace:"):
+        _rid = attribution.split(":", 1)[1].strip()
+        if not _rid.isdigit():
+            return Response({"message": "replace target match_id must be numeric."}, status=400)
+        match_id = int(_rid)
+
     if not match_id:
-        # ── Live auto-capture path (owner 2026-07-03): the AFC Capture client posts stage + group
-        # but NO match_id (it only knows the FF match id, not the AFC Match slot). Resolve the NEXT
-        # unscored match in that group so each map auto-fills the next slot; if every slot already
-        # has a result, CREATE the next one so live capture never stalls after the last map (the
-        # "failed to capture: match_id required" the operator hit). Event scoping is unchanged: the
-        # resolved match's event is checked against the upload token below, so a token for event A
-        # still cannot write into event B via a group id. Falls through to 400 only when no group
-        # is given (a genuinely malformed request).
         group_id = request.data.get("group") or request.data.get("group_id")
-        if group_id:
-            try:
-                _grp = StageGroups.objects.select_related("stage__event").get(group_id=group_id)
-            except (StageGroups.DoesNotExist, ValueError, TypeError):
-                return Response({"message": "Group not found."}, status=404)
+        if not group_id:
+            # No slot AND no group = a genuinely malformed request.
+            return Response({"message": "match_id required."}, status=400)
+        try:
+            _grp = StageGroups.objects.select_related("stage__event").get(group_id=group_id)
+        except (StageGroups.DoesNotExist, ValueError, TypeError):
+            return Response({"message": "Group not found."}, status=404)
+        _event = _grp.stage.event
+        # Event scoping (mirrors the match-path guard below): a capture token minted for event A can
+        # never write into event B via a group id — enforced here too so pending/new/409 all respect it.
+        if upload_token is not None and upload_token.event_id != _event.event_id:
+            return Response({"message": "This upload token is not valid for this event."}, status=403)
+
+        # "decide later" -> park the raw upload verbatim in the pending bucket; score nothing. This is the
+        # never-lose-data guarantee: the file text + set stage/group are stored so a human can re-score it.
+        if attribution == "pending":
+            _uf = request.FILES.get("file")
+            if not _uf:
+                return Response({"message": "file required."}, status=400)
+            _text = _uf.read().decode("utf-8", errors="ignore")
+            from .views_capture_pending import _create_pending_capture
+            pending = _create_pending_capture(
+                event=_event, stage=_grp.stage, group=_grp, upload_token=upload_token,
+                uploaded_by=admin, file_text=_text, file_name=(getattr(_uf, "name", "") or ""),
+                file_type=str(request.data.get("file_type") or ""),
+            )
+            return Response({
+                "pending": True,
+                "pending_id": pending.id,
+                "message": "Saved to the website pending bucket. Resolve it from the event leaderboard.",
+            }, status=202)
+
+        if attribution == "new":
+            # The ONLY path that auto-creates a slot now: the operator explicitly chose "new extra map".
+            _num = (_grp.matches.aggregate(m=Max("match_number"))["m"] or 0) + 1
+            match_id = Match.objects.create(group=_grp, match_number=_num).match_id
+        else:
             _next = (_grp.matches.filter(result_inputted=False)
                      .order_by("match_number", "match_id").first())
-            if _next is None:
-                _num = (_grp.matches.aggregate(m=Max("match_number"))["m"] or 0) + 1
-                _next = Match.objects.create(group=_grp, match_number=_num)
-            match_id = _next.match_id
-        else:
-            return Response({"message": "match_id required."}, status=400)
+            if _next is not None:
+                # Normal mid-series path (UNCHANGED): fill the next unscored slot.
+                match_id = _next.match_id
+            else:
+                # Every configured slot is already scored and the client did NOT say what to do -> ASK.
+                # We deliberately DO NOT create a slot here (the complaint-D fix). The desktop prompt turns
+                # this 409 into [new map] / [replace map] / [decide later]; nothing is scored or lost.
+                return Response({
+                    "needs_attribution": True,
+                    "existing_slots": _capture_group_match_slots(_grp),
+                    "expected_map_count": _capture_expected_map_count(_grp),
+                    "message": ("All map slots for this group already have results. Choose whether this "
+                                "extra game is a new map, replaces an existing map, or should be decided "
+                                "later on the website."),
+                }, status=409)
 
     uploaded_file = request.FILES.get("file")
     if not uploaded_file:

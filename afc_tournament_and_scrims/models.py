@@ -933,6 +933,76 @@ class EventUploadToken(models.Model):
         return f"EventUploadToken(event={self.event_id}, {state})"
 
 
+class PendingCaptureUpload(models.Model):
+    """A captured result the desktop AFC Capture client could NOT auto-attribute, parked for a human to
+    resolve later on the website (owner 2026-07-05, complaint D — "decide later" bucket).
+
+    WHY THIS EXISTS
+    ---------------
+    The capture client posts each round's MatchResult file to upload_team_match_result with a stage +
+    group but NO match_id; the backend fills the next unscored map slot. When EVERY configured map slot
+    for that group is already scored and an EXTRA game lands, the old code SILENTLY created a new slot —
+    the complaint-D bug (an accidental re-run / a wrong-event capture became a phantom "map"). The new
+    behaviour is: the backend returns a structured 409 asking the operator to decide, and the desktop
+    prompt offers three choices — attribute as a NEW map, REPLACE an existing map, or "decide later".
+    "Decide later" reliably parks the raw upload HERE (never dropped) so an admin/organizer resolves it
+    from the website later. A pending row therefore ALWAYS carries enough to re-score it verbatim.
+
+    WHAT IS STORED
+    --------------
+      • raw_payload   : {file_text, file_name, file_type, stage_id, group_id} — the exact bytes + the
+                        client's set stage/group, so resolve re-runs the IDENTICAL scoring path.
+      • parsed_summary: a small human-readable digest ({teams:[{team_name, placement, players, kills}],
+                        team_count, player_count}) built at intake so the resolve UI can show what the
+                        upload contains WITHOUT re-parsing.
+      • status        : pending -> resolved (scored into a match) | discarded (operator dropped it).
+
+    CONNECTS TO
+    -----------
+    Created by upload_team_match_result's attribution="pending" branch (via
+    views_capture_pending._create_pending_capture). Listed / resolved / discarded by
+    views_capture_pending (events/<id>/pending-captures/...), gated exactly like the other event result
+    endpoints (AFC event admin OR an organizer with can_upload_results). Resolving runs the SAME
+    _score_team_match_result core the live upload uses, into a new or replacement Match slot.
+    """
+    STATUS_CHOICES = [
+        ("pending", "Pending"),      # awaiting an operator decision
+        ("resolved", "Resolved"),    # scored into a match (new or replacement)
+        ("discarded", "Discarded"),  # operator dropped it (a genuine mis-capture)
+    ]
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="pending_captures")
+    # Who/what sent it. uploaded_by = the token's granting user (may be None if the user was deleted);
+    # upload_token = the exact capture key, kept for the audit trail (SET_NULL so a rotate keeps history).
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                    on_delete=models.SET_NULL, related_name="pending_captures_uploaded")
+    upload_token = models.ForeignKey(EventUploadToken, null=True, blank=True,
+                                     on_delete=models.SET_NULL, related_name="pending_captures")
+    # The client's SET stage/group at capture time (a hint for the resolver's default target). SET_NULL
+    # so deleting a stage/group never destroys the parked result.
+    stage = models.ForeignKey(Stages, null=True, blank=True, on_delete=models.SET_NULL,
+                              related_name="pending_captures")
+    group = models.ForeignKey(StageGroups, null=True, blank=True, on_delete=models.SET_NULL,
+                              related_name="pending_captures")
+    file_name = models.CharField(max_length=255, blank=True)
+    raw_payload = models.JSONField(default=dict)       # {file_text, file_name, file_type, stage_id, group_id}
+    parsed_summary = models.JSONField(default=dict)    # {teams:[...], team_count, player_count}
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="pending", db_index=True)
+    # Bookkeeping filled when an operator resolves/discards it.
+    resolution = models.CharField(max_length=40, blank=True)   # "new" | "replace:<match_id>" | "discarded"
+    resolved_match = models.ForeignKey(Match, null=True, blank=True, on_delete=models.SET_NULL,
+                                       related_name="resolved_pending_captures")
+    resolved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                    on_delete=models.SET_NULL, related_name="pending_captures_resolved")
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"PendingCaptureUpload(event={self.event_id}, {self.status})"
+
+
 class EventPageView(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="pageviews")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)  # if available
@@ -1467,16 +1537,28 @@ class EventOverlay(models.Model):
     overlay's design/stage/group/animations from the studio updates what the SAME link renders live —
     the operator never re-copies a URL into OBS.
 
-    kind:   "leaderboard" (renders a design + live standings) | "timer" (countdown scene).
+    kind:   "leaderboard" (design + live TEAM standings) | "timer" (countdown scene) |
+            "booyah" (winner banner) | "h2h" (head-to-head) | "mvp" (design + ranked PLAYERS by per-map
+            MVP count) | "top_killers" (design + ranked PLAYERS by summed kills). The mvp + top_killers
+            kinds (owner 2026-07-05, complaints G+H) are PLAYER-driven: they render player rows (rank /
+            photo / IGN / kills / damage / assists) through ANY design and can COMBINE selected whole
+            stages + individual groups. See views_mvp.py (the CONTRACT block) + views_overlays.py
+            (_mvp_payload / _top_killers_payload).
     config: freeform per kind —
-      leaderboard: {design_id, follow (bool), stage_id, group_id, anim, reveal, interval, size, live}
-      timer:       {end_at (ISO), label}
-    active: scenes (timer) toggle visibility with it; leaderboard overlays ignore it (always render).
+      leaderboard:       {design_id, follow (bool), scope, stage_id, group_id, group_ids, stage_ids,
+                          anim, reveal, interval, size, live}
+      timer:             {end_at (ISO), label}
+      mvp / top_killers: {design_id, scope, group_ids, stage_ids, group_id, stage_id} — the SAME combine
+                          shape complaint C added for leaderboards (whole stages expand to their groups;
+                          absent => whole event).
+    active: scenes (timer) toggle visibility with it; leaderboard / mvp / top_killers overlays ignore it
+            (always render).
 
     CONNECTS TO: views_overlays.py (CRUD via the broadcast gate + the public config feed) <-
     FE studio app/(a)/a/overlays/[eventId] (cards) + renderer app/overlay/view/[token]/[overlayId].
     """
-    KINDS = (("leaderboard", "Leaderboard"), ("timer", "Timer"), ("booyah", "Booyah banner"), ("h2h", "Head to head"))
+    KINDS = (("leaderboard", "Leaderboard"), ("timer", "Timer"), ("booyah", "Booyah banner"),
+             ("h2h", "Head to head"), ("mvp", "MVP"), ("top_killers", "Top killers"))
 
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="overlays")
     name = models.CharField(max_length=80)

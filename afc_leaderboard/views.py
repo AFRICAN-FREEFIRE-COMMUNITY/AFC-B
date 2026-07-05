@@ -650,7 +650,8 @@ def leaderboard_graphic(request, lb_id):
         "total_points": r.get("total_points", 0),
         "kills": r.get("kills", 0),
     } for i, r in enumerate(std)]
-    from afc_organizers.views_leaderboard_design import build_field_layout, build_pages_for_export
+    from afc_organizers.views_leaderboard_design import (
+        build_field_layout, build_pages_for_export, build_ephemeral_afc_default)
     from .graphic import render_leaderboard_graphic, render_design_all_pages
     from django.http import HttpResponse
 
@@ -659,6 +660,50 @@ def leaderboard_graphic(request, lb_id):
     # Consumed by the FE ExportGraphicDialog, which requests page=all when the design has >1 page.
     page_param = (request.GET.get("page") or "").strip().lower()
     want_all_pages = (page_param == "all") and design is not None
+
+    # ══ Branded AFC default FALLBACK (owner 2026-07-05, audit complaint J) ═══════════════════════
+    # When the library has NO design at all (design is None), do NOT drop to the legacy bare dark
+    # auto-table below. Build an EPHEMERAL AFC-branded default (identical look to create_default_design:
+    # AFC logo, green/gold background, POS / TEAM LOGO / TEAM NAME / KILLS / PLACEMENT / BOOYAH / TOTAL
+    # columns), sized to the ACTUAL standings length via the row->page rule, and render THROUGH it.
+    # Nothing is written to the design library (build_ephemeral_afc_default persists nothing).
+    #   row->page rule: n<=12 -> one 12-row page; n<=15 -> one 15-row page; n>15 -> pages of 24
+    #   (two 12-row columns), ceil(n/24) pages. AUTO row detection = len(rows), never a hardcoded 16.
+    # ?page=all zips every page; ?page=<N> renders that page; no ?page renders page 1.
+    # ?plain=1 is an escape hatch that keeps the OLD bare table (falls through to the legacy path).
+    plain = str(request.GET.get("plain") or "").strip().lower() in ("1", "true", "yes", "on")
+    if design is None and not plain and rows:
+        eph = build_ephemeral_afc_default(
+            len(rows), org=(lb.organization if lb.organization_id else None))
+        safe_name = (lb.name or "leaderboard").replace('"', "").replace("\n", " ")
+        # page=all -> ZIP of every page (only meaningful when >1 page; a 1-page default falls through
+        # to the single-PNG return below via the shared render call).
+        if page_param == "all" and eph.page_count > 1:
+            pngs = render_design_all_pages(
+                rows, eph.pages_spec, size=size, logos=eph.logos, title=title, subtitle=subtitle,
+                text_color=eph.text_color, accent_color=eph.accent_color, max_rows=eph.max_rows,
+                show_title=eph.show_title, show_subtitle=eph.show_subtitle,
+                transparent_background=eph.transparent_background)
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for i, png in enumerate(pngs, start=1):
+                    zf.writestr(f"{safe_name}-{size}-page{i}.png", png)
+            zip_buf.seek(0)
+            resp = HttpResponse(zip_buf.read(), content_type="application/zip")
+            resp["Content-Disposition"] = f'attachment; filename="{safe_name}-{size}-all-pages.zip"'
+            return resp
+        # page=<N> -> that page only (1-based, clamped to range); anything else -> page 1.
+        idx = int(page_param) - 1 if (page_param.isdigit()
+                                      and 1 <= int(page_param) <= eph.page_count) else 0
+        pngs = render_design_all_pages(
+            rows, [eph.pages_spec[idx]], size=size, logos=eph.logos, title=title, subtitle=subtitle,
+            text_color=eph.text_color, accent_color=eph.accent_color, max_rows=eph.max_rows,
+            show_title=eph.show_title, show_subtitle=eph.show_subtitle,
+            transparent_background=eph.transparent_background)
+        resp = HttpResponse(pngs[0], content_type="image/png")
+        suffix = f"-page{idx + 1}" if eph.page_count > 1 else ""
+        resp["Content-Disposition"] = f'attachment; filename="{safe_name}-{size}{suffix}.png"'
+        return resp
 
     # ?page=<N> (owner 2026-06-16): render ONLY page N as a single PNG so the FE downloads each page as
     # a SEPARATE image instead of one ZIP (owner prefers multiple images). ?page=all still ZIPs.
