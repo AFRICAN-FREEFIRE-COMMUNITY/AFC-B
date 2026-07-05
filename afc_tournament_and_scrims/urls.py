@@ -62,7 +62,10 @@ from .views_event_graphic import event_stage_graphic
 # EVENT OVERLAYS (owner 2026-07-02, studio v2): saved/named overlays (leaderboard-from-design +
 # timer scene) with CRUD + the public config feed their STABLE links poll.
 # Event MVP (owner 2026-07-02): criteria-arranged MVP compute + config save ("MVPs" tab).
-from .views_mvp import event_mvp, event_tie_breakers
+# event_top_killers / event_player_board_graphic (owner 2026-07-05, complaints G+H): player-driven MVP
+# + Top-killers boards (ranked players, combine-aware) — preview endpoints + a design-rendered PNG export.
+from .views_mvp import (event_mvp, event_tie_breakers,
+                        event_top_killers, event_player_board_graphic)
 # Debugger-log backfill (owner 2026-07-02): post-hoc rich stats (deaths/knockdowns/headshots/
 # revives/survival) from the 3D-room client's persisted debugger-*.log. See debugger_ingest.py.
 from .debugger_ingest import debugger_backfill
@@ -73,6 +76,12 @@ from .views_overlays import (
     list_overlays, create_overlay, update_overlay,
     duplicate_overlay, delete_overlay, overlay_config,
     capture_version, capture_config,
+)
+# Pending capture bucket (owner 2026-07-05, complaint D): when the desktop capture client has an EXTRA
+# game and the operator picks "decide later", the raw upload is parked here; an admin/organizer resolves
+# it (score as a new/replacement map) or discards it from the website. See views_capture_pending.py.
+from .views_capture_pending import (
+    list_pending_captures, resolve_pending_capture, discard_pending_capture,
 )
 from django.conf import settings
 from django.conf.urls.static import static
@@ -108,6 +117,14 @@ urlpatterns = [
     #                  desktop client can WARN when the data it captures doesn't match the set event/
     #                  stage. Read-only; ?stage=&group= optional. SHARED with complaint D (attribution).
     path('capture/context/', capture_context, name='capture_context'),
+    # Pending capture bucket (complaint D): list/resolve/discard the "decide later" uploads for an event.
+    # Gated like the other result endpoints (AFC event admin OR org can_upload_results). resolve re-runs
+    # the SAME scoring path as a live upload. Consumed by the admin leaderboard editor PendingCapturesPanel.
+    path('<int:event_id>/pending-captures/', list_pending_captures, name='list_pending_captures'),
+    path('<int:event_id>/pending-captures/<int:pending_id>/resolve/', resolve_pending_capture,
+         name='resolve_pending_capture'),
+    path('<int:event_id>/pending-captures/<int:pending_id>/discard/', discard_pending_capture,
+         name='discard_pending_capture'),
     # Capture remote update + config (owner 2026-07-02): the thin launcher polls these. PUBLIC.
     path('capture/version/', capture_version, name='capture_version'),
     path('capture/config/', capture_config, name='capture_config'),
@@ -127,6 +144,14 @@ urlpatterns = [
     # Event MVP (owner 2026-07-02): GET computes with the saved config; POST saves {criteria, scope}
     # then returns the recomputed ranking. Consumed by the leaderboard "MVPs" tab. See views_mvp.py.
     path('<int:event_id>/mvp/', event_mvp, name='event_mvp'),
+    # TOP-KILLERS (owner 2026-07-05, complaint H): players ranked by summed kills, same combine scope as
+    # MVP. Preview source for the Top-killers design tab. See views_mvp.py.
+    path('<int:event_id>/top-killers/', event_top_killers, name='event_top_killers'),
+    # PLAYER-BOARD PNG export (owner 2026-07-05, complaints G+H #7): download the MVP or Top-killers board
+    # rendered THROUGH a design (?kind=mvp|top_killers&design_id=&size=&group_ids=&stage_ids=). Like the
+    # leaderboard export, but for player rows (esports_image renders as an image). See views_mvp.py.
+    path('<int:event_id>/player-board-graphic/', event_player_board_graphic,
+         name='event_player_board_graphic'),
     # Leaderboard tie-breakers (owner 2026-07-02): arranged criteria, apply-to-all|stage|group.
     path('<int:event_id>/tie-breakers/', event_tie_breakers, name='event_tie_breakers'),
     # Debugger-log backfill: dry-run parse + apply (round->match mapping). See debugger_ingest.py.

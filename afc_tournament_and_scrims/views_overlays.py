@@ -65,8 +65,9 @@ def create_overlay(request, event_id):
         event=event, name=name, kind=kind, config=config,
         # Timers start hidden until triggered; leaderboards render immediately; BOOYAH banners start
         # ACTIVE (owner 2026-07-02: "showing automatically without having to click trigger") - in
-        # live mode they render the latest booyah as soon as the source loads.
-        active=(kind in ("leaderboard", "booyah")),
+        # live mode they render the latest booyah as soon as the source loads. MVP + TOP-KILLERS boards
+        # (owner 2026-07-05) render immediately too, like the leaderboard.
+        active=(kind in ("leaderboard", "booyah", "mvp", "top_killers")),
     )
     return Response(_serialize(row), status=201)
 
@@ -110,7 +111,10 @@ def duplicate_overlay(request, event_id, overlay_id):
         return Response({"message": "Overlay not found."}, status=404)
     copy = EventOverlay.objects.create(
         event=event, name=f"{row.name} copy"[:80], kind=row.kind,
-        config=dict(row.config or {}), active=row.active if row.kind == "leaderboard" else False,
+        config=dict(row.config or {}),
+        # Always-render kinds (leaderboard / mvp / top_killers) keep the original's active flag; scenes
+        # (timer / booyah / h2h) start hidden so a duplicate never auto-fires.
+        active=row.active if row.kind in ("leaderboard", "mvp", "top_killers") else False,
     )
     return Response(_serialize(copy), status=201)
 
@@ -169,6 +173,16 @@ def overlay_config(request):
     # public page needs exactly one request per poll (mirrors overlay_feed bundling design+standings).
     if row.kind == "h2h":
         payload["h2h"] = _h2h_payload(event, row.config or {}, request)
+    # MVP (G) + TOP-KILLERS (H) overlays (owner 2026-07-05) bundle their RESOLVED ranked PLAYER rows +
+    # design look with the config poll, mirroring _h2h_payload. Each honours the overlay config's COMBINE
+    # scope (config {scope, group_ids, stage_ids}; whole stages expand to their groups, absent => whole
+    # event), so the SAME stable link renders whatever combination the studio card saved. Both return the
+    # identical row shape (keyed by the design player FIELD_CHOICES) so the FE renders G + H with ONE
+    # renderer through the bound design. See views_mvp.py (the CONTRACT block).
+    if row.kind == "mvp":
+        payload["mvp"] = _mvp_payload(event, row.config or {}, request)
+    if row.kind == "top_killers":
+        payload["top_killers"] = _top_killers_payload(event, row.config or {}, request)
     # BOOYAH LIVE mode (owner 2026-07-02): config.live=true makes the banner FOLLOW THE LEADERBOARD -
     # each poll resolves the event's LATEST booyah (most recent match with a placement-1 team) and
     # overrides team/logo/map in the RESPONSE (nothing persisted), so as new results land the banner
@@ -267,6 +281,70 @@ def _h2h_payload(event, config, request):
 
     return {"mode": mode, "competitors": competitors,
             "design": _design_look(config.get("design_id"), request)}
+
+
+# ── MVP (G) + TOP-KILLERS (H) player-board payloads (owner 2026-07-05) ─────────────────────────────
+# Both mirror _h2h_payload: resolve the overlay's ranked PLAYER rows (honouring the config COMBINE
+# scope) + attach the bound design's look, so the FE renders each through its design with ONE renderer.
+# The heavy lifting (aggregation, ranking, the design-row shape) lives in views_mvp.py so the endpoints
+# and these payloads share ONE implementation; see the CONTRACT block at the top of views_mvp.py.
+
+def _combine_ids_from_config(config, plural_key, singular_key):
+    """Read a combine id list off an overlay config: a real JSON list under plural_key (or a csv string)
+    plus an optional singular id folded in. Returns raw str ids; validation (this-event / stage-expand)
+    happens in views_mvp._resolve_player_scope. Mirrors the endpoint's _read_scope_params ergonomics."""
+    vals = []
+    raw = (config or {}).get(plural_key)
+    if isinstance(raw, (list, tuple)):
+        vals.extend(raw)
+    elif raw not in (None, ""):
+        vals.extend(str(raw).split(","))
+    one = (config or {}).get(singular_key)
+    if one not in (None, ""):
+        vals.append(one)
+    return [str(x).strip() for x in vals if str(x).strip()]
+
+
+def _mvp_payload(event, config, request):
+    """Resolve an MVP overlay (owner 2026-07-05, complaint G) to its RANKED PLAYER ROWS + design look,
+    mirroring _h2h_payload. config: {design_id?, scope?, group_ids?: [...], stage_ids?: [...], group_id?,
+    stage_id?}. The combine scope (whole STAGES + individual GROUPS) resolves via the SAME validator the
+    leaderboard combine uses, so an MVP board agrees with the site. Each row is keyed by the design
+    player FIELD_CHOICES (pos/player_name/esports_image/kills/damage/assists/team_name/mvp_count) so G
+    renders through any bound design. Returns {kind:"mvp", players:[...], top:<row|None>, combine:{...},
+    design:{...}}."""
+    from .views_mvp import (compute_event_mvp, build_player_design_rows, _resolve_player_scope)
+    group_ids = _combine_ids_from_config(config, "group_ids", "group_id")
+    stage_ids = _combine_ids_from_config(config, "stage_ids", "stage_id")
+    scope_group_ids = _resolve_player_scope(event, group_ids, stage_ids)
+    computed = compute_event_mvp(event, request, group_ids=scope_group_ids)
+    rows = build_player_design_rows(computed["players"])
+    return {
+        "kind": "mvp",
+        "players": rows,
+        "top": rows[0] if rows else None,
+        "combine": {"group_ids": scope_group_ids, "combined": scope_group_ids is not None},
+        "design": _design_look(config.get("design_id"), request),
+    }
+
+
+def _top_killers_payload(event, config, request):
+    """Resolve a TOP-KILLERS overlay (owner 2026-07-05, complaint H) to ranked player rows + design look
+    — identical shape/keys to _mvp_payload (so G and H share ONE FE renderer), but ranked by SUM(kills)
+    over the same combine scope. Returns {kind:"top_killers", players, top, combine, design}."""
+    from .views_mvp import (compute_top_killers, build_player_design_rows, _resolve_player_scope)
+    group_ids = _combine_ids_from_config(config, "group_ids", "group_id")
+    stage_ids = _combine_ids_from_config(config, "stage_ids", "stage_id")
+    scope_group_ids = _resolve_player_scope(event, group_ids, stage_ids)
+    computed = compute_top_killers(event, request, group_ids=scope_group_ids)
+    rows = build_player_design_rows(computed["players"])
+    return {
+        "kind": "top_killers",
+        "players": rows,
+        "top": rows[0] if rows else None,
+        "combine": {"group_ids": scope_group_ids, "combined": scope_group_ids is not None},
+        "design": _design_look(config.get("design_id"), request),
+    }
 
 
 def _design_look(design_id, request):

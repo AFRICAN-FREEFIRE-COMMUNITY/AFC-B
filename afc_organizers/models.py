@@ -394,6 +394,18 @@ class OrgLeaderboardDesignField(models.Model):
         # "versus"/H2H designs, MVP displays); on TEAM standings rows it is emitted as None (blank).
         # The FE DesignBoard already renders any *image* field as an <img> (same path as team_logo).
         ("esports_image", "Player esport image"),
+        # ── PLAYER-ROW field types (owner 2026-07-05, complaints G+H) ──────────────────────────────
+        # These bind to PLAYER rows on the MVP (kind="mvp") + Top-killers (kind="top_killers") boards
+        # (afc_tournament_and_scrims.views_mvp), NOT the team-row leaderboard. A player row is keyed by
+        # field_type just like a team row, so an operator places them the same way on a design:
+        #   • player_name -> the player's in-game name (IGN)   (team rows use `team_name`)
+        #   • damage / assists -> per-player combat stats      (team rows never carry these)
+        #   • mvp_count  -> map MVPs won (the MVP board's headline stat)
+        # Player rank reuses the existing `pos`; the player PHOTO reuses `esports_image` (rendered as an
+        # image); kills / matches / team_name / team_flag are shared with the team leaderboard. On a
+        # TEAM leaderboard render these keys are simply absent (blank cell), so adding them is safe.
+        ("player_name", "Player name (IGN)"), ("damage", "Damage"),
+        ("assists", "Assists"), ("mvp_count", "Map MVPs won"),
         ("booyah", "Booyah"), ("placement_points", "Placement points"),
         ("kill_points", "Kill points"), ("total_points", "Total points"),
         ("rush_points", "Rush points"), ("kills", "Kills (raw)"), ("matches", "Matches played"),
