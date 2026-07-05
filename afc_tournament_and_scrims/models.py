@@ -1003,6 +1003,59 @@ class PendingCaptureUpload(models.Model):
         return f"PendingCaptureUpload(event={self.event_id}, {self.status})"
 
 
+class CaptureRelease(models.Model):
+    """A published desktop AFC Capture INSTALLER release (owner 2026-07-05, full auto-update).
+
+    WHY THIS EXISTS
+    ---------------
+    Copies of the AFC Capture tray client are installed on tournament observer PCs. Without an update
+    mechanism, shipping a fix meant asking every operator to hunt down + re-download the installer. This
+    row is the server-side "what is the latest version" record the installed client polls on startup so
+    it can update ITSELF. The owner publishes a new version by uploading the new Inno Setup installer
+    somewhere it can be downloaded (any static host: the frontend /public/downloads, S3, a release asset,
+    etc.) and creating one of these rows with that URL. NO code deploy is needed to bump the version.
+
+    WHAT IS STORED
+    --------------
+      • version              : the semver of this release ("1.3.0"). The client compares it to its own
+                               afc_capture.__version__ (proper numeric semver compare, not string compare).
+      • installer_url        : absolute URL the client downloads the new installer .exe from, then runs
+                               SILENTLY to replace itself (a running .exe cannot overwrite its own file on
+                               Windows, so the installer does the swap + relaunch).
+      • notes                : optional human-readable changelog shown/logged with the update.
+      • min_supported_version: optional floor; when set and the client is BELOW it, the update is treated
+                               as required (the client may nag harder). Purely advisory server-side.
+      • is_latest            : exactly one row is the "current" release the version endpoint serves.
+                               Publishing a new release sets this True and clears it on every other row.
+
+    CONNECTS TO
+    -----------
+    Written by views_capture_update.capture_releases (POST events/capture/releases/, gated to a super
+    admin / head_admin via views._is_head_or_super_admin). Read by views_capture_update.capture_version
+    (GET events/capture/version/, PUBLIC — no token, exposes only a version + a public download URL).
+    Consumed by the desktop client afc-capture/afc_capture/updater.py, which is invoked on startup by
+    app.CaptureController and from the tray "Check for updates" item.
+    """
+    version = models.CharField(max_length=32, db_index=True)          # semver, e.g. "1.3.0"
+    installer_url = models.URLField(max_length=1000)                  # where the installer .exe is hosted
+    notes = models.TextField(blank=True)                             # optional changelog / release notes
+    # Optional force-update floor: clients older than this SHOULD update (advisory; the server never blocks).
+    min_supported_version = models.CharField(max_length=32, blank=True, default="")
+    # Exactly one row is the served "latest". Publishing sets this True + clears every other row (see
+    # capture_releases). Indexed because the version endpoint filters on it on every poll.
+    is_latest = models.BooleanField(default=False, db_index=True)
+    # Who published it (audit); SET_NULL so removing the user keeps the release history.
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name="capture_releases")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"CaptureRelease(v{self.version}{' [latest]' if self.is_latest else ''})"
+
+
 class EventPageView(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="pageviews")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)  # if available

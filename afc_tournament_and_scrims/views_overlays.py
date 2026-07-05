@@ -414,7 +414,12 @@ from django.conf import settings as _settings
 
 @api_view(["GET"])
 def capture_version(request):
-    """GET events/capture/version/ — the latest capture-payload release descriptor (or 404 when no
+    """DEPRECATED (owner 2026-07-05): superseded by views_capture_update.capture_version, which serves the
+    DB-model CaptureRelease and drives the FULL installer auto-update. urls.py no longer routes
+    capture/version/ here; this legacy file-based descriptor (the "thin launcher + payload zip" experiment)
+    is kept only for reference. Left intact to avoid churn; do not wire it back without a reason.
+
+    GET events/capture/version/ — the latest capture-payload release descriptor (or 404 when no
     release has been published yet). The launcher compares `version` to its local payload."""
     path = _os.path.join(_settings.MEDIA_ROOT, "capture", "capture_release.json")
     if not _os.path.exists(path):
