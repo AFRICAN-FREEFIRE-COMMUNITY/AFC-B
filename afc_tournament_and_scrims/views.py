@@ -22862,15 +22862,20 @@ def maybe_autocomplete_event(event, by_user):
 
 @api_view(["POST"])
 def complete_event(request):
-    user, err = _get_event_action_user(request)
-    if err:
-        return err
-
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+
+    # Organizer parity (owner 2026-07-05): the owning organizer (can_edit_events) may mark THEIR OWN
+    # event complete, exactly like cancel_event + reopen_event. This was a bare
+    # _get_event_action_user(request) = AFC-staff-only, so an organizer got 403 completing their own
+    # event. Resolve the event FIRST (mirrors cancel_event) so org_can_event can check the owning org;
+    # native (org=None) events stay admin-only.
+    user, err = _get_event_action_user(request, event=event, org_perm="can_edit_events")
+    if err:
+        return err
 
     if event.event_status in ["completed", "cancelled"]:
         return Response({"message": f"Event is already {event.event_status}."}, status=400)
