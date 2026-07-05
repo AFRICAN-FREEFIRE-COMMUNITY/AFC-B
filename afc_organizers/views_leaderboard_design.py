@@ -132,6 +132,12 @@ def _serialize_field(f, request=None):
         "font_size_pct": f.font_size_pct,
         "color": f.color,
         "order": f.order,
+        # Per-size enablement (owner 2026-07-05): whether this column renders on each size,
+        # independently. The editor reads these to drive its per-size palette + "Shown on IG/YT"
+        # switches; the render/export paths (build_field_layout / build_pages_for_export) drop the
+        # field for a size whose flag is False. Both default True = shown on both (backward safe).
+        "show_instagram": f.show_instagram,
+        "show_youtube": f.show_youtube,
         "page_id": f.page_id,  # null = legacy/page-1
     }
 
@@ -280,6 +286,12 @@ def build_field_layout(design, size="instagram", page_number=None):
         fields = all_fields
         texts = all_texts
 
+    # ── PER-SIZE enablement (owner 2026-07-05): drop any field the operator hid for THIS size. A
+    #    field with show_youtube=False never renders on the YouTube export (and vice-versa). Applied
+    #    AFTER the page-scoping/fallback above so it filters whichever set of fields we ended up with.
+    #    Texts have no per-size flag, so they are unaffected. ──
+    fields = [f for f in fields if (f.show_youtube if yt else f.show_instagram)]
+
     if not fields:
         return None
 
@@ -354,6 +366,10 @@ def build_pages_for_export(design, size="instagram"):
                 else obj.column_groups) or []
 
     def _layout(source_obj, fields, texts):
+        # Per-size enablement (owner 2026-07-05): drop fields hidden for the requested size before
+        # baking this page's layout, mirroring build_field_layout. Empty after filtering => no layout
+        # (the renderer falls back to its legacy auto-table for this page).
+        fields = [f for f in fields if (f.show_youtube if yt else f.show_instagram)]
         if not fields:
             return None
         return {
@@ -870,6 +886,64 @@ def apply_background_to_all(request, design_id):
     return Response({"design": _serialize_design(d_fresh, request)}, status=status.HTTP_200_OK)
 
 
+@api_view(["POST"])
+def apply_field_enablement_to_all(request, design_id):
+    """POST organizers/leaderboard-designs/by-id/<design_id>/apply-field-enablement-to-all/
+    (owner 2026-07-05, audit complaint A — "Apply to all")
+
+    Copy a placed column's per-size enablement so it applies to BOTH sizes (and, for a single field,
+    across ALL pages of a multi-page design). This is the field-level twin of apply_background_to_all:
+    that one broadcasts a background image to every page; this one broadcasts a field's "shown"
+    enablement so a column configured on one size shows on the other too, in one click.
+
+    The per-size split (OrgLeaderboardDesignField.show_instagram / show_youtube) lets a column render on
+    Instagram but not YouTube (or vice-versa). After splitting layouts per size an operator often wants
+    to say "actually, show this everywhere" — that is this endpoint. It sets BOTH flags True on the
+    target field(s), so build_field_layout("instagram") and build_field_layout("youtube") both include
+    them again.
+
+    Body (JSON or multipart):
+      • field_id  (optional int) — a single field to enable on both sizes. Omit / "all" / blank =>
+        EVERY field on the design (turn the whole design's columns back on for both sizes).
+    When a single field_id is given AND the design is multi-page, the SAME column (matched by
+    field_type + column_group) is also enabled on both sizes on every OTHER page, so "apply to all"
+    means all sizes AND all pages for that column. (No new fields are created — only existing rows are
+    flipped, mirroring how apply_background_to_all only touches existing page rows.)
+
+    Response 200: {"design": <updated design dict>} (full design so the editor refreshes every field).
+    404 when field_id is given but not found on this design. Gate: _get_design_for_write (same as the
+    design_fields PATCH). Consumed by: DesignFieldsEditor.tsx "Apply to all" control on a placed field.
+    """
+    user, err = _authenticate(request)
+    if err:
+        return err
+    d, err = _get_design_for_write(user, design_id)
+    if err:
+        return err
+
+    raw_field_id = request.data.get("field_id")
+    single = raw_field_id not in (None, "", "null", "all", "0", 0)
+
+    if single:
+        target = OrgLeaderboardDesignField.objects.filter(design=d, id=raw_field_id).first()
+        if not target:
+            return Response({"message": "Field not found."}, status=status.HTTP_404_NOT_FOUND)
+        # Enable THIS column on both sizes, plus its twin (same field_type + column_group) on every
+        # other page of the design (multi-page "all pages"). Matching by type+group keeps the same
+        # logical column in sync without needing per-page ids from the caller.
+        siblings = OrgLeaderboardDesignField.objects.filter(
+            design=d, field_type=target.field_type, column_group=target.column_group)
+        siblings.update(show_instagram=True, show_youtube=True)
+    else:
+        # "All fields": turn every placed column back on for both sizes.
+        OrgLeaderboardDesignField.objects.filter(design=d).update(
+            show_instagram=True, show_youtube=True)
+
+    d_fresh = (OrgLeaderboardDesign.objects.select_related("organization")
+               .prefetch_related("logos", "fields", "texts", "pages").get(id=design_id))
+    return Response({"design": _serialize_design(d_fresh, request)}, status=status.HTTP_200_OK)
+
+
 # ───────────── Connected-column FIELDS (placed data columns on a design) ─────────────
 # Each field binds to a real standings stat and is drawn at x_pct for every row of its column
 # group. The connected-columns palette + drag canvas in LeaderboardDesignsManager manage these.
@@ -924,6 +998,15 @@ def _apply_field_attrs(f, data, design):
             f.order = max(0, int(data.get("order")))
         except (TypeError, ValueError):
             pass
+    # Per-size enablement (owner 2026-07-05): the editor sends these to show/hide this column on ONE
+    # size without touching the other. Booleans arrive as real bools over JSON (the FE field calls use
+    # a JSON body) or as "true"/"false" strings over multipart; coerce both. Absent => leave unchanged
+    # (so a position-only PATCH does not reset a flag).
+    for _flag in ("show_instagram", "show_youtube"):
+        if _flag in data:
+            v = data.get(_flag)
+            setattr(f, _flag, v if isinstance(v, bool)
+                    else str(v).strip().lower() in ("true", "1", "yes", "on"))
 
 
 @api_view(["POST"])

@@ -136,6 +136,10 @@ urlpatterns = [
     path("leaderboard-designs/by-id/<int:design_id>/apply-background-to-all/",
          views_leaderboard_design.apply_background_to_all,
          name="organizers_leaderboard_design_apply_bg_all"),  # POST (multipart bg -> all pages)
+    # Apply a placed column's per-size enablement to BOTH sizes (+ all pages for one field). owner 2026-07-05.
+    path("leaderboard-designs/by-id/<int:design_id>/apply-field-enablement-to-all/",
+         views_leaderboard_design.apply_field_enablement_to_all,
+         name="organizers_leaderboard_design_apply_field_enablement_all"),  # POST ({field_id?} -> both sizes)
     path("leaderboard-designs/by-id/<int:design_id>/", views_leaderboard_design.design_item,
          name="organizers_leaderboard_design_item"),       # PATCH / DELETE
     # One-click "Create default AFC design" generator (owner 2026-07-04): builds a ready-to-use
