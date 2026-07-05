@@ -18623,6 +18623,182 @@ def capture_resolve(request):
     }, status=status.HTTP_200_OK)
 
 
+# ── capture-client EXPECTED-CONTEXT resolver (owner 2026-07-05, complaint F) ──────────────────────
+# WHY THIS EXISTS
+#   Complaint F: the desktop AFC Capture client must be able to tell whether the data it is collecting
+#   and uploading actually belongs to the event+stage+group it has been pointed at, and WARN the
+#   operator when it does not (the classic "capture was left running on yesterday's event overnight").
+#   To do that the client needs the EXPECTED roster for the set stage/group: which teams are due to
+#   play, each team's players with their Free Fire UID + in-game name (IGN), and the maps configured
+#   for that group/stage. This read-only endpoint returns exactly that.
+#
+# HOW THE CLIENT USES IT (afc-capture/afc_capture/roster.py + app.py CaptureController)
+#   The client fetches this ONCE after the operator sets event/stage/group, holds it, and compares:
+#     • every MatchResult_*.log block (team NAME + player Free Fire UID + IGN) — the STRONG check,
+#       because UID is an exact identity (watcher.py), and
+#     • every live debugger AddPlayer / OnTeamScoreInited line (player + team NAME only — the debugger
+#       stream carries an in-game entity id, NOT the account UID) — a weaker NAME-only check (tailer.py).
+#   A mismatch above a small threshold raises a tray warning. The comparison + warning are ADDITIVE and
+#   NEVER block or drop an upload (the operator may have legitimately mis-set it; data must still flow).
+#
+# AUTH: identical to capture_resolve — the event-scoped upload token IS the capability (?token= query or
+#   the X-Upload-Token header). 400 if missing, 403 if invalid/revoked. Read-only (GET); a token minted
+#   for event A can only ever read event A's roster (event scoping enforced by _resolve_event_upload_token).
+# QUERY PARAMS (both optional): ?stage=<stage_id>&group=<group_id> — the operator's current picks. Each is
+#   validated to belong to the token's event; anything foreign is ignored and we fall back to the SAME
+#   "active stage/group" capture_resolve chooses (first 'ongoing' stage, else the first stage; its first
+#   group), so a call with no params still returns a sensible default.
+# EXTENSIBILITY (complaint D, attribution — this endpoint is SHARED): the response is intentionally shaped
+#   so D can later ADD existing-match-slot info (e.g. a top-level "matches" list or per-group "match_slots")
+#   WITHOUT breaking F. F reads only teams[].players[].uid/username, teams[].team_name, and maps.
+# CONNECTS TO: EventUploadToken (auth), Stages/StageGroups (target), StageGroupCompetitor/StageCompetitor
+#   (seeded rosters) → TournamentTeam → TournamentTeamMember → User(uid, username). Consumed by the
+#   capture client's roster.py fetch_expected_roster().
+@api_view(["GET"])
+def capture_context(request):
+    value, token = _resolve_event_upload_token(request)
+    if not value:
+        return Response({"message": "No capture key provided."}, status=status.HTTP_400_BAD_REQUEST)
+    if not token:
+        return Response({"message": "Invalid or revoked capture key."}, status=status.HTTP_403_FORBIDDEN)
+    event = token.event
+
+    # ── Resolve the target stage + group ─────────────────────────────────────────────────────────
+    # Prefer the client-supplied ?stage=/?group= (the operator's current picks), each validated to THIS
+    # event so a forged id can never read another event's roster. Fall back to the active stage/group the
+    # same way capture_resolve does, so a call with no params still returns something sensible.
+    stage = None
+    stage_q = request.query_params.get("stage")
+    if str(stage_q or "").strip().isdigit():
+        stage = Stages.objects.filter(stage_id=int(stage_q), event=event).first()
+    group = None
+    group_q = request.query_params.get("group")
+    if str(group_q or "").strip().isdigit():
+        gq = StageGroups.objects.filter(group_id=int(group_q), stage__event=event)
+        if stage is not None:
+            gq = gq.filter(stage=stage)
+        group = gq.first()
+        # A valid group pins the stage (so ?group= alone still resolves its stage + maps).
+        if group is not None and stage is None:
+            stage = group.stage
+
+    if stage is None:
+        # Same active-stage pick as capture_resolve: first 'ongoing' stage, else the first stage.
+        stage = (Stages.objects.filter(event=event, stage_status="ongoing")
+                 .order_by("stage_order", "start_date", "stage_id").first()
+                 or Stages.objects.filter(event=event)
+                 .order_by("stage_order", "start_date", "stage_id").first())
+    if group is None and stage is not None:
+        group = stage.groups.all().order_by(
+            "group_order", "playing_date", "playing_time", "group_id").first()
+
+    teams_out, roster_source = _capture_expected_teams(event, stage, group)
+    maps_out = _capture_expected_maps(stage, group)
+
+    player_count = sum(len(t["players"]) for t in teams_out)
+    uid_count = sum(1 for t in teams_out for p in t["players"] if p["uid"])
+    return Response({
+        "event_id": event.event_id,
+        "event_name": event.event_name,
+        "participant_type": event.participant_type,
+        "stage_id": stage.stage_id if stage else None,
+        "stage_name": stage.stage_name if stage else None,
+        "group_id": group.group_id if group else None,
+        "group_name": group.group_name if group else None,
+        # Maps the set group/stage expects (informational; the client shows them, they are NOT part of
+        # the mismatch threshold — a map swap is legitimate and must not cry wolf).
+        "maps": maps_out,
+        "teams": teams_out,
+        "team_count": len(teams_out),
+        "player_count": player_count,
+        "uid_count": uid_count,
+        # Provenance of the team list: "group" (group-seeded) / "stage" (stage-seeded) / "event"
+        # (fallback to all active event teams). Lets the client + complaint D tell a precisely-seeded
+        # group apart from the whole-event fallback.
+        "roster_source": roster_source,
+    }, status=status.HTTP_200_OK)
+
+
+def _capture_expected_teams(event, stage, group):
+    """Resolve the teams DUE to play in (group ‖ stage ‖ event) plus each team's players (IGN + Free
+    Fire UID), for the capture client's expected-vs-collected check (complaint F).
+
+    Precedence mirrors how the seeding tables narrow a roster, most-specific first:
+      1. a GROUP's seeded competitors  (StageGroupCompetitor.stage_group=group)  -> source "group",
+      2. else a STAGE's seeded competitors (StageCompetitor.stage=stage)         -> source "stage",
+      3. else every non-dropped TournamentTeam on the event                      -> source "event"
+         (the common single-stage/single-group event that never explicitly seeds StageGroupCompetitor).
+    Returns (teams, source). Solo events carry no team rosters, so teams is [] there (F's check is
+    team+UID oriented and the result-upload endpoint is team-only). Members are fetched in ONE query
+    (no N+1). Each player: {user_id, username (IGN), uid (Free Fire UID, "" when the member never set
+    one — the client treats a blank uid as name-only)."""
+    from collections import defaultdict
+
+    # Which tournament_team rows are due here, most-specific source first.
+    tt_ids, source = None, "event"
+    if group is not None:
+        ids = list(StageGroupCompetitor.objects.filter(stage_group=group)
+                   .exclude(tournament_team__isnull=True)
+                   .values_list("tournament_team_id", flat=True))
+        if ids:
+            tt_ids, source = ids, "group"
+    if tt_ids is None and stage is not None:
+        ids = list(StageCompetitor.objects.filter(stage=stage)
+                   .exclude(tournament_team__isnull=True)
+                   .values_list("tournament_team_id", flat=True))
+        if ids:
+            tt_ids, source = ids, "stage"
+
+    if tt_ids is not None:
+        tt_qs = TournamentTeam.objects.filter(tournament_team_id__in=tt_ids)
+    else:
+        # Fallback: every team registered to the event that hasn't dropped out.
+        tt_qs = TournamentTeam.objects.filter(event=event).exclude(
+            status__in=["withdrawn", "left", "disqualified"])
+    tt_list = list(tt_qs.select_related("team").order_by("tournament_team_id"))
+    tt_ids_final = [t.tournament_team_id for t in tt_list]
+
+    # All members for those teams in one query, grouped by team (IGN = User.username, UID = User.uid).
+    members_by_tt = defaultdict(list)
+    for m in TournamentTeamMember.objects.filter(
+            tournament_team_id__in=tt_ids_final).select_related("user"):
+        members_by_tt[m.tournament_team_id].append({
+            "user_id": m.user_id,
+            "username": (m.user.username if m.user else "") or "",   # in-game name (IGN)
+            "uid": (m.user.uid if m.user else "") or "",             # Free Fire UID (may be blank)
+        })
+
+    teams_out = []
+    for tt in tt_list:
+        teams_out.append({
+            "tournament_team_id": tt.tournament_team_id,
+            "team_id": tt.team_id,
+            "team_name": (tt.team.team_name if tt.team else "") or "",
+            "status": tt.status,
+            "players": members_by_tt.get(tt.tournament_team_id, []),
+        })
+    return teams_out, source
+
+
+def _capture_expected_maps(stage, group):
+    """The maps the set group/stage expects, for the capture client to show the operator. A GROUP's maps
+    are StageGroups.match_maps; when only a stage is set, return the de-duplicated union of that stage's
+    groups' maps (order-preserving). Author-entered JSON, so each entry is trimmed and blanks dropped."""
+    raw = []
+    if group is not None:
+        raw = list(group.match_maps or [])
+    elif stage is not None:
+        seen, ordered = set(), []
+        for g in stage.groups.all().order_by(
+                "group_order", "playing_date", "playing_time", "group_id"):
+            for mp in (g.match_maps or []):
+                if mp not in seen:
+                    seen.add(mp)
+                    ordered.append(mp)
+        raw = ordered
+    return [str(m).strip() for m in raw if str(m).strip()]
+
+
 def _design_row_capacity(design, size):
     """Total standings rows a design can DISPLAY = sum of its column groups' row_count for the
     active size (owner 2026-07-04). A 2-column leaderboard has two groups (8 + 8 = 16), so the
