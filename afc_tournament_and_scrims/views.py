@@ -72,6 +72,20 @@ def _is_event_admin(user):
         user.userroles.filter(role__role_name__in=["event_admin", "head_admin"]).exists()
 
 
+# ── event-CREATOR bypass (Bug D fix) ──────────────────────────────────────────────────────────────
+# The event-management gates below resolve permission ONLY through the event's owning organization
+# (org_can_event) plus the AFC-admin check. That blocks the person who actually CREATED the event
+# whenever (a) the event has no organization (native / legacy / admin-created events, where
+# org_can_event falls back to admin-only) or (b) a sub_organizer holds can_create but not
+# can_edit/can_manage. Event.creator (models.py:110, stamped at create time, views.py:1853) already
+# records who made the event, and delete_event already trusts it. This helper lets us thread the
+# creator in as an additive OR-term so a creator can always edit / manage their own event. It does
+# NOT relax the team-deletion results guard (removing teams that already have match results stays
+# blocked) — that check is independent of this bypass.
+def _is_event_creator(user, event):
+    return bool(user) and bool(event.creator_id) and event.creator_id == user.pk
+
+
 # ── all-groups ROOM-DETAILS visibility (owner 2026-06-29) ──
 # Seeing EVERY group's room id/name/password is a competitive-integrity surface (you could peek at
 # or grief other groups' lobbies), so it is restricted MORE tightly than the general event-admin
@@ -260,11 +274,30 @@ def effective_event_status(event):
     if event.event_status == "completed":
         return "completed"
     from datetime import datetime as _dt, time as _time
+    _tz = timezone.get_current_timezone()
+    now = timezone.now()
     start_dt = timezone.make_aware(
         _dt.combine(event.start_date, event.event_start_time or _time.min),
-        timezone.get_current_timezone(),
+        _tz,
     )
-    return "ongoing" if timezone.now() >= start_dt else "upcoming"
+    # ── Bug B (stuck "Ongoing" / "Upcoming") ──────────────────────────────────────────────────────
+    # This helper used to only converge upcoming -> ongoing at read time and NEVER ongoing ->
+    # completed, so a past-end event read "Ongoing" forever (the correct end-instant transition lives
+    # in update_event_and_stage_statuses, but that beat sweep is not scheduled in the LIVE celery beat).
+    # Make the derivation SYMMETRIC by mirroring the sweep's ongoing -> completed rule (L179-188): if
+    # the event is not already completed/cancelled, was not manually reopened (auto_complete_suppressed),
+    # and its END date + time instant (end_date + event_end_time, or end-of-day when the time is NULL,
+    # combined in the current tz exactly like the sweep) has passed, the badge reads "completed". This
+    # is a pure read-time comparison (no cron needed), so the badge is correct even before any sweep.
+    if event.event_status not in ("completed", "cancelled") and not getattr(event, "auto_complete_suppressed", False):
+        end_dt = timezone.make_aware(
+            _dt.combine(event.end_date, event.event_end_time or _time.max),
+            _tz,
+        )
+        if now > end_dt:
+            return "completed"
+    # Otherwise keep the existing upcoming -> ongoing convergence.
+    return "ongoing" if now >= start_dt else "upcoming"
 
 
 # @api_view(["POST"])
@@ -571,7 +604,10 @@ def get_all_tournaments_and_scrims_separated_paginated(request):
 
 import json
 from datetime import date
-from django.db import transaction
+# IntegrityError is used by register_for_event / add_teams_to_event to catch the new
+# uniq_event_team_registration constraint (Bug C, duplicate registration race) and return a clean
+# 409 instead of a 500. transaction is used for the select_for_update locks + set_rollback there.
+from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -2995,8 +3031,10 @@ def edit_event(request):
 
     # AFC admins may edit any event; an org member needs can_edit_events on the event's
     # owning org. org_can_event treats native (org=None) events as admin-only, so org
-    # members can never edit AFC events.
-    if not is_admin and not org_can_event(user, "can_edit_events", event):
+    # members can never edit AFC events. Bug D: the event's own CREATOR may also edit it
+    # (covers native/legacy/admin-created events with no organization, and sub_organizers
+    # who can create but not edit).
+    if not is_admin and not _is_event_creator(user, event) and not org_can_event(user, "can_edit_events", event):
         return Response({"message": "You do not have permission to modify this event."}, status=403)
 
     old_snapshot = snapshot_event(event)
@@ -6250,9 +6288,12 @@ def register_for_event(request):
         if not check_discord_membership(user.discord_id):
             return Response({"message": "You must join the Discord server before registering."}, status=403)
 
-        # Prevent duplicate solo registration
-        if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
-            return Response({"message": "You are already registered."}, status=409)
+        # NOTE (Bug C, duplicate registration race): the "already registered" duplicate check used to
+        # live HERE, OUTSIDE the atomic block. It has been MOVED inside the `with transaction.atomic():`
+        # below, behind a select_for_update lock on the event, so two near-simultaneous solo
+        # registrations serialize and the second one 409s instead of creating a second RegisteredCompetitors
+        # row. (RegisteredCompetitors has no unique constraint, so the lock + moved check IS the fix here;
+        # there is no DB constraint to add an IntegrityError guard against, unlike the team path.)
 
         # Capacity check
         if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
@@ -6291,6 +6332,13 @@ def register_for_event(request):
                 }, status=409)
 
         with transaction.atomic():
+            # Bug C: lock the event row + re-check for an existing solo registration INSIDE the atomic
+            # block so two concurrent registrations by the same user serialize (the second blocks on the
+            # lock, then sees the row and 409s) instead of both creating a RegisteredCompetitors row.
+            event = Event.objects.select_for_update().get(pk=event.pk)
+            if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
+                return Response({"message": "You are already registered."}, status=409)
+
             active_count = RegisteredCompetitors.objects.filter(
                 event=event,
                 status__in=["registered", "approved"],
@@ -6451,14 +6499,15 @@ def register_for_event(request):
             return Response({"message": "You are not a member of this team."}, status=403)
 
         existing_registration = TournamentTeam.objects.filter(event=event, team=team).first()
-        
+
         if existing_registration and existing_registration.status != "registered":
             return Response({"message": "You cannot rejoin this event."}, status=400)
 
-
-        # Prevent duplicate team registration
-        if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
-            return Response({"message": "Team already registered."}, status=409)
+        # NOTE (Bug C, duplicate registration race): the "already registered" duplicate check used to
+        # live HERE, OUTSIDE the atomic block, so two near-simultaneous requests both passed it and
+        # each created a TournamentTeam row (#15, #16) for the same (event, team). It has been MOVED
+        # inside the `with transaction.atomic():` below, behind a select_for_update lock on the event,
+        # so concurrent registrations serialize and the second one 409s instead of duplicating.
 
         if event.is_sponsored:
             if not sponsor_ids:
@@ -6700,8 +6749,30 @@ def register_for_event(request):
                 return Response({"message": "Invite token has already been used."}, status=403)
 
 
+        # ── Bug A (waitlist 500) HOIST ──────────────────────────────────────────────────────────────
+        # role_id_stage (the event's entry Stage, used for Discord role assignment) is read by BOTH the
+        # waitlist branch (`stage = role_id_stage`) and the normal-registration path below. Its only
+        # assignment used to sit AFTER the waitlist branch, in the normal path, so Python bound the name
+        # as a function-local and the waitlist branch hit UnboundLocalError -> 500 on EVERY team waitlist
+        # join. Hoisting the lookup here fixes it (a stage-less event yields None; None-safe guards below
+        # handle that). The old duplicate assignment further down has been removed.
+        role_id_stage = Stages.objects.filter(event=event).first()
+
         # Register
         with transaction.atomic():
+            # ── Bug C (duplicate registration race) ───────────────────────────────────────────────
+            # Lock the event row so two concurrent registrations of the SAME team serialize here: the
+            # second blocks until the first commits, then the moved dup-check below sees the new row and
+            # 409s. Previously this check ran OUTSIDE the atomic block, so a race produced twin
+            # TournamentTeam rows (#15, #16) that made the team un-removable (MultipleObjectsReturned in
+            # _resolve_event_team). The uniq_event_team_registration DB constraint + the IntegrityError
+            # guards on the creates below are the hard backstop. We check RegisteredCompetitors (active
+            # path) OR TournamentTeam (also catches a waitlist row, which has no RC) to cover both.
+            event = Event.objects.select_for_update().get(pk=event.pk)
+            if RegisteredCompetitors.objects.filter(event=event, team=team).exists() or \
+               TournamentTeam.objects.filter(event=event, team=team).exists():
+                return Response({"message": "This team is already registered for this event."}, status=409)
+
             active_count = TournamentTeam.objects.filter(
                 event=event,
                 is_waitlisted=False
@@ -6721,12 +6792,19 @@ def register_for_event(request):
                     return Response({"message": "Waitlist is full."}, status=403)
 
                 # CREATE WAITLIST TEAM
-                tt = TournamentTeam.objects.create(
-                    event=event,
-                    team=team,
-                    registered_by=user,
-                    is_waitlisted=True
-                )
+                # Bug C IntegrityError guard: the uniq_event_team_registration constraint rejects a
+                # duplicate (event, team) row (e.g. a race that slipped past the lock above); roll the
+                # transaction back and return a clean 409 instead of surfacing a 500.
+                try:
+                    tt = TournamentTeam.objects.create(
+                        event=event,
+                        team=team,
+                        registered_by=user,
+                        is_waitlisted=True
+                    )
+                except IntegrityError:
+                    transaction.set_rollback(True)
+                    return Response({"message": "This team is already registered for this event."}, status=409)
 
                 TournamentTeamMember.objects.bulk_create([
                     TournamentTeamMember(
@@ -6756,7 +6834,9 @@ def register_for_event(request):
                     ])
 
                 # ---------------- AUTO ASSIGN ROLES FOR NON-SPONSORED ----------------
-                if not event.is_sponsored:
+                # Bug A null-stage guard: a stage-less event has role_id_stage=None, and the block below
+                # dereferences stage.stage_id (AttributeError -> 500). Only run it when a stage exists.
+                if not event.is_sponsored and role_id_stage:
 
                     stage = role_id_stage
 
@@ -6798,13 +6878,20 @@ def register_for_event(request):
                 status="registered"
             )
 
-            tt = TournamentTeam.objects.create(
-                event=event,
-                team=team,
-                status="pending" if event.is_sponsored else "active",
-                registered_by=user,
-                country=team_country
-            )
+            # Bug C IntegrityError guard: same backstop as the waitlist create above. The competitor
+            # RegisteredCompetitors row was created just above in this same transaction, so a rollback
+            # here also clears it (no orphaned registration).
+            try:
+                tt = TournamentTeam.objects.create(
+                    event=event,
+                    team=team,
+                    status="pending" if event.is_sponsored else "active",
+                    registered_by=user,
+                    country=team_country
+                )
+            except IntegrityError:
+                transaction.set_rollback(True)
+                return Response({"message": "This team is already registered for this event."}, status=409)
 
             # TournamentTeamMember.objects.bulk_create(
             #     [TournamentTeamMember(tournament_team=tt, user=roster_users_by_id[uid], event=event) for uid in roster_member_ids],
@@ -6886,7 +6973,9 @@ def register_for_event(request):
 
             # Queue discord roles
             # role_id = getattr(settings, "DISCORD_TOURNAMENT_TEAM_ROLE_ID", None)
-            role_id_stage = Stages.objects.filter(event=event).first()
+            # Bug A: role_id_stage is now hoisted above (before the atomic block); the duplicate
+            # re-assignment that used to live here has been removed so the waitlist branch and this
+            # normal path both read the same hoisted value.
             # Guard: an event with no stages yet has role_id_stage=None (AttributeError = 500).
             role_id = role_id_stage.stage_discord_role_id if role_id_stage else None
             if role_id:
@@ -17295,14 +17384,22 @@ def _resolve_event_team(request):
     if not tournament_team_id and not team_id:
         return None, None, None, Response({"message": "tournament_team_id or team_id is required."}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
-    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+    # Bug D: allow the event's own creator too (native/legacy events with no org, or a sub_organizer
+    # who can create but not manage), in addition to AFC admins and org managers.
+    if not _is_event_admin(admin) and not _is_event_creator(admin, event) and not org_can_event(admin, "can_manage_registrations", event):
         return None, None, None, Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
     if event.participant_type == "solo":
         return None, None, None, Response({"message": "This endpoint is for TEAM events only (duo/squad)."}, status=400)
     if tournament_team_id:
         tt = get_object_or_404(TournamentTeam, tournament_team_id=tournament_team_id, event=event)
     else:
-        tt = get_object_or_404(TournamentTeam, event=event, team__team_id=team_id)
+        # Bug C (un-removable duplicate): when resolving by team_id, legacy duplicate (event, team)
+        # rows made get_object_or_404 raise MultipleObjectsReturned -> 500, so the dupe could never be
+        # removed. Resolve deterministically to the LOWEST tournament_team_id instead (the new unique
+        # constraint prevents new dupes; this keeps any pre-existing dupe removable). 404 if none.
+        tt = TournamentTeam.objects.filter(event=event, team__team_id=team_id).order_by("tournament_team_id").first()
+        if tt is None:
+            return None, None, None, Response({"message": "That team is not registered for this event."}, status=404)
     return admin, event, tt, None
 
 
@@ -17343,11 +17440,23 @@ def remove_team_from_event(request):
     except Exception:
         pass
 
+    # Bug C: if the caller explicitly targeted ONE duplicate row (passed tournament_team_id) and OTHER
+    # TournamentTeam rows for the same (event, team) still exist, a blanket
+    # RegisteredCompetitors.filter(event, team).delete() would also wipe the SURVIVOR's registration.
+    # In that case delete just ONE RegisteredCompetitors row so the survivor keeps its registration;
+    # otherwise (normal single-team removal) clear the (event, team) registration as before.
+    explicit_tt_id = request.data.get("tournament_team_id")
     with transaction.atomic():
         StageGroupCompetitor.objects.filter(stage_group__stage__event=event, tournament_team=tt).delete()
         StageCompetitor.objects.filter(stage__event=event, tournament_team=tt).delete()
         TournamentTeamMember.objects.filter(tournament_team=tt).delete()
-        RegisteredCompetitors.objects.filter(event=event, team=team).delete()
+        others_remain = TournamentTeam.objects.filter(event=event, team=team).exclude(pk=tt.pk).exists()
+        if explicit_tt_id and others_remain:
+            rc = RegisteredCompetitors.objects.filter(event=event, team=team).order_by("id").first()
+            if rc:
+                rc.delete()
+        else:
+            RegisteredCompetitors.objects.filter(event=event, team=team).delete()
         tt.delete()
 
     return Response({
@@ -18284,7 +18393,8 @@ def add_teams_to_stage(request):
     stage = get_object_or_404(Stages, stage_id=stage_id)
     event = stage.event
     # ── registration gate (org-aware, resolved from the stage's event) ──
-    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
+    # Bug D: the event creator may also manage seeding (native/legacy events, create-only sub_organizers).
+    if not _is_event_admin(admin) and not _is_event_creator(admin, event) and not org_can_event(admin, "can_manage_registrations", event):
         return Response({"message": "No permission"}, status=403)
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
@@ -20544,6 +20654,11 @@ def add_teams_to_event(request):
 
     with transaction.atomic():
 
+        # Bug C (duplicate registration race): lock the event row so a concurrent bulk-add (or a
+        # simultaneous user self-registration) can't slip between this loop's "does it exist?" filter
+        # and the create and produce duplicate (event, team) TournamentTeam rows.
+        event = Event.objects.select_for_update().get(pk=event.pk)
+
         for team in teams:
 
             # RegisteredCompetitors
@@ -20560,12 +20675,20 @@ def add_teams_to_event(request):
             tt = TournamentTeam.objects.filter(event=event, team=team).first()
 
             if not tt:
-                tt = TournamentTeam.objects.create(
-                    event=event,
-                    team=team,
-                    status="active"
-                )
-                new_tournament_teams.append(tt)
+                # Bug C IntegrityError guard: the uniq_event_team_registration constraint rejects a
+                # racing duplicate. Wrap the create in a SAVEPOINT (nested atomic) so a conflict rolls
+                # back only this one create; we then re-fetch the row the other writer created and
+                # carry on with the rest of the batch instead of 500-ing the whole bulk add.
+                try:
+                    with transaction.atomic():
+                        tt = TournamentTeam.objects.create(
+                            event=event,
+                            team=team,
+                            status="active"
+                        )
+                    new_tournament_teams.append(tt)
+                except IntegrityError:
+                    tt = TournamentTeam.objects.filter(event=event, team=team).first()
 
             # Add team members
             members = TeamMembers.objects.filter(team=team).select_related("member")
@@ -20668,7 +20791,8 @@ def add_teams_to_group(request):
     rr_group = RoundRobinGroup.objects.select_related("stage__event").filter(group_id=group_id).first()
     if rr_group is not None:
         rr_event = rr_group.stage.event
-        if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", rr_event):
+        # Bug D: event creator may also manage seeding.
+        if not _is_event_admin(admin) and not _is_event_creator(admin, rr_event) and not org_can_event(admin, "can_manage_registrations", rr_event):
             return Response({"message": "Unauthorized."}, status=403)
         if rr_event.participant_type == "solo":
             return Response({"message": "This endpoint is for team events only."}, status=400)
@@ -20695,7 +20819,8 @@ def add_teams_to_group(request):
 
     group = get_object_or_404(StageGroups, group_id=group_id)
     # ── registration gate (org-aware, event resolved group -> stage -> event) ──
-    if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", group.stage.event):
+    # Bug D: event creator may also manage seeding.
+    if not _is_event_admin(admin) and not _is_event_creator(admin, group.stage.event) and not org_can_event(admin, "can_manage_registrations", group.stage.event):
         return Response({"message": "Unauthorized."}, status=403)
     if group.stage.event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)

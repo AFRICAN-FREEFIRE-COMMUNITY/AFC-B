@@ -724,6 +724,19 @@ class TournamentTeam(models.Model):
                 fields=["event", "assigned_letter"],
                 name="uniq_assigned_letter_per_event",
             ),
+            # ── Bug C (duplicate registration + un-removable dupe) ────────────────────────────────
+            # One registration per (event, team). Before this, a race in register_for_event /
+            # add_teams_to_event could create TWO TournamentTeam rows for the same team in the same
+            # event (e.g. #15 and #16), which then made the team un-removable
+            # (get_object_or_404(event, team) -> MultipleObjectsReturned -> 500) and double-counted
+            # it in the bracket. A plain UniqueConstraint enforces on BOTH MySQL (production) and
+            # Postgres. The 0050 migration DEDUPES existing rows before adding this, so the
+            # AddConstraint cannot fail on legacy dupes. App-level select_for_update + IntegrityError
+            # guards (register_for_event, add_teams_to_event) are the friendly first line of defence.
+            models.UniqueConstraint(
+                fields=["event", "team"],
+                name="uniq_event_team_registration",
+            ),
         ]
 
     @property
