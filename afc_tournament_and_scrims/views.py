@@ -18751,6 +18751,115 @@ def _overlay_cumulative_rows(event, group_ids, max_rows, request):
     return _overlay_rows_from_standings(standings, max_rows, request)
 
 
+# ── Per-overlay COMBINE spec (owner 2026-07-05, complaint C) ──────────────────────────────────────
+# A studio leaderboard overlay can COMBINE selected units into one cumulative board: any mix of whole
+# STAGES and individual GROUPS. Unlike the event-wide broadcast selection (Event.broadcast_*, ONE per
+# event), the combine spec lives PER OVERLAY in EventOverlay.config as
+#   {"scope": "combine", "group_ids": [g1, g2, ...], "stage_ids": [s1, ...]}
+# ("single" / absent scope keeps the legacy single stage_id+group_id behaviour, so old config rows are
+# untouched). It rides the ONE stable link two ways that must agree: (a) overlay_config bundles the
+# resolved standings for the poll (see _overlay_config_leaderboard_standings), and (b) the inner
+# /overlay/leaderboard iframe carries it as ?groups=<csv>&stages=<csv>, parsed here for overlay_feed.
+# Both funnel through _expand_overlay_combine so a combined overlay agrees with the site's cumulative
+# tables (same _overlay_cumulative_rows -> round_robin._aggregate_team_standings aggregator).
+def _expand_overlay_combine(event, group_ids, stage_ids):
+    """Resolve a combine spec to the concrete, THIS-EVENT set of group ids to aggregate. group_ids are
+    kept as-is (validated to the event); stage_ids EXPAND to every group under those stages. Returns a
+    sorted unique list, or [] when nothing valid was given. Shared by overlay_feed (the per-link
+    ?groups=/?stages= params) and overlay_config (the saved combine config) so both resolve the same
+    combined board. Cross-event ids are dropped, so a forged id can never pull another event's data."""
+    valid_group_ids = set(
+        StageGroups.objects.filter(stage__event=event).values_list("group_id", flat=True))
+    chosen = set()
+    for g in (group_ids or []):
+        if str(g).strip().isdigit() and int(g) in valid_group_ids:
+            chosen.add(int(g))
+    stage_ids_clean = [int(s) for s in (stage_ids or []) if str(s).strip().isdigit()]
+    if stage_ids_clean:
+        for gid in StageGroups.objects.filter(
+                stage__event=event, stage__stage_id__in=stage_ids_clean).values_list(
+                    "group_id", flat=True):
+            chosen.add(gid)
+    return sorted(chosen)
+
+
+def _parse_overlay_combine(request, event):
+    """Read a per-overlay COMBINE selection off the overlay_feed query (?groups=<csv|repeated>&
+    stages=<csv|repeated>) and resolve it to a validated group_id list, or None when NO combine params
+    were sent — so single-group/stage and follow-broadcast callers stay on their existing paths
+    untouched. An all-invalid selection also yields None (graceful fall-through, never an empty board)."""
+    def _multi(name):
+        out = []
+        for v in request.query_params.getlist(name):  # supports repeated ?groups=1&groups=2
+            out.extend(str(v).split(","))              # and the ?groups=1,2 csv form
+        return [x.strip() for x in out if str(x).strip()]
+
+    groups = _multi("groups")
+    stages = _multi("stages")
+    if not groups and not stages:
+        return None
+    combined = _expand_overlay_combine(event, groups, stages)
+    return combined or None
+
+
+def _overlay_config_leaderboard_standings(event, config, request):
+    """Standings a SAVED leaderboard overlay currently shows, bundled into overlay_config (owner
+    2026-07-05, complaint C) exactly the way _h2h_payload / _booyah_payload bundle their resolved data,
+    so the ONE stable link's config poll and its inner /overlay/leaderboard iframe (which pulls the
+    identical numbers from overlay_feed) always agree. Honours, in precedence order:
+      • follow-broadcast (config.follow) -> the event's saved Event.broadcast_* selection;
+      • COMBINE (config.scope == "combine") -> sum config.group_ids + the groups of config.stage_ids
+        via the shared cumulative aggregator;
+      • single (default / legacy, no scope) -> the chosen stage + optional group.
+    Solo events carry no team standings, so []. max_rows mirrors overlay_feed (the design's real row
+    capacity, youtube page) so the bundled board is the same length as the live feed's."""
+    from .views_event_graphic import _resolve_event_design
+    if event.participant_type == "solo":
+        return []
+    config = config or {}
+    design = _resolve_event_design(event, config.get("design_id"))
+    max_rows = _design_row_capacity(design, "youtube") if design else 16
+
+    # follow-broadcast: resolve the event's saved broadcast selection (mirrors overlay_feed's follow
+    # block) so a "follow" overlay bundles whatever BroadcastControl currently points at.
+    if config.get("follow"):
+        scope = (event.broadcast_scope or "group").lower()
+        if scope == "group" and event.broadcast_group_id:
+            g = StageGroups.objects.filter(
+                group_id=event.broadcast_group_id, stage__event=event).first()
+            return _overlay_standings_rows(event, None, g, max_rows, request)
+        if scope == "stage" and event.broadcast_stage_id:
+            s = Stages.objects.filter(stage_id=event.broadcast_stage_id, event=event).first()
+            return _overlay_standings_rows(event, s, None, max_rows, request)
+        if scope == "event":
+            return _overlay_cumulative_rows(event, None, max_rows, request)
+        if scope == "custom":
+            valid = set(StageGroups.objects.filter(
+                stage__event=event).values_list("group_id", flat=True))
+            gids = [g for g in (event.broadcast_group_ids or []) if g in valid]
+            return _overlay_cumulative_rows(event, gids, max_rows, request)
+        return []
+
+    # COMBINE scope: sum the chosen groups + whole stages (expanded) into one cumulative board.
+    if (config.get("scope") or "single") == "combine":
+        gids = _expand_overlay_combine(event, config.get("group_ids"), config.get("stage_ids"))
+        if not gids:
+            return []
+        return _overlay_cumulative_rows(event, gids, max_rows, request)
+
+    # single scope (default, and every legacy config row that has no `scope`): the chosen stage +
+    # optional group — the original per-overlay behaviour, preserved for backward compatibility.
+    stage = None
+    if str(config.get("stage_id") or "").isdigit():
+        stage = Stages.objects.filter(stage_id=int(config["stage_id"]), event=event).first()
+    group = None
+    if str(config.get("group_id") or "").isdigit():
+        gq = StageGroups.objects.filter(group_id=int(config["group_id"]))
+        gq = gq.filter(stage=stage) if stage is not None else gq.filter(stage__event=event)
+        group = gq.first()
+    return _overlay_standings_rows(event, stage, group, max_rows, request)
+
+
 @api_view(["POST"])
 def ensure_overlay_token(request, event_id):
     """POST events/<event_id>/overlay/token/  — ensure (create-if-null) + return the event's public
@@ -18787,10 +18896,13 @@ def overlay_feed(request):
     results_published (results_hidden is always false) — a suspended-org event still 404s.
 
     Params: token (required); stage / group (which standings slice, mirrors the graphic export —
-    group_standings if a group is given, else cumulative_standings for the stage); design (which
-    OrgLeaderboardDesign to render, else the library default); size (youtube|instagram, default
-    youtube); live (0/1 — when 1 and a Redis snapshot exists at overlay:live:<event>:<stage>:<group>,
-    that provisional in-round standings snapshot is returned with live=true).
+    group_standings if a group is given, else cumulative_standings for the stage); groups / stages
+    (owner 2026-07-05, complaint C — a per-overlay COMBINE: comma-separated or repeated group ids and/or
+    whole-stage ids, summed into ONE cumulative board via _overlay_cumulative_rows; supersedes
+    stage/group + broadcast-follow when present); design (which OrgLeaderboardDesign to render, else the
+    library default); size (youtube|instagram, default youtube); live (0/1 — when 1 and a Redis snapshot
+    exists at overlay:live:<event>:<stage>:<group>, that provisional in-round snapshot is returned with
+    live=true).
 
     Team events only for standings (mirrors event graphic); a solo event returns empty standings + a
     note. Sends Access-Control-Allow-Origin: * (safe public read) so the feed loads cross-origin.
@@ -18833,7 +18945,20 @@ def overlay_feed(request):
     #   event  -> cumulative across ALL groups of ALL stages | custom -> across broadcast_group_ids.
     broadcast_cumulative = False   # True => use _overlay_cumulative_rows (event / custom scopes)
     broadcast_group_ids = None     # None + cumulative => whole event; [...] => exactly those groups
-    if stage is None and group is None:
+
+    # ── Per-overlay COMBINE (owner 2026-07-05, complaint C) ───────────────────────────────────────
+    # A studio leaderboard overlay whose config has {scope:"combine", group_ids, stage_ids} rides the
+    # stable link's inner URL as ?groups=<csv>&stages=<csv>. When present, aggregate EXACTLY those
+    # groups (stages already expanded to their groups by the FE-independent _expand_overlay_combine) —
+    # this per-link combination supersedes any ?stage=/?group= and the event-wide broadcast follow, and
+    # reuses the same cumulative path as the broadcast 'custom' scope. Absent params => untouched below.
+    combine_group_ids = _parse_overlay_combine(request, event)
+    if combine_group_ids is not None:
+        broadcast_cumulative = True
+        broadcast_group_ids = combine_group_ids
+        stage = None   # combine is its own scope; clear any single slice so the cumulative path runs
+        group = None
+    elif stage is None and group is None:
         scope = (event.broadcast_scope or "group").lower()
         if scope == "group" and event.broadcast_group_id:
             group = StageGroups.objects.filter(

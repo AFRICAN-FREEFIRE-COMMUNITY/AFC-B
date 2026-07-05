@@ -1397,19 +1397,30 @@ def _generate_afc_background(w, h):
     return Image.alpha_composite(base.convert("RGBA"), glow).convert("RGB")
 
 
-def _afc_default_background_bytes(size):
-    """Return PNG bytes for the AFC-branded default background of `size` ("instagram"|"youtube").
+def _afc_default_background_path(size):
+    """Return the filesystem PATH to the AFC-branded default background of `size`
+    ("instagram"|"youtube"), generating it ONCE into afc_organizers/assets/ if missing.
 
-    Idempotent + reusable: the PNG is generated ONCE into afc_organizers/assets/ and re-read on every
-    later call (so every generated default design shares the identical background art without
-    re-rendering). Copied into the design's background_instagram / background_youtube ImageField by
-    create_default_design."""
+    Idempotent + reusable: the PNG is generated once and re-read on every later call, so every
+    generated/ephemeral default design shares the identical background art without re-rendering.
+    Two consumers: create_default_design copies the BYTES into a persisted design's ImageField (via
+    _afc_default_background_bytes below), while the EXPORT fallback (build_ephemeral_afc_default)
+    hands this PATH straight to the renderer, which opens it — no media file / DB row needed."""
     fname, (w, h) = _AFC_BG_ASSETS.get(size, _AFC_BG_ASSETS["instagram"])
     path = os.path.join(_ASSETS_DIR, fname)
     if not os.path.exists(path):
         os.makedirs(_ASSETS_DIR, exist_ok=True)
         _generate_afc_background(w, h).save(path, format="PNG")
-    with open(path, "rb") as fh:
+    return path
+
+
+def _afc_default_background_bytes(size):
+    """Return PNG bytes for the AFC-branded default background of `size` ("instagram"|"youtube").
+
+    Reads the cached asset produced by _afc_default_background_path (generated once), so every
+    generated default design shares the identical background art. Copied into the design's
+    background_instagram / background_youtube ImageField by create_default_design."""
+    with open(_afc_default_background_path(size), "rb") as fh:
         return fh.read()
 
 
@@ -1618,3 +1629,162 @@ def create_default_design(request):
         {"design": _serialize_design(d_fresh, request), "note": logo_note},
         status=status.HTTP_201_CREATED,
     )
+
+
+# ═══════════ Ephemeral branded-default for the EXPORT FALLBACK (owner 2026-07-05, complaint J) ═══
+#
+# WHAT / WHY: create_default_design (above) PERSISTS a branded default into a library. But the export
+# endpoints must ALSO produce a branded PNG when a leaderboard/event has NO saved design at all —
+# without writing anything to the library, and without polluting an org/event that legitimately has
+# an empty design library. build_ephemeral_afc_default builds the SAME visual IN MEMORY ONLY: it
+# reuses _afc_default_spec's column geometry, the cached AFC background asset
+# (_afc_default_background_path) and the bundled AFC logo (_AFC_LOGO_ASSET), and returns render-ready
+# page specs the existing renderer consumes UNCHANGED (afc_leaderboard.graphic.render_design_all_pages
+# -> render_leaderboard_graphic, field-layout path). NOTHING is saved.
+#
+# ROW -> PAGE RULE (owner spec; mirrors the create-default 12/15/24 presets):
+#   n <= 12         -> ONE page,  12-row single column                     (preset "12")
+#   13 <= n <= 15   -> ONE page,  15-row single column                     (preset "15")
+#   n > 15          -> pages of 24 (two 12-row columns each), ceil(n / 24)
+#                      pages, with each page's start_rank OFFSET by 24       (preset "24" tiled)
+# So 12 teams = 1 page; 18 teams = 1 page (two-column 24 layout); 30 teams = 2 pages.
+#
+# CONSUMED BY (the `design is None` fallback branch of each export entry point):
+#   * afc_leaderboard.views.leaderboard_graphic               (standalone leaderboard export)
+#   * afc_tournament_and_scrims.views_event_graphic.event_stage_graphic  (event stage export)
+# Escape hatch: those callers honour ?plain=1 to keep the LEGACY bare dark auto-table instead.
+
+
+class _EphemeralBackground:
+    """A stand-in for an ImageField that only needs to expose `.path` to the renderer.
+    render_design_all_pages resolves a page's background via page_spec["background_*"].path, so an
+    ephemeral (unsaved) default supplies its cached AFC background asset through this tiny shim
+    instead of a real media file / DB row (there is none — nothing is persisted)."""
+    __slots__ = ("path",)
+
+    def __init__(self, path):
+        self.path = path
+
+
+class _EphemeralAfcDefault:
+    """The render-ready result of build_ephemeral_afc_default. NOT a model instance — nothing is
+    persisted. Carries exactly what the two export callers pass to render_design_all_pages:
+
+        pages_spec : list of per-page dicts in the SAME shape build_pages_for_export returns
+                     ({page_number, background_instagram, background_youtube, field_layout}), so the
+                     multi-page renderer consumes it unchanged. Backgrounds are _EphemeralBackground
+                     shims (path only). One entry per page per the row->page rule.
+        logos      : positioned logos (AFC logo top-left; org logo top-right when the org has one),
+                     same {path, x_pct, y_pct, size} shape the renderer's _paste_logos expects.
+        max_rows   : per-page row capacity (ignored by the field-layout path, but passed through for
+                     signature parity with the saved-design export).
+    text_color / accent_color / show_title / show_subtitle / transparent_background mirror the AFC
+    default theme so the render kwargs match a freshly created default design."""
+
+    def __init__(self, pages_spec, logos, max_rows):
+        self.pages_spec = pages_spec
+        self.logos = logos
+        self.max_rows = max_rows
+        self.text_color = AFC_DEFAULT_TEXT_COLOR
+        self.accent_color = AFC_DEFAULT_ACCENT_COLOR
+        # The branded default places its own columns (field-layout path), which does NOT draw the
+        # built-in title/subtitle — identical to create_default_design (it adds no title text). These
+        # flags are passed through only for signature parity; they do not change the field-layout look.
+        self.show_title = True
+        self.show_subtitle = True
+        self.transparent_background = False
+
+    @property
+    def page_count(self):
+        return len(self.pages_spec)
+
+
+def _fields_from_columns(columns_by_group):
+    """Turn the _afc_default_spec column tuples (field_type, x_pct, align) into the field dicts the
+    renderer's field_layout expects. font_path / font_size_pct / color are left unset so the renderer
+    uses its defaults (2.1% row height, the design text colour) — identical to a freshly created
+    default, whose OrgLeaderboardDesignField rows also carry no custom font/size/colour."""
+    out = []
+    for gi, columns in enumerate(columns_by_group):
+        for (field_type, x_pct, align) in columns:
+            out.append({
+                "field_type": field_type, "column_group": gi, "x_pct": x_pct,
+                "align": align, "font_path": None, "font_size_pct": None, "color": None,
+            })
+    return out
+
+
+def build_ephemeral_afc_default(n, *, org=None):
+    """Build an in-memory AFC-branded default sized to `n` teams/players. Persists NOTHING.
+
+    `n`   the ACTUAL number of standings rows being exported (auto row detection — the caller passes
+          len(rows), never a hardcoded 16). Clamped to >= 1.
+    `org` the owning organization (or None). When it has a logo, that logo is placed top-right
+          opposite the AFC logo, mirroring create_default_design.
+
+    Returns an _EphemeralAfcDefault (see that class). The row->page rule is documented in the section
+    header above and implemented here. Reuses _afc_default_spec (column geometry) + the cached AFC
+    background asset + the bundled AFC logo, so the fallback looks identical to the persisted default.
+    """
+    n = max(1, int(n or 0))
+
+    # Backgrounds (shared across every page) as path-shims the renderer resolves via `.path`. The
+    # cached asset is generated once on first call; no media file / DB row is created.
+    bg_ig = _EphemeralBackground(_afc_default_background_path("instagram"))
+    bg_yt = _EphemeralBackground(_afc_default_background_path("youtube"))
+
+    # Positioned logos: AFC logo top-left (bundled asset), org logo top-right when an org has one.
+    # Positions mirror create_default_design (AFC at 8%/8%, org at 90%/8%, both "medium").
+    logos = []
+    if os.path.exists(_AFC_LOGO_ASSET):
+        logos.append({"path": _AFC_LOGO_ASSET, "x_pct": 8.0, "y_pct": 8.0, "size": "medium"})
+    if org is not None and getattr(org, "logo", None):
+        try:
+            logos.append({"path": org.logo.path, "x_pct": 90.0, "y_pct": 8.0, "size": "medium"})
+        except Exception:
+            pass
+
+    pages_spec = []
+    if n <= 15:
+        # ── ONE single-column page: the 12-row preset for n<=12, the 15-row preset for 13..15. ──
+        spec = _afc_default_spec("12" if n <= 12 else "15")
+        pages_spec.append({
+            "page_number": 1,
+            "background_instagram": bg_ig,
+            "background_youtube": bg_yt,
+            "field_layout": {
+                "column_groups": spec["column_groups"],
+                "fields": _fields_from_columns(spec["columns_by_group"]),
+                "texts": [],
+            },
+        })
+        max_rows = spec["max_rows"]
+    else:
+        # ── n > 15: TWO-COLUMN (24-capacity) pages, one per 24 teams. Reuse the "24" preset's column
+        #    geometry + placed columns, and OFFSET each page's start_rank by 24 so page 2 shows ranks
+        #    25..48, page 3 shows 49..72, etc. render_design_all_pages passes ALL rows to every page;
+        #    the per-page start_rank + row_count select that page's slice (out-of-range ranks are just
+        #    skipped by the renderer), so a partial last page renders only the rows that exist. ──
+        base_spec = _afc_default_spec("24")
+        per_page = base_spec["max_rows"]                       # 24 (two 12-row columns)
+        page_count = (n + per_page - 1) // per_page            # ceil(n / 24), no math import needed
+        for p in range(page_count):
+            offset = p * per_page
+            groups = []
+            for g in base_spec["column_groups"]:
+                ng = dict(g)                                   # copy so we never mutate the shared spec
+                ng["start_rank"] = g["start_rank"] + offset
+                groups.append(ng)
+            pages_spec.append({
+                "page_number": p + 1,
+                "background_instagram": bg_ig,
+                "background_youtube": bg_yt,
+                "field_layout": {
+                    "column_groups": groups,
+                    "fields": _fields_from_columns(base_spec["columns_by_group"]),
+                    "texts": [],
+                },
+            })
+        max_rows = per_page
+
+    return _EphemeralAfcDefault(pages_spec, logos, max_rows)
