@@ -434,6 +434,19 @@ class OrgLeaderboardDesignField(models.Model):
     font_size_pct = models.FloatField(null=True, blank=True)
     color = models.CharField(max_length=9, blank=True, default="")
     order = models.PositiveSmallIntegerField(default=0)
+    # ── PER-SIZE enablement (owner 2026-07-05, audit complaint A) ────────────────────────────────
+    # Whether THIS column renders on each export size, INDEPENDENTLY. Until now a placed field row
+    # rendered on BOTH Instagram and YouTube (its mere existence = enabled everywhere), so you could
+    # not show a column (e.g. team_logo, kill_points) on IG but hide it on YT. These two booleans split
+    # that: build_field_layout / build_pages_for_export DROP a field when its flag for the requested
+    # size is False (instagram -> require show_instagram; youtube -> require show_youtube). This mirrors
+    # the position (x_pct / x_pct_youtube) and geometry (column_groups / column_groups_youtube) per-size
+    # splits already in place. Both default True so EVERY pre-existing field keeps rendering on both
+    # sizes (backward safe — no data migration needed). Toggled per-size in DesignFieldsEditor.tsx
+    # (the palette add/remove + the style-panel "Shown on Instagram / YouTube" switches) and reset to
+    # "shown on both" by the apply_field_enablement_to_all endpoint ("Apply to all").
+    show_instagram = models.BooleanField(default=True)
+    show_youtube = models.BooleanField(default=True)
     # Multi-page support (owner 2026-06-14): null = legacy (belongs to page 1 / design-level layout).
     # Non-null scopes this field to a specific page. Cascade: deleting a page removes its fields.
     # Set by design_fields when the editor passes page_id; read by build_pages_for_export to slice
