@@ -75,8 +75,13 @@ from .views_broadcast_kit import broadcast_kit_summary, broadcast_kit_download
 from .views_overlays import (
     list_overlays, create_overlay, update_overlay,
     duplicate_overlay, delete_overlay, overlay_config,
-    capture_version, capture_config,
+    capture_config,
 )
+# Desktop AFC Capture FULL AUTO-UPDATE (owner 2026-07-05): the installed tray client polls
+# capture/version/ on startup and updates itself from the published installer URL; an admin publishes a
+# new release via capture/releases/. Own module (isolation rationale as views_capture_pending). This
+# REPLACES the legacy file-based capture_version that used to live in views_overlays.py.
+from .views_capture_update import capture_version, capture_releases
 # Pending capture bucket (owner 2026-07-05, complaint D): when the desktop capture client has an EXTRA
 # game and the operator picks "decide later", the raw upload is parked here; an admin/organizer resolves
 # it (score as a new/replacement map) or discards it from the website. See views_capture_pending.py.
@@ -125,9 +130,13 @@ urlpatterns = [
          name='resolve_pending_capture'),
     path('<int:event_id>/pending-captures/<int:pending_id>/discard/', discard_pending_capture,
          name='discard_pending_capture'),
-    # Capture remote update + config (owner 2026-07-02): the thin launcher polls these. PUBLIC.
+    # Desktop AFC Capture auto-update + config. Both PUBLIC (no secrets; the capture WRITE key stays
+    # per-event). capture/version/ = latest release descriptor the installed client polls on startup
+    # (views_capture_update.capture_version, DB-model backed). capture/config/ = tunable cadences.
     path('capture/version/', capture_version, name='capture_version'),
     path('capture/config/', capture_config, name='capture_config'),
+    # Publish a new capture release (owner pastes the hosted installer URL). Bearer + super/head admin only.
+    path('capture/releases/', capture_releases, name='capture_releases'),
     # broadcast control: which standings the "follow broadcast" overlay shows (group/stage/event/custom
     #                    cumulative). Set from the FE BroadcastControl; read by overlay_feed each poll.
     path('<int:event_id>/broadcast/', get_broadcast, name='get_broadcast'),
