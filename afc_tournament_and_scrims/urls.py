@@ -103,6 +103,11 @@ urlpatterns = [
     # capture/resolve: upload-token only — "paste key -> auto-fill" for the desktop app: returns the
     #                  token's event + stages/groups + the active one so the client fills them itself.
     path('capture/resolve/', capture_resolve, name='capture_resolve'),
+    # capture/context: upload-token only — EXPECTED roster for the set stage/group (complaint F): the
+    #                  teams due to play + each player's Free Fire UID/IGN + the group's maps, so the
+    #                  desktop client can WARN when the data it captures doesn't match the set event/
+    #                  stage. Read-only; ?stage=&group= optional. SHARED with complaint D (attribution).
+    path('capture/context/', capture_context, name='capture_context'),
     # Capture remote update + config (owner 2026-07-02): the thin launcher polls these. PUBLIC.
     path('capture/version/', capture_version, name='capture_version'),
     path('capture/config/', capture_config, name='capture_config'),
