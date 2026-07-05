@@ -78,7 +78,12 @@ DEFAULT_BG = (10, 14, 12)        # dark AFC base when no background is uploaded 
 DEFAULT_ACCENT = "#34d27b"
 DEFAULT_TEXT = "#FFFFFF"
 # A positioned logo's longest edge, as a fraction of canvas HEIGHT, per size band. Lets a big org
-# logo and small sponsor logos coexist on one design.
+# logo and small sponsor logos coexist on one design. These three fractions are MIRRORED, verbatim,
+# by the FE so a downloaded PNG matches the design editor + live overlay exactly:
+#   • editor logo markers — LeaderboardDesignsManager.tsx LOGO_SIZE_FRAC (~L105)
+#   • live overlay board  — DesignBoard.tsx LOGO_SIZE_FRAC (~L70)
+# The FE draws each positioned logo in a square (edge x edge) box with CSS `object-fit: contain`
+# (longest edge = edge); _paste_logos below reproduces that exact box via _contain_resize.
 LOGO_SIZE_FRAC = {"small": 0.07, "medium": 0.11, "large": 0.16}
 
 # Default sizes for the FIELD-LAYOUT path (owner 2026-06-14), as a fraction of canvas HEIGHT,
@@ -90,6 +95,16 @@ LOGO_SIZE_FRAC = {"small": 0.07, "medium": 0.11, "large": 0.16}
 # "download didn't follow the sizes set in design"). The editor/overlay are the source of truth.
 FIELD_SIZE_FRAC = 0.021
 TEXT_SIZE_FRAC = 0.05
+
+# An IN-ROW image cell (team logo / flag / player photo) is drawn 1.35x the field's TEXT size, so a
+# logo sits slightly larger than the row's numbers. Mirrors the FE image cell, which sizes every
+# image field at `fSizePx * 1.35` (fSizePx = the field's font_size_pct% of canvas height):
+#   • design editor preview — DesignFieldsEditor.tsx ~L2135 (`const boxPx = fSizePx * 1.35`)
+#   • live overlay board    — DesignBoard.tsx ~L213 (`height/width: sizePx * 1.35`)
+# Backend previously sized in-row logos at 0.06*H (team_logo) / 0.05*H (flag) with NO 1.35 factor —
+# ~2x the editor box — which is why a downloaded logo looked far bigger than the editor sample
+# (owner audit complaint I, 2026-07-05). The editor/overlay are the source of truth.
+ROW_LOGO_SCALE = 1.35
 
 # Cache loaded truetype fonts by (path, size) so a 16-row x 6-field render does not re-open the
 # same .ttf 96 times.
@@ -160,6 +175,23 @@ def _cover(img, size):
     return img.crop((left, top, left + tw, top + th))
 
 
+def _contain_resize(img, box_px):
+    """Scale `img` (up OR down) to FIT inside a box_px x box_px square while preserving aspect: the
+    longest edge becomes box_px, the shorter edge scales proportionally. This is the pixel-exact
+    equivalent of the FE's CSS `object-fit: contain` in a square box — the editor logo markers
+    (LeaderboardDesignsManager.tsx `object-contain`), the editor in-row sample (DesignFieldsEditor.tsx
+    `objectFit: "contain"`) and the overlay CellValue img (DesignBoard.tsx `objectFit: "contain"`).
+    Unlike PIL.Image.thumbnail it UPSCALES small art too (the browser does), so the rendered box
+    equals the editor's box regardless of the source resolution. Used by BOTH logo paths below."""
+    box_px = max(1, int(box_px))
+    iw, ih = img.size
+    if iw <= 0 or ih <= 0:
+        return img
+    scale = box_px / float(max(iw, ih))
+    nw, nh = max(1, round(iw * scale)), max(1, round(ih * scale))
+    return img.resize((nw, nh), Image.LANCZOS)
+
+
 def _text_w(draw, text, font):
     box = draw.textbbox((0, 0), text, font=font)
     return box[2] - box[0]
@@ -212,31 +244,40 @@ def _elem_size_px(elem, H, frac):
     return max(8, int(pct / 100.0 * H))
 
 
-def _paste_row_logo(base, path, cx, cy, H, edge_px):
-    """Paste a team logo centred at (cx, cy), normalised so EVERY logo occupies the same visual
-    footprint regardless of its source aspect/padding (owner 2026-07-03: "uniformity in size for all
-    logos"). Two steps: (1) auto-trim the logo's transparent border so baked-in padding doesn't make
-    one mark look tiny next to a full-bleed square; (2) scale the trimmed mark to FILL a fixed
-    edge_px x edge_px box (contain: the longest side hits edge_px), centred. Silent no-op on a bad
-    path."""
+def _row_image_box_px(f, H):
+    """Pixel box for an IN-ROW image cell (team logo / flag / player photo). It is the field's TEXT
+    size (font_size_pct% of canvas H, default 2.1% = FIELD_SIZE_FRAC, the SAME default the editor +
+    overlay use via `field.font_size_pct ?? 2.1`) times ROW_LOGO_SCALE (1.35). This reproduces the FE
+    image-cell box exactly — DesignFieldsEditor.tsx ~L2135 `boxPx = fSizePx * 1.35` and DesignBoard.tsx
+    CellValue `sizePx * 1.35` — so a downloaded logo lands at the size the operator sees in the editor.
+    Computed in ONE expression (no intermediate floor) to stay within a pixel of the FE's float box."""
+    pct = f.get("font_size_pct")
+    try:
+        pct = float(pct)
+    except (TypeError, ValueError):
+        pct = FIELD_SIZE_FRAC * 100.0   # 2.1 — mirrors the editor default `?? 2.1`
+    return max(1, int(pct / 100.0 * H * ROW_LOGO_SCALE))
+
+
+def _paste_row_logo(base, path, cx, cy, edge_px):
+    """Paste an in-row team logo / flag / player photo centred at (cx, cy), contained into a fixed
+    edge_px x edge_px box (aspect preserved, longest side = edge_px), matching the design editor.
+
+    NO alpha-trim (changed 2026-07-05, owner audit complaint I "downloaded logos don't match the
+    editor"): the FE editor sample + live overlay draw the image with plain CSS `object-fit: contain`
+    and NO trimming (DesignFieldsEditor.tsx ~L2148, DesignBoard.tsx CellValue ~L215). Trimming here
+    made a padded logo fill the box MORE than the editor showed, so the download looked bigger than the
+    sample. Dropping the trim + using _contain_resize (same box math as the editor, incl. upscale)
+    makes the rendered footprint equal the editor's box. Silent no-op on a bad path."""
     if not path:
         return
     try:
         limg = Image.open(path).convert("RGBA")
     except Exception:
         return
-    # (1) Trim fully-transparent margins so logos with lots of alpha padding scale up to match
-    # full-bleed ones. getbbox() on the alpha channel is the tight content box; skip if the logo is
-    # opaque (no alpha to trim) or the bbox read fails.
-    try:
-        bbox = limg.split()[3].getbbox()
-        if bbox and bbox != (0, 0, limg.width, limg.height):
-            limg = limg.crop(bbox)
-    except Exception:
-        pass
-    # (2) Contain into the fixed box. thumbnail preserves aspect; after the trim every mark now
-    # fills the box to its longest side, so footprints are uniform.
-    limg.thumbnail((edge_px, edge_px), Image.LANCZOS)
+    # Contain into the fixed box exactly like the editor's `object-fit: contain` (no trim, aspect
+    # kept, small art upscaled), so the on-canvas footprint matches the editor sample pixel-for-pixel.
+    limg = _contain_resize(limg, edge_px)
     base.paste(limg, (cx - limg.width // 2, cy - limg.height // 2), limg)
 
 
@@ -267,13 +308,16 @@ def _render_fields(base, field_layout, rows, W, H, default_rgb):
                 x = int(float(f.get("x_pct", 10.0)) / 100.0 * W)
                 ft = f.get("field_type")
                 if ft == "team_logo":
-                    _paste_row_logo(base, r.get("team_logo"), x, y, H, _elem_size_px(f, H, 0.06))
+                    # Box = the field's font px x 1.35 (see _row_image_box_px), matching the editor's
+                    # in-row logo sample so a downloaded logo is the same size the operator placed.
+                    _paste_row_logo(base, r.get("team_logo"), x, y, _row_image_box_px(f, H))
                     continue
                 if ft == "team_flag":
                     # Country flag column (owner 2026-07-04): resolve the row's team_country to a
-                    # cached flag PNG and paste it in the cell, sized like a logo.
-                    _paste_row_logo(base, _country_flag_path(r.get("team_country")), x, y, H,
-                                    _elem_size_px(f, H, 0.05))
+                    # cached flag PNG and paste it in the cell. Same box math as team_logo (the FE
+                    # renders team_flag through the identical image cell), so the flag matches too.
+                    _paste_row_logo(base, _country_flag_path(r.get("team_country")), x, y,
+                                    _row_image_box_px(f, H))
                     continue
                 val = r.get(ft)
                 if val is None or val == "":
@@ -307,7 +351,10 @@ def _paste_logos(base, logos, W, H):
             continue
         frac = LOGO_SIZE_FRAC.get((spec.get("size") or "medium"), LOGO_SIZE_FRAC["medium"])
         edge = max(1, int(H * frac))
-        limg.thumbnail((edge, edge), Image.LANCZOS)
+        # Contain into an edge x edge box (longest side = edge), matching the FE editor/overlay's
+        # square `object-fit: contain` logo box (LeaderboardDesignsManager.tsx marker + DesignBoard.tsx
+        # positioned logo). _contain_resize also upscales small art, exactly like the browser.
+        limg = _contain_resize(limg, edge)
         cx = int((spec.get("x_pct", 10.0) / 100.0) * W)
         cy = int((spec.get("y_pct", 10.0) / 100.0) * H)
         px = max(0, min(W - limg.width, cx - limg.width // 2))
@@ -476,20 +523,9 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
 
     # ── positioned logos (drawn ON TOP, after standings) ── each centred at (x_pct% of W,
     # y_pct% of H) and scaled so its longest edge is LOGO_SIZE_FRAC[size] of the canvas height.
-    for spec in (logos or []):
-        try:
-            limg = Image.open(spec["path"]).convert("RGBA")
-        except Exception:
-            continue
-        frac = LOGO_SIZE_FRAC.get((spec.get("size") or "medium"), LOGO_SIZE_FRAC["medium"])
-        edge = max(1, int(H * frac))
-        limg.thumbnail((edge, edge), Image.LANCZOS)
-        cx = int((spec.get("x_pct", 10.0) / 100.0) * W)
-        cy = int((spec.get("y_pct", 10.0) / 100.0) * H)
-        # paste centred on (cx, cy); clamp the top-left so the logo stays on-canvas.
-        px = max(0, min(W - limg.width, cx - limg.width // 2))
-        py = max(0, min(H - limg.height, cy - limg.height // 2))
-        base.paste(limg, (px, py), limg)
+    # Uses the SAME helper as the field-layout path so both positioned-logo code paths size
+    # identically (they previously duplicated this loop; unified 2026-07-05 so they can never drift).
+    _paste_logos(base, logos, W, H)
 
     buf = io.BytesIO()
     base.save(buf, format="PNG")
