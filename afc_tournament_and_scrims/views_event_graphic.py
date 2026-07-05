@@ -26,6 +26,10 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.http import HttpResponse
+# ORM primitives for the SOLO combined aggregator (_solo_combined_standings below). Mirrors the
+# imports advancement_routing._solo_standings / round_robin._aggregate_team_standings use.
+from django.db.models import Case, Count, F, IntegerField, Sum, Value, When
+from django.db.models.functions import Coalesce
 
 from afc.api_utils import authenticate as _authenticate
 from afc_organizers.permissions import org_can_event
@@ -34,7 +38,9 @@ from afc_organizers.views_leaderboard_design import (
     build_field_layout, build_pages_for_export, build_ephemeral_afc_default)
 from afc_leaderboard.graphic import render_leaderboard_graphic, render_design_all_pages
 
-from afc_tournament_and_scrims.models import Event, Stages, StageGroups, TournamentTeam
+from afc_tournament_and_scrims.models import (
+    Event, Stages, StageGroups, TournamentTeam,
+    TournamentTeamMatchStats, SoloPlayerMatchStats)
 from afc_tournament_and_scrims import round_robin
 from afc_tournament_and_scrims.event_links import _is_event_admin
 
@@ -83,6 +89,97 @@ def _design_max_rank(design, size):
     return max(ranks) if ranks else 0
 
 
+# ── COMBINE selection (owner 2026-07-05, complaint B) ─────────────────────────────────────────────
+# The base export renders ONE group or ONE stage. Complaint B lets the user COMBINE the leaderboards
+# of SELECTED units — any mix of whole STAGES and individual GROUPS — into ONE merged, re-ranked board
+# and download it through the chosen design (paginated across ALL pages via ?page=all). The combine
+# UNIT rule is owner-locked: whole stages AND individual groups are both selectable, and a stage
+# expands to its groups.
+#
+# We deliberately REUSE the broadcast overlay's combine machinery instead of re-implementing it:
+#   • _expand_overlay_combine(event, group_ids, stage_ids)  (afc_tournament_and_scrims.views, ~L18765)
+#     resolves the selection to a validated, THIS-EVENT list of group ids (each stage expands to its
+#     groups; cross-event / malformed ids are dropped so a forged id can never pull another event's
+#     data). Imported LAZILY inside _parse_combine_selection to keep this module free of the 21k-line
+#     views.py at import time (same pattern views.py uses to lazy-import round_robin / this module).
+#   • round_robin._aggregate_team_standings(qs, event=event)  does the actual TEAM merge+re-rank — the
+#     SAME aggregator every team-ranking surface (cumulative_standings / group_standings / the overlay
+#     _overlay_cumulative_rows) funnels through, so a combined export agrees with the site's tables.
+def _parse_combine_selection(request, event):
+    """Read the combine selection off the export query (?group_ids=<csv|repeated>&stage_ids=<csv|
+    repeated>) and resolve it to a validated, THIS-EVENT list of group ids to aggregate.
+
+    Returns:
+      • None  -> NO combine params were sent (the caller keeps the legacy single-group/stage path,
+                 fully untouched).
+      • []    -> combine params WERE sent but none resolved to a valid group of this event, so the
+                 caller can return a clear 400 instead of silently rendering an empty board.
+      • [g1, g2, ...] -> the deduped, sorted group ids to sum (each selected stage already expanded
+                 to its groups by _expand_overlay_combine).
+
+    Accepts both ?group_ids=1&group_ids=2 (repeated) and ?group_ids=1,2 (csv), matching the overlay's
+    _parse_overlay_combine ergonomics. Shared by event_stage_graphic only; the overlay has its own
+    parser (views._parse_overlay_combine) reading ?groups=/?stages= for the iframe link."""
+    def _multi(name):
+        out = []
+        for v in request.query_params.getlist(name):   # repeated ?group_ids=1&group_ids=2
+            out.extend(str(v).split(","))               # and the ?group_ids=1,2 csv form
+        return [x.strip() for x in out if str(x).strip()]
+
+    groups = _multi("group_ids")
+    stages = _multi("stage_ids")
+    if not groups and not stages:
+        return None
+    # Lazy import: views.py is the 21k-line module and is NOT loaded at this module's top level.
+    from .views import _expand_overlay_combine
+    return _expand_overlay_combine(event, groups, stages)
+
+
+def _solo_combined_standings(group_ids):
+    """Combined SOLO standings across a set of groups (owner 2026-07-05, complaint B) — the solo twin
+    of the TEAM combine path (round_robin._aggregate_team_standings over the matched TTMS).
+
+    Folds every SoloPlayerMatchStats row whose match is in `group_ids` into ONE per-competitor points
+    table, re-ranked. Mirrors advancement_routing._solo_standings (the canonical solo ranking: summed
+    total_points, then kills) but ADDITIONALLY surfaces the placement/kill/bonus/penalty point splits +
+    games_played + booyah, so a design that places those columns renders real numbers rather than a
+    blank cell (a bare _solo_standings only carries total_points/kills/booyah).
+
+    KEY-SHAPE NOTE: rows use the SAME stat keys the export's row-builder reads for teams
+    (effective_total / placement_sum / kill_sum / bonus_sum / penalty_sum / total_kills / total_booyah
+    / games_played) but carry competitor identity (competitor_id + username) instead of
+    tournament_team_id + team_name. event_stage_graphic's solo branch maps username -> the design's
+    team_name column so the placed name column shows the player.
+
+    TIE-BREAK CAVEAT (Task 3): solo uses the fixed -effective_total -> -total_kills -> username chain
+    (identical to _solo_standings / the legacy solo advance). The event's CONFIG tie-breakers
+    (round_robin.apply_tie_breakers) are TEAM-scoped — they read tournament_team_id + team fields — so
+    they are intentionally NOT applied to solo here, exactly as the single-stage solo standings path
+    does not apply them either. Team combines DO honour the event-level config tie-breakers (via
+    _aggregate_team_standings(event=event))."""
+    qs = SoloPlayerMatchStats.objects.filter(match__group_id__in=group_ids)
+    rows = (
+        qs
+        .values("competitor_id", username=F("competitor__user__username"))
+        .annotate(
+            games_played=Count("match_id"),
+            total_kills=Coalesce(Sum("kills"), 0),
+            total_booyah=Coalesce(Sum(
+                Case(When(placement=1, then=Value(1)), default=Value(0),
+                     output_field=IntegerField())), 0),
+            placement_sum=Coalesce(Sum("placement_points"), 0),
+            kill_sum=Coalesce(Sum("kill_points"), 0),
+            bonus_sum=Coalesce(Sum("bonus_points"), 0),
+            penalty_sum=Coalesce(Sum("penalty_points"), 0),
+            # effective_total = the authoritative solo score = the stored per-match total_points summed
+            # (solo total_points is already placement+kill+bonus-penalty; see SoloPlayerMatchStats).
+            effective_total=Coalesce(Sum("total_points"), 0),
+        )
+        .order_by("-effective_total", "-total_kills", "username")
+    )
+    return list(rows)
+
+
 @api_view(["GET"])
 def event_stage_graphic(request, event_id, stage_id):
     """Render `stage`'s cumulative standings onto a chosen design and return a PNG download."""
@@ -100,10 +197,26 @@ def event_stage_graphic(request, event_id, stage_id):
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
         return Response({"message": "You do not have permission to export this event."},
                         status=status.HTTP_403_FORBIDDEN)
-    # v1 supports TEAM stages (cumulative_standings is team-based); the Dynasty Cup is team.
-    if event.participant_type == "solo":
+
+    # ── COMBINE selection (owner 2026-07-05, complaint B) ──────────────────────────────────────────
+    # ?group_ids= / ?stage_ids= (csv or repeated) turn this into a COMBINED export: sum the standings
+    # of ALL selected groups (each stage expands to its groups) into one merged, re-ranked board. See
+    # _parse_combine_selection: None => no combine params (legacy single-group/stage path untouched);
+    # [] => params sent but nothing valid resolved (400 below, never an empty board); [ids] => combine.
+    combine_group_ids = _parse_combine_selection(request, event)
+    is_combined = combine_group_ids is not None
+
+    # SOLO: the single-stage/group graphic export is still unsupported (400 as before) — but a COMBINE
+    # export IS supported through _solo_combined_standings, so only 400 for solo when this is NOT a
+    # combine request (owner 2026-07-05: combined solo boards download too).
+    if event.participant_type == "solo" and not is_combined:
         return Response({"message": "Graphic export for solo stages is not available yet."},
                         status=status.HTTP_400_BAD_REQUEST)
+    # Combine params sent but nothing valid resolved (all cross-event / malformed) => clear 400.
+    if is_combined and not combine_group_ids:
+        return Response(
+            {"message": "No valid groups or stages were selected for the combined export."},
+            status=status.HTTP_400_BAD_REQUEST)
 
     size = (request.query_params.get("size") or "youtube").lower()
     if size not in ("instagram", "youtube"):
@@ -114,20 +227,30 @@ def event_stage_graphic(request, event_id, stage_id):
     # single design.max_rows=8), so no column is left with empty rows. Falls back to design.max_rows.
     max_rows = (_design_max_rank(design, size) if design else 0) or (design.max_rows if design else 16)
 
-    # Standings source (owner 2026-06-16 fix): the event leaderboard PAGE shows a single GROUP's
-    # "Overall Leaderboard" (TTMS filtered by match__group=group). The export must mirror EXACTLY
-    # what the user sees, so when the FE passes the selected group_id we render THAT group's
-    # standings; otherwise we fall back to the whole-stage cumulative table (all groups). Without
-    # this, a multi-group stage (or a group whose stage differs from the requested stage_id) exported
-    # the design background with NO rows because the stage-wide query missed the per-group data.
-    group_id = request.query_params.get("group_id")
-    group = None
-    if group_id and str(group_id).isdigit():
-        group = StageGroups.objects.filter(group_id=int(group_id), stage=stage).first()
-    standings = (
-        round_robin.group_standings(group) if group
-        else round_robin.cumulative_standings(stage)
-    )
+    # Standings source. Three shapes, one downstream render path:
+    #   • COMBINED (owner 2026-07-05, complaint B): sum every competitor across the selected groups.
+    #     Teams reuse round_robin._aggregate_team_standings over the union of matched TTMS (the SAME
+    #     aggregator + event-level tie-breakers the broadcast overlay's _overlay_cumulative_rows uses,
+    #     so a combined export equals the site's cumulative tables); solo uses _solo_combined_standings.
+    #   • single GROUP (owner 2026-06-16 fix): the event leaderboard PAGE shows a single group's
+    #     "Overall Leaderboard" (TTMS filtered by match__group=group), so ?group_id renders THAT group.
+    #   • whole STAGE (default): the stage-wide cumulative table (all groups of the stage).
+    is_solo_combined = is_combined and event.participant_type == "solo"
+    if is_combined:
+        if is_solo_combined:
+            standings = _solo_combined_standings(combine_group_ids)
+        else:
+            qs = TournamentTeamMatchStats.objects.filter(match__group_id__in=combine_group_ids)
+            standings = round_robin._aggregate_team_standings(qs, event=event)
+    else:
+        group_id = request.query_params.get("group_id")
+        group = None
+        if group_id and str(group_id).isdigit():
+            group = StageGroups.objects.filter(group_id=int(group_id), stage=stage).first()
+        standings = (
+            round_robin.group_standings(group) if group
+            else round_robin.cumulative_standings(stage)
+        )
     # A SAVED design shows a fixed number of rows, so we cap the fetched standings to what it displays.
     # The branded-default FALLBACK (design is None, ?plain not set) instead paginates ALL rows by its
     # row->page rule, so it must NOT be capped here (owner 2026-07-05, complaint J: auto row detection
@@ -136,25 +259,36 @@ def event_stage_graphic(request, event_id, stage_id):
     if not (design is None and not plain):
         standings = standings[: max(1, max_rows)]
 
-    # Team logos in bulk (tournament_team_id -> team_logo filesystem path).
-    tt_ids = [r["tournament_team_id"] for r in standings]
+    # Team logos in bulk (tournament_team_id -> team_logo filesystem path). SOLO rows carry a
+    # competitor_id + username (no tournament_team), so there is no team logo/flag to fetch — the PNG
+    # field-layout renderer just skips a team_logo/team_flag cell whose value is None (see graphic.py
+    # _render_fields), so a combined SOLO board renders its name + stat columns cleanly.
     logo_by_tt = {}
     country_by_tt = {}  # country flag column (owner 2026-07-04)
-    for tt in TournamentTeam.objects.filter(tournament_team_id__in=tt_ids).select_related("team"):
-        try:
-            if tt.team and tt.team.team_logo:
-                logo_by_tt[tt.tournament_team_id] = tt.team.team_logo.path
-        except Exception:
-            pass
-        if tt.team:
-            country_by_tt[tt.tournament_team_id] = tt.team.country or ""
+    if not is_solo_combined:
+        tt_ids = [r["tournament_team_id"] for r in standings]
+        for tt in TournamentTeam.objects.filter(
+                tournament_team_id__in=tt_ids).select_related("team"):
+            try:
+                if tt.team and tt.team.team_logo:
+                    logo_by_tt[tt.tournament_team_id] = tt.team.team_logo.path
+            except Exception:
+                pass
+            if tt.team:
+                country_by_tt[tt.tournament_team_id] = tt.team.country or ""
 
     # Per-row dicts keyed by field_type (the field-layout path reads these); also a legacy-shaped
     # list so a design with NO placed fields still renders via the built-in auto-table.
     rows, legacy = [], []
     for i, r in enumerate(standings):
-        tt_id = r["tournament_team_id"]
-        name = r.get("team_name") or "-"
+        # SOLO combined: identity is competitor_id + username; map the username onto the design's
+        # team_name column (mirrors the overlay solo feed), no team logo/flag. TEAM: tournament_team.
+        if is_solo_combined:
+            tt_id = None
+            name = r.get("username") or "-"
+        else:
+            tt_id = r["tournament_team_id"]
+            name = r.get("team_name") or "-"
         rows.append({
             "pos": i + 1,
             "team_name": name,
@@ -204,7 +338,12 @@ def event_stage_graphic(request, event_id, stage_id):
     title = request.query_params.get("title") or event.event_name
     subtitle = request.query_params.get("subtitle")
     if subtitle is None:
-        subtitle = stage.stage_name or ""
+        # A combined board spans multiple stages/groups, so a single stage name would mislead — leave
+        # the subtitle blank for combine (the FE / design's own freeform header supplies any label).
+        subtitle = "" if is_combined else (stage.stage_name or "")
+    # Filename scope tag (owner 2026-07-05, complaint B): "combined" for a combine export, else the
+    # stage name. Used by every download filename below so a combined graphic saves as "<event>-combined".
+    scope_label = "combined" if is_combined else (stage.stage_name or "stage")
 
     # ── Multi-page export (owner 2026-06-14) ── ?page=all returns a ZIP of one PNG per design page.
     # Backward compatible: any other (or no) ?page value falls through to the single-PNG path below.
@@ -224,7 +363,7 @@ def event_stage_graphic(request, event_id, stage_id):
     if design is None and not plain and rows:
         eph = build_ephemeral_afc_default(
             len(rows), org=(event.organization if event.organization_id else None))
-        safe_name = f"{event.event_name}-{stage.stage_name or 'stage'}".replace(" ", "_")
+        safe_name = f"{event.event_name}-{scope_label}".replace(" ", "_")
         # page=all -> ZIP of every page (only when >1 page; a 1-page default falls to the single return).
         if page_param == "all" and eph.page_count > 1:
             pngs = render_design_all_pages(
@@ -269,7 +408,7 @@ def event_stage_graphic(request, event_id, stage_id):
                 transparent_background=transparent_bg,
             )
             resp = HttpResponse(pngs[0], content_type="image/png")
-            fname = f"{event.event_name}-{stage.stage_name or 'stage'}-{size}-page{n}.png".replace(" ", "_")
+            fname = f"{event.event_name}-{scope_label}-{size}-page{n}.png".replace(" ", "_")
             resp["Content-Disposition"] = f'attachment; filename="{fname}"'
             return resp
         # invalid page index -> fall through to the single-PNG path below.
@@ -285,7 +424,7 @@ def event_stage_graphic(request, event_id, stage_id):
                 transparent_background=transparent_bg,
             )
             zip_buf = io.BytesIO()
-            safe_name = f"{event.event_name}-{stage.stage_name or 'stage'}".replace(" ", "_")
+            safe_name = f"{event.event_name}-{scope_label}".replace(" ", "_")
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
                 for i, png in enumerate(pngs, start=1):
                     zf.writestr(f"{safe_name}-{size}-page{i}.png", png)
@@ -302,6 +441,6 @@ def event_stage_graphic(request, event_id, stage_id):
         field_layout=field_layout, rows=rows, transparent_background=transparent_bg,
     )
     resp = HttpResponse(png, content_type="image/png")
-    fname = f"{event.event_name}-{stage.stage_name or 'stage'}-{size}.png".replace(" ", "_")
+    fname = f"{event.event_name}-{scope_label}-{size}.png".replace(" ", "_")
     resp["Content-Disposition"] = f'attachment; filename="{fname}"'
     return resp
