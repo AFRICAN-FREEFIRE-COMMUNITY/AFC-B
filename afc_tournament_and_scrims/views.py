@@ -14021,6 +14021,89 @@ def get_event_group_rosters(request):
 #   • per-day     — round_robin.day_standings(stage, day): sum one game day's lobbies;
 #   • cumulative  — round_robin.cumulative_standings(stage): sum the whole stage, the
 #                   round-robin table the format is built around.
+# ── PUBLIC combined standings (owner 2026-07-05, complaint C) ─────────────────────────────────────
+# "A way to COMBINE and VIEW the combined leaderboards under View Leaderboard." The combine aggregation
+# already powers the OBS overlay + broadcast + export; this exposes it to the USER-facing event page so a
+# viewer can pick any set of groups/stages (or the whole event) and see ONE cumulative table. The public
+# per-day view stays the default (each StageGroups/day renders alone); this is the opt-in combine.
+# REUSES the exact same primitives every other standings surface uses so the numbers agree everywhere:
+#   _expand_overlay_combine  -> event-scoped id validation + stage->group expansion (a forged/foreign
+#                               group id is dropped, so a caller can't pull another event's data);
+#   round_robin._aggregate_team_standings -> the shared team aggregator (groups by tournament_team, sums
+#                               each team across the chosen groups' matches, applies the event tie-breakers).
+# CONSUMED BY: frontend CombinedStandings.tsx (the "Combined" tab on tournaments/[slug], wired in
+# EventDetailsWrapper). Team events only for now (the aggregator is team-based); solo returns [] + a note.
+@api_view(["POST"])
+def get_event_combined_standings(request):
+    """POST events/get-event-combined-standings/ {event_id, group_ids?:[..]|"csv", stage_ids?:[..]|"csv"}
+    -> {event_id, participant_type, results_published, group_ids, standings:[...]}. PUBLIC (no auth); an
+    optional Bearer is ignored here. Empty/absent selection => the WHOLE event (all groups of all stages).
+
+    Withholds like the public event page: a suspended-org event 404s (_org_hidden); an event with
+    results_published=False returns standings=[] + results_published=False so the FE shows "not published
+    yet". Each row carries the aggregator's columns PLUS FE-friendly aliases (total_points, kills,
+    placement_points, kill_points, booyah, matches_played) so the existing table renderers work unchanged."""
+    from . import round_robin
+    from .models import TournamentTeamMatchStats
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if _org_hidden(event):
+        # A suspended/deleted org's event is invisible to the public (mirrors the detail view).
+        return Response({"message": "Event not found."}, status=404)
+    if event.participant_type == "solo":
+        # The team aggregator is team-scoped; solo combined standings are a separate (future) surface.
+        return Response({"event_id": event.event_id, "participant_type": "solo",
+                         "results_published": event.results_published, "group_ids": [],
+                         "standings": [], "note": "Combined standings are available for team events."})
+    if not event.results_published:
+        # Same withholding the public per-group overall block uses (results_hidden = not published).
+        return Response({"event_id": event.event_id, "participant_type": event.participant_type,
+                         "results_published": False, "group_ids": [], "standings": []})
+
+    # Parse the selection: group_ids + stage_ids each accept a list OR a comma-separated string.
+    def _ids(name):
+        raw = request.data.get(name) or []
+        if isinstance(raw, str):
+            raw = raw.split(",")
+        return [str(x).strip() for x in raw if str(x).strip()]
+    groups = _ids("group_ids")
+    stages = _ids("stage_ids")
+
+    if not groups and not stages:
+        # No selection => whole event: every match of every group of every stage, summed per team.
+        qs = TournamentTeamMatchStats.objects.filter(match__group__stage__event=event)
+        resolved_gids = None
+    else:
+        # _expand_overlay_combine validates ids to THIS event + expands stage_ids to their group_ids.
+        resolved_gids = _expand_overlay_combine(event, groups, stages)
+        if not resolved_gids:
+            # Every selected id was foreign/invalid -> nothing to show (never leak another event).
+            return Response({"event_id": event.event_id, "participant_type": event.participant_type,
+                             "results_published": True, "group_ids": [], "standings": []})
+        qs = TournamentTeamMatchStats.objects.filter(match__group_id__in=resolved_gids)
+
+    rows = round_robin._aggregate_team_standings(qs, event=event)
+    # Alias the aggregator's columns to the keys the FE table renderers already read (so CombinedStandings
+    # can reuse TournamentStructure's rowPoints/rowKills/rowPlacementPts without a new mapping).
+    for r in rows:
+        r["total_points"] = r.get("effective_total", 0)
+        r["kills"] = r.get("total_kills", 0)
+        r["placement_points"] = r.get("placement_sum", 0)
+        r["kill_points"] = r.get("kill_sum", 0)
+        r["booyah"] = r.get("total_booyah", 0)
+        r["matches_played"] = r.get("games_played", 0)
+    return Response({
+        "event_id": event.event_id,
+        "participant_type": event.participant_type,
+        "results_published": True,
+        "group_ids": resolved_gids,
+        "standings": rows,
+    })
+
+
 # This endpoint bundles the per-day + cumulative tables plus the structural blocks the UI
 # needs to render the toggle (`groups` = base A/B/C identity, `game_days` = which lobbies
 # fall on which day). Admin-gated like the other event-results endpoints.
@@ -19555,6 +19638,60 @@ def live_push(request):
 
     # Stash under the EXACT key overlay_feed reads. Short 15s TTL bounds staleness: when the client stops
     # pushing (round ends / app closed) the snapshot evaporates and the feed falls back to official.
+    # ── Normalize the live snapshot to the OFFICIAL scoring (owner 2026-07-05, live-overlay bug) ──
+    # The capture client pushed rows where KP/PP/BOOYAH were 0 (only TP populated) — a thin/stale client
+    # sends a raw score without the kill_points/placement_points split, so a LIVE overlay rendered
+    # KP=PP=BOOYAH=0 while the official (non-live) board is fine. Recompute the point columns HERE from
+    # the SAME per-group Leaderboard scoring upload_team_match_result uses (Leaderboard.kill_point +
+    # normalize_placement_points(placement_points)), so the live board's numbers match the official
+    # export. Keyed to the pushed stage/group; per-row best-effort; wrapped so a bad row never 500s the
+    # push (falls back to the client's raw row / the previous store-as-is behaviour). CONNECTS TO:
+    # scoring.normalize_placement_points, Leaderboard (same source as the official upload), and
+    # _overlay_rows_from_standings whose field_type keys (kills/kill_points/placement_points/total_points/
+    # booyah) this now mirrors so the LIVE and OFFICIAL paths emit identical row shapes.
+    try:
+        from .scoring import normalize_placement_points
+        stage_id_raw = request.data.get("stage_id")
+        group_id_raw = request.data.get("group_id")
+        lb = None
+        if group_id_raw:
+            lb = Leaderboard.objects.filter(event_id=event_id, group_id=group_id_raw).first()
+        if lb is None and stage_id_raw:
+            lb = Leaderboard.objects.filter(event_id=event_id, stage_id=stage_id_raw).first()
+        if lb is None:
+            lb = Leaderboard.objects.filter(event_id=event_id).first()
+        kill_point = float(lb.kill_point) if lb and lb.kill_point is not None else 1.0
+        place_table = normalize_placement_points(lb.placement_points if lb else None)
+        normalized = []
+        for r in standings:
+            try:
+                kills = int(r.get("kills") or 0)
+                place = r.get("placement") or r.get("pos")
+                kill_pts = int(round(kills * kill_point))
+                # placement points from the official table when the round rank is known; else keep the
+                # row's own value (in-round snapshots may not have a final placement yet).
+                if str(place).isdigit():
+                    place_pts = int(place_table.get(int(place), 0))
+                else:
+                    place_pts = int(r.get("placement_points") or 0)
+                normalized.append({
+                    **r,  # keep the live-only rich stats (deaths/knockdowns/headshots/... ) as-is
+                    "kills": kills,
+                    "kill_points": kill_pts,
+                    "placement_points": place_pts,
+                    "total_points": kill_pts + place_pts,
+                    "base_total": kill_pts + place_pts,
+                    "booyah": r.get("booyah", 0),  # 0 in-round by design (no booyah until the round ends)
+                    "matches": r.get("matches", 0),
+                    "bonus": r.get("bonus", 0),
+                    "penalty": r.get("penalty", 0),
+                })
+            except Exception:
+                normalized.append(r)  # a single malformed row never drops the whole snapshot
+        standings = normalized
+    except Exception:
+        pass  # scoring/Leaderboard lookup failed -> store the client's raw rows (previous behaviour)
+
     from django.core.cache import cache
     live_key = _overlay_live_key(event_id, request.data.get("stage_id"), request.data.get("group_id"))
     cache.set(live_key, standings, timeout=15)

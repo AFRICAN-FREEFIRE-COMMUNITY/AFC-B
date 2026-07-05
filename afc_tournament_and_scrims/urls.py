@@ -271,6 +271,10 @@ urlpatterns = [
     path('get-event-group-rosters/', get_event_group_rosters, name='get_event_group_rosters'),
     # BR Round-Robin (sub-project B): per-day + cumulative standings for a round-robin stage.
     path('get-round-robin-standings/', get_round_robin_standings, name='get_round_robin_standings'),
+    # PUBLIC combined standings (owner 2026-07-05, complaint C): the user-facing "Combined" tab on the
+    # event page POSTs group_ids/stage_ids here to sum a chosen set into one cumulative table. Consumed by
+    # frontend CombinedStandings.tsx. Reuses _expand_overlay_combine + round_robin._aggregate_team_standings.
+    path('get-event-combined-standings/', get_event_combined_standings, name='get_event_combined_standings'),
     path('advance-group-competitors-to-next-stage/', advance_group_competitors_to_next_stage, name='advance_group_competitors_to_next_stage'),
     # BR Round-Robin (sub-project B): advance top-N from the CUMULATIVE table (or top-K per base group).
     path('advance-round-robin/', advance_round_robin, name='advance_round_robin'),
