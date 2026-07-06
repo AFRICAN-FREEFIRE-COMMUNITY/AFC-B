@@ -1866,9 +1866,11 @@ def get_player_details(request):
     except User.DoesNotExist:
         return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
     
-    try:
-        profile = UserProfile.objects.get(user=user)
-    except UserProfile.DoesNotExist:
+    # canonical_profile, NOT .get(): dup UserProfile rows exist in prod and .get()
+    # raises MultipleObjectsReturned there (500 instead of the player card, 2026-07-06).
+    from afc_auth.models import canonical_profile
+    profile = canonical_profile(user)
+    if profile is None:
         return Response({"message": "User profile not found."}, status=status.HTTP_404_NOT_FOUND)
     
     

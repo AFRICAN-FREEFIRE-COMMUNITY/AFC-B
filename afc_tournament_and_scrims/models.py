@@ -787,10 +787,30 @@ class TournamentTeamMatchStats(models.Model):
     assists = models.PositiveIntegerField(default=0)
     placement_points = models.PositiveIntegerField(default=0)
     kill_points = models.PositiveIntegerField(default=0)
-    total_points = models.PositiveIntegerField(default=0)
+    # SIGNED (owner 2026-07-06): total = placement + kill + assist + damage + bonus - penalty, which
+    # goes NEGATIVE when a team's penalty exceeds its earned points. As a PositiveIntegerField (MySQL
+    # UNSIGNED) that crashed the save with DataError 1264 under STRICT mode on any heavily-penalized
+    # team (upload / manual entry / edit / the scoring-config recompute all persist this value).
+    total_points = models.IntegerField(default=0)
     played = models.BooleanField(default=True)
     penalty_points = models.IntegerField(default=0) # ✅ -
     bonus_points = models.IntegerField(default=0)   # ✅ +
+
+    class Meta:
+        # One stats row per (match, team). Without this a second row for the same team in a match
+        # (pre-2026-06-29 foreign-log residue: a ringer block credited to a site team it already had
+        # a row for) double-counts in the standings Sum(total_points)/Count(match_id), inflating that
+        # team's total and match count (bug found 2026-07-06: event 134 Alpha Wolves showed 84 vs the
+        # correct 70). The upload path already clears a match's rows before re-inserting, so this only
+        # guards against the residual dupes + any future accidental double-insert. Stale duplicates
+        # must be collapsed first (management command dedupe_team_match_stats) or the migration adding
+        # this constraint will fail.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["match", "tournament_team"],
+                name="uniq_team_stats_per_match",
+            ),
+        ]
 
 class TournamentPlayerMatchStats(models.Model):
     """

@@ -760,3 +760,471 @@ def move_team_between_groups(request):
         "from_group_id": from_group.group_id,
         "to_group_id": to_group.group_id,
     }, status=200)
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# MANUAL SEED / UNSEED — targeted single-competitor add + remove (owner 2026-07-06)
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# WHAT THIS ADDS
+#   The owner wants organizers/admins to hand-pick who sits in each stage/group AND to pull a single
+#   team/player back out again:
+#     • remove_competitor_from_group  — take ONE team/solo player out of ONE group (leave them in the
+#                                       stage pool + the event registration).
+#     • remove_competitor_from_stage  — take ONE team/player out of a whole stage (its StageCompetitor
+#                                       pool row + every group membership in that stage). Event
+#                                       registration is untouched.
+#     • add_solo_players_to_group /    — the SOLO siblings of views.add_teams_to_group /
+#       add_solo_players_to_stage        add_teams_to_stage (those two are hard team-only and reject
+#                                       solo events), so a solo event can be manually seeded too.
+#     • list_registered_solo_players  — read-only picker feed the solo-add UI selects from.
+#
+# WHY HERE (not views.py)
+#   Same isolation rationale as the rest of this module: keep the additive seeding surface out of the
+#   19k-line views.py to avoid edit-churn/regressions. These reuse this file's proven helpers
+#   (_auth_user, _seeding_gate, _distribute_into_groups, the played-results primitives).
+#
+# DATA-SAFETY (critical — mirrors the delete_group_managed / move_team results guard)
+#   A remove is REFUSED (400, nothing deleted) when the competitor already has entered match results
+#   under the target group/stage: TournamentTeamMatchStats for a team, SoloPlayerMatchStats for a solo
+#   player. Real match stats are never cascade-deleted — the caller must clear the results first. This
+#   is the exact "clear its results first" hard-stop the spec calls for (no force override, unlike a
+#   move where past results can legitimately stay behind).
+#
+# HOW IT CONNECTS
+#   - Auth: _seeding_gate = AFC event admin OR the event's creator OR an organizer with
+#     can_manage_registrations on the owning org (native org=None events stay admin-only). This is the
+#     SAME gate views.add_teams_to_group / add_teams_to_stage use, resolved group->stage->event or
+#     stage->event.
+#   - Round-robin: RR teams live on RoundRobinGroup.teams (M2M), not StageGroupCompetitor, so the group
+#     remove has an RR branch (detect the RR base-group id first, exactly like add_teams_to_group /
+#     move_team_between_groups) and the stage remove also strips RR base-group memberships.
+#   - Consumed by: the frontend GroupTeamMover (team remove-from-group, admin + organizer) and the
+#     organizer Groups & Rosters page (solo remove + the solo AddSoloPlayersModal). Routes registered
+#     in afc_tournament_and_scrims/urls.py under events/seeding/.
+
+
+# ── target resolvers ─────────────────────────────────────────────────────────────────────────────
+def _resolve_target_team(event, data):
+    """Resolve the TournamentTeam a team-event add/remove targets, accepting EITHER identifier the two
+    existing seeding surfaces already send: `tournament_team_id` (the TournamentTeam PK, as
+    move_team_between_groups uses) OR `team_id` (the underlying Team FK, as add_teams_to_group / the FE
+    AddTeamsModal use). Scoped to the event so a Team maps to its single per-event TournamentTeam.
+    Returns TournamentTeam | None."""
+    tt_id = data.get("tournament_team_id")
+    if tt_id not in (None, ""):
+        return TournamentTeam.objects.filter(event=event, tournament_team_id=tt_id).first()
+    team_id = data.get("team_id")
+    if team_id not in (None, ""):
+        return TournamentTeam.objects.filter(event=event, team_id=team_id).first()
+    return None
+
+
+def _resolve_target_competitor(event, data):
+    """Resolve the RegisteredCompetitors (solo player) a solo-event add/remove targets, accepting
+    `competitor_id` (its PK — the spec's identifier) OR `user_id` (what get_event_group_rosters exposes
+    per solo row, so the FE can act straight off the rendered row). Scoped to the event's SOLO rows
+    (team is null). Returns RegisteredCompetitors | None."""
+    comp_id = data.get("competitor_id") or data.get("player_id")
+    if comp_id not in (None, ""):
+        return RegisteredCompetitors.objects.filter(event=event, id=comp_id, team__isnull=True).first()
+    user_id = data.get("user_id")
+    if user_id not in (None, ""):
+        return RegisteredCompetitors.objects.filter(
+            event=event, user_id=user_id, team__isnull=True,
+        ).first()
+    return None
+
+
+# ── played-results guards (per competitor — never cascade-delete real match stats) ─────────────────
+def _team_has_group_results(group, tournament_team):
+    """True when a team already has entered results in a STANDARD group (its Match rows carry the
+    TournamentTeamMatchStats). Blocks a group-remove that would strand real stats."""
+    from .models import TournamentTeamMatchStats
+    return TournamentTeamMatchStats.objects.filter(
+        match__group=group, tournament_team=tournament_team,
+    ).exists()
+
+
+def _team_has_rr_group_results(rr_group, tournament_team):
+    """True when a team has entered results in any game-day LOBBY fed by this RR base group. RR base
+    groups hold no Match rows themselves; their lobbies (StageGroups) reference them via source_groups
+    (same relationship move_team_between_groups' RR guard walks)."""
+    from .models import TournamentTeamMatchStats
+    return TournamentTeamMatchStats.objects.filter(
+        match__group__source_groups=rr_group, tournament_team=tournament_team,
+    ).exists()
+
+
+def _team_has_stage_results(stage, tournament_team):
+    """True when a team has entered results anywhere in the stage (any group's/lobby's matches)."""
+    from .models import TournamentTeamMatchStats
+    return TournamentTeamMatchStats.objects.filter(
+        match__group__stage=stage, tournament_team=tournament_team,
+    ).exists()
+
+
+def _solo_has_group_results(group, competitor):
+    """True when a solo player already has entered results in a group (SoloPlayerMatchStats)."""
+    from .models import SoloPlayerMatchStats
+    return SoloPlayerMatchStats.objects.filter(
+        match__group=group, competitor=competitor,
+    ).exists()
+
+
+def _solo_has_stage_results(stage, competitor):
+    """True when a solo player has entered results anywhere in the stage."""
+    from .models import SoloPlayerMatchStats
+    return SoloPlayerMatchStats.objects.filter(
+        match__group__stage=stage, competitor=competitor,
+    ).exists()
+
+
+# ── Discord (best-effort, scoped to ONE competitor leaving a group) ────────────────────────────────
+def _queue_competitor_group_role_removal(group, *, tournament_team=None, player=None):
+    """Queue Discord group-role removal for ONE competitor being taken out of a group — the scoped
+    sibling of _queue_group_role_removal (which does the whole group). Non-critical: fully wrapped so a
+    Discord/Celery hiccup never fails the removal. RoundRobinGroup has no group_discord_role_id, so the
+    getattr short-circuits to a no-op for RR base groups (their roles live on the lobby StageGroups)."""
+    try:
+        from .views import remove_group_role_task  # lazy: avoid load-time circular import
+        role_id = getattr(group, "group_discord_role_id", None)
+        if not role_id:
+            return
+        users = []
+        if player is not None and getattr(player, "user", None):
+            users = [player.user]
+        elif tournament_team is not None:
+            users = [m.user for m in tournament_team.members.select_related("user").all()]
+        for user in users:
+            if user and getattr(user, "discord_id", None):
+                remove_group_role_task.delay(user.discord_id, role_id)
+    except Exception:
+        pass  # non-critical
+
+
+# ── endpoints: REMOVE ──────────────────────────────────────────────────────────────────────────────
+@api_view(["POST"])
+def remove_competitor_from_group(request):
+    """POST events/seeding/remove-from-group/
+        {group_id, team_id? | tournament_team_id? | competitor_id? | user_id?}
+
+    Remove ONE team (team event) or ONE solo player (solo event) from ONE group ONLY — the competitor
+    stays stage-seeded (StageCompetitor) and event-registered. Idempotent: removing something that is
+    not there returns 200 with removed=0.
+
+    RR groups: membership lives on RoundRobinGroup.teams (M2M); we detect an RR base-group id first
+    (id-collision guard, same as add_teams_to_group) and RoundRobinGroup.teams.remove it.
+    Standard groups: delete the team's/player's StageGroupCompetitor row.
+
+    DATA-SAFETY: 400 (nothing deleted) if the competitor already has entered results under this group.
+
+    AUTH: _seeding_gate (AFC event admin OR event creator OR org can_manage_registrations). Event
+    resolved group -> stage -> event. Consumed by the FE GroupTeamMover (teams) + organizer Groups
+    page (solo)."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+
+    group_id = request.data.get("group_id")
+    if group_id in (None, ""):
+        return Response({"message": "group_id is required."}, status=400)
+
+    from .models import RoundRobinGroup
+
+    # ── ROUND-ROBIN branch (detect the RR base-group id FIRST) ──────────────────────────────────────
+    rr_group = RoundRobinGroup.objects.select_related("stage__event").filter(group_id=group_id).first()
+    if rr_group is not None:
+        event = rr_group.stage.event
+        if not _seeding_gate(user, event):
+            return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        if event.participant_type == "solo":
+            return Response({"message": "This is a team (round-robin) group; provide a team, not a solo player."}, status=400)
+        tt = _resolve_target_team(event, request.data)
+        if tt is None:
+            return Response({"message": "Provide a valid team_id or tournament_team_id."}, status=400)
+        if _team_has_rr_group_results(rr_group, tt):
+            return Response({"message": "That team has match results in this group; clear its results first."}, status=400)
+        removed = 0
+        if rr_group.teams.filter(tournament_team_id=tt.tournament_team_id).exists():
+            rr_group.teams.remove(tt)
+            removed = 1
+        return Response({
+            "message": "Team removed from group." if removed else "That team was not in this group.",
+            "removed": removed, "group_id": rr_group.group_id,
+        }, status=200)
+
+    # ── STANDARD group (StageGroups) ────────────────────────────────────────────────────────────────
+    group = get_object_or_404(StageGroups, group_id=group_id)
+    stage = group.stage
+    event = stage.event
+    if not _seeding_gate(user, event):
+        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+
+    if event.participant_type == "solo":
+        competitor = _resolve_target_competitor(event, request.data)
+        if competitor is None:
+            return Response({"message": "Provide a valid competitor_id or user_id."}, status=400)
+        if _solo_has_group_results(group, competitor):
+            return Response({"message": "That player has match results in this group; clear its results first."}, status=400)
+        rows = StageGroupCompetitor.objects.filter(stage_group=group, player=competitor)
+        removed = rows.count()
+        if removed:
+            _queue_competitor_group_role_removal(group, player=competitor)
+            rows.delete()
+        return Response({
+            "message": "Player removed from group." if removed else "That player was not in this group.",
+            "removed": removed, "group_id": group.group_id,
+        }, status=200)
+
+    # team event
+    tt = _resolve_target_team(event, request.data)
+    if tt is None:
+        return Response({"message": "Provide a valid team_id or tournament_team_id."}, status=400)
+    if _team_has_group_results(group, tt):
+        return Response({"message": "That team has match results in this group; clear its results first."}, status=400)
+    rows = StageGroupCompetitor.objects.filter(stage_group=group, tournament_team=tt)
+    removed = rows.count()
+    if removed:
+        _queue_competitor_group_role_removal(group, tournament_team=tt)
+        rows.delete()
+    return Response({
+        "message": "Team removed from group." if removed else "That team was not in this group.",
+        "removed": removed, "group_id": group.group_id,
+    }, status=200)
+
+
+@api_view(["POST"])
+def remove_competitor_from_stage(request):
+    """POST events/seeding/remove-from-stage/
+        {stage_id, team_id? | tournament_team_id? | competitor_id? | user_id?}
+
+    Remove ONE team/player from a whole STAGE: delete its StageCompetitor (stage pool) row AND every
+    StageGroupCompetitor / RoundRobinGroup membership within that stage. The EVENT registration
+    (TournamentTeam / RegisteredCompetitors) is left intact — this only un-seeds the stage. Idempotent.
+
+    DATA-SAFETY: 400 (nothing deleted) if the competitor already has entered results anywhere in the
+    stage. AUTH: _seeding_gate, event resolved stage -> event."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+
+    stage = get_object_or_404(Stages, stage_id=request.data.get("stage_id"))
+    event = stage.event
+    if not _seeding_gate(user, event):
+        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+
+    from .models import RoundRobinGroup
+
+    if event.participant_type == "solo":
+        competitor = _resolve_target_competitor(event, request.data)
+        if competitor is None:
+            return Response({"message": "Provide a valid competitor_id or user_id."}, status=400)
+        if _solo_has_stage_results(stage, competitor):
+            return Response({"message": "That player has match results in this stage; clear its results first."}, status=400)
+        with transaction.atomic():
+            # Discord: queue removal from every group role this player currently holds in the stage.
+            for sgc in StageGroupCompetitor.objects.filter(
+                stage_group__stage=stage, player=competitor,
+            ).select_related("stage_group"):
+                _queue_competitor_group_role_removal(sgc.stage_group, player=competitor)
+            group_memberships_removed = StageGroupCompetitor.objects.filter(
+                stage_group__stage=stage, player=competitor,
+            ).delete()[0]
+            stage_removed = StageCompetitor.objects.filter(stage=stage, player=competitor).delete()[0]
+        any_removed = bool(group_memberships_removed or stage_removed)
+        return Response({
+            "message": "Player removed from stage." if any_removed else "That player was not in this stage.",
+            "removed": stage_removed, "group_memberships_removed": group_memberships_removed,
+            "stage_id": stage.stage_id,
+        }, status=200)
+
+    # team event
+    tt = _resolve_target_team(event, request.data)
+    if tt is None:
+        return Response({"message": "Provide a valid team_id or tournament_team_id."}, status=400)
+    if _team_has_stage_results(stage, tt):
+        return Response({"message": "That team has match results in this stage; clear its results first."}, status=400)
+    with transaction.atomic():
+        for sgc in StageGroupCompetitor.objects.filter(
+            stage_group__stage=stage, tournament_team=tt,
+        ).select_related("stage_group"):
+            _queue_competitor_group_role_removal(sgc.stage_group, tournament_team=tt)
+        group_memberships_removed = StageGroupCompetitor.objects.filter(
+            stage_group__stage=stage, tournament_team=tt,
+        ).delete()[0]
+        # RR base-group memberships within this stage (M2M — no StageGroupCompetitor rows).
+        rr_removed = 0
+        for rr in RoundRobinGroup.objects.filter(stage=stage, teams=tt):
+            rr.teams.remove(tt)
+            rr_removed += 1
+        stage_removed = StageCompetitor.objects.filter(stage=stage, tournament_team=tt).delete()[0]
+    any_removed = bool(group_memberships_removed or rr_removed or stage_removed)
+    return Response({
+        "message": "Team removed from stage." if any_removed else "That team was not in this stage.",
+        "removed": stage_removed,
+        "group_memberships_removed": group_memberships_removed + rr_removed,
+        "stage_id": stage.stage_id,
+    }, status=200)
+
+
+# ── endpoints: manual SOLO add (siblings of views.add_teams_to_group / add_teams_to_stage) ──────────
+@api_view(["POST"])
+def add_solo_players_to_group(request):
+    """POST events/seeding/add-solo-to-group/  {group_id, competitor_ids: [int]}
+
+    Solo sibling of add_teams_to_group (which is hard team-only). Seed already-registered SOLO players
+    (RegisteredCompetitors) straight into ONE StageGroups group (StageGroupCompetitor) AND the
+    stage-level pool (StageCompetitor), so undo/reseed — which work off the pool — keep them. Idempotent
+    (get_or_create). competitor_ids are RegisteredCompetitors PKs (from list_registered_solo_players).
+
+    AUTH: _seeding_gate, event resolved group -> stage -> event. Consumed by the FE AddSoloPlayersModal."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    group_id = request.data.get("group_id")
+    competitor_ids = request.data.get("competitor_ids", [])
+    if group_id in (None, ""):
+        return Response({"message": "group_id is required."}, status=400)
+    if not isinstance(competitor_ids, list) or not all(isinstance(c, int) for c in competitor_ids):
+        return Response({"message": "competitor_ids must be a list of integers."}, status=400)
+
+    group = get_object_or_404(StageGroups, group_id=group_id)
+    stage = group.stage
+    event = stage.event
+    if not _seeding_gate(user, event):
+        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+    if event.participant_type != "solo":
+        return Response({"message": "This endpoint is for solo events only."}, status=400)
+
+    regs = RegisteredCompetitors.objects.filter(
+        event=event, id__in=competitor_ids, team__isnull=True, status="registered",
+    )
+    if not regs.exists():
+        return Response({"message": "No valid registered solo players found for the provided competitor_ids."}, status=400)
+
+    existing_group_player_ids = set(
+        StageGroupCompetitor.objects.filter(
+            stage_group=group, player__isnull=False,
+        ).values_list("player_id", flat=True)
+    )
+    added = []
+    with transaction.atomic():
+        for reg in regs:
+            # Keep the stage POOL consistent (mirrors add_teams_to_group's StageCompetitor upsert).
+            StageCompetitor.objects.get_or_create(
+                stage=stage, player=reg, tournament_team=None, defaults={"status": "active"},
+            )
+            if reg.id in existing_group_player_ids:
+                continue
+            StageGroupCompetitor.objects.get_or_create(
+                stage_group=group, player=reg, tournament_team=None, defaults={"status": "active"},
+            )
+            added.append(reg.id)
+    return Response({
+        "message": f"{len(added)} players added to group.",
+        "group_id": group.group_id, "added_competitor_ids": added,
+    }, status=200)
+
+
+@api_view(["POST"])
+def add_solo_players_to_stage(request):
+    """POST events/seeding/add-solo-to-stage/  {stage_id, competitor_ids: [int]}
+
+    Solo sibling of add_teams_to_stage. Seed registered SOLO players into a stage's competitor pool
+    (StageCompetitor), then auto-distribute the still-ungrouped pool into the stage's groups for the
+    group-standings formats (same only_ungrouped round-robin pass add_teams_to_stage runs). Idempotent.
+
+    AUTH: _seeding_gate, event resolved stage -> event."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    stage_id = request.data.get("stage_id")
+    competitor_ids = request.data.get("competitor_ids", [])
+    if stage_id in (None, ""):
+        return Response({"message": "stage_id is required."}, status=400)
+    if not isinstance(competitor_ids, list) or not all(isinstance(c, int) for c in competitor_ids):
+        return Response({"message": "competitor_ids must be a list of integers."}, status=400)
+
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+    event = stage.event
+    if not _seeding_gate(user, event):
+        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+    if event.participant_type != "solo":
+        return Response({"message": "This endpoint is for solo events only."}, status=400)
+
+    regs = RegisteredCompetitors.objects.filter(
+        event=event, id__in=competitor_ids, team__isnull=True, status="registered",
+    )
+    if not regs.exists():
+        return Response({"message": "No valid registered solo players found for the provided competitor_ids."}, status=400)
+
+    existing_ids = set(
+        StageCompetitor.objects.filter(
+            stage=stage, player__isnull=False,
+        ).values_list("player_id", flat=True)
+    )
+    added = []
+    with transaction.atomic():
+        new_entries = []
+        for reg in regs:
+            if reg.id in existing_ids:
+                continue
+            new_entries.append(StageCompetitor(stage=stage, player=reg))
+            added.append(reg.id)
+        StageCompetitor.objects.bulk_create(new_entries, ignore_conflicts=True)
+        group_seeds_added = 0
+        if stage.stage_format in GROUP_DISTRIBUTABLE_FORMATS:
+            group_seeds_added = _distribute_into_groups(stage, shuffle=False, only_ungrouped=True)
+    return Response({
+        "message": f"{len(added)} players added to stage.",
+        "stage_id": stage.stage_id, "added_competitor_ids": added,
+        "group_seeds_added": group_seeds_added,
+    }, status=200)
+
+
+@api_view(["GET"])
+def list_registered_solo_players(request):
+    """GET events/seeding/registered-solo-players/?event_id=<id>[&stage_id=<id>][&group_id=<id>]
+
+    Read-only picker feed for the manual solo-add UI. Returns the event's registered SOLO players with
+    competitor_id (RegisteredCompetitors PK — the add/remove key), user info, and in_stage / in_group
+    flags (set only when stage_id / group_id are supplied) so the FE can grey out already-seeded rows.
+    AUTH: _seeding_gate. Consumed by the FE AddSoloPlayersModal."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    event_id = request.query_params.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if not _seeding_gate(user, event):
+        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+    if event.participant_type != "solo":
+        return Response({"message": "This endpoint is for solo events only.", "players": []}, status=400)
+
+    stage_id = request.query_params.get("stage_id")
+    group_id = request.query_params.get("group_id")
+    in_stage_ids = set(
+        StageCompetitor.objects.filter(stage_id=stage_id, player__isnull=False)
+        .values_list("player_id", flat=True)
+    ) if stage_id else set()
+    in_group_ids = set(
+        StageGroupCompetitor.objects.filter(stage_group_id=group_id, player__isnull=False)
+        .values_list("player_id", flat=True)
+    ) if group_id else set()
+
+    regs = (
+        RegisteredCompetitors.objects.select_related("user")
+        .filter(event=event, team__isnull=True, user__isnull=False, status="registered")
+        .order_by("user__username")
+    )
+    players = [{
+        "competitor_id": r.id,
+        "user_id": r.user.user_id,
+        "username": r.user.username,   # IGN
+        "uid": r.user.uid,
+        "full_name": r.user.full_name,
+        "in_stage": r.id in in_stage_ids,
+        "in_group": r.id in in_group_ids,
+    } for r in regs]
+    return Response({"event_id": event.event_id, "count": len(players), "players": players}, status=200)

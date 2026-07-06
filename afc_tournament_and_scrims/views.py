@@ -164,18 +164,46 @@ from celery import shared_task
 from django.utils import timezone
 from django.utils.text import slugify  # event re-slug on rename (edit_event, owner 2026-06-29)
 
+
+def _event_zone(event):
+    """The tz to interpret an event's naive start/end TIMES in. event.event_start_time /
+    event_end_time are stored as the HOST's wall clock, so a Lagos event's "16:00" means 16:00 WAT.
+    Combining them with the SERVER tz (UTC on prod) mis-times same-day transitions by the offset
+    (Lagos off by 1h, Johannesburg 2h) — bug 2026-07-06. Use the event's stored IANA `timezone`
+    when set, else the server tz (older events / time TBD). Consumed by
+    update_event_and_stage_statuses + effective_event_status."""
+    tzname = getattr(event, "timezone", None)
+    if tzname:
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(tzname)
+        except Exception:
+            pass
+    return timezone.get_current_timezone()
+
+
 @shared_task
 def update_event_and_stage_statuses():
     today = timezone.localdate()
 
     # EVENTS
-    # NOTE: exclude(auto_complete_suppressed=True) so an event an admin/organizer manually REOPENED
-    # (reopen_event) is NOT silently re-completed by this date sweep just because its end_date is in
-    # the past. Such events stay active until results-based auto-complete or a manual complete closes
-    # them again. (owner 2026-06-25)
-    # Events whose date window is entirely in the PAST/FUTURE update in bulk (no time nuance needed).
-    Event.objects.filter(is_draft=False, end_date__lt=today).exclude(event_status="completed").exclude(auto_complete_suppressed=True).update(event_status="completed")
-    Event.objects.filter(is_draft=False, start_date__gt=today).exclude(event_status="upcoming").update(event_status="upcoming")
+    # Completions route through complete_event_core (NOT a bare .update()/.save()) so qualification
+    # links, prize sync + notifications fire — a bulk .update() skipped every side effect, which is
+    # why scheduling this sweep used to double-complete against close_finished_events with no links
+    # firing (bug 2026-07-06). auto_complete_suppressed (a manually REOPENED event) is never
+    # re-completed here (owner 2026-06-25 reopen contract).
+    # Events whose window is entirely in the PAST complete; entirely-FUTURE reset to upcoming in bulk.
+    for _ev in (Event.objects.filter(is_draft=False, end_date__lt=today)
+                .exclude(event_status__in=["completed", "cancelled"])
+                .exclude(auto_complete_suppressed=True)):
+        try:
+            complete_event_core(_ev, None, source="auto-date")
+        except Exception:
+            continue
+    # Reset entirely-FUTURE events to upcoming — but NEVER touch a cancelled or (manually) completed
+    # one: without excluding those, this bulk un-cancels / re-opens a future-dated cancelled event on
+    # every run (bug 2026-07-06, now that this sweep is scheduled every 5 min).
+    Event.objects.filter(is_draft=False, start_date__gt=today).exclude(event_status__in=["upcoming", "completed", "cancelled"]).update(event_status="upcoming")
 
     # ── TIME-AWARE window (owner 2026-07-04) ───────────────────────────────────────────────────
     # The date-only bulk sweep ignored event_start_time / event_end_time, so an event whose window
@@ -184,30 +212,40 @@ def update_event_and_stage_statuses():
     # date-window set is now walked WITH the clock (NOT bulk-set to ongoing, which would thrash
     # against this loop): before its start instant => upcoming, past its end instant => completed,
     # otherwise ongoing. Only this small "touches today" set is iterated, so the sweep stays cheap.
+    # Times are interpreted in the EVENT's timezone (_event_zone), not the server tz.
     # auto_complete_suppressed (a manually reopened event) is never re-completed here.
     from datetime import datetime as _dt, time as _time
-    _tz = timezone.get_current_timezone()
     _now = timezone.now()
-    for _ev in Event.objects.filter(is_draft=False, start_date__lte=today, end_date__gte=today).exclude(event_status="completed"):
+    for _ev in Event.objects.filter(is_draft=False, start_date__lte=today, end_date__gte=today).exclude(event_status__in=["completed", "cancelled"]):
+        _z = _event_zone(_ev)
         try:
-            start_dt = timezone.make_aware(_dt.combine(_ev.start_date, _ev.event_start_time or _time.min), _tz)
-            end_dt = timezone.make_aware(_dt.combine(_ev.end_date, _ev.event_end_time or _time.max), _tz)
+            start_dt = timezone.make_aware(_dt.combine(_ev.start_date, _ev.event_start_time or _time.min), _z)
+            end_dt = timezone.make_aware(_dt.combine(_ev.end_date, _ev.event_end_time or _time.max), _z)
         except Exception:
             continue
         if _now < start_dt:
             _new = "upcoming"
         elif _now > end_dt and not _ev.auto_complete_suppressed:
-            _new = "completed"
+            # Past its end instant: complete via core so side effects fire (see note above).
+            try:
+                complete_event_core(_ev, None, source="auto-date")
+            except Exception:
+                pass
+            continue
         else:
             _new = "ongoing"
         if _new != _ev.event_status:
             _ev.event_status = _new
             _ev.save(update_fields=["event_status"])
 
-    # STAGES
-    Stages.objects.filter(end_date__lt=today).exclude(stage_status="completed").update(stage_status="completed")
-    Stages.objects.filter(start_date__lte=today, end_date__gte=today).exclude(stage_status="ongoing").update(stage_status="ongoing")
-    Stages.objects.filter(start_date__gt=today).exclude(stage_status="upcoming").update(stage_status="upcoming")
+    # STAGES — only for LIVE parent events. Skip stages of draft, cancelled or manually-reopened
+    # (auto_complete_suppressed) events so this date march doesn't drive stage_status independently of
+    # the event's real state (bug 2026-07-06). `_live_stage` scopes every stage update below.
+    _live_stage = Stages.objects.filter(event__is_draft=False).exclude(
+        event__event_status="cancelled").exclude(event__auto_complete_suppressed=True)
+    _live_stage.filter(end_date__lt=today).exclude(stage_status="completed").update(stage_status="completed")
+    _live_stage.filter(start_date__lte=today, end_date__gte=today).exclude(stage_status="ongoing").update(stage_status="ongoing")
+    _live_stage.filter(start_date__gt=today).exclude(stage_status="upcoming").update(stage_status="upcoming")
 
     # ── Check-in relegation (owner 2026-07-04) ─────────────────────────────────────────────────
     # Once an event's check-in window CLOSES, competitors who did not check in (or squads missing any
@@ -273,8 +311,13 @@ def effective_event_status(event):
     # A finished event stays finished — do not let a time comparison re-open it.
     if event.event_status == "completed":
         return "completed"
+    # A cancelled event stays cancelled: without this it fell through to the start/end time
+    # comparison below and displayed as "ongoing"/"upcoming" on the list + detail badges, losing
+    # its cancelled state (bug 2026-07-06). ("cancelled" is written by cancel_event.)
+    if event.event_status == "cancelled":
+        return "cancelled"
     from datetime import datetime as _dt, time as _time
-    _tz = timezone.get_current_timezone()
+    _tz = _event_zone(event)  # interpret the event's naive times in ITS timezone, not the server's
     now = timezone.now()
     start_dt = timezone.make_aware(
         _dt.combine(event.start_date, event.event_start_time or _time.min),
@@ -4971,23 +5014,61 @@ def get_event_details(request):
                 })
 
             # -------- OVERALL LEADERBOARD --------
+            # PUBLIC == ADMIN (owner 2026-07-06): the public page must show EXACTLY what the
+            # admin/organizer results editor collected + set + edited — same stored stats, same
+            # computed columns, and the SAME ranking/tiebreak. This used to sum only total_points and
+            # order by (-total_points,-total_kills,name), omitting the booyah + last-map-placement
+            # tiebreaks the editor (get_all_leaderboard_details_for_event) uses, so equal-point teams
+            # ranked DIFFERENTLY on the public page than on the editor. The annotations + .order_by()
+            # below are now byte-identical to that editor builder (booyah = Sum(placement==1),
+            # effective_total, last_match_placement=last map's stored placement, 999 when none).
             if event.participant_type == "solo":
+                last_placement_subq = Subquery(
+                    SoloPlayerMatchStats.objects
+                    # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
+                    # in the most recent map the competitor ACTUALLY PLACED in. A not-played map stores
+                    # placement=0, which would sort BEST (0 < any real rank); excluding it makes a team
+                    # that sat out the last map fall to 999 (worst) instead of jumping to the top.
+                    .filter(match__group=group, competitor_id=OuterRef("competitor_id"), placement__gt=0)
+                    .order_by("-match__match_number").values("placement")[:1]
+                )
                 overall = (
                     SoloPlayerMatchStats.objects
                     .filter(match__group=group)
                     .values("competitor_id", "competitor__user__username")
                     .annotate(
                         matches_played=Count("match_id", distinct=True),
-                        total_kills=Sum("kills"),
+                        total_kills=Coalesce(Sum("kills"), 0),
+                        total_booyah=Coalesce(Sum(Case(
+                            When(placement=1, then=Value(1)), default=Value(0),
+                            output_field=IntegerField())), 0),
                         # placement_sum: summed placement points, surfaced so the standings can show
                         # the placement-points contribution as its own column, not just the combined
                         # total (owner 2026-06-15). Public event-detail surface (TournamentStructure).
-                        placement_sum=Sum("placement_points"),
-                        total_points=Sum("total_points"),
+                        placement_sum=Coalesce(Sum("placement_points"), 0),
+                        kill_sum=Coalesce(Sum("kill_points"), 0),
+                        bonus_sum=Coalesce(Sum("bonus_points"), 0),
+                        penalty_sum=Coalesce(Sum("penalty_points"), 0),
+                        total_points=Coalesce(Sum("total_points"), 0),
+                        effective_total=(
+                            Coalesce(Sum("placement_points"), 0) + Coalesce(Sum("kill_points"), 0) +
+                            Coalesce(Sum("bonus_points"), 0) - Coalesce(Sum("penalty_points"), 0)
+                        ),
+                        last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                     )
-                    .order_by("-total_points", "-total_kills", "competitor__user__username")
+                    .order_by("-effective_total", "-total_booyah", "-total_kills",
+                              "last_match_placement", "competitor__user__username")
                 )
             else:
+                last_placement_subq = Subquery(
+                    TournamentTeamMatchStats.objects
+                    # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
+                    # in the last map the team actually PLAYED. A not-played last map (placement 0) must
+                    # NOT count (else it sorts best=0); excluding it falls back to the last played map, or
+                    # 999 via the Coalesce when the team played nothing. Mirrors the solo subqueries.
+                    .filter(match__group=group, tournament_team_id=OuterRef("tournament_team_id"), placement__gt=0)
+                    .order_by("-match__match_number").values("placement")[:1]
+                )
                 overall = (
                     TournamentTeamMatchStats.objects
                     .filter(match__group=group)
@@ -5002,14 +5083,26 @@ def get_event_details(request):
                     )
                     .annotate(
                         matches_played=Count("match_id", distinct=True),
-                        total_kills=Sum("kills"),
+                        total_kills=Coalesce(Sum("kills"), 0),
+                        total_booyah=Coalesce(Sum(Case(
+                            When(placement=1, then=Value(1)), default=Value(0),
+                            output_field=IntegerField())), 0),
                         # placement_sum: summed placement points, surfaced so the standings can show
                         # the placement-points contribution as its own column, not just the combined
                         # total (owner 2026-06-15). Public event-detail surface (TournamentStructure).
-                        placement_sum=Sum("placement_points"),
-                        total_points=Sum("total_points"),
+                        placement_sum=Coalesce(Sum("placement_points"), 0),
+                        kill_sum=Coalesce(Sum("kill_points"), 0),
+                        bonus_sum=Coalesce(Sum("bonus_points"), 0),
+                        penalty_sum=Coalesce(Sum("penalty_points"), 0),
+                        total_points=Coalesce(Sum("total_points"), 0),
+                        # team effective_total == stored total_points sum (placement+kill+assist+damage
+                        # +bonus-penalty), exactly the editor's aliased effective_total. Reference the
+                        # total_points annotation via F() (NOT a second Sum, which would nest aggregates).
+                        effective_total=F("total_points"),
+                        last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                     )
-                    .order_by("-total_points", "-total_kills", "tournament_team__team__team_name")
+                    .order_by("-effective_total", "-total_booyah", "-total_kills",
+                              "last_match_placement", "tournament_team__team__team_name")
                 )
 
             # ── Include SEEDED competitors with no results yet (owner 2026-06-21 bug fix) ──
@@ -5025,12 +5118,16 @@ def get_event_details(request):
                 ).select_related("player__user"):
                     if _sc.player_id in _present:
                         continue
+                    # 0-row carries the SAME keys as a real row (incl. the tiebreak keys booyah +
+                    # last_match_placement=999) so it sorts identically to the editor's seeded 0-rows.
                     overall.append({
                         "competitor_id": _sc.player_id,
                         "competitor__user__username": (
                             _sc.player.user.username if _sc.player and _sc.player.user else ""
                         ),
-                        "matches_played": 0, "total_kills": 0, "placement_sum": 0, "total_points": 0,
+                        "matches_played": 0, "total_kills": 0, "total_booyah": 0,
+                        "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
+                        "total_points": 0, "effective_total": 0, "last_match_placement": 999,
                     })
             else:
                 _present = {r["tournament_team_id"] for r in overall}
@@ -5050,7 +5147,9 @@ def get_event_details(request):
                             _sc.tournament_team.team.country
                             if _sc.tournament_team and _sc.tournament_team.team else ""
                         ),
-                        "matches_played": 0, "total_kills": 0, "placement_sum": 0, "total_points": 0,
+                        "matches_played": 0, "total_kills": 0, "total_booyah": 0,
+                        "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
+                        "total_points": 0, "effective_total": 0, "last_match_placement": 999,
                     })
 
             # ── Point-Rush carry-over overlay (scoring-modes) ─────────────────────────────────────
@@ -5708,21 +5807,53 @@ def get_event_details_not_logged_in(request):
                     "stats": list(stats),
                 })
 
-            # overall leaderboard for group
+            # overall leaderboard for group — PUBLIC == ADMIN (owner 2026-07-06): identical annotations
+            # + tiebreak to get_all_leaderboard_details_for_event (and to the logged-in public endpoint
+            # above), so anonymous, logged-in, and admin views rank the same stored stats identically.
             if event.participant_type == "solo":
+                last_placement_subq = Subquery(
+                    SoloPlayerMatchStats.objects
+                    # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
+                    # in the most recent map the competitor ACTUALLY PLACED in. A not-played map stores
+                    # placement=0, which would sort BEST (0 < any real rank); excluding it makes a team
+                    # that sat out the last map fall to 999 (worst) instead of jumping to the top.
+                    .filter(match__group=group, competitor_id=OuterRef("competitor_id"), placement__gt=0)
+                    .order_by("-match__match_number").values("placement")[:1]
+                )
                 overall = (SoloPlayerMatchStats.objects
                            .filter(match__group=group)
                            .values("competitor_id", "competitor__user__username")
                            .annotate(
                                matches_played=Count("match_id", distinct=True),
-                               total_kills=Sum("kills"),
+                               total_kills=Coalesce(Sum("kills"), 0),
+                               total_booyah=Coalesce(Sum(Case(
+                                   When(placement=1, then=Value(1)), default=Value(0),
+                                   output_field=IntegerField())), 0),
                                # placement_sum: summed placement points, surfaced as its own standings
                                # column (owner 2026-06-15). Public event-detail surface.
-                               placement_sum=Sum("placement_points"),
-                               total_points=Sum("total_points"),
+                               placement_sum=Coalesce(Sum("placement_points"), 0),
+                               kill_sum=Coalesce(Sum("kill_points"), 0),
+                               bonus_sum=Coalesce(Sum("bonus_points"), 0),
+                               penalty_sum=Coalesce(Sum("penalty_points"), 0),
+                               total_points=Coalesce(Sum("total_points"), 0),
+                               effective_total=(
+                                   Coalesce(Sum("placement_points"), 0) + Coalesce(Sum("kill_points"), 0) +
+                                   Coalesce(Sum("bonus_points"), 0) - Coalesce(Sum("penalty_points"), 0)
+                               ),
+                               last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                            )
-                           .order_by("-total_points", "-total_kills", "competitor__user__username"))
+                           .order_by("-effective_total", "-total_booyah", "-total_kills",
+                                     "last_match_placement", "competitor__user__username"))
             else:
+                last_placement_subq = Subquery(
+                    TournamentTeamMatchStats.objects
+                    # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
+                    # in the last map the team actually PLAYED. A not-played last map (placement 0) must
+                    # NOT count (else it sorts best=0); excluding it falls back to the last played map, or
+                    # 999 via the Coalesce when the team played nothing. Mirrors the solo subqueries.
+                    .filter(match__group=group, tournament_team_id=OuterRef("tournament_team_id"), placement__gt=0)
+                    .order_by("-match__match_number").values("placement")[:1]
+                )
                 overall = (TournamentTeamMatchStats.objects
                            .filter(match__group=group)
                            .values(
@@ -5735,13 +5866,23 @@ def get_event_details_not_logged_in(request):
                            )
                            .annotate(
                                matches_played=Count("match_id", distinct=True),
-                               total_kills=Sum("kills"),
+                               total_kills=Coalesce(Sum("kills"), 0),
+                               total_booyah=Coalesce(Sum(Case(
+                                   When(placement=1, then=Value(1)), default=Value(0),
+                                   output_field=IntegerField())), 0),
                                # placement_sum: summed placement points, surfaced as its own standings
                                # column (owner 2026-06-15). Public event-detail surface.
-                               placement_sum=Sum("placement_points"),
-                               total_points=Sum("total_points"),
+                               placement_sum=Coalesce(Sum("placement_points"), 0),
+                               kill_sum=Coalesce(Sum("kill_points"), 0),
+                               bonus_sum=Coalesce(Sum("bonus_points"), 0),
+                               penalty_sum=Coalesce(Sum("penalty_points"), 0),
+                               total_points=Coalesce(Sum("total_points"), 0),
+                               # F() reference to the total_points annotation (not a nested Sum).
+                               effective_total=F("total_points"),
+                               last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                            )
-                           .order_by("-total_points", "-total_kills", "tournament_team__team__team_name"))
+                           .order_by("-effective_total", "-total_booyah", "-total_kills",
+                                     "last_match_placement", "tournament_team__team__team_name"))
 
             # ── Point-Rush carry-over overlay (anon public view) ──────────────────────────────────
             # Same on-read overlay as get_event_details: materialise the standings so we can fold the
@@ -6156,6 +6297,15 @@ def register_for_event(request):
     event = get_object_or_404(Event, event_id=event_id)
     participant_type = event.participant_type  # solo/duo/squad
     is_public = event.is_public  # True/False
+
+    # -------------------------
+    # STATUS GATE (2026-07-06): the date window below is NOT enough — a cancelled or completed event
+    # can still have an open registration window (cancelled early, or a short event completed while its
+    # reg window is technically still open), and without this it kept accepting new registrations into
+    # a dead event. Only upcoming/ongoing events accept registrations.
+    # -------------------------
+    if event.event_status in ("cancelled", "completed"):
+        return Response({"message": "This event is no longer open for registration."}, status=403)
 
     # -------------------------
     # REG WINDOW CHECK
@@ -8505,19 +8655,17 @@ from django.shortcuts import get_object_or_404
 
 @api_view(["POST"])
 def sync_event_registrations_with_discord_roles(request):
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid Authorization"}, status=400)
-
-    admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
-        return Response({"message": "Unauthorized"}, status=403)
-
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
+    # #8 (2026-07-06 organizer parity): was AFC-super-admin-only (admin.role != "admin"), which locked
+    # the OWNING organizer out of their own event. Now staff OR the owning organizer with
+    # can_manage_registrations passes; native (org=None) events stay admin-only via org_can_event.
+    admin, err = _get_event_action_user(request, event=event, org_perm="can_manage_registrations")
+    if err:
+        return err
 
     if event.participant_type == "solo":
         role_id = getattr(settings, "DISCORD_TOURNAMENT_SOLO_ROLE_ID", None)
@@ -10046,6 +10194,13 @@ def remove_group_role_task(self, discord_id, role_id):
 @api_view(["POST"])
 def discord_role_progress(request):
     stage_id = request.data.get("stage_id")
+    if not stage_id:
+        return Response({"message": "stage_id is required."}, status=400)
+    # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED. Gate to staff OR the owning organizer.
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+    user, err = _get_event_action_user(request, event=stage.event, org_perm="can_manage_registrations")
+    if err:
+        return err
 
     qs = DiscordRoleAssignment.objects.filter(stage_id=stage_id)
 
@@ -10061,6 +10216,11 @@ def discord_role_progress(request):
 def get_stage_role_assignment_progress(request):
     progress_id = request.data.get("progress_id")
     progress = get_object_or_404(DiscordStageRoleAssignmentProgress, id=progress_id)
+    # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED. Gate to staff OR the owning organizer of the
+    # progress row's stage event.
+    user, err = _get_event_action_user(request, event=progress.stage.event, org_perm="can_manage_registrations")
+    if err:
+        return err
 
     return Response({
         "total": progress.total,
@@ -10073,6 +10233,11 @@ def get_stage_role_assignment_progress(request):
 
 @api_view(["GET"])
 def get_all_role_progress(request):
+    # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED and CROSS-EVENT (last 10 across all events).
+    # Admin-only listing (no single event to scope to).
+    user, err = _get_event_action_user(request)
+    if err:
+        return err
     progresses = DiscordStageRoleAssignmentProgress.objects.all().order_by("-created_at")[:10]
 
     data = []
@@ -10094,6 +10259,14 @@ def get_all_role_progress(request):
 @api_view(["POST"])
 def retry_failed_discord_roles(request):
     stage_id = request.data.get("stage_id")
+    if not stage_id:
+        return Response({"message": "stage_id is required."}, status=400)
+    # SECURITY (#8 audit 2026-07-06): was completely UNAUTHENTICATED — any anonymous caller could
+    # re-dispatch Discord role tasks. Gate: AFC staff OR the owning organizer (can_manage_registrations).
+    stage = get_object_or_404(Stages, stage_id=stage_id)
+    user, err = _get_event_action_user(request, event=stage.event, org_perm="can_manage_registrations")
+    if err:
+        return err
 
     failed = DiscordRoleAssignment.objects.filter(
         stage_id=stage_id,
@@ -11462,19 +11635,17 @@ def seed_stage_competitors_to_groups(request):
 
 @api_view(["POST"])
 def sync_group_discord_roles(request):
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid Authorization"}, status=400)
-
-    admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
-        return Response({"message": "Unauthorized"}, status=403)
-
     group_id = request.data.get("group_id")
     if not group_id:
         return Response({"message": "group_id is required"}, status=400)
 
     group = get_object_or_404(StageGroups, group_id=group_id)
+    # #8 (2026-07-06 organizer parity): was AFC-super-admin-only; now the owning organizer
+    # (can_manage_registrations) can sync THEIR OWN event's group roles.
+    admin, err = _get_event_action_user(request, event=group.stage.event, org_perm="can_manage_registrations")
+    if err:
+        return err
+
     role_id = group.group_discord_role_id
     if not role_id:
         return Response({"message": "This group has no discord role id."}, status=400)
@@ -11758,6 +11929,13 @@ def send_match_room_details_notification_to_competitor(request):
     event = get_object_or_404(Event, event_id=event_id)
     group = get_object_or_404(StageGroups, group_id=group_id)
 
+    # BIND the group to the authorized event (IDOR fix 2026-07-06): the permission below is checked
+    # against `event`, but `group` was fetched from group_id alone. Without this an organizer with
+    # can_upload_results on THEIR event could pass a group_id belonging to ANOTHER event and push that
+    # other event's room details. A group's owning event is group.stage.event.
+    if group.stage.event_id != event.event_id:
+        return Response({"message": "That group does not belong to this event."}, status=400)
+
     # Organizer parity (owner 2026-07-05): the owning organizer (can_upload_results) may push this map's
     # room details for THEIR OWN event. Was role != "admin" = AFC-staff-only, so an organizer got 403.
     # Resolved the event first (mirrors complete_event) so org_can_event can check the owning org; native
@@ -11828,24 +12006,17 @@ def send_match_room_details_notification_to_competitor(request):
 @api_view(["POST"])
 def remove_all_stage_competitors_from_groups_and_their_discord_roles(request):
     # ---------------- AUTH ----------------
-    session_token = request.headers.get("Authorization")
-    if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
-    token = session_token.split(" ")[1]
-    admin = validate_token(token)
-    if not admin:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
-    if admin.role != "admin":
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
-    
     stage_id = request.data.get("stage_id")
     if not stage_id:
         return Response({"message": "stage_id is required."}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
+    # #8 (2026-07-06 organizer parity): was AFC-super-admin-only; this DESTRUCTIVE action (clears every
+    # StageGroupCompetitor + their Discord roles) is now allowed for the owning organizer
+    # (can_manage_registrations) on THEIR OWN event. Native (org=None) events stay admin-only.
+    admin, err = _get_event_action_user(request, event=stage.event, org_perm="can_manage_registrations")
+    if err:
+        return err
 
     groups = stage.groups.all()
     total_removed = 0
@@ -11947,6 +12118,11 @@ def get_all_user_id_in_stage(request):
         return Response({"message": "stage_id is required."}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
+    # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED (enumerated every user in a stage). Gate to
+    # AFC staff OR the owning organizer of this stage's event.
+    user, err = _get_event_action_user(request, event=stage.event, org_perm="can_manage_registrations")
+    if err:
+        return err
 
     competitors = StageCompetitor.objects.filter(
         stage=stage,
@@ -11973,6 +12149,10 @@ def get_all_user_id_in_group(request):
         return Response({"message": "group_id is required."}, status=400)
 
     group = get_object_or_404(StageGroups, group_id=group_id)
+    # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED. Gate to AFC staff OR the owning organizer.
+    user, err = _get_event_action_user(request, event=group.stage.event, org_perm="can_manage_registrations")
+    if err:
+        return err
 
     competitors = StageGroupCompetitor.objects.filter(
         stage_group=group,
@@ -11999,6 +12179,11 @@ def delete_notifications_from_users_in_a_group(request):
         return Response({"message": "group_id is required."}, status=400)
 
     group = get_object_or_404(StageGroups, group_id=group_id)
+    # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED + DESTRUCTIVE (deleted notifications for every
+    # user in the group). Gate to AFC staff OR the owning organizer (can_manage_registrations).
+    user, err = _get_event_action_user(request, event=group.stage.event, org_perm="can_manage_registrations")
+    if err:
+        return err
 
     competitors = StageGroupCompetitor.objects.filter(
         stage_group=group,
@@ -12674,6 +12859,11 @@ def upload_solo_match_result(request):
 
 @api_view(["GET"])
 def get_all_leaderboards(request):
+    # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED and cross-event (every leaderboard on the
+    # platform). It backs the admin Leaderboards listing, so gate to AFC staff.
+    user, err = _get_event_action_user(request)
+    if err:
+        return err
     leaderboards = Leaderboard.objects.select_related("event", "stage", "group", "creator").all()
     data = []
     for lb in leaderboards:
@@ -12793,19 +12983,16 @@ def get_all_leaderboards(request):
 
 @api_view(["POST"])
 def reconcile_group_roles(request):
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
-
-    admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
-        return Response({"message": "Forbidden."}, status=403)
-
     stage_id = request.data.get("stage_id")
     if not stage_id:
         return Response({"message": "stage_id is required."}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
+    # #8 (2026-07-06 organizer parity): was AFC-super-admin-only; now the owning organizer
+    # (can_manage_registrations) can reconcile THEIR OWN event's group roles.
+    admin, err = _get_event_action_user(request, event=stage.event, org_perm="can_manage_registrations")
+    if err:
+        return err
 
     created = 0
     skipped = 0
@@ -13249,12 +13436,20 @@ def _apply_public_carry_over(stage, rows, participant_type):
         bonus = carry_over.get(row.get(id_key), 0)
         row["carry_over_points"] = bonus
         if bonus:
+            # Fold into BOTH the sort basis (effective_total, mirroring the admin overlay) and the
+            # displayed total_points so the carried points show AND rank correctly.
+            row["effective_total"] = int(row.get("effective_total") or 0) + bonus
             row["total_points"] = int(row.get("total_points") or 0) + bonus
             changed = True
     if changed:
+        # Re-sort on the SAME full tiebreak chain as the editor + the public DB .order_by() above
+        # (-effective_total, -total_booyah, -total_kills, last_match_placement, name), so a landed
+        # carry-over bonus never silently drops the booyah / last-placement tiebreaks.
         rows.sort(key=lambda r: (
-            -int(r.get("total_points") or 0),
+            -int(r.get("effective_total") or 0),
+            -int(r.get("total_booyah") or 0),
             -int(r.get("total_kills") or 0),
+            int(r.get("last_match_placement") or 999),
             r.get(name_key) or "",
         ))
     return rows
@@ -13426,11 +13621,21 @@ def get_all_leaderboard_details_for_event(request):
                             "players": list(player_stats)  # 🔥 nested players here
                         })
 
+                # DEFENSIVE MAP-WINNER FLAG (owner 2026-07-06 booyah bug): a map that has results but no
+                # stored 1st-place row contributes 0 booyahs and undercounts the standings (the legacy
+                # DYNASTY map-3005 case, and any .log upload whose winner block was dropped). Surface it
+                # so the editor can badge "map winner missing" instead of the miscount being invisible.
+                # Booyah is Sum(placement==1); missing_winner == there is no placement==1 among the
+                # entered rows. Consumed by the results editor + ReviewAndPublishStep (FE badge).
+                _match_placements = [int(s.get("placement") or 0) for s in match_stats]
+                missing_winner = bool(match.result_inputted) and bool(match_stats) and (1 not in _match_placements)
+
                 matches_payload.append({
                     "match_id": match.match_id,
                     "match_number": match.match_number,
                     "match_map": match.match_map,
                     "result_inputted": match.result_inputted,
+                    "missing_winner": missing_winner,
                     "room_id": match.room_id,
                     "room_name": match.room_name,
                     "room_password": match.room_password,
@@ -13442,7 +13647,10 @@ def get_all_leaderboard_details_for_event(request):
             if event.participant_type == "solo":
                 last_placement_subq = Subquery(
                     SoloPlayerMatchStats.objects
-                    .filter(match__group=group, competitor_id=OuterRef("competitor_id"))
+                    # placement__gt=0 (owner rule #6, 2026-07-06): last-map tiebreak = placement in the
+                    # last map the player actually PLAYED; a not-played last map (0) must sort worst, not
+                    # best. Matches the get_event_details solo subquery.
+                    .filter(match__group=group, competitor_id=OuterRef("competitor_id"), placement__gt=0)
                     .order_by("-match__match_number")
                     .values("placement")[:1]
                 )
@@ -13493,7 +13701,11 @@ def get_all_leaderboard_details_for_event(request):
             else:
                 last_placement_subq = Subquery(
                     TournamentTeamMatchStats.objects
-                    .filter(match__group=group, tournament_team_id=OuterRef("tournament_team_id"))
+                    # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
+                    # in the last map the team actually PLAYED. A not-played last map (placement 0) must
+                    # NOT count (else it sorts best=0); excluding it falls back to the last played map, or
+                    # 999 via the Coalesce when the team played nothing. Mirrors the solo subqueries.
+                    .filter(match__group=group, tournament_team_id=OuterRef("tournament_team_id"), placement__gt=0)
                     .order_by("-match__match_number")
                     .values("placement")[:1]
                 )
@@ -14121,11 +14333,6 @@ def get_round_robin_standings(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    # Results are admin-facing → gate on _is_event_admin (which uses the correct
-    # role__role_name__in path; NEVER role_name__in, which FieldErrors).
-    if not _is_event_admin(user):
-        return Response({"message": "You do not have permission."}, status=403)
-
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
     if not event_id or not stage_id:
@@ -14134,6 +14341,12 @@ def get_round_robin_standings(request):
     event = get_object_or_404(Event, event_id=event_id)
     # Scope the stage to the event so a mismatched pair can't read another event's stage.
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
+
+    # AUTH (#8 2026-07-06 organizer parity): was _is_event_admin-only, which blocked the OWNING
+    # organizer from reading THEIR OWN event's round-robin standings. Now staff OR the owning organizer
+    # with can_upload_results (the same results-read gate get_all_leaderboard_details_for_event uses).
+    if not _is_event_admin(user) and not org_can_event(user, "can_upload_results", event):
+        return Response({"message": "You do not have permission."}, status=403)
 
     # (1) Base-group structure (A/B/C…). RoundRobinGroup has Meta.ordering = ["order"], so
     # `round_robin_groups.all()` is already A→B→C; we just echo label + member team names.
@@ -15110,6 +15323,36 @@ def advance_round_robin(request):
 #     }, status=200)
 
 
+def _recompute_solo_leaderboard_points(lb):
+    """Recompute every stored SoloPlayerMatchStats row under a leaderboard's group from its stored
+    placement/kills using the leaderboard's CURRENT placement_points/kill_point, so existing solo
+    standings reflect an edited scoring scheme. This is the SOLO counterpart of
+    _recompute_team_match_points (which does the same for team matches on a scoring-config edit); solo
+    standings read the STORED SoloPlayerMatchStats point columns, which are otherwise frozen at the
+    scoring in force when the map was uploaded. Called by edit_leaderboard. Returns rows updated.
+    Data flow: reads Leaderboard.placement_points/kill_point (edited just above) + stored
+    SoloPlayerMatchStats(placement,kills); rewrites their placement_points/kill_points/total_points via
+    scoring_lib.compute_solo_points. Consumed by get_all_leaderboard_details_for_event (solo branch)."""
+    from .models import SoloPlayerMatchStats
+    if not lb.group_id:
+        return 0
+    placement_points = _normalize_placement_points(lb.placement_points or {})
+    kill_point = float(lb.kill_point or 1.0)
+    updated = 0
+    with transaction.atomic():
+        for r in SoloPlayerMatchStats.objects.select_for_update().filter(match__group=lb.group):
+            pts = scoring_lib.compute_solo_points(
+                placement_points=placement_points, kill_point=kill_point,
+                placement=r.placement or 0, kills=r.kills or 0, played=True,
+            )
+            r.placement_points = pts["placement_points"]
+            r.kill_points = pts["kill_points"]
+            r.total_points = pts["total_points"]
+            r.save(update_fields=["placement_points", "kill_points", "total_points"])
+            updated += 1
+    return updated
+
+
 @api_view(["POST"])
 def edit_leaderboard(request):
     auth = request.headers.get("Authorization")
@@ -15175,7 +15418,15 @@ def edit_leaderboard(request):
     if lb.group:
         Match.objects.filter(group=lb.group).update(leaderboard=lb)
 
-    return Response({"message": "Leaderboard updated.", "leaderboard_id": lb.leaderboard_id}, status=200)
+    # If the SOLO scoring changed, retro-recompute the stored solo rows so standings reflect it
+    # immediately (bug 2026-07-06: solo standings kept showing the OLD scoring; the team path already
+    # recomputes on a scoring-config edit). No-op for team events (their scoring lives per-match).
+    recomputed_solo = 0
+    if (placement_points_raw is not None or kill_point_raw is not None) and lb.event.participant_type == "solo":
+        recomputed_solo = _recompute_solo_leaderboard_points(lb)
+
+    return Response({"message": "Leaderboard updated.", "leaderboard_id": lb.leaderboard_id,
+                     "recomputed_solo_rows": recomputed_solo}, status=200)
 
 
 @api_view(["POST"])
@@ -15281,23 +15532,21 @@ from rest_framework import status
 
 @api_view(["POST"])
 def remove_non_nigeria_registered_competitors(request):
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
-
-    admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
-        return Response({"message": "Not authorized."}, status=403)
-
     event_id = request.data.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
 
-    dry_run = str(request.data.get("dry_run", "true")).lower() in ("1", "true", "yes")
-
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
         return Response({"message": "Event not found."}, status=404)
+
+    # #8 (2026-07-06 organizer parity): was AFC-super-admin-only; this registration mutation is now
+    # allowed for the owning organizer (can_manage_registrations) on THEIR OWN event.
+    admin, err = _get_event_action_user(request, event=event, org_perm="can_manage_registrations")
+    if err:
+        return err
+
+    dry_run = str(request.data.get("dry_run", "true")).lower() in ("1", "true", "yes")
 
     # latest country per user
     latest_country = LoginHistory.objects.filter(
@@ -15942,6 +16191,16 @@ def enter_team_match_result_manual(request):
     if len(set(placements)) != len(placements):
         return Response({"message": "Placements must be unique among played teams."}, status=400)
 
+    # A played map MUST have a 1st-place team (the map winner = the booyah). Uniqueness above already
+    # bars two winners, so this makes it EXACTLY one. Without it an organizer could save placements
+    # that skip 1 (e.g. start at 2), leaving the map with no placement==1 row, so it silently
+    # contributes 0 booyahs to the standings (bug 2026-07-06: "5 maps but only 3 booyahs"). Booyah is
+    # counted as Sum(placement==1) in get_all_leaderboard_details_for_event / round_robin, so a missing
+    # winner is invisible until the total is short. Runs BEFORE the destructive transaction below.
+    if played_rows and 1 not in [int(p) for p in placements if str(p).lstrip("-").isdigit()]:
+        return Response({"message": "The map winner is missing: one played team must be placement 1 "
+                                    "(the team that won/booyah'd the map)."}, status=400)
+
     # ---------------- PLAYED-PLAYER VALIDATION (must run BEFORE the destructive write) ----------------
     # Squad rules cap a match at 4 PLAYED players per team. Validate here, ahead of the transaction:
     # the block below deletes the match's existing stats first, and an early `return` inside
@@ -16504,6 +16763,23 @@ def enter_solo_match_result_manual(request):
         for rc in RegisteredCompetitors.objects.filter(event=event, id__in=comp_ids).select_related("user")
     }
 
+    # PLACEMENT VALIDATION (booyah parity 2026-07-06): the solo manual path had NO placement checks at
+    # all, unlike the team path. A played solo map must have UNIQUE placements and exactly one 1st place
+    # (the map winner = the booyah); otherwise the map silently yields 0 booyahs (no rank-1) or a double
+    # booyah (two rank-1s). Booyah is Sum(placement==1) in get_all_leaderboard_details_for_event
+    # (solo branch) / round_robin. Runs BEFORE the destructive delete below (an early return here leaves
+    # the saved results intact; a return inside the atomic block after the delete would wipe them).
+    _played = [p for p in players_payload
+               if bool(p.get("played", True)) and p.get("competitor_id") in comp_map]
+    _pl = [int(p.get("placement")) for p in _played if str(p.get("placement")).lstrip("-").isdigit()]
+    if _played and len(_pl) != len(_played):
+        return Response({"message": "Each played player must have a numeric placement."}, status=400)
+    if len(set(_pl)) != len(_pl):
+        return Response({"message": "Placements must be unique among played players."}, status=400)
+    if _played and 1 not in _pl:
+        return Response({"message": "The map winner is missing: one played player must be placement 1 "
+                                    "(the player who won/booyah'd the map)."}, status=400)
+
     rows = []
     with transaction.atomic():
         SoloPlayerMatchStats.objects.filter(match=match).delete()
@@ -16653,6 +16929,13 @@ def edit_match_result(request):
 
     if len(set(placements)) != len(placements):
         return Response({"message": "Placements must be unique among played teams."}, status=400)
+
+    # A played map MUST have a 1st-place team (the map winner = the booyah); see the identical guard in
+    # enter_team_match_result_manual. Without it an edited map could drop its placement==1 row and
+    # silently contribute 0 booyahs (bug 2026-07-06). Runs BEFORE the destructive transaction below.
+    if played_rows and 1 not in [int(p) for p in placements if str(p).lstrip("-").isdigit()]:
+        return Response({"message": "The map winner is missing: one played team must be placement 1 "
+                                    "(the team that won/booyah'd the map)."}, status=400)
 
     # ---------------- PLAYED-PLAYER VALIDATION (must run BEFORE the destructive write) ----------------
     # Squad rules cap a match at 4 PLAYED players per team. This check MUST happen here, ahead of the
@@ -19660,8 +19943,24 @@ def live_push(request):
             lb = Leaderboard.objects.filter(event_id=event_id, stage_id=stage_id_raw).first()
         if lb is None:
             lb = Leaderboard.objects.filter(event_id=event_id).first()
-        kill_point = float(lb.kill_point) if lb and lb.kill_point is not None else 1.0
-        place_table = normalize_placement_points(lb.placement_points if lb else None)
+        # PREFER the per-match scoring the OFFICIAL board uses (match.scoring_settings) over the
+        # Leaderboard row (bug 2026-07-06): Leaderboard.placement_points/kill_point are empty for
+        # custom-scored events (ScoringConfigPanel writes match.scoring_settings, not the LB row), so
+        # the LB-only path here made the LIVE overlay diverge from the official export the moment
+        # anyone customized scoring. Take a representative match's config from the pushed group (fall
+        # back to the LB row, then DEFAULT) so live and official share one scoring source.
+        match_cfg = None
+        if group_id_raw:
+            for _m in Match.objects.filter(group_id=group_id_raw).only("scoring_settings"):
+                if _m.scoring_settings and _m.scoring_settings.get("placement_points"):
+                    match_cfg = _m.scoring_settings
+                    break
+        if match_cfg:
+            kill_point = float(match_cfg.get("kill_point", 1))
+            place_table = normalize_placement_points(match_cfg.get("placement_points"))
+        else:
+            kill_point = float(lb.kill_point) if lb and lb.kill_point is not None else 1.0
+            place_table = normalize_placement_points(lb.placement_points if lb else None)
         normalized = []
         for r in standings:
             try:
@@ -19845,6 +20144,14 @@ def upload_team_match_result(request):
         # never write into event B via a group id — enforced here too so pending/new/409 all respect it.
         if upload_token is not None and upload_token.event_id != _event.event_id:
             return Response({"message": "This upload token is not valid for this event."}, status=403)
+
+        # Bearer manager gate (auth fix 2026-07-06): the token path is event-scoped just above, but a
+        # BEARER user reaching this no-match_id branch (pending / new / next-slot fill / 409) writes
+        # PendingCaptureUpload or a fresh Match BELOW, BEFORE the manager gate that the match_id path
+        # applies later — so any authenticated non-manager could write into an event they don't run.
+        # Gate the Bearer path here (native org=None events stay admin-only), mirroring the match path.
+        if upload_token is None and not (_is_event_admin(admin) or org_can_event(admin, "can_upload_results", _event)):
+            return Response({"message": "You do not have permission to manage results for this event."}, status=403)
 
         # "decide later" -> park the raw upload verbatim in the pending bucket; score nothing. This is the
         # never-lose-data guarantee: the file text + set stage/group are stored so a human can re-score it.
@@ -20651,6 +20958,24 @@ def upload_team_match_result(request):
         except Exception:
             pass
 
+    # ── MAP-WINNER SURFACE (owner 2026-07-06 booyah bug) ─────────────────────────────────────────
+    # A .log upload can silently DROP the map winner: the 1st-place block fails UID/name matching, is
+    # parked to UnmatchedTeamBlock (missing_teams / roster_mismatch), and NO placement==1 row is
+    # written — so the map contributes 0 booyahs and the standings undercount (the DYNASTY map-3005
+    # case). Unlike manual entry (which now HARD-BLOCKS a winner-less map) this path must NOT block: a
+    # guest/unregistered team legitimately winning a scrim map means no registered booyah. So we WARN.
+    # missing_winner tells the FE (FileUploadStep.tsx) to show a "map winner not attributed" banner
+    # pointing at the flagged-teams resolver. _file_winner = the file's rank-1 block; it's "saved" only
+    # when it matched a registered team (_team_obj set -> a placement==1 team stat was written).
+    _file_winner = next((td for td in parsed_teams if int(td.get("placement") or 0) == 1), None)
+    missing_winner = None
+    if not dry_run:
+        if _file_winner is None:
+            missing_winner = {"reason": "no_first_place_in_file"}
+        elif not _file_winner.get("_team_obj"):
+            missing_winner = {"reason": "winner_unmatched",
+                              "team_name": _file_winner.get("team_name"), "placement": 1}
+
     return Response({
         "message": (
             "Match-log preview ready (nothing saved yet)." if dry_run
@@ -20658,6 +20983,9 @@ def upload_team_match_result(request):
         ),
         "dry_run": dry_run,                            # true = preview only, no DB writes (multi-map review)
         "match_id": match.match_id,
+        # None when the map has a stored 1st-place team; else {reason[, team_name, placement]} so the FE
+        # warns the operator the map's booyah winner was not recorded (see MAP-WINNER SURFACE above).
+        "missing_winner": missing_winner,
         "parsed_teams": len(parsed_teams),
         "saved_teams": len(created_team_stats),        # on dry_run: teams that WOULD be saved
         "saved_players": len(player_stats_to_create),  # on dry_run: players that WOULD be credited
@@ -20990,6 +21318,11 @@ def add_teams_to_group(request):
 
 @api_view(["GET"])
 def get_all_tournament_player_match_stats(requests):
+    # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED and dumped every player's match stats across
+    # all events. Gate to AFC staff (this is an admin/debug surface). `requests` is the request object.
+    user, err = _get_event_action_user(requests)
+    if err:
+        return err
     stats = TournamentPlayerMatchStats.objects.all()
     data = []
     for stat in stats:
@@ -21063,13 +21396,8 @@ def assign_sponsor_to_event(request):
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token."}, status=400)
     admin = validate_token(auth.split(" ")[1])
-    if not admin or admin.role != "admin":
-        return Response({"message": "Unauthorized."}, status=403)
-
-    if admin.userroles.filter(role__role_name='head_admin'):
-        pass  # User has permission
-    else:
-        return Response({"message": "You do not have permission to create sponsor account."}, status=status.HTTP_403_FORBIDDEN)
+    if not admin:
+        return Response({"message": "Unauthorized."}, status=401)
 
     sponsor_username = request.data.get("sponsor_username")
     event_ids = request.data.get("event_ids", [])
@@ -21079,13 +21407,21 @@ def assign_sponsor_to_event(request):
 
     if not isinstance(event_ids, list) or not all(isinstance(eid, int) for eid in event_ids):
         return Response({"message": "event_ids must be a list of integers"}, status=400)
-    
+
     role = Roles.objects.get(role_name="sponsor_admin")
-    
+
     sponsor = get_object_or_404(User, username=sponsor_username, role="admin", userroles__role=role)
     events = Event.objects.filter(event_id__in=event_ids)
     if not events.exists():
         return Response({"message": "No valid events found for the provided event_ids."}, status=400)
+
+    # AUTH (#8 / owner 2026-07-06): an AFC head_admin may assign sponsors to ANY events; an organizer
+    # may assign to THEIR OWN events only (every event in the list must be owned via org_can_event).
+    # Was head_admin-only, which blocked organizers from sponsoring their own events.
+    is_head_admin = admin.role == "admin" and admin.userroles.filter(role__role_name="head_admin").exists()
+    if not is_head_admin and not all(org_can_event(admin, "can_edit_events", ev) for ev in events):
+        return Response({"message": "You can only assign sponsors to your own events."}, status=403)
+
     for event in events:
         event.sponsor = sponsor
 
@@ -21156,6 +21492,63 @@ def get_list_of_players_in_sponsor_event(request):
     return Response(data, status=200)
 
 
+def _recompute_team_match_points(match):
+    """Recompute + restore the STORED point columns (placement_points / kill_points /
+    total_points) of every TournamentTeamMatchStats row for `match` from the match's CURRENT
+    scoring_settings, and return how many rows were updated.
+
+    WHY (bug 2026-07-06 "wrong score even when manually computed"): edit_match_scoring_config
+    (and the ScoringConfigPanel "Apply to group / stage / entire event" fan-out, which POSTs it
+    once per match) used to ONLY save match.scoring_settings and leave the already-stored per-map
+    points untouched. So after an admin/organizer changed the kill point or placement ladder, the
+    Scoring tab showed the NEW config but the leaderboard total still reflected the OLD one, and
+    hand-computing from the config on screen disagreed with the displayed total.
+
+    A scoring-config edit changes ONLY the point mapping, never the raw inputs (placement / kills /
+    damage / assists / played / bonus / penalty), so we re-derive JUST the three point columns from
+    the stored raw values through the SAME scoring.compute_team_points the upload path uses. Kills
+    themselves (including flagged-ringer accounting) are untouched. The scoring extraction mirrors
+    upload_team_match_result / edit_match_result verbatim (empty placement_points -> {} -> 0 points,
+    NOT the DEFAULT table) so this can never silently change a score the upload path would not.
+
+    TEAM events only: SOLO scoring lives on Leaderboard.placement_points (upload_solo_match_result),
+    edited via a different surface, so solo matches simply have no team_stats rows and update 0.
+    CONNECTS TO: scoring.compute_team_points, TournamentTeamMatchStats (match.team_stats),
+    get_all_leaderboard_details_for_event (the reader whose Sum(total_points) this keeps honest).
+    CALLED BY: edit_match_scoring_config (below).
+    """
+    from .scoring import compute_team_points
+
+    scoring = match.scoring_settings or {}
+    try:
+        placement_points = {
+            int(k): int(v)
+            for k, v in (scoring.get("placement_points") or {}).items()
+        }
+    except Exception:
+        # Malformed config: leave the stored points as-is rather than zeroing everyone.
+        return 0
+    kill_point = float(scoring.get("kill_point", 1))
+    points_per_assist = float(scoring.get("points_per_assist", 0))
+    points_per_1000_damage = float(scoring.get("points_per_1000_damage", 0))
+
+    updated = 0
+    with transaction.atomic():
+        for row in match.team_stats.select_for_update():
+            pts = compute_team_points(
+                placement_points=placement_points, kill_point=kill_point,
+                points_per_assist=points_per_assist, points_per_1000_damage=points_per_1000_damage,
+                placement=row.placement, kills=row.kills, damage=row.damage, assists=row.assists,
+                bonus=row.bonus_points, penalty=row.penalty_points, played=row.played,
+            )
+            row.placement_points = pts["placement_points"]
+            row.kill_points = pts["kill_points"]
+            row.total_points = pts["total_points"]
+            row.save(update_fields=["placement_points", "kill_points", "total_points"])
+            updated += 1
+    return updated
+
+
 @api_view(["POST"])
 def edit_match_scoring_config(request):
     auth = request.headers.get("Authorization")
@@ -21186,8 +21579,18 @@ def edit_match_scoring_config(request):
 
     match.scoring_settings = scoring_settings
     match.save(update_fields=["scoring_settings"])
-    
-    return Response({"message": "Match scoring settings updated successfully."}, status=200)
+
+    # Recompute the stored per-map points from the NEW config so the leaderboard total ALWAYS
+    # matches the config just set (bug 2026-07-06). Both the single-match "Save Scoring Config"
+    # button AND the "Apply to group / stage / entire event" fan-out POST this endpoint per match,
+    # so doing the recompute HERE fixes every path at one chokepoint. TEAM events only (solo scoring
+    # lives on the Leaderboard row); a solo match simply recomputes 0 rows.
+    recomputed = _recompute_team_match_points(match)
+
+    return Response({
+        "message": "Match scoring settings updated successfully.",
+        "recomputed_teams": recomputed,
+    }, status=200)
 
 @api_view(["POST"])
 def get_sponsor_details(request):
@@ -23013,6 +23416,16 @@ def cancel_event(request):
     event.event_status = "cancelled"
     event.save(update_fields=["event_status"])
 
+    # #12 (owner 2026-07-06 "cancel should withdraw it"): a cancelled event must PULL BACK any teams/
+    # players it already promoted into downstream (linked) events at completion, else a reopened-then-
+    # cancelled event leaves stale qualifiers registered elsewhere. Best-effort + data-safe (a promoted
+    # team that already PLAYED downstream is only detached, never deleted). See withdraw_links_for_event.
+    from . import event_links as _event_links
+    try:
+        withdrawn = _event_links.withdraw_links_for_event(event, user)
+    except Exception:
+        withdrawn = 0
+
     count = _notify_all_registered(
         event,
         title=f"Event Cancelled: {event.event_name}",
@@ -23025,11 +23438,13 @@ def cancel_event(request):
     AdminHistory.objects.create(
         admin_user=user,
         action="cancel_event",
-        description=f"Cancelled event {event.event_name} (ID: {event.event_id})",
+        description=(f"Cancelled event {event.event_name} (ID: {event.event_id}); "
+                     f"withdrew {withdrawn} downstream promotion(s)"),
     )
 
     return Response(
-        {"message": f"Event '{event.event_name}' has been cancelled.", "notifications_sent": count},
+        {"message": f"Event '{event.event_name}' has been cancelled.",
+         "notifications_sent": count, "promotions_withdrawn": withdrawn},
         status=200,
     )
 
@@ -23106,16 +23521,20 @@ def maybe_autocomplete_event(event, by_user):
     2026-06-16: "once results of an event are inputted ... the event should be set complete").
     Called best-effort at the end of each event result-save endpoint. 'Done' = the final stage
     (finals, else highest stage_order) has >=1 match and ALL of them have result_inputted=True.
-    Scrims never auto-complete (no finals concept); drafts + already-finished events are skipped.
-    Returns True if it completed the event. Wrapped by callers in try/except so a hiccup never
-    blocks the result save. Mirrors close_finished_events (date sweep) + complete_event (manual);
-    all three go through complete_event_core."""
+    Scrims DO auto-complete now (owner 2026-07-06, see the inline note below); drafts + already-
+    finished events are skipped. Returns True if it completed the event. Wrapped by callers in
+    try/except so a hiccup never blocks the result save. Mirrors close_finished_events (date sweep)
+    + complete_event (manual); all three go through complete_event_core."""
     if event is None or getattr(event, "is_draft", False):
         return False
     if event.event_status in ("completed", "cancelled"):
         return False
-    if getattr(event, "competition_type", None) == "scrims":
-        return False
+    # NOTE (owner 2026-07-06): scrims NOW auto-complete once their final stage's results are all in
+    # (organizer report: "I input results for 5 maps but the event stayed ongoing"). Previously scrims
+    # were skipped here on the "no completion concept" design; that no longer matches how organizers
+    # run day-scrims (each DAY is a one-off event they expect to close when results are entered). The
+    # completion is still gated on EVERY final-stage match having result_inputted=True, so a scrims with
+    # maps still to enter stays ongoing. A completed scrims can still be reopened (reopen_event).
     stage = _final_stage_for_event(event)
     if stage is None:
         return False
@@ -23310,8 +23729,11 @@ def _recompute_team_kills_for_event(event):
     """Rebuild every team-match total in `event` from ROSTERED player kills + the flagged kills that
     currently COUNT (MatchKillFlag.effective_count = per-flag override else event default). Saves
     kills + kill_points + total_points back on each TournamentTeamMatchStats and returns the number
-    updated. Mirrors the file-upload team formula (placement + kills; assists/damage 0 on that path,
-    bonus/penalty preserved). Called after the toggle or a per-flag override changes."""
+    updated. Uses the SAME formula as upload/manual entry — placement + kills + assist + damage points
+    (read from each match's own scoring_settings) + bonus - penalty — so a flag toggle / per-flag
+    override recount never silently DROPS assist or damage points (bug #15, 2026-07-06; previously this
+    path hardcoded assist/damage to 0 and disagreed with the stored totals). Called after the toggle or
+    a per-flag override changes."""
     from collections import defaultdict
     from django.db.models import Sum
     from .models import MatchKillFlag, UnmatchedTeamBlock
@@ -23343,7 +23765,10 @@ def _recompute_team_kills_for_event(event):
             pp = {}
         return scoring_lib.compute_team_points(
             placement_points=pp, kill_point=float(scoring.get("kill_point", 1)),
-            points_per_assist=0, points_per_1000_damage=0,
+            # #15 (2026-07-06): honour the match's assist/damage scoring instead of forcing 0, so the
+            # recount matches what upload/manual entry stored.
+            points_per_assist=float(scoring.get("points_per_assist", 0) or 0),
+            points_per_1000_damage=float(scoring.get("points_per_1000_damage", 0) or 0),
             placement=placement, kills=kills, damage=damage, assists=assists,
             bonus=bonus, penalty=penalty, played=played,
         )
@@ -23928,14 +24353,20 @@ def broadcast_to_group(request):
     # group from a different event by smuggling a foreign group_id).
     group = get_object_or_404(StageGroups, group_id=group_id, stage__event=event)
 
-    # AUTH: AFC event admin OR an organizer who can edit this event (owner always can).
-    # Native (org=None) events fall to AFC-admin-only via org_can_event.
-    if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
+    mode = (request.data.get("mode") or "custom").strip()
+
+    # AUTH (owner 2026-07-06 #9 parity): organizers may send ROOM DETAILS to the whole group just like
+    # the per-map broadcast_match_room_details path — so a results-only organizer (can_upload_results)
+    # is allowed for mode='room_details'. Sending an ARBITRARY custom message is a broader power kept to
+    # AFC admins + organizers who can EDIT the event (can_edit_events). The existing per-organizer rate
+    # limit below (5/hr + 5-min cooldown) still bounds spam. Native (org=None) events stay admin-only.
+    _can_room = _is_event_admin(user) or org_can_event(user, "can_edit_events", event) \
+        or org_can_event(user, "can_upload_results", event)
+    _can_custom = _is_event_admin(user) or org_can_event(user, "can_edit_events", event)
+    if not (_can_room if mode == "room_details" else _can_custom):
         return Response(
             {"message": "You do not have permission to message this group."}, status=403
         )
-
-    mode = (request.data.get("mode") or "custom").strip()
 
     if mode == "room_details":
         title = f"Match Room Details: {event.event_name}"
@@ -24862,17 +25293,23 @@ def download_esport_media(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    # Admins always pass; otherwise the platform organizer role (held by org members).
-    is_organizer = UserRoles.objects.filter(user=user, role__role_name="organizer").exists()
-    if not _is_event_admin(user) and not is_organizer:
-        return Response({"message": "Only admins and organizers can download esport media."}, status=403)
-
     team_ids = request.data.get("team_ids") or []
     player_ids = request.data.get("player_ids") or []
     event_id = request.data.get("event_id")
 
     if not team_ids and not player_ids and not event_id:
         return Response({"message": "Provide team_ids, player_ids, or event_id."}, status=400)
+
+    # AUTH (event-scoped, privacy fix 2026-07-06): this returns players' esport images + team logos =
+    # roster PII. AFC event admins always pass. A mere platform "organizer" role is NOT enough: an
+    # organizer may only pull media for an event THEIR org owns (org_can_event), and only via event_id
+    # (a raw team_ids/player_ids pull can't be org-scoped, so it stays admin-only). Native (org=None)
+    # events stay admin-only. Was: admin OR anyone holding the organizer role -> any organizer could
+    # download ANY event's full roster media.
+    if not _is_event_admin(user):
+        scoped_event = Event.objects.filter(event_id=event_id).first() if event_id else None
+        if not (scoped_event and org_can_event(user, "can_edit_events", scoped_event)):
+            return Response({"message": "You do not have permission to download this event's media."}, status=403)
 
     zip_label = "esport-media"
     if event_id:
@@ -25011,9 +25448,16 @@ def download_single_media(request):
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
-    is_organizer = UserRoles.objects.filter(user=user, role__role_name="organizer").exists()
-    if not _is_event_admin(user) and not is_organizer:
-        return Response({"message": "Only admins and organizers can download media."}, status=403)
+    # AUTH (#9 audit + privacy 2026-07-06): mirror download_esport_media (the bulk ZIP sibling). Roster
+    # media is PII. AFC staff always pass. A mere platform "organizer" role is NOT enough: a non-admin
+    # must scope to an event THEIR org owns (org_can_event) AND the requested team/player must belong to
+    # that event (verified per-kind below). Was: admin OR anyone with the organizer role -> any organizer
+    # could download ANY team logo / player image cross-org.
+    scoped_event = None
+    if not _is_event_admin(user):
+        scoped_event = Event.objects.filter(event_id=request.data.get("event_id")).first()
+        if not (scoped_event and org_can_event(user, "can_edit_events", scoped_event)):
+            return Response({"message": "You do not have permission to download this event's media."}, status=403)
 
     kind = (request.data.get("kind") or "").strip()
     fmt = (request.data.get("format") or "png").lower()
@@ -25035,6 +25479,12 @@ def download_single_media(request):
         team = Team.objects.filter(team_id=request.data.get("team_id")).first()
         if not team:
             return Response({"message": "Team not found."}, status=400)
+        # Organizer scope: the team must actually be in the event they own (closes cross-event IDOR).
+        if scoped_event and not (
+            TournamentTeam.objects.filter(event=scoped_event, team=team).exists()
+            or RegisteredCompetitors.objects.filter(event=scoped_event, team=team).exists()
+        ):
+            return Response({"message": "That team is not in this event."}, status=403)
         default_name = team.team_name or f"team-{team.team_id}"
         if team.team_logo:
             try:
@@ -25046,6 +25496,12 @@ def download_single_media(request):
         u = User.objects.filter(user_id=request.data.get("user_id")).first()
         if not u:
             return Response({"message": "Player not found."}, status=400)
+        # Organizer scope: the player must be in the event they own (solo competitor or roster member).
+        if scoped_event and not (
+            RegisteredCompetitors.objects.filter(event=scoped_event, user=u).exists()
+            or TournamentTeamMember.objects.filter(tournament_team__event=scoped_event, user=u).exists()
+        ):
+            return Response({"message": "That player is not in this event."}, status=403)
         default_name = u.username or f"player-{u.user_id}"
         prof = UserProfile.objects.filter(user_id=u.user_id).first()
         if prof and prof.esports_pic:

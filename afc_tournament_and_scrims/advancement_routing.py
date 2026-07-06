@@ -265,6 +265,7 @@ def route_stage_advancement(stage, *, dry_run=False):
         "routed": [],
         "newly_seeded": 0,
         "already_seeded": 0,
+        "removed_stale": 0,
         "discord_roles_queued": 0,
         "progress_ids": {},
     }
@@ -274,12 +275,20 @@ def route_stage_advancement(stage, *, dry_run=False):
 
     event = stage.event
     queued_by_stage = {}  # target Stages -> queued role count (for the worker kick)
+    # #11 (owner 2026-07-06): the CURRENT qualifying set per target stage, unioned across all rules that
+    # feed it, so a RE-RUN can remove competitors that dropped out of the cut (get_or_create only ADDS).
+    from collections import defaultdict as _dd
+    seeded_teams_by_stage = _dd(set)    # target Stage -> {tournament_team_id currently qualifying}
+    seeded_players_by_stage = _dd(set)  # target Stage -> {RegisteredCompetitors.id currently qualifying}
 
     # All writes for a real run go in one transaction so a mid-apply failure rolls back cleanly.
     ctx = transaction.atomic() if not dry_run else _nullcontext()
     with ctx:
         for rule in rules:
             rows, kind = _ranking_for_rule(rule, event)
+            # Ensure this target stage is reconciled even if its current cut is EMPTY (all qualifiers
+            # dropped): touch the key so the removal pass below runs for it.
+            (seeded_teams_by_stage if kind == "team" else seeded_players_by_stage)[rule.target_stage]
             # 1-based inclusive slice with auto-clamp. position_from-1 past the end => empty slice.
             lo = max(rule.position_from - 1, 0)
             hi = rule.position_to  # exclusive end; slicing clamps if hi > len(rows)
@@ -315,6 +324,7 @@ def route_stage_advancement(stage, *, dry_run=False):
                         tournament_team_id=seed_id).first()
                     if not tt:
                         continue
+                    seeded_teams_by_stage[rule.target_stage].add(tt.tournament_team_id)  # #11: in the cut
                     _, created = StageCompetitor.objects.get_or_create(
                         stage=rule.target_stage, tournament_team=tt, player=None,
                         defaults={"status": "active"})
@@ -331,6 +341,7 @@ def route_stage_advancement(stage, *, dry_run=False):
                         id=seed_id).first()
                     if not comp:
                         continue
+                    seeded_players_by_stage[rule.target_stage].add(comp.id)  # #11: in the cut
                     _, created = StageCompetitor.objects.get_or_create(
                         stage=rule.target_stage, player=comp, tournament_team=None,
                         defaults={"status": "active"})
@@ -344,6 +355,34 @@ def route_stage_advancement(stage, *, dry_run=False):
                         result["already_seeded"] += 1
 
             result["routed"].append(block)
+
+        # ── #11 reconcile (owner 2026-07-06): remove competitors that DROPPED OUT of the cut on a
+        # re-run. get_or_create above only ADDS current qualifiers, so after a standings correction the
+        # previously-seeded (now-dropped) team was left in the target stage, over-filling it. Remove a
+        # target-stage StageCompetitor only when it is (a) NOT in the current qualifying set for that
+        # stage AND (b) has NOT played any match in that stage — a competitor that already competed is
+        # never auto-removed (data-safe, mirrors the promotion-withdraw guard #16). Only stages this run
+        # seeded are touched. Runs inside the same transaction so a failure rolls the removals back too.
+        if not dry_run:
+            from .models import TournamentTeamMatchStats, SoloPlayerMatchStats
+            for tgt_stage, keep_team_ids in seeded_teams_by_stage.items():
+                for sc in StageCompetitor.objects.filter(stage=tgt_stage, tournament_team__isnull=False):
+                    if sc.tournament_team_id in keep_team_ids:
+                        continue
+                    if TournamentTeamMatchStats.objects.filter(
+                            match__group__stage=tgt_stage, tournament_team_id=sc.tournament_team_id).exists():
+                        continue  # already played in this stage -> keep (never destroy real results)
+                    sc.delete()
+                    result["removed_stale"] += 1
+            for tgt_stage, keep_player_ids in seeded_players_by_stage.items():
+                for sc in StageCompetitor.objects.filter(stage=tgt_stage, player__isnull=False):
+                    if sc.player_id in keep_player_ids:
+                        continue
+                    if SoloPlayerMatchStats.objects.filter(
+                            match__group__stage=tgt_stage, competitor_id=sc.player_id).exists():
+                        continue
+                    sc.delete()
+                    result["removed_stale"] += 1
 
     # Kick Discord workers AFTER the transaction commits (real runs only).
     if not dry_run and queued_by_stage:

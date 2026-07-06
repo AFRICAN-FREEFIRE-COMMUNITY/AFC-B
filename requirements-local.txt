@@ -79,6 +79,7 @@ openpyxl==3.1.5
 packaging==24.2
 pathspec==0.12.1
 pillow==10.4.0
+pillow-heif==1.4.0  # HEIC->JPEG for esport-image uploads (image_utils.normalize_image_upload)
 prompt_toolkit==3.0.48
 propcache==0.2.0
 proto-plus==1.24.0

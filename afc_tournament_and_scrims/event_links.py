@@ -220,8 +220,13 @@ def _promote(qual, actor, bypass_window=False):
     with transaction.atomic():
         if qual.team_id:
             # Already in the target (registered directly or via another qualifier): point at
-            # the existing registration, never duplicate.
-            if RegisteredCompetitors.objects.filter(event=target, team=qual.team).exists():
+            # the existing registration, never duplicate. Check BOTH the RegisteredCompetitors row
+            # AND the authoritative TournamentTeam (bug #10, 2026-07-06): TournamentTeam carries the
+            # uniq_event_team_registration constraint, and a team can exist as a TournamentTeam without
+            # an RC row (e.g. added by an admin/auto-seed path), which slipped past an RC-only guard and
+            # then hit the unique constraint / created a duplicate on the create below.
+            if (RegisteredCompetitors.objects.filter(event=target, team=qual.team).exists()
+                    or TournamentTeam.objects.filter(event=target, team=qual.team).exists()):
                 qual.status = "promoted"
                 qual.note = "already registered in the target"
                 qual.save(update_fields=["status", "note"])
@@ -302,10 +307,20 @@ def _withdraw_promotion(qual):
     ('already registered in the target') is never deleted."""
     if qual.promoted_tournament_team_id:
         tt = qual.promoted_tournament_team
-        TournamentTeamMember.objects.filter(tournament_team=tt).delete()
-        RegisteredCompetitors.objects.filter(event=qual.link.target_event, team=tt.team).delete()
-        tt.delete()
-        qual.promoted_tournament_team = None
+        # DATA-LOSS GUARD (2026-07-06): TournamentTeamMatchStats.tournament_team is on_delete=CASCADE,
+        # so tt.delete() would destroy any matches this promoted team ALREADY PLAYED in the target
+        # event. If results exist, do NOT delete the team (withdrawing a team that already competed is
+        # itself wrong) — just detach the qual pointer so the promotion is no longer tracked. Only a
+        # team that has not yet played is safe to fully remove.
+        from .models import TournamentTeamMatchStats
+        has_played = TournamentTeamMatchStats.objects.filter(tournament_team=tt).exists()
+        if has_played:
+            qual.promoted_tournament_team = None
+        else:
+            TournamentTeamMember.objects.filter(tournament_team=tt).delete()
+            RegisteredCompetitors.objects.filter(event=qual.link.target_event, team=tt.team).delete()
+            tt.delete()
+            qual.promoted_tournament_team = None
     if qual.promoted_competitor_id:
         qual.promoted_competitor.delete()
         qual.promoted_competitor = None
@@ -354,6 +369,31 @@ def fire_links_for_event(event, actor=None):
         except Exception:
             continue
     return fired
+
+
+def withdraw_links_for_event(event, actor=None):
+    """Inverse of fire_links_for_event: pull back every promotion THIS event's links pushed
+    downstream. Called from cancel_event (owner 2026-07-06 #12: "cancel should withdraw it") so a
+    cancelled source event does not leave the teams/players it promoted sitting registered in the
+    target events. Only PROMOTED/REPLACED qualifications are withdrawn (pending/rejected/declined
+    never created a registration). Uses _withdraw_promotion, which is DATA-SAFE: it will not delete a
+    promoted team that has already PLAYED in the target (it just detaches the tracking pointer), so
+    cancelling a source never destroys real results downstream. Best-effort, never raises. Returns the
+    number of promotions withdrawn. Callers: cancel_event (views.py)."""
+    from django.utils import timezone
+    withdrawn = 0
+    for link in EventLink.objects.filter(source_event=event):
+        for qual in link.qualifications.filter(status__in=("promoted", "replaced")):
+            try:
+                _withdraw_promotion(qual)
+                qual.status = "withdrawn"
+                qual.note = "source event cancelled"
+                qual.decided_by, qual.decided_at = actor, timezone.now()
+                qual.save()
+                withdrawn += 1
+            except Exception:
+                continue
+    return withdrawn
 
 
 # ── serialization ────────────────────────────────────────────────────────────────────────────

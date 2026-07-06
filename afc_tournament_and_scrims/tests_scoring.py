@@ -257,6 +257,75 @@ class EnterTeamMatchResultManualDBTests(TestCase):
         self.assertEqual(stat.total_points, 20)
 
 
+class MapWinnerRequiredDBTests(EnterTeamMatchResultManualDBTests):
+    """A manually-entered played map MUST have a placement==1 (the map winner = the booyah).
+    Regression for the booyah miscount (owner 2026-07-06: "5 maps but only 3 booyahs") — a map saved
+    with no 1st place silently contributes 0 booyahs to the standings."""
+
+    def _post(self, placement):
+        payload = {
+            "match_id": self.match.match_id,
+            "results": json.dumps([
+                {"tournament_team_id": self.tt.tournament_team_id, "placement": placement,
+                 "played": True, "players": [{"kills": 3, "damage": 0, "assists": 0, "played": True}]},
+            ]),
+        }
+        return self.client.post("/events/enter-team-match-result-manual/", data=payload,
+                                HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+
+    def test_map_without_first_place_is_rejected(self):
+        resp = self._post(placement=2)  # no winner
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn(b"winner is missing", resp.content)
+        # And nothing was written (validation runs before the destructive transaction).
+        self.assertFalse(
+            TournamentTeamMatchStats.objects.filter(match=self.match, tournament_team=self.tt).exists()
+        )
+
+    def test_map_with_first_place_is_accepted(self):
+        resp = self._post(placement=1)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        stat = TournamentTeamMatchStats.objects.get(match=self.match, tournament_team=self.tt)
+        self.assertEqual(stat.placement, 1)
+
+
+class EditScoringConfigRecomputeDBTests(EnterTeamMatchResultManualDBTests):
+    """Editing a match's scoring config MUST recompute the STORED per-map points, not just save the
+    config (bug 2026-07-06: after an admin/organizer changed the kill point or placement ladder the
+    leaderboard total stayed on the OLD config, so hand-computing from the config on screen disagreed
+    with the displayed total). Reuses the squad event/stage/group/match fixture from the manual-entry
+    test above; edit_match_scoring_config is the ONE endpoint both the single-match save and the
+    "Apply to group/stage/entire event" fan-out POST."""
+
+    def test_edit_scoring_config_recomputes_stored_points(self):
+        # Arrange: a stored result under the ORIGINAL config — placement 1 (=12) + 8 kills @1 => 20.
+        TournamentTeamMatchStats.objects.create(
+            match=self.match, tournament_team=self.tt,
+            placement=1, kills=8, damage=0, assists=0,
+            placement_points=12, kill_points=8, total_points=20, played=True,
+        )
+
+        # Act: change the config — placement 1 now worth 20, kill_point now 2.
+        resp = self.client.post(
+            "/events/edit-match-scoring-config/",
+            data=json.dumps({
+                "match_id": self.match.match_id,
+                "scoring_settings": {"placement_points": {"1": 20, "2": 9, "3": 8}, "kill_point": 2},
+            }),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+
+        # Assert: endpoint recomputed the one team row, and the STORED points now reflect the NEW
+        # config — placement 1 -> 20, 8 kills @2 -> 16, total 36 (was 12/8/20).
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json().get("recomputed_teams"), 1)
+        stat = TournamentTeamMatchStats.objects.get(match=self.match, tournament_team=self.tt)
+        self.assertEqual(stat.placement_points, 20)
+        self.assertEqual(stat.kill_points, 16)
+        self.assertEqual(stat.total_points, 36)
+
+
 class CreateEventScoringModesDBTests(TestCase):
     """End-to-end DB test for Task 3: the create-event endpoint must store the new
     per-stage scoring-mode config and wire the Point-Rush carry-over target by index.
