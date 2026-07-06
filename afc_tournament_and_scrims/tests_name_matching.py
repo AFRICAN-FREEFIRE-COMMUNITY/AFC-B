@@ -8,8 +8,9 @@ What it covers (test-plan items 1-10):
   1.  A team resolvable ONLY by name (no UID hits) is ADOPTED -> gets a
       TournamentTeamMatchStats row (placement points) instead of being skipped.
   2.  A player whose UID changed but whose NAME matches THIS team's roster becomes a
-      `name_matched_uid_changed` flag with count_kills=False (PENDING), EXCLUDED from
-      the team total at upload; the response row carries matched_user_id/flag_id/scope.
+      `name_matched_uid_changed` flag with count_kills=None (FOLLOWS count_flagged_kills;
+      owner 2026-07-06), so it COUNTS by default; the response row still carries
+      matched_user_id/flag_id/scope so the organizer can still toggle it off.
   3.  Approving that flag (PATCH events/flagged-kills/flag/ {count_kills:true}) recomputes
       the team total = rostered + the flag's kills; rejecting (false) backs it out.
   4.  A name that matches a member on a DIFFERENT team -> `name_matched_other_team`,
@@ -159,7 +160,7 @@ class NameMatchingTests(TestCase):
         self.assertNotIn("ALPHA", body["missing_teams"])
 
     # ── 2. player UID changed, name matches THIS team ──────────────────────────────────────────────
-    def test_2_name_matched_uid_changed_is_pending_and_excluded(self):
+    def test_2_name_matched_uid_changed_counts_with_toggle(self):
         # 3 real ALPHA UIDs (resolve the block) + "AlphaStar" under a NEW uid (real 1004 absent).
         log = self._block("ALPHA", 1, [
             ("alpha0", "1001", 2), ("alpha1", "1002", 1), ("alpha2", "1003", 1),
@@ -168,26 +169,29 @@ class NameMatchingTests(TestCase):
         resp = self._upload(log)
         self.assertEqual(resp.status_code, 200, resp.content)
 
+        # The flag is created but FOLLOWS the event count_flagged_kills toggle (count_kills=None), not
+        # forced pending (owner 2026-07-06): a same-team UID change is the team's own returning player.
         flag = MatchKillFlag.objects.get(match=self.match, uid="8888")
         self.assertEqual(flag.reason, "name_matched_uid_changed")
-        self.assertEqual(flag.count_kills, False)            # explicit PENDING
+        self.assertIsNone(flag.count_kills)                  # follows count_flagged_kills, NOT pending
         self.assertEqual(flag.kills, 5)
         self.assertEqual(flag.registered_user_id, self.alpha_members["AlphaStar"].user_id)
 
-        # The 5 pending kills are EXCLUDED from the team total at upload (only the 4 rostered count).
+        # With count_flagged_kills ON (setUp default True) the 5 kills COUNT: 4 rostered + 5 = 9.
         row = TournamentTeamMatchStats.objects.get(match=self.match, tournament_team=self.tt_alpha)
-        self.assertEqual(row.kills, 4)
+        self.assertEqual(row.kills, 9)
 
-        # Response row carries the match metadata so the panel can approve inline.
+        # Still surfaced in the panel (scope + flag_id) so the organizer CAN toggle it off, but it must
+        # NOT be counted as "pending approval" any more.
         ur = next(r for r in resp.json()["unknown_uids"] if r["uid"] == "8888")
         self.assertEqual(ur["reason"], "name_matched_uid_changed")
         self.assertEqual(ur["matched_user_id"], self.alpha_members["AlphaStar"].user_id)
         self.assertEqual(ur["scope"], "same_team")
         self.assertIsNotNone(ur["flag_id"])
-        self.assertEqual(resp.json()["pending_count"], 1)
+        self.assertEqual(resp.json()["pending_count"], 0)
 
-    # ── 3. approve -> counts; reject -> backs out ─────────────────────────────────────────────────
-    def test_3_approve_then_reject_recomputes_team_total(self):
+    # ── 3. counts by default; per-flag reject -> excluded; approve -> counts again ─────────────────
+    def test_3_toggle_off_then_on_recomputes_team_total(self):
         log = self._block("ALPHA", 1, [
             ("alpha0", "1001", 2), ("alpha1", "1002", 1), ("alpha2", "1003", 1),
             ("AlphaStar", "8888", 5),
@@ -195,15 +199,19 @@ class NameMatchingTests(TestCase):
         self.assertEqual(self._upload(log).status_code, 200)
         flag = MatchKillFlag.objects.get(match=self.match, uid="8888")
 
-        # APPROVE -> 4 rostered + 5 approved = 9.
-        self.assertEqual(self._approve(flag.id, True).status_code, 200)
+        # Counts by default (toggle ON): 4 rostered + 5 = 9.
         row = TournamentTeamMatchStats.objects.get(match=self.match, tournament_team=self.tt_alpha)
         self.assertEqual(row.kills, 9)
 
-        # REJECT -> back to 4.
+        # Per-flag REJECT (count_kills=False) -> excluded -> back to 4.
         self.assertEqual(self._approve(flag.id, False).status_code, 200)
         row.refresh_from_db()
         self.assertEqual(row.kills, 4)
+
+        # Per-flag APPROVE (count_kills=True) -> counts again -> 9.
+        self.assertEqual(self._approve(flag.id, True).status_code, 200)
+        row.refresh_from_db()
+        self.assertEqual(row.kills, 9)
 
     # ── 4. name matches a member on ANOTHER team ──────────────────────────────────────────────────
     def test_4_name_matched_other_team(self):
@@ -333,7 +341,7 @@ class NameMatchingTests(TestCase):
         self.assertEqual(self._upload(log).status_code, 200)
         flag = MatchKillFlag.objects.get(match=self.match, uid="7777")
         self.assertEqual(flag.reason, "name_matched_uid_changed")
-        self.assertEqual(flag.count_kills, False)
+        self.assertIsNone(flag.count_kills)   # follows count_flagged_kills (owner 2026-07-06)
 
     def test_10b_unicode_prefix_match(self):
         # Roster "Dragon"; file "龙 | Dragon" -> NFKD ascii-fold drops the CJK + "|" -> "dragon".
@@ -345,7 +353,47 @@ class NameMatchingTests(TestCase):
         self.assertEqual(self._upload(log).status_code, 200)
         flag = MatchKillFlag.objects.get(match=self.match, uid="7778")
         self.assertEqual(flag.reason, "name_matched_uid_changed")
-        self.assertEqual(flag.count_kills, False)
+        self.assertIsNone(flag.count_kills)   # follows count_flagged_kills (owner 2026-07-06)
+
+    # ── 10c. team KillScore > listed players (dropped line) -> honor the KillScore ─────────────────
+    def test_10c_unlisted_kills_honor_team_killscore(self):
+        # ALPHA's block KillScore says 10 but the file lists only 3 rostered players summing to 6 (the
+        # FF client dropped a 4th player's KILL line). The team total must honor the KillScore: the
+        # 4-kill gap is recorded as one synthetic "unlisted_in_file" flag that counts by default
+        # (owner 2026-07-07 "trust the team's KillScore").
+        head = "TeamName: ALPHA  Rank: 1  KillScore: 10  RankScore: 0  TotalScore: 10\n"
+        body = ("NAME: alpha0  ID: 1001  KILL: 2\n"
+                "NAME: alpha1  ID: 1002  KILL: 1\n"
+                "NAME: alpha2  ID: 1003  KILL: 3\n")
+        resp = self._upload(head + body)
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+        # Team total honors the KillScore (10), not the 6 listed.
+        row = TournamentTeamMatchStats.objects.get(match=self.match, tournament_team=self.tt_alpha)
+        self.assertEqual(row.kills, 10)
+
+        # One synthetic flag carries the 4 unlisted kills, counting by default (follows the toggle).
+        flag = MatchKillFlag.objects.get(
+            match=self.match, tournament_team=self.tt_alpha, reason="unlisted_in_file")
+        self.assertEqual(flag.kills, 4)
+        self.assertEqual(flag.uid, "unlisted")
+        self.assertIsNone(flag.count_kills)
+        self.assertTrue(flag.effective_count)
+
+        # It is NOT counted as pending approval (it already counts).
+        self.assertEqual(resp.json()["pending_count"], 0)
+
+        # Organizer can switch it off from the panel -> back to the 6 listed.
+        self.assertEqual(self._approve(flag.id, False).status_code, 200)
+        row.refresh_from_db()
+        self.assertEqual(row.kills, 6)
+
+    def test_10d_complete_file_has_no_unlisted_flag(self):
+        # Sanity: when KillScore == sum of listed players (normal complete file), NO unlisted flag.
+        log = self._block("ALPHA", 1, [("alpha0", "1001", 2), ("alpha1", "1002", 1)])
+        self.assertEqual(self._upload(log).status_code, 200)
+        self.assertFalse(MatchKillFlag.objects.filter(
+            match=self.match, reason="unlisted_in_file").exists())
 
     # ── 11. ADVERSARIAL (HIGH): dedup is order-INDEPENDENT ─────────────────────────────────────────
     def test_11_dedup_reversed_order(self):

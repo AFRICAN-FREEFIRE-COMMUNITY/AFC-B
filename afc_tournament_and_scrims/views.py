@@ -20310,6 +20310,10 @@ def upload_team_match_result(request):
         parsed_teams.append({
             "team_name": block.group("team_name").strip(),
             "placement": int(block.group("placement")),
+            # The block's OFFICIAL team KillScore (owner 2026-07-07). Kept so the team total can honor it
+            # when the FF client drops a player's KILL line (sum of listed players < KillScore); see the
+            # "unlisted_in_file" reconciliation where team stats are built.
+            "team_kills": int(block.group("team_kills")),
             "players": players
         })
 
@@ -20647,8 +20651,9 @@ def upload_team_match_result(request):
                         continue
                     seen_block.add(uid)
                     nk = _norm_pname(p["name"])
-                    # Flag carries an explicit count_kills: None = follow the event default (legacy
-                    # not_on_roster), False = PENDING approval (name match / cross-team, requirement c).
+                    # Flag carries an explicit count_kills: None = follow the event default
+                    # (not_on_roster stranger AND same-team name_matched_uid_changed - owner 2026-07-06),
+                    # False = PENDING approval (cross-team only: belongs_to_other_team / name_matched_other_team).
                     f = {
                         "uid": uid, "name": p["name"], "kills": p["kills"],
                         "registered_user_id": (member.user_id if member else None),
@@ -20669,9 +20674,19 @@ def upload_team_match_result(request):
                             per_team_name_idx.get(block_tt_id, {}), nk, p["name"])
                         if same is not None:
                             if same["user_id"] not in block_credited:
-                                # Name matches a member of THIS team whose UID changed -> pending.
+                                # Name matches a member of THIS team whose UID just changed. This is the
+                                # team's OWN rostered player playing under a new Free Fire UID, so it
+                                # FOLLOWS the event's count_flagged_kills toggle (count_kills=None), exactly
+                                # like a not_on_roster stranger below - NOT forced pending.
+                                # Owner 2026-07-06 fix: forcing count_kills=False here made a rostered
+                                # player's kills silently vanish while "count flagged kills" was ON (the
+                                # DYNASTY CUP report: PARADOX/"PDX SNIPE" lost 12 kills -> 295 instead of
+                                # 307, FROZEN EMPIRE/"FZN.X-NINJA" lost 4). A total stranger's kills counted
+                                # but the team's own returning player did not - backwards. Cross-team name
+                                # matches (name_matched_other_team) STILL stay pending (False) below, since
+                                # those are a genuine borrowed-ringer concern the organizer must review.
                                 f["reason"] = "name_matched_uid_changed"
-                                f["count_kills"] = False
+                                f["count_kills"] = None
                                 f["registered_user_id"] = same["user_id"]
                                 f["matched_username"] = same["username"]
                             else:
@@ -20698,9 +20713,27 @@ def upload_team_match_result(request):
                                 # still follows the event default.
                                 f["reason"] = "not_on_roster"
                     block_flags.append(f)
+
+            # UNLISTED-in-file reconciliation (owner 2026-07-07 "trust the team's KillScore"): the file's
+            # official team KillScore can EXCEED the kills it listed against players when the Free Fire
+            # client drops a player's row (the COSA NOSTRA case: KillScore 9, but only 6 across 3 listed
+            # players). Record that gap as ONE synthetic flag (uid "unlisted") so the team total honors the
+            # official KillScore. count_kills=None -> follows count_flagged_kills (counts by default; the
+            # organizer can switch it off from the panel if a KillScore ever looks wrong). No gap -> no flag,
+            # so a normal complete file is unchanged. This flag flows through counted_flagged below AND
+            # _recompute_team_kills_for_event untouched (it sums every counting MatchKillFlag).
+            listed_kills = sum(p["kills"] for p in players)
+            unlisted_gap = team_data.get("team_kills", listed_kills) - listed_kills
+            if unlisted_gap > 0:
+                block_flags.append({
+                    "uid": "unlisted", "name": "(kills not listed in file)", "kills": unlisted_gap,
+                    "registered_user_id": None, "reason": "unlisted_in_file", "count_kills": None,
+                })
+
             team_data["_flags"] = block_flags
-            # §1e: pending (count_kills=False) flags contribute 0 here; not_on_roster still follows the
-            # event default. Mirrors _recompute_team_kills_for_event so the upload total is consistent.
+            # §1e: pending (count_kills=False) flags contribute 0 here; not_on_roster + unlisted_in_file
+            # still follow the event default. Mirrors _recompute_team_kills_for_event so the upload total
+            # is consistent.
             counted_flagged = sum(f["kills"] for f in block_flags if _will_count(f))
             total_kills = rostered_kills + counted_flagged
 
@@ -21037,12 +21070,15 @@ def upload_team_match_result(request):
         "unknown_uids": unknown_players,               # file UIDs that could not be credited (+ reason)
         "roster_no_uid": roster_no_uid,                # rostered players with no UID set (cannot match)
         "unmatched_count": len(unknown_players),       # convenience count for the FE toast
-        # §1j: how many unknown rows are PENDING an admin approval (name match or cross-team). Each
-        # carries a flag_id the FE can approve inline via PATCH events/flagged-kills/flag/.
+        # §1j: how many unknown rows are PENDING an admin approval (CROSS-TEAM only). Each carries a
+        # flag_id the FE can approve inline via PATCH events/flagged-kills/flag/. name_matched_uid_changed
+        # is deliberately EXCLUDED (owner 2026-07-06): a same-team UID change auto-counts with the
+        # count_flagged_kills toggle, so it is not "awaiting approval" - it still shows in the flagged
+        # panel for visibility, but must not inflate the "N players need review" badge.
         "pending_count": sum(
             1 for r in unknown_players
             if r["reason"] in (
-                "name_matched_uid_changed", "name_matched_other_team", "belongs_to_other_team",
+                "name_matched_other_team", "belongs_to_other_team",
             )
         ),
     }, status=200)
