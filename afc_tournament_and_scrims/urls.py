@@ -60,6 +60,7 @@ from .seeding_management import (
     add_solo_players_to_stage,
     list_registered_solo_players,
     list_registered_teams,
+    seed_next_stage_by_standings,
 )
 # Branching advancement routing (feature #9, owner plan WEBSITE/tasks/advancement-routing-plan.md):
 # run a stage's StageAdvancementRule rows to seed each rule's [from..to] finishers into a later
@@ -320,6 +321,7 @@ urlpatterns = [
     path('seeding/add-solo-to-stage/', add_solo_players_to_stage, name='seeding_add_solo_to_stage'),
     path('seeding/registered-solo-players/', list_registered_solo_players, name='seeding_registered_solo_players'),
     path('seeding/registered-teams/', list_registered_teams, name='seeding_registered_teams'),
+    path('seeding/seed-next-stage-by-standings/', seed_next_stage_by_standings, name='seed_next_stage_by_standings'),
     # Reorder stages / groups (manual drag-to-arrange, owner 2026-06-15). Default order=0 means
     # "auto-arrange by date/time"; these endpoints write 1-based orders that override the date sort
     # (and return a `warning` when the manual order diverges from the schedule). Views

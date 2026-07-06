@@ -433,6 +433,138 @@ def reseed_into_groups(request):
 
 
 @api_view(["POST"])
+def seed_next_stage_by_standings(request):
+    """POST events/seeding/seed-next-stage-by-standings/ {stage_id, force?}
+
+    Seed the NEXT stage's groups using THIS round-robin stage's COMBINED overall standings, snake
+    (balanced) distributed (owner 2026-07-06: "seed teams from round robin games where the teams are
+    seeded from the combined overall matches"; owner chose target=next-stage, distribution=snake).
+
+    FLOW this fits into: a round-robin stage (e.g. SEMI FINALS) is played -> the top teams are ADVANCED
+    into the next stage (advance_round_robin writes StageCompetitor rows there) -> THIS endpoint then
+    fills the next stage's GROUPS by how those teams finished the round-robin, snaking the ranking
+    across the groups so every group gets a mix of strong and weak teams. Ordering source is
+    round_robin.cumulative_standings(rr_stage) (the same authoritative table the RR Standings modal +
+    advancement + public leaderboard read), so the seed matches what everyone sees.
+
+    Snake: rank 1 -> group 1, 2 -> group 2, ... last group, then REVERSE (next -> last group, ... ->
+    group 1), repeating. Teams the standings do not cover (edge case) trail at the end in id order.
+
+    TARGET rows: for a NORMAL next stage (br/cs) we clear + write StageGroupCompetitor (the same rows
+    the manual "Seed to groups" writes). A round-robin NEXT stage stores group membership on
+    RoundRobinGroup.teams + regenerates lobbies, a different mechanism, so we reject it with a clear
+    message pointing to the Round-Robin panel rather than half-seed it.
+
+    GUARD: if the next stage already has entered results, a reseed makes them unreachable, so we
+    require force=true (mirrors reseed_into_groups). AUTH: _seeding_gate (AFC event admin / creator /
+    owning organizer with can_manage_registrations). Consumed by SeedToGroupModal (the RR-stage
+    "Seed next stage by combined standings" option)."""
+    from collections import defaultdict
+    from . import round_robin
+    from .models import RoundRobinGroup
+
+    user, err = _auth_user(request)
+    if err:
+        return err
+
+    rr_stage = get_object_or_404(Stages, stage_id=request.data.get("stage_id"))
+    event = rr_stage.event
+    if not _seeding_gate(user, event):
+        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+
+    force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
+
+    # Resolve the NEXT stage in the event's canonical display order (saved stage_order wins, else
+    # by date, then id - identical to get_event_details / advance_round_robin).
+    ordered = list(event.stages.all().order_by("stage_order", "start_date", "stage_id"))
+    idx = next((i for i, s in enumerate(ordered) if s.stage_id == rr_stage.stage_id), None)
+    if idx is None or idx + 1 >= len(ordered):
+        return Response({"message": "This is the last stage; there is no next stage to seed."}, status=400)
+    next_stage = ordered[idx + 1]
+
+    # The combined RR ranking (best-first). Empty => the round-robin has not been played yet.
+    standings = round_robin.cumulative_standings(rr_stage)
+    if not standings:
+        return Response({"message": "This round-robin stage has no results yet. Enter the match "
+                                    "results first, then seed the next stage by the standings."}, status=400)
+    rank = {row["tournament_team_id"]: i for i, row in enumerate(standings)}
+
+    # A round-robin NEXT stage seeds base groups differently (RoundRobinGroup.teams + lobby rebuild);
+    # do not half-seed it here.
+    if next_stage.stage_format == "br - round robin":
+        return Response({"message": f"'{next_stage.stage_name}' is itself a round-robin. Seed its "
+                                    f"base groups from the Round-Robin panel instead."}, status=400)
+
+    groups = list(StageGroups.objects.filter(stage=next_stage).order_by("group_order", "group_id"))
+    if not groups:
+        return Response({"message": f"'{next_stage.stage_name}' has no groups to seed into. Add "
+                                    f"groups to that stage first."}, status=400)
+
+    # Reseed guard: refuse to wipe a next stage that already has entered results unless forced.
+    played = _played_maps_in_stage(next_stage)
+    if played and not force:
+        return Response({
+            "message": f"'{next_stage.stage_name}' has {played} map(s) with entered results. Seeding "
+                       f"re-distributes its teams (existing results become unreachable). Confirm to proceed.",
+            "played_maps": played,
+            "requires_force": True,
+        }, status=400)
+
+    # WHO gets seeded - ONE-CLICK (owner 2026-07-06: "it should just work, not tell me to advance
+    # first"). If the next stage already holds teams (advanced manually), seed THOSE, ordered by the
+    # RR standings. If it is empty, AUTO-ADVANCE the round-robin's top-N qualifiers straight from the
+    # standings (N = this RR stage's teams_qualifying_from_stage, else everyone) by writing their
+    # StageCompetitor rows - the same sink advance_round_robin uses - so no separate advance step is
+    # needed. Ordering is always the combined RR standings, best-first.
+    with transaction.atomic():
+        existing = list(StageCompetitor.objects.filter(
+            stage=next_stage, status="active", tournament_team__isnull=False))
+        auto_advanced = 0
+        if existing:
+            pool_ids = [c.tournament_team_id for c in existing]
+        else:
+            n_qual = rr_stage.teams_qualifying_from_stage or len(standings)
+            n_qual = max(1, min(int(n_qual), len(standings)))
+            pool_ids = [row["tournament_team_id"] for row in standings[:n_qual]]
+            for tid in pool_ids:
+                _, created = StageCompetitor.objects.get_or_create(
+                    stage=next_stage, tournament_team_id=tid, player=None,
+                    defaults={"status": "active"})
+                if created:
+                    auto_advanced += 1
+
+        # Order by RR finish (best first); teams the standings do not cover trail at the end.
+        pool_ids.sort(key=lambda tid: rank.get(tid, len(rank)))
+
+        # Snake the ranked pool across the groups: even rounds L->R, odd rounds R->L.
+        n = len(groups)
+        assignments = defaultdict(list)   # StageGroups -> [tournament_team_id]
+        for i, tid in enumerate(pool_ids):
+            pos = i % n
+            group = groups[pos] if (i // n) % 2 == 0 else groups[n - 1 - pos]
+            assignments[group].append(tid)
+
+        _clear_group_seeding(next_stage)   # wipe old group rows (StageCompetitor pool untouched)
+        entries = [
+            StageGroupCompetitor(stage_group=group, tournament_team_id=tid)
+            for group, tids in assignments.items() for tid in tids
+        ]
+        StageGroupCompetitor.objects.bulk_create(entries, ignore_conflicts=True)
+        _reconcile_group_roles(next_stage)   # sync Discord group roles best-effort
+
+    lead = f"Advanced {auto_advanced} and seeded " if auto_advanced else "Seeded "
+    return Response({
+        "message": lead + f"{len(entries)} team(s) into '{next_stage.stage_name}' by "
+                          f"'{rr_stage.stage_name}' combined standings (snake).",
+        "seeded": len(entries),
+        "advanced": auto_advanced,
+        "next_stage_id": next_stage.stage_id,
+        "next_stage_name": next_stage.stage_name,
+        "groups": n,
+    }, status=200)
+
+
+@api_view(["POST"])
 def delete_group_managed(request):
     """DELETE a group with a disposition choice for its competitors.
 
