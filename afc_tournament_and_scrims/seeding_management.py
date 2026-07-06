@@ -1228,3 +1228,57 @@ def list_registered_solo_players(request):
         "in_group": r.id in in_group_ids,
     } for r in regs]
     return Response({"event_id": event.event_id, "count": len(players), "players": players}, status=200)
+
+
+@api_view(["GET"])
+def list_registered_teams(request):
+    """GET events/seeding/registered-teams/?event_id=<id>
+
+    Read-only picker feed for manual TEAM seeding (owner 2026-07-06: "show only teams/players that are
+    REGISTERED as those you can seed"). Returns ONLY the event's REGISTERED teams (its active
+    TournamentTeam rows), NOT every team on the platform — so when an admin/organizer seeds a team into
+    a stage or group they pick from who actually registered for THIS event. The response envelope +
+    per-team fields deliberately match /team/get-all-teams/ ({teams:[{team_id, team_name, team_logo,
+    team_tag, member_count, country, is_banned}]}) so AddTeamsModal renders it with no shape change; it
+    just points its fetch here when a target event is known (stage/group modes). tournament_team_id
+    rides along for callers that key on it.
+
+    AUTH: _seeding_gate (AFC event admin OR event creator OR org can_manage_registrations; native
+    org=None events admin-only). Consumed by the FE AddTeamsModal (stage + group seeding). The backend
+    add-teams endpoints already reject non-registered teams; this just stops the PICKER offering them."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    event_id = request.query_params.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if not _seeding_gate(user, event):
+        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+    if event.participant_type == "solo":
+        return Response({"message": "This endpoint is for team events only.", "teams": []}, status=400)
+
+    tts = (TournamentTeam.objects.select_related("team")
+           .filter(event=event, status="active").order_by("team__team_name"))
+    teams = []
+    for tt in tts:
+        t = tt.team
+        if not t:
+            continue
+        logo = None
+        try:
+            if getattr(t, "team_logo", None):
+                logo = request.build_absolute_uri(t.team_logo.url)
+        except Exception:
+            logo = None
+        teams.append({
+            "team_id": t.team_id,
+            "team_name": t.team_name,
+            "team_logo": logo,
+            "team_tag": getattr(t, "team_tag", None),
+            "member_count": tt.members.count(),
+            "country": getattr(t, "country", "") or "",
+            "is_banned": bool(getattr(t, "is_banned", False)),
+            "tournament_team_id": tt.tournament_team_id,
+        })
+    return Response({"event_id": event.event_id, "count": len(teams), "teams": teams}, status=200)
