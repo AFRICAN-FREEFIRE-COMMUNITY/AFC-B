@@ -857,14 +857,23 @@ class MatchKillFlag(models.Model):
     REASON_CHOICES = [
         ("not_on_roster", "Played for this team but is on no roster for this event"),
         ("belongs_to_other_team", "Played for this team but is registered on another team"),
-        # NAME-MATCH reasons (owner 2026-06-29): created by upload_team_match_result when a file
-        # player did NOT UID-match but their in-game NAME (ascii-folded, clan-tag-stripped) matches a
-        # registered roster member. Both are created count_kills=False (explicit PENDING) so they need
-        # an admin/organizer approval (set_match_kill_flag -> True) before their kills join the team
-        # total. name_matched_uid_changed = matches a member of THIS team (UID just changed);
-        # name_matched_other_team = matches a member registered on a DIFFERENT team.
+        # NAME-MATCH reasons: created by upload_team_match_result when a file player did NOT UID-match
+        # but their in-game NAME (ascii-folded, clan-tag-stripped) matches a registered roster member.
+        # name_matched_uid_changed = matches a member of THIS team (the team's own player under a new
+        # UID) -> created count_kills=None so it FOLLOWS the event count_flagged_kills toggle, exactly
+        # like not_on_roster (owner 2026-07-06: forcing it PENDING silently dropped a returning player's
+        # kills even with the toggle ON). name_matched_other_team = matches a member registered on a
+        # DIFFERENT team -> created count_kills=False (explicit PENDING), needs admin/organizer approval
+        # (set_match_kill_flag -> True) before those kills join the team total, since a cross-team name
+        # match is a genuine borrowed-ringer concern.
         ("name_matched_uid_changed", "Name matches a roster member of this team but the UID differs"),
         ("name_matched_other_team", "Name matches a roster member registered on another team"),
+        # UNLISTED (owner 2026-07-07): the file's team KillScore exceeds the sum of the KILL lines it
+        # listed against players - the Free Fire client dropped a player's row, so those kills belong to
+        # the team but have no player to attach to. Recorded as ONE synthetic flag (uid="unlisted",
+        # registered_user=None) with count_kills=None so it FOLLOWS count_flagged_kills (counts by
+        # default, toggleable) and the team total honors the official KillScore.
+        ("unlisted_in_file", "Kills in the team score that the match file did not list against any player"),
     ]
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="kill_flags")
     # The team the ringer's kills were credited TO in the file (the block they appeared in).
