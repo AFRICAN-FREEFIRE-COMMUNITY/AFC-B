@@ -12860,11 +12860,34 @@ def upload_solo_match_result(request):
 @api_view(["GET"])
 def get_all_leaderboards(request):
     # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED and cross-event (every leaderboard on the
-    # platform). It backs the admin Leaderboards listing, so gate to AFC staff.
-    user, err = _get_event_action_user(request)
-    if err:
-        return err
-    leaderboards = Leaderboard.objects.select_related("event", "stage", "group", "creator").all()
+    # platform). Gated so AFC staff see EVERY leaderboard (admin Leaderboards listing), while an
+    # ORGANIZER sees only the leaderboards of THEIR OWN organizations' events (owner 2026-07-06 "fix
+    # the organizer thing too": the staff-only gate 403'd the organizer leaderboards page, which reads
+    # this to show a per-event "Leaderboards: N" count and then intersects to one org). Non-staff with
+    # no active org membership still get 403. This scoping is what stops the cross-org leak the audit
+    # closed, so organizers regain their own data without seeing anyone else's.
+    from afc_organizers.models import OrganizationMember
+
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    is_staff = user.role in ["admin", "moderator", "support"] or \
+        user.userroles.filter(role__role_name__in=["event_admin", "head_admin"]).exists()
+
+    leaderboards = Leaderboard.objects.select_related("event", "stage", "group", "creator")
+    if is_staff:
+        leaderboards = leaderboards.all()
+    else:
+        # Events of every organization this user is an ACTIVE member of (owner or sub-organizer).
+        org_ids = list(OrganizationMember.objects.filter(user=user, status="active")
+                       .values_list("organization_id", flat=True))
+        if not org_ids:
+            return Response({"message": "You do not have permission."}, status=403)
+        leaderboards = leaderboards.filter(event__organization_id__in=org_ids)
     data = []
     for lb in leaderboards:
         data.append({
@@ -14270,7 +14293,18 @@ def get_event_combined_standings(request):
         return Response({"event_id": event.event_id, "participant_type": "solo",
                          "results_published": event.results_published, "group_ids": [],
                          "standings": [], "note": "Combined standings are available for team events."})
-    if not event.results_published:
+    # Authed event staff (AFC admin, or the owning organizer with can_upload_results) may read the
+    # combined standings BEFORE the event is published — the admin/organizer leaderboard editor's new
+    # "Combined" tab (frontend CombinedStandings) uses this endpoint and must show numbers while the
+    # event is still mid-flight. The PUBLIC caller keeps the published-only withholding below.
+    can_see_unpublished = False
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        viewer = validate_token(auth.split(" ")[1])
+        if viewer and (_is_event_admin(viewer) or org_can_event(viewer, "can_upload_results", event)):
+            can_see_unpublished = True
+
+    if not event.results_published and not can_see_unpublished:
         # Same withholding the public per-group overall block uses (results_hidden = not published).
         return Response({"event_id": event.event_id, "participant_type": event.participant_type,
                          "results_published": False, "group_ids": [], "standings": []})
