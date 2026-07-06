@@ -19,6 +19,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
 from .models import AdminHistory, AuditLog, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SentBroadcast, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import canonical_profile  # dup-safe UserProfile resolution (see models.py)
 # set_audit lets these admin views supply a SPECIFIC human audit summary (entity name + before/after)
 # that the AuditLogMiddleware records instead of its generic "Edited ... #id" fallback.
 from afc_auth.audit import set_audit
@@ -2469,8 +2470,11 @@ def edit_profile(request):
         user.preferred_currency = (pref_ccy or "").upper()[:3]
     user.save()
 
-    # Update or create UserProfile
-    user_profile, created = UserProfile.objects.get_or_create(user=user)
+    # Update or create UserProfile. canonical_profile, NOT get_or_create: dup profile
+    # rows exist in prod and get_or_create raises MultipleObjectsReturned there (500 on
+    # profile edit for those users, 2026-07-06). Resolves the same lowest-profile_id row
+    # every reader returns.
+    user_profile = canonical_profile(user, create=True)
 
     if profile_pic:
         user_profile.profile_pic = profile_pic
@@ -2603,15 +2607,15 @@ def get_user_profile(request):
     # ---------------- PROFILE PIC + ESPORT IMAGE ----------------
     profile_pic_url = None
     esport_image_url = None
-    profile = None  # stays None when the user has no UserProfile row (whatsapp echo guards on it)
-    try:
-        profile = UserProfile.objects.get(user=user)
+    # canonical_profile, NOT .get(): UserProfile.user is a plain FK and dup rows exist in
+    # prod - .get() raised MultipleObjectsReturned there, 500ing this fetch (which
+    # AuthContext runs on every login/refresh) for exactly those users (2026-07-06).
+    profile = canonical_profile(user)  # None when the user has no UserProfile row (whatsapp echo guards on it)
+    if profile is not None:
         profile_pic_url = request.build_absolute_uri(profile.profile_pic.url) if profile.profile_pic else None
         # The SEPARATE esport image (UserProfile.esports_pic): organizers use it for event
         # graphics; the profile-edit UI shows it + the replace flow (upload_esport_image).
         esport_image_url = request.build_absolute_uri(profile.esports_pic.url) if profile.esports_pic else None
-    except UserProfile.DoesNotExist:
-        pass
 
     # ---------------- SOLO STATS ----------------
     solo_agg = (SoloPlayerMatchStats.objects
@@ -2947,8 +2951,9 @@ def upload_esport_image(request):
     AUTH     : Bearer SessionToken (same validate_token pattern as edit_profile).
     REQUEST  : POST /auth/upload-esport-image/  multipart, field `esport_image` (required).
     RESPONSE : 200 {"status": "ok", "esport_image_url": <absolute url>}
-               400 missing file / missing or malformed Authorization header
+               400 missing file / too large / missing or malformed Authorization header
                401 invalid/expired session token
+               (The face check no longer 400s - see the advisory-gate note below.)
 
     FRONTEND CONSUMER
         app/(user)/profile/edit/page.tsx ("Esport Image" section: preview + replace button +
@@ -2985,24 +2990,29 @@ def upload_esport_image(request):
     from .image_utils import normalize_image_upload
     esport_image = normalize_image_upload(esport_image, force_jpeg=True)
 
-    # ── Human-picture gate (owner 2026-06-20) ───────────────────────────────────
-    # Stop players uploading random gallery items (logos, screenshots, memes) as
-    # their esport image. Runs a FREE, fully-local OpenCV face detector (no paid AI
-    # API) - see afc_auth.face_check.image_has_human_face. Fails OPEN: if the
-    # detector is unavailable or errors it returns True, so it can never wrongly
-    # block a legitimate upload; it only rejects images where it is confident there
-    # is no human face. The React profile-edit "Esport Image" widget shows this 400
-    # message as a toast.
+    # ── Human-picture check (owner 2026-06-20; demoted to ADVISORY 2026-07-06) ──
+    # Originally a hard 400 gate against random gallery junk (logos, screenshots,
+    # memes). Field reports showed the Haar detector false-rejecting REAL bust shots
+    # (tilted heads, caps/headsets, low-light photos - poor Haar recall), locking
+    # players out of events that require an esport image. The detector still runs
+    # (free, local) but a "no face" verdict now only logs a warning - the upload
+    # ALWAYS saves. Junk images stay catchable by admins on the broadcast media-audit
+    # page (afc_tournament_and_scrims/views_media_audit.py), which is the human
+    # backstop with the flag/owner-notify/force-replace tools.
     from .face_check import image_has_human_face
-    has_face, _why = image_has_human_face(esport_image)
+    has_face, why = image_has_human_face(esport_image)
     if not has_face:
-        return Response(
-            {"message": "We couldn't find a person in that image. Your esport image must be a "
-                        "clear photo of you (a bust shot). Please upload a real picture of yourself."},
-            status=status.HTTP_400_BAD_REQUEST,
+        import logging
+        logging.getLogger("afc_auth").warning(
+            "upload_esport_image: no face detected (%s) for user %s - saving anyway (advisory gate)",
+            why, user.pk,
         )
 
-    profile, _created = UserProfile.objects.get_or_create(user=user)
+    # canonical_profile, NOT get_or_create: dup UserProfile rows exist in prod, where
+    # get_or_create raises MultipleObjectsReturned (500). Also guarantees we write the
+    # SAME lowest-profile_id row profile_of()/readers return - a write/read row mismatch
+    # made uploads look like they silently failed (2026-07-06).
+    profile = canonical_profile(user, create=True)
     profile.esports_pic = esport_image  # replace-only: the old file reference is overwritten
     profile.save(update_fields=["esports_pic"])  # column-scoped write (see edit_profile note)
 

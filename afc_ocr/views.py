@@ -404,8 +404,11 @@ def commit_ocr_session(request, session_id):
         save_name_corrections(final_rows, session.draft_rows)
         save_team_notes(final_rows, session.match, user)
 
+        # #14: commit_team_result now returns (lb, unmatched_blocks) so unmatched OCR team blocks are
+        # surfaced to the reviewer instead of silently dropped. Solo has no team-matching step.
+        unmatched_blocks = []
         if session.event_type == "team":
-            lb = commit_team_result(session.match, final_rows)
+            lb, unmatched_blocks = commit_team_result(session.match, final_rows)
         else:
             lb = commit_solo_result(session.match, final_rows)
 
@@ -438,6 +441,9 @@ def commit_ocr_session(request, session_id):
         return Response({
             "message":       "OCR session committed successfully.",
             "leaderboard_id": lb.leaderboard_id if lb else None,
+            # #14: team blocks the OCR could not match to a registered team, so the reviewer can
+            # attribute them from the flagged-teams resolver instead of losing them silently. [] = clean.
+            "missing_teams": unmatched_blocks,
         })
 
     except Exception as exc:
@@ -483,6 +489,12 @@ def ocr_from_stored_image(request):
     # Event-scoped access check (admins, or org members with can_upload_results on this match).
     if (deny := _require_results_access(user, match)):
         return deny
+
+    # #12 (2026-07-06): bind the stored image to the AUTHORIZED match. The access check above gates on
+    # match_id, but image_id was fetched independently — without this an organizer with results access
+    # on match A could OCR a screenshot belonging to another event's match by passing a foreign image_id.
+    if getattr(stored, "match_id", None) and stored.match_id != match.match_id:
+        return Response({"message": "That image does not belong to this match."}, status=400)
 
     event = _get_event(match)
     if not event:

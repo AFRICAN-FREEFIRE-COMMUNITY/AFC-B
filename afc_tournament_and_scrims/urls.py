@@ -52,6 +52,13 @@ from .seeding_management import (
     delete_stage_managed,
     move_team_between_groups,
     sync_entry_stage_seeding,
+    # Manual seed/unseed (owner 2026-07-06): targeted single-competitor add + remove for stages/groups,
+    # plus the solo-add siblings of add_teams_to_group/stage and the solo picker feed.
+    remove_competitor_from_group,
+    remove_competitor_from_stage,
+    add_solo_players_to_group,
+    add_solo_players_to_stage,
+    list_registered_solo_players,
 )
 # Branching advancement routing (feature #9, owner plan WEBSITE/tasks/advancement-routing-plan.md):
 # run a stage's StageAdvancementRule rows to seed each rule's [from..to] finishers into a later
@@ -302,6 +309,15 @@ urlpatterns = [
     # Stats-page safety-net (owner 2026-06-21): idempotently auto-seed every registration into the
     # entry stage's groups. Fired by the admin + organizer leaderboard pages on open. Gated admin+org.
     path('seeding/sync-entry-stage/', sync_entry_stage_seeding, name='seeding_sync_entry_stage'),
+    # Manual seed/unseed (owner 2026-07-06): pull ONE team/player out of a group or a whole stage
+    # (leaves the event registration intact; refuses if the competitor already has match results), and
+    # the SOLO siblings of add-teams-to-group/stage (add_teams_* are team-only). Admin + organizer
+    # (org-aware via _seeding_gate). FE: GroupTeamMover (team remove) + organizer Groups page (solo).
+    path('seeding/remove-from-group/', remove_competitor_from_group, name='seeding_remove_from_group'),
+    path('seeding/remove-from-stage/', remove_competitor_from_stage, name='seeding_remove_from_stage'),
+    path('seeding/add-solo-to-group/', add_solo_players_to_group, name='seeding_add_solo_to_group'),
+    path('seeding/add-solo-to-stage/', add_solo_players_to_stage, name='seeding_add_solo_to_stage'),
+    path('seeding/registered-solo-players/', list_registered_solo_players, name='seeding_registered_solo_players'),
     # Reorder stages / groups (manual drag-to-arrange, owner 2026-06-15). Default order=0 means
     # "auto-arrange by date/time"; these endpoints write 1-based orders that override the date sort
     # (and return a `warning` when the manual order diverges from the schedule). Views

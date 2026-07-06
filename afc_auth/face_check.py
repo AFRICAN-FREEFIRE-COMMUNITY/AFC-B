@@ -11,9 +11,10 @@
 #
 # WHO CALLS IT
 #   afc_auth.views.upload_esport_image -> image_has_human_face(file) before saving
-#   UserProfile.esports_pic. If no face is found the view returns 400 and the
-#   upload is rejected; the React profile-edit "Esport Image" widget surfaces the
-#   message as a toast.
+#   UserProfile.esports_pic. ADVISORY since 2026-07-06: a no-face verdict is only
+#   logged and the upload saves anyway (Haar recall false-rejected real bust shots -
+#   tilted heads, caps/headsets, low light). The hard 400 gate survives ONLY in the
+#   admin media-audit upload (views_media_audit.py), which has a force override.
 #
 # DESIGN NOTES
 #   - FAIL-OPEN: any detector/import problem returns (True, "skipped") so a broken

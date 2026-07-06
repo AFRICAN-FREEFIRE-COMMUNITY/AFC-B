@@ -20,7 +20,7 @@ Spec: WEBSITE/tasks/round-robin-design.md.
 """
 from itertools import combinations
 
-from django.db.models import Case, Count, F, IntegerField, Sum, Value, When
+from django.db.models import Case, Count, F, IntegerField, OuterRef, Subquery, Sum, Value, When
 from django.db.models.functions import Coalesce
 
 from .models import TournamentTeamMatchStats
@@ -180,6 +180,20 @@ def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
     `tournament_team_id` for internal use (advancement seeding in Task 5) plus the public
     `team_name` + stat fields; no other raw PKs leak.
     """
+    # last_match_placement tiebreak (owner #6/#7, 2026-07-06): the placement in the LAST map the team
+    # actually PLAYED within THIS fed slice. Built from `stats_qs` itself so the "last map" is scoped to
+    # the same lobby/day/stage the caller aggregated (group_standings -> that group's maps,
+    # cumulative/day -> that stage's / day's maps). placement__gt=0 drops not-played maps so sitting out
+    # the last map sorts WORST (Coalesce -> 999), never best. This is the SAME 4th tiebreak the results
+    # editor + public leaderboard use, so combined/RR standings, the overlay feed and advancement seeding
+    # now rank identically to what admins/organizers see on the leaderboard page (the "one tiebreaker
+    # everywhere" unification). Correlated subquery: cheap (indexed on match_number), one per team row.
+    last_placement_subq = Subquery(
+        stats_qs
+        .filter(tournament_team_id=OuterRef("tournament_team_id"), placement__gt=0)
+        .order_by("-match__match_number")
+        .values("placement")[:1]
+    )
     rows = (
         stats_qs
         # Group by team; surface the human name via F() so the dict is UI-ready.
@@ -224,11 +238,15 @@ def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
             # total_points is already placement+kill only. The placement/kill/bonus/penalty sums stay
             # as independent display columns; the sort key below still orders on effective_total.
             effective_total=Coalesce(Sum("total_points"), 0),
+            # 4th tiebreak column (see last_placement_subq above): last PLAYED map's placement, 999 if none.
+            last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
         )
-        # Keep the server sort authoritative (FE renders verbatim) and identical to the
-        # per-lobby leaderboard's lead tiebreakers: points, then booyahs, then kills, then
-        # name for a stable final order.
-        .order_by("-effective_total", "-total_booyah", "-total_kills", "team_name")
+        # Keep the server sort authoritative (FE renders verbatim) and IDENTICAL to the per-lobby
+        # leaderboard + public page: points, booyahs, kills, last-map placement, then name for a stable
+        # final order. Adding last_match_placement here is what unifies combined/RR/overlay/advancement
+        # with the editor (owner #7): tied-on-points teams now break by last-map finish, not alphabet.
+        .order_by("-effective_total", "-total_booyah", "-total_kills",
+                  "last_match_placement", "team_name")
     )
     # Config-driven tie-breakers (owner 2026-07-02): when the event has an arrangement for this
     # scope, re-sort equal-point teams by it; otherwise the DB order above stands (legacy chain).

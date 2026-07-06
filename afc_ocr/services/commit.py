@@ -36,10 +36,15 @@ def commit_team_result(match, final_rows: list):
     Groups rows by placement — each placement group = one team.
     """
     from afc_tournament_and_scrims.models import (
-        TournamentTeamMatchStats, TournamentPlayerMatchStats,
+        TournamentTeamMatchStats, TournamentPlayerMatchStats, UnmatchedTeamBlock,
     )
 
     lb = _get_lb_for_match(match)
+    # #14 (owner 2026-07-06 "never silently drop, always flag/notify"): OCR placement groups whose team
+    # didn't match a registered team are recorded here as UnmatchedTeamBlock (the SAME flagged-teams
+    # resolver the .log upload uses) and returned to the caller, instead of being silently skipped. This
+    # is what previously made an OCR-uploaded map quietly lose its winner (booyah undercount).
+    unmatched_blocks = []
 
     # `scoring` is now the imported module; use a distinct local name for the match's
     # per-match scoring config so it doesn't shadow scoring.compute_* / normalize_*.
@@ -60,10 +65,22 @@ def commit_team_result(match, final_rows: list):
 
     with transaction.atomic():
         TournamentTeamMatchStats.objects.filter(match=match).delete()
+        # Rebuild this match's unmatched-block records from scratch too, so a re-commit doesn't stack
+        # duplicates (mirrors deleting the team stats above).
+        UnmatchedTeamBlock.objects.filter(match=match).delete()
 
         for placement, rows in sorted(groups.items()):
             t_team_id = rows[0].get("matched_team_id")
             if not t_team_id:
+                # #14: record + surface instead of silently dropping this team block.
+                _blk_name = (rows[0].get("team_name") or rows[0].get("ocr_team_name")
+                             or rows[0].get("name") or f"Unmatched (placement {placement})")
+                _blk_kills = sum(int(r.get("kills", 0)) for r in rows)
+                UnmatchedTeamBlock.objects.create(
+                    match=match, team_name=_blk_name, placement=placement,
+                    kills=_blk_kills, attributed_team_id=None,
+                )
+                unmatched_blocks.append({"team_name": _blk_name, "placement": placement, "kills": _blk_kills})
                 continue
 
             team_kills   = sum(int(r.get("kills", 0))   for r in rows)
@@ -118,7 +135,9 @@ def commit_team_result(match, final_rows: list):
             match.leaderboard = lb
             match.save(update_fields=["leaderboard"])
 
-    return lb
+    # (lb, unmatched_blocks): the caller surfaces unmatched_blocks to the reviewer (#14) so an
+    # OCR-uploaded map never silently loses a team; [] when every block matched.
+    return lb, unmatched_blocks
 
 
 def commit_solo_result(match, final_rows: list):

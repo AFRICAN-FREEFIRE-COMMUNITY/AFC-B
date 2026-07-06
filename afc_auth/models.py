@@ -252,6 +252,28 @@ def esports_pic_url(user, request=None):
     return request.build_absolute_uri(pic.url) if request is not None else pic.url
 
 
+def canonical_profile(user, create=False):
+    """THE UserProfile row for a user (lowest profile_id), optionally creating it.
+
+    UserProfile.user is a plain FK (NOT unique/OneToOne) and duplicate rows exist in
+    prod for some users, so `.get(user=...)` / `get_or_create(user=...)` raise
+    MultipleObjectsReturned there. That 500'd the profile fetch (get_user_profile),
+    profile edit (edit_profile) and the esport-image upload for those users (bug
+    found 2026-07-06). Every writer AND reader must resolve the SAME row - the
+    lowest-profile_id one, matching profile_of() above - otherwise a write can land
+    on a row no reader returns and the upload looks like it silently failed.
+
+    CALLERS: afc_auth.views get_user_profile / edit_profile / upload_esport_image,
+    afc_team.views get-player-details, afc_tournament_and_scrims.views_media_audit
+    fix-gaps upload. `user` may be a User instance or a raw user_id.
+    """
+    user_id = user.pk if hasattr(user, "pk") else user
+    profile = UserProfile.objects.filter(user_id=user_id).order_by("profile_id").first()
+    if profile is None and create:
+        profile = UserProfile.objects.create(user_id=user_id)
+    return profile
+
+
 class UserProfile(models.Model):
     profile_id = models.AutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE)

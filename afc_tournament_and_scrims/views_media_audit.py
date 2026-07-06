@@ -220,9 +220,15 @@ def media_upload(request, event_id):
     from afc_auth.views import is_stats_admin, validate_token
     auth = request.headers.get("Authorization", "")
     viewer = validate_token(auth.split(" ")[1]) if " " in auth else None
-    if viewer is None or not is_stats_admin(viewer):
-        return Response({"message": "Only AFC admins can upload media for teams or players."},
-                        status=403)
+    if viewer is None:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    # Owner 2026-07-06: owning ORGANIZERS may now overwrite media for teams/players IN THEIR OWN event
+    # (was AFC-admin-only). _broadcast_gate above already confirmed staff OR owning-org access to THIS
+    # event. AFC staff (is_stats_admin) may overwrite ANY target; an organizer only a target that is
+    # actually registered in this event (enforced per-kind below via `is_staff`). NOTE this write is
+    # GLOBAL (Team.team_logo / UserProfile.esports_pic change everywhere) — the owner accepted that for
+    # an organizer editing their own event's participants.
+    is_staff = is_stats_admin(viewer)
 
     kind = (request.data.get("kind") or "").strip()
     upload = request.FILES.get("file")
@@ -241,6 +247,12 @@ def media_upload(request, event_id):
             team = Team.objects.get(team_id=request.data.get("team_id"))
         except (Team.DoesNotExist, ValueError, TypeError):
             return Response({"message": "Team not found."}, status=404)
+        # Organizer scope: a non-staff caller may only overwrite a team that is IN this event.
+        if not is_staff:
+            from .models import TournamentTeam, RegisteredCompetitors
+            if not (TournamentTeam.objects.filter(event=event, team=team).exists()
+                    or RegisteredCompetitors.objects.filter(event=event, team=team).exists()):
+                return Response({"message": "That team is not in this event."}, status=403)
         team.team_logo = upload
         team.save(update_fields=["team_logo"])
         url = request.build_absolute_uri(team.team_logo.url)
@@ -252,6 +264,14 @@ def media_upload(request, event_id):
         # slot ("how did this get past the face recognition"). Reject an image with no detectable face,
         # UNLESS the operator explicitly passes force=true (a trusted admin may knowingly place a
         # placeholder). Fail-open inside image_has_human_face keeps a broken detector from blocking.
+        # Organizer scope: a non-staff caller may only overwrite a player who is IN this event
+        # (solo competitor or a roster member of one of this event's teams).
+        if not is_staff:
+            from .models import RegisteredCompetitors, TournamentTeamMember
+            _uid = request.data.get("user_id")
+            if not (RegisteredCompetitors.objects.filter(event=event, user_id=_uid).exists()
+                    or TournamentTeamMember.objects.filter(tournament_team__event=event, user_id=_uid).exists()):
+                return Response({"message": "That player is not in this event."}, status=403)
         force = str(request.data.get("force") or "").strip().lower() in ("1", "true", "yes")
         if not force:
             from afc_auth.face_check import image_has_human_face
@@ -263,7 +283,11 @@ def media_upload(request, event_id):
                     "code": "no_face",
                 }, status=400)
         try:
-            profile, _ = UserProfile.objects.get_or_create(user_id=request.data.get("user_id"))
+            # canonical_profile, NOT get_or_create: dup UserProfile rows exist in prod and
+            # get_or_create raises MultipleObjectsReturned there; also targets the same
+            # lowest-profile_id row every reader resolves (2026-07-06).
+            from afc_auth.models import canonical_profile
+            profile = canonical_profile(request.data.get("user_id"), create=True)
         except (ValueError, TypeError):
             return Response({"message": "Player not found."}, status=404)
         profile.esports_pic = upload

@@ -42,11 +42,24 @@ app.conf.beat_schedule = {
         'schedule': crontab(minute=0, hour=3, day_of_week=1),   # Mondays 03:00
         'options': {'queue': 'ocr_ml'},
     },
+    # ── Event + stage status convergence (owner 2026-07-06) ───────────────────
+    # The comprehensive lifecycle sweep: upcoming -> ongoing -> completed (TIME-aware, in each
+    # event's own timezone), stage_status convergence, check-in relegation, and auto-seed of
+    # fully-automatic events at their start instant. This was defined but NEVER scheduled, so on
+    # prod stored event_status jumped upcoming -> completed and NEVER became "ongoing" (the badge
+    # was only papered over on some endpoints by effective_event_status), and stage-status /
+    # check-in relegation / auto-seed never fired automatically. Its completions route through
+    # complete_event_core (links + prize + notify), so it does not silently complete. Every 5 min
+    # so transitions land promptly without hammering the DB (the per-event loops are bounded to the
+    # "touches today" + auto-seed-pending + recently-closed-check-in sets).
+    'update_event_and_stage_statuses_every_5min': {
+        'task': 'afc_tournament_and_scrims.views.update_event_and_stage_statuses',
+        'schedule': crontab(minute='*/5'),
+    },
     # ── Auto-complete finished tournaments (owner 2026-06-16) ─────────────────
-    # The DATE half of event auto-complete: each day, mark any non-draft tournament whose
-    # end_date has passed as completed (the RESULTS half fires inline on result save via
-    # views.maybe_autocomplete_event). Runs on the default queue (a normal `celery -A afc worker`
-    # drains it; no dedicated worker needed). 01:00 server time, off-peak.
+    # The DATE half of event auto-complete kept as a daily BACKSTOP to the 5-min sweep above (both
+    # go through complete_event_core and are idempotent, so the backstop just no-ops once the main
+    # sweep has completed an event). Runs on the default queue. 01:00 server time, off-peak.
     'close_finished_events_daily': {
         'task': 'afc_tournament_and_scrims.tasks.close_finished_events',
         'schedule': crontab(minute=0, hour=1),     # 01:00 every day

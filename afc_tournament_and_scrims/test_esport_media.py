@@ -138,9 +138,13 @@ class DownloadEsportMediaTests(TestCase):
         # The logo-less team is reported, never an error.
         self.assertIn("Bare Team", manifest)
 
-    def test_organizer_role_allowed(self):
+    def test_bare_organizer_role_denied_without_org_scope(self):
+        # Privacy fix 2026-07-06: holding the platform "organizer" role is NOT enough to pull roster
+        # PII (player esport images). A non-admin must scope the request to an event THEIR org owns
+        # (org_can_event). This bare-role organizer owns no event, and a raw player_ids pull can't be
+        # org-scoped, so it must now be denied. Previously any organizer got 200 for anyone's media.
         resp = self._post({"player_ids": [self.player.user_id]}, self.org_token)
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 403)
 
 
 class RegistrationMediaCriteriaTests(TestCase):
@@ -162,7 +166,12 @@ class RegistrationMediaCriteriaTests(TestCase):
         event = _event(self.admin, require_esport_images=True)
         resp = self._register(event, self.player_token)
         self.assertEqual(resp.status_code, 403)
-        self.assertEqual(resp.json().get("code"), "esport_image_required")
+        # register_for_event now returns the UNIFIED requirements block (code
+        # "registration_requirements_unmet" + a per-player `missing` list) rather than the old
+        # per-criterion "esport_image_required" code; the missing field key is "esports_image".
+        body = resp.json()
+        self.assertEqual(body.get("code"), "registration_requirements_unmet")
+        self.assertIn("esports_image", body["missing"][0]["fields"])
 
     def test_solo_passes_gate_with_esport_image(self):
         event = _event(self.admin, require_esport_images=True)
@@ -170,7 +179,7 @@ class RegistrationMediaCriteriaTests(TestCase):
         resp = self._register(event, self.player_token)
         # The media gate passes; the next gate (Discord) is what blocks now, proving the
         # esport-image criterion itself was satisfied.
-        self.assertNotEqual(resp.json().get("code"), "esport_image_required")
+        self.assertNotEqual(resp.json().get("code"), "registration_requirements_unmet")
 
     def test_team_blocked_without_logo(self):
         event = _event(self.admin, participant_type="squad", require_team_logo=True)
