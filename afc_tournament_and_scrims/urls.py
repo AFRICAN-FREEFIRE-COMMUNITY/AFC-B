@@ -399,6 +399,9 @@ urlpatterns = [
     path("upload-match-result-image/", upload_match_result_image, name="upload_match_result_image"),
     path("get-match-result-images/", get_match_result_images, name="get_match_result_images"),
     path("delete-match-result-image/", delete_match_result_image, name="delete_match_result_image"),
+    # Stored .log evidence (owner 2026-07-07): list + download + delete the raw match files uploaded.
+    path("match-result-logs/", get_match_result_logs, name="get_match_result_logs"),
+    path("match-result-logs/delete/", delete_match_result_log, name="delete_match_result_log"),
     path("cancel-event/", cancel_event, name="cancel_event"),
     path("complete-event/", complete_event, name="complete_event"),
     # Reopen a completed event (owner 2026-06-25): admins OR organizers (can_edit_events) flip a

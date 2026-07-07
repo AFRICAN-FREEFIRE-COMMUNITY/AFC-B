@@ -20292,7 +20292,11 @@ def upload_team_match_result(request):
     kill_point = float(scoring.get("kill_point", 1))
 
     # -------- PARSE FILE --------
-    text = uploaded_file.read().decode("utf-8", errors="ignore")
+    # Keep the RAW bytes (owner 2026-07-07 audit trail): the parser only needs the decoded text, but the
+    # exact uploaded file is persisted to MatchResultLog after scoring (below) so a disputed result can
+    # be re-checked against the original game export.
+    raw_bytes = uploaded_file.read()
+    text = raw_bytes.decode("utf-8", errors="ignore")
 
     parsed_teams = []
 
@@ -20964,6 +20968,25 @@ def upload_team_match_result(request):
 
         match.result_inputted = True
         match.save(update_fields=["result_inputted"])
+
+        # AUDIT TRAIL (owner 2026-07-07 "store the match files so they can be checked later if needed"):
+        # keep the exact .log that produced this result. Append a MatchResultLog per real upload (not on
+        # dry_run), mirroring how OCR screenshots are retained as MatchResultImage (which also feed the
+        # OCR training loop). Best-effort so a storage hiccup never fails an already-scored upload - the
+        # stats are what matter - but the failure is logged, not silently swallowed.
+        if not dry_run:
+            try:
+                from django.core.files.base import ContentFile
+                from .models import MatchResultLog
+                _log_name = getattr(uploaded_file, "name", "") or f"match_{match.match_id}.log"
+                MatchResultLog.objects.create(
+                    match=match, file=ContentFile(raw_bytes, name=_log_name),
+                    file_name=_log_name, uploaded_by=admin,
+                )
+            except Exception:
+                import logging
+                logging.getLogger("afc_tournament_and_scrims").exception(
+                    "MatchResultLog store failed for match %s", match.match_id)
 
         # DRY-RUN: roll back EVERY write above (the idempotent clear, team/player stats, kill flags,
         # result_inputted) as the LAST act of the atomic block. All the summary lists were already
@@ -23393,6 +23416,64 @@ def delete_match_result_image(request):
 
     img.image.delete(save=False)
     img.delete()
+    return Response({"message": "Deleted."}, status=200)
+
+
+@api_view(["POST"])
+def get_match_result_logs(request):
+    """POST events/match-result-logs/ {match_id} -> the stored .log FILES uploaded for a match, newest
+    first, each with a download URL. Evidence sibling of get_match_result_images (owner 2026-07-07 audit
+    trail). Auth: AFC event admin OR org member with can_upload_results on the match's event. Consumed by
+    the results editor's evidence view (MatchResultsGrid uploaded-files section)."""
+    from .models import MatchResultLog
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    match_id = request.data.get("match_id")
+    if not match_id:
+        return Response({"message": "match_id is required."}, status=400)
+    match = get_object_or_404(Match, match_id=match_id)
+    # Event-scoped read (same rule as get_match_result_images): AFC event admins pass; otherwise an org
+    # member with can_upload_results on the event's owning org. Native (org=None) events stay admin-only.
+    _event = match.group.stage.event if match.group else None
+    if not _is_event_admin(admin) and not (_event and org_can_event(admin, "can_upload_results", _event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+    logs = MatchResultLog.objects.filter(match=match)   # model Meta orders newest-first
+    data = [{
+        "log_id": lg.log_id,
+        "file_url": request.build_absolute_uri(lg.file.url) if lg.file else None,
+        "file_name": lg.file_name,
+        "uploaded_by": lg.uploaded_by.username if lg.uploaded_by else None,
+        "uploaded_at": lg.uploaded_at,
+    } for lg in logs]
+    return Response({"match_id": match.match_id, "logs": data})
+
+
+@api_view(["DELETE"])
+def delete_match_result_log(request):
+    """DELETE events/match-result-logs/delete/ {log_id} -> remove one stored .log (file + row). Same
+    event-scoped auth as delete_match_result_image (owner 2026-07-07)."""
+    from .models import MatchResultLog
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin = validate_token(auth.split(" ")[1])
+    if not admin:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    log_id = request.data.get("log_id")
+    if not log_id:
+        return Response({"message": "log_id is required."}, status=400)
+    lg = get_object_or_404(MatchResultLog, log_id=log_id)
+    _event = lg.match.group.stage.event if (lg.match and lg.match.group) else None
+    if not _is_event_admin(admin) and not (_event and org_can_event(admin, "can_upload_results", _event)):
+        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+    if lg.file:
+        lg.file.delete(save=False)
+    lg.delete()
+    return Response({"message": "Deleted."}, status=200)
 
 
 # ── Event Actions ──────────────────────────────────────────────────────────────
@@ -23681,9 +23762,19 @@ def reopen_event(request):
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
         return Response({"message": "You do not have permission to perform this action."}, status=403)
 
-    if event.event_status != "completed":
+    # Gate on the EFFECTIVE status (the read-time derivation the FE badge + event lists use), NOT the raw
+    # stored event_status. effective_event_status reports a past-end event as "completed" even when the
+    # stored field is stuck at "upcoming"/"ongoing" because the date-based auto-complete sweep is not
+    # scheduled in the live celery beat (see effective_event_status). reopen_event used to read the raw
+    # field, so an event the WHOLE SITE shows as completed and locks could not be reopened - owner
+    # 2026-07-07: "LEGACY SCRIMS" (scrims, past dates, stuck on "upcoming") gave "Only a completed event
+    # can be reopened (this one is upcoming)". Using the effective status makes reopen agree with what the
+    # user sees: cancelled/draft + genuinely upcoming/ongoing events are still rejected, but a
+    # finished-by-date one reopens.
+    _eff = effective_event_status(event)
+    if event.is_draft or _eff != "completed":
         return Response(
-            {"message": f"Only a completed event can be reopened (this one is {event.event_status})."},
+            {"message": f"Only a completed event can be reopened (this one is {_eff})."},
             status=400,
         )
 
