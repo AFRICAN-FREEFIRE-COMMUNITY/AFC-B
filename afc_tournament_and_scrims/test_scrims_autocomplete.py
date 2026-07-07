@@ -12,9 +12,11 @@ does NOT complete while any map is still missing a result.
 import datetime
 
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
+from rest_framework.test import APITestCase
 
-from afc_auth.models import User
+from afc_auth.models import User, SessionToken
 from afc_tournament_and_scrims.models import Event, Stages, StageGroups, Match
 from afc_tournament_and_scrims.views import (
     maybe_autocomplete_event,
@@ -146,3 +148,63 @@ class UpdateSweepTests(TestCase):
         update_event_and_stage_statuses()
         ev.refresh_from_db()
         self.assertNotEqual(ev.event_status, "completed")
+
+
+class ReopenEventTests(APITestCase):
+    """reopen_event gates on effective_event_status, not the raw stored event_status (owner 2026-07-07:
+    "LEGACY SCRIMS" showed completed + locked but reopen said "this one is upcoming"). A finished-by-date
+    event whose stored status never moved off "upcoming" (the auto-complete sweep is not in the live beat)
+    must still reopen; a genuinely upcoming future event must not."""
+
+    def setUp(self):
+        self.admin = User.objects.create(
+            username="reopen_admin", email="reopen_admin@example.com", full_name="Reopen Admin",
+            role="admin", password="x")
+        self.token = "reopen-tok-abc123"
+        SessionToken.objects.create(
+            user=self.admin, token=self.token,
+            expires_at=timezone.now() + datetime.timedelta(hours=1))
+
+    def _event(self, start, end, **over):
+        base = dict(
+            competition_type="scrims", participant_type="squad", event_type="internal",
+            max_teams_or_players=12, event_name="Lifecycle Scrim", event_mode="virtual",
+            start_date=start, end_date=end, registration_open_date=start, registration_end_date=start,
+            prizepool="0", event_rules="r", event_status="upcoming", registration_link="https://x",
+            number_of_stages=1, creator=self.admin, is_draft=False, auto_complete_suppressed=False)
+        base.update(over)
+        return Event.objects.create(**base)
+
+    def _reopen(self, event_id):
+        return self.client.post(reverse("reopen_event"), {"event_id": event_id}, format="json",
+                                HTTP_AUTHORIZATION=f"Bearer {self.token}")
+
+    def test_reopen_past_dated_stuck_upcoming_event(self):
+        # Past dates, stored status stuck on "upcoming" (the sweep never ran) = the LEGACY SCRIMS bug.
+        d = datetime.date.today() - datetime.timedelta(days=2)
+        ev = self._event(d, d, event_status="upcoming")
+        # Sanity: the badge already reads completed, which is why the UI locked it.
+        self.assertEqual(effective_event_status(ev), "completed")
+        res = self._reopen(ev.event_id)
+        self.assertEqual(res.status_code, 200, res.data)
+        ev.refresh_from_db()
+        self.assertEqual(ev.event_status, "ongoing")          # unlocked for editing
+        self.assertTrue(ev.auto_complete_suppressed)          # sweep won't re-complete it
+
+    def test_reopen_completed_event_still_works(self):
+        d = datetime.date.today() - datetime.timedelta(days=2)
+        ev = self._event(d, d, event_status="completed")
+        self.assertEqual(self._reopen(ev.event_id).status_code, 200)
+
+    def test_reopen_rejects_genuinely_upcoming_event(self):
+        # Future dates + upcoming = it has NOT happened; must not be reopenable.
+        future = datetime.date.today() + datetime.timedelta(days=5)
+        ev = self._event(future, future, event_status="upcoming")
+        res = self._reopen(ev.event_id)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("upcoming", res.data["message"].lower())
+
+    def test_reopen_rejects_cancelled_event(self):
+        d = datetime.date.today() - datetime.timedelta(days=2)
+        ev = self._event(d, d, event_status="cancelled")
+        self.assertEqual(self._reopen(ev.event_id).status_code, 400)

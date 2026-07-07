@@ -1374,6 +1374,33 @@ class MatchResultImage(models.Model):
         return f"Result image for match {self.match_id}"
 
 
+class MatchResultLog(models.Model):
+    """The original .log FILE an admin/organizer uploaded to score a match (owner 2026-07-07:
+    "store the match files so it can be checked later if needed"). The .log-file upload path
+    (views.upload_team_match_result) parses the text then discards it; this keeps the exact bytes
+    as a per-match AUDIT TRAIL so a disputed result can be re-checked against the raw game export.
+
+    Parallel to MatchResultImage (which already retains OCR SCREENSHOT uploads). Each upload of a
+    match appends a NEW row (not replace) so the full history of what was uploaded is preserved.
+
+    Written by: views.upload_team_match_result (on a real, non-dry-run .log upload).
+    Read by: views.get_match_result_logs (lists + download URLs for the results editor's evidence
+    view, the sibling of get_match_result_images). Deleted by: views.delete_match_result_log."""
+    log_id = models.AutoField(primary_key=True)
+    match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="result_logs")
+    file = models.FileField(upload_to='match_result_logs/')
+    file_name = models.CharField(max_length=255, blank=True)   # original filename for display
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                    on_delete=models.SET_NULL)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-uploaded_at", "-log_id"]   # newest upload first
+
+    def __str__(self):
+        return f"Result log for match {self.match_id} ({self.file_name})"
+
+
 class EventPrizePayout(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="payouts")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
