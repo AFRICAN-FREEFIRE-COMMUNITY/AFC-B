@@ -75,6 +75,12 @@ urlpatterns = [
     path('verify-code/', verify_code, name='verify_code'),
     path('resend-verification-code/', resend_verification_code, name='resend_verification_code'),
     path('change-password/', change_password, name='change_password'),
+    # Change email (owner 2026-07-09, bug #1). Self-serve (re-auth: current password + old email,
+    # then a code to the new address) + admin-assisted recovery for locked-out legacy users.
+    # Consumed by frontend profile settings "Change email" dialog + admin player-detail "Edit email".
+    path('request-email-change/', request_email_change, name='request_email_change'),
+    path('confirm-email-change/', confirm_email_change, name='confirm_email_change'),
+    path('admin/set-user-email/', admin_set_user_email, name='admin_set_user_email'),
     path('edit-profile/', edit_profile, name='edit_profile'),
     path('get-user-profile/', get_user_profile, name='get_user_profile'),
     # Flip the current user's first-time WELCOME tour flag to seen. Bearer-auth POST.

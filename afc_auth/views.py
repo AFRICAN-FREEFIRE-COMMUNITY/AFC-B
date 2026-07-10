@@ -18,7 +18,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
-from .models import AdminHistory, AuditLog, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SentBroadcast, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles
+from .models import AdminHistory, AuditLog, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SentBroadcast, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles, EmailChangeRequest
 from .models import canonical_profile  # dup-safe UserProfile resolution (see models.py)
 # set_audit lets these admin views supply a SPECIFIC human audit summary (entity name + before/after)
 # that the AuditLogMiddleware records instead of its generic "Edited ... #id" fallback.
@@ -467,6 +467,45 @@ def email_password_changed(username, when_text):
   <tr><td style="padding:24px 44px 30px;">
     <div style="background:#16120a;border:1px solid #4a3a14;border-radius:10px;padding:14px 18px;font-size:13px;line-height:1.6;color:#d8c98f;">
       Did not do this? Your account may be at risk. Reset your password immediately and contact <a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">support</a>.
+    </div>
+  </td></tr>"""
+    return _email_shell(inner, "green")
+
+
+def email_change_code(code):
+    """Change-email verification code, sent to the NEW address (gold security accent). Consumed by
+    request_email_change (owner 2026-07-09, bug #1). Proves the user owns the new address before we
+    switch the account email, so a typo can't lock them out again."""
+    inner = f"""
+  <tr><td style="padding:38px 44px 8px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">Confirm your new email</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">Someone (hopefully you) asked to switch an AFC account's email to this address. Enter the code below on the profile settings page to confirm it.</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 8px;" align="center">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#16120a;border:1px solid #7a611f;border-radius:12px;padding:18px 34px;">
+      <span style="font-size:34px;font-weight:800;letter-spacing:10px;color:#f5c518;font-family:Consolas,Menlo,monospace;">{code}</span>
+    </td></tr></table>
+  </td></tr>
+  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">This code expires in 10 minutes.</div></td></tr>
+  <tr><td style="padding:0 44px 8px;">
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">If you did not request this, you can ignore this email, no account was changed. Never share this code.</div>
+  </td></tr>"""
+    return _email_shell(inner, "gold")
+
+
+def email_email_changed(username, new_email, when_text):
+    """Email-changed confirmation, sent to BOTH the old and new addresses (green). Consumed by
+    confirm_email_change + admin_set_user_email (owner 2026-07-09, bug #1). Doubles as a tripwire:
+    if it lands in the OLD inbox and the owner didn't do it, they know to contact support."""
+    inner = f"""
+  <tr><td style="padding:40px 44px 6px;text-align:center;">
+    <div style="width:64px;height:64px;line-height:64px;border-radius:50%;background:#0a120d;border:1px solid #2c7a4d;margin:0 auto;font-size:30px;color:#34d27b;">&#10003;</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">Your account email was changed</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">The email on <span style="color:#e8efe9;font-weight:600;">{username}</span>'s AFC account was changed to <span style="color:#e8efe9;font-weight:600;">{new_email}</span> on {when_text}. Sign in with your new email from now on.</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 30px;">
+    <div style="background:#16120a;border:1px solid #4a3a14;border-radius:10px;padding:14px 18px;font-size:13px;line-height:1.6;color:#d8c98f;">
+      Did not do this? Your account may be at risk. Contact <a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">support</a> right away.
     </div>
   </td></tr>"""
     return _email_shell(inner, "green")
@@ -2459,7 +2498,13 @@ def edit_profile(request):
     # Update User fields
     user.full_name = full_name
     user.username = in_game_name
-    user.email = email
+    # Email is NO LONGER writable from this endpoint (owner 2026-07-09, bug #1). It used to be a
+    # direct `user.email = email` with no re-auth and no proof the user owned the new address, an
+    # account-takeover / recovery-hijack hole. Email now changes ONLY through the verified flow
+    # (request_email_change -> confirm_email_change: re-checks the current password + the OLD email on
+    # file, then confirms a 6-digit code sent to the NEW address). Locked-out legacy users are fixed by
+    # an admin via admin_set_user_email. The `email` value is still read + validated above so a save
+    # never proceeds on a malformed value, but we intentionally do NOT persist any change here.
     user.uid = uid
     user.language = language
     # Multi-currency (owner 2026-06-30): persist the chosen display currency ONLY when the request
@@ -3229,6 +3274,190 @@ def change_password(request):
 
     else:
         return Response({"message": "You have Inputted the wrong password."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Change email (owner 2026-07-09, bug #1: let users fix a wrong/forgotten signup email)
+# ──────────────────────────────────────────────────────────────────────────────
+# Two surfaces:
+#   1. SELF-SERVE (logged-in user): request_email_change -> confirm_email_change. Re-auth = current
+#      password + the OLD email on file (owner's chosen verification), then a code sent to the NEW
+#      address proves ownership so a typo can't re-lock the account. Uses EmailChangeRequest.
+#   2. ADMIN-ASSISTED: admin_set_user_email. For LOCKED-OUT legacy users (wrong email + can't log in),
+#      who by definition can't self-serve. Also flips is_active True to unlock never-verified signups.
+# Related: edit_profile no longer writes email (that direct write was a no-reauth takeover hole);
+# login (EmailOrUsernameModelBackend) accepts email/username/uid; send_email localizes per recipient.
+# Consumed by: profile settings "Change email" dialog + the admin player-detail "Edit email" control.
+
+@api_view(["POST"])
+def request_email_change(request):
+    """POST /auth/request-email-change/  Bearer auth. Body: { old_email, new_email, current_password }.
+    Step 1 of the self-serve change-email flow. Verifies the caller (current password + the OLD email
+    on file both match), then emails a 6-digit code to the NEW address and parks an EmailChangeRequest.
+    The switch happens in confirm_email_change. Rate-limited 60s (mirrors resend_token)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    old_email = (request.data.get("old_email") or "").strip()
+    new_email = (request.data.get("new_email") or "").strip()
+    current_password = request.data.get("current_password") or ""
+
+    if not old_email or not new_email or not current_password:
+        return Response({"message": "Current email, new email, and password are all required."}, status=400)
+
+    # Re-auth 1: the OLD email typed must match the email on file (owner's chosen verification step).
+    if old_email.lower() != (user.email or "").lower():
+        return Response({"message": "The current email you entered doesn't match the email on your account."}, status=400)
+
+    # Re-auth 2: current password must be correct (closes the old no-reauth email-change hole).
+    if not user.check_password(current_password):
+        return Response({"message": "Incorrect password."}, status=403)
+
+    # New email must be well-formed, actually different, and not already taken by another account.
+    is_valid, msg = is_valid_email(new_email)
+    if not is_valid:
+        return Response({"error": msg}, status=400)
+    if new_email.lower() == (user.email or "").lower():
+        return Response({"message": "That is already your email."}, status=400)
+    if User.objects.exclude(pk=user.pk).filter(email__iexact=new_email).exists():
+        return Response({"message": "That email is already registered to another account."}, status=400)
+
+    # Rate limit: 60s cooldown between code requests (mirrors resend_token).
+    existing = EmailChangeRequest.objects.filter(user=user).first()
+    if existing and (timezone.now() - existing.created_at).total_seconds() < 60:
+        return Response({"message": "Please wait at least 1 minute before requesting another code."},
+                        status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    token = str(random.randint(100000, 999999))
+    EmailChangeRequest.objects.update_or_create(
+        user=user,
+        defaults={"new_email": new_email, "token": token, "created_at": timezone.now()},
+    )
+
+    # Code goes to the NEW address (ownership proof), localized to the user's language.
+    try:
+        lang = user.language or language_for_country(user.country) or "en"
+    except Exception:
+        lang = "en"
+    send_email(new_email, "Confirm your new AFC email", email_change_code(token), language=lang)
+
+    return Response({"message": "We sent a 6-digit code to your new email. Enter it to confirm the change."}, status=200)
+
+
+@api_view(["POST"])
+def confirm_email_change(request):
+    """POST /auth/confirm-email-change/  Bearer auth. Body: { token }.
+    Step 2: validates the pending EmailChangeRequest's code, switches User.email to the new address,
+    deletes the request, and confirms to BOTH the old + new addresses (a tripwire for the old inbox)."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+
+    token = (request.data.get("token") or "").strip()
+    if not token:
+        return Response({"message": "The confirmation code is required."}, status=400)
+
+    req = EmailChangeRequest.objects.filter(user=user).first()
+    if not req or req.token != token:
+        return Response({"message": "Invalid confirmation code."}, status=400)
+    if not req.is_valid():
+        return Response({"message": "This code has expired. Please request a new one."}, status=400)
+
+    new_email = req.new_email
+    # Re-check uniqueness at commit time (someone else may have taken it since the request).
+    if User.objects.exclude(pk=user.pk).filter(email__iexact=new_email).exists():
+        req.delete()
+        return Response({"message": "That email was just registered to another account. Try a different one."}, status=400)
+
+    old_email = user.email
+    user.email = new_email
+    user.save(update_fields=["email"])
+    req.delete()
+
+    # Confirmation to BOTH addresses (best-effort; never fail the change on a mail error).
+    try:
+        lang = user.language or language_for_country(user.country) or "en"
+    except Exception:
+        lang = "en"
+    try:
+        when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
+        body = email_email_changed(user.username, new_email, when)
+        if old_email:
+            send_email(old_email, "Your AFC account email was changed", body, language=lang)
+        send_email(new_email, "Your AFC account email was changed", body, language=lang)
+    except Exception as e:
+        print(f"Email-changed confirmation failed for {user.username}: {e}")
+
+    return Response({"message": "Your email has been updated.", "email": new_email}, status=200)
+
+
+@api_view(["POST"])
+def admin_set_user_email(request):
+    """POST /auth/admin/set-user-email/  Bearer auth, ADMIN only. Body: { user_id, new_email }.
+    Directly corrects a user's email when they can't self-serve (forgot/wrong email + locked out).
+    Also flips is_active True so a never-verified (is_active=False) signup becomes loginable. Audited
+    + logged like suspend_user. Identity is verified out-of-band by support before calling this."""
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    admin_user = validate_token(auth.split(" ")[1])
+    if not admin_user:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if admin_user.role != "admin":
+        return Response({"message": "You do not have permission to change a user's email."}, status=403)
+
+    user_id = request.data.get("user_id")
+    new_email = (request.data.get("new_email") or "").strip()
+    if not user_id or not new_email:
+        return Response({"message": "user_id and new_email are required."}, status=400)
+
+    is_valid, msg = is_valid_email(new_email)
+    if not is_valid:
+        return Response({"error": msg}, status=400)
+
+    try:
+        target = User.objects.get(user_id=user_id)
+    except User.DoesNotExist:
+        return Response({"message": "User not found."}, status=404)
+
+    if User.objects.exclude(pk=target.pk).filter(email__iexact=new_email).exists():
+        return Response({"message": "That email is already registered to another account."}, status=400)
+
+    old_email = target.email
+    target.email = new_email
+    # Unlock a never-verified signup (is_active=False = never entered the signup code = locked out),
+    # the exact legacy case this endpoint exists for.
+    target.is_active = True
+    target.save(update_fields=["email", "is_active"])
+
+    set_audit(request, f"Changed the email of {target.username} from {old_email} to {new_email}")
+    AdminHistory.objects.create(
+        admin_user=admin_user,
+        action="set_user_email",
+        description=f"Set email for {target.username} (ID: {target.user_id}): {old_email} -> {new_email}",
+    )
+
+    # Best-effort heads-up to the NEW address (the user likely can't read the old one).
+    try:
+        lang = target.language or language_for_country(target.country) or "en"
+    except Exception:
+        lang = "en"
+    try:
+        when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
+        send_email(new_email, "Your AFC account email was updated",
+                   email_email_changed(target.username, new_email, when), language=lang)
+    except Exception as e:
+        print(f"Admin email-change confirmation failed for {target.username}: {e}")
+
+    return Response({"message": f"Email for {target.username} updated to {new_email}.", "email": new_email}, status=200)
+
 
 @api_view(["POST"])
 def contact_us(request):

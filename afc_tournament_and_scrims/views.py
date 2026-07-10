@@ -6445,11 +6445,15 @@ def register_for_event(request):
         # row. (RegisteredCompetitors has no unique constraint, so the lock + moved check IS the fix here;
         # there is no DB constraint to add an IntegrityError guard against, unlike the team path.)
 
-        # Capacity check
-        if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
-            return Response({"message": "Registration limit reached."}, status=403)
+        # Capacity / waitlist is enforced INSIDE the atomic block below (see active_count check ~6498),
+        # which correctly overflows a full-but-waitlist-enabled event to the waitlist instead of rejecting.
+        # The old pre-atomic reject that lived here (owner 2026-07-09, bug #4) counted status="registered"
+        # and IGNORED is_waitlist_enabled, so a full SOLO event with the waitlist ON still 403'd
+        # "Registration limit reached" even though the event page had already flipped the button to
+        # "Join Waitlist" - FE and BE contradicted each other. Removed so the atomic branch governs, which
+        # mirrors the TEAM path (no pre-atomic reject). Overflow-to-waitlist stays gated on the organizer's
+        # is_waitlist_enabled toggle (owner choice: not universal).
 
-        
         # -------------------------
         # SPONSOR ID UNIQUENESS CHECK
         # -------------------------
@@ -6529,6 +6533,14 @@ def register_for_event(request):
                         role_id=role_id,
                         defaults={"status": "pending"}
                     )
+
+                # A single-use invite that lands its holder on the waitlist is still spent (owner
+                # 2026-07-09, bug #4): the link was meant for one join, and a waitlist entry IS a join.
+                # SHARED/FCFS links stay open. Mirrors the consume in the registered branch below; without
+                # this a single-use link that overflowed to the waitlist could be reused by someone else.
+                if is_public == False and not invite.is_shared:
+                    EventInviteToken.objects.filter(event=event, token=invite_token).update(
+                        is_used=True, used_by=user, used_at=timezone.now())
 
                 return Response({
                     "message": "Event is full. You have been added to the waitlist.",
@@ -7015,6 +7027,13 @@ def register_for_event(request):
                             stage.stage_id,
                             user_ids
                         )
+
+                # Consume a single-use invite even when the team overflows to the waitlist (owner
+                # 2026-07-09, bug #4): the link was for one join and a waitlist entry IS a join. SHARED/
+                # FCFS links stay open. Mirrors the consume in the registered branch below + the solo path.
+                if is_public == False and not invite.is_shared:
+                    EventInviteToken.objects.filter(event=event, token=invite_token).update(
+                        is_used=True, used_by=user, used_at=timezone.now())
 
                 return Response({
                     "message": "Event is full. Team added to waitlist.",
@@ -22998,69 +23017,58 @@ def total_published_news(request):
 
 def _extract_results_from_image(image_file, participant_type):
     """
-    Send a match result screenshot to GPT-4o and return structured JSON.
-    Returns a list of dicts. Raises ValueError if extraction fails.
+    Extract structured results from a Free Fire match-result screenshot. Returns a list of dicts.
+    Raises on failure (the caller catches + logs).
+
+    Repointed off OpenAI/GPT-4o -> the shared Gemini pipeline (owner 2026-07-09, bug #7):
+    this bulk "Upload + OCR all maps" path was the LAST caller still hitting
+    settings.OPENAI_API_KEY, which is unset on this machine/prod, so every image raised and the
+    UI showed "Uploaded 0 of 1 maps. 1 failed." with the true error swallowed. It now uses the
+    SAME extraction the rest of the app already uses (afc_ocr.services.extract.extract_rows =
+    local-first OCR student with a Gemini teacher fallback, keyed off GEMINI_API_KEY, which IS
+    configured). No second AI provider / key to maintain.
+
+    extract_rows returns Gemini's canonical dict {"placements": [{"placement", "players":[...]}]}.
+    We adapt it back to the flat shapes THIS endpoint's insert code below already consumes so the
+    scoring / matching path stays untouched:
+      team -> [{"placement", "players": [{"name","kills"}, ...]}]   (placements[] as-is)
+      solo -> [{"placement", "name", "kills"}]                      (one player per placement)
     """
-    import base64
-    import openai as _openai
+    from afc_ocr.services.extract import extract_rows
 
     image_bytes = image_file.read()
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    # Detect mime type from first bytes
+    # Detect mime type from magic bytes (Gemini requires an explicit mime_type).
     mime = "image/jpeg"
     if image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
         mime = "image/png"
     elif image_bytes[:4] == b'RIFF':
         mime = "image/webp"
 
-    if participant_type == "solo":
-        schema_hint = (
-            'a JSON array where each element is: '
-            '{"placement": <int>, "name": "<ign>", "kills": <int>}'
-        )
-        extra = "Each row is one player."
-    else:
-        schema_hint = (
-            'a JSON array where each element is: '
-            '{"placement": <int>, "players": [{"name": "<ign>", "kills": <int>}, ...]}'
-        )
-        extra = "Group players by their team (same placement number = same team)."
+    event_type = "solo" if participant_type == "solo" else "team"
+    # This helper only has participant_type (no match), so no per-match alias/team-note context is
+    # injected - same as the old OpenAI call, which also used none. The shared service handles the
+    # empty context fine; alias-assisted OCR still runs on the primary afc_ocr upload path.
+    raw_output, _engine = extract_rows(image_bytes, mime, event_type, aliases=[], team_notes=[])
 
-    prompt = (
-        f"This is a Free Fire match result screen. "
-        f"Extract all visible results and return ONLY {schema_hint}. "
-        f"{extra} "
-        "Use the exact in-game names shown. "
-        "The 'kills' field is the Eliminations count shown next to each player. "
-        "Return only valid JSON with no markdown, no explanation."
-    )
+    placements = (raw_output or {}).get("placements", []) or []
 
-    client = _openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-    resp = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
-        max_tokens=2000,
-    )
+    if event_type == "solo":
+        # Flatten one player per placement into the {"placement","name","kills"} row the solo
+        # insert branch expects.
+        rows = []
+        for pl in placements:
+            players = pl.get("players") or []
+            first = players[0] if players else {}
+            rows.append({
+                "placement": pl.get("placement"),
+                "name": first.get("name") or "",
+                "kills": int(first.get("kills") or 0),
+            })
+        return rows
 
-    raw = resp.choices[0].message.content.strip()
-    # Strip possible markdown fences
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip())
+    # team: placements[] already matches [{"placement","players":[{name,kills}]}]
+    return placements
 
 
 def _merge_team_results(all_results):
@@ -23149,6 +23157,11 @@ def upload_match_result_image(request):
             if isinstance(extracted, list):
                 all_raw.extend(extracted)
         except Exception as e:
+            # Log the REAL exception server-side (owner 2026-07-09, bug #7): this used to be
+            # append-only, so an OCR failure surfaced to the admin as a bare "1 failed" with the
+            # cause visible only in the HTTP response body. Now it also hits the server logs.
+            logging.getLogger("afc_tournament_and_scrims").exception(
+                "OCR extraction failed for match %s image %s", match_id, getattr(img_file, "name", "?"))
             extraction_errors.append(str(e))
 
     if not all_raw and extraction_errors:
@@ -24329,20 +24342,38 @@ def _group_recipient_users(event, group):
     """Deduped list of Users in a StageGroup. Solo -> each competitor's user;
     team/squad -> registered event players + team management per team in the group
     (via _event_team_recipient_users). Returns a de-duplicated set so a custom
-    broadcast lands once per person."""
+    broadcast lands once per person.
+
+    Waitlist exclusion (owner 2026-07-09, bug: "Send to players" also hit the waitlist):
+    a team that fails check-in is flagged is_waitlisted=True by relegate_unchecked_competitors
+    but is NOT removed from its StageGroupCompetitor slot, so it would otherwise still be counted
+    as a "group player" here and receive the room ID + password. We drop any waitlisted competitor
+    from this recipient set. Waitlisted competitors are reached ONLY through the dedicated
+    release-to-waitlist channel (views_room_release.py), which matches the "waitlist is a separate
+    recipient group" model. Callers: broadcast_match_room_details ("Send to players"),
+    broadcast_to_group, and the whole-stage broadcast."""
     users = {}
     if event.participant_type == "solo":
+        # Solo waitlist is tracked on RegisteredCompetitors.is_waitlisted (relegate_unchecked_competitors,
+        # views_checkin.py:241), keyed by user, so exclude those users here.
+        waitlisted_user_ids = set(
+            RegisteredCompetitors.objects
+            .filter(event=event, is_waitlisted=True, user__isnull=False)
+            .values_list("user_id", flat=True)
+        )
         competitors = (StageGroupCompetitor.objects
                        .select_related("player__user")
                        .filter(stage_group=group, player__isnull=False))
         for sc in competitors:
             u = sc.player.user
-            if u and u.user_id not in users:
+            if u and u.user_id not in users and u.user_id not in waitlisted_user_ids:
                 users[u.user_id] = u
     else:
+        # Team waitlist is a flag on TournamentTeam; exclude relegated/waitlisted teams outright.
         teams = (StageGroupCompetitor.objects
                  .select_related("tournament_team__team")
-                 .filter(stage_group=group, tournament_team__isnull=False))
+                 .filter(stage_group=group, tournament_team__isnull=False)
+                 .exclude(tournament_team__is_waitlisted=True))
         for sgc in teams:
             # Registered event players + team management only (owner 2026-07-04): unregistered club
             # players never get the room ID+PASS; managers/coaches always do. See
