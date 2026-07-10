@@ -285,7 +285,12 @@ class UserProfile(models.Model):
     #    sent to (E.164, e.g. +2348012345678) + explicit OPT-IN (Meta policy requires consent).
     #    Set on the profile settings page; consumed by whatsapp_zernio.send_room_details. ──
     whatsapp_number = models.CharField(max_length=20, blank=True, default="")
-    whatsapp_opt_in = models.BooleanField(default=False)
+    # Default ON (owner 2026-07-09, bug #5): NEW profile rows start opted-in. Existing rows keep
+    # whatever they already have (a default change only affects rows created after it; no data
+    # migration flips existing users, per owner "leave existing users' choice"). The FE mirrors this
+    # (form default true + `?? true` seed). Consent note still holds: send_room_details also requires
+    # a number to be set, so default-on alone never messages anyone without a number.
+    whatsapp_opt_in = models.BooleanField(default=True)
 
 
 class LoginHistory(models.Model):
@@ -347,6 +352,24 @@ class PasswordResetToken(models.Model):
 
     def is_valid(self):
         return (timezone.now() - self.created_at) <= timedelta(minutes=10)  # token valid for 10 mins
+
+
+class EmailChangeRequest(models.Model):
+    """A pending self-serve EMAIL change (owner 2026-07-09, bug #1: let users fix a wrong/forgotten
+    signup email). Mirrors PasswordResetToken, but the 6-digit code is emailed to the NEW address to
+    prove the user actually owns it before we switch, precisely so they cannot mistype and re-lock
+    themselves out (the very problem this feature solves). Created by afc_auth.views.request_email_change
+    AFTER re-auth (current password + the OLD email on file must both match), consumed by
+    confirm_email_change (which writes User.email + deletes this row). One pending change per user
+    (OneToOne + update_or_create). created_at uses default=timezone.now (NOT auto_now_add) so a
+    re-request refreshes the 10-minute window + the resend cooldown."""
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="email_change_request")
+    new_email = models.EmailField()
+    token = models.CharField(max_length=6)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def is_valid(self):
+        return (timezone.now() - self.created_at) <= timedelta(minutes=10)  # code valid for 10 mins
 
 
 class TeamBan(models.Model):
