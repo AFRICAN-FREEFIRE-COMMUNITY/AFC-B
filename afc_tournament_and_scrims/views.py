@@ -20343,6 +20343,38 @@ def upload_team_match_result(request):
     if not parsed_teams:
         return Response({"message": "No team data parsed."}, status=400)
 
+    # ── ID: 0 (or blank) = the game's "UID unknown" SENTINEL, not a real identity (owner 2026-07-11) ──
+    # Free Fire exports ID: 0 for a player whose UID it could not resolve (seen when a lobby is exported
+    # by an observer/replay client — e.g. DYNASTY CUP GRAND FINALS "RUSH POINT" map 6, where most players
+    # came through as ID: 0). Everything downstream keys a player by their UID STRING: the per-block and
+    # per-match de-dupe (seen_block / seen_uids), the flag identity (MatchKillFlag.unique_together(match,
+    # tournament_team, uid) + the (tt, uid) prior-approval snapshot + flags_by_uid). With every ID: 0
+    # player sharing the single key "0", that de-dupe kept only the FIRST such player in each team block
+    # and silently dropped the rest BEFORE they could become a counted flag — so their kills vanished and
+    # the "count flagged kills" toggle could not recover them (FROZEN EMPIRE 9→5, FORSE ESP 6→2, ALPHA
+    # WOLVES 5→1, SPACE X 3→1). FIX: give each sentinel-UID player a STABLE, per-player synthetic key so
+    # the existing UID-keyed logic treats them as the distinct people they are. The key is name-derived
+    # (ascii-folded, mirroring _norm_pname) so it is IDENTICAL across a re-upload — keeping the §1i
+    # approval-restore stable — with a positional fallback for all-emoji names and a per-block suffix so
+    # two same-name sentinels in one block don't recollide. Real UIDs are untouched, so a normal file's
+    # attribution is byte-for-byte unchanged. Capped at 64 chars to fit MatchKillFlag.uid.
+    import unicodedata as _ud
+    for _bi, _t in enumerate(parsed_teams):
+        _used_keys = {}
+        for _pi, _p in enumerate(_t["players"]):
+            _u = (_p.get("uid") or "").strip()
+            if _u and not (_u.isdigit() and int(_u) == 0):
+                continue  # real Free Fire UID -> leave exactly as-is
+            _nm = _ud.normalize("NFKD", _p.get("name") or "").encode("ascii", "ignore").decode().lower()
+            _nm = re.sub(r"[^a-z0-9]", "", _nm)[:40]
+            _key = f"noid:{_nm}" if _nm else f"noid:b{_bi}p{_pi}"
+            _seen = _used_keys.get(_key, 0)
+            _used_keys[_key] = _seen + 1
+            if _seen:
+                _key = f"{_key}#{_seen}"          # 2nd+ same-name sentinel in this block -> disambiguate
+            _p["raw_uid"] = _u                    # keep the original ("0"/"") for display / debugging
+            _p["uid"] = _key[:64]
+
     # -------- MAP USERS (by in-game UID, scoped to THIS event's roster) --------
     # Players are matched to registered roster members purely by Free Fire UID (User.uid).
     # The file carries each player's uid + kills; we resolve uid -> TournamentTeamMember for
