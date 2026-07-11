@@ -238,3 +238,47 @@ class TeamAttributionTests(TestCase):
         self.assertEqual(by_match.get(self.match.match_id), 9)
         self.assertEqual(by_match.get(m2.match_id), 23)
         self.assertEqual(by_match.get(m3.match_id), 25)
+
+    # ── 5. ID: 0 SENTINEL — zero-UID players must NOT be collapsed (owner 2026-07-11) ───────────────
+    # Free Fire can export EVERY player with ID: 0 (a "UID unknown" sentinel, not a real identity). All
+    # four below are different players. Before the fix they all shared the key "0", so the per-block
+    # de-dupe kept only the first and dropped the other three BEFORE they became counted flags -> the
+    # team lost their kills even with count_flagged_kills ON (the DYNASTY CUP "RUSH POINT" map-6 report:
+    # FORSE ESP 6->2, ALPHA WOLVES 5->1, etc.). Their names match this team's roster, so each is a
+    # name_matched_uid_changed flag that counts under the default-ON toggle -> the team total must be 6.
+    def test_zero_uid_players_are_not_collapsed(self):
+        from afc_tournament_and_scrims.models import MatchKillFlag
+        self.assertTrue(self.event.count_flagged_kills)  # default ON
+        tt = self._register("Zero Squad", ["1111111111", "2222222222", "3333333333", "4444444444"])
+        log = (
+            "TeamName: Zero Squad  Rank: 1  KillScore: 6  RankScore: 12  TotalScore: 18\n"
+            "NAME: Zero Squad_0  ID: 0  KILL: 2\n"
+            "NAME: Zero Squad_1  ID: 0  KILL: 1\n"
+            "NAME: Zero Squad_2  ID: 0  KILL: 2\n"
+            "NAME: Zero Squad_3  ID: 0  KILL: 1\n"
+        )
+        resp = self._upload(log)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        st = self._team_stat(tt)
+        self.assertIsNotNone(st)
+        self.assertEqual(st.placement, 1)
+        # BUG regression guard: pre-fix this was 2 (only the first ID:0 player survived the de-dupe).
+        self.assertEqual(st.kills, 6, "all four ID:0 players must count, not collapse to one")
+        # Each zero-UID player becomes its OWN flag (distinct synthetic uid), not a single "0" row.
+        self.assertEqual(MatchKillFlag.objects.filter(match=self.match, tournament_team=tt).count(), 4)
+
+    # Mixed block: one real UID (rostered) + three ID: 0 (the FROZEN EMPIRE shape, 9 -> was 5).
+    def test_zero_uid_mixed_with_real_uid(self):
+        tt = self._register("Mix Squad", ["1111111111", "2222222222", "3333333333", "4444444444"])
+        log = (
+            "TeamName: Mix Squad  Rank: 1  KillScore: 9  RankScore: 12  TotalScore: 21\n"
+            "NAME: Mix Squad_0  ID: 1111111111  KILL: 4\n"   # real UID -> rostered
+            "NAME: Mix Squad_1  ID: 0  KILL: 1\n"
+            "NAME: Mix Squad_2  ID: 0  KILL: 3\n"
+            "NAME: Mix Squad_3  ID: 0  KILL: 1\n"
+        )
+        resp = self._upload(log)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        st = self._team_stat(tt)
+        self.assertIsNotNone(st)
+        self.assertEqual(st.kills, 9, "rostered 4 + three ID:0 players (1+3+1) must all count")
