@@ -996,3 +996,130 @@ class PublicCarryOverDBTests(TestCase):
         stages = resp.json()["event_details"]["stages"]
         finals = next(s for s in stages if s["stage_id"] == self.finals.stage_id)
         self.assertEqual(finals["groups"][0]["overall_leaderboard"], [])
+
+
+# ── Gap 3 (Point-Rush carry-over on the OBS OVERLAY feed). ────────────────────────────────────────
+# Owner report 2026-07-11 (DYNASTY CUP GRAND FINALS): the LIVE overlay "did not see the rush points"
+# and, before any finals game, "doesn't load" (blank board). The overlay agreement is: the overlay
+# shows what the LEADERBOARD shows. But the overlay feed built standings straight from PLAYED match
+# stats (round_robin), so for a pre-game finals it produced ZERO rows AND never folded the Point-Rush
+# carry-over the public leaderboard folds. views._overlay_seed_and_carry now (a) seeds the advanced
+# qualifiers as 0-rows and (b) folds the same _carry_over_for_stage bonus into the total, so the
+# overlay agrees with the site. These build the same Semis -> Finals Point-Rush event as the public
+# tests and prove the overlay feed surfaces the carry. TestCase => rolled back.
+class OverlayCarryOverDBTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create(
+            username="ovl_admin", email="ovl_admin@example.com",
+            full_name="Ovl Admin", role="admin", password="x",
+        )
+        self.token = SessionToken.objects.create(
+            user=self.admin, token="ovl-admin-token-1234567890",
+            expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1),
+        )
+        today = datetime.date.today()
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=16, event_name="Overlay Carry Cup", event_mode="virtual",
+            start_date=today, end_date=today, registration_open_date=today, registration_end_date=today,
+            prizepool="0", event_rules="rules", event_status="ongoing",
+            registration_link="https://example.com/reg", number_of_stages=2, creator=self.admin,
+            results_published=True, overlay_token="overlay-carry-token-abcdef",
+        )
+        # Finals = carry-over TARGET; Semis = the Point-Rush SOURCE pointing at it.
+        self.finals = Stages.objects.create(
+            event=self.event, stage_name="Finals", start_date=today, end_date=today,
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=1, stage_order=2,
+        )
+        self.semis = Stages.objects.create(
+            event=self.event, stage_name="Semis", start_date=today, end_date=today,
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=2, stage_order=1,
+            point_rush_enabled=True, point_rush_reward={"1": 10, "2": 7},
+            point_rush_target_stage=self.finals,
+        )
+        self.semis_group = StageGroups.objects.create(
+            stage=self.semis, group_name="Semis A", playing_date=today,
+            playing_time=datetime.time(18, 0), teams_qualifying=2, match_count=1,
+        )
+        self.semis_lb = Leaderboard.objects.create(
+            leaderboard_name="Semis LB", event=self.event, stage=self.semis, group=self.semis_group,
+            creator=self.admin, placement_points={"1": 12, "2": 9}, kill_point=1.0,
+            leaderboard_method="manual",
+        )
+        self.semis_match = Match.objects.create(
+            leaderboard=self.semis_lb, group=self.semis_group, match_number=1, match_map="bermuda",
+            scoring_settings={"placement_points": {"1": 12, "2": 9}, "kill_point": 1},
+        )
+        # Finals group with NO results — teams are only SEEDED in (advanced), the exact GRAND FINALS
+        # pre-game state the owner was looking at.
+        self.finals_group = StageGroups.objects.create(
+            stage=self.finals, group_name="Finals A", playing_date=today,
+            playing_time=datetime.time(18, 0), teams_qualifying=1, match_count=1,
+        )
+        self.team_a = Team.objects.create(
+            team_name="Alpha", team_tag="ALP", join_settings="open",
+            team_creator=self.admin, team_owner=self.admin, country="NG",
+        )
+        self.team_b = Team.objects.create(
+            team_name="Bravo", team_tag="BRV", join_settings="open",
+            team_creator=self.admin, team_owner=self.admin, country="NG",
+        )
+        self.tt_a = TournamentTeam.objects.create(event=self.event, team=self.team_a, registered_by=self.admin)
+        self.tt_b = TournamentTeam.objects.create(event=self.event, team=self.team_b, registered_by=self.admin)
+        StageGroupCompetitor.objects.create(stage_group=self.finals_group, tournament_team=self.tt_a)
+        StageGroupCompetitor.objects.create(stage_group=self.finals_group, tournament_team=self.tt_b)
+
+    def _enter_semis(self):
+        # A wins Semis (1st -> reward 10), B 2nd (-> reward 7).
+        results = [
+            {"tournament_team_id": self.tt_a.tournament_team_id, "placement": 1, "played": True,
+             "players": [{"kills": 0, "damage": 0, "assists": 0, "played": True}]},
+            {"tournament_team_id": self.tt_b.tournament_team_id, "placement": 2, "played": True,
+             "players": [{"kills": 0, "damage": 0, "assists": 0, "played": True}]},
+        ]
+        resp = self.client.post(
+            "/events/enter-team-match-result-manual/",
+            data={"match_id": self.semis_match.match_id, "results": json.dumps(results)},
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+    def _feed(self, **params):
+        params["token"] = self.event.overlay_token
+        resp = self.client.get("/events/overlay/feed/", params)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return resp.json()
+
+    def test_overlay_seeds_finalists_and_folds_carry_before_any_finals_game(self):
+        # The MAIN regression: pre-game GRAND FINALS. The overlay must (a) show BOTH seeded teams even
+        # though no finals match was played, and (b) fold the rush points into total_points, A > B.
+        self._enter_semis()
+        data = self._feed(stage=self.finals.stage_id)
+        rows = data["standings"]
+        by_name = {r["team_name"]: r for r in rows}
+        self.assertEqual(len(rows), 2)                              # seeded qualifiers appear
+        self.assertEqual(by_name["Alpha"]["total_points"], 10)      # carry folded into total
+        self.assertEqual(by_name["Alpha"]["carry_over_points"], 10)  # and exposed as its own column
+        self.assertEqual(by_name["Bravo"]["total_points"], 7)
+        self.assertEqual(by_name["Bravo"]["carry_over_points"], 7)
+        self.assertEqual(by_name["Alpha"]["matches"], 0)            # nothing played yet
+        self.assertEqual(rows[0]["team_name"], "Alpha")            # ranked by carry (10 > 7)
+
+    def test_overlay_group_slice_matches_stage_slice(self):
+        # The per-group overlay link (?group=) must agree with the whole-stage slice — same carry.
+        self._enter_semis()
+        data = self._feed(stage=self.finals.stage_id, group=self.finals_group.group_id)
+        by_name = {r["team_name"]: r for r in data["standings"]}
+        self.assertEqual(by_name["Alpha"]["total_points"], 10)
+        self.assertEqual(by_name["Bravo"]["total_points"], 7)
+
+    def test_overlay_no_point_rush_source_is_unchanged(self):
+        # A stage no source targets (the Semis itself) folds NO carry: real results only, carry 0.
+        self._enter_semis()
+        data = self._feed(stage=self.semis.stage_id, group=self.semis_group.group_id)
+        rows = data["standings"]
+        self.assertTrue(all(r["carry_over_points"] == 0 for r in rows))
+        by_name = {r["team_name"]: r for r in rows}
+        self.assertEqual(by_name["Alpha"]["total_points"], 12)     # 1st placement = 12, no carry
+        self.assertEqual(by_name["Bravo"]["total_points"], 9)
