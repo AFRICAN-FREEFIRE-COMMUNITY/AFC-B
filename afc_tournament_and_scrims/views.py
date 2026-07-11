@@ -20494,6 +20494,40 @@ def upload_team_match_result(request):
         for _tt in _lst:
             tt_by_id[_tt.tournament_team_id] = _tt
 
+    def _resolve_team_by_player_names(players, claimed):
+        """Player-name PLURALITY team resolution (owner 2026-07-11) — the fallback used when a block
+        matches NO registered team by UID (all ID:0) or by team name (abbreviated / off, e.g. the file's
+        "BERSERK GEN" vs registered "BERSERK GENERATION"). Count, per registered team, how many of the
+        block's players' NAMES are on that team's roster (ascii-folded + clan-tag-stripped, via
+        global_name_idx), then adopt the team with a CLEAR plurality — the whole lineup names the team, so
+        a single ambiguous / borrowed name is outvoted by its teammates (owner: "compare with teammate
+        names"). Guards against a coincidental grab: needs >=2 matched players, at least half the block, a
+        strict winner over the runner-up, and an UNCLAIMED team (per-match uniqueness). A player whose name
+        sits on several rosters adds a vote to each, so only a team the LINEUP agrees on wins. Returns a
+        TournamentTeam or None. Called from the team-resolution fallback below (after UID + team-name +
+        manual attribution all miss)."""
+        from collections import Counter
+        counts = Counter()
+        for p in players:
+            nk = _norm_pname(p["name"])
+            tts = {c["tt_id"] for c in global_name_idx.get(nk, [])}
+            if not tts:                       # clan-tag tail fallback, same 2nd pass as _name_lookup
+                tail = _norm_pname(_clan_tail(p["name"]))
+                if tail and tail != nk:
+                    tts = {c["tt_id"] for c in global_name_idx.get(tail, [])}
+            for tid in tts:
+                if tid not in claimed:        # never re-adopt a team already taken this match
+                    counts[tid] += 1
+        if not counts:
+            return None
+        ranked = counts.most_common()
+        top_tt, top_n = ranked[0]
+        runner_n = ranked[1][1] if len(ranked) > 1 else 0
+        # Clear, teammate-backed winner: >=2 names, at least half the lineup, strictly beats runner-up.
+        if top_n >= 2 and top_n * 2 >= len(players) and top_n > runner_n:
+            return tt_by_id.get(top_tt)
+        return None
+
     # Whether a flag's kills will count at THIS upload: its explicit per-flag count_kills if set, else
     # the event default. Pending name/cross-team flags carry count_kills=False -> contribute 0 here,
     # exactly matching what _recompute_team_kills_for_event computes later (§1e).
@@ -20642,34 +20676,57 @@ def upload_team_match_result(request):
                             "manual": True,          # admin-attributed (vs auto name-match)
                         })
                     else:
-                        # No attribution -> advisory relabel (unique name match) or missing as before.
-                        team_data["_name_matched_tt"] = (_matched[0] if len(_matched) == 1 else None)
-                        if team_data["_name_matched_tt"]:
+                        # PLAYER-NAME PLURALITY (owner 2026-07-11): before giving up, identify the team
+                        # from its PLAYERS' NAMES — count how many of the block's players sit on each
+                        # registered roster and adopt the clear-plurality team. Resolves an abbreviated /
+                        # off in-game team name whose UIDs are all ID:0, e.g. "BERSERK GEN" -> registered
+                        # "BERSERK GENERATION": all 4 names match, so the lineup itself names the team. The
+                        # whole roster votes, so a single ambiguous / borrowed name is outvoted by its
+                        # teammates; guarded (>=2 matches, >=half the block, strict winner, unclaimed) so it
+                        # never grabs a team on one coincidence. On a hit we DO NOT continue -> the block
+                        # falls through to classification and gets its placement + its players' kills.
+                        _pn_tt = _resolve_team_by_player_names(team_data["players"], claimed_team_ids)
+                        if _pn_tt is not None:
+                            team_obj = _pn_tt
+                            team_data["_team_obj"] = _pn_tt
+                            claimed_team_ids.add(_pn_tt.tournament_team_id)
+                            team_data["_name_matched_tt"] = _pn_tt
                             roster_mismatch_teams.append({
                                 "team_name": team_data["team_name"],
-                                "site_team_name": team_data["_name_matched_tt"].team.team_name,
-                                "site_team_id": team_data["_name_matched_tt"].team_id,
-                                "tournament_team_id": team_data["_name_matched_tt"].tournament_team_id,
+                                "site_team_name": _pn_tt.team.team_name,
+                                "site_team_id": _pn_tt.team_id,
+                                "tournament_team_id": _pn_tt.tournament_team_id,
+                                "by_player_names": True,     # resolved from the lineup, not the team name
                             })
                         else:
-                            missing_teams.append(team_data["team_name"])
-                            # Persist the block (owner 2026-06-30) so it can be attributed to a registered
-                            # team later from the SAME flagged panel (no re-upload). Store its placement +
-                            # total kills; restore the admin's prior attribution across a re-upload (only
-                            # when that team still exists in the event). On dry_run the whole transaction
-                            # rolls back, so the preview lists the team without persisting anything.
-                            _blk_kills = sum(int(p.get("kills", 0)) for p in team_data["players"])
-                            _restored_tt = prior_block_attr.get(team_data["team_name"])
-                            if _restored_tt not in tt_by_id:
-                                _restored_tt = None
-                            UnmatchedTeamBlock.objects.create(
-                                match=match,
-                                team_name=team_data["team_name"],
-                                placement=team_data["placement"],
-                                kills=_blk_kills,
-                                attributed_team_id=_restored_tt,
-                            )
-                        continue
+                            # No attribution -> advisory relabel (unique name match) or missing as before.
+                            team_data["_name_matched_tt"] = (_matched[0] if len(_matched) == 1 else None)
+                            if team_data["_name_matched_tt"]:
+                                roster_mismatch_teams.append({
+                                    "team_name": team_data["team_name"],
+                                    "site_team_name": team_data["_name_matched_tt"].team.team_name,
+                                    "site_team_id": team_data["_name_matched_tt"].team_id,
+                                    "tournament_team_id": team_data["_name_matched_tt"].tournament_team_id,
+                                })
+                            else:
+                                missing_teams.append(team_data["team_name"])
+                                # Persist the block (owner 2026-06-30) so it can be attributed to a registered
+                                # team later from the SAME flagged panel (no re-upload). Store its placement +
+                                # total kills; restore the admin's prior attribution across a re-upload (only
+                                # when that team still exists in the event). On dry_run the whole transaction
+                                # rolls back, so the preview lists the team without persisting anything.
+                                _blk_kills = sum(int(p.get("kills", 0)) for p in team_data["players"])
+                                _restored_tt = prior_block_attr.get(team_data["team_name"])
+                                if _restored_tt not in tt_by_id:
+                                    _restored_tt = None
+                                UnmatchedTeamBlock.objects.create(
+                                    match=match,
+                                    team_name=team_data["team_name"],
+                                    placement=team_data["placement"],
+                                    kills=_blk_kills,
+                                    attributed_team_id=_restored_tt,
+                                )
+                            continue
 
             # Classify this block into ROSTERED players (count normally) vs FLAGGED ringers — a UID
             # that played for this team but is NOT on its site roster (not_on_roster) or is

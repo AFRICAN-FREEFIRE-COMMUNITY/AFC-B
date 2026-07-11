@@ -282,3 +282,99 @@ class TeamAttributionTests(TestCase):
         st = self._team_stat(tt)
         self.assertIsNotNone(st)
         self.assertEqual(st.kills, 9, "rostered 4 + three ID:0 players (1+3+1) must all count")
+
+    # ── 6. PLAYER-NAME PLURALITY team resolution (owner 2026-07-11) ─────────────────────────────────
+    def _register_named(self, team_name, members):
+        """Register a team with EXPLICIT (username, uid) members so the file names can be made to
+        match (or not) the roster — used by the player-name resolution tests."""
+        team = Team.objects.create(
+            team_name=team_name, team_tag=team_name[:3], join_settings="open",
+            team_creator=self.admin, team_owner=self.admin, country="NG",
+        )
+        tt = TournamentTeam.objects.create(event=self.event, team=team, registered_by=self.admin)
+        for uname, uid in members:
+            u = User.objects.create(username=uname, email=f"{uid}@x.com", full_name=uname,
+                                    role="player", password="x", uid=uid)
+            TournamentTeamMember.objects.create(tournament_team=tt, user=u)
+        return tt
+
+    def test_team_resolved_by_player_name_plurality(self):
+        # Abbreviated in-game team name + ALL ID:0 UIDs -> the block resolves by NEITHER UID nor team
+        # name ("berserk gen" != registered "berserk generation"). It must be resolved from the PLAYERS'
+        # NAMES (the owner's BERSERK GEN report). All four names sit on the roster -> the lineup names it.
+        tt = self._register_named("Berserk Generation", [
+            ("GEN.liamHIGH", "6111111111"), ("GEN.CRACKED", "6222222222"),
+            ("GEN.SMITH", "6333333333"), ("GEN.roroHIGH", "6444444444"),
+        ])
+        log = (
+            "TeamName: BERSERK GEN  Rank: 1  KillScore: 6  RankScore: 12  TotalScore: 18\n"
+            "NAME: GEN.LiamHIGH  ID: 0  KILL: 3\n"   # case differs, still normalises to match
+            "NAME: GEN.CRACKED   ID: 0  KILL: 1\n"
+            "NAME: GEN.SMITH.    ID: 0  KILL: 1\n"   # trailing dot, still matches
+            "NAME: GEN.roroHIGH  ID: 0  KILL: 1\n"
+        )
+        resp = self._upload(log)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        st = self._team_stat(tt)
+        self.assertIsNotNone(st, "BERSERK GEN must resolve to BERSERK GENERATION from its players' names")
+        self.assertEqual(st.placement, 1)
+        self.assertEqual(st.kills, 6, "all 4 name-matched players' kills count under the default toggle")
+        self.assertNotIn("BERSERK GEN", resp.json().get("missing_teams", []))
+
+    def test_player_name_plurality_needs_majority(self):
+        # Only ONE file name coincidentally matches the roster (rest are strangers) -> below the
+        # >=2 / half-the-lineup threshold -> the block is NOT grabbed; it stays unmatched (missing_teams).
+        self._register_named("Berserk Generation", [
+            ("GEN.liamHIGH", "6111111111"), ("GEN.CRACKED", "6222222222"),
+            ("GEN.SMITH", "6333333333"), ("GEN.roroHIGH", "6444444444"),
+        ])
+        log = (
+            "TeamName: RANDOM STRANGERS  Rank: 1  KillScore: 6  RankScore: 12  TotalScore: 18\n"
+            "NAME: GEN.liamHIGH  ID: 0           KILL: 3\n"   # 1 coincidental name match
+            "NAME: totally.new1  ID: 7111111111  KILL: 1\n"
+            "NAME: totally.new2  ID: 7222222222  KILL: 1\n"
+            "NAME: totally.new3  ID: 7333333333  KILL: 1\n"
+        )
+        resp = self._upload(log)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("RANDOM STRANGERS", resp.json().get("missing_teams", []))
+
+    def test_player_name_plurality_tiebreak_by_unique_teammates(self):
+        # Two teams SHARE a pair of names (Alpha, Beta). A block whose lineup also carries Team A's
+        # UNIQUE members (Gamma, Delta) resolves to A: A gets 4 votes, B only 2 -> the teammates break
+        # the tie (owner: "compare with teammate names").
+        a = self._register_named("Squad Alpha", [
+            ("Alpha", "8101"), ("Beta", "8102"), ("Gamma", "8103"), ("Delta", "8104")])
+        b = self._register_named("Squad Bravo", [
+            ("Alpha.", "9101"), ("Beta.", "9102"), ("Epsilon", "9103"), ("Zeta", "9104")])
+        log = (
+            "TeamName: AAA UNKNOWN  Rank: 1  KillScore: 4  RankScore: 12  TotalScore: 16\n"
+            "NAME: Alpha  ID: 0  KILL: 1\n"
+            "NAME: Beta   ID: 0  KILL: 1\n"
+            "NAME: Gamma  ID: 0  KILL: 1\n"
+            "NAME: Delta  ID: 0  KILL: 1\n"
+        )
+        resp = self._upload(log)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIsNotNone(self._team_stat(a), "unique teammates Gamma/Delta must break the tie to Squad Alpha")
+        self.assertIsNone(self._team_stat(b), "Squad Bravo (only the 2 shared names) must NOT be grabbed")
+        self.assertEqual(self._team_stat(a).kills, 4)
+
+    def test_player_name_plurality_fully_ambiguous_abstains(self):
+        # A block whose names are ENTIRELY shared between two teams (Alpha, Beta only) ties 2-2 -> no
+        # strict winner -> the resolver abstains (NO auto-grab), leaving it for manual attribution.
+        a = self._register_named("Squad Alpha", [
+            ("Alpha", "8101"), ("Beta", "8102"), ("Gamma", "8103"), ("Delta", "8104")])
+        b = self._register_named("Squad Bravo", [
+            ("Alpha.", "9101"), ("Beta.", "9102"), ("Epsilon", "9103"), ("Zeta", "9104")])
+        log = (
+            "TeamName: SHARED CLAN  Rank: 1  KillScore: 2  RankScore: 12  TotalScore: 14\n"
+            "NAME: Alpha  ID: 0  KILL: 1\n"
+            "NAME: Beta   ID: 0  KILL: 1\n"
+        )
+        resp = self._upload(log)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIsNone(self._team_stat(a))
+        self.assertIsNone(self._team_stat(b))
+        self.assertIn("SHARED CLAN", resp.json().get("missing_teams", []),
+                      "a fully-ambiguous lineup must stay unmatched, not be guessed")
