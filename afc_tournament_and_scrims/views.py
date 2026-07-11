@@ -19453,6 +19453,11 @@ def _overlay_rows_from_standings(standings, max_rows, request):
             "base_total": r.get("effective_total", 0),
             "bonus": r.get("bonus_sum", 0),
             "penalty": r.get("penalty_sum", 0),
+            # Point-Rush carry-over as its OWN column (mirrors the public leaderboard, which exposes
+            # carry_over_points AND folds it into total_points). Set by _overlay_seed_and_carry for the
+            # single group/stage slice; 0 on the cumulative path. Lets a design place a dedicated
+            # "rush points" column; total_points already includes it either way.
+            "carry_over_points": r.get("carry_over_points", 0),
             # ── LIVE-ONLY rich stats (owner 2026-07-01, spec §12) ──────────────────────────────────
             # These 8 exist ONLY in the Tier-2 debugger stream (the live_push snapshot); the OFFICIAL
             # per-round standings do NOT carry them — MatchResult_*.log / round_robin standings are
@@ -19472,17 +19477,100 @@ def _overlay_rows_from_standings(standings, max_rows, request):
     return rows
 
 
+def _overlay_seed_and_carry(standings, event, stage, group):
+    """Bring the overlay's team standings into AGREEMENT WITH THE PUBLIC LEADERBOARD for a single
+    group / whole-stage slice — the two must never disagree (owner rule: the overlay is "based off
+    what is in the leaderboard"). The raw round_robin standings are built from PLAYED match stats
+    only, so they skip the two things the public tournament page (get_event_details -> the OVERALL
+    block + _apply_public_carry_over) does. This adds both, in place:
+
+      1. SEED 0-point rows — a team advanced/seeded into this stage or group
+         (StageGroupCompetitor) but with no played match yet is absent from the stats aggregation,
+         so it was missing from the overlay entirely. Append a 0-row (same keys as a real row) for
+         each, so a FINALS board shows every qualifier BEFORE the first finals game is played — the
+         exact moment the owner was looking at an "empty" GRAND FINALS overlay. Mirrors the seeded
+         block in get_event_details (~L5108).
+      2. FOLD Point-Rush carry-over — _carry_over_for_stage(stage) banks each qualifier's
+         placement bonus from the source RUSH-POINT stage (keyed by tournament_team_id for team
+         events). Add it into effective_total (the column _overlay_rows_from_standings maps to
+         total_points / base_total) so the carried "rush points" SHOW on the overlay, exactly as
+         _apply_public_carry_over folds them into the site leaderboard. Without this the carry never
+         appeared on the overlay although it shows on the site — the disconnect the owner reported.
+
+    Re-sorts ONLY when a carry bonus actually landed (mirrors _apply_public_carry_over's `changed`
+    guard), on the same tiebreak chain round_robin used, so a plain group with config tie-breakers
+    and no Point-Rush source stays byte-identical (seeded 0-rows just append at the end like the
+    public page). Team events only — overlay standings are team-based (solo returns [] upstream).
+    Mutates and returns `standings`. CONNECTS TO: _carry_over_for_stage (the same on-read bonus the
+    leaderboard uses) + StageGroupCompetitor (advancement seeding); consumed by
+    _overlay_standings_rows -> overlay_feed / _overlay_config_leaderboard_standings."""
+    # (1) Seed advanced-but-unplayed teams as 0-rows. Scope: the chosen group, else every group of
+    # the stage (cumulative slice). Same key shape a real round_robin row carries so it sorts identically.
+    present = {r["tournament_team_id"] for r in standings}
+    if group is not None:
+        seed_qs = StageGroupCompetitor.objects.filter(
+            stage_group=group, tournament_team__isnull=False)
+    else:
+        seed_qs = StageGroupCompetitor.objects.filter(
+            stage_group__stage=stage, tournament_team__isnull=False)
+    for sc in seed_qs.select_related("tournament_team__team"):
+        if sc.tournament_team_id in present:
+            continue
+        present.add(sc.tournament_team_id)
+        tt = sc.tournament_team
+        standings.append({
+            "tournament_team_id": sc.tournament_team_id,
+            "team_name": (tt.team.team_name if tt and tt.team else ""),
+            "team_country": (tt.team.country if tt and tt.team else ""),
+            "games_played": 0, "total_kills": 0, "total_booyah": 0,
+            "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
+            "effective_total": 0, "last_match_placement": 999,
+        })
+
+    # (2) Fold the Point-Rush carry-over banked for `stage` (on-read, never persisted — identical to
+    # _apply_public_carry_over). Keys are tournament_team_id for team events (see _group_ranked_ids).
+    carry = _carry_over_for_stage(stage, event.participant_type)
+    changed = False
+    for r in standings:
+        bonus = carry.get(r["tournament_team_id"], 0)
+        r["carry_over_points"] = bonus
+        if bonus:
+            r["effective_total"] = int(r.get("effective_total") or 0) + bonus
+            changed = True
+
+    # Re-rank only when a bonus actually landed, on the SAME chain round_robin/_apply_public_carry_over
+    # use, so carried points show AND rank correctly; an unaffected group keeps its DB/config order.
+    if changed:
+        standings.sort(key=lambda r: (
+            -int(r.get("effective_total") or 0),
+            -int(r.get("total_booyah") or 0),
+            -int(r.get("total_kills") or 0),
+            int(r.get("last_match_placement") or 999),
+            r.get("team_name") or "",
+        ))
+    return standings
+
+
 def _overlay_standings_rows(event, stage, group, max_rows, request):
     """Overlay standings for a single GROUP or a whole STAGE (the graphic-export slices): mirrors the
     export EXACTLY so the overlay numbers match the site — round_robin.group_standings(group) when a
-    group is selected, else cumulative_standings(stage). [] when neither is given. Capped at max_rows."""
+    group is selected, else cumulative_standings(stage). [] when neither is given. Capped at max_rows.
+
+    Then reconciled with the PUBLIC LEADERBOARD via _overlay_seed_and_carry (owner: overlay == what
+    the site shows): seeds advanced-but-unplayed qualifiers + folds the Point-Rush carry-over the
+    leaderboard shows, both of which the raw round_robin standings omit."""
     from . import round_robin  # local import: round_robin isn't loaded at this module's top level.
     if group is not None:
         standings = round_robin.group_standings(group)
+        carry_stage = group.stage       # carry-over is banked ON the group's stage
     elif stage is not None:
         standings = round_robin.cumulative_standings(stage)
+        carry_stage = stage
     else:
         return []
+    # Team events only carry standings + Point-Rush seeding/carry (solo overlay returns [] upstream).
+    if event.participant_type != "solo":
+        standings = _overlay_seed_and_carry(list(standings), event, carry_stage, group)
     return _overlay_rows_from_standings(standings, max_rows, request)
 
 
