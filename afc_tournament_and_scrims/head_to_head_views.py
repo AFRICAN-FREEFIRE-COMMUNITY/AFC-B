@@ -191,6 +191,15 @@ def generate_h2h_bracket(request, stage_id):
     if not isinstance(team_ids, list) or len(team_ids) < 2:
         return Response({"message": "team_ids must be a list of at least 2 tournament team ids "
                                     "in seed order."}, status=400)
+    # Coerce to ints up front (P2, owner 2026-07-13): a non-numeric id (e.g. "abc", null, a float)
+    # used to reach the `__in=team_ids` query and raise an uncaught 500. Reject it as a clean 400
+    # instead. Booleans are ints in Python but never a real team id, so refuse them explicitly.
+    try:
+        team_ids = [int(t) for t in team_ids if not isinstance(t, bool)]
+        if len(team_ids) != len(request.data.get("team_ids")):
+            raise ValueError
+    except (TypeError, ValueError):
+        return Response({"message": "team_ids must all be integer tournament team ids."}, status=400)
     if len(set(team_ids)) != len(team_ids):
         return Response({"message": "team_ids contains duplicates: each team can only be "
                                     "seeded once."}, status=400)

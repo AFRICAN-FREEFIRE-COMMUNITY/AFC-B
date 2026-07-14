@@ -221,11 +221,18 @@ def _booyah_live_config(event, config, request):
 def _h2h_payload(event, config, request):
     """Resolve an H2H overlay's competitor slots to THIS-EVENT stats (owner 2026-07-02).
 
-    config: {mode: "team"|"player", competitor_ids: [2-3 ids], design_id?}. Teams compare their
-    aggregated TournamentTeamMatchStats (kills/booyahs/points/matches); players their
-    TournamentPlayerMatchStats (kills/damage/assists + the 3D-room rich stats when the debugger
+    config: {mode: "team"|"player"|"bracket", competitor_ids: [2-3 ids], stage_id?, design_id?}.
+    Teams compare their aggregated TournamentTeamMatchStats (kills/booyahs/points/matches); players
+    their TournamentPlayerMatchStats (kills/damage/assists + the 3D-room rich stats when the debugger
     backfill has filled them). The picked DESIGN drives the look (bg + colors) - "overlays are
     created based off available designs"; the full versus design-editor type is the next phase.
+
+    mode == "bracket" (Clash Squad, P1#6 owner 2026-07-13): a pure CS event has no BR stats to put in
+    a versus card, so the overlay renders the STAGE BRACKET instead. config.stage_id picks which CS
+    stage (falls back to the event's first cs- stage); the resolved tree is the SAME shape the public
+    bracket GET returns (head_to_head_views._bracket_payload), so the FE draws it read-only over the
+    design look. Returns {mode:"bracket", bracket:{...}|None, competitors:[], design:{...}}.
+
     Returns {mode, competitors: [...], design: {...}} for the public overlay_config feed."""
     from django.db.models import Sum, Count, Case, When, Value, IntegerField
     from .models import TournamentTeamMatchStats, TournamentPlayerMatchStats
@@ -233,6 +240,25 @@ def _h2h_payload(event, config, request):
     mode = (config.get("mode") or "team").strip()
     ids = [int(i) for i in (config.get("competitor_ids") or []) if str(i).strip()][:3]
     competitors = []
+
+    # ── Clash Squad bracket mode: render the stage bracket, not a stat comparison. ──
+    if mode == "bracket":
+        from .models import Stages
+        from .head_to_head_views import _bracket_payload
+        stage = None
+        sid = config.get("stage_id")
+        if sid not in (None, ""):
+            stage = Stages.objects.filter(event=event, stage_id=sid).first()
+        if stage is None:
+            # No explicit / stale stage_id: fall back to the event's first Clash Squad stage.
+            stage = (Stages.objects.filter(event=event, stage_format__startswith="cs -")
+                     .order_by("stage_order", "stage_id").first())
+        return {
+            "mode": "bracket",
+            "competitors": [],
+            "bracket": _bracket_payload(stage) if stage is not None else None,
+            "design": _design_look(config.get("design_id"), request),
+        }
 
     if mode == "player":
         from afc_auth.models import User

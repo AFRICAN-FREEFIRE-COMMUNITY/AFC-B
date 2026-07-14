@@ -50,6 +50,29 @@ def org_can(user, perm, organization) -> bool:
     return bool(getattr(member, perm, False))
 
 
+def org_is_owner(user, organization) -> bool:
+    """Whether `user` is the OWNER of `organization` (or an AFC platform admin, who oversee
+    every org). This is a STRICTER gate than org_can(..., "can_manage_members", ...): it never
+    passes a sub_organizer, even one granted can_manage_members.
+
+    Member + permission management is owner-only by design (owner, 2026-07-14): letting a
+    sub_organizer add/remove members or toggle permission switches would let them escalate their
+    OWN access (e.g. grant themselves can_upload_results, or add an all-permissions accomplice).
+    Only the account holder — or AFC staff for oversight — may touch the permission surface.
+
+    Used by: add_organization_member / edit_organization_member / remove_organization_member in
+    views_organizer.py, and mirrored on the frontend by OrganizerContext.isOwner gating the
+    organizer members page. Rebrand (edit_organization_profile) is separately owner-only already."""
+    # 1) AFC oversight bypass — same central rule as org_can (permissions rule 1).
+    if is_platform_org_admin(user):
+        return True
+    # 2) Must be the active OWNER member of THIS org. A sub_organizer never passes.
+    member = OrganizationMember.objects.filter(
+        organization=organization, user=user, status="active"
+    ).first()
+    return bool(member and member.role == "owner")
+
+
 def org_can_event(user, perm, event) -> bool:
     """Event-scoped variant: resolves the event's owning org(s). Native AFC events (no
     organization) are admin-only — organizers never touch events outside their own org.

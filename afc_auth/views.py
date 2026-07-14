@@ -284,7 +284,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 
-def send_email(to_address, subject, html_body, language="en"):
+def send_email(to_address, subject, html_body, language="en", prelocalized=False):
     """Send a branded HTML email over Office365 SMTP. THE single email chokepoint for the whole
     backend: afc_auth account mail, afc_shop order mail, afc_sponsors / afc_tournament_and_scrims /
     afc_player_market notifications, and the broadcast sender all go through here.
@@ -296,7 +296,16 @@ def send_email(to_address, subject, html_body, language="en"):
     walks only the visible text nodes, leaving tags / inline CSS / links / verification codes intact).
     Centralizing the translation here means callers only have to thread the language through; they do
     NOT have to translate their own copy. Per the project failure-safe rule, any translation error
-    returns the ORIGINAL English text and never blocks the send."""
+    returns the ORIGINAL English text and never blocks the send.
+
+    prelocalized (owner 2026-07-13): when True, the caller has ALREADY produced the subject + body in
+    the recipient's language from the HAND-AUTHORED catalog (afc_auth.email_i18n), so we SKIP the
+    machine-translation block entirely. This is how every FIXED transactional email (verification,
+    welcome, reset, password-changed, email-change, shop order/vendor, sponsor rejection, tournament
+    accept/reject, player-market trial/application) now ships: natural hand-written fr/pt copy that
+    does NOT depend on the DeepL engine being up. The machine-translation path stays for the ONLY
+    remaining callers that carry admin-typed free-text bodies (broadcast + sponsor DM), which cannot
+    be pre-authored and must be translated on the fly."""
     try:
         is_valid, message = is_valid_email(to_address)
         if not is_valid:
@@ -309,9 +318,11 @@ def send_email(to_address, subject, html_body, language="en"):
     # ── Localize to the recipient's language (best-effort, never raises into the send) ───────────
     # translate()/translate_html() are no-ops when language == "en" or blank, and fall back to the
     # original English text on ANY engine error, so this is safe to run unconditionally.
+    # SKIPPED when prelocalized=True: the subject + body already arrived in the target language from
+    # the hand-authored catalog, so re-translating would be wasteful and could double-translate.
     try:
         lang = (language or "en").lower()
-        if lang and lang != "en":
+        if not prelocalized and lang and lang != "en":
             from afc_auth.translation import translate, translate_html
             subject = translate(subject, target=lang)
             html_body = translate_html(html_body, target=lang)
@@ -363,6 +374,11 @@ def send_email(to_address, subject, html_body, language="en"):
 # change_password (password-changed confirmation). Replaces the old plain-text bodies.
 SITE_URL = "https://africanfreefirecommunity.com"
 
+# Hand-authored per-language subject lines for the FIXED transactional emails (owner 2026-07-13).
+# subject_for(key, lang, **fmt) returns the localized subject; call sites pair it with the matching
+# builder + send_email(..., prelocalized=True). See afc_auth/email_i18n.py for the full catalog.
+from afc_auth.email_i18n import subject_for
+
 
 def _email_shell(body_inner_html, accent="green"):
     """Wrap an email's inner table rows in the shared AFC branded shell. `body_inner_html` is the
@@ -395,117 +411,162 @@ def _email_shell(body_inner_html, accent="green"):
 </table></td></tr></table></body></html>"""
 
 
-def email_verification_code(username, code):
-    """Signup / resend verification-code email (green). Consumed by signup + resend_code."""
+def email_verification_code(username, code, lang="en"):
+    """Signup / resend verification-code email (green). Consumed by signup + resend_code.
+
+    i18n (owner 2026-07-13): copy comes from the HAND-AUTHORED catalog (afc_auth.email_i18n,
+    template "verification_code") in the recipient's `lang`; dynamic values (username, the code,
+    the verify link) are wrapped in their branded HTML spans and injected into the natural sentence.
+    Callers send with prelocalized=True + the localized subject from subject_for("verify_account" |
+    "resend_code", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("verification_code", lang)
+    username_html = f'<span style="color:#e8efe9;font-weight:600;">{username}</span>'
+    site_html = f'<a href="{SITE_URL}/verify" style="color:#34d27b;text-decoration:none;font-weight:600;">africanfreefirecommunity.com</a>'
     inner = f"""
   <tr><td style="padding:38px 44px 8px;">
-    <div style="font-size:21px;font-weight:700;color:#ffffff;">Verify your account</div>
-    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">Hi <span style="color:#e8efe9;font-weight:600;">{username}</span>, welcome to the arena. Enter this code on <a href="{SITE_URL}/verify" style="color:#34d27b;text-decoration:none;font-weight:600;">africanfreefirecommunity.com</a> to finish creating your account.</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"].format(username=username_html, site=site_html)}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 8px;" align="center">
     <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#0a120d;border:1px solid #2c7a4d;border-radius:12px;padding:18px 34px;">
       <span style="font-size:38px;font-weight:800;letter-spacing:12px;color:#34d27b;font-family:Consolas,Menlo,monospace;">{code}</span>
     </td></tr></table>
   </td></tr>
-  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">This code expires in 10 minutes.</div></td></tr>
+  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">{c["expires"]}</div></td></tr>
   <tr><td style="padding:0 44px 8px;">
-    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">If you did not create an AFC account, you can safely ignore this email. Never share this code with anyone, AFC staff will never ask for it.</div>
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">{c["disclaimer"]}</div>
   </td></tr>"""
     return _email_shell(inner, "green")
 
 
-def email_welcome(username):
-    """Welcome / account-created email, sent after verification succeeds (green). verify_code."""
+def email_welcome(username, lang="en"):
+    """Welcome / account-created email, sent after verification succeeds (green). Consumed by
+    verify_code (password signups) + the Google / Discord SSO new-account paths.
+
+    i18n (owner 2026-07-13): hand-authored copy from the catalog (template "welcome") in `lang`;
+    the username is injected into the localized heading. Callers send with prelocalized=True and
+    subject_for("welcome", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("welcome", lang)
     inner = f"""
   <tr><td style="padding:40px 44px 6px;text-align:center;">
     <div style="font-size:46px;">&#127881;</div>
-    <div style="font-size:23px;font-weight:800;color:#ffffff;margin-top:10px;">You're in, {username}</div>
-    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">Your account is verified and ready. Join tournaments, climb the rankings, build your team, and rep your country across Africa.</div>
+    <div style="font-size:23px;font-weight:800;color:#ffffff;margin-top:10px;">{c["heading"].format(username=username)}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"]}</div>
   </td></tr>
   <tr><td style="padding:26px 44px 10px;" align="center">
     <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#34d27b;border-radius:10px;">
-      <a href="{SITE_URL}" style="display:inline-block;padding:14px 40px;font-size:15px;font-weight:700;color:#062012;text-decoration:none;">Enter the Community</a>
+      <a href="{SITE_URL}" style="display:inline-block;padding:14px 40px;font-size:15px;font-weight:700;color:#062012;text-decoration:none;">{c["cta"]}</a>
     </td></tr></table>
   </td></tr>
   <tr><td style="padding:22px 44px 30px;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-      <td width="33%" style="text-align:center;padding:8px;"><div style="font-size:22px;">&#127942;</div><div style="font-size:12px;color:#8b988f;margin-top:6px;">Compete in tournaments</div></td>
-      <td width="33%" style="text-align:center;padding:8px;"><div style="font-size:22px;">&#128200;</div><div style="font-size:12px;color:#8b988f;margin-top:6px;">Climb the rankings</div></td>
-      <td width="33%" style="text-align:center;padding:8px;"><div style="font-size:22px;">&#129309;</div><div style="font-size:12px;color:#8b988f;margin-top:6px;">Find your team</div></td>
+      <td width="33%" style="text-align:center;padding:8px;"><div style="font-size:22px;">&#127942;</div><div style="font-size:12px;color:#8b988f;margin-top:6px;">{c["feat1"]}</div></td>
+      <td width="33%" style="text-align:center;padding:8px;"><div style="font-size:22px;">&#128200;</div><div style="font-size:12px;color:#8b988f;margin-top:6px;">{c["feat2"]}</div></td>
+      <td width="33%" style="text-align:center;padding:8px;"><div style="font-size:22px;">&#129309;</div><div style="font-size:12px;color:#8b988f;margin-top:6px;">{c["feat3"]}</div></td>
     </tr></table>
   </td></tr>"""
     return _email_shell(inner, "green")
 
 
-def email_reset_token(token):
-    """Forgot-password reset-token email (gold security accent). reset-password request views."""
+def email_reset_token(token, lang="en"):
+    """Forgot-password reset-token email (gold security accent). Consumed by the reset-password
+    request + resend views.
+
+    i18n (owner 2026-07-13): hand-authored copy from the catalog (template "reset_token") in `lang`.
+    Callers send with prelocalized=True and subject_for("reset_password" | "resend_reset", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("reset_token", lang)
     inner = f"""
   <tr><td style="padding:38px 44px 8px;">
-    <div style="font-size:21px;font-weight:700;color:#ffffff;">Reset your password</div>
-    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">We received a request to reset your password. Use the token below to set a new one.</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"]}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 8px;" align="center">
     <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#16120a;border:1px solid #7a611f;border-radius:12px;padding:18px 34px;">
       <span style="font-size:34px;font-weight:800;letter-spacing:10px;color:#f5c518;font-family:Consolas,Menlo,monospace;">{token}</span>
     </td></tr></table>
   </td></tr>
-  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">This token expires in 10 minutes.</div></td></tr>
+  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">{c["expires"]}</div></td></tr>
   <tr><td style="padding:0 44px 8px;">
-    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">If you did not request a password reset, ignore this email, your password stays unchanged. Never share this token.</div>
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">{c["disclaimer"]}</div>
   </td></tr>"""
     return _email_shell(inner, "gold")
 
 
-def email_password_changed(username, when_text):
-    """Password-changed confirmation (green). reset_password + change_password."""
+def email_password_changed(username, when_text, lang="en"):
+    """Password-changed confirmation (green). Consumed by reset_password + change_password.
+
+    i18n (owner 2026-07-13): hand-authored copy from the catalog (template "password_changed") in
+    `lang`; username + timestamp are injected into the localized sentence and the "support" link
+    text is localized too. Callers send with prelocalized=True + subject_for("password_changed")."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("password_changed", lang)
+    username_html = f'<span style="color:#e8efe9;font-weight:600;">{username}</span>'
+    support_html = f'<a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">{c["support_label"]}</a>'
     inner = f"""
   <tr><td style="padding:40px 44px 6px;text-align:center;">
     <div style="width:64px;height:64px;line-height:64px;border-radius:50%;background:#0a120d;border:1px solid #2c7a4d;margin:0 auto;font-size:30px;color:#34d27b;">&#10003;</div>
-    <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">Your password was changed</div>
-    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">This confirms the password for <span style="color:#e8efe9;font-weight:600;">{username}</span> was updated on {when_text}.</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"].format(username=username_html, when=when_text)}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 30px;">
     <div style="background:#16120a;border:1px solid #4a3a14;border-radius:10px;padding:14px 18px;font-size:13px;line-height:1.6;color:#d8c98f;">
-      Did not do this? Your account may be at risk. Reset your password immediately and contact <a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">support</a>.
+      {c["warning"].format(support=support_html)}
     </div>
   </td></tr>"""
     return _email_shell(inner, "green")
 
 
-def email_change_code(code):
+def email_change_code(code, lang="en"):
     """Change-email verification code, sent to the NEW address (gold security accent). Consumed by
     request_email_change (owner 2026-07-09, bug #1). Proves the user owns the new address before we
-    switch the account email, so a typo can't lock them out again."""
+    switch the account email, so a typo can't lock them out again.
+
+    i18n (owner 2026-07-13): hand-authored copy from the catalog (template "change_code") in `lang`.
+    Caller sends with prelocalized=True + subject_for("confirm_new_email", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("change_code", lang)
     inner = f"""
   <tr><td style="padding:38px 44px 8px;">
-    <div style="font-size:21px;font-weight:700;color:#ffffff;">Confirm your new email</div>
-    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">Someone (hopefully you) asked to switch an AFC account's email to this address. Enter the code below on the profile settings page to confirm it.</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"]}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 8px;" align="center">
     <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#16120a;border:1px solid #7a611f;border-radius:12px;padding:18px 34px;">
       <span style="font-size:34px;font-weight:800;letter-spacing:10px;color:#f5c518;font-family:Consolas,Menlo,monospace;">{code}</span>
     </td></tr></table>
   </td></tr>
-  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">This code expires in 10 minutes.</div></td></tr>
+  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">{c["expires"]}</div></td></tr>
   <tr><td style="padding:0 44px 8px;">
-    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">If you did not request this, you can ignore this email, no account was changed. Never share this code.</div>
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">{c["disclaimer"]}</div>
   </td></tr>"""
     return _email_shell(inner, "gold")
 
 
-def email_email_changed(username, new_email, when_text):
+def email_email_changed(username, new_email, when_text, lang="en"):
     """Email-changed confirmation, sent to BOTH the old and new addresses (green). Consumed by
     confirm_email_change + admin_set_user_email (owner 2026-07-09, bug #1). Doubles as a tripwire:
-    if it lands in the OLD inbox and the owner didn't do it, they know to contact support."""
+    if it lands in the OLD inbox and the owner didn't do it, they know to contact support.
+
+    i18n (owner 2026-07-13): hand-authored copy from the catalog (template "email_changed") in
+    `lang`; username, the new address, and the timestamp are injected into the localized sentence.
+    Callers send with prelocalized=True + subject_for("email_changed" | "email_updated_admin")."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("email_changed", lang)
+    username_html = f'<span style="color:#e8efe9;font-weight:600;">{username}</span>'
+    new_email_html = f'<span style="color:#e8efe9;font-weight:600;">{new_email}</span>'
+    support_html = f'<a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">{c["support_label"]}</a>'
     inner = f"""
   <tr><td style="padding:40px 44px 6px;text-align:center;">
     <div style="width:64px;height:64px;line-height:64px;border-radius:50%;background:#0a120d;border:1px solid #2c7a4d;margin:0 auto;font-size:30px;color:#34d27b;">&#10003;</div>
-    <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">Your account email was changed</div>
-    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">The email on <span style="color:#e8efe9;font-weight:600;">{username}</span>'s AFC account was changed to <span style="color:#e8efe9;font-weight:600;">{new_email}</span> on {when_text}. Sign in with your new email from now on.</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"].format(username=username_html, new_email=new_email_html, when=when_text)}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 30px;">
     <div style="background:#16120a;border:1px solid #4a3a14;border-radius:10px;padding:14px 18px;font-size:13px;line-height:1.6;color:#d8c98f;">
-      Did not do this? Your account may be at risk. Contact <a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">support</a> right away.
+      {c["warning"].format(support=support_html)}
     </div>
   </td></tr>"""
     return _email_shell(inner, "green")
@@ -1092,11 +1153,13 @@ def google_auth(request):
     # localized to the user's language. Best-effort: a mail hiccup must NOT fail the sign-in.
     if is_new:
         try:
+            welcome_lang = user.language or "en"
             send_email(
                 user.email,
-                "Welcome to African Free Fire Community",
-                email_welcome(user.username),
-                language=user.language or "en",
+                subject_for("welcome", welcome_lang),
+                email_welcome(user.username, welcome_lang),
+                language=welcome_lang,
+                prelocalized=True,
             )
         except Exception:
             pass
@@ -1254,10 +1317,12 @@ def signup(request):
             signup_lang = language_for_country(country) or "en"
         except Exception:
             signup_lang = "en"
-        subject = 'Verify your AFC account'
-        message = email_verification_code(in_game_name, verification_code)
+        # Localized subject + body from the hand-authored catalog; prelocalized so send_email skips
+        # the machine-translation pass (the copy is already in signup_lang).
+        subject = subject_for("verify_account", signup_lang)
+        message = email_verification_code(in_game_name, verification_code, signup_lang)
         try:
-            send_email(email, subject, message, language=signup_lang)
+            send_email(email, subject, message, language=signup_lang, prelocalized=True)
         except Exception as e:
             print(f"Error sending email: {e}")
             return Response({"error": "Failed to send verification email. Please try again later."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1320,7 +1385,7 @@ def verify_code(request):
     except Exception:
         welcome_lang = "en"
     try:
-        send_email(user.email, "Welcome to African Free Fire Community", email_welcome(user.username), language=welcome_lang)
+        send_email(user.email, subject_for("welcome", welcome_lang), email_welcome(user.username, welcome_lang), language=welcome_lang, prelocalized=True)
     except Exception as e:
         print(f"Welcome email failed for {user.email}: {e}")
 
@@ -1378,9 +1443,9 @@ def resend_verification_code(request):
         resend_lang = user.language or language_for_country(user.country) or "en"
     except Exception:
         resend_lang = "en"
-    subject = "Your new AFC verification code"
-    message = email_verification_code(user.username, verification_code)
-    send_email(user.email, subject, message, language=resend_lang)
+    subject = subject_for("resend_code", resend_lang)
+    message = email_verification_code(user.username, verification_code, resend_lang)
+    send_email(user.email, subject, message, language=resend_lang, prelocalized=True)
 
     return Response(
         {"message": "A new verification code has been sent to your email."},
@@ -3118,9 +3183,9 @@ def send_verification_token(request):
         reset_lang = user.language or language_for_country(user.country) or "en"
     except Exception:
         reset_lang = "en"
-    subject = "Reset your AFC password"
-    message = email_reset_token(token)
-    send_email(email, subject, message, language=reset_lang)
+    subject = subject_for("reset_password", reset_lang)
+    message = email_reset_token(token, reset_lang)
+    send_email(email, subject, message, language=reset_lang, prelocalized=True)
 
     return Response({"message": "Password reset token has been sent to your email."}, status=status.HTTP_200_OK)
 
@@ -3188,7 +3253,7 @@ def reset_password(request):
         changed_lang = "en"
     try:
         when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
-        send_email(user.email, "Your AFC password was changed", email_password_changed(user.username, when), language=changed_lang)
+        send_email(user.email, subject_for("password_changed", changed_lang), email_password_changed(user.username, when, changed_lang), language=changed_lang, prelocalized=True)
     except Exception as e:
         print(f"Password-changed email failed for {user.email}: {e}")
 
@@ -3236,9 +3301,9 @@ def resend_token(request):
         resend_token_lang = user.language or language_for_country(user.country) or "en"
     except Exception:
         resend_token_lang = "en"
-    subject = "Your new AFC password reset token"
-    message = email_reset_token(token)
-    send_email(email, subject, message, language=resend_token_lang)
+    subject = subject_for("resend_reset", resend_token_lang)
+    message = email_reset_token(token, resend_token_lang)
+    send_email(email, subject, message, language=resend_token_lang, prelocalized=True)
 
     return Response({"message": "A new password reset token has been sent to your email."}, status=status.HTTP_200_OK)
 
@@ -3266,7 +3331,7 @@ def change_password(request):
             chg_lang = "en"
         try:
             when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
-            send_email(user.email, "Your AFC password was changed", email_password_changed(user.username, when), language=chg_lang)
+            send_email(user.email, subject_for("password_changed", chg_lang), email_password_changed(user.username, when, chg_lang), language=chg_lang, prelocalized=True)
         except Exception as e:
             print(f"Password-changed email failed for {user.email}: {e}")
 
@@ -3343,7 +3408,7 @@ def request_email_change(request):
         lang = user.language or language_for_country(user.country) or "en"
     except Exception:
         lang = "en"
-    send_email(new_email, "Confirm your new AFC email", email_change_code(token), language=lang)
+    send_email(new_email, subject_for("confirm_new_email", lang), email_change_code(token, lang), language=lang, prelocalized=True)
 
     return Response({"message": "We sent a 6-digit code to your new email. Enter it to confirm the change."}, status=200)
 
@@ -3388,10 +3453,11 @@ def confirm_email_change(request):
         lang = "en"
     try:
         when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
-        body = email_email_changed(user.username, new_email, when)
+        body = email_email_changed(user.username, new_email, when, lang)
+        subj = subject_for("email_changed", lang)
         if old_email:
-            send_email(old_email, "Your AFC account email was changed", body, language=lang)
-        send_email(new_email, "Your AFC account email was changed", body, language=lang)
+            send_email(old_email, subj, body, language=lang, prelocalized=True)
+        send_email(new_email, subj, body, language=lang, prelocalized=True)
     except Exception as e:
         print(f"Email-changed confirmation failed for {user.username}: {e}")
 
@@ -3451,8 +3517,8 @@ def admin_set_user_email(request):
         lang = "en"
     try:
         when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
-        send_email(new_email, "Your AFC account email was updated",
-                   email_email_changed(target.username, new_email, when), language=lang)
+        send_email(new_email, subject_for("email_updated_admin", lang),
+                   email_email_changed(target.username, new_email, when, lang), language=lang, prelocalized=True)
     except Exception as e:
         print(f"Admin email-change confirmation failed for {target.username}: {e}")
 
@@ -5264,8 +5330,9 @@ def discord_sso_callback(request):
     # Welcome email for a brand-new Discord account (no email-verification code path).
     if is_new:
         try:
-            send_email(user.email, "Welcome to African Free Fire Community",
-                       email_welcome(user.username), language=user.language or "en")
+            welcome_lang = user.language or "en"
+            send_email(user.email, subject_for("welcome", welcome_lang),
+                       email_welcome(user.username, welcome_lang), language=welcome_lang, prelocalized=True)
         except Exception:
             pass
 
@@ -5518,6 +5585,43 @@ def view_notification(request):
     notification.save()
 
     return Response({"message": "Notification marked as read."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def view_all_notifications(request):
+    """Bulk-mark EVERY unread notification for the logged-in user as read: the "Mark all as read"
+    action on the notifications panel. Idempotent (a user with nothing unread just gets marked=0).
+
+    Request:  POST /auth/view-all-notifications/  (Authorization: Bearer <session token>, no body).
+    Response: 200 {"message": ..., "marked": <int rows updated>}  |  401 invalid/expired token.
+    Auth:     validate_token(session token) -> the User; the UPDATE is scoped to filter(user=user),
+              so a caller can only ever clear THEIR OWN notifications, never another user's.
+    Consumed by: the frontend notifications panel (app/(user)/_components/NotificationDropdown.tsx,
+                 "Mark all as read" button) which then calls onNotificationUpdate() to refetch
+                 get-notifications so the unread count + accents clear. Mirrors view_notification
+                 above but scoped to the user and done as ONE bulk UPDATE (no per-row save)."""
+    session_token = request.headers.get("Authorization")
+
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+    session_token = session_token.split(" ")[1]
+    user = validate_token(session_token)
+    if not user:
+        return Response(
+            {"message": "Invalid or expired session token."},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+
+    # One bulk UPDATE over this user's unread rows only (idempotent; `marked` = how many changed).
+    marked = Notifications.objects.filter(user=user, is_read=False).update(is_read=True)
+
+    return Response(
+        {"message": "All notifications marked as read.", "marked": marked},
+        status=status.HTTP_200_OK,
+    )
 
 
 # ── NOTIFICATION DEEP-LINKING: shared request parser (owner 2026-06-15) ──────────────────────────

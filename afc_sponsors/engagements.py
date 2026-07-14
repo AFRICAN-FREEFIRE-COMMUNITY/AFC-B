@@ -451,17 +451,27 @@ def _notify_rejection(submission, reason, final=False):
     # notification above is the guaranteed channel.
     import threading
 
-    # i18n (owner 2026-06-15): localize to the player's saved language. send_email translates the
-    # subject + the visible body text to player.language ("en"/"fr"/"pt"), falling back to English.
+    # i18n (owner 2026-07-13): the in-app Notification above stays in English (the translate-on-read
+    # layer localizes it when the player reads it). For the EMAIL we use HAND-AUTHORED per-language
+    # copy from the catalog (afc_auth.email_i18n, template "sponsor_reject_final"/"sponsor_reject_retry")
+    # in the player's saved language, and inject the dynamic values: the sponsor name, event, the
+    # engagement label, and the sponsor's free-text `reason` (a reason is user-generated content and is
+    # injected AS-IS, exactly like a username). Sent prelocalized=True so send_email does NOT machine-
+    # translate (the scaffolding sentences are already natural fr/pt).
+    from afc_auth.email_i18n import copy_for, subject_for
     player_lang = (getattr(player, "language", "") or "en")
+    tmpl = "sponsor_reject_final" if final else "sponsor_reject_retry"
+    c = copy_for(tmpl, player_lang)
+    email_title = subject_for(tmpl, player_lang, label=label, event_name=event.event_name)
+    email_body = c["body"].format(sponsor=sp.sponsor.name, label=label, event_name=event.event_name, reason=reason)
 
     def _send():
         try:
             inner = f"""
-<tr><td style="padding:0 32px 8px;color:#e8efe9;font-size:18px;font-weight:bold;">{title}</td></tr>
-<tr><td style="padding:0 32px 16px;color:#9fb3a6;font-size:14px;line-height:1.6;">{body}</td></tr>
+<tr><td style="padding:0 32px 8px;color:#e8efe9;font-size:18px;font-weight:bold;">{email_title}</td></tr>
+<tr><td style="padding:0 32px 16px;color:#9fb3a6;font-size:14px;line-height:1.6;">{email_body}</td></tr>
 """
-            send_email(player.email, title, _email_shell(inner, accent="gold"), language=player_lang)
+            send_email(player.email, email_title, _email_shell(inner, accent="gold"), language=player_lang, prelocalized=True)
         except Exception:
             pass
 

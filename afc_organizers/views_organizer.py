@@ -16,11 +16,15 @@
 #     original developer can read a view top-to-bottom and see the whole request/response
 #     shape in one place.
 #
-# Permission rule of thumb (all enforced via permissions.org_can so the owner/admin
-# bypass stays in ONE place — never re-implement it here):
+# Permission rule of thumb (all enforced via permissions.org_can / org_is_owner so the
+# owner/admin bypass stays in ONE place — never re-implement it here):
 #   • owner               → every can_* is effectively True.
 #   • sub_organizer       → only the granular toggles the owner granted.
 #   • non-member          → 403 (cannot see or touch the org at all).
+# EXCEPTION — member + permission management (add / edit-permissions / remove member) and
+# rebrand are OWNER-ONLY: they use org_is_owner, NOT org_can(can_manage_members), so a
+# sub_organizer can never touch the permission surface or grow/shrink the team (would be
+# self-escalation). (owner, 2026-07-14)
 #
 # Full spec: WEBSITE/tasks/organizers-design.md.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -36,7 +40,7 @@ from rest_framework import status
 from afc_auth.views import validate_token
 
 from afc_organizers.models import Organization, OrganizationMember, PERMISSION_FIELDS
-from afc_organizers.permissions import org_can
+from afc_organizers.permissions import org_can, org_is_owner
 from afc_auth.models import User, Roles, UserRoles
 from .permissions import member_or_403 as _member_or_403
 # Super-admin god-mode: lets a head_admin/super_admin operating "as" this org (via the
@@ -422,8 +426,10 @@ def get_organization_members(request, slug):
 def add_organization_member(request, slug):
     """Add an existing user to the org as a sub_organizer (creating, or reactivating a
     previously-removed, OrganizationMember row) and grant them the platform-level
-    'organizer' role. Gated by can_manage_members so an owner or a trusted sub_organizer
-    can grow the team. Optional `permissions` toggles seed the new member's grants."""
+    'organizer' role. OWNER-ONLY (owner, 2026-07-14): only the org owner (or an AFC admin)
+    may grow the team — a sub_organizer must never add members, as that is part of the
+    permission surface they are not allowed to touch. Optional `permissions` toggles seed
+    the new member's grants."""
     # ── auth handshake (Bearer + validate_token) ──
     session_token = request.headers.get("Authorization")
     if not session_token:
@@ -451,10 +457,11 @@ def add_organization_member(request, slug):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Permission gate — routed through org_can so the owner/admin bypass stays central.
-    if not org_can(user, "can_manage_members", org):
+    # Permission gate — OWNER-ONLY (org_is_owner keeps the AFC-admin oversight bypass but
+    # rejects any sub_organizer, even one holding can_manage_members).
+    if not org_is_owner(user, org):
         return Response(
-            {"message": "You do not have permission to manage members."},
+            {"message": "Only the organization owner can manage members."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -525,8 +532,10 @@ def add_organization_member(request, slug):
 @api_view(["PATCH"])
 def edit_organization_member(request, slug, user_id):
     """Toggle the granular permission booleans on one sub_organizer's membership row.
-    Gated by can_manage_members. The owner's own row is off-limits (400) — the owner
-    already has everything implicitly and must never be down-scoped through this path."""
+    OWNER-ONLY (owner, 2026-07-14): only the org owner (or an AFC admin) may edit permissions —
+    a sub_organizer can never re-tune anyone's grants (that would be self-escalation). The
+    owner's own row is off-limits (400): the owner already has everything implicitly and must
+    never be down-scoped through this path."""
     # ── auth handshake (Bearer + validate_token) ──
     session_token = request.headers.get("Authorization")
     if not session_token:
@@ -554,10 +563,10 @@ def edit_organization_member(request, slug, user_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Permission gate — central owner/admin bypass via org_can.
-    if not org_can(user, "can_manage_members", org):
+    # Permission gate — OWNER-ONLY (owner/AFC-admin only; sub_organizers can never edit perms).
+    if not org_is_owner(user, org):
         return Response(
-            {"message": "You do not have permission to manage members."},
+            {"message": "Only the organization owner can edit member permissions."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -601,8 +610,9 @@ def edit_organization_member(request, slug, user_id):
 @api_view(["DELETE"])
 def remove_organization_member(request, slug, user_id):
     """Soft-remove a sub_organizer from the org by flipping their membership status to
-    'removed' (preserving history and allowing later reactivation). Gated by
-    can_manage_members. The owner cannot be removed through this path (400)."""
+    'removed' (preserving history and allowing later reactivation). OWNER-ONLY
+    (owner, 2026-07-14): only the org owner (or an AFC admin) may remove a member. The owner
+    cannot be removed through this path (400)."""
     # ── auth handshake (Bearer + validate_token) ──
     session_token = request.headers.get("Authorization")
     if not session_token:
@@ -630,10 +640,10 @@ def remove_organization_member(request, slug, user_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Permission gate — central owner/admin bypass via org_can.
-    if not org_can(user, "can_manage_members", org):
+    # Permission gate — OWNER-ONLY (owner/AFC-admin only; sub_organizers can never remove members).
+    if not org_is_owner(user, org):
         return Response(
-            {"message": "You do not have permission to manage members."},
+            {"message": "Only the organization owner can remove members."},
             status=status.HTTP_403_FORBIDDEN,
         )
 

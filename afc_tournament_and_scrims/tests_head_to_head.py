@@ -30,10 +30,14 @@ from afc_tournament_and_scrims import head_to_head, round_robin
 from afc_tournament_and_scrims.models import (
     Event,
     HeadToHeadMatch,
+    Leaderboard,
     Match,
+    StageGroups,
     Stages,
     TournamentTeam,
     TournamentTeamMatchStats,
+    TournamentTeamMember,
+    TournamentPlayerMatchStats,
 )
 
 
@@ -216,6 +220,19 @@ class SingleElimReportingTests(H2HBase):
         resp = self._report(self.m0, -1, 3)
         self.assertEqual(resp.status_code, 400, resp.content)
 
+    def test_absurdly_large_score_refused(self):
+        # P2 sanity cap (owner 2026-07-13): a fat-finger "400-2" is rejected, not silently stored.
+        resp = self._report(self.m0, 400, 2)
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("too large", resp.json()["message"])
+        self.m0.refresh_from_db()
+        self.assertEqual(self.m0.status, "pending")
+
+    def test_score_at_cap_is_accepted(self):
+        # The boundary value (99) is still a legal set score.
+        resp = self._report(self.m0, 99, 2)
+        self.assertEqual(resp.status_code, 200, resp.content)
+
     def test_cannot_report_match_missing_a_team(self):
         # The final has no teams yet: reporting it must be refused.
         resp = self._report(self.final, 4, 0)
@@ -302,6 +319,10 @@ class RegenerationGuardTests(H2HBase):
         self.assertEqual(self._generate(self._ids(2), fmt="double_elim").status_code, 400)
         # Unknown fmt string.
         self.assertEqual(self._generate(self._ids(4), fmt="triple_elim").status_code, 400)
+        # Non-numeric team id (P2, owner 2026-07-13): a clean 400, not an uncaught 500.
+        resp = self._generate([self.tts[0].tournament_team_id, "not-an-int"])
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("integer", resp.json()["message"])
 
     def test_non_cs_stage_requires_explicit_fmt(self):
         br_stage = Stages.objects.create(
@@ -497,6 +518,74 @@ class PlacementStatsBridgeTests(H2HBase):
         self.assertEqual(stats, {"T3": 1, "T1": 2, "T4": 3, "T2": 3})
 
 
+class PlayerRankingBridgeTests(H2HBase):
+    """CS results feed PLAYER rankings too (owner 2026-07-13: "cs should be both team and player
+    ranking"). write_placement_stats writes a PLAYED TournamentPlayerMatchStats (kills 0) per rostered
+    member of each placed team, so every CS player counts as having played the event (participation)
+    and the champion's roster gets the team-win bonus — afc_rankings._collect_player scores on
+    participation + kills + team_won + finals, never raw placement."""
+
+    def setUp(self):
+        super().setUp()
+        # Give the four bracket teams (T1..T4) a 2-player roster each; T5/T6 sit out the 4-team field.
+        self.rosters = {}
+        for tt in self.tts[:4]:
+            self.rosters[tt.tournament_team_id] = self._add_roster(tt, 2)
+
+    def _add_roster(self, tt, n):
+        users = []
+        base = tt.team.team_name
+        for i in range(n):
+            u = User.objects.create(
+                username=f"{base}_m{i}", email=f"{base}_m{i}@afc.test",
+                full_name=f"{base} M{i}", role="player")
+            TournamentTeamMember.objects.create(
+                tournament_team=tt, user=u, event=self.event, status="active")
+            users.append(u)
+        return users
+
+    def _play_four_team_knockout(self):
+        """T1 > T4, T3 > T2, final T1 > T3 -> all four placed."""
+        self.assertEqual(self._generate(self._ids(4)).status_code, 201)
+        self.assertEqual(self._report(self._m("winners", 1, 0), 4, 1).status_code, 200)
+        self.assertEqual(self._report(self._m("winners", 1, 1), 2, 4).status_code, 200)
+        return self._report(self._m("winners", 2, 0), 4, 2)
+
+    def test_completion_writes_player_stats_for_rosters(self):
+        resp = self._play_four_team_knockout()
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()["bracket_complete"])
+
+        synthetic = Match.objects.get(group__stage=self.stage, match_number=0)
+        pstats = TournamentPlayerMatchStats.objects.filter(team_stats__match=synthetic)
+        # 4 placed teams x 2 roster members = 8 played, kills-0 player rows (no per-player CS kills).
+        self.assertEqual(pstats.count(), 8)
+        self.assertTrue(all(p.played and p.kills == 0 for p in pstats))
+
+        # Champion T1's two members each get a row hung off T1's synthetic team stat.
+        t1 = self.tts[0]
+        t1_users = {u.pk for u in self.rosters[t1.tournament_team_id]}
+        t1_stat = TournamentTeamMatchStats.objects.get(match=synthetic, tournament_team=t1)
+        got = set(TournamentPlayerMatchStats.objects.filter(team_stats=t1_stat)
+                  .values_list("player_id", flat=True))
+        self.assertEqual(got, t1_users)
+
+    def test_roster_change_resyncs_player_stats(self):
+        self._play_four_team_knockout()
+        synthetic = Match.objects.get(group__stage=self.stage, match_number=0)
+        t1 = self.tts[0]
+        # Drop one member from T1's roster, then re-run the bridge (a corrected final would do this).
+        dropped = self.rosters[t1.tournament_team_id][0]
+        TournamentTeamMember.objects.filter(tournament_team=t1, user=dropped).delete()
+        head_to_head.write_placement_stats(self.stage)
+
+        t1_stat = TournamentTeamMatchStats.objects.get(match=synthetic, tournament_team=t1)
+        remaining = set(TournamentPlayerMatchStats.objects.filter(team_stats=t1_stat)
+                        .values_list("player_id", flat=True))
+        self.assertNotIn(dropped.pk, remaining)
+        self.assertEqual(len(remaining), 1)
+
+
 class PermissionTests(H2HBase):
     """Stranger 403s; an organizer of the OWNING org passes both write gates."""
 
@@ -549,3 +638,119 @@ class PermissionTests(H2HBase):
         self.event.save(update_fields=["organization"])
         resp = self._generate(self._ids(4), token=self.organizer_token.token)
         self.assertEqual(resp.status_code, 403, resp.content)
+
+
+class CreateEventCSGroupGuardTests(TestCase):
+    """CS remediation P1#1 (owner 2026-07-13): create_event / edit_event must NOT materialise the
+    BR-style group + Match + Leaderboard rows the stage-config wizard still sends for a `cs - *`
+    stage. Those phantom "Pending" matches sit next to the real HeadToHeadMatch bracket and entering
+    a result into one DOUBLE-WRITES scoring. A BR stage in the SAME create keeps materialising its
+    group + matches, proving the guard is CS-specific (mirrors the round-robin phantom-group guard).
+
+    Consumes: POST /events/create-event/ (create_event) and /events/<id>/edit-event/ style edit.
+    Related engine tests above prove the bracket itself needs no group to seed (generate_bracket
+    takes explicit team_ids)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.admin = User.objects.create(
+            username="cs_guard_admin", email="cs_guard_admin@afc.test",
+            full_name="CS Guard Admin", role="admin")
+        self.token = SessionToken.objects.create(
+            user=self.admin, token="cs-guard-token",
+            expires_at=datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc))
+
+    def _payload(self):
+        D = "2026-06-01"
+
+        def group(name, count, maps):
+            # The BR-shaped group the stage-config wizard forces onto EVERY stage, CS included.
+            return {"group_name": name, "playing_date": D, "playing_time": "10:00",
+                    "teams_qualifying": 1, "match_count": count, "match_maps": maps}
+
+        return {
+            "competition_type": "tournament", "participant_type": "squad",
+            "event_type": "internal", "max_teams_or_players": 16,
+            "event_name": "CS Guard Cup", "event_mode": "virtual",
+            "start_date": D, "end_date": D,
+            "registration_open_date": D, "registration_end_date": D,
+            "event_start_time": "10:00", "event_end_time": "12:00",
+            "registration_start_time": "09:00", "registration_end_time": "09:30",
+            "prizepool": "$1000", "number_of_stages": 2, "is_draft": False,
+            "stages": [
+                {"stage_name": "Bracket", "start_date": D, "end_date": D,
+                 "number_of_groups": 1, "stage_format": "cs - knockout",
+                 "teams_qualifying_from_stage": 1,
+                 "groups": [group("CS Group A", 3, ["bermuda", "purgatory", "kalahari"])]},
+                {"stage_name": "Group Stage", "start_date": D, "end_date": D,
+                 "number_of_groups": 1, "stage_format": "br - normal",
+                 "teams_qualifying_from_stage": 1,
+                 "groups": [group("BR Group 1", 2, ["bermuda", "purgatory"])]},
+            ],
+        }
+
+    def test_cs_stage_creates_no_phantom_group_but_br_stage_does(self):
+        resp = self.client.post(
+            "/events/create-event/", data=self._payload(),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+
+        event = Event.objects.get(event_name="CS Guard Cup")
+        cs_stage = Stages.objects.get(event=event, stage_format="cs - knockout")
+        br_stage = Stages.objects.get(event=event, stage_format="br - normal")
+
+        # CS stage: the forced group + its matches + leaderboard were IGNORED (no phantom rows) —
+        # the bracket owns the structure, generated later from team_ids with zero groups.
+        self.assertEqual(StageGroups.objects.filter(stage=cs_stage).count(), 0)
+        self.assertEqual(Match.objects.filter(group__stage=cs_stage).count(), 0)
+        self.assertEqual(Leaderboard.objects.filter(stage=cs_stage).count(), 0)
+
+        # BR control stage: its group + 2 matches + leaderboard DID materialise (guard is CS-only).
+        self.assertEqual(StageGroups.objects.filter(stage=br_stage).count(), 1)
+        self.assertEqual(Match.objects.filter(group__stage=br_stage).count(), 2)
+        self.assertEqual(Leaderboard.objects.filter(stage=br_stage).count(), 1)
+
+
+class BracketOverlayPayloadTests(H2HBase):
+    """CS remediation P1#6 (owner 2026-07-13): the h2h broadcast overlay renders the BRACKET for a
+    Clash Squad event instead of a versus stat card (a pure CS event has no BR stats to compare).
+    views_overlays._h2h_payload with config {mode:"bracket", stage_id} returns the resolved bracket
+    tree (same shape as the public bracket GET) so the overlay renderer can draw it read-only.
+
+    Consumes: _h2h_payload (bundled into the public overlay_config poll). design_id is omitted, so
+    _design_look returns None without touching the request and a RequestFactory stub is enough."""
+
+    def _payload(self, config):
+        from django.test import RequestFactory
+        from afc_tournament_and_scrims.views_overlays import _h2h_payload
+        return _h2h_payload(self.event, config, RequestFactory().get("/"))
+
+    def test_bracket_mode_returns_the_resolved_tree(self):
+        # Build + partly play a 4-team knockout so the tree has a real round-1 result.
+        self.assertEqual(self._generate(self._ids(4)).status_code, 201)
+        self.assertEqual(self._report(self._m("winners", 1, 0), 4, 1).status_code, 200)
+
+        out = self._payload({"mode": "bracket", "stage_id": self.stage.stage_id})
+        self.assertEqual(out["mode"], "bracket")
+        self.assertEqual(out["competitors"], [])          # no stat cards in bracket mode
+        self.assertIsNotNone(out["bracket"])
+        self.assertTrue(out["bracket"]["generated"])
+        self.assertEqual(out["bracket"]["stage_id"], self.stage.stage_id)
+        # 4 teams -> 2 winners rounds (round 1 + final), no losers bracket for single-elim.
+        self.assertEqual(len(out["bracket"]["rounds"]["winners"]), 2)
+        self.assertEqual(out["bracket"]["rounds"]["losers"], [])
+
+    def test_bracket_mode_falls_back_to_first_cs_stage_when_stage_id_missing(self):
+        self.assertEqual(self._generate(self._ids(4)).status_code, 201)
+        # No stage_id: resolve the event's only CS stage automatically.
+        out = self._payload({"mode": "bracket"})
+        self.assertIsNotNone(out["bracket"])
+        self.assertEqual(out["bracket"]["stage_id"], self.stage.stage_id)
+
+    def test_bracket_mode_before_generation_returns_none_bracket(self):
+        # Stage exists but no bracket generated yet -> bracket is a not-generated payload.
+        out = self._payload({"mode": "bracket", "stage_id": self.stage.stage_id})
+        self.assertIsNotNone(out["bracket"])
+        self.assertFalse(out["bracket"]["generated"])
+        self.assertEqual(out["bracket"]["rounds"]["winners"], [])

@@ -190,6 +190,13 @@ class LeaderboardMatch(models.Model):
     match_number = models.PositiveIntegerField(default=1)
     match_map = models.CharField(max_length=20, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # A4 (OCR remediation 2026-07-14): nullable idempotency marker. The legacy single-shot
+    # afc_leaderboard.views.ocr_apply stamps this with the draft_id that ocr_extract minted, so a
+    # duplicate re-apply (double click / network retry of the SAME draft) is detected via
+    # leaderboard.matches.filter(source_draft_id=...) and returns 409 ocr_already_applied instead of
+    # creating a second map that double-counts the standings. Stays NULL on the async batch path
+    # (ocr_job_apply) and on manually created maps. Column added in migration 0005.
+    source_draft_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
 
     class Meta:
         ordering = ["match_number"]

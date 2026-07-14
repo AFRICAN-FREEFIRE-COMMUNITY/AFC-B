@@ -1712,6 +1712,12 @@ def get_team_details(request):
         .filter(event__is_draft=False, event__event_status__in=["upcoming", "ongoing"])
         .select_related("event")
     )
+    # The raw event_status pre-filter above goes stale: a scrim past its end date keeps
+    # event_status="upcoming" (the auto-complete sweep is not in the live beat), so it would list
+    # here as an "upcoming registered" event long after it finished. Re-check the derived badge
+    # (same helper the lock + reopen + public badges trust) so a finished event drops off this card.
+    # (owner 2026-07-14, mirrors _member_in_active_event_roster.)
+    from afc_tournament_and_scrims.views import effective_event_status
     registered_events = [
         {
             "event_id": tt.event.event_id,
@@ -1722,6 +1728,7 @@ def get_team_details(request):
             "participant_type": "squad",
         }
         for tt in registered_events_qs
+        if effective_event_status(tt.event) in ("upcoming", "ongoing")
     ]
     # Soonest first; events with no start_date sort last (None -> True sorts after False).
     registered_events.sort(key=lambda e: (e["event_date"] is None, e["event_date"] or ""))
@@ -2174,8 +2181,22 @@ def _member_in_active_event_roster(team, member_id) -> bool:
     a team that advances keeps an active StageCompetitor in the next stage and stays locked; an
     eliminated team has none and unlocks. Safe default: a roster row with NO StageCompetitor data
     at all (stages unseeded / data gap) stays locked so we never wrongly free a live roster.
+
+    EFFECTIVE-STATUS release (owner 2026-07-14): the DB pre-filter below matches on the RAW
+    event_status field, but that field goes stale. The auto-complete sweep that flips
+    upcoming/ongoing -> completed at the end instant is NOT scheduled in the live celery beat, so a
+    SCRIM (or any event) whose end date/time has passed keeps event_status="upcoming" forever even
+    though effective_event_status() reads "completed". Trusting the raw field permanently locked a
+    whole roster to a finished scrim ("there's no current event but I can't leave / can't remove a
+    player" - VENTRIX GAMING, events 198/200 ended a week prior). So each candidate row is re-checked
+    against effective_event_status(): if the event is not STILL effectively upcoming/ongoing, it can
+    no longer be played and must not lock. This is the same derived badge reopen_event and the public
+    event surfaces already trust (afc_tournament_and_scrims.views.effective_event_status).
     """
     from afc_tournament_and_scrims.models import TournamentTeamMember, StageCompetitor
+    # Local import (heavy views module) keeps this lazy + avoids an import cycle, matching how this
+    # helper already imports its models inline.
+    from afc_tournament_and_scrims.views import effective_event_status
     live_rosters = (
         TournamentTeamMember.objects.filter(
             tournament_team__team=team,
@@ -2187,6 +2208,10 @@ def _member_in_active_event_roster(team, member_id) -> bool:
     )
     for ttm in live_rosters:
         tt = ttm.tournament_team
+        # Raw event_status said upcoming/ongoing, but a past-end scrim reads "completed" here even
+        # with no cron. A finished event can never be played -> it must not lock the roster.
+        if effective_event_status(tt.event) not in ("upcoming", "ongoing"):
+            continue
         stage_rows = StageCompetitor.objects.filter(stage__event=tt.event, tournament_team=tt)
         if not stage_rows.exists():
             return True  # no stage data -> safe default: treat as still on a live roster (locked)

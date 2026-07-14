@@ -2034,13 +2034,21 @@ def create_event(request):
                 if _is_round_robin_stage:
                     _build_round_robin_stage(stage, event, user, stage_data)
 
-                # NEVER materialise the plain `groups` for a round-robin stage — its lobbies are the
-                # base groups + game-day meetings built above. If we also looped `groups` here, any
-                # values the FE sent (the number_of_groups placeholders, or the schedule-backfill the
-                # create wizard adds so validation passes) would create PHANTOM "Group 1/2" lobbies
-                # sitting next to the real "Day N" meetings (owner 2026-07-02 bug). Mirror edit_event,
-                # which already guards with `[] if _is_round_robin_stage`.
-                for group_data in ([] if _is_round_robin_stage else stage_data.get("groups", [])):
+                # ── Clash Squad (head-to-head bracket) stage guard (CS remediation P1#1, owner
+                # 2026-07-13) ──────────────────────────────────────────────────────────────────
+                # A `cs - *` stage runs as a HeadToHeadMatch bracket (head_to_head.py), generated
+                # later from the event page via events/stages/<id>/bracket/generate/ with an
+                # explicit team_ids seed list — it needs NO StageGroups to seed from. The stage-
+                # config wizard still forces a BR-style group (name/maps/match_count) so the payload
+                # carries one, but materialising it here creates PHANTOM "Pending" BR Match rows +
+                # a manual Leaderboard sitting next to the real bracket, and entering a result into
+                # one DOUBLE-WRITES scoring. So, exactly like the round-robin guard above, never loop
+                # the plain `groups` for a CS stage. write_placement_stats() synthesises a single
+                # "Bracket Results" group on completion when the stage has none, so downstream
+                # leaderboard/rankings reads keep working with zero groups here.
+                _is_cs_stage = str(stage_data.get("stage_format", "")).startswith("cs - ")
+
+                for group_data in ([] if (_is_round_robin_stage or _is_cs_stage) else stage_data.get("groups", [])):
                     group = StageGroups.objects.create(
                         stage=stage,
                         group_name=group_data["group_name"],
@@ -3557,6 +3565,20 @@ def edit_event(request):
                     kept_group_ids.extend(
                         _edit_round_robin_stage(stage, event, user, stage_data))
 
+                # ── Clash Squad (head-to-head bracket) stage guard (CS remediation P1#1, owner
+                # 2026-07-13) ──────────────────────────────────────────────────────────────────
+                # Mirror create_event: a `cs - *` stage is a HeadToHeadMatch bracket, NOT a set of BR
+                # lobbies, so never materialise the config wizard's forced group here (phantom BR
+                # rows that double-write scoring — see the create_event note). Also PROTECT any group
+                # the bracket already owns from the delete_missing sweep below: write_placement_stats
+                # synthesises a "Bracket Results" StageGroups (holding the synthetic result Match +
+                # per-team stats) that the FE never echoes back in `groups`, so without this it would
+                # be swept on the next edit and wipe the CS results. Exactly how _edit_round_robin_stage
+                # feeds its rebuilt lobby ids into kept_group_ids just above.
+                _is_cs_stage = str(stage_data.get("stage_format", "")).startswith("cs - ")
+                if _is_cs_stage:
+                    kept_group_ids.extend(stage.groups.values_list("group_id", flat=True))
+
                 # CRITICAL (owner 2026-06-17): for a round-robin stage the game-day lobbies are owned
                 # entirely by _edit_round_robin_stage above. On EDIT the FE sends its tempGroups (the
                 # current lobby list) in `groups`, so running the normal group loop over it would
@@ -3565,7 +3587,8 @@ def edit_event(request):
                 # "matches per meeting resets / add base group doesn't save / date doesn't save":
                 # every RR edit-save wiped the stage. create_event avoids this only because the FE
                 # sends empty `groups` on create; edit must defend explicitly. So skip the loop here.
-                for group_data in ([] if _is_round_robin_stage else stage_data.get("groups", [])):
+                # (CS stages skip for the same reason — the bracket owns the structure, not `groups`.)
+                for group_data in ([] if (_is_round_robin_stage or _is_cs_stage) else stage_data.get("groups", [])):
                     group_id = group_data.get("group_id")
 
                     group_defaults = {
@@ -7266,7 +7289,17 @@ def check_and_activate_team(tournament_team):
         # send_email (afc_auth.views) localizes the subject + visible body text to this locale.
         owner_lang = (getattr(tournament_team.team.team_owner, "language", "") or "en")
 
-        subject = f'AFC Registration Update: Your Team {team_name} is now Fully Registered for {event_name}'
+        # i18n (owner 2026-07-13): hand-authored per-language copy from the catalog
+        # (afc_auth.email_i18n, template "team_registered") in the team owner's saved language;
+        # dynamic values (leader, team, event) are injected as HTML into the natural sentences.
+        # Sent prelocalized=True so send_email skips machine-translation.
+        from afc_auth.email_i18n import copy_for, subject_for
+        c = copy_for("team_registered", owner_lang)
+        subject = subject_for("team_registered", owner_lang, team_name=team_name, event_name=event_name)
+        leader_html = f'<strong style="color:#ffffff;">{team_leader_username}</strong>'
+        team_html = f'<strong style="color:#f5a623;">{team_name}</strong>'
+        event_html = f'<strong>{event_name}</strong>'
+        mail_link = '<a href="mailto:info@africanfreefirecommunity.com" style="color:#f5a623;">info@africanfreefirecommunity.com</a>'
         message = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -7280,7 +7313,7 @@ def check_and_activate_team(tournament_team):
       <td align="center">
 
         <table width="600" cellpadding="0" cellspacing="0" style="background:#0a0a0a;border:1px solid #1f1f1f;max-width:600px;width:100%;">
-          
+
           <tr>
             <td style="background:#f5a623;height:4px;"></td>
           </tr>
@@ -7294,43 +7327,39 @@ def check_and_activate_team(tournament_team):
           <tr>
             <td style="padding:40px 35px;color:#b0b0b0;font-size:15px;line-height:1.6;">
 
-              <h1 style="color:#ffffff;margin-bottom:20px;">Congratulations 🎉</h1>
+              <h1 style="color:#ffffff;margin-bottom:20px;">{c["congrats"]} 🎉</h1>
 
-              <p>Dear <strong style="color:#ffffff;">{team_leader_username}</strong> (Team {team_name}),</p>
+              <p>{c["dear"].format(leader=leader_html, team_name=team_name)}</p>
 
-              <p>We are pleased to inform you that all members of your team have been successfully verified and accepted.</p>
+              <p>{c["verified"]}</p>
 
               <table width="100%" style="border:1px solid #f5a623;background:#14110a;margin:25px 0;">
                 <tr>
                   <td style="padding:20px;text-align:center;color:#ffffff;">
-                    Your team <strong style="color:#f5a623;">{team_name}</strong> is now fully registered for 
-                    <strong>{event_name}</strong>.
+                    {c["box"].format(team_name=team_html, event_name=event_html)}
                   </td>
                 </tr>
               </table>
 
               <p>
-                All match details (room IDs, passwords, schedules) will be available in your AFC dashboard notifications.
+                {c["match_details"]}
               </p>
 
               <p>
-                Stay prepared and keep checking the platform regularly.
+                {c["stay"]}
               </p>
 
               <p>
-                Need help? Contact us at 
-                <a href="mailto:info@africanfreefirecommunity.com" style="color:#f5a623;">
-                  info@africanfreefirecommunity.com
-                </a>
+                {c["need_help"].format(email=mail_link)}
               </p>
 
               <p style="color:#ffffff;font-weight:bold;">
-                We look forward to seeing your team compete!
+                {c["look_forward"]}
               </p>
 
               <p>
-                Best regards,<br>
-                <strong style="color:#ffffff;">AFC Management Board</strong>
+                {c["regards"]}<br>
+                <strong style="color:#ffffff;">{c["board"]}</strong>
               </p>
 
             </td>
@@ -7343,13 +7372,13 @@ def check_and_activate_team(tournament_team):
                   <td style="color:#888;font-size:12px;">
                     <strong>African Free Fire Community</strong><br>
                     <a href="https://www.africanfreefirecommunity.com" style="color:#f5a623;">
-                      Visit Website
+                      {c["visit_website"]}
                     </a>
                   </td>
                   <td align="right">
                     <a href="https://discord.gg/YOUR_LINK"
                        style="border:1px solid #333;color:#fff;padding:10px 15px;text-decoration:none;font-size:11px;">
-                      Join Discord
+                      {c["join_discord"]}
                     </a>
                   </td>
                 </tr>
@@ -7365,7 +7394,7 @@ def check_and_activate_team(tournament_team):
 </body>
 </html>
 """
-        send_email(email, subject, message, language=owner_lang)
+        send_email(email, subject, message, language=owner_lang, prelocalized=True)
 
         # ---------------- PREPARE ROLE ASSIGNMENT ----------------
         stage = Stages.objects.filter(event=tournament_team.event).first()
@@ -7448,10 +7477,19 @@ def confirm_player(request):
     player_lang = (getattr(member.user, "language", "") or "en")
     owner_lang = (getattr(member.tournament_team.team.team_owner, "language", "") or "en")
 
+    # i18n (owner 2026-07-13): hand-authored per-language copy from the catalog for BOTH recipients,
+    # each in their own saved language; dynamic values injected as HTML. Sent prelocalized=True.
+    from afc_auth.email_i18n import copy_for, subject_for
+
     # =========================
     # 📧 EMAIL TO PLAYER
     # =========================
-    subject = f'AFC Registration Update: Your Application for {event_name} Has Been Accepted'
+    subject = subject_for("player_accepted", player_lang, event_name=event_name)
+    cp = copy_for("player_accepted", player_lang)
+    player_html = f'<strong style="color:#ffffff;">{player_username}</strong>'
+    event_html = f'<strong>{event_name}</strong>'
+    status_html = f'<span style="color:#15a84e;"><strong>{cp["status_word"]}</strong></span>'
+    mail_green = '<a href="mailto:info@africanfreefirecommunity.com" style="color:#15a84e;">info@africanfreefirecommunity.com</a>'
 
     player_message = f"""
 <!DOCTYPE html>
@@ -7461,7 +7499,7 @@ def confirm_player(request):
     <tr>
       <td align="center">
         <table width="600" style="background-color: #0a0a0a; border: 1px solid #1f1f1f;">
-          
+
           <tr><td height="4" style="background-color: #15a84e;"></td></tr>
 
           <tr>
@@ -7471,30 +7509,25 @@ def confirm_player(request):
                    style="max-height: 50px; display:block;">
             </td>
           </tr>
-          
+
           <tr>
             <td style="padding: 40px; color: #d0d0d0; font-size: 15px;">
-              
-              <h1 style="color: #ffffff;">Registration Accepted</h1>
-              
-              <p>Dear <strong style="color:#ffffff;">{player_username}</strong>,</p>
-              
-              <p>Your registration for <strong>{event_name}</strong> has been 
-              <span style="color:#15a84e;"><strong>verified and accepted!</strong></span></p>
 
-              <p>You are now eligible to participate. Match details will be available in your dashboard.</p>
+              <h1 style="color: #ffffff;">{cp["heading"]}</h1>
 
-              <p>If you have questions, contact:
-                <a href="mailto:info@africanfreefirecommunity.com" style="color:#15a84e;">
-                  info@africanfreefirecommunity.com
-                </a>
-              </p>
+              <p>{cp["dear"].format(player=player_html)}</p>
 
-              <p style="color:#ffffff;"><strong>Good luck in the tournament!</strong></p>
+              <p>{cp["accepted"].format(event_name=event_html, status=status_html)}</p>
+
+              <p>{cp["eligible"]}</p>
+
+              <p>{cp["questions"].format(email=mail_green)}</p>
+
+              <p style="color:#ffffff;"><strong>{cp["good_luck"]}</strong></p>
 
               <p>
-                Best regards,<br>
-                <strong style="color:#ffffff;">AFC Management Board</strong>
+                {cp["regards"]}<br>
+                <strong style="color:#ffffff;">{cp["board"]}</strong>
               </p>
             </td>
           </tr>
@@ -7507,14 +7540,19 @@ def confirm_player(request):
 """
 
     try:
-        send_email(email, subject, player_message, language=player_lang)
+        send_email(email, subject, player_message, language=player_lang, prelocalized=True)
     except Exception as e:
         print(f"Player email failed: {e}")
 
     # =========================
     # 📧 EMAIL TO TEAM OWNER
     # =========================
-    subject = f'AFC Registration Update: Player {player_username} Accepted for {event_name}'
+    subject = subject_for("player_accepted_owner", owner_lang, player=player_username, event_name=event_name)
+    co = copy_for("player_accepted_owner", owner_lang)
+    leader_html = f'<strong style="color:#ffffff;">{team_leader_username}</strong>'
+    o_player_html = f'<strong style="color:#ffffff;">{player_username}</strong>'
+    o_event_html = f'<strong>{event_name}</strong>'
+    o_contact = '<a href="mailto:info@africanfreefirecommunity.com" style="color:#ffffff;">' + co["contact_support"] + '</a>'
 
     owner_message = f"""
 <!DOCTYPE html>
@@ -7524,7 +7562,7 @@ def confirm_player(request):
     <tr>
       <td align="center">
         <table width="600" style="background-color: #0a0a0a; border: 1px solid #1f1f1f;">
-          
+
           <tr><td height="4" style="background-color: #ffffff;"></td></tr>
 
           <tr>
@@ -7534,46 +7572,41 @@ def confirm_player(request):
                    style="max-height: 50px; display:block;">
             </td>
           </tr>
-          
+
           <tr>
             <td style="padding: 40px; color: #d0d0d0; font-size: 15px;">
-              
-              <h1 style="color:#ffffff;">Player Status Update</h1>
-              
+
+              <h1 style="color:#ffffff;">{co["heading"]}</h1>
+
               <p>
-                Dear <strong style="color:#ffffff;">{team_leader_username}</strong>
-                (Team {team_name}),
+                {co["dear"].format(leader=leader_html, team_name=team_name)}
               </p>
-              
+
               <p>
-                Player <strong style="color:#ffffff;">{player_username}</strong> 
-                has been reviewed for <strong>{event_name}</strong>.
+                {co["reviewed"].format(player=o_player_html, event_name=o_event_html)}
               </p>
 
               <table width="100%" style="border:1px solid #333; background:#0f0f0f; margin:20px 0;">
                 <tr>
                   <td style="padding:20px;">
                     <strong style="color:#ffffff;">
-                      Status: <span style="color:#15a84e;">Accepted</span>
+                      {co["status_label"]} <span style="color:#15a84e;">{co["status_word"]}</span>
                     </strong>
                   </td>
                 </tr>
               </table>
 
-              <p>You can track all players in your dashboard.</p>
+              <p>{co["track"]}</p>
 
               <p>
-                Need help? 
-                <a href="mailto:info@africanfreefirecommunity.com" style="color:#ffffff;">
-                  Contact support
-                </a>
+                {co["need_help"].format(contact=o_contact)}
               </p>
 
-              <p style="color:#ffffff;"><strong>Thanks for your participation.</strong></p>
+              <p style="color:#ffffff;"><strong>{co["thanks"]}</strong></p>
 
               <p>
-                Best regards,<br>
-                <strong style="color:#ffffff;">AFC Management Board</strong>
+                {co["regards"]}<br>
+                <strong style="color:#ffffff;">{co["board"]}</strong>
               </p>
             </td>
           </tr>
@@ -7587,7 +7620,7 @@ def confirm_player(request):
 """
 
     try:
-        send_email(team_owner_email, subject, owner_message, language=owner_lang)
+        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True)
     except Exception as e:
         print(f"Owner email failed: {e}")
 
@@ -7717,10 +7750,20 @@ def reject_player(request):
     player_lang = (getattr(member.user, "language", "") or "en")
     owner_lang = (getattr(member.tournament_team.team.team_owner, "language", "") or "en")
 
+    # i18n (owner 2026-07-13): hand-authored per-language copy from the catalog for BOTH recipients.
+    # The `reason` is the organizer's free-text rejection reason and is injected AS-IS (not translated),
+    # like a username. Sent prelocalized=True so send_email skips machine-translation.
+    from afc_auth.email_i18n import copy_for, subject_for
+
     # =========================
     # 📧 EMAIL TO PLAYER
     # =========================
-    subject = f'AFC Registration Update: Your Application for {event_name} Has Been Rejected'
+    subject = subject_for("player_rejected", player_lang, event_name=event_name)
+    cp = copy_for("player_rejected", player_lang)
+    player_html = f'<strong style="color:#ffffff;">{player_username}</strong>'
+    event_html = f'<strong>{event_name}</strong>'
+    status_html = f'<span style="color:#dc2626;"><strong>{cp["status_word"]}</strong></span>'
+    p_contact = '<a href="mailto:info@africanfreefirecommunity.com" style="color:#dc2626;">' + cp["contact_support"] + '</a>'
 
     player_message = f"""
 <!DOCTYPE html>
@@ -7730,7 +7773,7 @@ def reject_player(request):
     <tr>
       <td align="center">
         <table width="600" style="background-color:#0a0a0a;border:1px solid #1f1f1f;">
-          
+
           <tr><td height="4" style="background-color:#dc2626;"></td></tr>
 
           <tr>
@@ -7740,45 +7783,41 @@ def reject_player(request):
                    style="max-height:50px;display:block;">
             </td>
           </tr>
-          
+
           <tr>
             <td style="padding:40px;color:#d0d0d0;font-size:15px;">
-              
-              <h1 style="color:#ffffff;">Registration Update</h1>
-              
-              <p>Dear <strong style="color:#ffffff;">{player_username}</strong>,</p>
-              
-              <p>Your application for <strong>{event_name}</strong> has been 
-              <span style="color:#dc2626;"><strong>rejected</strong></span>.</p>
+
+              <h1 style="color:#ffffff;">{cp["heading"]}</h1>
+
+              <p>{cp["dear"].format(player=player_html)}</p>
+
+              <p>{cp["rejected"].format(event_name=event_html, status=status_html)}</p>
 
               <table width="100%" style="border-left:3px solid #dc2626;background:#1a0b0b;margin:20px 0;">
                 <tr>
                   <td style="padding:20px;">
-                    <p style="color:#dc2626;font-weight:bold;">Reason:</p>
+                    <p style="color:#dc2626;font-weight:bold;">{cp["reason_label"]}</p>
                     <p style="color:#ffffff;">{reason}</p>
                   </td>
                 </tr>
               </table>
 
-              <p>Please correct the issue and re-submit your registration.</p>
+              <p>{cp["correct"]}</p>
 
               <p>
                 <a href="https://www.africanfreefirecommunity.com"
                    style="background:#dc2626;color:#fff;padding:12px 20px;text-decoration:none;">
-                   Update Registration
+                   {cp["update_btn"]}
                 </a>
               </p>
 
               <p>
-                Need help? 
-                <a href="mailto:info@africanfreefirecommunity.com" style="color:#dc2626;">
-                  Contact support
-                </a>
+                {cp["need_help"].format(contact=p_contact)}
               </p>
 
               <p>
-                Best regards,<br>
-                <strong style="color:#ffffff;">AFC Management Board</strong>
+                {cp["regards"]}<br>
+                <strong style="color:#ffffff;">{cp["board"]}</strong>
               </p>
             </td>
           </tr>
@@ -7792,14 +7831,19 @@ def reject_player(request):
 """
 
     try:
-        send_email(email, subject, player_message, language=player_lang)
+        send_email(email, subject, player_message, language=player_lang, prelocalized=True)
     except Exception as e:
         print(f"Player rejection email failed: {e}")
 
     # =========================
     # 📧 EMAIL TO TEAM OWNER
     # =========================
-    subject = f'AFC Registration Update: Player {player_username} Rejected for {event_name}'
+    subject = subject_for("player_rejected_owner", owner_lang, player=player_username, event_name=event_name)
+    co = copy_for("player_rejected_owner", owner_lang)
+    leader_html = f'<strong style="color:#ffffff;">{team_leader_username}</strong>'
+    o_player_html = f'<strong style="color:#ffffff;">{player_username}</strong>'
+    o_event_html = f'<strong>{event_name}</strong>'
+    o_contact = '<a href="mailto:info@africanfreefirecommunity.com" style="color:#ffffff;">' + co["contact_support"] + '</a>'
 
     owner_message = f"""
 <!DOCTYPE html>
@@ -7809,7 +7853,7 @@ def reject_player(request):
     <tr>
       <td align="center">
         <table width="600" style="background-color:#0a0a0a;border:1px solid #1f1f1f;">
-          
+
           <tr><td height="4" style="background-color:#ffffff;"></td></tr>
 
           <tr>
@@ -7819,49 +7863,44 @@ def reject_player(request):
                    style="max-height:50px;display:block;">
             </td>
           </tr>
-          
+
           <tr>
             <td style="padding:40px;color:#d0d0d0;font-size:15px;">
-              
-              <h1 style="color:#ffffff;">Player Status Update</h1>
-              
+
+              <h1 style="color:#ffffff;">{co["heading"]}</h1>
+
               <p>
-                Dear <strong style="color:#ffffff;">{team_leader_username}</strong>
-                (Team {team_name}),
+                {co["dear"].format(leader=leader_html, team_name=team_name)}
               </p>
-              
+
               <p>
-                Player <strong style="color:#ffffff;">{player_username}</strong> 
-                has been reviewed for <strong>{event_name}</strong>.
+                {co["reviewed"].format(player=o_player_html, event_name=o_event_html)}
               </p>
 
               <table width="100%" style="border:1px solid #333;background:#0f0f0f;margin:20px 0;">
                 <tr>
                   <td style="padding:20px;">
                     <p style="color:#ffffff;font-weight:bold;">
-                      Status: <span style="color:#dc2626;">Rejected</span>
+                      {co["status_label"]} <span style="color:#dc2626;">{co["status_word"]}</span>
                     </p>
 
                     <div style="margin-top:15px;border-top:1px solid #333;padding-top:15px;">
-                      <p style="color:#dc2626;font-weight:bold;">Reason:</p>
+                      <p style="color:#dc2626;font-weight:bold;">{co["reason_label"]}</p>
                       <p style="color:#ffffff;">{reason}</p>
                     </div>
                   </td>
                 </tr>
               </table>
 
-              <p>You can monitor your team in the dashboard.</p>
+              <p>{co["monitor"]}</p>
 
               <p>
-                Need help? 
-                <a href="mailto:info@africanfreefirecommunity.com" style="color:#ffffff;">
-                  Contact support
-                </a>
+                {co["need_help"].format(contact=o_contact)}
               </p>
 
               <p>
-                Best regards,<br>
-                <strong style="color:#ffffff;">AFC Management Board</strong>
+                {co["regards"]}<br>
+                <strong style="color:#ffffff;">{co["board"]}</strong>
               </p>
             </td>
           </tr>
@@ -7875,7 +7914,7 @@ def reject_player(request):
 """
 
     try:
-        send_email(team_owner_email, subject, owner_message, language=owner_lang)
+        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True)
     except Exception as e:
         print(f"Owner rejection email failed: {e}")
 
@@ -24196,10 +24235,24 @@ def _as_bool_nullable(v, default=None):
 
 @api_view(["GET"])
 def get_event_flagged_kills(request):
-    """GET events/flagged-kills/?event_id= — the event-wide count_flagged_kills default + every
-    flagged ringer (uid, name, kills, reason, who they really are, whether it counts now). Auth:
-    AFC event admin OR org member with can_upload_results. Consumed by the flagged-players panel on
-    the event leaderboard editor (FlaggedKillsPanel)."""
+    """GET events/flagged-kills/?event_id=[&stage_ids=..&group_ids=..] — the event-wide
+    count_flagged_kills default + flagged ringers, OPTIONALLY scoped to specific stages/groups.
+
+    SCOPING (owner 2026-07-10 "flagged players should only show for the stage/group they were flagged
+    for, and admins/organizers decide which stages/groups to combine to view them"): the panel passes
+    the stage(s)/group(s) it is viewing as comma-separated `stage_ids` / `group_ids`. `stage_ids` expand
+    to ALL their groups, unioned with any explicit `group_ids` (both validated to this event); flags and
+    unmatched-team blocks are then filtered to matches whose group is in that set. With NEITHER param the
+    WHOLE event is returned (back-compat). Every flag/block now carries its
+    `stage_id/stage_name/group_id/group_name` (derived from `match.group.stage`; null when the match has
+    no group) so the panel can label + group rows, and the response echoes the event's stage->group
+    structure so the panel builds its combine picker from this one call.
+
+    DISPLAY-ONLY: scoping changes WHAT IS SHOWN, never any team total — the count/exclude decisions and
+    _recompute_team_kills_for_event are unchanged (still event-wide).
+
+    Auth: AFC event admin OR org member with can_upload_results. Consumed by FlaggedKillsPanel on the
+    admin + organizer event leaderboards."""
     event_id = request.query_params.get("event_id")
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
@@ -24207,43 +24260,88 @@ def get_event_flagged_kills(request):
     admin, err = _auth_event_results(request, event)
     if err:
         return err
-    from .models import MatchKillFlag
-    flags = (MatchKillFlag.objects
-             .filter(tournament_team__event=event)
-             .select_related("tournament_team__team", "registered_user")
-             .order_by("tournament_team__team__team_name", "match_id", "uid"))
-    rows = [{
-        "flag_id": f.id,
-        "match_id": f.match_id,
-        "tournament_team_id": f.tournament_team_id,
-        "team_name": (f.tournament_team.team.team_name if f.tournament_team.team_id else None),
-        "uid": f.uid,
-        "name": f.name,
-        "kills": f.kills,
-        "reason": f.reason,
-        "registered_username": (f.registered_user.username if f.registered_user_id else None),
-        "count_kills": f.count_kills,            # null = follow the event default
-        "effective_count": f.effective_count,    # resolved: does this player's kills count right now?
-    } for f in flags]
+    from .models import MatchKillFlag, UnmatchedTeamBlock, StageGroups
+
+    # ── Resolve the optional stage/group scope into a concrete set of group ids for THIS event. ──
+    # stage_ids -> their groups, unioned with explicit group_ids; ids from other events are ignored.
+    def _id_list(key):
+        raw = request.query_params.get(key) or ""
+        return [int(x) for x in raw.replace(" ", "").split(",") if x.lstrip("-").isdigit()]
+    req_stage_ids = _id_list("stage_ids")
+    req_group_ids = _id_list("group_ids")
+    scoped = bool(req_stage_ids or req_group_ids)
+    scope_group_ids = None
+    if scoped:
+        egroups = list(StageGroups.objects.filter(stage__event=event).values("group_id", "stage_id"))
+        event_gids = {g["group_id"] for g in egroups}
+        scope_group_ids = set()
+        if req_group_ids:
+            scope_group_ids |= (set(req_group_ids) & event_gids)
+        if req_stage_ids:
+            sset = set(req_stage_ids)
+            scope_group_ids |= {g["group_id"] for g in egroups if g["stage_id"] in sset}
+
+    # The stage/group a per-match row belongs to (null-safe: Match.group is nullable).
+    def _grp_stage(match):
+        grp = match.group if (match and match.group_id) else None
+        return grp, (grp.stage if grp else None)
+
+    flags_qs = (MatchKillFlag.objects
+                .filter(tournament_team__event=event)
+                .select_related("tournament_team__team", "registered_user", "match__group__stage")
+                .order_by("tournament_team__team__team_name", "match_id", "uid"))
+    if scoped:
+        flags_qs = flags_qs.filter(match__group_id__in=scope_group_ids)
+    rows = []
+    for f in flags_qs:
+        grp, stg = _grp_stage(f.match)
+        rows.append({
+            "flag_id": f.id,
+            "match_id": f.match_id,
+            "tournament_team_id": f.tournament_team_id,
+            "team_name": (f.tournament_team.team.team_name if f.tournament_team.team_id else None),
+            "uid": f.uid,
+            "name": f.name,
+            "kills": f.kills,
+            "reason": f.reason,
+            "registered_username": (f.registered_user.username if f.registered_user_id else None),
+            "count_kills": f.count_kills,            # null = follow the event default
+            "effective_count": f.effective_count,    # resolved: does this player's kills count right now?
+            # Where the flag was raised (owner 2026-07-10 scoping); null if the match has no group.
+            "stage_id": (stg.stage_id if stg else None),
+            "stage_name": (stg.stage_name if stg else None),
+            "group_id": (grp.group_id if grp else None),
+            "group_name": (grp.group_name if grp else None),
+        })
 
     # Unmatched-team blocks (owner 2026-06-30): in-game teams from a match-log upload that matched NO
     # registered team. The panel lists them with an "attribute to / don't count" dropdown (event_teams
-    # are the options) so this one surface resolves BOTH ringer players and whole-team attribution.
-    from .models import UnmatchedTeamBlock
-    blocks = (UnmatchedTeamBlock.objects
-              .filter(match__group__stage__event=event)
-              .select_related("match", "attributed_team__team")
-              .order_by("team_name", "match_id"))
-    unmatched_rows = [{
-        "block_id": b.id,
-        "match_id": b.match_id,
-        "team_name": b.team_name,
-        "placement": b.placement,
-        "kills": b.kills,
-        "attributed_team_id": b.attributed_team_id,
-        "attributed_team_name": (b.attributed_team.team.team_name
-                                 if b.attributed_team_id and b.attributed_team.team_id else None),
-    } for b in blocks]
+    # are the options) so this one surface resolves BOTH ringer players and whole-team attribution. Scoped
+    # by the SAME stage/group filter so the panel stays coherent with the flags above.
+    blocks_qs = (UnmatchedTeamBlock.objects
+                 .filter(match__group__stage__event=event)
+                 .select_related("match__group__stage", "attributed_team__team")
+                 .order_by("team_name", "match_id"))
+    if scoped:
+        blocks_qs = blocks_qs.filter(match__group_id__in=scope_group_ids)
+    unmatched_rows = []
+    for b in blocks_qs:
+        grp, stg = _grp_stage(b.match)
+        unmatched_rows.append({
+            "block_id": b.id,
+            "match_id": b.match_id,
+            "team_name": b.team_name,
+            "placement": b.placement,
+            "kills": b.kills,
+            "attributed_team_id": b.attributed_team_id,
+            "attributed_team_name": (b.attributed_team.team.team_name
+                                     if b.attributed_team_id and b.attributed_team.team_id else None),
+            "stage_id": (stg.stage_id if stg else None),
+            "stage_name": (stg.stage_name if stg else None),
+            "group_id": (grp.group_id if grp else None),
+            "group_name": (grp.group_name if grp else None),
+        })
+    # Attribution options stay the WHOLE event's teams (unscoped) - a block can be attributed to any team.
     event_teams = sorted(
         ({"tournament_team_id": tt.tournament_team_id, "team_name": tt.team.team_name}
          for tt in TournamentTeam.objects.filter(event=event).select_related("team")),
@@ -24257,6 +24355,10 @@ def get_event_flagged_kills(request):
         "flag_count": len(rows),
         "unmatched_teams": unmatched_rows,
         "event_teams": event_teams,
+        # Stage->group structure for the panel's combine picker (owner 2026-07-10). Reuses the same
+        # helper the BroadcastControl picker uses so the shapes stay in sync.
+        "stages": _event_stage_structure(event),
+        "scoped": scoped,
     })
 
 
@@ -24376,6 +24478,99 @@ def attribute_unmatched_team(request):
         "block_id": block.id,
         "attributed_team_id": block.attributed_team_id,
         "team_rows_recomputed": updated,
+    })
+
+
+@api_view(["PATCH"])
+def set_flagged_kills_bulk(request):
+    """PATCH events/flagged-kills/bulk/ — apply MANY flagged-player decisions and/or unmatched-team
+    attributions for ONE event in a single call, then recompute the event's team totals EXACTLY ONCE.
+
+    WHY (owner 2026-07-13): each single set_match_kill_flag / attribute_unmatched_team PATCH runs a
+    full _recompute_team_kills_for_event, so accepting/rejecting flagged players one by one re-scored
+    the whole event on every click and felt slow. The FlaggedKillsPanel "Accept all" / "Reject all"
+    (and per-team) buttons POST the whole batch here; every decision is written in one transaction and
+    the event is recomputed once at the end.
+
+    Body:
+      { "event_id": N,
+        "flags":     [ {"flag_id": id, "count_kills": true|false|null}, ... ],   # optional
+        "unmatched": [ {"block_id": id, "tournament_team_id": id|null},  ... ] }  # optional
+    Every flag/block MUST belong to `event_id` (else it is skipped + reported), so a caller cannot
+    reach across events. Auth: AFC event admin OR org member with can_upload_results on the event.
+    Returns counts applied + team_rows_recomputed. Consumed by frontend lib/flaggedKills.ts bulkSet()
+    (FlaggedKillsPanel bulk-action buttons)."""
+    from .models import MatchKillFlag, UnmatchedTeamBlock
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    admin, err = _auth_event_results(request, event)
+    if err:
+        return err
+
+    flags_in = request.data.get("flags") or []
+    unmatched_in = request.data.get("unmatched") or []
+    if not isinstance(flags_in, list) or not isinstance(unmatched_in, list):
+        return Response({"message": "flags and unmatched must be lists."}, status=400)
+
+    flags_updated = 0
+    blocks_updated = 0
+    skipped = []
+
+    with transaction.atomic():
+        # ── flagged players: set each flag's count_kills (True/False/null=follow event default) ──
+        for item in flags_in:
+            fid = item.get("flag_id") if isinstance(item, dict) else None
+            if not fid:
+                continue
+            flag = (MatchKillFlag.objects.select_related("tournament_team__event")
+                    .filter(id=fid, tournament_team__event=event).first())
+            if not flag:
+                skipped.append({"flag_id": fid, "reason": "not found or not in this event"})
+                continue
+            flag.count_kills = _as_bool_nullable(item.get("count_kills"), default=None)
+            flag.save(update_fields=["count_kills"])
+            flags_updated += 1
+
+        # ── unmatched team blocks: attribute to a registered team, or null to leave uncounted ──
+        for item in unmatched_in:
+            bid = item.get("block_id") if isinstance(item, dict) else None
+            if not bid:
+                continue
+            block = (UnmatchedTeamBlock.objects.select_related("match__group__stage__event")
+                     .filter(id=bid, match__group__stage__event=event).first())
+            if not block:
+                skipped.append({"block_id": bid, "reason": "not found or not in this event"})
+                continue
+            raw = item.get("tournament_team_id")
+            new_tt_id = None
+            if raw not in (None, "", "null"):
+                try:
+                    new_tt_id = int(raw)
+                except (TypeError, ValueError):
+                    skipped.append({"block_id": bid, "reason": "tournament_team_id must be int or null"})
+                    continue
+                if not TournamentTeam.objects.filter(tournament_team_id=new_tt_id, event=event).exists():
+                    skipped.append({"block_id": bid, "reason": "team not registered for this event"})
+                    continue
+            old_tt_id = block.attributed_team_id
+            block.attributed_team_id = new_tt_id
+            block.save(update_fields=["attributed_team"])
+            if old_tt_id and old_tt_id != new_tt_id:
+                _cleanup_attribution_only_stat(block.match, old_tt_id)
+            blocks_updated += 1
+
+        # ONE recompute for the entire batch — the whole point of this endpoint.
+        recomputed = _recompute_team_kills_for_event(event)
+
+    return Response({
+        "message": "Flagged decisions applied.",
+        "flags_updated": flags_updated,
+        "blocks_updated": blocks_updated,
+        "skipped": skipped,
+        "team_rows_recomputed": recomputed,
     })
 
 

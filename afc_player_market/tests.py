@@ -117,7 +117,7 @@ class CreatePostExpiryCapTests(TestCase):
         # accepted platforms (owner: "tell them the platform links we are accepting").
         resp = self._post(add_one_month(self.today), video_url="https://evil.example.com/clip.mp4")
         self.assertEqual(resp.status_code, 400)
-        self.assertIn("YouTube, TikTok or Instagram", resp.json()["message"])
+        self.assertIn("YouTube, TikTok, Instagram, X (Twitter) or Facebook", resp.json()["message"])
         self.assertEqual(RecruitmentPost.objects.count(), 0)
 
     def test_expiry_two_months_out_is_rejected(self):

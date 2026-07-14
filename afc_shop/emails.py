@@ -35,6 +35,10 @@ commas, periods, or a spaced hyphen.
 """
 
 from afc_auth.views import _email_shell, send_email, SITE_URL
+# HAND-AUTHORED per-language copy (en/fr/pt) for the order emails, so a French / Portuguese buyer
+# gets natural sentences WITHOUT depending on the DeepL engine (owner 2026-07-13). copy_for returns
+# the localized body dict; subject_for returns the localized subject. Callers send prelocalized=True.
+from afc_auth.email_i18n import copy_for, subject_for
 
 
 # ── Small render helpers (shared by the three builders below) ──────────────────
@@ -60,13 +64,14 @@ def _order_items_rows(order):
     return rows
 
 
-def _delivery_block(order):
+def _delivery_block(order, lang="en"):
     """Render the buyer's delivery details as an email-safe block.
 
     Reads the delivery snapshot the checkout stored on the Order
     (first_name/last_name/address/city/state/postcode/phone_number). Returns an
     HTML string. These are the SAME fields a vendor sees when fulfilling, so the
-    buyer can confirm where their order is going."""
+    buyer can confirm where their order is going. `lang` is unused here (all values
+    are the buyer's own data) but kept for signature symmetry with _summary_table."""
     full_name = f"{order.first_name} {order.last_name}".strip()
     # Build the address line from whatever parts are present (some may be blank).
     parts = [p for p in [order.address, order.city, order.state, order.postcode] if p]
@@ -79,100 +84,116 @@ def _delivery_block(order):
     </div>"""
 
 
-def _summary_table(order):
+def _summary_table(order, lang="en"):
     """Render the full order-summary card (items table + totals + delivery), shared
     by all three emails so the buyer always sees the same recap. Reads the order's
-    monetary fields (subtotal/discount_total/tax/total) plus the helpers above."""
+    monetary fields (subtotal/discount_total/tax/total) plus the helpers above.
+
+    i18n (owner 2026-07-13): the static labels (Order #, Subtotal, Discount, Tax, Total,
+    Delivery to) come from the hand-authored catalog (template "order_summary") in `lang`.
+    The numbers + the buyer's own data are locale-neutral and pass through unchanged."""
+    lbl = copy_for("order_summary", lang)
     items = _order_items_rows(order)
-    delivery = _delivery_block(order)
+    delivery = _delivery_block(order, lang)
     # Only show the discount row when there actually was one (keeps the recap clean).
     discount_row = ""
     if order.discount_total and order.discount_total > 0:
         discount_row = f"""
-      <tr><td style="padding:4px 0;font-size:14px;color:#8b988f;" colspan="2">Discount</td>
+      <tr><td style="padding:4px 0;font-size:14px;color:#8b988f;" colspan="2">{lbl["discount"]}</td>
           <td style="padding:4px 0;font-size:14px;color:#34d27b;" align="right">- {order.discount_total}</td></tr>"""
     return f"""
   <tr><td style="padding:8px 44px 4px;">
     <div style="background:#0a120d;border:1px solid #1d2a22;border-radius:12px;padding:20px 22px;">
-      <div style="font-size:13px;letter-spacing:1px;text-transform:uppercase;color:#7c8c83;margin-bottom:10px;">Order #{order.id}</div>
+      <div style="font-size:13px;letter-spacing:1px;text-transform:uppercase;color:#7c8c83;margin-bottom:10px;">{lbl["order_no"].format(id=order.id)}</div>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
         {items}
       </table>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;">
-        <tr><td style="padding:4px 0;font-size:14px;color:#8b988f;" colspan="2">Subtotal</td>
+        <tr><td style="padding:4px 0;font-size:14px;color:#8b988f;" colspan="2">{lbl["subtotal"]}</td>
             <td style="padding:4px 0;font-size:14px;color:#cdd6cf;" align="right">{order.subtotal}</td></tr>
         {discount_row}
-        <tr><td style="padding:4px 0;font-size:14px;color:#8b988f;" colspan="2">Tax</td>
+        <tr><td style="padding:4px 0;font-size:14px;color:#8b988f;" colspan="2">{lbl["tax"]}</td>
             <td style="padding:4px 0;font-size:14px;color:#cdd6cf;" align="right">{order.tax}</td></tr>
-        <tr><td style="padding:8px 0 0;font-size:16px;font-weight:700;color:#ffffff;" colspan="2">Total</td>
+        <tr><td style="padding:8px 0 0;font-size:16px;font-weight:700;color:#ffffff;" colspan="2">{lbl["total"]}</td>
             <td style="padding:8px 0 0;font-size:16px;font-weight:700;color:#34d27b;" align="right">{order.total}</td></tr>
       </table>
     </div>
   </td></tr>
   <tr><td style="padding:14px 44px 4px;">
-    <div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#7c8c83;margin-bottom:6px;">Delivery to</div>
+    <div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#7c8c83;margin-bottom:6px;">{lbl["delivery_to"]}</div>
     {delivery}
   </td></tr>"""
 
 
 # ── 1. Order received (sent on PAID) ───────────────────────────────────────────
-def order_received_email(order):
+def order_received_email(order, lang="en"):
     """Build the "we received your order" HTML body (green accent). Sent by
     afc_shop.fulfilment.notify_order_paid the moment a vendor order is paid, so the
-    buyer knows AFC has the order and the vendor is preparing it."""
+    buyer knows AFC has the order and the vendor is preparing it. Copy from the
+    hand-authored catalog (template "order_received") in `lang`."""
+    c = copy_for("order_received", lang)
     buyer = order.first_name or order.user.username
+    buyer_html = f'<span style="color:#e8efe9;font-weight:600;">{buyer}</span>'
+    track_link = f'<a href="{SITE_URL}/orders" style="color:#34d27b;text-decoration:none;">africanfreefirecommunity.com/orders</a>'
     inner = f"""
   <tr><td style="padding:38px 44px 6px;">
-    <div style="font-size:21px;font-weight:700;color:#ffffff;">We received your order</div>
-    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">Hi <span style="color:#e8efe9;font-weight:600;">{buyer}</span>, thank you for your purchase. Your payment is confirmed and the seller is preparing your order. We will email you again when it ships.</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"].format(buyer=buyer_html)}</div>
   </td></tr>
-  {_summary_table(order)}
+  {_summary_table(order, lang)}
   <tr><td style="padding:18px 44px 26px;">
-    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">You can track this order any time at <a href="{SITE_URL}/orders" style="color:#34d27b;text-decoration:none;">africanfreefirecommunity.com/orders</a>.</div>
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">{c["track"].format(link=track_link)}</div>
   </td></tr>"""
     return _email_shell(inner, "green")
 
 
 # ── 2. Order shipped (sent on the shipped transition) ──────────────────────────
-def order_shipped_email(order):
+def order_shipped_email(order, lang="en"):
     """Build the "your order is on the way" HTML body (green accent). Sent by
     afc_shop.fulfilment.vendor_mark_shipped when the vendor dispatches the order;
-    includes the vendor-picked ship date when one was set."""
+    includes the vendor-picked ship date when one was set. Copy from the hand-authored
+    catalog (template "order_shipped") in `lang`."""
+    c = copy_for("order_shipped", lang)
     buyer = order.first_name or order.user.username
+    buyer_html = f'<span style="color:#e8efe9;font-weight:600;">{buyer}</span>'
+    contact_link = f'<a href="{SITE_URL}/contact" style="color:#34d27b;text-decoration:none;">africanfreefirecommunity.com/contact</a>'
     # ship_date is optional (a vendor may ship without having set a date); only show
     # the line when present.
     ship_line = ""
     if order.ship_date:
         ship_line = f"""
-    <div style="font-size:14px;color:#cdd6cf;margin-top:10px;">Estimated ship date: <span style="color:#e8efe9;font-weight:600;">{order.ship_date.strftime('%d %b %Y')}</span></div>"""
+    <div style="font-size:14px;color:#cdd6cf;margin-top:10px;">{c["ship_label"]} <span style="color:#e8efe9;font-weight:600;">{order.ship_date.strftime('%d %b %Y')}</span></div>"""
     inner = f"""
   <tr><td style="padding:38px 44px 6px;">
-    <div style="font-size:21px;font-weight:700;color:#ffffff;">Your order is on the way</div>
-    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">Good news, <span style="color:#e8efe9;font-weight:600;">{buyer}</span>. Your order has been shipped and is heading to you.</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"].format(buyer=buyer_html)}</div>
     {ship_line}
   </td></tr>
-  {_summary_table(order)}
+  {_summary_table(order, lang)}
   <tr><td style="padding:18px 44px 26px;">
-    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">Questions about delivery? Reach us at <a href="{SITE_URL}/contact" style="color:#34d27b;text-decoration:none;">africanfreefirecommunity.com/contact</a>.</div>
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">{c["questions"].format(link=contact_link)}</div>
   </td></tr>"""
     return _email_shell(inner, "green")
 
 
 # ── 3. Order completed (sent on the completed transition) ──────────────────────
-def order_completed_email(order):
+def order_completed_email(order, lang="en"):
     """Build the "your order is complete" HTML body (green accent). Sent by
     afc_shop.fulfilment.order_mark_completed when the order is closed out as
-    delivered."""
+    delivered. Copy from the hand-authored catalog (template "order_completed") in `lang`."""
+    c = copy_for("order_completed", lang)
     buyer = order.first_name or order.user.username
+    buyer_html = f'<span style="color:#e8efe9;font-weight:600;">{buyer}</span>'
+    shop_link = f'<a href="{SITE_URL}/shop" style="color:#34d27b;text-decoration:none;">africanfreefirecommunity.com/shop</a>'
     inner = f"""
   <tr><td style="padding:40px 44px 6px;text-align:center;">
     <div style="width:64px;height:64px;line-height:64px;border-radius:50%;background:#0a120d;border:1px solid #2c7a4d;margin:0 auto;font-size:30px;color:#34d27b;">&#10003;</div>
-    <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">Your order is complete</div>
-    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">Thank you, <span style="color:#e8efe9;font-weight:600;">{buyer}</span>. Your order has been delivered and is now complete. We hope you enjoy it.</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"].format(buyer=buyer_html)}</div>
   </td></tr>
-  {_summary_table(order)}
+  {_summary_table(order, lang)}
   <tr><td style="padding:18px 44px 26px;">
-    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">Shop again any time at <a href="{SITE_URL}/shop" style="color:#34d27b;text-decoration:none;">africanfreefirecommunity.com/shop</a>.</div>
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">{c["shop_again"].format(link=shop_link)}</div>
   </td></tr>"""
     return _email_shell(inner, "green")
 
@@ -204,15 +225,21 @@ def _order_language(order):
 
 
 def send_order_received(order):
-    """Send the order-received email for `order`. Called by notify_order_paid."""
-    return send_email(_recipient(order), "We received your order", order_received_email(order), language=_order_language(order))
+    """Send the order-received email for `order`. Called by notify_order_paid.
+
+    i18n (owner 2026-07-13): subject + body come from the hand-authored catalog in the buyer's
+    language, so we send prelocalized=True (send_email skips the machine-translation pass)."""
+    lang = _order_language(order)
+    return send_email(_recipient(order), subject_for("order_received", lang), order_received_email(order, lang), language=lang, prelocalized=True)
 
 
 def send_order_shipped(order):
     """Send the order-shipped email for `order`. Called by vendor_mark_shipped."""
-    return send_email(_recipient(order), "Your order is on the way", order_shipped_email(order), language=_order_language(order))
+    lang = _order_language(order)
+    return send_email(_recipient(order), subject_for("order_shipped", lang), order_shipped_email(order, lang), language=lang, prelocalized=True)
 
 
 def send_order_completed(order):
     """Send the order-completed email for `order`. Called by order_mark_completed."""
-    return send_email(_recipient(order), "Your order is complete", order_completed_email(order), language=_order_language(order))
+    lang = _order_language(order)
+    return send_email(_recipient(order), subject_for("order_completed", lang), order_completed_email(order, lang), language=lang, prelocalized=True)

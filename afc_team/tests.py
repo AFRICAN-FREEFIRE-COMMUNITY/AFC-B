@@ -107,11 +107,20 @@ _D = datetime.date(2026, 1, 1)
 def _make_event(creator, event_status="upcoming", name="Roster Lock Cup"):
     """Minimal valid Event row (all required, non-null fields populated), mirroring the
     afc_tournament_and_scrims test fixtures. event_status drives Rule B (upcoming/ongoing
-    = active; completed = finished)."""
+    = active; completed = finished).
+
+    Dates span a window ENDING IN THE FUTURE so an upcoming/ongoing event is genuinely LIVE.
+    The roster lock now derives liveness via effective_event_status() (owner 2026-07-14), which
+    reads a PAST-end event as "completed" no matter what event_status says - so a fixed past date
+    (the old _D = 2026-01-01) would make even an "upcoming" event effectively finished and stop it
+    locking. A future end keeps these fixtures representing a real live tournament."""
+    _today = datetime.date.today()
+    _start = _today - datetime.timedelta(days=1)   # already started
+    _end = _today + datetime.timedelta(days=7)     # ends in the future -> effectively live
     return Event.objects.create(
         event_name=name, competition_type="tournament", participant_type="squad",
         event_type="internal", max_teams_or_players=16, event_mode="virtual",
-        start_date=_D, end_date=_D, registration_open_date=_D, registration_end_date=_D,
+        start_date=_start, end_date=_end, registration_open_date=_D, registration_end_date=_D,
         prizepool="$1000", event_rules="rules", event_status=event_status,
         registration_link="https://afc.test/reg", number_of_stages=1,
         creator=creator, is_draft=False,
@@ -220,6 +229,30 @@ class RuleB_TournamentMembershipLockTests(TestCase):
                                       team=self.team, status="withdrawn")
         res = self._kick(self.owner_tok, self.member.user_id)
         self.assertEqual(res.status_code, 200)
+        self.assertFalse(TeamMembers.objects.filter(pk=self.membership.pk).exists())
+
+    def test_exit_and_kick_allowed_when_event_status_stale_but_end_passed(self):
+        # Regression (owner 2026-07-14, VENTRIX GAMING / LEGACY SCRIMS 198+200): a scrim whose
+        # end date/time has PASSED keeps event_status="upcoming" forever because the auto-complete
+        # sweep is not scheduled in the live celery beat. effective_event_status() reads it as
+        # "completed", so the roster lock must RELEASE even though the raw field still says upcoming.
+        # Before the fix the member was frozen ("no current event but I can't leave / can't remove").
+        _today = datetime.date.today()
+        stale = Event.objects.create(
+            event_name="Stale Scrim", competition_type="scrim", participant_type="squad",
+            event_type="internal", max_teams_or_players=16, event_mode="virtual",
+            start_date=_today - datetime.timedelta(days=8),
+            end_date=_today - datetime.timedelta(days=7),   # ended a week ago
+            registration_open_date=_D, registration_end_date=_D,
+            prizepool="$0", event_rules="rules", event_status="upcoming",  # stale raw status
+            registration_link="https://afc.test/reg", number_of_stages=1,
+            creator=self.owner, is_draft=False,
+        )
+        tt = TournamentTeam.objects.create(event=stale, team=self.team)
+        self._roster(tt, self.member)                       # member IS on the (stale) event roster
+        # Owner kick is allowed...
+        res = self._kick(self.owner_tok, self.member.user_id)
+        self.assertEqual(res.status_code, 200, res.json())
         self.assertFalse(TeamMembers.objects.filter(pk=self.membership.pk).exists())
 
 

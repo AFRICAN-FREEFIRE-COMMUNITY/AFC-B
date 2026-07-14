@@ -192,6 +192,61 @@ def _contain_resize(img, box_px):
     return img.resize((nw, nh), Image.LANCZOS)
 
 
+# ── Render caches (owner 2026-07-13, "it took time to download today") ───────────────────────────
+# Every graphic download re-renders server-side from scratch: the FE deliberately cache-busts each
+# request (params._ts) so the PNG always reflects the LATEST scores, which means the same heavy pixels
+# were recomputed on every click — the uploaded background decoded + LANCZOS cover-resized to the full
+# 1920x1080 / 1080x1350 canvas, and every team/sponsor logo re-decoded + resized, per render. These
+# two per-process memos skip that repeat work. Keyed on (file path + mtime + target box) so replacing
+# a background or a team logo transparently invalidates only its own entry; a plain miss just does the
+# original work, so correctness never depends on the cache. Bounded — cleared wholesale when large
+# (backgrounds/logos per org are few, so this stays tiny in practice).
+_BG_COVER_CACHE: dict = {}     # (path, mtime, w, h) -> cover-resized RGB Image (a COPY is returned)
+_LOGO_RESIZE_CACHE: dict = {}  # (path, mtime, box_px) -> contained RGBA Image (only ever pasted)
+
+
+def _file_mtime(path):
+    """File mtime for cache keying, or 0 when it can't be read (a missing/None path just re-renders)."""
+    try:
+        return os.path.getmtime(path)
+    except Exception:
+        return 0
+
+
+def _cover_cached(path, size):
+    """`_cover` (decode + LANCZOS fill-crop to `size`) memoised by (path, mtime, size). Returns a
+    fresh COPY every call because the caller draws its fields/rows straight ONTO this base image, so
+    the cached original must stay pristine for the next render. Raises on a bad path (the caller's
+    existing try/except falls back to the plain dark background), matching the old inline behaviour."""
+    key = (path, _file_mtime(path), size[0], size[1])
+    img = _BG_COVER_CACHE.get(key)
+    if img is None:
+        img = _cover(Image.open(path).convert("RGB"), size)
+        if len(_BG_COVER_CACHE) > 48:
+            _BG_COVER_CACHE.clear()
+        _BG_COVER_CACHE[key] = img
+    return img.copy()
+
+
+def _load_contained_rgba(path, box_px):
+    """Decode `path` to RGBA + `_contain_resize` into a box_px square, memoised by (path, mtime,
+    box_px). The result is only ever PASTED (paste reads the image, never mutates it), so callers may
+    share the cached instance directly — no copy needed, even when the same logo repeats across rows.
+    Returns None on any decode failure (so a bad/None path is a silent no-op, as before)."""
+    box_px = max(1, int(box_px))
+    key = (path, _file_mtime(path), box_px)
+    img = _LOGO_RESIZE_CACHE.get(key)
+    if img is None:
+        try:
+            img = _contain_resize(Image.open(path).convert("RGBA"), box_px)
+        except Exception:
+            return None
+        if len(_LOGO_RESIZE_CACHE) > 256:
+            _LOGO_RESIZE_CACHE.clear()
+        _LOGO_RESIZE_CACHE[key] = img
+    return img
+
+
 def _text_w(draw, text, font):
     box = draw.textbbox((0, 0), text, font=font)
     return box[2] - box[0]
@@ -305,13 +360,12 @@ def _paste_row_logo(base, path, cx, cy, edge_px):
     path = _local_media_path(path)
     if not path:
         return
-    try:
-        limg = Image.open(path).convert("RGBA")
-    except Exception:
-        return
     # Contain into the fixed box exactly like the editor's `object-fit: contain` (no trim, aspect
     # kept, small art upscaled), so the on-canvas footprint matches the editor sample pixel-for-pixel.
-    limg = _contain_resize(limg, edge_px)
+    # _load_contained_rgba memoises the decode+resize (same logo across rows/renders resolves once).
+    limg = _load_contained_rgba(path, edge_px)
+    if limg is None:
+        return
     base.paste(limg, (cx - limg.width // 2, cy - limg.height // 2), limg)
 
 
@@ -393,16 +447,15 @@ def _paste_logos(base, logos, W, H):
     """Paste positioned logos centred at (x_pct% W, y_pct% H), longest edge = LOGO_SIZE_FRAC[size]
     of canvas height. Shared by the field-layout path (the legacy path keeps its own inline loop)."""
     for spec in (logos or []):
-        try:
-            limg = Image.open(spec["path"]).convert("RGBA")
-        except Exception:
-            continue
         frac = LOGO_SIZE_FRAC.get((spec.get("size") or "medium"), LOGO_SIZE_FRAC["medium"])
         edge = max(1, int(H * frac))
         # Contain into an edge x edge box (longest side = edge), matching the FE editor/overlay's
         # square `object-fit: contain` logo box (LeaderboardDesignsManager.tsx marker + DesignBoard.tsx
         # positioned logo). _contain_resize also upscales small art, exactly like the browser.
-        limg = _contain_resize(limg, edge)
+        # _load_contained_rgba memoises the decode+resize (sponsor logos repeat across every re-render).
+        limg = _load_contained_rgba(spec.get("path"), edge)
+        if limg is None:
+            continue
         cx = int((spec.get("x_pct", 10.0) / 100.0) * W)
         cy = int((spec.get("y_pct", 10.0) / 100.0) * H)
         px = max(0, min(W - limg.width, cx - limg.width // 2))
@@ -449,8 +502,9 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
         base = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
     elif background_path:
         try:
-            bg = Image.open(background_path).convert("RGB")
-            base = _cover(bg, canvas_size)
+            # _cover_cached memoises the decode + LANCZOS cover-resize across re-renders (returns a
+            # private copy to draw on); falls back to the plain dark fill on a bad path as before.
+            base = _cover_cached(background_path, canvas_size)
         except Exception:
             base = Image.new("RGB", canvas_size, DEFAULT_BG)
     else:

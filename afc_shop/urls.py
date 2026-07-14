@@ -5,6 +5,10 @@ from .views import *
 # clearly sourced. The Paystack routes below (buy-now / verify-paystack-payment / paystack-webhook)
 # are unchanged.
 from .stripe_checkout import stripe_buy_now, stripe_verify, stripe_webhook
+# Shipping rate-quote (provider-agnostic, afc_shop/views_shipping.py). One endpoint the
+# FE courier picker calls once a delivery address is filled in; degrades to "disabled"
+# until a shipping provider + key are configured (afc_shop/services/shipping.py).
+from .views_shipping import shipping_quote
 # Marketplace fulfilment state machine (Phase A, afc_shop/fulfilment.py). Imported
 # explicitly (not via *) so the vendor transition + queue endpoints are clearly
 # sourced. These are the ONE backend API the per-order vendor page AND the Kapso
@@ -125,6 +129,9 @@ urlpatterns = [
     path("stripe-buy-now/", stripe_buy_now, name="stripe_buy_now"),
     path("stripe-verify/", stripe_verify, name="stripe_verify"),
     path("stripe-webhook/", stripe_webhook, name="stripe_webhook"),
+
+    # ── Shipping rate-quote (provider-agnostic; disabled until a provider is wired) ──
+    path("shipping/quote/", shipping_quote, name="shipping_quote"),
     path("get-my-orders/", get_my_orders, name="get_my_orders"),
     path("get-order-details/", get_order_details, name="get_order_details"),
     path("get-order-details-for-admin/", get_order_details_for_admin, name="get_order_details_for_admin"),
