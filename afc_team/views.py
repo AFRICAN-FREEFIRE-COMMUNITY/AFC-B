@@ -1574,17 +1574,29 @@ def get_team_details(request):
     # return, so the shape is identical either way (back-compatible).
     total_matches = 0
     total_wins = 0
+    total_kills_all = 0
     win_rate = 0
     avg_kills = 0
     avg_placement = 0
     tournament_performance = []
     recent_matches = []
+    # Overview-tab stat cards (see the fix note below where these are populated). Zeroed default so
+    # the response shape is identical whether or not the viewer may see the numbers.
+    stats_overview = {
+        "total_kills": 0,
+        "tournament_wins": 0,
+        "scrim_wins": 0,
+        "tournaments_played": 0,
+        "scrims_played": 0,
+    }
 
     if stats_visible:
         # Lazy imports (function-scope to avoid an app-load cycle: afc_team <-> afc_tournament_and_scrims).
         from afc_tournament_and_scrims.views import effective_event_status
         from afc_tournament_and_scrims.prize_sync import sync_event_prize_payouts
-        from afc_tournament_and_scrims.round_robin import _aggregate_team_standings
+        # Tiered final standings: a team's placement = its rank in the LAST STAGE it played (owner
+        # 2026-07-14). Same helper the prize auto-sync uses, so "Nth place" == "Nth-place prize".
+        from afc_tournament_and_scrims.final_standings import event_final_standings
 
         # Aggregate match stats across all tournament entries
         agg = TournamentTeamMatchStats.objects.filter(
@@ -1592,11 +1604,13 @@ def get_team_details(request):
         ).aggregate(
             total_matches=Count("team_stats_id"),
             total_wins=Count("team_stats_id", filter=Q(placement=1)),
+            total_kills=Sum("kills"),
             avg_kills=Avg("kills"),
             avg_placement=Avg("placement"),
         )
         total_matches = agg["total_matches"] or 0
         total_wins = agg["total_wins"] or 0
+        total_kills_all = agg["total_kills"] or 0
         win_rate = round((total_wins / total_matches) * 100, 1) if total_matches else 0
         avg_kills = round(float(agg["avg_kills"] or 0), 1)
         avg_placement = round(float(agg["avg_placement"] or 0), 1)
@@ -1624,7 +1638,7 @@ def get_team_details(request):
         except Exception:
             pass
 
-        # Final-standing cache: event_id -> {tournament_team_id: rank}. See the note in the loop.
+        # Final-standing cache: event_id -> (rank_by_tt, reached_final_ids). See the note in the loop.
         _final_ranks = {}
 
         # Per-event tournament performance
@@ -1636,24 +1650,28 @@ def get_team_details(request):
                 best_placement=Min("placement"),
             )
 
-            # ── Final standing (owner 2026-07-14) ──
-            # "Final placement" must be the team's FINAL OVERALL STANDING in the event — the same
-            # cumulative + tie-breaker ranking the prize uses (_aggregate_team_standings) — NOT
-            # best_placement, which is Min(placement) = the team's best SINGLE map. A team that won one
-            # map but finished 6th overall was showing "1st". Only meaningful once the event has ended
-            # (None otherwise -> the frontend falls back to best_placement). Cached per event so a team
-            # with several entries in one event doesn't recompute. Consistent with the prize position, so
-            # "6th place" always lines up with "6th-place prize".
+            # ── Final standing + finalist flag (owner 2026-07-14) ──
+            # "Final placement" = the team's rank in the LAST STAGE it actually played
+            # (event_final_standings: teams that reached a deeper stage outrank teams eliminated
+            # earlier, ordered within a stage by that stage's OFFICIAL leaderboard). NOT best_placement
+            # (Min(placement) = best single map) and NOT cumulative points summed across every stage —
+            # a team that topped one semifinal map but exited the Grand Finals low now shows its real
+            # finish. `reached_final_stage` marks teams that actually PLAYED the deciding stage so the
+            # UI can badge finalists differently (owner: "if the team got to the last stage it should
+            # show differently"). Only meaningful once the event has ended (None/False otherwise -> the
+            # frontend falls back to best_placement). Cached per event so a team with several entries in
+            # one event doesn't recompute. Built from the SAME helper the prize auto-sync uses, so a
+            # team's "Nth place" always lines up with its "Nth-place prize".
             final_placement = None
+            reached_final_stage = False
             if effective_event_status(tt.event) == "completed":
                 _ev_id = tt.event_id
                 if _ev_id not in _final_ranks:
-                    _ev_stats = TournamentTeamMatchStats.objects.filter(match__group__stage__event=tt.event)
-                    _standings = _aggregate_team_standings(_ev_stats, event=tt.event)
-                    _final_ranks[_ev_id] = {
-                        row["tournament_team_id"]: i for i, row in enumerate(_standings, start=1)
-                    }
-                final_placement = _final_ranks[_ev_id].get(tt.pk)
+                    _ordered, _rank_by_tt, _reached, _fstage = event_final_standings(tt.event)
+                    _final_ranks[_ev_id] = (_rank_by_tt, _reached)
+                _rank_by_tt, _reached = _final_ranks[_ev_id]
+                final_placement = _rank_by_tt.get(tt.pk)
+                reached_final_stage = tt.pk in _reached
 
             # ── ADDITIVE: per-event date + per-event prize earned ──
             # event_date: prefer the event's scheduled start_date; fall back to the team's
@@ -1679,9 +1697,12 @@ def get_team_details(request):
                 "event_status": tt.event.event_status,
                 "team_status": tt.status,
                 "best_placement": tt_agg["best_placement"],
-                # Team's FINAL overall standing in the event (owner 2026-07-14); null until the event
-                # ends. The frontend shows this as "Final placement" and falls back to best_placement.
+                # Team's FINAL standing in the event = rank in the last stage it played (owner
+                # 2026-07-14); null until the event ends. FE shows this as "Final placement" and falls
+                # back to best_placement. `reached_final_stage` -> the team played the deciding stage,
+                # so the FE badges it as a finalist ("Reached <final stage>").
                 "final_placement": final_placement,
+                "reached_final_stage": reached_final_stage,
                 "total_points": tt_agg["total_points"] or 0,
                 "total_kills": tt_agg["total_kills"] or 0,
                 "matches_played": tt_agg["matches_played"] or 0,
@@ -1689,6 +1710,37 @@ def get_team_details(request):
                 "event_date": event_date,
                 "prize_earned": str(prize_earned) if prize_earned is not None else "0.00",
             })
+
+        # ── Overview stat cards (owner 2026-07-14 fix: "this page doesn't load and show the data") ──
+        # The team Overview tab reads teamDetails.stats.{total_kills, tournament_wins, scrim_wins,
+        # tournaments_played, scrims_played}, but get_team_details never returned a `stats` object at
+        # all, so every card silently fell back to 0. Derive them LIVE from the same real data computed
+        # above (dedup by event_id so a re-registration / second entry in one event doesn't double
+        # count):
+        #   tournaments/scrims_played = distinct events by competition_type
+        #   tournament/scrim_wins     = events the team FINISHED 1st in (final_placement == 1)
+        #   total_kills               = the kills already summed in `agg` above
+        # Gated with the rest of the sensitive block (a non-member viewer keeps the zeroed default).
+        _events_seen = {}
+        for _p in tournament_performance:
+            _events_seen[_p["event_id"]] = _p  # collapse multiple entries for the same event
+        stats_overview = {
+            "total_kills": total_kills_all,
+            "tournament_wins": sum(
+                1 for _p in _events_seen.values()
+                if _p["competition_type"] == "tournament" and _p["final_placement"] == 1
+            ),
+            "scrim_wins": sum(
+                1 for _p in _events_seen.values()
+                if _p["competition_type"] == "scrims" and _p["final_placement"] == 1
+            ),
+            "tournaments_played": sum(
+                1 for _p in _events_seen.values() if _p["competition_type"] == "tournament"
+            ),
+            "scrims_played": sum(
+                1 for _p in _events_seen.values() if _p["competition_type"] == "scrims"
+            ),
+        }
 
         # ── ALL of the team's match stats (owner 2026-07-14) ──
         # This drives the expandable PER-EVENT breakdown (the frontend groups these by event -> stage ->
@@ -1713,6 +1765,22 @@ def get_team_details(request):
                 # legacy match with no group.
                 "stage_name": s.match.group.stage.stage_name if (s.match.group and s.match.group.stage) else None,
                 "group_name": s.match.group.group_name if s.match.group else None,
+                # Stage + group DATES (owner 2026-07-14: "the stages and groups of each event ... should
+                # have their dates showing"). Stage carries a start/end window; a group (lobby) carries
+                # its own playing_date. All ISO strings (or null) so the FE renders them in the viewer's
+                # timezone/locale via LocalTime, grouped under each stage/group header.
+                "stage_start_date": (
+                    s.match.group.stage.start_date.isoformat()
+                    if (s.match.group and s.match.group.stage and s.match.group.stage.start_date) else None
+                ),
+                "stage_end_date": (
+                    s.match.group.stage.end_date.isoformat()
+                    if (s.match.group and s.match.group.stage and s.match.group.stage.end_date) else None
+                ),
+                "group_date": (
+                    s.match.group.playing_date.isoformat()
+                    if (s.match.group and s.match.group.playing_date) else None
+                ),
                 "match_number": s.match.match_number,
                 "match_map": s.match.match_map,
                 "placement": s.placement,
@@ -1838,6 +1906,9 @@ def get_team_details(request):
         # Stats (zeroed when stats_visible is False)
         "total_wins": total_wins,
         "total_losses": total_matches - total_wins,
+        # Overview-tab stat cards (owner 2026-07-14): total_kills / tournament_wins / scrim_wins /
+        # tournaments_played / scrims_played. The FE reads teamDetails.stats.*; previously absent -> 0.
+        "stats": stats_overview,
         "win_rate": win_rate,
         "average_kills": avg_kills,
         "average_placement": avg_placement,

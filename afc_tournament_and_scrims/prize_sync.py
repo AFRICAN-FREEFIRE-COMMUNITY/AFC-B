@@ -15,9 +15,10 @@
 # the existing EventPrizePayout -> recalc pipeline.
 
 import re
+from collections import defaultdict
 from decimal import Decimal
 
-from .models import Event, EventPrizePayout, TournamentTeamMatchStats
+from .models import Event, EventPrizePayout
 
 
 def _amount_ngn(raw, currency, rate_map):
@@ -41,49 +42,90 @@ def _amount_ngn(raw, currency, rate_map):
     return (amt / Decimal(src_rate)) * Decimal(ngn_rate)
 
 
-def sync_event_prize_payouts(event):
-    """Derive the event's auto payouts. Returns the number of rows created (0 = nothing to do)."""
-    dist = event.prize_distribution or {}
-    if not dist:
-        return 0
-    # Final overall standings, event-wide, with the event's configured tie-breakers applied.
-    from .round_robin import _aggregate_team_standings
-    qs = TournamentTeamMatchStats.objects.filter(match__group__stage__event=event)
-    standings = _aggregate_team_standings(qs, event=event)
-    if not standings:
-        return 0
-
-    from afc_auth.models import FxRate
-    rate_map = {f.currency: f.rate for f in FxRate.objects.all()}
-
-    # Per-player prize distribution (owner 2026-06-15 feature): a TEAM payout must also write one
-    # PlayerWinning row per active roster member, so the prize shows on each player's OWN profile
-    # (afc_player stats -> tournament_winnings), not only in the team's total_earnings.
-    # admin_prize.prize_create does this for MANUAL entries, but the auto-sync path here never did,
-    # so every player profile showed 0 winnings for prize-pool events even after the team page showed
-    # the prize (bug found alongside the DYNASTY GRAND FINALS attribution fix, 2026-07-14). We reuse
-    # the same helper so auto + manual behave identically. Lazy import: admin_prize imports THIS module
-    # (its on-read sweep), so importing it at module load would cycle.
-    from afc_rankings.admin_prize import _distribute_payout
-
-    # Replace ONLY the previous auto rows (manual rows untouched). PlayerWinning.payout is CASCADE, so
-    # deleting an auto payout also drops its per-player shares -> the recreation below is a clean,
-    # idempotent rewrite (no double-counting on re-sync).
-    EventPrizePayout.objects.filter(event=event, auto_synced=True).delete()
-    created = 0
-    for pos_str, raw_amount in dist.items():
+def _award_pool(dist, ordered_ids, currency, rate_map, totals):
+    """Map ONE prize_distribution ({position: amount}) onto an ordered team list, accumulating the
+    NGN amount per team into `totals` ({tournament_team_id: Decimal}). position N (1-based) pays the
+    Nth team in `ordered_ids`. Unparseable positions/amounts and out-of-range positions are skipped.
+    Shared by the event pool + every stage/group pool so a team that places in several of them has its
+    winnings SUMMED (owner 2026-07-14: "combine all money the team earned across all stages/groups")."""
+    for pos_str, raw_amount in (dist or {}).items():
         try:
             pos = int(re.sub(r"[^0-9]", "", str(pos_str)) or 0)
         except ValueError:
             continue
-        if pos < 1 or pos > len(standings):
+        if pos < 1 or pos > len(ordered_ids):
             continue
-        amount = _amount_ngn(raw_amount, getattr(event, "prize_currency", "USD"), rate_map)
+        amount = _amount_ngn(raw_amount, currency, rate_map)
         if amount is None:
+            continue
+        totals[ordered_ids[pos - 1]] += amount
+
+
+def sync_event_prize_payouts(event):
+    """Derive the event's auto payouts. Returns the number of rows created (0 = nothing to do).
+
+    Owner rule (2026-07-14): a team's prize is the SUM of every prize it earned across the event —
+    the event-level pool PLUS any per-stage and per-group pools. Each pool is mapped onto the
+    standings it belongs to:
+      - EVENT pool  -> the event's FINAL standings (rank by LAST STAGE PLAYED; the same table the
+                       team profile shows as "Final placement", so Nth place == Nth-place prize).
+      - STAGE pool  -> that stage's cumulative standings.
+      - GROUP pool  -> that group's standings.
+    Amounts are converted to NGN and summed per team, so one team can draw money from more than one
+    pool and gets a single combined payout row. (Today all events keep the whole pool at the event
+    level; the stage/group loops are inert until an organizer sets a per-stage/group prize.)
+    """
+    from .final_standings import event_final_standings
+    from .round_robin import cumulative_standings, group_standings
+    from .models import Stages, StageGroups
+
+    currency = getattr(event, "prize_currency", "USD")
+    from afc_auth.models import FxRate
+    rate_map = {f.currency: f.rate for f in FxRate.objects.all()}
+
+    # tournament_team_id -> summed NGN winnings across every pool.
+    totals = defaultdict(lambda: Decimal("0"))
+
+    # (1) EVENT pool -> FINAL standings (last stage played). This is the deciding leaderboard.
+    ordered, _rank_by_tt, _reached, _final_stage = event_final_standings(event)
+    final_ids = [row["tournament_team_id"] for row in ordered]
+    _award_pool(event.prize_distribution, final_ids, currency, rate_map, totals)
+
+    # (2) Per-STAGE pools -> that stage's standings. (3) Per-GROUP pools -> that group's standings.
+    for stage in Stages.objects.filter(event=event):
+        if getattr(stage, "prize_distribution", None):
+            _award_pool(
+                stage.prize_distribution,
+                [r["tournament_team_id"] for r in cumulative_standings(stage)],
+                currency, rate_map, totals,
+            )
+        for grp in StageGroups.objects.filter(stage=stage):
+            if getattr(grp, "prize_distribution", None):
+                _award_pool(
+                    grp.prize_distribution,
+                    [r["tournament_team_id"] for r in group_standings(grp)],
+                    currency, rate_map, totals,
+                )
+
+    # Per-player prize distribution (owner 2026-06-15 feature): a TEAM payout must also write one
+    # PlayerWinning row per active roster member, so the prize shows on each player's OWN profile
+    # (afc_player stats -> tournament_winnings), not only in the team's total_earnings. We reuse the
+    # same helper manual entry uses so auto + manual behave identically. Lazy import: admin_prize
+    # imports THIS module (its on-read sweep), so importing it at module load would cycle.
+    from afc_rankings.admin_prize import _distribute_payout
+
+    # Replace ONLY the previous auto rows (manual rows untouched). PlayerWinning.payout is CASCADE, so
+    # deleting an auto payout also drops its per-player shares -> the recreation below is a clean,
+    # idempotent rewrite (no double-counting on re-sync). Done even when totals is empty so a stale
+    # auto payout (e.g. after the finals were re-scored) is cleared.
+    EventPrizePayout.objects.filter(event=event, auto_synced=True).delete()
+    created = 0
+    for tt_id, amount in totals.items():
+        if amount is None or amount <= 0:
             continue
         payout = EventPrizePayout.objects.create(
             event=event,
-            tournament_team_id=standings[pos - 1]["tournament_team_id"],
+            tournament_team_id=tt_id,
             amount=amount.quantize(Decimal("0.01")),
             auto_synced=True,
         )
