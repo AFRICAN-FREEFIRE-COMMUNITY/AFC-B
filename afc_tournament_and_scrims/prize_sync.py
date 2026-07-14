@@ -61,8 +61,8 @@ def _award_pool(dist, ordered_ids, currency, rate_map, totals):
         totals[ordered_ids[pos - 1]] += amount
 
 
-def sync_event_prize_payouts(event):
-    """Derive the event's auto payouts. Returns the number of rows created (0 = nothing to do).
+def compute_event_prize_totals(event):
+    """PURE (no writes): the NGN winnings each team SHOULD get, per the current rule.
 
     Owner rule (2026-07-14): a team's prize is the SUM of every prize it earned across the event —
     the event-level pool PLUS any per-stage and per-group pools. Each pool is mapped onto the
@@ -71,9 +71,10 @@ def sync_event_prize_payouts(event):
                        team profile shows as "Final placement", so Nth place == Nth-place prize).
       - STAGE pool  -> that stage's cumulative standings.
       - GROUP pool  -> that group's standings.
-    Amounts are converted to NGN and summed per team, so one team can draw money from more than one
-    pool and gets a single combined payout row. (Today all events keep the whole pool at the event
-    level; the stage/group loops are inert until an organizer sets a per-stage/group prize.)
+    Returns {tournament_team_id: Decimal(ngn, 2dp)} for POSITIVE winnings only. Used by
+    sync_event_prize_payouts (to write) and by event_prize_is_stale (to compare vs what is stored).
+    (Today all events keep the whole pool at the event level; the stage/group loops are inert until an
+    organizer sets a per-stage/group prize.)
     """
     from .final_standings import event_final_standings
     from .round_robin import cumulative_standings, group_standings
@@ -106,6 +107,30 @@ def sync_event_prize_payouts(event):
                     [r["tournament_team_id"] for r in group_standings(grp)],
                     currency, rate_map, totals,
                 )
+    return {tt: amt.quantize(Decimal("0.01")) for tt, amt in totals.items() if amt and amt > 0}
+
+
+def event_prize_is_stale(event):
+    """True when re-syncing WOULD change the event's auto payouts: the stored auto rows differ from
+    what compute_event_prize_totals() now says. Lets the on-read self-heal + the sweep CORRECT payouts
+    left over from an earlier ranking rule (the cumulative -> last-stage-played change, 2026-07-14)
+    instead of skipping any event that already has auto rows. One standings computation; cheap enough
+    for a gated read path."""
+    expected = compute_event_prize_totals(event)
+    stored = {
+        p.tournament_team_id: p.amount
+        for p in EventPrizePayout.objects.filter(event=event, auto_synced=True)
+    }
+    return expected != stored
+
+
+def sync_event_prize_payouts(event):
+    """Rewrite the event's AUTO payouts to compute_event_prize_totals(). Returns the row count.
+
+    Idempotent + manual-safe: deletes ONLY auto_synced rows (manual entries untouched) and recreates
+    them, so a re-sync after the ranking rule changed cleanly overwrites a stale amount/team.
+    """
+    totals = compute_event_prize_totals(event)
 
     # Per-player prize distribution (owner 2026-06-15 feature): a TEAM payout must also write one
     # PlayerWinning row per active roster member, so the prize shows on each player's OWN profile
@@ -116,17 +141,15 @@ def sync_event_prize_payouts(event):
 
     # Replace ONLY the previous auto rows (manual rows untouched). PlayerWinning.payout is CASCADE, so
     # deleting an auto payout also drops its per-player shares -> the recreation below is a clean,
-    # idempotent rewrite (no double-counting on re-sync). Done even when totals is empty so a stale
+    # idempotent rewrite (no double-counting on re-sync). Done even when totals is empty so a now-invalid
     # auto payout (e.g. after the finals were re-scored) is cleared.
     EventPrizePayout.objects.filter(event=event, auto_synced=True).delete()
     created = 0
     for tt_id, amount in totals.items():
-        if amount is None or amount <= 0:
-            continue
         payout = EventPrizePayout.objects.create(
             event=event,
             tournament_team_id=tt_id,
-            amount=amount.quantize(Decimal("0.01")),
+            amount=amount,
             auto_synced=True,
         )
         # Split this team payout across its active roster -> PlayerWinning rows. Idempotent (keyed on

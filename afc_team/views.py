@@ -1628,12 +1628,18 @@ def get_team_details(request):
         # finds the events already synced and we skip them; only EFFECTIVELY-completed events with a prize
         # pool are touched. A sync hiccup must never break the profile read.
         try:
-            _prized = [tt.event for tt in tournament_teams if tt.event.prize_distribution]
-            _already = set(EventPrizePayout.objects
-                           .filter(event__in=_prized, auto_synced=True)
-                           .values_list("event_id", flat=True))
-            for _ev in _prized:
-                if _ev.event_id not in _already and effective_event_status(_ev) == "completed":
+            from afc_tournament_and_scrims.prize_sync import event_prize_is_stale
+            # De-dupe events (a team can have several TournamentTeam rows in one event).
+            _prized = {tt.event_id: tt.event for tt in tournament_teams if tt.event.prize_distribution}
+            for _ev in _prized.values():
+                # Sync when the event is finished AND its stored auto payouts differ from what the
+                # CURRENT rule produces. event_prize_is_stale is True both when there are NO auto rows yet
+                # (a newly-finished event) AND when the stored rows are STALE (left over from the old
+                # cumulative-across-stages rule, now last-stage-played). So just VIEWING the team page
+                # both attributes a new prize AND corrects an out-of-date one — owner 2026-07-14: after
+                # the rule change the placement flipped to 6th but the prize still showed the old
+                # 4th-place amount because the self-heal used to SKIP any event that already had payouts.
+                if effective_event_status(_ev) == "completed" and event_prize_is_stale(_ev):
                     sync_event_prize_payouts(_ev)
         except Exception:
             pass
