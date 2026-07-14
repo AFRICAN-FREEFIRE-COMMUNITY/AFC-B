@@ -1581,6 +1581,11 @@ def get_team_details(request):
     recent_matches = []
 
     if stats_visible:
+        # Lazy imports (function-scope to avoid an app-load cycle: afc_team <-> afc_tournament_and_scrims).
+        from afc_tournament_and_scrims.views import effective_event_status
+        from afc_tournament_and_scrims.prize_sync import sync_event_prize_payouts
+        from afc_tournament_and_scrims.round_robin import _aggregate_team_standings
+
         # Aggregate match stats across all tournament entries
         agg = TournamentTeamMatchStats.objects.filter(
             tournament_team__team=team
@@ -1596,8 +1601,33 @@ def get_team_details(request):
         avg_kills = round(float(agg["avg_kills"] or 0), 1)
         avg_placement = round(float(agg["avg_placement"] or 0), 1)
 
+        tournament_teams = list(
+            TournamentTeam.objects.filter(team=team).select_related("event")
+        )
+
+        # ── Prize self-heal (owner 2026-07-14) ─────────────────────────────────────────────────────
+        # Attribute any of THIS team's finished, prize-pool events that the event->prize auto-sync has
+        # not reached yet. That sweep (prize_sync.sync_completed_events) otherwise only runs when an admin
+        # opens the rankings Prize Money page, so a finished event's prize sat at "-" on the team stats
+        # page indefinitely (the "the admin page didn't update it" report). Doing it on read means the
+        # prize appears the moment a member/admin opens the team's stats. Cheap + idempotent: one query
+        # finds the events already synced and we skip them; only EFFECTIVELY-completed events with a prize
+        # pool are touched. A sync hiccup must never break the profile read.
+        try:
+            _prized = [tt.event for tt in tournament_teams if tt.event.prize_distribution]
+            _already = set(EventPrizePayout.objects
+                           .filter(event__in=_prized, auto_synced=True)
+                           .values_list("event_id", flat=True))
+            for _ev in _prized:
+                if _ev.event_id not in _already and effective_event_status(_ev) == "completed":
+                    sync_event_prize_payouts(_ev)
+        except Exception:
+            pass
+
+        # Final-standing cache: event_id -> {tournament_team_id: rank}. See the note in the loop.
+        _final_ranks = {}
+
         # Per-event tournament performance
-        tournament_teams = TournamentTeam.objects.filter(team=team).select_related("event")
         for tt in tournament_teams:
             tt_agg = TournamentTeamMatchStats.objects.filter(tournament_team=tt).aggregate(
                 total_points=Sum("total_points"),
@@ -1605,6 +1635,25 @@ def get_team_details(request):
                 matches_played=Count("team_stats_id"),
                 best_placement=Min("placement"),
             )
+
+            # ── Final standing (owner 2026-07-14) ──
+            # "Final placement" must be the team's FINAL OVERALL STANDING in the event — the same
+            # cumulative + tie-breaker ranking the prize uses (_aggregate_team_standings) — NOT
+            # best_placement, which is Min(placement) = the team's best SINGLE map. A team that won one
+            # map but finished 6th overall was showing "1st". Only meaningful once the event has ended
+            # (None otherwise -> the frontend falls back to best_placement). Cached per event so a team
+            # with several entries in one event doesn't recompute. Consistent with the prize position, so
+            # "6th place" always lines up with "6th-place prize".
+            final_placement = None
+            if effective_event_status(tt.event) == "completed":
+                _ev_id = tt.event_id
+                if _ev_id not in _final_ranks:
+                    _ev_stats = TournamentTeamMatchStats.objects.filter(match__group__stage__event=tt.event)
+                    _standings = _aggregate_team_standings(_ev_stats, event=tt.event)
+                    _final_ranks[_ev_id] = {
+                        row["tournament_team_id"]: i for i, row in enumerate(_standings, start=1)
+                    }
+                final_placement = _final_ranks[_ev_id].get(tt.pk)
 
             # ── ADDITIVE: per-event date + per-event prize earned ──
             # event_date: prefer the event's scheduled start_date; fall back to the team's
@@ -1630,6 +1679,9 @@ def get_team_details(request):
                 "event_status": tt.event.event_status,
                 "team_status": tt.status,
                 "best_placement": tt_agg["best_placement"],
+                # Team's FINAL overall standing in the event (owner 2026-07-14); null until the event
+                # ends. The frontend shows this as "Final placement" and falls back to best_placement.
+                "final_placement": final_placement,
                 "total_points": tt_agg["total_points"] or 0,
                 "total_kills": tt_agg["total_kills"] or 0,
                 "matches_played": tt_agg["matches_played"] or 0,
@@ -1638,13 +1690,18 @@ def get_team_details(request):
                 "prize_earned": str(prize_earned) if prize_earned is not None else "0.00",
             })
 
-        # Last 10 match stats
+        # ── ALL of the team's match stats (owner 2026-07-14) ──
+        # This drives the expandable PER-EVENT breakdown (the frontend groups these by event -> stage ->
+        # group). It used to be a GLOBAL "last 10 matches", so an older event's matches fell off the list
+        # entirely and its breakdown read "No per-match records available" even though the matches exist.
+        # Send every match for every event the team played, ordered event -> group -> match_number, so
+        # each event shows all its stages/groups. (The frontend already treats this list as `allMatches`.)
         recent_stat_qs = (
             TournamentTeamMatchStats.objects.filter(tournament_team__team=team)
             .select_related(
                 "match", "match__group", "match__group__stage", "tournament_team__event"
             )
-            .order_by("-match__match_date")[:10]
+            .order_by("tournament_team__event__event_id", "match__group_id", "match__match_number")
         )
         recent_matches = [
             {
