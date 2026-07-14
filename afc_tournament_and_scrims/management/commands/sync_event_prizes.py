@@ -34,11 +34,20 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--apply", action="store_true",
                             help="Write payouts + shares. Without this the command only reports (dry run).")
+        parser.add_argument("--force", action="store_true",
+                            help="Re-sync EVERY finished prized event, even ones whose auto payouts already "
+                                 "match. Use after a scoring/data change if you want to rebuild all rows.")
 
     def handle(self, *args, **opts):
         from afc_tournament_and_scrims.views import effective_event_status
+        from afc_tournament_and_scrims.prize_sync import event_prize_is_stale, sync_event_prize_payouts
 
-        # ── Preview: which effectively-completed events still lack auto payouts? ──
+        force = opts["force"]
+
+        # ── Preview: finished events whose auto payouts are MISSING or STALE ──
+        # event_prize_is_stale is True when the stored auto payouts differ from what the CURRENT rule
+        # (last-stage-played, summed pools) produces — so this catches both never-attributed events AND
+        # ones left with an out-of-date amount/team from the earlier cumulative rule (owner 2026-07-14).
         today = datetime.date.today()
         candidates = (Event.objects
                       .exclude(prize_distribution={})
@@ -47,10 +56,10 @@ class Command(BaseCommand):
         for ev in candidates:
             if effective_event_status(ev) != "completed":
                 continue
-            if EventPrizePayout.objects.filter(event=ev, auto_synced=True).exists():
-                continue
-            to_sync.append(ev)
-        self.stdout.write(f"Finished events awaiting prize attribution: {len(to_sync)}")
+            if force or event_prize_is_stale(ev):
+                to_sync.append(ev)
+        self.stdout.write(f"Finished events to (re)attribute prizes for: {len(to_sync)}"
+                          f"{' [FORCE: all]' if force else ' [missing or stale]'}")
         for ev in to_sync:
             self.stdout.write(f"  ev{ev.event_id} {ev.event_name!r} raw={ev.event_status} "
                               f"end={ev.end_date} dist={ev.prize_distribution}")
@@ -65,9 +74,10 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("Dry run: nothing written. Re-run with --apply."))
             return
 
-        # ── 1. Sweep: create team payouts + shares for the newly-attributed events. ──
-        from afc_tournament_and_scrims.prize_sync import sync_completed_events
-        created = sync_completed_events()
+        # ── 1. (Re)sync each missing/stale event: delete + recreate its auto payouts + shares. ──
+        created = 0
+        for ev in to_sync:
+            created += sync_event_prize_payouts(ev)
 
         # ── 2. Backfill shares for any pre-existing payouts that still lack them. ──
         from afc_rankings.admin_prize import _distribute_payout
@@ -78,5 +88,5 @@ class Command(BaseCommand):
             shares += PlayerWinning.objects.filter(payout=p).count()
 
         self.stdout.write(self.style.SUCCESS(
-            f"Done. Created {created} team payout(s) for newly-attributed events; "
+            f"Done. (Re)synced {len(to_sync)} event(s), wrote {created} team payout row(s); "
             f"wrote {shares} PlayerWinning share(s) for previously-undistributed payouts."))
