@@ -10,10 +10,41 @@ from afc_tournament_and_scrims.models import Event, Match, MatchResultImage
 from .models import OCRSession
 from .services.gemini import call_gemini, get_prompt_context
 from .services.matching import get_registered_players, match_name, detect_team_mismatches
+# A8/A5 per-request image cap. Shared server-side validator (mime + per-file size + count)
+# used by the OCR upload views ONLY (upload_ocr_session below). Returns a client-safe error
+# string or None; rejecting garbage/oversize/HEIC uploads BEFORE any Gemini call keeps the
+# synchronous read under the gateway budget. Defined in afc_ocr/services/image_validate.py.
+from .services.image_validate import validate_ocr_images
 
 import logging
+import re  # A7: leading-int parse in _safe_int (Gemini can emit "3 kills" for a kills cell)
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_int(x, default=0):
+    """Coerce a Gemini-emitted value to int, defaulting on null/blank/garbage.
+
+    Gemini occasionally returns None, "", "3 kills" or a float for a kills/placement cell;
+    a bare int() there 500s the whole upload. Used at every int() call site that consumes
+    raw model output (upload_ocr_session + ocr_from_stored_image draft build below, and the
+    solo commit path in services/commit.py). Kept module-level + pure so it is trivially
+    unit-testable (afc_ocr/tests/test_safe_int.py).
+    """
+    try:
+        if x is None:
+            return default
+        if isinstance(x, bool):        # avoid True -> 1 surprises
+            return default
+        if isinstance(x, (int, float)):
+            return int(x)
+        s = str(x).strip()
+        if not s:
+            return default
+        m = re.match(r"-?\d+", s)       # leading integer run ("3 kills" -> 3)
+        return int(m.group()) if m else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type):
@@ -72,7 +103,7 @@ def _require_results_access(user, match):
     org members holding can_upload_results on the match's owning org. org_can_event treats
     native (org=None) events as admin-only, so organizers never touch events outside their org.
     """
-    # Preserve the existing admin path exactly — if _require_admin passes, so does this.
+    # Preserve the existing admin path exactly: if _require_admin passes, so does this.
     if _require_admin(user) is None:
         return None
     event = _get_event(match)
@@ -92,14 +123,14 @@ def upload_ocr_session(request):
     Form fields:
       match_id   (int)
       map_index  (int, 1-indexed)
-      screenshot (file: PNG / JPG / WEBP) — repeatable; send the field once per screenshot when a
+      screenshot (file: PNG / JPG / WEBP), repeatable; send the field once per screenshot when a
                  map's standings are split across several shots. A single file still works.
     """
     user, err = _auth(request)
     if err:
         return err
-    # Permission is gated below, after the match is resolved — org members with
-    # can_upload_results may upload for THEIR org's events (AFC admins always pass).
+    # Permission is gated below, after the match is resolved (org members with
+    # can_upload_results may upload for THEIR org's events; AFC admins always pass).
 
     match_id  = request.data.get("match_id")
     map_index = request.data.get("map_index")
@@ -114,6 +145,25 @@ def upload_ocr_session(request):
     if not match_id or not map_index or not screenshots:
         return Response(
             {"message": "match_id, map_index, and at least one screenshot are required."},
+            status=400,
+        )
+
+    # A5/A8: per-request image cap BEFORE any Gemini call. validate_ocr_images rejects a wrong
+    # mime (incl. HEIC), an oversize file, or too many screenshots at once, returning a
+    # client-safe message. Bounding the file count keeps the synchronous multi-image read
+    # under the ~30s prod gateway budget (the Gemini socket timeout does the rest, see A5).
+    if (image_err := validate_ocr_images(screenshots)):
+        return Response({"message": image_err}, status=400)
+
+    # A5 (sync path stays under the ~30s prod gateway budget): the synchronous per-map read fans
+    # a SEPARATE Gemini call out per screenshot (ThreadPoolExecutor with max_workers=min(4, N)
+    # below, each worker calls _extract_with_router -> Gemini). So N>4 screenshots serialize into
+    # multiple waves and can blow past the gateway budget. Cap the SYNC path at 4 here; the async
+    # standalone batch flow (afc_leaderboard.ocr.process_job) is the path for larger uploads.
+    # validate_ocr_images already bounded mime/size/count above; this bounds the wall-time.
+    if len(screenshots) > 4:
+        return Response(
+            {"message": "You can upload up to 4 screenshots per map at once. Add the rest as a second read."},
             status=400,
         )
 
@@ -186,8 +236,18 @@ def upload_ocr_session(request):
     try:
         with ThreadPoolExecutor(max_workers=min(4, len(payloads))) as ex:
             outputs = list(ex.map(_read_one, payloads))   # ex.map preserves upload order
-    except Exception as exc:
-        return Response({"message": f"OCR extraction failed: {exc}"}, status=503)
+    except RuntimeError as exc:
+        # A5/A9/A10: services/gemini.call_gemini raises FRIENDLY, key-free RuntimeErrors for the
+        # known-safe cases (a Gemini timeout -> "took too long, try again", a safety block, an
+        # empty/unreadable result). The Gemini API key is stripped at the gemini.py layer, so
+        # these messages carry no secret and are safe to show the reviewer verbatim.
+        logger.warning("OCR extraction could not read screenshots for match %s: %s", match_id, exc)
+        return Response({"message": str(exc)}, status=503)
+    except Exception:
+        # A10: anything unexpected -> log the real detail server-side, return a GENERIC message.
+        # Never interpolate {exc} into the client body (avoids leaking internals / the API key).
+        logger.exception("OCR extraction failed for match %s", match_id)
+        return Response({"message": "Could not read that screenshot. Please try again."}, status=503)
 
     placement_lists = [(raw.get("placements", []) or []) for raw, _eng in outputs]
     # Record the last non-empty engine for the FE "which engine" badge (mirrors process_job).
@@ -202,10 +262,12 @@ def upload_ocr_session(request):
     # Build draft rows from the extracted output (same shape whether local student or Gemini)
     draft_rows = []
     for placement_entry in raw_output.get("placements", []):
-        placement = int(placement_entry.get("placement", 0))
+        # A7: _safe_int guards raw Gemini output (null / "" / "3 kills" / a float) so a garbage
+        # cell yields 0 instead of 500-ing the whole upload with ValueError/TypeError.
+        placement = _safe_int(placement_entry.get("placement", 0))
         for player_data in placement_entry.get("players", []):
             raw_name = player_data.get("name", "").strip()
-            kills    = int(player_data.get("kills", 0))
+            kills    = _safe_int(player_data.get("kills", 0))
             row = match_name(raw_name, registered)
             row["placement"] = placement
             row["kills"]     = kills
@@ -247,9 +309,9 @@ def upload_ocr_session(request):
 @api_view(["GET", "PATCH", "DELETE"])
 def ocr_session_detail(request, session_id):
     """
-    GET    /events/ocr-session/<id>/  — fetch draft
-    PATCH  /events/ocr-session/<id>/  — update one row
-    DELETE /events/ocr-session/<id>/  — discard session
+    GET    /events/ocr-session/<id>/  : fetch draft
+    PATCH  /events/ocr-session/<id>/  : update one row
+    DELETE /events/ocr-session/<id>/  : discard session
 
     PATCH body:
       row_id             (str, required)
@@ -258,7 +320,7 @@ def ocr_session_detail(request, session_id):
       matched_team_id    (int, optional)
       kills              (int, optional)
       admin_confirmed_sub (bool, optional)
-      corrected_text     (str, optional) — the corrected ON-SCREEN read name. This is
+      corrected_text     (str, optional): the corrected ON-SCREEN read name. This is
                           recognition-truth (what the pixels say), kept separate from
                           matched_user_id (identity-truth, who it resolves to). Feeds
                           the OCR learning loop: at commit, capture_training_pair uses
@@ -269,8 +331,8 @@ def ocr_session_detail(request, session_id):
     user, err = _auth(request)
     if err:
         return err
-    # Permission is gated below, after the session (and its match) is resolved — org members
-    # with can_upload_results may act on THEIR org's events (AFC admins always pass).
+    # Permission is gated below, after the session (and its match) is resolved (org members
+    # with can_upload_results may act on THEIR org's events; AFC admins always pass).
 
     try:
         session = OCRSession.objects.select_related(
@@ -347,13 +409,13 @@ def commit_ocr_session(request, session_id):
     Commit the OCR session: save aliases, save sub notes, write match stats.
 
     Body (optional):
-      final_rows  (list) — if omitted, uses the session's current draft_rows
+      final_rows  (list): if omitted, uses the session's current draft_rows
     """
     user, err = _auth(request)
     if err:
         return err
-    # Permission is gated below, after the session (and its match) is resolved — org members
-    # with can_upload_results may commit for THEIR org's events (AFC admins always pass).
+    # Permission is gated below, after the session (and its match) is resolved (org members
+    # with can_upload_results may commit for THEIR org's events; AFC admins always pass).
 
     try:
         session = OCRSession.objects.select_related(
@@ -372,9 +434,11 @@ def commit_ocr_session(request, session_id):
 
     final_rows = request.data.get("final_rows") or session.draft_rows
 
-    # Validate: every row must either have a matched_user_id or be removed
+    # Validate: every row must either have a matched_user_id or be removed.
+    # A10: use .get("raw_name","") (NOT r["raw_name"]). This runs BEFORE the try below, so a
+    # hand-built or older final_rows row missing raw_name would otherwise be a raw 500 here.
     unresolved = [
-        r["raw_name"] for r in final_rows
+        r.get("raw_name", "") for r in final_rows
         if not r.get("matched_user_id")
     ]
     if unresolved:
@@ -384,7 +448,7 @@ def commit_ocr_session(request, session_id):
         }, status=400)
 
     unacknowledged = [
-        r["raw_name"] for r in final_rows
+        r.get("raw_name", "") for r in final_rows
         if r.get("team_mismatch") and not r.get("admin_confirmed_sub")
     ]
     if unacknowledged:
@@ -404,13 +468,18 @@ def commit_ocr_session(request, session_id):
         save_name_corrections(final_rows, session.draft_rows)
         save_team_notes(final_rows, session.match, user)
 
-        # #14: commit_team_result now returns (lb, unmatched_blocks) so unmatched OCR team blocks are
-        # surfaced to the reviewer instead of silently dropped. Solo has no team-matching step.
-        unmatched_blocks = []
+        # #14: commit_team_result returns (lb, unmatched_blocks) so unmatched OCR team blocks
+        # are surfaced to the reviewer instead of silently dropped.
+        # A3: commit_solo_result now ALSO returns (lb, skipped): solo rows whose matched user is
+        # not a RegisteredCompetitors for this event, which the old code dropped silently. We keep
+        # the two channels DISTINCT (team skips are teams -> missing_teams; solo skips are players
+        # -> skipped_rows) so the FE can label each correctly.
+        unmatched_blocks = []   # team path: OCR team blocks not matched to a registered team
+        skipped_rows = []       # solo path: matched players not on the event roster (A3)
         if session.event_type == "team":
             lb, unmatched_blocks = commit_team_result(session.match, final_rows)
         else:
-            lb = commit_solo_result(session.match, final_rows)
+            lb, skipped_rows = commit_solo_result(session.match, final_rows)
 
         # Persist final state BEFORE capturing training data, so capture diffs the
         # original Gemini draft (session.draft_rows still holds it here) against
@@ -444,10 +513,94 @@ def commit_ocr_session(request, session_id):
             # #14: team blocks the OCR could not match to a registered team, so the reviewer can
             # attribute them from the flagged-teams resolver instead of losing them silently. [] = clean.
             "missing_teams": unmatched_blocks,
+            # A3: solo rows dropped because the matched player is not on this event's roster.
+            # DISTINCT from missing_teams (players, not teams) so OCRReviewTable.handleCommit can
+            # warn "N players were not on the event roster and were skipped." [] = clean / team event.
+            "skipped_rows": skipped_rows,
         })
 
-    except Exception as exc:
-        return Response({"message": f"Commit failed: {exc}"}, status=500)
+    except Exception:
+        # A10: log the real exception server-side, return a GENERIC client message (no {exc}
+        # interpolation -> avoids leaking internals / any secret into the response body).
+        logger.exception("OCR commit failed for session %s", session_id)
+        return Response({"message": "Could not commit the results. Please try again."}, status=500)
+
+
+@api_view(["GET"])
+def ocr_session_roster(request, session_id):
+    """
+    GET /events/ocr-session/<id>/roster/
+    Return the players REGISTERED for this OCR session's event, so the review table's
+    "matched player" picker can be scoped to the roster instead of the whole platform.
+
+    WHY this exists / how it connects
+      OCRReviewTable.tsx lets an admin re-point a read row at the correct player. Its
+      searchable picker was populating from each row's fuzzy `top_candidates` only, which
+      misses a registered player the OCR never guessed. This endpoint hands the FE the full
+      event roster once, so the picker offers every legitimate participant (and nobody who
+      is not registered) for that event. It reuses the SAME roster resolver the draft build
+      uses (services/matching.py::get_registered_players), so the picker list and the
+      auto-match candidate pool are drawn from one source of truth.
+
+    Request:
+      path session_id (uuid) - the OCRSession to scope the roster to.
+
+    Response 200 JSON:
+      {
+        "players": [{"user_id": int, "username": str,
+                     "team_id": int|null, "team_name": str|null}],
+        "event_type": "solo" | "team"
+      }
+      (players is get_registered_players' list verbatim: team_id/team_name are null on solo
+       events, and carry the tournament team on team events.)
+
+    Auth: Bearer token via _auth (400 missing/garbled header, 401 bad/expired token), then
+      the SAME event-scoped gate every other OCR session view uses, _require_results_access
+      (403 unless AFC admin OR an organizer holding can_upload_results on the event's org).
+
+    Errors: 401 bad/missing token; 403 no results access; 404 session or event not found.
+
+    Frontend consumer: OCRReviewTable.tsx via lib/api/ocr.ts getSessionRoster(), which calls
+      this to populate the roster-scoped "matched player" searchable picker.
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    # Permission is gated below, after the session (and its match) is resolved (org members
+    # with can_upload_results may read THEIR org's roster; AFC admins always pass). Mirrors
+    # ocr_session_detail / commit_ocr_session above exactly.
+
+    try:
+        session = OCRSession.objects.select_related(
+            "match__leaderboard__event",
+            "match__group__stage__event",
+        ).get(session_id=session_id)
+    except OCRSession.DoesNotExist:
+        return Response({"message": "Session not found."}, status=404)
+
+    # Event-scoped access check, resolving the event via the session's match (identical gate
+    # to the sibling session views, so admin AND organizer parity is preserved here).
+    if (deny := _require_results_access(user, session.match)):
+        return deny
+
+    # Resolve the event the SAME way the draft build does (_get_event: a match hangs off either
+    # a standalone leaderboard or a stage group). A session with no resolvable event is a 404.
+    event = _get_event(session.match)
+    if not event:
+        return Response({"message": "Cannot determine event for this session."}, status=404)
+
+    # solo events carry no team context (team_id/team_name come back null from the resolver);
+    # anything else is a team event. Same derivation the upload/commit paths use.
+    event_type = "solo" if event.participant_type == "solo" else "team"
+
+    # The single source of truth for "who is allowed on this event's rows" (services/matching.py).
+    # Reusing it keeps the picker list identical to the auto-match candidate pool.
+    players = get_registered_players(session.match, event, event_type)
+
+    return Response({
+        "players":    players,
+        "event_type": event_type,
+    })
 
 
 @api_view(["POST"])
@@ -463,8 +616,8 @@ def ocr_from_stored_image(request):
     user, err = _auth(request)
     if err:
         return err
-    # Permission is gated below, after the match is resolved — org members with
-    # can_upload_results may run OCR for THEIR org's events (AFC admins always pass).
+    # Permission is gated below, after the match is resolved (org members with
+    # can_upload_results may run OCR for THEIR org's events; AFC admins always pass).
 
     image_id  = request.data.get("image_id")
     match_id  = request.data.get("match_id")
@@ -491,7 +644,7 @@ def ocr_from_stored_image(request):
         return deny
 
     # #12 (2026-07-06): bind the stored image to the AUTHORIZED match. The access check above gates on
-    # match_id, but image_id was fetched independently — without this an organizer with results access
+    # match_id, but image_id was fetched independently, so without this an organizer with results access
     # on match A could OCR a screenshot belonging to another event's match by passing a foreign image_id.
     if getattr(stored, "match_id", None) and stored.match_id != match.match_id:
         return Response({"message": "That image does not belong to this match."}, status=400)
@@ -515,21 +668,33 @@ def ocr_from_stored_image(request):
             mime_type = "image/webp"
         else:
             mime_type = "image/jpeg"
-    except Exception as exc:
-        return Response({"message": f"Failed to read stored image: {exc}"}, status=500)
+    except Exception:
+        # A10: log the real open error server-side, return a GENERIC client-safe message. No
+        # {exc} interpolation -> a storage path / backend detail never leaks into the response
+        # body (mirrors the extraction error paths above + the commit guard).
+        logger.exception("Could not open stored image %s for match %s", image_id, match_id)
+        return Response({"message": "Could not open that stored image. Please try again."}, status=500)
 
     try:
         raw_output, engine = _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type)
-    except Exception as exc:
-        return Response({"message": f"OCR extraction failed: {exc}"}, status=503)
+    except RuntimeError as exc:
+        # A5/A9/A10: friendly, key-free RuntimeError from services/gemini (timeout / safety block /
+        # unreadable result). Safe to surface verbatim; the API key is stripped at the gemini layer.
+        logger.warning("OCR extraction could not read stored image %s for match %s: %s", image_id, match_id, exc)
+        return Response({"message": str(exc)}, status=503)
+    except Exception:
+        # A10: unexpected failure -> log detail server-side, return a GENERIC message (no {exc}).
+        logger.exception("OCR extraction failed for stored image %s match %s", image_id, match_id)
+        return Response({"message": "Could not read that screenshot. Please try again."}, status=503)
     raw_output.setdefault("_engine", engine)  # persisted for the FE badge + training corpus
 
     draft_rows = []
     for placement_entry in raw_output.get("placements", []):
-        placement = int(placement_entry.get("placement", 0))
+        # A7: _safe_int guards raw Gemini output so a null/blank/garbage cell yields 0, not a 500.
+        placement = _safe_int(placement_entry.get("placement", 0))
         for player_data in placement_entry.get("players", []):
             raw_name = player_data.get("name", "").strip()
-            kills    = int(player_data.get("kills", 0))
+            kills    = _safe_int(player_data.get("kills", 0))
             row = match_name(raw_name, registered)
             row["placement"] = placement
             row["kills"]     = kills
@@ -573,7 +738,10 @@ def list_ocr_sessions(request):
     (app/(a)/a/events/[slug]/ocr/page.tsx) via lib/api/ocr.ts listSessions().
 
     Auth (organizer parity, owner 2026-07-02):
-      - AFC admins (_require_admin): UNCHANGED - the unscoped list, optional match_id filter.
+      - AFC admins (_require_admin): unscoped platform-wide list by default. Optional match_id
+        filter, and (O4, 2026-07-14) an OPTIONAL event_id filter: passing ?event_id= scopes the
+        list to that one event so the rebuilt admin event OCR page can show only THIS event's
+        sessions. Omitting event_id preserves the historical unscoped behavior.
       - Organizers: NEW branch - allowed when they hold can_upload_results on the event's
         owning org (org_can_event, same grant as every other OCR surface, see
         _require_results_access above). An organizer MUST pass event_id and only ever gets
@@ -602,6 +770,21 @@ def list_ocr_sessions(request):
         qs = qs.filter(
             Q(match__leaderboard__event=event) | Q(match__group__stage__event=event)
         )
+    else:
+        # O4: AFC admin. Default list is platform-wide, but the rebuilt admin event OCR page
+        # (app/(a)/a/events/[slug]/ocr/page.tsx) passes ?event_id= to see only THIS event's
+        # sessions. Reuse the SAME event-scope filter the organizer branch uses (session ->
+        # match -> event via a standalone leaderboard OR a stage group; both FKs covered).
+        # No event_id -> unscoped, so any other admin caller is unaffected.
+        admin_event_id = request.query_params.get("event_id")
+        if admin_event_id:
+            try:
+                event = Event.objects.get(event_id=admin_event_id)
+            except Event.DoesNotExist:
+                return Response({"message": "Event not found."}, status=404)
+            qs = qs.filter(
+                Q(match__leaderboard__event=event) | Q(match__group__stage__event=event)
+            )
 
     match_id = request.query_params.get("match_id")
     if match_id:

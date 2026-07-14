@@ -1,5 +1,7 @@
 import base64
 import json
+import random
+import time
 
 import requests
 from django.conf import settings
@@ -53,9 +55,9 @@ Return a JSON object with this exact structure:
 
 Critical rules:
 - Include ALL placements visible (both columns)
-- Copy player names EXACTLY — including underscores, dots, symbols, unicode
+- Copy player names EXACTLY, including underscores, dots, symbols, unicode
 - "kills" is always an integer (0 if not shown)
-- Return ONLY raw JSON — no markdown fences, no explanation
+- Return ONLY raw JSON, no markdown fences, no explanation
 """
 
     # ── team_standings variant: ask for a team_name + summed team kills per placement ──
@@ -110,6 +112,13 @@ def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: l
     # "team_standings" = additionally read a team_name per placement). It is threaded down from
     # services.extract.extract_rows so the standalone-leaderboard team flow can ask Gemini for a
     # team name; the event flow passes the default (None) and is unchanged.
+    #
+    # This single call region owns three reliability fixes (spec A5 / A6 / A9). All three preserve
+    # the existing api-key stripping: the request URL carries ?key=<GEMINI_API_KEY>, and requests'
+    # own exception + HTTPError messages embed that URL, so NO raw requests error is ever surfaced.
+    # Callers (services.extract.extract_rows -> upload_ocr_session, and afc_leaderboard.ocr.process_job)
+    # persist / render str(exc) in the review dialog, so every message raised here must be client-safe
+    # and key-free.
     api_key = getattr(settings, "GEMINI_API_KEY", "")
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not configured in settings.")
@@ -132,7 +141,56 @@ def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: l
         },
     }
 
-    resp = requests.post(url, json=payload, timeout=90)
+    # ── A5: cap the socket timeout under the prod gateway budget ──
+    # Prod sits behind a ~30s ALB/EB gateway. The old 90s socket timeout meant a slow Gemini read
+    # returned a 502/504 to the user even though the socket would eventually have succeeded. Cap the
+    # timeout so a hung read fails cleanly (with a friendly message) BEFORE the gateway kills it.
+    # Read at call time so ops / tests can override GEMINI_HTTP_TIMEOUT without a redeploy; the
+    # default (20s) is defined in settings.py and leaves headroom under the 30s gateway.
+    timeout = getattr(settings, "GEMINI_HTTP_TIMEOUT", 20)
+
+    # ── A6: bounded exponential backoff + jitter on transient upstream failures ──
+    # Retry ONLY the transient statuses: 429 (rate-limited) and 503 (temporarily unavailable). Never
+    # retry 400/401/403/404, which are permanent (bad request / auth / not found). Total added wait is
+    # bounded (<= 2 retries, each sleep capped at 4.0s) so the worst case still fits under the A5 socket
+    # cap plus the gateway budget. Read the knobs at call time so tests can override them.
+    retry_statuses = {429, 503}
+    max_retries = getattr(settings, "GEMINI_MAX_RETRIES", 2)      # total attempts = 1 + max_retries
+    base_backoff = getattr(settings, "GEMINI_BACKOFF_BASE", 0.5)  # seconds, doubled per attempt
+
+    resp = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.post(url, json=payload, timeout=timeout)
+        except requests.Timeout:
+            # A5: a full-timeout read is likely to blow the gateway budget, so we do NOT spend another
+            # attempt on it (a second 20s try would double the wall time). Fail fast with a friendly,
+            # key-free message. requests.Timeout str() can embed the ?key= URL, so it is never surfaced.
+            raise RuntimeError(
+                "The screenshot reader took too long. Try again, or upload fewer screenshots at once."
+            ) from None
+        except requests.ConnectionError:
+            # Could not reach Gemini. Per A6 we retry ONLY on 429/503 statuses (not on exceptions), so a
+            # connection failure is surfaced immediately as a friendly, key-free message. The raw
+            # ConnectionError embeds the ?key= URL and must never reach the review dialog.
+            raise RuntimeError(
+                "Could not reach the screenshot reader. Please try again."
+            ) from None
+
+        # Retry the transient statuses with exponential backoff + jitter; break on anything else.
+        if resp.status_code in retry_statuses and attempt < max_retries:
+            # Honour a numeric Retry-After when the server sends one, else exponential backoff. Jitter
+            # avoids a thundering-herd retry; the cap keeps total added wait under the gateway budget.
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                delay = float(retry_after)
+            else:
+                delay = base_backoff * (2 ** attempt)
+            delay = min(delay + random.uniform(0, 0.25), 4.0)
+            time.sleep(delay)
+            continue
+        break
+
     try:
         resp.raise_for_status()
     except requests.HTTPError:
@@ -151,14 +209,46 @@ def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: l
             + (f": {detail}" if detail else "")
         ) from None
 
-    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    # ── A9: defensive parse of the Gemini response ──
+    # On a SAFETY block or an empty read, Gemini returns HTTP 200 with NO candidates (or a candidate
+    # carrying finishReason SAFETY / MAX_TOKENS and no parts). The old code indexed
+    # ["candidates"][0]["content"]["parts"][0]["text"] blindly, so those cases raised KeyError /
+    # IndexError, which the caller turned into a cryptic 503 ("OCR extraction failed: 'candidates'").
+    # Parse defensively and raise friendly, key-free guidance instead. None of these messages contain
+    # the URL or api key.
+    body = resp.json()
+    candidates = body.get("candidates") or []
+    if not candidates:
+        block_reason = (body.get("promptFeedback") or {}).get("blockReason")
+        raise RuntimeError(
+            "The screenshot reader returned no result"
+            + (f" (blocked: {block_reason})" if block_reason else "")
+            + ". Try a clearer screenshot of the results screen."
+        )
+    cand0 = candidates[0]
+    parts = ((cand0.get("content") or {}).get("parts")) or []
+    if not parts or "text" not in parts[0]:
+        finish_reason = cand0.get("finishReason")
+        raise RuntimeError(
+            "The screenshot reader could not read this image"
+            + (f" ({finish_reason})" if finish_reason else "")
+            + ". Try a clearer screenshot."
+        )
+    text = parts[0]["text"].strip()
 
     # Strip markdown fences if present
     if text.startswith("```"):
         lines = text.splitlines()
         text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
 
-    return json.loads(text)
+    # A9: a non-JSON text body (Gemini occasionally answers in prose despite responseMimeType) must
+    # not 500 the upload; turn a JSON parse failure into the same friendly, key-free guidance.
+    try:
+        return json.loads(text)
+    except ValueError:
+        raise RuntimeError(
+            "The screenshot reader returned an unreadable result. Try a clearer screenshot."
+        ) from None
 
 
 def get_prompt_context(match) -> tuple:

@@ -428,6 +428,9 @@ urlpatterns = [
     path("flagged-kills/flag/", set_match_kill_flag, name="set_match_kill_flag"),
     # Attribute one unmatched in-game team block to a registered team (or clear it). owner 2026-06-30.
     path("flagged-kills/unmatched-team/", attribute_unmatched_team, name="attribute_unmatched_team"),
+    # Bulk accept/reject many flagged players + team blocks in ONE call + ONE recompute (owner
+    # 2026-07-13: one-by-one was slow because each PATCH re-scored the whole event). See FlaggedKillsPanel.
+    path("flagged-kills/bulk/", set_flagged_kills_bulk, name="set_flagged_kills_bulk"),
     path("broadcast-announcement/", broadcast_announcement, name="broadcast_announcement"),
     # per-group broadcast composer (AFC official + organizer). See broadcast_to_group.
     path("broadcast-to-group/", broadcast_to_group, name="broadcast_to_group"),

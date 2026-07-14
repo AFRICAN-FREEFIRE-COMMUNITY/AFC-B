@@ -40,6 +40,7 @@ ENDPOINTS (mounted at leaderboards/standalone/… via afc/urls.py → afc_leader
 """
 import datetime
 import io
+import logging
 import uuid
 import zipfile
 
@@ -67,6 +68,11 @@ from afc_tournament_and_scrims.scoring import (
 # the SAME local-first-then-Gemini router the event OCR flow uses; the matching helpers un-gate the
 # candidate pool to the whole platform (a standalone leaderboard has no event roster).
 from afc_ocr.services import extract
+# A8: shared server-side image validator. Rejects non-PNG/JPG/WEBP (incl. HEIC), oversized
+# (>10MB), and empty/over-count uploads with a friendly client message BEFORE any Gemini call is
+# wasted. Contract: validate_ocr_images(files) -> str | None (client-safe error, or None if all pass);
+# it never raises. Used by ocr_extract (single file) and ocr_job_create (multi-file) below.
+from afc_ocr.services.image_validate import validate_ocr_images
 from afc_ocr.services.matching import (
     all_platform_players, all_platform_teams_with_ghosts, match_team_name, match_name,
 )
@@ -95,6 +101,11 @@ from utils.match_log import parse_team_match_log
 # Punctuation/leet-insensitive search (same util search-teams / search-users use), for the
 # ghost-team / ghost-player typeahead endpoints below.
 from utils.search_utils import normalized_column, separator_stripped
+
+# Module logger: the OCR endpoints below log the REAL extraction/apply exception server-side while
+# returning a generic message to the client (A10: never leak {exc}, it could carry the Gemini key or
+# internal detail). Mirrors afc_ocr.views which already keeps a getLogger(__name__) for the same reason.
+logger = logging.getLogger(__name__)
 
 
 # ── pagination (afc_partner_api envelope) ────────────────────────────────────────────────────
@@ -1491,6 +1502,12 @@ def ocr_extract(request, lb_id):
     if not screenshot:
         return Response({"message": "screenshot is required."}, status=400)
 
+    # A8: validate the single upload (wrapped in a list) BEFORE the extract engine runs. The shared
+    # validator rejects non-PNG/JPG/WEBP, HEIC, oversized (>10MB), and empty uploads with a friendly
+    # client message so a bad image never wastes a Gemini call.
+    if (image_err := validate_ocr_images([screenshot])):
+        return Response({"message": image_err}, status=400)
+
     is_team = lb.format == "team"
     event_type = "team" if is_team else "solo"
     # Team leaderboards use the team_standings prompt so Gemini reads a team_name per placement;
@@ -1504,8 +1521,11 @@ def ocr_extract(request, lb_id):
         raw_output, _engine = extract.extract_rows(
             image_bytes, mime_type, event_type, prompt_kind=prompt_kind,
         )
-    except Exception as exc:
-        return Response({"message": f"OCR extraction failed: {exc}"}, status=503)
+    except Exception:
+        # A10: keep the real failure (which can carry the Gemini key / internal detail) in the server
+        # log only; hand the client a generic, safe message. Same pattern as afc_ocr.views.
+        logger.exception("Standalone OCR extraction failed for leaderboard %s", lb_id)
+        return Response({"message": "Could not read that screenshot. Please try again."}, status=503)
 
     if is_team:
         # Same pools as the batch worker: teams INCLUDING ghosts (resolve to an existing ghost
@@ -1601,6 +1621,9 @@ def ocr_apply(request, lb_id):
     REQUEST (application/json)
         {
           "match_map"?: str,                     # optional free-text map name for the created match
+          "draft_id"?: str,                      # optional idempotency key (the uuid ocr_extract minted
+                                                 # for this draft); a re-apply with the same draft_id is
+                                                 # blocked instead of creating a duplicate map (see below).
           "rows": [
             {"placement": int, "kills": int,
              "damage"?, "assists"?, "bonus"?, "penalty"?, "played"?,   # optional scoring inputs
@@ -1613,18 +1636,26 @@ def ocr_apply(request, lb_id):
         }
     RESPONSE 200
         { "match": <match dict>, "participants": [<participant dict>], "standings": [<standings rows>] }
-        (standings reuse afc_leaderboard.standings.standalone_standings — same shape as leaderboard_detail.)
+        (standings reuse afc_leaderboard.standings.standalone_standings, same shape as leaderboard_detail.)
+    RESPONSE 409 (already applied)
+        { "message", "code": "ocr_already_applied", "applied_match_id": <int> }
+        Returned when this leaderboard already has a map created from the SAME draft_id (a double-click
+        / network-retry). No second map is created; the FE should edit/delete the existing map instead.
+        Mirrors the batch twin ocr_job_apply guard (which keys idempotency on the job's applied_match).
     ERRORS
         404 leaderboard not found; 403 non-manager; 400 empty rows / a resolution that cannot resolve
-        (missing field, entity not found, bad kind). The whole apply is atomic: any bad row rolls back
-        the match + every result, so a partial map is never left behind.
+        (missing field, entity not found, bad kind); 409 already applied (see above). The whole apply is
+        atomic: any bad row rolls back the match + every result, so a partial map is never left behind.
     HOW IT CONNECTS
         - _resolve_or_create_participant (shared with add_participant) does ghost creation + real
           get-or-create (a real/ghost_existing entity already present is reused, so re-applying the same
           screenshot does not duplicate participants).
         - _save_one_result (shared with save_match_results) does the point math via scoring.compute_*.
-        - Consumed by the FE OcrUploadDialog "Apply" action; on success the wizard ingests the returned
-          participants + match and jumps to the Results step pre-filled.
+        - Idempotency (A4): the created LeaderboardMatch records source_draft_id=draft_id; a second apply
+          with that draft_id finds the existing map and 409s instead of double-counting the standings.
+          draft_id is the same uuid ocr_extract returned (L1521) and the FE holds for this draft.
+        - Consumed by the FE OcrUploadDialog / ResultFileDialog "Apply" action; on success the wizard
+          ingests the returned participants + match and jumps to the Results step pre-filled.
     """
     user, err = _auth_user(request)
     if err:
@@ -1636,8 +1667,24 @@ def ocr_apply(request, lb_id):
         return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
 
     data = request.data or {}
+    # A4 idempotency guard: the legacy single-shot apply is stateless, so a retry (double-click, network
+    # blip) used to create a SECOND map whose rows double-counted in the standings. When the FE sends the
+    # draft_id ocr_extract minted, block a re-apply that already produced a map for that draft and hand
+    # back the existing one. This mirrors ocr_job_apply's applied_match guard for the batch flow.
+    draft_id = (data.get("draft_id") or "").strip() or None
+    if draft_id:
+        existing = lb.matches.filter(source_draft_id=draft_id).order_by("match_number").first()
+        if existing:
+            return Response(
+                {"message": "These results have already been applied.",
+                 "code": "ocr_already_applied", "applied_match_id": existing.id},
+                status=409,
+            )
+
     try:
-        match, unique_participants = _apply_ocr_rows(lb, data.get("rows"), data.get("match_map"), user)
+        match, unique_participants = _apply_ocr_rows(
+            lb, data.get("rows"), data.get("match_map"), user, draft_id=draft_id,
+        )
     except _ParticipantResolutionError as e:
         # A bad resolution rolls the whole apply back (no orphan match/results) and returns a clean 4xx.
         return Response({"message": e.message}, status=e.status)
@@ -1649,7 +1696,7 @@ def ocr_apply(request, lb_id):
     })
 
 
-def _apply_ocr_rows(lb, rows, match_map, user):
+def _apply_ocr_rows(lb, rows, match_map, user, draft_id=None):
     """Shared apply: turn reviewed OCR rows into ONE new map + its participants + scored results, atomically.
 
     The single source of truth for "apply reviewed OCR rows", used by BOTH the legacy single-shot ocr_apply
@@ -1660,6 +1707,10 @@ def _apply_ocr_rows(lb, rows, match_map, user):
     _save_one_result (shared with save_match_results). Returns (match, [unique participants]). Raises
     _ParticipantResolutionError (rolls the whole apply back) on empty rows or any row that cannot resolve,
     so the caller returns a clean 4xx and never leaves a partial map behind.
+
+    draft_id (optional, A4): stamps the created map's source_draft_id so ocr_apply can detect a duplicate
+    re-apply (see the guard there) and 409 instead of double-counting. The batch ocr_job_apply caller does
+    NOT pass it (its idempotency is the job's applied_match), so the field stays null on that path.
     """
     if not isinstance(rows, list) or not rows:
         raise _ParticipantResolutionError("rows must be a non-empty list.")
@@ -1677,6 +1728,8 @@ def _apply_ocr_rows(lb, rows, match_map, user):
             leaderboard=lb,
             match_number=next_number,
             match_map=(match_map or None),
+            # A4 idempotency marker: null on the batch path / manual maps, set only when a draft_id rode in.
+            source_draft_id=draft_id,
         )
         # Resolve each row's participant (reusing existing ones / creating ghosts) and score it.
         for row in rows:
@@ -1758,6 +1811,12 @@ def ocr_job_create(request, lb_id):
     files = request.FILES.getlist("images")
     if not files:
         return Response({"message": "Attach at least one screenshot for this map."}, status=400)
+
+    # A8: validate every upload BEFORE the job or any LeaderboardOcrImage is persisted. The shared
+    # validator rejects non-PNG/JPG/WEBP, HEIC, oversized (>10MB), and empty/over-count uploads with a
+    # friendly client message so we never store a bad batch or waste a Gemini call on it.
+    if (image_err := validate_ocr_images(files)):
+        return Response({"message": image_err}, status=400)
 
     map_label = (request.data.get("map_label") or "").strip()[:120]
     job = LeaderboardOcrJob.objects.create(leaderboard=lb, map_label=map_label, created_by=user)

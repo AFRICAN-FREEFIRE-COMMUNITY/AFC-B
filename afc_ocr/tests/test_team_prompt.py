@@ -9,6 +9,7 @@ json-loads whatever Gemini returns). The Gemini HTTP call is mocked - never the 
 import json
 from unittest import mock
 
+import requests
 from django.test import TestCase, override_settings
 
 from afc_ocr.services import gemini
@@ -106,3 +107,152 @@ class CallGeminiErrorSanitizationTests(TestCase):
         msg = str(ctx.exception)
         self.assertNotIn("super-secret-key", msg)
         self.assertIn("HTTP 502", msg)
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# A5 / A6 / A9 - reliability fixes on call_gemini (timeout cap, bounded 429/503 retry, defensive
+# parse). Every case mocks the requests.post boundary so NO live Gemini call is made, and asserts
+# the raised message is FRIENDLY + key-free (the URL carries ?key=<GEMINI_API_KEY>, so a leak would
+# expose the secret in the review dialog). A distinctive fake key is used so any leak is obvious.
+# Follows the CallGeminiErrorSanitizationTests idiom above.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+
+_FAKE_KEY = "leaky-secret-key-xyz"
+
+
+def _ok_resp(payload):
+    """A healthy 200 Gemini response carrying `payload` as the candidate JSON text."""
+    resp = mock.Mock()
+    resp.status_code = 200
+    resp.headers = {}
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}}]}
+    return resp
+
+
+def _status_resp(status_code, detail="upstream detail"):
+    """A non-2xx response whose raise_for_status raises an HTTPError embedding the ?key= URL (as
+    real requests does), so we can prove call_gemini strips it. json() carries Gemini's own detail."""
+    resp = mock.Mock()
+    resp.status_code = status_code
+    resp.headers = {}
+    resp.raise_for_status.side_effect = requests.HTTPError(
+        f"{status_code} Client Error for url: https://x/y:generateContent?key={_FAKE_KEY}"
+    )
+    resp.json.return_value = {"error": {"message": detail}}
+    return resp
+
+
+def _raw_json_resp(body):
+    """A 200 response with an arbitrary parsed body (for the A9 defensive-parse cases)."""
+    resp = mock.Mock()
+    resp.status_code = 200
+    resp.headers = {}
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = body
+    return resp
+
+
+@override_settings(GEMINI_API_KEY=_FAKE_KEY)
+class CallGeminiRetryTests(TestCase):
+    """A6: bounded exponential backoff on transient 429/503 only; never retry 400/401/404."""
+
+    def test_retries_once_then_succeeds_on_429(self):
+        payload = {"match_type": "team", "placements": []}
+        responses = [_status_resp(429), _ok_resp(payload)]
+        with mock.patch("afc_ocr.services.gemini.time.sleep"):   # do not actually sleep
+            with mock.patch.object(gemini.requests, "post", side_effect=responses) as posted:
+                out = gemini.call_gemini(b"x", "image/png", [], [])
+        self.assertEqual(posted.call_count, 2)   # one retry after the 429
+        self.assertEqual(out, payload)
+
+    def test_no_retry_on_400(self):
+        with mock.patch("afc_ocr.services.gemini.time.sleep") as slept:
+            with mock.patch.object(gemini.requests, "post", return_value=_status_resp(400)) as posted:
+                with self.assertRaises(RuntimeError) as ctx:
+                    gemini.call_gemini(b"x", "image/png", [], [])
+        msg = str(ctx.exception)
+        self.assertEqual(posted.call_count, 1)   # 400 is permanent -> no retry
+        slept.assert_not_called()
+        self.assertIn("HTTP 400", msg)
+        self.assertNotIn(_FAKE_KEY, msg)
+        self.assertNotIn("key=", msg)
+
+    def test_gives_up_after_max_retries_503(self):
+        # Persistent 503: total attempts = 1 + GEMINI_MAX_RETRIES (default 2) = 3, then the key-free
+        # HTTP 503 error is raised.
+        with mock.patch("afc_ocr.services.gemini.time.sleep"):
+            with mock.patch.object(gemini.requests, "post", return_value=_status_resp(503)) as posted:
+                with self.assertRaises(RuntimeError) as ctx:
+                    gemini.call_gemini(b"x", "image/png", [], [])
+        msg = str(ctx.exception)
+        self.assertEqual(posted.call_count, 3)
+        self.assertIn("HTTP 503", msg)
+        self.assertNotIn(_FAKE_KEY, msg)
+
+    def test_backoff_capped(self):
+        # Each slept delay must stay under the 4.0s cap so the worst case fits the gateway budget.
+        delays = []
+        with mock.patch("afc_ocr.services.gemini.time.sleep", side_effect=lambda d: delays.append(d)):
+            with mock.patch.object(gemini.requests, "post", return_value=_status_resp(503)):
+                with self.assertRaises(RuntimeError):
+                    gemini.call_gemini(b"x", "image/png", [], [])
+        self.assertTrue(delays)                       # it did back off
+        for d in delays:
+            self.assertLessEqual(d, 4.0)
+
+
+@override_settings(GEMINI_API_KEY=_FAKE_KEY)
+class CallGeminiDefensiveParseTests(TestCase):
+    """A9: a SAFETY block / empty read / non-JSON body must raise a FRIENDLY, key-free message
+    instead of a KeyError/IndexError that the caller turns into a cryptic 503."""
+
+    def test_empty_candidates_raises_friendly(self):
+        body = {"promptFeedback": {"blockReason": "SAFETY"}}
+        with mock.patch.object(gemini.requests, "post", return_value=_raw_json_resp(body)):
+            with self.assertRaises(RuntimeError) as ctx:
+                gemini.call_gemini(b"x", "image/png", [], [])
+        msg = str(ctx.exception)
+        self.assertIn("no result", msg)
+        self.assertIn("SAFETY", msg)
+        self.assertNotIn(_FAKE_KEY, msg)
+
+    def test_candidate_without_parts_raises_friendly(self):
+        body = {"candidates": [{"finishReason": "SAFETY", "content": {}}]}
+        with mock.patch.object(gemini.requests, "post", return_value=_raw_json_resp(body)):
+            with self.assertRaises(RuntimeError) as ctx:
+                gemini.call_gemini(b"x", "image/png", [], [])
+        msg = str(ctx.exception)
+        self.assertIn("could not read this image", msg)
+        self.assertNotIn(_FAKE_KEY, msg)
+
+    def test_non_json_text_raises_friendly(self):
+        body = {"candidates": [{"content": {"parts": [{"text": "not json at all"}]}}]}
+        with mock.patch.object(gemini.requests, "post", return_value=_raw_json_resp(body)):
+            with self.assertRaises(RuntimeError) as ctx:
+                gemini.call_gemini(b"x", "image/png", [], [])
+        msg = str(ctx.exception)
+        self.assertIn("unreadable", msg)
+        self.assertNotIn(_FAKE_KEY, msg)
+
+
+@override_settings(GEMINI_API_KEY=_FAKE_KEY)
+class CallGeminiTimeoutTests(TestCase):
+    """A5: a socket timeout raises a friendly key-free message, and the socket timeout is read from
+    settings.GEMINI_HTTP_TIMEOUT so ops can tune it under the prod gateway budget."""
+
+    def test_timeout_raises_friendly(self):
+        with mock.patch.object(gemini.requests, "post", side_effect=requests.Timeout("read timed out")):
+            with self.assertRaises(RuntimeError) as ctx:
+                gemini.call_gemini(b"x", "image/png", [], [])
+        msg = str(ctx.exception)
+        self.assertIn("took too long", msg)
+        self.assertNotIn(_FAKE_KEY, msg)
+
+    @override_settings(GEMINI_HTTP_TIMEOUT=5)
+    def test_timeout_setting_is_read(self):
+        payload = {"match_type": "team", "placements": []}
+        with mock.patch.object(gemini.requests, "post", return_value=_ok_resp(payload)) as posted:
+            gemini.call_gemini(b"x", "image/png", [], [])
+        # requests.post must be called with the overridden socket timeout.
+        self.assertEqual(posted.call_args.kwargs["timeout"], 5)

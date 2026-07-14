@@ -290,17 +290,22 @@ def notify_vendor(order, event="received"):
     if vendor.contact_email:
         try:
             from afc_auth.views import send_email, _email_shell, SITE_URL
+            from afc_auth.email_i18n import copy_for, subject_for
             full_name = f"{order.first_name} {order.last_name}".strip()
+            # i18n (owner 2026-07-13): hand-authored per-language copy from the catalog (template
+            # "vendor_new_order"), localized to the vendor account's saved language (Vendor.user ->
+            # afc_auth.User.language), falling back to English. Sent prelocalized=True so send_email
+            # skips machine-translation. The order number, buyer name, and site link are injected.
+            vendor_lang = (getattr(getattr(vendor, "user", None), "language", "") or "en")
+            c = copy_for("vendor_new_order", vendor_lang)
+            buyer_html = f'<span style="color:#e8efe9;font-weight:600;">{full_name}</span>'
+            site_link = f'<a href="{SITE_URL}" style="color:#34d27b;text-decoration:none;">africanfreefirecommunity.com</a>'
             inner = f"""
   <tr><td style="padding:38px 44px 8px;">
-    <div style="font-size:21px;font-weight:700;color:#ffffff;">You have a new order</div>
-    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">Order #{order.id} is paid and ready to fulfil. Buyer: <span style="color:#e8efe9;font-weight:600;">{full_name}</span>. Open your fulfilment page on <a href="{SITE_URL}" style="color:#34d27b;text-decoration:none;">africanfreefirecommunity.com</a> to acknowledge it and set a ship date.</div>
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"].format(order_no=order.id, buyer=buyer_html, link=site_link)}</div>
   </td></tr>"""
-            # i18n (owner 2026-06-15): localize the vendor heads-up to the vendor account's saved
-            # language (Vendor.user -> afc_auth.User.language), falling back to English. send_email
-            # translates the subject + visible body text.
-            vendor_lang = (getattr(getattr(vendor, "user", None), "language", "") or "en")
-            send_email(vendor.contact_email, f"New AFC order #{order.id} to fulfil", _email_shell(inner, "green"), language=vendor_lang)
+            send_email(vendor.contact_email, subject_for("vendor_new_order", vendor_lang, order_no=order.id), _email_shell(inner, "green"), language=vendor_lang, prelocalized=True)
         except Exception as e:  # mail must never block the order
             logger.warning("notify_vendor email failed for order #%s: %s", order.id, e)
 

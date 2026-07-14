@@ -49,6 +49,8 @@ from .models import (
     Match,
     StageGroups,
     TournamentTeamMatchStats,
+    TournamentPlayerMatchStats,
+    TournamentTeamMember,
 )
 
 # ── format mapping ───────────────────────────────────────────────────────────────────────────
@@ -65,6 +67,9 @@ FORMAT_FROM_STAGE = {
 VALID_FORMATS = ("single_elim", "double_elim", "league", "round_robin_h2h")
 # League-family formats share the pairing engine and have no advancement links.
 LEAGUE_FORMATS = ("league", "round_robin_h2h")
+# Sanity cap for a reported set score (round wins). Generous enough for any real best-of format,
+# small enough to reject fat-finger typos like "400". See report_result (P2, owner 2026-07-13).
+MAX_ROUND_SCORE = 99
 
 
 class BracketError(Exception):
@@ -376,6 +381,11 @@ def report_result(match, score_a, score_b, acting_user=None):
         raise BracketError("score_a and score_b must be integers (round wins).")
     if sa < 0 or sb < 0:
         raise BracketError("Scores cannot be negative.")
+    # Sanity upper bound (P2, owner 2026-07-13): a CS set is a small number of round wins. Without a
+    # cap a fat-finger "40-2" is accepted (winner is still right, but it skews a league's round-diff
+    # tiebreak). 99 is generous enough for any real best-of format while catching gross typos.
+    if sa > MAX_ROUND_SCORE or sb > MAX_ROUND_SCORE:
+        raise BracketError(f"Scores look too large: max {MAX_ROUND_SCORE} round wins per team.")
 
     elimination = match.bracket in ("winners", "losers")
     if elimination and sa == sb:
@@ -607,7 +617,11 @@ def write_placement_stats(stage):
         match_number=0,
         defaults={
             "leaderboard": leaderboard,
-            "match_map": "bermuda",       # required field; meaningless for a CS bracket
+            # match_map is a required CharField; a CS bracket has no BR map. "clash_squad" is not one
+            # of the BR map choices (choices are not DB-enforced) so it reads as "clash_squad" rather
+            # than mislabelling the set "Bermuda" (P2, owner 2026-07-13). The synthetic match is not
+            # shown in the BR editor for a CS stage (guarded out in P1#3); this is the placement anchor.
+            "match_map": "clash_squad",
             "result_inputted": True,
             "played_on": stage.end_date,
         },
@@ -616,7 +630,7 @@ def write_placement_stats(stage):
     written_team_ids = []
     for r in placed:
         points = placement_table.get(r["placement"], 0)
-        TournamentTeamMatchStats.objects.update_or_create(
+        team_stat, _ = TournamentTeamMatchStats.objects.update_or_create(
             match=synthetic_match,
             tournament_team_id=r["tournament_team_id"],
             defaults={
@@ -632,8 +646,32 @@ def write_placement_stats(stage):
         )
         written_team_ids.append(r["tournament_team_id"])
 
+        # ── PLAYER-RANKING BRIDGE (owner 2026-07-13: "cs should be both team and player ranking") ──
+        # A CS bracket has no per-player kill data (results are team round-wins), but players still
+        # earn ranking credit through PARTICIPATION + team-win + finals: afc_rankings._collect_player
+        # scores a player on kills + participated + team_won + finals_appearances + mvp, and forces
+        # personal_placement_pts=0 (players never score on raw placement). So we write one PLAYED
+        # TournamentPlayerMatchStats (kills 0) per ROSTERED member of each placed team, hung off that
+        # team's synthetic stat — exactly the row shape a BR match writes — so every CS player counts
+        # as having played the event (participation), and the champion's roster gets the team-win
+        # bonus. Idempotent: sync to the CURRENT roster, dropping stats for members no longer rostered
+        # (a regenerated bracket / roster edit), and a team dropped from `placed` has its team_stat
+        # deleted below, which CASCADE-deletes its player rows.
+        roster_user_ids = list(
+            TournamentTeamMember.objects
+            .filter(tournament_team_id=r["tournament_team_id"], status__in=("active", "approved"))
+            .values_list("user_id", flat=True)
+        )
+        for uid in roster_user_ids:
+            TournamentPlayerMatchStats.objects.update_or_create(
+                team_stats=team_stat, player_id=uid,
+                defaults={"kills": 0, "damage": 0, "assists": 0, "played": True},
+            )
+        TournamentPlayerMatchStats.objects.filter(team_stats=team_stat).exclude(
+            player_id__in=roster_user_ids).delete()
+
     # Refresh semantics: drop synthetic rows for teams no longer placed (e.g. a regenerated
-    # bracket with a different field, or a corrected result chain).
+    # bracket with a different field, or a corrected result chain). CASCADE removes their player rows.
     TournamentTeamMatchStats.objects.filter(match=synthetic_match).exclude(
         tournament_team_id__in=written_team_ids).delete()
 

@@ -77,10 +77,18 @@ INSTALLED_APPS = [
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Which Gemini model the OCR teacher calls. Flash is ~2x faster than Pro (≈12s vs ≈26s on a FF
-# result screen) and reads the standings just as well, so it is the default — the synchronous prod
+# result screen) and reads the standings just as well, so it is the default. The synchronous prod
 # request was timing out on Pro. Env-overridable (set GEMINI_MODEL=gemini-2.5-pro to trade speed for
 # a touch more accuracy). Read at call time by afc_ocr.services.gemini.call_gemini.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Socket timeout (seconds) for the synchronous Gemini OCR call. Read at call time by
+# afc_ocr.services.gemini.call_gemini via getattr(settings, "GEMINI_HTTP_TIMEOUT", 20). Kept
+# comfortably UNDER the prod ~30s gateway (ALB / Elastic Beanstalk) budget so a slow or hung
+# Gemini read fails cleanly on our side (turned into a friendly 503 by upload_ocr_session)
+# instead of the gateway returning a raw 502/504 to the user. Env-overridable so a Pro model or
+# a slow network can be given more headroom without a redeploy.
+GEMINI_HTTP_TIMEOUT = int(os.getenv("GEMINI_HTTP_TIMEOUT", "20"))
 
 # Translations (news/events/notifications/emails via afc_auth.translation) run on DeepL, NOT Gemini
 # (owner 2026-06-20) - DeepL is purpose-built for translation with a generous free tier. Gemini above
@@ -212,7 +220,7 @@ WSGI_APPLICATION = 'afc.wsgi.application'
 
 # Env-driven DB config. The defaults are the LOCAL dev values, so local keeps working with
 # no env set. PRODUCTION MUST set DB_USER/DB_PASSWORD/DB_HOST (and DB_NAME) to a DEDICATED
-# app user on the real DB host — NOT root@localhost. Deploying these root@localhost defaults
+# app user on the real DB host, NOT root@localhost. Deploying these root@localhost defaults
 # to production is what causes the intermittent 1698 "Access denied for user 'root'@'localhost'"
 # 500s (root@localhost uses socket auth, so a password/TCP login is rejected).
 DATABASES = {
@@ -330,6 +338,17 @@ OCR_GATE_MIN_MEAN_SCORE = float(os.getenv("OCR_GATE_MIN_MEAN_SCORE", "0.80"))
 OCR_GATE_MIN_NAMED_FRAC = float(os.getenv("OCR_GATE_MIN_NAMED_FRAC", "0.70"))
 OCR_GATE_MAX_OVERSIZED_FRAC = float(os.getenv("OCR_GATE_MAX_OVERSIZED_FRAC", "0.15"))
 
+# OCR upload image guards (A8). Read by afc_ocr.services.image_validate.validate_ocr_images,
+# which the OCR upload views (afc_ocr.views.upload_ocr_session, afc_leaderboard.views.ocr_extract
+# and afc_leaderboard.views.ocr_job_create) call before any Gemini read: a per-file byte cap plus a
+# max file count keep a single synchronous upload bounded so it stays inside the request budget.
+# NOTE (deliberate): we do NOT set a global DATA_UPLOAD_MAX_MEMORY_SIZE / FILE_UPLOAD_MAX_MEMORY_SIZE
+# here - other endpoints (shop / design-asset uploads) rely on their own larger caps and a
+# restrictive global would break them; these app-level checks are authoritative for the OCR paths
+# only. 10 MB mirrors afc_player_market.MAX_POST_IMAGE_BYTES (a phone screenshot is well under that).
+OCR_MAX_IMAGE_BYTES = int(os.getenv("OCR_MAX_IMAGE_BYTES", str(10 * 1024 * 1024)))  # 10 MB / file
+OCR_MAX_IMAGES = int(os.getenv("OCR_MAX_IMAGES", "8"))                              # files / request
+
 
 CACHES = {
     "default": {
@@ -408,6 +427,14 @@ PAYSTACK_CALLBACK_URL = "https://africanfreefirecommunity.com/orders/success"
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+# Shipping (provider-agnostic, afc_shop/services/shipping.py). Both unset => shipping is
+# DISABLED and checkout is unchanged (the FE courier picker shows nothing, shipping_fee=0).
+# Set SHIPPING_PROVIDER to the chosen courier API ("terminal" | "shipbubble" | "gigl") and
+# SHIPPING_API_KEY to that provider's key (sandbox locally, live on prod only, never in git)
+# once the provider is confirmed and its client is wired in get_provider().
+SHIPPING_PROVIDER = os.getenv("SHIPPING_PROVIDER", "")
+SHIPPING_API_KEY = os.getenv("SHIPPING_API_KEY")
 
 # Kapso (WhatsApp Cloud API proxy). Consumed by afc_shop/services/kapso.py, which the marketplace
 # fulfilment notify (afc_shop/fulfilment.py notify_vendor) calls to message product owners/vendors

@@ -140,6 +140,7 @@ urlpatterns = [
     # Admin GLOBAL broadcast audit (ALL scopes + senders, incl. organizer event broadcasts). owner 2026-06-27.
     path("all-broadcasts/", get_all_broadcasts, name="get_all_broadcasts"),
     path("view-notification/", view_notification, name="view_notification"),
+    path("view-all-notifications/", view_all_notifications, name="view_all_notifications"),
     path('get-total-players-count/', get_total_players_count, name='get_total_players_count'),
     path('get-active-players-count/', get_active_players_count, name='get_active_players_count'),
     path('get-banned-players-count/', get_banned_players_count, name='get_banned_players_count'),

@@ -7,6 +7,10 @@ urlpatterns = [
     path("ocr-sessions/",                        views.list_ocr_sessions,     name="ocr_sessions_list"),
     path("ocr-session/<uuid:session_id>/",       views.ocr_session_detail,    name="ocr_session_detail"),
     path("ocr-session/<uuid:session_id>/commit/",views.commit_ocr_session,    name="ocr_session_commit"),
+    # Roster-scoped player picker for the review table: returns the event's registered players
+    # so OCRReviewTable.tsx (lib/api/ocr.ts getSessionRoster) can offer a searchable "matched
+    # player" list gated to who is actually in this session's event. Same auth as the routes above.
+    path("ocr-session/<uuid:session_id>/roster/",views.ocr_session_roster,    name="ocr_session_roster"),
 
     # ── OCR MLOps control surface (all under /events/ocr/, admin/staff-gated) ──────
     # These power the "OCR Model" admin dashboard (model-stats render + Promote/Rollback

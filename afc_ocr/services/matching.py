@@ -237,7 +237,13 @@ def match_team_name(raw_name: str, teams: list) -> dict:
 
 def match_name(raw_name: str, registered: list) -> dict:
     """
-    1. Check OCRNameAlias for an exact match (confidence = 1.0).
+    1. Check OCRNameAlias for an exact match, honoured ONLY when that aliased user is in
+       this event's `registered` roster (confidence = 1.0). OCRNameAlias is a GLOBAL table
+       (raw_name unique across all events), so an alias can point at a user who is not in
+       the current event; trusting it blindly would auto-resolve a row to an off-event
+       player at 1.0 with no candidates (and, on team events, a null team). Roster-gating
+       the fast-path keeps aliases event-safe and lets out-of-event aliases fall through
+       to the fuzzy pass so `top_candidates` is still surfaced.
     2. Fall back to rapidfuzz against registered usernames.
     3. Return top 5 candidates plus the best match row.
 
@@ -252,7 +258,14 @@ def match_name(raw_name: str, registered: list) -> dict:
 
     row_id = str(uuid.uuid4())
 
-    # Step 1: exact alias lookup
+    # Step 1: exact alias lookup, roster-gated.
+    # OCRNameAlias is global (see docstring). `registered` is this event's roster from
+    # get_registered_players (team events carry team_id/team_name; solo events carry None
+    # for both). We only honour the alias when the aliased user is actually in that roster,
+    # deriving the alias user's team by looking them up inside `registered` (no separate
+    # team query lives here). Callers: match_name is invoked per read row by the event OCR
+    # commit/draft flow (afc_ocr.services) and reused by afc_leaderboard.views.ocr_extract's
+    # solo path (which passes the full platform pool, so a real alias user is still "in").
     alias = (
         OCRNameAlias.objects
         .filter(raw_name__iexact=raw_name)
@@ -261,16 +274,20 @@ def match_name(raw_name: str, registered: list) -> dict:
     )
     if alias and alias.user:
         reg = next((p for p in registered if p["user_id"] == alias.user_id), None)
-        return {
-            "row_id":            row_id,
-            "raw_name":          raw_name,
-            "matched_user_id":   alias.user_id,
-            "matched_username":  alias.user.username,
-            "confidence":        1.0,
-            "matched_team_id":   reg["team_id"]   if reg else None,
-            "matched_team_name": reg["team_name"] if reg else None,
-            "top_candidates":    [],
-        }
+        if reg is not None:                       # roster-gated: only trust an in-event alias
+            return {
+                "row_id":            row_id,
+                "raw_name":          raw_name,
+                "matched_user_id":   alias.user_id,
+                "matched_username":  alias.user.username,
+                "confidence":        1.0,
+                "matched_team_id":   reg["team_id"],
+                "matched_team_name": reg["team_name"],
+                "top_candidates":    [],
+            }
+        # Alias points at a user NOT registered for this event -> ignore it and fall through
+        # to fuzzy matching so the reviewer still sees the real roster candidates instead of
+        # an auto-resolved off-event player at confidence 1.0 with no candidates.
 
     # Step 2: rapidfuzz - score the raw read AND a tag-stripped variant, keep each username's best.
     try:

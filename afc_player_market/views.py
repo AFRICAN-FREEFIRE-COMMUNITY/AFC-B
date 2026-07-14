@@ -182,13 +182,19 @@ def _country_gate(user, post):
 # sync, and when adding a platform also update _VIDEO_PLATFORMS_LABEL below + the FE helper text.
 _VIDEO_HOSTS = {
     "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be",
-    "tiktok.com", "www.tiktok.com", "vm.tiktok.com",
+    # TikTok: full links + vm./vt. share short links (resolved to a /video/<id> URL below).
+    "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
     "instagram.com", "www.instagram.com", "m.instagram.com", "instagr.am",
+    # X / Twitter: status links on either domain (FE embeds via platform.twitter.com/embed).
+    "twitter.com", "www.twitter.com", "mobile.twitter.com", "x.com", "www.x.com", "mobile.x.com",
+    # Facebook: watch/video/reel links + the fb.watch share short link (resolved below).
+    "facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com", "fb.watch",
 }
 
 # Human-readable platform list for error messages (owner 2026-06-12: "tell them the platform
-# links we are accepting"). The FE shows the same list in the form helper text.
-_VIDEO_PLATFORMS_LABEL = "YouTube, TikTok or Instagram"
+# links we are accepting"). The FE shows the same list in the form helper text; keep this string
+# byte-for-byte in sync with VIDEO_PLATFORMS_LABEL in frontend lib/videoEmbed.ts.
+_VIDEO_PLATFORMS_LABEL = "YouTube, TikTok, Instagram, X (Twitter) or Facebook"
 
 
 def _validate_video_url(raw):
@@ -218,37 +224,51 @@ def _validate_video_url(raw):
 
 
 def _resolve_video_url(url):
-    """Resolve a TikTok SHARE SHORT link to its canonical video URL so the FE can EMBED it instead
-    of linking out (owner 2026-06-30).
+    """Resolve a SHARE SHORT link (TikTok or Facebook) to its canonical video URL so the FE can
+    EMBED it inline instead of linking out (owner 2026-06-30; Facebook added 2026-07-13).
 
-    TikTok's share button hands out vm.tiktok.com / vt.tiktok.com / tiktok.com/t/<code> short links
-    that carry NO /video/<id> in the path, so lib/videoEmbed.parseVideoEmbed can't build a player and
-    falls back to an outbound link. Following the redirect yields the real
-    tiktok.com/@user/video/<id> URL (which DOES embed). We strip the tracking query so the stored URL
-    stays clean + under the 300-char cap. Everything else (full TikTok/YouTube/Instagram links) passes
-    through unchanged. Fail-soft: any network error / non-redirect returns the ORIGINAL url (the FE
-    then just renders the plain link, same as before).
+    Share buttons hand out short links that carry NO id in the path, so lib/videoEmbed.parseVideoEmbed
+    can't build a player and would fall back to an outbound link:
+      - TikTok: vm.tiktok.com / vt.tiktok.com / tiktok.com/t/<code>  ->  tiktok.com/@user/video/<id>
+      - Facebook: fb.watch/<code>                                    ->  facebook.com/.../videos/<id>
+    Following the redirect yields the real permalink (which DOES embed - the TikTok v2 player /
+    Facebook video plugin). We strip the tracking query so the stored URL stays clean + under the
+    300-char cap. Everything else (full TikTok/YouTube/Instagram/X/Facebook links) passes through
+    unchanged. Fail-soft: any network error / non-redirect / non-video target returns the ORIGINAL
+    url (the FE then just renders the plain outbound link, same as before).
     """
     if not url:
         return url
     try:
         from urllib.parse import urlparse
-        host = (urlparse(url).hostname or "").lower()
-        is_short = host in ("vm.tiktok.com", "vt.tiktok.com") or (
-            host.endswith("tiktok.com") and "/t/" in urlparse(url).path
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        # TikTok short links resolve to a URL that must contain /video/<id>; Facebook short links
+        # (fb.watch) resolve to a facebook.com permalink. Each platform needs its own "did this
+        # actually land on an embeddable video?" check, so we track which one we are resolving.
+        is_tiktok_short = host in ("vm.tiktok.com", "vt.tiktok.com") or (
+            host.endswith("tiktok.com") and "/t/" in parsed.path
         )
-        if not is_short:
+        is_facebook_short = host == "fb.watch"
+        if not (is_tiktok_short or is_facebook_short):
             return url
         import requests
         resp = requests.head(
             url, allow_redirects=True, timeout=6,
             headers={"User-Agent": "Mozilla/5.0 (compatible; AFCBot/1.0)"},
         )
-        final = (resp.url or "").split("?")[0]  # canonical, drop ?_t=... tracking params
-        # Only accept a resolved URL that actually points at a video (has /video/<id>); else keep
-        # the original (e.g. a profile short link with no specific video can't be embedded).
-        if final and "/video/" in final and len(final) <= 300:
+        final = (resp.url or "").split("?")[0]  # canonical, drop ?_t=... / ?fbclid=... tracking
+        if not final or len(final) > 300:
+            return url
+        final_host = (urlparse(final).hostname or "").lower()
+        # TikTok: only accept a resolved URL that actually points at a video (has /video/<id>).
+        if is_tiktok_short and "/video/" in final:
             return final
+        # Facebook: accept any resolved facebook.com permalink; the video plugin renders it inline.
+        if is_facebook_short and final_host.endswith("facebook.com"):
+            return final
+        # Fell through (e.g. a profile short link with no specific video): keep the original so the
+        # FE degrades to a plain outbound link rather than embedding a non-video page.
     except Exception:
         pass
     return url
@@ -583,7 +603,7 @@ def create_recruitment_post(request):
         # ---------------- PLAYER POST ----------------
         if post_type == "PLAYER_AVAILABLE":
             post.player = user
-            # A player who is ALREADY on a team can't advertise that they're "available" — they have
+            # A player who is ALREADY on a team can't advertise that they're "available", they have
             # a team (owner 2026-06-30: "it shouldn't allow those in a team create"). They must leave
             # first. Mirrors the apply-to-post guard (which blocks in-team appliers). Returns a CLEAR
             # 400 so the FE shows WHY instead of a generic "Failed to create post". Covers both a
@@ -929,14 +949,24 @@ def apply_to_team(request):
             if addr and addr not in recipient_targets:
                 recipient_targets[addr] = (getattr(ru, "language", "") or "en")
 
-        email_subject = "Your Player Market post is getting attention!"
-        email_body = f"""
+        # i18n (owner 2026-07-13): build the milestone email PER RECIPIENT in their own saved
+        # language, from the HAND-AUTHORED catalog (afc_auth.email_i18n, template
+        # "pm_application_received"), and send prelocalized=True (no machine-translation). The team
+        # name + the applications count are injected into the localized natural sentences.
+        from afc_auth.email_i18n import copy_for, subject_for
+        team_name = post.team.team_name
+
+        def _build_pm_application_received(lang):
+            c = copy_for("pm_application_received", lang)
+            mgmt = f'<strong style="color:#ffffff;">{c["mgmt"].format(team=team_name)}</strong>'
+            team_html = f'<strong style="color:#ff7a00;">{team_name}</strong>'
+            return f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Your post is getting attention</title>
+  <title>{c["header"]}</title>
 </head>
 <body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f0f0f;padding:40px 0;">
@@ -948,7 +978,7 @@ def apply_to_team(request):
           <tr>
             <td style="background:linear-gradient(135deg,#ff6b00,#ff9500);padding:32px 40px;text-align:center;">
               <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:rgba(255,255,255,0.75);text-transform:uppercase;">African Free Fire Community</p>
-              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">Your Post Is Getting Attention!</h1>
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">{c["header"]}</h1>
             </td>
           </tr>
 
@@ -957,17 +987,16 @@ def apply_to_team(request):
             <td style="padding:36px 40px;">
 
               <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
-                Hi <strong style="color:#ffffff;">{post.team.team_name} Management</strong>, your recruitment post for
-                <strong style="color:#ff7a00;">{post.team.team_name}</strong> is attracting players!
+                {c["hi"].format(mgmt=mgmt, team=team_html)}
               </p>
 
               <!-- Milestone Counter -->
               <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
                 <tr>
                   <td align="center" style="background-color:#242424;border-radius:10px;border:1px solid #333;padding:28px;">
-                    <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;text-transform:uppercase;color:#666;">Total Applications</p>
+                    <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;text-transform:uppercase;color:#666;">{c["total_label"]}</p>
                     <p style="margin:0;font-size:56px;font-weight:800;color:#ff7a00;line-height:1;">{total_number_of_applications}</p>
-                    <p style="margin:8px 0 0 0;font-size:13px;color:#888;">players have applied to join your team</p>
+                    <p style="margin:8px 0 0 0;font-size:13px;color:#888;">{c["applied_sub"]}</p>
                   </td>
                 </tr>
               </table>
@@ -975,7 +1004,7 @@ def apply_to_team(request):
               <!-- Message -->
               <div style="background-color:#1e1e1e;border-left:3px solid #ff7a00;border-radius:0 8px 8px 0;padding:16px 20px;margin-bottom:28px;">
                 <p style="margin:0;font-size:14px;color:#bbbbbb;line-height:1.7;">
-                  Don&rsquo;t let talent slip away &mdash; log in to review your applications, shortlist the best candidates, and invite players to trial.
+                  {c["message"]}
                 </p>
               </div>
 
@@ -985,7 +1014,7 @@ def apply_to_team(request):
                   <td align="center">
                     <a href="https://africanfreefirecommunity.com/player-markets?applications=true"
                        style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
-                      Review Applications
+                      {c["cta"]}
                     </a>
                   </td>
                 </tr>
@@ -997,8 +1026,8 @@ def apply_to_team(request):
           <!-- Footer -->
           <tr>
             <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
-              <p style="margin:0;font-size:12px;color:#555555;">You received this because you are a staff member of <strong style="color:#777;">{post.team.team_name}</strong>.</p>
-              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
+              <p style="margin:0;font-size:12px;color:#555555;">{c["footer_staff"].format(team='<strong style="color:#777;">' + team_name + '</strong>')}</p>
+              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">{c["rights"]}</p>
             </td>
           </tr>
 
@@ -1009,8 +1038,9 @@ def apply_to_team(request):
 </body>
 </html>
 """
+
         for email, lang in recipient_targets.items():
-            send_email(email, email_subject, email_body, language=lang)
+            send_email(email, subject_for("pm_application_received", lang), _build_pm_application_received(lang), language=lang, prelocalized=True)
 
     return Response({"message": "Application submitted"}, status=201)
 
@@ -1060,14 +1090,28 @@ def update_application_status(request):
         )
 
         # SEND EMAIL TO PLAYER
-        email_subject = f"Application Update from {application.team.team_name}"
+        # i18n (owner 2026-07-13): hand-authored per-language copy from the catalog (template
+        # "pm_application_rejected") in the player's saved language; the team name is injected and the
+        # optional free-text `application.reason` passes through AS-IS. Sent prelocalized=True.
+        from afc_auth.email_i18n import copy_for, subject_for
+        _pm_lang = (getattr(application.player, "language", "") or "en")
+        c = copy_for("pm_application_rejected", _pm_lang)
+        email_subject = subject_for("pm_application_rejected", _pm_lang, team_name=application.team.team_name)
+        player_html = f'<strong style="color:#ffffff;">{application.player.username}</strong>'
+        team_html = f'<strong style="color:#ffffff;">{application.team.team_name}</strong>'
+        reason_box = "" if not application.reason else f"""
+              <p style="margin:0 0 8px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#555;">{c["reason_label"]}</p>
+              <div style="background-color:#1e1e1e;border-left:3px solid #555;border-radius:0 8px 8px 0;padding:16px 20px;margin-bottom:28px;">
+                <p style="margin:0;font-size:14px;color:#999999;line-height:1.7;font-style:italic;">{application.reason}</p>
+              </div>
+              """
         email_body = f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Application Update</title>
+  <title>{c["header"]}</title>
 </head>
 <body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f0f0f;padding:40px 0;">
@@ -1079,7 +1123,7 @@ def update_application_status(request):
           <tr>
             <td style="background:linear-gradient(135deg,#1a1a1a,#2a2a2a);padding:32px 40px;text-align:center;border-bottom:3px solid #333;">
               <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:#666;text-transform:uppercase;">African Free Fire Community</p>
-              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">Application Update</h1>
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">{c["header"]}</h1>
             </td>
           </tr>
 
@@ -1088,30 +1132,23 @@ def update_application_status(request):
             <td style="padding:36px 40px;">
 
               <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
-                Hi <strong style="color:#ffffff;">{application.player.username}</strong>,
+                {c["hi"].format(player=player_html)}
               </p>
 
               <p style="margin:0 0 24px 0;font-size:15px;color:#aaaaaa;line-height:1.7;">
-                Thank you for your interest in joining <strong style="color:#ffffff;">{application.team.team_name}</strong>.
-                After careful consideration, we regret to inform you that your application was not successful at this time.
-                We encourage you to keep honing your skills and consider applying again in the future.
+                {c["body"].format(team=team_html)}
               </p>
 
               <!-- Reason Box (only shown if reason provided) -->
-              {"" if not application.reason else f"""
-              <p style="margin:0 0 8px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#555;">Reason</p>
-              <div style="background-color:#1e1e1e;border-left:3px solid #555;border-radius:0 8px 8px 0;padding:16px 20px;margin-bottom:28px;">
-                <p style="margin:0;font-size:14px;color:#999999;line-height:1.7;font-style:italic;">{application.reason}</p>
-              </div>
-              """}
+              {reason_box}
 
               <!-- Encouragement Card -->
               <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
                 <tr>
                   <td style="background-color:#1e1a0e;border:1px solid #ff9500;border-radius:8px;padding:20px 24px;">
-                    <p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">Keep Going</p>
+                    <p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">{c["keep_going_title"]}</p>
                     <p style="margin:0;font-size:13px;color:#cc9933;line-height:1.6;">
-                      Every great player started somewhere. Keep practicing, stay active in the community, and your next opportunity could be just around the corner.
+                      {c["keep_going_body"]}
                     </p>
                   </td>
                 </tr>
@@ -1123,7 +1160,7 @@ def update_application_status(request):
                   <td align="center">
                     <a href="https://africanfreefirecommunity.com/player-market"
                        style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
-                      Browse Other Teams
+                      {c["cta"]}
                     </a>
                   </td>
                 </tr>
@@ -1135,8 +1172,8 @@ def update_application_status(request):
           <!-- Footer -->
           <tr>
             <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
-              <p style="margin:0;font-size:12px;color:#555555;">We wish you the best of luck in your esports journey.</p>
-              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
+              <p style="margin:0;font-size:12px;color:#555555;">{c["footer"]}</p>
+              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">{c["rights"]}</p>
             </td>
           </tr>
 
@@ -1147,8 +1184,8 @@ def update_application_status(request):
 </body>
 </html>
 """
-        # i18n: send in the player's saved language; send_email localizes subject + body (falls back to English).
-        send_email(application.player.email, email_subject, email_body, language=(getattr(application.player, "language", "") or "en"))
+        # Copy is already localized (hand-authored catalog), so prelocalized=True skips machine-translation.
+        send_email(application.player.email, email_subject, email_body, language=_pm_lang, prelocalized=True)
 
     elif action == "SHORTLIST":
         application.status = "SHORTLISTED"
@@ -1199,14 +1236,22 @@ def update_application_status(request):
         )
 
         # Email to player
-        email_subject = f"You've Been Added to a Trial with {application.team.team_name}!"
+        # i18n (owner 2026-07-13): hand-authored per-language copy from the catalog (template
+        # "pm_trial_started_player") in the player's saved language; player + team names injected.
+        from afc_auth.email_i18n import copy_for, subject_for
+        _tsp_lang = (getattr(player, "language", "") or "en")
+        cpl = copy_for("pm_trial_started_player", _tsp_lang)
+        email_subject = subject_for("pm_trial_started_player", _tsp_lang, team_name=application.team.team_name)
+        player_hey_html = f'<strong style="color:#ffffff;">{player.username}</strong>'
+        team_hey_html = f'<strong style="color:#ff7a00;">{application.team.team_name}</strong>'
+        team_foot_html = f'<strong style="color:#777;">{application.team.team_name}</strong>'
         player_email_body = f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Trial Started</title>
+  <title>{cpl["header"]}</title>
 </head>
 <body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f0f0f;padding:40px 0;">
@@ -1218,7 +1263,7 @@ def update_application_status(request):
           <tr>
             <td style="background:linear-gradient(135deg,#ff6b00,#ff9500);padding:32px 40px;text-align:center;">
               <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:rgba(255,255,255,0.75);text-transform:uppercase;">African Free Fire Community</p>
-              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">Your Trial Has Begun!</h1>
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">{cpl["header"]}</h1>
             </td>
           </tr>
 
@@ -1227,16 +1272,14 @@ def update_application_status(request):
             <td style="padding:36px 40px;">
 
               <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
-                Hey <strong style="color:#ffffff;">{player.username}</strong> &mdash;
-                <strong style="color:#ff7a00;">{application.team.team_name}</strong> has selected you for a trial!
-                A dedicated trial chat has been created where you can communicate directly with the team&rsquo;s management.
+                {cpl["hey"].format(player=player_hey_html, team=team_hey_html)}
               </p>
 
               <!-- Team Card -->
               <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#242424;border-radius:10px;border:1px solid #333;margin-bottom:24px;">
                 <tr>
                   <td style="padding:20px 24px;">
-                    <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Team</p>
+                    <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">{cpl["team_label"]}</p>
                     <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;">{application.team.team_name}</p>
                   </td>
                 </tr>
@@ -1246,9 +1289,9 @@ def update_application_status(request):
               <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
                 <tr>
                   <td style="background-color:#1e1a0e;border:1px solid #ff6b0044;border-radius:8px;padding:16px 20px;">
-                    <p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">What happens next?</p>
+                    <p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">{cpl["whatnext_title"]}</p>
                     <p style="margin:0;font-size:13px;color:#cc9933;line-height:1.6;">
-                      Use the trial chat in the AFC app to coordinate with the team. This is your chance to impress &mdash; give it your all!
+                      {cpl["whatnext_body"]}
                     </p>
                   </td>
                 </tr>
@@ -1260,7 +1303,7 @@ def update_application_status(request):
                   <td align="center">
                     <a href="https://africanfreefirecommunity.com/applications"
                        style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
-                      Open Trial Chat
+                      {cpl["cta"]}
                     </a>
                   </td>
                 </tr>
@@ -1272,8 +1315,8 @@ def update_application_status(request):
           <!-- Footer -->
           <tr>
             <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
-              <p style="margin:0;font-size:12px;color:#555555;">This trial was started because you applied to <strong style="color:#777;">{application.team.team_name}</strong> on the AFC Player Market.</p>
-              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
+              <p style="margin:0;font-size:12px;color:#555555;">{cpl["footer"].format(team=team_foot_html)}</p>
+              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">{cpl["rights"]}</p>
             </td>
           </tr>
 
@@ -1284,8 +1327,8 @@ def update_application_status(request):
 </body>
 </html>
 """
-        # i18n: localized to the player's saved language (send_email translates subject + body).
-        send_email(player.email, email_subject, player_email_body, language=(getattr(player, "language", "") or "en"))
+        # Copy already localized (hand-authored catalog), so prelocalized=True skips machine-translation.
+        send_email(player.email, email_subject, player_email_body, language=_tsp_lang, prelocalized=True)
 
         # Notify team staff
         Notifications.objects.create(
@@ -1306,14 +1349,23 @@ def update_application_status(request):
             if addr and addr not in recipient_targets:
                 recipient_targets[addr] = (getattr(su, "language", "") or "en")
 
-        team_email_subject = f"Trial Started: {player.username} has been added!"
-        team_email_body = f"""
+        # i18n (owner 2026-07-13): build the staff email PER RECIPIENT in their own saved language,
+        # from the hand-authored catalog (template "pm_trial_started_team"); player + team injected.
+        _tst_team = application.team.team_name
+        _tst_player = player.username
+
+        def _build_pm_trial_started_team(lang):
+            c = copy_for("pm_trial_started_team", lang)
+            mgmt = f'<strong style="color:#ffffff;">{c["mgmt"].format(team=_tst_team)}</strong>'
+            player_html = f'<strong style="color:#ff7a00;">{_tst_player}</strong>'
+            team_foot_html = f'<strong style="color:#777;">{_tst_team}</strong>'
+            return f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Trial Started</title>
+  <title>{c["header"]}</title>
 </head>
 <body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f0f0f;padding:40px 0;">
@@ -1325,7 +1377,7 @@ def update_application_status(request):
           <tr>
             <td style="background:linear-gradient(135deg,#ff6b00,#ff9500);padding:32px 40px;text-align:center;">
               <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:rgba(255,255,255,0.75);text-transform:uppercase;">African Free Fire Community</p>
-              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">Trial Started</h1>
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:1px;">{c["header"]}</h1>
             </td>
           </tr>
 
@@ -1334,20 +1386,19 @@ def update_application_status(request):
             <td style="padding:36px 40px;">
 
               <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
-                Hi <strong style="color:#ffffff;">{application.team.team_name}</strong> Management,
+                {c["hi"].format(mgmt=mgmt)}
               </p>
 
               <p style="margin:0 0 24px 0;font-size:15px;color:#aaaaaa;line-height:1.7;">
-                <strong style="color:#ff7a00;">{player.username}</strong> has been added to a trial with your team.
-                A dedicated trial chat is now available to coordinate and evaluate their performance.
+                {c["body"].format(player=player_html)}
               </p>
 
               <!-- Player Card -->
               <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#242424;border-radius:10px;border:1px solid #333;margin-bottom:28px;">
                 <tr>
                   <td style="padding:20px 24px;">
-                    <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Player on Trial</p>
-                    <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;">{player.username}</p>
+                    <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">{c["player_label"]}</p>
+                    <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;">{_tst_player}</p>
                   </td>
                 </tr>
               </table>
@@ -1358,7 +1409,7 @@ def update_application_status(request):
                   <td align="center">
                     <a href="https://africanfreefirecommunity.com/team/trials"
                        style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
-                      Open Trial Chat
+                      {c["cta"]}
                     </a>
                   </td>
                 </tr>
@@ -1370,8 +1421,8 @@ def update_application_status(request):
           <!-- Footer -->
           <tr>
             <td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
-              <p style="margin:0;font-size:12px;color:#555555;">You received this because you are a staff member of <strong style="color:#777;">{application.team.team_name}</strong>.</p>
-              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
+              <p style="margin:0;font-size:12px;color:#555555;">{c["footer_staff"].format(team=team_foot_html)}</p>
+              <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">{c["rights"]}</p>
             </td>
           </tr>
 
@@ -1382,8 +1433,10 @@ def update_application_status(request):
 </body>
 </html>
 """
+
         for email, lang in recipient_targets.items():
-            send_email(email, team_email_subject, team_email_body, language=lang)
+            send_email(email, subject_for("pm_trial_started_team", lang, player=_tst_player),
+                       _build_pm_trial_started_team(lang), language=lang, prelocalized=True)
 
         application.save()
         return Response({"message": "Trial started.", "chat_id": chat.id}, status=200)
@@ -1910,10 +1963,19 @@ def invite_player_to_trial(request):
     )
 
     player = post.player
-    email_subject = f"Trial Invite from {team.team_name}"
+    # i18n (owner 2026-07-13): hand-authored per-language copy from the catalog (template
+    # "pm_trial_invite") in the invited player's saved language; player + team names injected, and
+    # the recruiter's free-text {invite_message} passes through AS-IS. Sent prelocalized=True.
+    from afc_auth.email_i18n import copy_for, subject_for
+    _ti_lang = (getattr(player, "language", "") or "en")
+    c = copy_for("pm_trial_invite", _ti_lang)
+    email_subject = subject_for("pm_trial_invite", _ti_lang, team_name=team.team_name)
+    player_hey_html = f'<strong style="color:#ffffff;">{player.username}</strong>'
+    team_hey_html = f'<strong style="color:#ff7a00;">{team.team_name}</strong>'
+    hours_html = f'<strong>{c["hours_text"]}</strong>'
     message_row = (
         f'<tr><td style="padding:0 24px 20px 24px;border-top:1px solid #333;">'
-        f'<p style="margin:12px 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Message</p>'
+        f'<p style="margin:12px 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">{c["message_label"]}</p>'
         f'<p style="margin:0;font-size:14px;color:#bbbbbb;line-height:1.6;font-style:italic;">{invite_message}</p>'
         f'</td></tr>'
     ) if invite_message else ""
@@ -1927,16 +1989,15 @@ def invite_player_to_trial(request):
       <table width="600" cellpadding="0" cellspacing="0" style="background-color:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;max-width:600px;width:100%;">
         <tr><td style="background:linear-gradient(135deg,#ff6b00,#ff9500);padding:32px 40px;text-align:center;">
           <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:rgba(255,255,255,0.75);text-transform:uppercase;">African Free Fire Community</p>
-          <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;">A Team Wants You!</h1>
+          <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;">{c["header"]}</h1>
         </td></tr>
         <tr><td style="padding:36px 40px;">
           <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">
-            Hey <strong style="color:#ffffff;">{player.username}</strong> &mdash;
-            <strong style="color:#ff7a00;">{team.team_name}</strong> saw your availability post and wants you on their roster for a trial!
+            {c["hey"].format(player=player_hey_html, team=team_hey_html)}
           </p>
           <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#242424;border-radius:10px;border:1px solid #333;margin-bottom:24px;">
             <tr><td style="padding:20px 24px;">
-              <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Team Inviting You</p>
+              <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">{c["team_inviting"]}</p>
               <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;">{team.team_name}</p>
             </td></tr>
             {message_row}
@@ -1946,8 +2007,8 @@ def invite_player_to_trial(request):
               <table cellpadding="0" cellspacing="0"><tr>
                 <td style="padding-right:12px;font-size:22px;">&#9201;</td>
                 <td>
-                  <p style="margin:0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">72-Hour Window</p>
-                  <p style="margin:4px 0 0 0;font-size:13px;color:#cc8800;line-height:1.5;">You must accept or decline within <strong>72 hours</strong>. After that, the invite expires.</p>
+                  <p style="margin:0;font-size:13px;font-weight:700;color:#ff9500;text-transform:uppercase;letter-spacing:1px;">{c["window_title"]}</p>
+                  <p style="margin:4px 0 0 0;font-size:13px;color:#cc8800;line-height:1.5;">{c["window_body"].format(hours=hours_html)}</p>
                 </td>
               </tr></table>
             </td></tr>
@@ -1955,21 +2016,21 @@ def invite_player_to_trial(request):
           <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
             <a href="https://africanfreefirecommunity.com/my-invites"
                style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
-              View &amp; Respond to Invite
+              {c["cta"]}
             </a>
           </td></tr></table>
         </td></tr>
         <tr><td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
-          <p style="margin:0;font-size:12px;color:#555555;">This invite was sent because you have an active availability post on the AFC Player Market.</p>
-          <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
+          <p style="margin:0;font-size:12px;color:#555555;">{c["footer"]}</p>
+          <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">{c["rights"]}</p>
         </td></tr>
       </table>
     </td></tr>
   </table>
 </body>
 </html>"""
-    # i18n: send the direct trial invite in the invited player's saved language.
-    send_email(player.email, email_subject, email_body, language=(getattr(player, "language", "") or "en"))
+    # Copy already localized (hand-authored catalog), so prelocalized=True skips machine-translation.
+    send_email(player.email, email_subject, email_body, language=_ti_lang, prelocalized=True)
     return Response({"message": "Trial invite sent.", "invite_id": invite.id}, status=201)
 
 
@@ -2105,8 +2166,19 @@ def respond_to_direct_trial_invite(request):
             if addr and addr not in recipient_targets:
                 recipient_targets[addr] = (getattr(su, "language", "") or "en")
 
-        team_email_subject = f"{user.username} accepted your trial invite!"
-        team_email_body = f"""<!DOCTYPE html>
+        # i18n (owner 2026-07-13): build the staff acceptance email PER RECIPIENT in their own saved
+        # language, from the hand-authored catalog (template "pm_trial_accepted_team"); player + team
+        # injected. Sent prelocalized=True so send_email skips machine-translation.
+        from afc_auth.email_i18n import copy_for, subject_for
+        _ta_team = team.team_name
+        _ta_player = user.username
+
+        def _build_pm_trial_accepted_team(lang):
+            c = copy_for("pm_trial_accepted_team", lang)
+            mgmt = f'<strong style="color:#ffffff;">{c["mgmt"].format(team=_ta_team)}</strong>'
+            player_html = f'<strong style="color:#ff7a00;">{_ta_player}</strong>'
+            team_foot_html = f'<strong style="color:#777;">{_ta_team}</strong>'
+            return f"""<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/></head>
 <body style="margin:0;padding:0;background-color:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif;">
@@ -2115,37 +2187,39 @@ def respond_to_direct_trial_invite(request):
       <table width="600" cellpadding="0" cellspacing="0" style="background-color:#1a1a1a;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;max-width:600px;width:100%;">
         <tr><td style="background:linear-gradient(135deg,#ff6b00,#ff9500);padding:32px 40px;text-align:center;">
           <p style="margin:0 0 6px 0;font-size:11px;letter-spacing:3px;color:rgba(255,255,255,0.75);text-transform:uppercase;">African Free Fire Community</p>
-          <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;">Trial Accepted!</h1>
+          <h1 style="margin:0;font-size:26px;font-weight:700;color:#ffffff;">{c["header"]}</h1>
         </td></tr>
         <tr><td style="padding:36px 40px;">
-          <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">Hi <strong style="color:#ffffff;">{team.team_name}</strong> Management,</p>
+          <p style="margin:0 0 24px 0;font-size:15px;color:#cccccc;line-height:1.6;">{c["hi"].format(mgmt=mgmt)}</p>
           <p style="margin:0 0 24px 0;font-size:15px;color:#aaaaaa;line-height:1.7;">
-            <strong style="color:#ff7a00;">{user.username}</strong> has accepted your trial invite. A dedicated trial chat is now open.
+            {c["body"].format(player=player_html)}
           </p>
           <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#242424;border-radius:10px;border:1px solid #333;margin-bottom:28px;">
             <tr><td style="padding:20px 24px;">
-              <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">Player on Trial</p>
-              <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;">{user.username}</p>
+              <p style="margin:0 0 4px 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#666;">{c["player_label"]}</p>
+              <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;">{_ta_player}</p>
             </td></tr>
           </table>
           <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
             <a href="https://africanfreefirecommunity.com/team/trials"
                style="display:inline-block;background:linear-gradient(135deg,#ff6b00,#ff9500);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;letter-spacing:1px;padding:14px 36px;border-radius:6px;text-transform:uppercase;">
-              Open Trial Chat
+              {c["cta"]}
             </a>
           </td></tr></table>
         </td></tr>
         <tr><td style="background-color:#141414;padding:20px 40px;text-align:center;border-top:1px solid #2a2a2a;">
-          <p style="margin:0;font-size:12px;color:#555555;">You received this because you are a staff member of <strong style="color:#777;">{team.team_name}</strong>.</p>
-          <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">&copy; 2026 African Free Fire Community. All rights reserved.</p>
+          <p style="margin:0;font-size:12px;color:#555555;">{c["footer_staff"].format(team=team_foot_html)}</p>
+          <p style="margin:6px 0 0 0;font-size:12px;color:#555555;">{c["rights"]}</p>
         </td></tr>
       </table>
     </td></tr>
   </table>
 </body>
 </html>"""
+
         for email, lang in recipient_targets.items():
-            send_email(email, team_email_subject, team_email_body, language=lang)
+            send_email(email, subject_for("pm_trial_accepted_team", lang, player=_ta_player),
+                       _build_pm_trial_accepted_team(lang), language=lang, prelocalized=True)
 
         return Response({"message": "Trial accepted.", "chat_id": chat.id}, status=200)
 

@@ -39,7 +39,7 @@ from afc_organizers.views_leaderboard_design import (
 from afc_leaderboard.graphic import render_leaderboard_graphic, render_design_all_pages
 
 from afc_tournament_and_scrims.models import (
-    Event, Stages, StageGroups, TournamentTeam,
+    Event, Stages, StageGroups, StageGroupCompetitor, TournamentTeam,
     TournamentTeamMatchStats, SoloPlayerMatchStats)
 from afc_tournament_and_scrims import round_robin
 from afc_tournament_and_scrims.event_links import _is_event_admin
@@ -236,6 +236,7 @@ def event_stage_graphic(request, event_id, stage_id):
     #     "Overall Leaderboard" (TTMS filtered by match__group=group), so ?group_id renders THAT group.
     #   • whole STAGE (default): the stage-wide cumulative table (all groups of the stage).
     is_solo_combined = is_combined and event.participant_type == "solo"
+    group = None  # hoisted so the seeded-team zero-fill below can scope by group in every branch
     if is_combined:
         if is_solo_combined:
             standings = _solo_combined_standings(combine_group_ids)
@@ -244,13 +245,71 @@ def event_stage_graphic(request, event_id, stage_id):
             standings = round_robin._aggregate_team_standings(qs, event=event)
     else:
         group_id = request.query_params.get("group_id")
-        group = None
         if group_id and str(group_id).isdigit():
             group = StageGroups.objects.filter(group_id=int(group_id), stage=stage).first()
         standings = (
             round_robin.group_standings(group) if group
             else round_robin.cumulative_standings(stage)
         )
+
+    # ── Include SEEDED teams that have NO results entered yet, so a team with no scores still shows
+    #    on the downloaded graphic (owner 2026-07-13: "downloaded leaderboard did not add the last
+    #    team, but they should be there regardless"). ─────────────────────────────────────────────
+    # WHY: the standings above come from round_robin (an aggregate over TournamentTeamMatchStats), so
+    # a team SEEDED into the stage/group but not yet scored produces zero match-stats rows and is
+    # silently absent from the export. The on-site leaderboard PAGE already fixes this by zero-filling
+    # seeded competitors (afc_tournament_and_scrims/views.py get_all_leaderboard_details_for_event,
+    # the "Include SEEDED competitors with no results yet" block, owner 2026-06-21) — the download was
+    # the only surface still dropping them, so the page showed the team while the PNG did not. This
+    # brings the export to PARITY with the page: append a 0-point row (keyed exactly like the
+    # round_robin rows: tournament_team_id / team_name / team_country / games_played / *_sum /
+    # effective_total) for every ACTIVE seeded team missing from `standings`, then STABLE-sort by
+    # effective_total so scored teams keep the aggregator's order (incl. config tie-breakers) and the
+    # 0-point seeded teams sink to the bottom (alphabetical among themselves). Runs BEFORE the design
+    # row cap below, so scored teams still win the limited slots on a small design. TEAM events only
+    # (solo-combined rows carry username, not tournament_team, so there is no seeded-team roster to
+    # zero-fill here — left as-is). Opt out with ?include_unscored=0 for the legacy scored-only board.
+    include_unscored = str(
+        request.query_params.get("include_unscored") or "1"
+    ).strip().lower() not in ("0", "false", "no", "off")
+    if include_unscored and not is_solo_combined:
+        # Scope the seeded roster the same way the standings were scoped:
+        #   combined -> the selected groups' competitors; single group -> that group's; whole stage
+        #   -> every group of the stage. StageGroupCompetitor is the per-lobby seeding the page reads.
+        if is_combined:
+            seeded_qs = StageGroupCompetitor.objects.filter(stage_group_id__in=combine_group_ids)
+        elif group is not None:
+            seeded_qs = StageGroupCompetitor.objects.filter(stage_group=group)
+        else:
+            seeded_qs = StageGroupCompetitor.objects.filter(stage_group__stage=stage)
+        seeded_qs = (
+            seeded_qs.filter(status="active", tournament_team__isnull=False)
+            .select_related("tournament_team__team")
+        )
+        present_ids = {r.get("tournament_team_id") for r in standings}
+        extra_rows, seen_seed = [], set()
+        for sc in seeded_qs:
+            tt_id = sc.tournament_team_id
+            if tt_id in present_ids or tt_id in seen_seed:
+                continue  # already scored, or the same team seeded into two of the combined groups
+            seen_seed.add(tt_id)
+            team = sc.tournament_team.team if sc.tournament_team else None
+            extra_rows.append({
+                "tournament_team_id": tt_id,
+                "team_name": (team.team_name if team else "") or "",
+                "team_country": (team.country if team else "") or "",
+                "games_played": 0, "total_kills": 0, "total_booyah": 0,
+                "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
+                "effective_total": 0, "last_match_placement": 999,
+            })
+        if extra_rows:
+            extra_rows.sort(key=lambda r: (r["team_name"] or "").lower())
+            # Stable sort keeps the aggregator's ordering for the real (scored) rows untouched and
+            # only lowers the 0-point seeded rows to the bottom (Python sort is stable).
+            standings = sorted(
+                list(standings) + extra_rows,
+                key=lambda r: -int(r.get("effective_total", 0) or 0),
+            )
     # A SAVED design shows a fixed number of rows, so we cap the fetched standings to what it displays.
     # The branded-default FALLBACK (design is None, ?plain not set) instead paginates ALL rows by its
     # row->page rule, so it must NOT be capped here (owner 2026-07-05, complaint J: auto row detection

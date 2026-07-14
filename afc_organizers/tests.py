@@ -73,3 +73,56 @@ class OrgPermissionTests(TestCase):
         self.assertTrue(permissions.org_can_event(self.owner, "can_upload_results", org_event))
         self.assertFalse(permissions.org_can_event(self.sub, "can_upload_results", org_event))
         self.assertTrue(permissions.org_can_event(self.sub, "can_view_metrics", org_event))
+
+
+class OrgIsOwnerTests(TestCase):
+    """org_is_owner is the OWNER-ONLY gate for member + permission management (owner, 2026-07-14).
+    The security-critical case: a sub_organizer GRANTED can_manage_members must still be rejected,
+    otherwise they could escalate their own access by re-tuning permission toggles or adding an
+    all-permissions accomplice. Mirrors the FE OrganizerContext.isOwner gate on the members page."""
+
+    def setUp(self):
+        # AFC oversight staff (must keep the bypass — org_is_owner allows platform admins).
+        self.organizer_admin_role, _ = Roles.objects.get_or_create(role_name="organizer_admin")
+        self.afc_admin = User.objects.create_user(
+            username="afcstaff", email="afc@x.com", password="x", full_name="AFC Staff", role="admin"
+        )
+        UserRoles.objects.create(user=self.afc_admin, role=self.organizer_admin_role)
+
+        self.org = Organization.objects.create(slug="acme", name="Acme Esports")
+        self.owner = User.objects.create_user(
+            username="owner", email="owner@x.com", password="x", full_name="Owner", role="player"
+        )
+        # A sub-organizer who WAS granted can_manage_members — the exact escalation risk.
+        self.sub_mgr = User.objects.create_user(
+            username="submgr", email="submgr@x.com", password="x", full_name="Sub Mgr", role="player"
+        )
+        self.outsider = User.objects.create_user(
+            username="outsider", email="out@x.com", password="x", full_name="Out", role="player"
+        )
+        OrganizationMember.objects.create(organization=self.org, user=self.owner, role="owner")
+        OrganizationMember.objects.create(
+            organization=self.org, user=self.sub_mgr, role="sub_organizer", can_manage_members=True
+        )
+
+    def test_owner_is_owner(self):
+        self.assertTrue(permissions.org_is_owner(self.owner, self.org))
+
+    def test_platform_admin_passes_owner_gate(self):
+        # AFC staff keep oversight access to member management.
+        self.assertTrue(permissions.org_is_owner(self.afc_admin, self.org))
+
+    def test_sub_with_can_manage_members_is_NOT_owner(self):
+        # THE fix: granting can_manage_members no longer opens the permission surface.
+        self.assertFalse(permissions.org_is_owner(self.sub_mgr, self.org))
+        # ...even though the looser org_can still reports the raw toggle as True.
+        self.assertTrue(permissions.org_can(self.sub_mgr, "can_manage_members", self.org))
+
+    def test_outsider_is_not_owner(self):
+        self.assertFalse(permissions.org_is_owner(self.outsider, self.org))
+
+    def test_removed_owner_is_not_owner(self):
+        m = OrganizationMember.objects.get(organization=self.org, user=self.owner)
+        m.status = "removed"
+        m.save(update_fields=["status"])
+        self.assertFalse(permissions.org_is_owner(self.owner, self.org))
