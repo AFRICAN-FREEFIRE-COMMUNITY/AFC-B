@@ -85,6 +85,10 @@ class GhostTeamRankedAndTieredTests(TestCase):
         standalone.recalc_ghost_team_quarterly(self.ghost.pk, self.season.season_id)
 
     def test_ghost_team_in_monthly_endpoint_ranked(self):
+        # Monthly standings are gated on the season's rankings_published (owner 2026-06-16), the same
+        # gate the quarterly tests below set. Publish so the public endpoint returns the rows.
+        self.season.rankings_published = True
+        self.season.save()
         resp = self.client.get(reverse("rankings_teams_monthly"), {"month": PLAYED_MONTH_PARAM})
         self.assertEqual(resp.status_code, 200)
         rows = resp.json()["results"]
@@ -141,6 +145,10 @@ class GhostPlayerRankedAndTieredTests(TestCase):
         standalone.recalc_ghost_player_quarterly(self.ghost.pk, self.season.season_id)
 
     def test_ghost_player_in_monthly_endpoint_ranked(self):
+        # Monthly standings are gated on rankings_published (owner 2026-06-16); publish like the
+        # quarterly test below so the public endpoint returns rows.
+        self.season.rankings_published = True
+        self.season.save()
         resp = self.client.get(reverse("rankings_players_monthly"), {"month": PLAYED_MONTH_PARAM})
         self.assertEqual(resp.status_code, 200)
         rows = resp.json()["results"]
@@ -323,6 +331,10 @@ class NoGhostRegressionTests(TestCase):
         self.assertEqual(b.rank, 2)
 
     def test_teams_monthly_endpoint_real_only_unchanged(self):
+        # Monthly standings are gated on rankings_published (owner 2026-06-16); publish so the
+        # public endpoint returns the two real rows.
+        self.season.rankings_published = True
+        self.season.save()
         recalc.rerank_team_month(PLAYED_MONTH)
         resp = self.client.get(reverse("rankings_teams_monthly"), {"month": PLAYED_MONTH_PARAM})
         rows = resp.json()["results"]
@@ -332,6 +344,10 @@ class NoGhostRegressionTests(TestCase):
         self.assertEqual([r["rank"] for r in rows], [1, 2])
 
     def test_players_monthly_endpoint_real_only_unchanged(self):
+        # Monthly standings are gated on rankings_published (owner 2026-06-16); publish so the
+        # public endpoint returns the two real rows.
+        self.season.rankings_published = True
+        self.season.save()
         recalc.rerank_player_month(PLAYED_MONTH)
         resp = self.client.get(reverse("rankings_players_monthly"), {"month": PLAYED_MONTH_PARAM})
         rows = resp.json()["results"]
