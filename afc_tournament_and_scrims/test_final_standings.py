@@ -208,3 +208,39 @@ class PrizeFromFinalStandingsTests(FinalStandingsTestBase):
         # event 1st (100) + stage 1st (50) both land on A -> ONE summed row of 150.
         self.assertEqual(a_pay.amount, Decimal("150.00"))
         self.assertEqual(EventPrizePayout.objects.filter(event=ev, tournament_team=a).count(), 1)
+
+    def test_event_pool_withheld_until_final_stage_played(self):
+        """Owner 2026-07-15 (DECA CUP SEASON 5): the organizer only uploaded the qualifiers; the
+        event's Grand Finals stage is still empty. The whole-event pool must NOT attribute yet, since a
+        qualifiers winner is not the event champion. A pool tied to the PLAYED qualifiers stage still
+        pays, because that money belongs to the stage the team actually played."""
+        ev = self._event(stages=2, dist={"1": "300"})       # event pool: 1st = 300
+        quals = self._stage(ev, "Qualifiers", 1, dist={"1": "40"})  # stage pool on the PLAYED stage
+        finals = self._stage(ev, "Grand Finals", 2)         # deciding stage: created but NEVER played
+        gq = self._group(quals, "Group B")
+        gf = self._group(finals, "Finals A")                # finals group exists but has NO matches yet
+        winner = self._team(ev, "WIN")   # 1st in qualifiers, but the finals never happened
+        other = self._team(ev, "OTH")
+        m = self._match(gq, 1)
+        self._stat(m, winner, placement=1, points=113)
+        self._stat(m, other, placement=2, points=90)
+
+        # The finals stage is the decider and has no results -> event pool is withheld.
+        _o, _rank, reached, final_stage = event_final_standings(ev)
+        self.assertEqual(final_stage.stage_name, "Grand Finals")
+        self.assertEqual(reached, set())                    # nobody reached the (empty) finals
+
+        sync_event_prize_payouts(ev)
+        by_team = {p.tournament_team_id: p.amount for p in EventPrizePayout.objects.filter(event=ev)}
+        # Event 1st (300) is WITHHELD; only the qualifiers stage pool (40) lands on its winner.
+        self.assertEqual(by_team.get(winner.pk), Decimal("40.00"))
+        self.assertNotIn(other.pk, by_team)
+
+        # When the organizer later uploads the finals, the event pool attributes on the next sync.
+        mf = self._match(gf, 1)
+        self._stat(mf, winner, placement=1, points=20)
+        self._stat(mf, other, placement=2, points=15)
+        sync_event_prize_payouts(ev)
+        after = {p.tournament_team_id: p.amount for p in EventPrizePayout.objects.filter(event=ev)}
+        # Now decided: event 1st (300) + qualifiers stage 1st (40) sum on the champion.
+        self.assertEqual(after.get(winner.pk), Decimal("340.00"))

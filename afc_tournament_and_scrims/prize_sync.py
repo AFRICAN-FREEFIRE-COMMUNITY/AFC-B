@@ -75,10 +75,18 @@ def compute_event_prize_totals(event):
     sync_event_prize_payouts (to write) and by event_prize_is_stale (to compare vs what is stored).
     (Today all events keep the whole pool at the event level; the stage/group loops are inert until an
     organizer sets a per-stage/group prize.)
+
+    Owner refinement (2026-07-15, DECA CUP SEASON 5): the EVENT pool is the WHOLE tournament's prize
+    and is only truly earned once the event reaches its own deciding stage. If the organizer has not
+    yet uploaded results for the last stage (e.g. only the qualifiers are in, the Grand Finals stage
+    is empty), the event is NOT decided, so attributing the event 1st-place prize to a team that only
+    played the qualifiers would be wrong. So the event pool is awarded ONLY when the deciding stage
+    actually has results. A prize tied to a specific stage/group the team DID play (a per-stage or
+    per-group pool below) still counts, because that money is attributed to that played stage.
     """
     from .final_standings import event_final_standings
     from .round_robin import cumulative_standings, group_standings
-    from .models import Stages, StageGroups
+    from .models import Stages, StageGroups, TournamentTeamMatchStats
 
     currency = getattr(event, "prize_currency", "USD")
     from afc_auth.models import FxRate
@@ -88,9 +96,16 @@ def compute_event_prize_totals(event):
     totals = defaultdict(lambda: Decimal("0"))
 
     # (1) EVENT pool -> FINAL standings (last stage played). This is the deciding leaderboard.
-    ordered, _rank_by_tt, _reached, _final_stage = event_final_standings(event)
+    ordered, _rank_by_tt, _reached, final_stage = event_final_standings(event)
     final_ids = [row["tournament_team_id"] for row in ordered]
-    _award_pool(event.prize_distribution, final_ids, currency, rate_map, totals)
+    # GATE: only pay the event pool once the deciding stage has been played (has team results). An
+    # event whose final stage is still empty is not decided, so its whole-event prize does not attribute
+    # yet; it self-corrects (event_prize_is_stale -> re-sync) the moment the finals are uploaded.
+    final_stage_played = final_stage is not None and TournamentTeamMatchStats.objects.filter(
+        match__group__stage=final_stage, tournament_team__isnull=False
+    ).exists()
+    if final_stage_played:
+        _award_pool(event.prize_distribution, final_ids, currency, rate_map, totals)
 
     # (2) Per-STAGE pools -> that stage's standings. (3) Per-GROUP pools -> that group's standings.
     for stage in Stages.objects.filter(event=event):
