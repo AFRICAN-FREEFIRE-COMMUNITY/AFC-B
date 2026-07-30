@@ -95,6 +95,12 @@ urlpatterns = [
     path('contact-us/', contact_us, name='contact_us'),
     path('create-news/', create_news, name='create_news'),
     path('edit-news/', edit_news, name='edit_news'),
+    # News-overhaul media uploads. Persist ONE image/video into local MEDIA (news_images/ /
+    # news_videos/) and return {"status":"ok","url": <absolute url>}. Bearer + news-admin gated (same
+    # as create_news). Consumed by the Tiptap editor image/gallery/video "Upload" tabs
+    # (frontend components/text-editor/Menubar.tsx); the returned url is embedded in the article node.
+    path('upload-news-image/', upload_news_image, name='upload_news_image'),
+    path('upload-news-video/', upload_news_video, name='upload_news_video'),
     path('get-news-detail/', get_news_detail, name='get_news_detail'),
     path('get-all-news/', get_all_news, name='get_all_news'),
     path('delete-news/', delete_news, name='delete_news'),
