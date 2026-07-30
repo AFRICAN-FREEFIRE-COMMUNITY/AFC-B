@@ -422,6 +422,20 @@ class News(models.Model):
     content = models.TextField()
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
     related_event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.SET_NULL, null=True, blank=True)
+    # ── related_events: NEW multi-event link (News overhaul) ─────────────────────────────────────
+    # A news post can now reference MANY events (e.g. a recap that covers several tournaments).
+    #   • related_events  - the new source of truth: a M2M to Event, edited by the admin News form
+    #                       (frontend app/(a)/a/news/create + [slug]/edit send `related_events` as a
+    #                       repeated form field of event ids). Written by afc_auth.views.create_news /
+    #                       edit_news via news.related_events.set(...); returned by get_news_detail /
+    #                       get_all_news and surfaced in the public "Related events" block on
+    #                       app/(user)/news/[slug] (frontend NewsClient).
+    #   • related_event   - KEPT for back-compat (old single-event links + any old readers). The views
+    #                       mirror the FIRST selected event into this FK when saving, so legacy code
+    #                       and the existing event_name response key keep working. Do not remove.
+    related_events = models.ManyToManyField(
+        "afc_tournament_and_scrims.Event", blank=True, related_name="related_news"
+    )
     images = models.ImageField(upload_to="news_images/", null=True, blank=True)
     author = models.ForeignKey(User, on_delete=models.CASCADE)  # Admin, Mod, or Support
     created_at = models.DateTimeField(auto_now_add=True)

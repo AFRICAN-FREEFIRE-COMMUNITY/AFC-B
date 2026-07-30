@@ -1861,6 +1861,31 @@ def _is_news_admin(user):
     return user.userroles.filter(role__role_name__in=["head_admin", "news_admin"]).exists()
 
 
+def _serialize_related_news_events(news):
+    """Serialize a News post's related_events M2M into the shape the API + frontend expect.
+
+    Returns a list of {event_id, event_name, slug, tournament_tier, end_date(iso|None)} for every
+    Event in news.related_events.all(). This is the NEW multi-event link added in the News overhaul
+    (models.py News.related_events). It is emitted by get_news_detail + get_all_news and rendered as
+    the public "Related events" block on frontend app/(user)/news/[slug] (_components/NewsClient),
+    where each entry links to that event's page. tournament_tier + end_date are read straight off the
+    Event; guarded with getattr / a None-check so a schema drift can never 500 the news page, and
+    end_date (a DateField) is serialized as an ISO "YYYY-MM-DD" string. get_all_news calls this inside
+    its per-row loop, so that view prefetch_related("related_events") to keep it free of N+1 queries.
+    """
+    events = []
+    for ev in news.related_events.all():
+        end = getattr(ev, "end_date", None)
+        events.append({
+            "event_id": ev.event_id,
+            "event_name": ev.event_name,
+            "slug": ev.slug,
+            "tournament_tier": getattr(ev, "tournament_tier", None),
+            "end_date": end.isoformat() if end else None,
+        })
+    return events
+
+
 def _resolve_scheduled_publish(scheduled_raw):
     """Turn the optional `scheduled_publish_at` request value into (scheduled_dt, is_published, error).
 
@@ -1919,7 +1944,7 @@ def create_news(request):
     news_title = request.data.get("news_title")
     content = request.data.get("content")
     category = request.data.get("category")
-    related_event_id = request.data.get("related_event")
+    related_event_id = request.data.get("related_event")   # legacy single-event link (back-compat)
     images = request.FILES.get("images")
 
     # Validate required fields
@@ -1931,13 +1956,24 @@ def create_news(request):
     if category not in valid_categories:
         return Response({"message": "Invalid category."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Fetch related event if provided
+    # Fetch related event if provided (LEGACY single field). The NEW multi-event link is
+    # `related_events`, handled right after the row is created; when it is present it takes precedence
+    # and its first id is mirrored back into this single FK. Kept so old single-event callers still work.
     related_event = None
     if related_event_id:
         try:
             related_event = Event.objects.get(event_id=related_event_id)
         except Event.DoesNotExist:
             return Response({"message": "Related event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Cover image (optional). Same 10MB guard + HEIC/EXIF/downscale normalization as the article-body
+    # image endpoint and every other image upload (force_jpeg=True: a cover is a photo). Fail-safe.
+    if images:
+        if getattr(images, "size", 0) > 10 * 1024 * 1024:
+            return Response({"message": "That cover image is too large (over 10MB). Please upload a "
+                                        "smaller image."}, status=status.HTTP_400_BAD_REQUEST)
+        from .image_utils import normalize_image_upload
+        images = normalize_image_upload(images, force_jpeg=True)
 
     # Scheduled publish (optional). A FUTURE scheduled_publish_at creates the post HIDDEN
     # (is_published=False); the publish_scheduled_news beat task flips it live at that time. Blank or a
@@ -1957,6 +1993,19 @@ def create_news(request):
         scheduled_publish_at=scheduled_dt,
         is_published=is_published,
     )
+
+    # related_events (News overhaul): the new multi-event link. The admin News form submits each
+    # selected event id as a repeated `related_events` form field (frontend app/(a)/a/news/create). When
+    # the field is present it is the FULL desired set: set the M2M and mirror the FIRST matched event
+    # into the legacy related_event FK (or None). Unknown / non-numeric ids are ignored. Absent -> leave
+    # the legacy single link (resolved above) untouched. Set after create() because M2M writes need the
+    # row persisted. Read back by get_news_detail / get_all_news via _serialize_related_news_events.
+    if "related_events" in request.data:
+        clean_ids = [i for i in request.data.getlist("related_events") if str(i).strip().isdigit()]
+        matched_events = list(Event.objects.filter(event_id__in=clean_ids))
+        news.related_events.set(matched_events)
+        news.related_event = matched_events[0] if matched_events else None
+        news.save(update_fields=["related_event"])
 
     set_audit(request, f"Posted the news '{news_title}'")
     AdminHistory.objects.create(
@@ -2028,26 +2077,42 @@ def edit_news(request):
     news_title = request.data.get("news_title", news.news_title)
     content = request.data.get("content", news.content)
     category = request.data.get("category", news.category)
-    related_event_id = request.data.get("related_event", None)
-    images = request.FILES.get("images", news.images)
+    related_event_id = request.data.get("related_event", None)   # legacy single-event link (back-compat)
 
     # Validate category if changed
     valid_categories = ["general", "tournament", "bans"]
     if category and category not in valid_categories:
         return Response({"message": "Invalid category."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Update related event if changed
+    # Update related event if changed (LEGACY single field). Superseded below when the new
+    # `related_events` multi field is present (its first id is mirrored back into this FK).
     if related_event_id:
         try:
             news.related_event = Event.objects.get(event_id=related_event_id)
         except Event.DoesNotExist:
             return Response({"message": "Related event not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Cover image (optional), three cases:
+    #   • a new file was uploaded (`images`) -> 10MB guard + normalize (force_jpeg) + replace.
+    #   • remove_image == "true"             -> CLEAR the cover. This fixes the OLD falsy-guard bug
+    #                                            where `request.FILES.get("images", news.images)` made
+    #                                            it impossible to remove an existing cover (a missing
+    #                                            file silently fell back to the current image).
+    #   • neither                             -> leave the existing cover untouched.
+    new_cover = request.FILES.get("images")
+    if new_cover:
+        if getattr(new_cover, "size", 0) > 10 * 1024 * 1024:
+            return Response({"message": "That cover image is too large (over 10MB). Please upload a "
+                                        "smaller image."}, status=status.HTTP_400_BAD_REQUEST)
+        from .image_utils import normalize_image_upload
+        news.images = normalize_image_upload(new_cover, force_jpeg=True)
+    elif str(request.data.get("remove_image", "")).lower() == "true":
+        news.images = None
+
     # Apply updates
     news.news_title = news_title
     news.content = content
     news.category = category
-    news.images = images
 
     # Scheduled publish (optional). Only act when the field is actually present in the request so an
     # edit that omits it leaves the publish state untouched. When present:
@@ -2063,6 +2128,19 @@ def edit_news(request):
         news.is_published = is_published
 
     news.save()
+
+    # related_events (News overhaul): when the field is present it is the FULL desired set - REPLACE the
+    # M2M and mirror the first matched event into the legacy related_event FK (empty -> clears BOTH).
+    # Absent -> leave both untouched, so legacy edits that only know the single `related_event` field
+    # still work (the admin News form always sends this field: each selected id, plus a single empty
+    # value when the selection was cleared, so a full deselect reaches here as an empty set). Set after
+    # save() because M2M writes need the row persisted. Unknown / non-numeric ids are ignored.
+    if "related_events" in request.data:
+        clean_ids = [i for i in request.data.getlist("related_events") if str(i).strip().isdigit()]
+        matched_events = list(Event.objects.filter(event_id__in=clean_ids))
+        news.related_events.set(matched_events)
+        news.related_event = matched_events[0] if matched_events else None
+        news.save(update_fields=["related_event"])
 
     set_audit(request, f"Edited the news '{news_title}'")
     AdminHistory.objects.create(
@@ -2081,6 +2159,150 @@ def edit_news(request):
         "category": news.category,
         "is_published": news.is_published,
         "scheduled_publish_at": news.scheduled_publish_at,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def upload_news_image(request):
+    """
+    Upload a single IMAGE for use INSIDE a news article body, returning its media URL.
+
+    PURPOSE
+        News overhaul (owner design decision): ALL article media lives inside the Tiptap editor
+        content as nodes that carry an uploaded URL - there is NO gallery DB table and NO image
+        model. This endpoint just persists one uploaded image to local MEDIA (news_images/) and
+        hands back an absolute URL; the editor embeds that URL in an <img> / gallery node. It
+        mirrors upload_esport_image's "upload-returns-URL" shape (same Bearer auth block, same
+        normalize_image_upload step), differing only in the 10MB cap and the news permission gate.
+
+    AUTH     : Bearer SessionToken (validate_token) AND the news permission gate - role in
+               admin|moderator|support holding head_admin or news_admin (the same people who may
+               call create_news; enforced via _is_news_admin so the gate never drifts from it).
+    REQUEST  : POST /auth/upload-news-image/  multipart, field `image` (required). Cap 10MB.
+    RESPONSE : 200 {"status": "ok", "url": <absolute media url>}
+               400 missing file / too large / missing or malformed Authorization header
+               401 invalid/expired session token
+               403 lacks the news permission
+
+    FRONTEND CONSUMER
+        The Tiptap editor image + gallery "Upload" tabs (frontend components/text-editor/Menubar.tsx):
+        each picked file is compressed then POSTed here and res.data.url is set as the node src.
+    """
+    # ---------------- AUTH (mirrors upload_esport_image) ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."},
+                        status=status.HTTP_401_UNAUTHORIZED)
+    # Same permission gate as create_news (role + head_admin|news_admin) - only news managers upload
+    # article media. _is_news_admin is the single source of truth for that gate.
+    if not _is_news_admin(user):
+        return Response({"message": "You do not have permission to upload news media."},
+                        status=status.HTTP_403_FORBIDDEN)
+
+    image = request.FILES.get("image")
+    if not image:
+        return Response({"message": "image file is required."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    # 10MB ceiling (contract). The frontend also compresses before sending, so normal phone photos
+    # never hit this; the message tells the admin WHY an upload was rejected.
+    if getattr(image, "size", 0) > 10 * 1024 * 1024:
+        return Response({"message": "That image is too large (over 10MB). Please upload a "
+                                    "smaller image."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    # HEIC->JPEG + EXIF-rotate + downscale, same as every other image upload. force_jpeg=True: article
+    # images are photos, so JPEG keeps them small. normalize_image_upload is fail-safe (never raises).
+    from .image_utils import normalize_image_upload
+    image = normalize_image_upload(image, force_jpeg=True)
+
+    # Persist to local MEDIA under news_images/ (the same folder News.images uses). default_storage
+    # uniquifies the name, so two uploads both called "photo.jpg" never overwrite each other. We return
+    # the absolute URL so the editor node src works from any origin.
+    from django.core.files.storage import default_storage
+    filename = os.path.basename(getattr(image, "name", "") or "news_image.jpg")
+    saved_path = default_storage.save(f"news_images/{filename}", image)
+
+    return Response({
+        "status": "ok",
+        "url": request.build_absolute_uri(default_storage.url(saved_path)),
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def upload_news_video(request):
+    """
+    Upload a single VIDEO for use INSIDE a news article body, returning its media URL.
+
+    PURPOSE
+        Companion to upload_news_image for the "Upload" tab of the editor's video node. Persists the
+        uploaded video to local MEDIA (news_videos/) and returns an absolute URL that the Tiptap
+        `newsVideo` node stores as its src (provider="file", rendered as a native <video controls> on
+        the read side). Unlike the image endpoint there is NO normalization - video bytes are stored
+        as-is (normalize_image_upload is for rasters only).
+
+    AUTH     : Bearer SessionToken (validate_token) AND the news permission gate (same as create_news /
+               upload_news_image; enforced via _is_news_admin).
+    REQUEST  : POST /auth/upload-news-video/  multipart, field `video` (required). Cap 50MB. The
+               uploaded file's content_type must start with "video/".
+    RESPONSE : 200 {"status": "ok", "url": <absolute media url>}
+               400 missing file / not a video / too large / missing or malformed Authorization header
+               401 invalid/expired session token
+               403 lacks the news permission
+
+    FRONTEND CONSUMER
+        The Tiptap editor video popover "Upload" tab (frontend components/text-editor/Menubar.tsx):
+        the picked file is POSTed here and res.data.url becomes the newsVideo node src. (The other
+        tab, "Paste link", never touches this endpoint - it stores a provider embed URL directly.)
+    """
+    # ---------------- AUTH (mirrors upload_news_image) ----------------
+    session_token = request.headers.get("Authorization")
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Authorization header is required'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Invalid token format'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token."},
+                        status=status.HTTP_401_UNAUTHORIZED)
+    if not _is_news_admin(user):
+        return Response({"message": "You do not have permission to upload news media."},
+                        status=status.HTTP_403_FORBIDDEN)
+
+    video = request.FILES.get("video")
+    if not video:
+        return Response({"message": "video file is required."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    # Only accept real video files (contract). content_type is browser-supplied, but it is a good
+    # first gate against a mislabeled image/doc being embedded as a <video> and rendering blank.
+    ctype = (getattr(video, "content_type", "") or "").lower()
+    if not ctype.startswith("video/"):
+        return Response({"message": "That file is not a video."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    # 50MB ceiling (contract). Videos are large; anything bigger should be hosted off-platform and
+    # embedded via the editor's "Paste link" tab instead of uploaded here.
+    if getattr(video, "size", 0) > 50 * 1024 * 1024:
+        return Response({"message": "That video is too large (over 50MB). Please upload a shorter/"
+                                    "smaller clip, or paste a video link instead."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    # Persist to local MEDIA under news_videos/. No normalization for video (unlike images).
+    # default_storage uniquifies the filename; the absolute URL is what the editor node stores.
+    from django.core.files.storage import default_storage
+    filename = os.path.basename(getattr(video, "name", "") or "news_video.mp4")
+    saved_path = default_storage.save(f"news_videos/{filename}", video)
+
+    return Response({
+        "status": "ok",
+        "url": request.build_absolute_uri(default_storage.url(saved_path)),
     }, status=status.HTTP_200_OK)
 
 
@@ -2111,7 +2333,13 @@ def get_all_news(request):
     # Scheduled-publish visibility gate (News "schedule publish" feature): the PUBLIC list hides any
     # item that has not gone live yet (is_published=False). Admins keep the full list - including
     # scheduled items - so the admin News page can show them with a "Scheduled" state + time.
-    news_list = News.objects.select_related("author", "related_event").order_by("-created_at")
+    # prefetch_related("related_events") so the per-row _serialize_related_news_events() call in the loop
+    # below does not re-query the M2M for every article (keeps this hot list-view free of N+1 queries).
+    news_list = (
+        News.objects.select_related("author", "related_event")
+        .prefetch_related("related_events")
+        .order_by("-created_at")
+    )
     if not is_admin_viewer:
         news_list = news_list.filter(is_published=True)
 
@@ -2144,7 +2372,10 @@ def get_all_news(request):
         item = {
             "news_id": news.news_id,
             "category": news.category,
+            # related_event = LEGACY single-event name string (kept for back-compat). related_events =
+            # the NEW multi-event list rendered as the public "Related events" block (News overhaul).
             "related_event": news.related_event.event_name if news.related_event else None,
+            "related_events": _serialize_related_news_events(news),
             "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
             "author": news.author.username if news.author else None,
             "created_at": news.created_at,
@@ -2195,7 +2426,10 @@ def get_news_detail(request):
     news_data = {
         "news_id": news.news_id,
         "category": news.category,
+        # related_event = LEGACY single-event name string (kept for back-compat). related_events = the
+        # NEW multi-event list the public "Related events" block on app/(user)/news/[slug] renders.
         "related_event": news.related_event.event_name if news.related_event else None,
+        "related_events": _serialize_related_news_events(news),
         "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
         "author": news.author.username,
         "created_at": news.created_at,
