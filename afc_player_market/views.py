@@ -189,12 +189,16 @@ _VIDEO_HOSTS = {
     "twitter.com", "www.twitter.com", "mobile.twitter.com", "x.com", "www.x.com", "mobile.x.com",
     # Facebook: watch/video/reel links + the fb.watch share short link (resolved below).
     "facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com", "fb.watch",
+    # Google Drive: a shared video file plays inline on the FE via /preview (owner 2026-07-15:
+    # gameplay clips are often uploaded to Drive). The file id is already in the URL, so no short-link
+    # resolution is needed; the file just has to be shared "anyone with the link".
+    "drive.google.com", "docs.google.com",
 }
 
 # Human-readable platform list for error messages (owner 2026-06-12: "tell them the platform
 # links we are accepting"). The FE shows the same list in the form helper text; keep this string
 # byte-for-byte in sync with VIDEO_PLATFORMS_LABEL in frontend lib/videoEmbed.ts.
-_VIDEO_PLATFORMS_LABEL = "YouTube, TikTok, Instagram, X (Twitter) or Facebook"
+_VIDEO_PLATFORMS_LABEL = "YouTube, TikTok, Instagram, X (Twitter), Facebook or Google Drive"
 
 
 def _validate_video_url(raw):
