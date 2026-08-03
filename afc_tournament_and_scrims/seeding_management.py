@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims.seeding_management — SEEDING UNDO/REDO + DELETE-AND-RESEED.
+afc_tournament_and_scrims.seeding_management - SEEDING UNDO/REDO + DELETE-AND-RESEED.
 
 PURPOSE (owner feature 2026-06-15, spec: WEBSITE/tasks/seeding-undo-redo-delete-reseed-plan.md)
     Let admins AND organizers reorganise competitor placement AFTER the initial seed:
@@ -14,7 +14,7 @@ PURPOSE (owner feature 2026-06-15, spec: WEBSITE/tasks/seeding-undo-redo-delete-
 
 WHY A SEPARATE MODULE
     The existing seed endpoints in views.py are admin-only and inline. Rather than refactor
-    that 19k-line file (regression risk), this module is self-contained — same isolation
+    that 19k-line file (regression risk), this module is self-contained - same isolation
     pattern as event_links.py / event_payments.py. It re-implements only the small, proven
     seed-into-groups algorithm (shuffle + round-robin modulo) and reuses the live data model.
 
@@ -28,7 +28,7 @@ HOW IT CONNECTS
     - Permissions: AFC event admins always pass; organizers pass with can_manage_registrations on
       the owning org (org_can_event). Native (org=None) AFC events stay admin-only.
     - Discord: best-effort reuse of views.remove_group_role_task / reconcile_group_roles_for_stage
-      (imported lazily, wrapped in try/except — Discord is non-critical and reconcile rebuilds
+      (imported lazily, wrapped in try/except - Discord is non-critical and reconcile rebuilds
       from DB state on the next seed).
     - Consumed by: frontend lib/seedingManagement.ts -> the admin event-edit ActionsTab
       "Seeding management" section and the organizer event groups page.
@@ -79,7 +79,7 @@ def _is_event_admin(user):
 
 
 def _is_event_creator(user, event):
-    """The user who CREATED this event (Bug D). Local copy of the views.py helper — we deliberately do
+    """The user who CREATED this event (Bug D). Local copy of the views.py helper - we deliberately do
     NOT import the 24k-line views module here (load-time cost / circular import). Lets an event's own
     creator reorganise its seeding even for native/legacy events with no organization, or when a
     sub_organizer can create but not manage registrations."""
@@ -149,7 +149,7 @@ def _clear_group_seeding(stage):
 
 
 def _distribute_into_groups(stage, shuffle=True, only_ungrouped=False):
-    """Distribute the stage's active competitors into its groups (shuffle + round-robin modulo —
+    """Distribute the stage's active competitors into its groups (shuffle + round-robin modulo - 
     the same algorithm as views.seed_stage_competitors_to_groups_team). Handles team and solo
     transparently (StageCompetitor carries tournament_team OR player).
 
@@ -221,7 +221,7 @@ GROUP_DISTRIBUTABLE_FORMATS = {"br - normal", "cs - normal"}
 
 
 def entry_stage(event):
-    """The event's ENTRY stage = the first by display order (stage_order, then start_date, then id) —
+    """The event's ENTRY stage = the first by display order (stage_order, then start_date, then id) - 
     the stage that takes REGISTRATION-based seeding. Later stages fill from results/qualifiers, never
     from raw registrations, so registration auto-seed only ever targets this one stage (owner choice
     2026-06-21: "entry stage only"). Returns a Stages or None when the event has no stages yet."""
@@ -317,13 +317,13 @@ def autoseed_entry_stage(event, *, shuffle=False):
 
 @api_view(["POST"])
 def sync_entry_stage_seeding(request):
-    """POST events/seeding/sync-entry-stage/ {event_id} — the Stats-page SAFETY-NET for auto-seeding.
+    """POST events/seeding/sync-entry-stage/ {event_id} - the Stats-page SAFETY-NET for auto-seeding.
 
     Idempotently seeds every confirmed registration of the event into its ENTRY stage's groups (see
     autoseed_entry_stage). Fired by the admin + organizer Stats/leaderboard pages when they open
     (owner 2026-06-21: "automatically seed those added teams ALSO when they click on Stat"), so teams
-    added by ANY path — admin add_teams_to_event, public/organizer register_for_event, or qualifier
-    promotion — appear in the groups and can have stats entered WITHOUT a manual seed step.
+    added by ANY path - admin add_teams_to_event, public/organizer register_for_event, or qualifier
+    promotion - appear in the groups and can have stats entered WITHOUT a manual seed step.
 
     AUTH: gated exactly like the other seeding endpoints (_seeding_gate = AFC event admin OR organizer
     with can_manage_registrations on the owning org), so it covers admins AND organizers. Underneath,
@@ -346,7 +346,7 @@ def sync_entry_stage_seeding(request):
 
 
 def _group_competitor_keys(group):
-    """The (team_ids, player_ids) currently seeded into a group — captured BEFORE deletion so the
+    """The (team_ids, player_ids) currently seeded into a group - captured BEFORE deletion so the
     caller can act on those specific competitors (auto redistribute / delete_all purge)."""
     rows = StageGroupCompetitor.objects.filter(stage_group=group)
     team_ids = set(r.tournament_team_id for r in rows if r.tournament_team_id)
@@ -611,7 +611,7 @@ def delete_group_managed(request):
             redistributed = _distribute_into_groups(stage, shuffle=False, only_ungrouped=True)
         elif mode == "delete_all":
             # Purge those competitors from the stage entirely, but only if they are not still placed
-            # in another group (defensive — a competitor should only be in one group).
+            # in another group (defensive - a competitor should only be in one group).
             still_grouped_teams = set(
                 StageGroupCompetitor.objects.filter(
                     stage_group__stage=stage, tournament_team_id__in=team_ids,
@@ -628,7 +628,7 @@ def delete_group_managed(request):
                 StageCompetitor.objects.filter(stage=stage, tournament_team_id__in=purge_teams).delete()
             if purge_players:
                 StageCompetitor.objects.filter(stage=stage, player_id__in=purge_players).delete()
-        # mode == "manual": nothing more — competitors remain stage-seeded, ungrouped.
+        # mode == "manual": nothing more - competitors remain stage-seeded, ungrouped.
 
     remaining = StageGroups.objects.filter(stage=stage).count()
     return Response({"message": f"Group deleted ({mode}).", "mode": mode,
@@ -721,11 +721,11 @@ def move_team_between_groups(request):
     editor. Standard stages only: delete the team's StageGroupCompetitor row in the source group and
     create one in the target group (the unique_together(stage_group, tournament_team, player) keeps a
     team in exactly one group per stage). Match rows are immutable, so the team's PAST results stay
-    linked to the OLD group's matches — if it already has entered results there, we require `force`
+    linked to the OLD group's matches - if it already has entered results there, we require `force`
     (warn-and-allow): those old-group stats remain in the old group's standings after the move.
 
     Round-robin stages store teams on RoundRobinGroup.teams (M2M) + rebuild lobbies, NOT on
-    StageGroupCompetitor, so a DnD move there needs a different path — we fail SAFE with a clear
+    StageGroupCompetitor, so a DnD move there needs a different path - we fail SAFE with a clear
     message rather than corrupt the lobby structure (use Reseed for RR for now).
 
     Request:  {from_group_id, to_group_id, tournament_team_id? | player_id?, force?}
@@ -739,14 +739,14 @@ def move_team_between_groups(request):
     _from_id = request.data.get("from_group_id")
     _to_id = request.data.get("to_group_id")
 
-    # Round-robin fail-safe #1 — reject RR group ids BEFORE the StageGroups lookup. RoundRobinGroup
+    # Round-robin fail-safe #1 - reject RR group ids BEFORE the StageGroups lookup. RoundRobinGroup
     # and StageGroups both use independent AutoField PKs whose integer ranges OVERLAP, so an RR
     # group_id sent by a stale/buggy client would otherwise `get_object_or_404(StageGroups, ...)` into
     # an UNRELATED StageGroups row (possibly in a different, non-RR stage) and the substring guard
-    # below would inspect the wrong stage and be bypassed — silently mutating the wrong stage's groups.
+    # below would inspect the wrong stage and be bypassed - silently mutating the wrong stage's groups.
     # Detecting the id against RoundRobinGroup first closes that collision. (Adversarial-review fix,
     # owner 2026-06-19.) RR teams live on RoundRobinGroup.teams (M2M) + drive generated lobbies, so a
-    # DnD move there is not supported — fail SAFE (use Reseed).
+    # DnD move there is not supported - fail SAFE (use Reseed).
     from .models import RoundRobinGroup, StageCompetitor
 
     # ── ROUND-ROBIN branch (owner 2026-07-03: RR stages now appear in the move panel) ──────────
@@ -836,7 +836,7 @@ def move_team_between_groups(request):
     if not _seeding_gate(user, event):
         return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
 
-    # Round-robin fail-safe #2 — STRUCTURAL guard on the RESOLVED stage (authoritative). The old check
+    # Round-robin fail-safe #2 - STRUCTURAL guard on the RESOLVED stage (authoritative). The old check
     # was `"round" in stage_format` which both over-matches (legacy 'br - roundrobin' Knockout) and
     # under-matches ('cs - league'); the presence of RoundRobinGroup rows is the real signal that a
     # stage's teams live on the RR M2M (same source of truth get_event_group_rosters uses).
@@ -865,7 +865,7 @@ def move_team_between_groups(request):
     if StageGroupCompetitor.objects.filter(**tgt_filter).exists():
         return Response({"message": "That competitor is already in the target group."}, status=400)
 
-    # Results guard (team only — solo stats are out of scope for the guard): if the team already has
+    # Results guard (team only - solo stats are out of scope for the guard): if the team already has
     # entered results in the source group, warn + require force (old-group stats stay behind).
     if tt_id:
         from .models import TournamentTeamMatchStats
@@ -895,30 +895,30 @@ def move_team_between_groups(request):
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════
-# MANUAL SEED / UNSEED — targeted single-competitor add + remove (owner 2026-07-06)
+# MANUAL SEED / UNSEED - targeted single-competitor add + remove (owner 2026-07-06)
 # ════════════════════════════════════════════════════════════════════════════════════════════
 # WHAT THIS ADDS
 #   The owner wants organizers/admins to hand-pick who sits in each stage/group AND to pull a single
 #   team/player back out again:
-#     • remove_competitor_from_group  — take ONE team/solo player out of ONE group (leave them in the
+#     • remove_competitor_from_group  - take ONE team/solo player out of ONE group (leave them in the
 #                                       stage pool + the event registration).
-#     • remove_competitor_from_stage  — take ONE team/player out of a whole stage (its StageCompetitor
+#     • remove_competitor_from_stage  - take ONE team/player out of a whole stage (its StageCompetitor
 #                                       pool row + every group membership in that stage). Event
 #                                       registration is untouched.
-#     • add_solo_players_to_group /    — the SOLO siblings of views.add_teams_to_group /
+#     • add_solo_players_to_group /    - the SOLO siblings of views.add_teams_to_group /
 #       add_solo_players_to_stage        add_teams_to_stage (those two are hard team-only and reject
 #                                       solo events), so a solo event can be manually seeded too.
-#     • list_registered_solo_players  — read-only picker feed the solo-add UI selects from.
+#     • list_registered_solo_players  - read-only picker feed the solo-add UI selects from.
 #
 # WHY HERE (not views.py)
 #   Same isolation rationale as the rest of this module: keep the additive seeding surface out of the
 #   19k-line views.py to avoid edit-churn/regressions. These reuse this file's proven helpers
 #   (_auth_user, _seeding_gate, _distribute_into_groups, the played-results primitives).
 #
-# DATA-SAFETY (critical — mirrors the delete_group_managed / move_team results guard)
+# DATA-SAFETY (critical - mirrors the delete_group_managed / move_team results guard)
 #   A remove is REFUSED (400, nothing deleted) when the competitor already has entered match results
 #   under the target group/stage: TournamentTeamMatchStats for a team, SoloPlayerMatchStats for a solo
-#   player. Real match stats are never cascade-deleted — the caller must clear the results first. This
+#   player. Real match stats are never cascade-deleted - the caller must clear the results first. This
 #   is the exact "clear its results first" hard-stop the spec calls for (no force override, unlike a
 #   move where past results can legitimately stay behind).
 #
@@ -953,7 +953,7 @@ def _resolve_target_team(event, data):
 
 def _resolve_target_competitor(event, data):
     """Resolve the RegisteredCompetitors (solo player) a solo-event add/remove targets, accepting
-    `competitor_id` (its PK — the spec's identifier) OR `user_id` (what get_event_group_rosters exposes
+    `competitor_id` (its PK - the spec's identifier) OR `user_id` (what get_event_group_rosters exposes
     per solo row, so the FE can act straight off the rendered row). Scoped to the event's SOLO rows
     (team is null). Returns RegisteredCompetitors | None."""
     comp_id = data.get("competitor_id") or data.get("player_id")
@@ -967,7 +967,7 @@ def _resolve_target_competitor(event, data):
     return None
 
 
-# ── played-results guards (per competitor — never cascade-delete real match stats) ─────────────────
+# ── played-results guards (per competitor - never cascade-delete real match stats) ─────────────────
 def _team_has_group_results(group, tournament_team):
     """True when a team already has entered results in a STANDARD group (its Match rows carry the
     TournamentTeamMatchStats). Blocks a group-remove that would strand real stats."""
@@ -1013,7 +1013,7 @@ def _solo_has_stage_results(stage, competitor):
 
 # ── Discord (best-effort, scoped to ONE competitor leaving a group) ────────────────────────────────
 def _queue_competitor_group_role_removal(group, *, tournament_team=None, player=None):
-    """Queue Discord group-role removal for ONE competitor being taken out of a group — the scoped
+    """Queue Discord group-role removal for ONE competitor being taken out of a group - the scoped
     sibling of _queue_group_role_removal (which does the whole group). Non-critical: fully wrapped so a
     Discord/Celery hiccup never fails the removal. RoundRobinGroup has no group_discord_role_id, so the
     getattr short-circuits to a no-op for RR base groups (their roles live on the lobby StageGroups)."""
@@ -1040,7 +1040,7 @@ def remove_competitor_from_group(request):
     """POST events/seeding/remove-from-group/
         {group_id, team_id? | tournament_team_id? | competitor_id? | user_id?}
 
-    Remove ONE team (team event) or ONE solo player (solo event) from ONE group ONLY — the competitor
+    Remove ONE team (team event) or ONE solo player (solo event) from ONE group ONLY - the competitor
     stays stage-seeded (StageCompetitor) and event-registered. Idempotent: removing something that is
     not there returns 200 with removed=0.
 
@@ -1132,7 +1132,7 @@ def remove_competitor_from_stage(request):
 
     Remove ONE team/player from a whole STAGE: delete its StageCompetitor (stage pool) row AND every
     StageGroupCompetitor / RoundRobinGroup membership within that stage. The EVENT registration
-    (TournamentTeam / RegisteredCompetitors) is left intact — this only un-seeds the stage. Idempotent.
+    (TournamentTeam / RegisteredCompetitors) is left intact - this only un-seeds the stage. Idempotent.
 
     DATA-SAFETY: 400 (nothing deleted) if the competitor already has entered results anywhere in the
     stage. AUTH: _seeding_gate, event resolved stage -> event."""
@@ -1184,7 +1184,7 @@ def remove_competitor_from_stage(request):
         group_memberships_removed = StageGroupCompetitor.objects.filter(
             stage_group__stage=stage, tournament_team=tt,
         ).delete()[0]
-        # RR base-group memberships within this stage (M2M — no StageGroupCompetitor rows).
+        # RR base-group memberships within this stage (M2M - no StageGroupCompetitor rows).
         rr_removed = 0
         for rr in RoundRobinGroup.objects.filter(stage=stage, teams=tt):
             rr.teams.remove(tt)
@@ -1206,7 +1206,7 @@ def add_solo_players_to_group(request):
 
     Solo sibling of add_teams_to_group (which is hard team-only). Seed already-registered SOLO players
     (RegisteredCompetitors) straight into ONE StageGroups group (StageGroupCompetitor) AND the
-    stage-level pool (StageCompetitor), so undo/reseed — which work off the pool — keep them. Idempotent
+    stage-level pool (StageCompetitor), so undo/reseed - which work off the pool - keep them. Idempotent
     (get_or_create). competitor_ids are RegisteredCompetitors PKs (from list_registered_solo_players).
 
     AUTH: _seeding_gate, event resolved group -> stage -> event. Consumed by the FE AddSoloPlayersModal."""
@@ -1319,7 +1319,7 @@ def list_registered_solo_players(request):
     """GET events/seeding/registered-solo-players/?event_id=<id>[&stage_id=<id>][&group_id=<id>]
 
     Read-only picker feed for the manual solo-add UI. Returns the event's registered SOLO players with
-    competitor_id (RegisteredCompetitors PK — the add/remove key), user info, and in_stage / in_group
+    competitor_id (RegisteredCompetitors PK - the add/remove key), user info, and in_stage / in_group
     flags (set only when stage_id / group_id are supplied) so the FE can grey out already-seeded rows.
     AUTH: _seeding_gate. Consumed by the FE AddSoloPlayersModal."""
     user, err = _auth_user(request)
@@ -1368,7 +1368,7 @@ def list_registered_teams(request):
 
     Read-only picker feed for manual TEAM seeding (owner 2026-07-06: "show only teams/players that are
     REGISTERED as those you can seed"). Returns ONLY the event's REGISTERED teams (its active
-    TournamentTeam rows), NOT every team on the platform — so when an admin/organizer seeds a team into
+    TournamentTeam rows), NOT every team on the platform - so when an admin/organizer seeds a team into
     a stage or group they pick from who actually registered for THIS event. The response envelope +
     per-team fields deliberately match /team/get-all-teams/ ({teams:[{team_id, team_name, team_logo,
     team_tag, member_count, country, is_banned}]}) so AddTeamsModal renders it with no shape change; it

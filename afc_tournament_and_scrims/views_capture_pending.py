@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims.views_capture_pending — PENDING CAPTURE BUCKET ("decide later").
+afc_tournament_and_scrims.views_capture_pending - PENDING CAPTURE BUCKET ("decide later").
 
 PURPOSE (owner 2026-07-05, complaint D)
     The desktop AFC Capture client posts each round with a stage + group but NO match_id. When every
@@ -14,18 +14,18 @@ PURPOSE (owner 2026-07-05, complaint D)
     create (helper), list, resolve, discard.
 
 WHY A SEPARATE MODULE
-    Same isolation rationale as event_links.py / seeding_management.py — keep the 20k-line views.py from
+    Same isolation rationale as event_links.py / seeding_management.py - keep the 20k-line views.py from
     growing. The heavy scoring lives in views.upload_team_match_result; RESOLVE deliberately re-invokes
     that SAME view (via a synthetic request) so a parked upload is scored by the identical code path a
-    live upload uses — no second scoring implementation to drift.
+    live upload uses - no second scoring implementation to drift.
 
 HOW IT CONNECTS
-    - Model: PendingCaptureUpload (afc_tournament_and_scrims.models) — stores {file_text, file_name,
+    - Model: PendingCaptureUpload (afc_tournament_and_scrims.models) - stores {file_text, file_name,
       file_type, stage_id, group_id} + a small parsed summary + status (pending|resolved|discarded).
     - Intake: views.upload_team_match_result calls _create_pending_capture() on attribution="pending".
     - Scoring: resolve_pending_capture() rebuilds the file and calls views.upload_team_match_result with
       attribution="new" (a fresh slot) or match_id=<mid> (overwrite), forwarding the operator's Bearer.
-    - Permissions: AFC event admin OR an organizer with can_upload_results on the event's owning org —
+    - Permissions: AFC event admin OR an organizer with can_upload_results on the event's owning org - 
       the SAME gate the other result endpoints use.
     - Consumed by: frontend lib/pendingCaptures.ts -> the admin event leaderboard editor's Flagging tab
       (PendingCapturesPanel).
@@ -52,7 +52,7 @@ from .models import Event, Match, PendingCaptureUpload, StageGroups
 
 
 # --------------------------------------------------------------------------- #
-# Intake helper — called by views.upload_team_match_result on attribution="pending"
+# Intake helper - called by views.upload_team_match_result on attribution="pending"
 # --------------------------------------------------------------------------- #
 def _parse_capture_summary(text: str) -> dict:
     """Build a small human-readable digest of a MatchResult file for the resolve UI, WITHOUT scoring.
@@ -103,10 +103,10 @@ def _create_pending_capture(*, event, stage, group, upload_token, uploaded_by,
 
 
 # --------------------------------------------------------------------------- #
-# Shared gate — same authority as the other result endpoints
+# Shared gate - same authority as the other result endpoints
 # --------------------------------------------------------------------------- #
 def _pending_gate(request, event_id):
-    """(user, event, error_response) — exactly one of (user+event) / error is set. Bearer auth + the
+    """(user, event, error_response) - exactly one of (user+event) / error is set. Bearer auth + the
     standard result-endpoint gate: an AFC event admin OR an organizer with can_upload_results on the
     event's owning org (native org=None events stay admin-only via org_can_event)."""
     from .views import _is_event_admin  # lazy: avoid a load-time circular import with views.py
@@ -147,7 +147,7 @@ def _serialize_pending(p: PendingCaptureUpload) -> dict:
 # --------------------------------------------------------------------------- #
 @api_view(["GET"])
 def list_pending_captures(request, event_id):
-    """GET events/<event_id>/pending-captures/ — the event's UNRESOLVED parked captures (status=pending),
+    """GET events/<event_id>/pending-captures/ - the event's UNRESOLVED parked captures (status=pending),
     plus the event's stage/group structure so the resolve dialog can offer a target picker. Consumed by
     the admin leaderboard editor's PendingCapturesPanel (frontend lib/pendingCaptures.ts)."""
     user, event, err = _pending_gate(request, event_id)
@@ -188,14 +188,14 @@ def list_pending_captures(request, event_id):
 
 @api_view(["POST"])
 def resolve_pending_capture(request, event_id, pending_id):
-    """POST events/<event_id>/pending-captures/<pending_id>/resolve/ — score a parked capture into a
+    """POST events/<event_id>/pending-captures/<pending_id>/resolve/ - score a parked capture into a
     match slot, then mark it resolved. Body:
         { attribution: "new" | "replace:<match_id>", group_id, stage_id? }
     "new"     -> create + score a fresh extra map slot in <group_id>.
     "replace" -> overwrite match <match_id>'s result.
 
     RUNS THE SAME SCORING PATH: this rebuilds the stored file and re-invokes views.upload_team_match_result
-    (forwarding the operator's Bearer token) so the parked upload is scored by the identical code — flag
+    (forwarding the operator's Bearer token) so the parked upload is scored by the identical code - flag
     derivation, name-matching, recompute, auto-complete, all included. No second scoring implementation."""
     from .views import upload_team_match_result  # lazy: avoid a load-time circular import
 
@@ -251,7 +251,7 @@ def resolve_pending_capture(request, event_id, pending_id):
     body = getattr(resp, "data", {}) or {}
     if not (200 <= status_code < 300):
         # Scoring rejected the file (bad parse, permission, ...). Leave the pending row PENDING so the
-        # operator can retry / discard — never lose it. Surface the inner error verbatim.
+        # operator can retry / discard - never lose it. Surface the inner error verbatim.
         return Response({"message": body.get("message", "Could not score this capture."), "detail": body},
                         status=status_code)
 
@@ -273,7 +273,7 @@ def resolve_pending_capture(request, event_id, pending_id):
 
 @api_view(["POST"])
 def discard_pending_capture(request, event_id, pending_id):
-    """POST events/<event_id>/pending-captures/<pending_id>/discard/ — drop a parked capture the operator
+    """POST events/<event_id>/pending-captures/<pending_id>/discard/ - drop a parked capture the operator
     judged a genuine mis-capture (wrong event, duplicate run). Marks it discarded (kept for the audit
     trail, not scored). Same gate as list/resolve."""
     user, event, err = _pending_gate(request, event_id)

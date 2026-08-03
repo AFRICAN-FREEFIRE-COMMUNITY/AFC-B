@@ -1,5 +1,5 @@
 """
-afc_leaderboard.graphic — render a standalone leaderboard's standings onto a branded design.
+afc_leaderboard.graphic - render a standalone leaderboard's standings onto a branded design.
 
 OWNER 2026-06-13: organizers upload branded background designs (a per-org library,
 afc_organizers.OrgLeaderboardDesign) and, when exporting a leaderboard, pick which design +
@@ -80,8 +80,8 @@ DEFAULT_TEXT = "#FFFFFF"
 # A positioned logo's longest edge, as a fraction of canvas HEIGHT, per size band. Lets a big org
 # logo and small sponsor logos coexist on one design. These three fractions are MIRRORED, verbatim,
 # by the FE so a downloaded PNG matches the design editor + live overlay exactly:
-#   • editor logo markers — LeaderboardDesignsManager.tsx LOGO_SIZE_FRAC (~L105)
-#   • live overlay board  — DesignBoard.tsx LOGO_SIZE_FRAC (~L70)
+#   • editor logo markers - LeaderboardDesignsManager.tsx LOGO_SIZE_FRAC (~L105)
+#   • live overlay board  - DesignBoard.tsx LOGO_SIZE_FRAC (~L70)
 # The FE draws each positioned logo in a square (edge x edge) box with CSS `object-fit: contain`
 # (longest edge = edge); _paste_logos below reproduces that exact box via _contain_resize.
 LOGO_SIZE_FRAC = {"small": 0.07, "medium": 0.11, "large": 0.16}
@@ -99,10 +99,10 @@ TEXT_SIZE_FRAC = 0.05
 # An IN-ROW image cell (team logo / flag / player photo) is drawn 1.35x the field's TEXT size, so a
 # logo sits slightly larger than the row's numbers. Mirrors the FE image cell, which sizes every
 # image field at `fSizePx * 1.35` (fSizePx = the field's font_size_pct% of canvas height):
-#   • design editor preview — DesignFieldsEditor.tsx ~L2135 (`const boxPx = fSizePx * 1.35`)
-#   • live overlay board    — DesignBoard.tsx ~L213 (`height/width: sizePx * 1.35`)
-# Backend previously sized in-row logos at 0.06*H (team_logo) / 0.05*H (flag) with NO 1.35 factor —
-# ~2x the editor box — which is why a downloaded logo looked far bigger than the editor sample
+#   • design editor preview - DesignFieldsEditor.tsx ~L2135 (`const boxPx = fSizePx * 1.35`)
+#   • live overlay board    - DesignBoard.tsx ~L213 (`height/width: sizePx * 1.35`)
+# Backend previously sized in-row logos at 0.06*H (team_logo) / 0.05*H (flag) with NO 1.35 factor - 
+# ~2x the editor box - which is why a downloaded logo looked far bigger than the editor sample
 # (owner audit complaint I, 2026-07-05). The editor/overlay are the source of truth.
 ROW_LOGO_SCALE = 1.35
 
@@ -178,7 +178,7 @@ def _cover(img, size):
 def _contain_resize(img, box_px):
     """Scale `img` (up OR down) to FIT inside a box_px x box_px square while preserving aspect: the
     longest edge becomes box_px, the shorter edge scales proportionally. This is the pixel-exact
-    equivalent of the FE's CSS `object-fit: contain` in a square box — the editor logo markers
+    equivalent of the FE's CSS `object-fit: contain` in a square box - the editor logo markers
     (LeaderboardDesignsManager.tsx `object-contain`), the editor in-row sample (DesignFieldsEditor.tsx
     `objectFit: "contain"`) and the overlay CellValue img (DesignBoard.tsx `objectFit: "contain"`).
     Unlike PIL.Image.thumbnail it UPSCALES small art too (the browser does), so the rendered box
@@ -195,11 +195,11 @@ def _contain_resize(img, box_px):
 # ── Render caches (owner 2026-07-13, "it took time to download today") ───────────────────────────
 # Every graphic download re-renders server-side from scratch: the FE deliberately cache-busts each
 # request (params._ts) so the PNG always reflects the LATEST scores, which means the same heavy pixels
-# were recomputed on every click — the uploaded background decoded + LANCZOS cover-resized to the full
+# were recomputed on every click - the uploaded background decoded + LANCZOS cover-resized to the full
 # 1920x1080 / 1080x1350 canvas, and every team/sponsor logo re-decoded + resized, per render. These
 # two per-process memos skip that repeat work. Keyed on (file path + mtime + target box) so replacing
 # a background or a team logo transparently invalidates only its own entry; a plain miss just does the
-# original work, so correctness never depends on the cache. Bounded — cleared wholesale when large
+# original work, so correctness never depends on the cache. Bounded - cleared wholesale when large
 # (backgrounds/logos per org are few, so this stays tiny in practice).
 _BG_COVER_CACHE: dict = {}     # (path, mtime, w, h) -> cover-resized RGB Image (a COPY is returned)
 _LOGO_RESIZE_CACHE: dict = {}  # (path, mtime, box_px) -> contained RGBA Image (only ever pasted)
@@ -231,7 +231,7 @@ def _cover_cached(path, size):
 def _load_contained_rgba(path, box_px):
     """Decode `path` to RGBA + `_contain_resize` into a box_px square, memoised by (path, mtime,
     box_px). The result is only ever PASTED (paste reads the image, never mutates it), so callers may
-    share the cached instance directly — no copy needed, even when the same logo repeats across rows.
+    share the cached instance directly - no copy needed, even when the same logo repeats across rows.
     Returns None on any decode failure (so a bad/None path is a silent no-op, as before)."""
     box_px = max(1, int(box_px))
     key = (path, _file_mtime(path), box_px)
@@ -303,14 +303,14 @@ def _row_image_box_px(f, H):
     """Pixel box for an IN-ROW image cell (team logo / flag / player photo). It is the field's TEXT
     size (font_size_pct% of canvas H, default 2.1% = FIELD_SIZE_FRAC, the SAME default the editor +
     overlay use via `field.font_size_pct ?? 2.1`) times ROW_LOGO_SCALE (1.35). This reproduces the FE
-    image-cell box exactly — DesignFieldsEditor.tsx ~L2135 `boxPx = fSizePx * 1.35` and DesignBoard.tsx
-    CellValue `sizePx * 1.35` — so a downloaded logo lands at the size the operator sees in the editor.
+    image-cell box exactly - DesignFieldsEditor.tsx ~L2135 `boxPx = fSizePx * 1.35` and DesignBoard.tsx
+    CellValue `sizePx * 1.35` - so a downloaded logo lands at the size the operator sees in the editor.
     Computed in ONE expression (no intermediate floor) to stay within a pixel of the FE's float box."""
     pct = f.get("font_size_pct")
     try:
         pct = float(pct)
     except (TypeError, ValueError):
-        pct = FIELD_SIZE_FRAC * 100.0   # 2.1 — mirrors the editor default `?? 2.1`
+        pct = FIELD_SIZE_FRAC * 100.0   # 2.1 - mirrors the editor default `?? 2.1`
     return max(1, int(pct / 100.0 * H * ROW_LOGO_SCALE))
 
 
@@ -354,7 +354,7 @@ def _paste_row_logo(base, path, cx, cy, edge_px):
     sample. Dropping the trim + using _contain_resize (same box math as the editor, incl. upscale)
     makes the rendered footprint equal the editor's box. Silent no-op on a bad path.
 
-    `path` may be a filesystem path OR a /media/... URL — _local_media_path resolves either (owner
+    `path` may be a filesystem path OR a /media/... URL - _local_media_path resolves either (owner
     2026-07-05, complaints G+H: the MVP/top-killers overlay rows carry esports_image as a URL, so the
     export renders the SAME rows by mapping the URL onto the local media file)."""
     path = _local_media_path(path)
@@ -414,7 +414,7 @@ def _render_fields(base, field_layout, rows, W, H, default_rgb):
                 if ft == "esports_image":
                     # Player PHOTO cell (owner 2026-07-05, complaints G+H): the MVP / top-killers boards
                     # place the player's esport image. Render it as an IMAGE (object-contain box) exactly
-                    # like team_logo / team_flag — previously it fell through to the TEXT path and drew
+                    # like team_logo / team_flag - previously it fell through to the TEXT path and drew
                     # the raw URL. Same box math (_row_image_box_px) so a player photo is sized WYSIWYG
                     # with the editor. The value may be a URL (overlay payload rows) OR a local path
                     # (export rows); _paste_row_logo -> _local_media_path resolves either. Blank when the
@@ -476,7 +476,7 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
                       -> a plain dark AFC background.
     transparent_background : when True (owner 2026-07-01, live-overlay designs) the canvas is a
                       fully-transparent RGBA image and the dark default fill is SKIPPED, so only the
-                      placed fields/logos/texts are drawn — the PNG can overlay an OBS scene. Wired
+                      placed fields/logos/texts are drawn - the PNG can overlay an OBS scene. Wired
                       from event_stage_graphic + leaderboard_graphic (design.transparent_background).
     logos           : the design's positioned logos, a list of
                       {"path": <fs path>, "x_pct": 0..100, "y_pct": 0..100, "size": s|m|l}.

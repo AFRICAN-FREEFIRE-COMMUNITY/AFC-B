@@ -1,5 +1,5 @@
 """
-afc_leaderboard.models — Standalone Leaderboards (Phase 1).
+afc_leaderboard.models - Standalone Leaderboards (Phase 1).
 
 PURPOSE
     A "standalone" leaderboard is an event-less competition table. An AFC admin (org = null,
@@ -7,7 +7,7 @@ PURPOSE
     create one, add real-or-ghost teams/players as participants, enter per-map results, and view
     the computed standings. This is deliberately DECOUPLED from the event-tied stats tables
     (afc_tournament_and_scrims) so editing a standalone leaderboard can never touch a live event.
-    See WEBSITE/tasks/standalone-leaderboard-design.md §2 (this file = "Approach A — new tables").
+    See WEBSITE/tasks/standalone-leaderboard-design.md §2 (this file = "Approach A - new tables").
 
 HOW IT CONNECTS
     - Point math is NOT redefined here. Results are scored on save through
@@ -22,10 +22,10 @@ HOW IT CONNECTS
       (/leaderboards/standalone/<id>) via the endpoints in afc_leaderboard.views / urls.
 
 MODELS
-    StandaloneLeaderboard  — the leaderboard header: name, format, scoring config, owner, status.
-    LeaderboardParticipant — one competitor row: exactly one of {team, ghost_team, user, ghost_player}.
-    LeaderboardMatch       — one "map" played in the leaderboard.
-    ParticipantMatchResult — one participant's result in one map, with computed point columns.
+    StandaloneLeaderboard  - the leaderboard header: name, format, scoring config, owner, status.
+    LeaderboardParticipant - one competitor row: exactly one of {team, ghost_team, user, ghost_player}.
+    LeaderboardMatch       - one "map" played in the leaderboard.
+    ParticipantMatchResult - one participant's result in one map, with computed point columns.
 """
 import uuid
 
@@ -40,7 +40,7 @@ class StandaloneLeaderboard(models.Model):
     `organization` null  => AFC-native (created by an AFC admin).
     `organization` set   => owned by that org (created by an organizer with can_upload_results).
     `counts_toward_rankings` is AFC-admin-only (enforced in the view, not the model); Phase 1 only
-    stores the flag — wiring it into the rankings engine is Phase 3.
+    stores the flag - wiring it into the rankings engine is Phase 3.
     `status` starts 'draft' (editable, hidden) and the creator publishes it to make standings viewable.
     Scoring config (placement_points / kill_point / points_per_assist / points_per_1000_damage) mirrors
     the args of scoring.compute_team_points so the same point math used by events applies here.
@@ -65,7 +65,7 @@ class StandaloneLeaderboard(models.Model):
     # These two columns configure HOW this leaderboard's results enter the AFC rankings engine when
     # the flag above is on. They are consumed by afc_rankings.standalone (the standalone->rankings
     # input builders) via effective_date below; an organizer can never set them (they cannot set the
-    # flag — see afc_leaderboard.views.create_leaderboard / edit_leaderboard, which gate both fields
+    # flag - see afc_leaderboard.views.create_leaderboard / edit_leaderboard, which gate both fields
     # behind permissions.can_set_rankings_flag exactly like counts_toward_rankings).
     # played_on buckets this leaderboard's results into a rankings month + season (null => the
     # created_at date is used by effective_date). One date per leaderboard (a standalone LB models
@@ -252,7 +252,7 @@ class ParticipantMatchResult(models.Model):
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════
-# OCR BATCH (Phase 2.6) — async, multi-image screenshot reading
+# OCR BATCH (Phase 2.6) - async, multi-image screenshot reading
 #
 # WHY THESE TWO MODELS EXIST
 #   Reading a Free Fire result screenshot via Gemini takes ~12-26s. Doing it inside the HTTP request
@@ -297,7 +297,7 @@ class LeaderboardOcrJob(models.Model):
     # The merged + platform-matched review rows (same shape the old ocr_extract returned), null until
     # the job is done. The FE renders these in the editable review table.
     rows = models.JSONField(null=True, blank=True)
-    # Which engine produced the read ("gemini-2.5-flash", "local_student_vN", ...) — for the FE badge
+    # Which engine produced the read ("gemini-2.5-flash", "local_student_vN", ...) - for the FE badge
     # + the training corpus. Blank until processed.
     engine = models.CharField(max_length=64, blank=True, default="")
     error = models.TextField(blank=True, default="")

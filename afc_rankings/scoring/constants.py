@@ -1,4 +1,4 @@
-"""Spec scales encoded as immutable data — no logic lives here.
+"""Spec scales encoded as immutable data - no logic lives here.
 
 Every table maps directly to a section of ``AFC_RANKING_TIERING_SPEC.md``.
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 from types import MappingProxyType
 
 # ---------------------------------------------------------------------------
-# Tier multipliers — spec §4
+# Tier multipliers - spec §4
 # ---------------------------------------------------------------------------
 # Applies to: placement points, kill points, finals appearance bonus.
 # Does NOT apply to: win bonuses, scrim points, prize money, social media.
@@ -29,9 +29,9 @@ TIER_MULTIPLIER = MappingProxyType(
 )
 
 # ---------------------------------------------------------------------------
-# Placement points per match — spec §4.1
+# Placement points per match - spec §4.1
 # ---------------------------------------------------------------------------
-# Finishes 11th-12th (and beyond) award 0 — handled via ``.get(finish, 0)``.
+# Finishes 11th-12th (and beyond) award 0 - handled via ``.get(finish, 0)``.
 PLACEMENT_POINTS = MappingProxyType(
     {
         1: 12,
@@ -48,7 +48,7 @@ PLACEMENT_POINTS = MappingProxyType(
 )
 
 # ---------------------------------------------------------------------------
-# Kill compression scale — spec §4.2
+# Kill compression scale - spec §4.2
 # ---------------------------------------------------------------------------
 # (cumulative_raw_kills_upper_bound_inclusive, compressed_points)
 KILL_COMPRESSION: tuple[tuple[int | None, int], ...] = (
@@ -67,7 +67,7 @@ KILL_COMPRESSION: tuple[tuple[int | None, int], ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# Placement compression scale — spec §4.3
+# Placement compression scale - spec §4.3
 # ---------------------------------------------------------------------------
 # (cumulative_raw_placement_pts_upper_bound_inclusive, compressed_points)
 PLACEMENT_COMPRESSION: tuple[tuple[int | None, int], ...] = (
@@ -85,7 +85,7 @@ PLACEMENT_COMPRESSION: tuple[tuple[int | None, int], ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# Win bonuses — spec §4.4 (flat, not compressed, not multiplied)
+# Win bonuses - spec §4.4 (flat, not compressed, not multiplied)
 # ---------------------------------------------------------------------------
 WIN_BONUS = MappingProxyType(
     {
@@ -96,12 +96,12 @@ WIN_BONUS = MappingProxyType(
 )
 
 # ---------------------------------------------------------------------------
-# Finals appearance bonus base — spec §4.5  (finals_bonus = 5 * tier_multiplier)
+# Finals appearance bonus base - spec §4.5  (finals_bonus = 5 * tier_multiplier)
 # ---------------------------------------------------------------------------
 FINALS_BASE = 5
 
 # ---------------------------------------------------------------------------
-# Prize money points (quarterly tiering only) — spec §7.2
+# Prize money points (quarterly tiering only) - spec §7.2
 # ---------------------------------------------------------------------------
 # (total_prize_naira_upper_bound_inclusive, points)
 # The spec's 1-naira band gaps (e.g. 100,001-100,999) are closed by the
@@ -124,7 +124,7 @@ PRIZE_MONEY_POINTS: tuple[tuple[int | None, int], ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# Social media points (teams only, quarterly tiering only, capped at 10) — §7.3
+# Social media points (teams only, quarterly tiering only, capped at 10) - §7.3
 # ---------------------------------------------------------------------------
 # (combined_followers_upper_bound_inclusive, points)
 SOCIAL_MEDIA_POINTS: tuple[tuple[int | None, int], ...] = (
@@ -137,7 +137,7 @@ SOCIAL_MEDIA_POINTS: tuple[tuple[int | None, int], ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# Tier thresholds (4 tiers) — spec §11
+# Tier thresholds (4 tiers) - spec §11
 # ---------------------------------------------------------------------------
 # Elite(0) >= 150, Competitive(1) 90-149, Rising(2) 40-89, Entry(3) < 40.
 # Encoded as descending (min_score_inclusive, tier_int); default tier is 3.
@@ -146,7 +146,7 @@ TIER_THRESHOLDS: tuple[tuple[int, int], ...] = (
     (90, 1),   # Competitive
     (40, 2),   # Rising
 )
-TIER_DEFAULT = 3  # Entry — score below 40
+TIER_DEFAULT = 3  # Entry - score below 40
 
 # Human-readable labels, for callers that want them (not used in math).
 TIER_LABELS = MappingProxyType(
@@ -159,7 +159,7 @@ TIER_LABELS = MappingProxyType(
 )
 
 # ---------------------------------------------------------------------------
-# Scrim rules — spec §6 (Step 3) + §12
+# Scrim rules - spec §6 (Step 3) + §12
 # ---------------------------------------------------------------------------
 SCRIM_WEIGHT = 0.5      # placement weight & kill weight (each 0.5x tournament value)
 SCRIM_WIN_FLAT = 3      # flat points per scrim win
@@ -168,7 +168,7 @@ SCRIM_DAILY_CAP = 4     # max scrims/day counted (enforced UPSTREAM, not here)
 SCRIM_MONTHLY_CAP = 60  # max scrims/month counted (enforced UPSTREAM, not here)
 
 # ---------------------------------------------------------------------------
-# Player ranking flat weights — spec §7 (and §2 "key changes")
+# Player ranking flat weights - spec §7 (and §2 "key changes")
 # ---------------------------------------------------------------------------
 PLAYER_MVP_PTS = 5            # per MVP award
 PLAYER_FINALS_PTS = 3         # per finals appearance (player in lineup)

@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims.views_capture_update — desktop AFC Capture FULL AUTO-UPDATE (owner 2026-07-05).
+afc_tournament_and_scrims.views_capture_update - desktop AFC Capture FULL AUTO-UPDATE (owner 2026-07-05).
 
 PURPOSE
     Installed copies of the AFC Capture tray client (afc-capture/) update THEMSELVES: on startup the
@@ -7,31 +7,31 @@ PURPOSE
     installer and runs it silently (a running .exe cannot overwrite its own file on Windows, so the
     installer does the file swap + relaunch). This module is the server side of that flow:
 
-        GET  events/capture/version/    capture_version   — PUBLIC. The "what is the latest version"
+        GET  events/capture/version/    capture_version   - PUBLIC. The "what is the latest version"
                                                             descriptor the client polls. No token: it
                                                             exposes only a version string + a public
                                                             download URL + notes, nothing sensitive, and
                                                             the client has no upload token at startup.
-        POST events/capture/releases/   capture_releases  — publish a new release (create a CaptureRelease,
+        POST events/capture/releases/   capture_releases  - publish a new release (create a CaptureRelease,
                                                             mark it latest, clear the others). Gated to a
                                                             super admin (User.role == "admin") or a
                                                             head_admin via views._is_head_or_super_admin.
                                                             The owner publishes a new version by pasting the
-                                                            hosted installer URL — NO code deploy to bump.
+                                                            hosted installer URL - NO code deploy to bump.
 
 WHY A SEPARATE MODULE
-    Same isolation rationale as views_capture_pending.py / event_links.py — keep the 19k-line views.py from
+    Same isolation rationale as views_capture_pending.py / event_links.py - keep the 19k-line views.py from
     growing, and keep this new auto-update surface next to the other capture endpoints (capture_resolve /
     capture_context live in views.py; capture_config lives in views_overlays.py).
 
     NOTE ON THE OLD capture_version: views_overlays.py has a legacy file-based capture_version (the earlier
     "thin launcher + payload zip" experiment reading MEDIA_ROOT/capture/capture_release.json). urls.py now
     routes capture/version/ to THIS model-based view instead. The launcher's payload path degrades safely
-    (it reads a "version" key this response no longer sends, so it simply does nothing) — the installer
+    (it reads a "version" key this response no longer sends, so it simply does nothing) - the installer
     auto-update below supersedes it. See afc-capture/README.md.
 
 HOW IT CONNECTS
-    - Model:    CaptureRelease (afc_tournament_and_scrims.models) — version / installer_url / notes /
+    - Model:    CaptureRelease (afc_tournament_and_scrims.models) - version / installer_url / notes /
                 min_supported_version / is_latest / created_by / created_at.
     - Auth:     capture_version is PUBLIC; capture_releases uses afc_auth.views.validate_token (Bearer)
                 + views._is_head_or_super_admin (super/head admin only).
@@ -57,7 +57,7 @@ from .models import CaptureRelease
 # --------------------------------------------------------------------------- #
 def _serialize_release(rel: CaptureRelease) -> dict:
     """Shape one release for the PUBLIC version endpoint. Deliberately exposes ONLY non-sensitive fields
-    (a version string, a public download URL, notes) — no tokens, no user data — because this is served
+    (a version string, a public download URL, notes) - no tokens, no user data - because this is served
     without auth to a client that may not hold an upload token yet at startup."""
     return {
         "latest_version": rel.version,
@@ -70,11 +70,11 @@ def _serialize_release(rel: CaptureRelease) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# GET events/capture/version/  — PUBLIC latest-release descriptor
+# GET events/capture/version/  - PUBLIC latest-release descriptor
 # --------------------------------------------------------------------------- #
 @api_view(["GET"])
 def capture_version(request):
-    """GET events/capture/version/ — the latest published desktop AFC Capture release, PUBLIC (no token).
+    """GET events/capture/version/ - the latest published desktop AFC Capture release, PUBLIC (no token).
 
     Request:  no params, no auth.
     Response 200:
@@ -88,7 +88,7 @@ def capture_version(request):
     body carries nothing sensitive (only a version + a public download URL)."""
     rel = CaptureRelease.objects.filter(is_latest=True).order_by("-created_at").first()
     if rel is None:
-        # No release published yet — return a well-formed body (200) so the client can cheaply treat a
+        # No release published yet - return a well-formed body (200) so the client can cheaply treat a
         # null latest_version as "nothing to update to" without special-casing a 404.
         return Response({
             "latest_version": None,
@@ -101,21 +101,21 @@ def capture_version(request):
 
 
 # --------------------------------------------------------------------------- #
-# POST events/capture/releases/  — publish a new release (admin only)
+# POST events/capture/releases/  - publish a new release (admin only)
 # --------------------------------------------------------------------------- #
 @api_view(["POST"])
 def capture_releases(request):
-    """POST events/capture/releases/ — publish a new desktop AFC Capture release. Super/head admin only.
+    """POST events/capture/releases/ - publish a new desktop AFC Capture release. Super/head admin only.
 
     Auth:     Authorization: Bearer <session token>; the user must be a super admin (User.role == "admin")
               or carry the head_admin granular role (views._is_head_or_super_admin). NOT event_admins,
-              NOT organizers — publishing an app update is a platform-wide action.
+              NOT organizers - publishing an app update is a platform-wide action.
     Request body (JSON):
         {"version": "1.3.0",                              # required, semver
          "installer_url": "https://.../AFC-Capture-Setup.exe",  # required, where the installer is hosted
          "notes": "optional changelog",                   # optional
          "min_supported_version": "1.0.0"}                # optional advisory update floor
-    Response 201: {"message": "...", "release": {serialized}}  — is_latest set on this row, cleared on the rest.
+    Response 201: {"message": "...", "release": {serialized}}  - is_latest set on this row, cleared on the rest.
 
     HOW THE OWNER USES IT: build the new installer (Inno Setup AFC-Capture.iss), upload it to any static
     host, then POST here with the version + that URL. Installed clients pick it up on their next launch.

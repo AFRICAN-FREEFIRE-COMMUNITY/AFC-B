@@ -1,10 +1,10 @@
-# ── EVENT OVERLAYS — saved, named broadcast overlays (owner 2026-07-02, studio v2) ──
+# ── EVENT OVERLAYS - saved, named broadcast overlays (owner 2026-07-02, studio v2) ──
 # An overlay is a persistent per-event entity: created from a design (kind="leaderboard") or as a
 # scene (kind="timer"), named/renamed, duplicated, deleted. Its public link NEVER changes:
 # /overlay/view/<Event.overlay_token>/<overlay_id> polls overlay_config below, so edits from the
 # studio (design, stage/group, animations, timer trigger) update what the SAME link renders live.
 #
-# ENDPOINTS (Bearer via _broadcast_gate — AFC event admin OR org that can_edit_events):
+# ENDPOINTS (Bearer via _broadcast_gate - AFC event admin OR org that can_edit_events):
 #   GET  events/<event_id>/overlays/                    -> list
 #   POST events/<event_id>/overlays/create/             -> {name, kind, config} -> row
 #   POST events/<event_id>/overlays/<overlay_id>/update/    -> {name?, config?, active?} -> row
@@ -39,7 +39,7 @@ def _serialize(row):
 
 @api_view(["GET"])
 def list_overlays(request, event_id):
-    """GET events/<event_id>/overlays/ — every saved overlay, in creation order (the studio's cards)."""
+    """GET events/<event_id>/overlays/ - every saved overlay, in creation order (the studio's cards)."""
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
@@ -51,7 +51,7 @@ def list_overlays(request, event_id):
 
 @api_view(["POST"])
 def create_overlay(request, event_id):
-    """POST events/<event_id>/overlays/create/ {name, kind, config} — new overlay (e.g. picked a
+    """POST events/<event_id>/overlays/create/ {name, kind, config} - new overlay (e.g. picked a
     design -> a leaderboard overlay preconfigured with it; or a fresh timer scene)."""
     event, err = _broadcast_gate(request, event_id)
     if err:
@@ -78,7 +78,7 @@ def _get_row(event, overlay_id):
 
 @api_view(["POST"])
 def update_overlay(request, event_id, overlay_id):
-    """POST events/<event_id>/overlays/<overlay_id>/update/ {name?, config?, active?} — partial edit.
+    """POST events/<event_id>/overlays/<overlay_id>/update/ {name?, config?, active?} - partial edit.
     config REPLACES wholesale when given (the FE always sends the full config object); rename via
     name; scenes trigger/hide via active. The public link keeps rendering the new state."""
     event, err = _broadcast_gate(request, event_id)
@@ -101,7 +101,7 @@ def update_overlay(request, event_id, overlay_id):
 
 @api_view(["POST"])
 def duplicate_overlay(request, event_id, overlay_id):
-    """POST events/<event_id>/overlays/<overlay_id>/duplicate/ — copy config+kind under "<name> copy"
+    """POST events/<event_id>/overlays/<overlay_id>/duplicate/ - copy config+kind under "<name> copy"
     (a fresh id = a fresh stable link, so the copy can diverge without touching the original)."""
     event, err = _broadcast_gate(request, event_id)
     if err:
@@ -121,7 +121,7 @@ def duplicate_overlay(request, event_id, overlay_id):
 
 @api_view(["POST"])
 def delete_overlay(request, event_id, overlay_id):
-    """POST events/<event_id>/overlays/<overlay_id>/delete/ — remove it (its link then 404s)."""
+    """POST events/<event_id>/overlays/<overlay_id>/delete/ - remove it (its link then 404s)."""
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
@@ -134,7 +134,7 @@ def delete_overlay(request, event_id, overlay_id):
 
 @api_view(["GET"])
 def overlay_config(request):
-    """GET events/overlay/config/?token=&overlay=<id> — PUBLIC config the stable renderer polls.
+    """GET events/overlay/config/?token=&overlay=<id> - PUBLIC config the stable renderer polls.
     Token = Event.overlay_token (same capability as overlay_feed); a hidden org's event 404s.
     server_time lets the timer correct client-clock drift. A deleted overlay 404s (OBS shows blank)."""
     token = (request.query_params.get("token") or "").strip()
@@ -162,7 +162,7 @@ def overlay_config(request):
     # complaint C), mirroring how h2h/booyah bundle their data below. This is where the per-overlay
     # COMBINE spec (config {scope:"combine", group_ids, stage_ids}) is honoured: a combine config
     # returns the merged cumulative rows spanning every chosen group/stage, a single-scope config just
-    # that group/stage, and a follow config the event's live broadcast selection — the SAME numbers the
+    # that group/stage, and a follow config the event's live broadcast selection - the SAME numbers the
     # stable link's inner /overlay/leaderboard iframe pulls from overlay_feed, so the two never drift.
     # The STABLE link is unchanged by any of this: editing the card re-saves config and this poll
     # re-resolves, so the one link always renders the overlay's current combination.
@@ -356,7 +356,7 @@ def _mvp_payload(event, config, request):
 
 def _top_killers_payload(event, config, request):
     """Resolve a TOP-KILLERS overlay (owner 2026-07-05, complaint H) to ranked player rows + design look
-    — identical shape/keys to _mvp_payload (so G and H share ONE FE renderer), but ranked by SUM(kills)
+    - identical shape/keys to _mvp_payload (so G and H share ONE FE renderer), but ranked by SUM(kills)
     over the same combine scope. Returns {kind:"top_killers", players, top, combine, design}."""
     from .views_mvp import (compute_top_killers, build_player_design_rows, _resolve_player_scope)
     group_ids = _combine_ids_from_config(config, "group_ids", "group_id")
@@ -445,7 +445,7 @@ def capture_version(request):
     capture/version/ here; this legacy file-based descriptor (the "thin launcher + payload zip" experiment)
     is kept only for reference. Left intact to avoid churn; do not wire it back without a reason.
 
-    GET events/capture/version/ — the latest capture-payload release descriptor (or 404 when no
+    GET events/capture/version/ - the latest capture-payload release descriptor (or 404 when no
     release has been published yet). The launcher compares `version` to its local payload."""
     path = _os.path.join(_settings.MEDIA_ROOT, "capture", "capture_release.json")
     if not _os.path.exists(path):
@@ -463,7 +463,7 @@ def capture_version(request):
 
 @api_view(["GET"])
 def capture_config(request):
-    """GET events/capture/config/ — centralised runtime settings for the capture app, so ops can
+    """GET events/capture/config/ - centralised runtime settings for the capture app, so ops can
     tune cadences/endpoints without any code or exe change."""
     return Response({
         "live_push_interval_seconds": 2,

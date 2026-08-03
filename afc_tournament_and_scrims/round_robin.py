@@ -3,16 +3,16 @@ Pure helpers for the BR Round-Robin stage format (sub-project B).
 
 A Round-Robin stage keeps *base groups* (A/B/C…) as the stable team identity, and
 forms each game-day *lobby* by merging two base groups. The round-robin schedule is
-therefore every unordered pairing of base groups, one pairing per game-day — the
+therefore every unordered pairing of base groups, one pairing per game-day - the
 direct analogue of a sports round-robin, but over groups-of-teams instead of teams.
 
 This module hosts:
-  • the schedule *generator* (`round_robin_schedule`, Task 2) — deliberately pure: group
+  • the schedule *generator* (`round_robin_schedule`, Task 2) - deliberately pure: group
     ids in → plain lobby-spec dicts out, no ORM, so create_event / edit_event can plan a
     schedule and materialise it into StageGroups rows themselves (Task 4), and so it stays
     unit-testable without a database; and
   • the read-time *standings* aggregators (`cumulative_standings` / `day_standings`,
-    Task 3) — these DO touch the ORM (they read `TournamentTeamMatchStats`) but write
+    Task 3) - these DO touch the ORM (they read `TournamentTeamMatchStats`) but write
     nothing: they fold the same per-match team stats the leaderboard view uses into a
     whole-stage (cumulative) or single-game-day (per-day) points table.
 
@@ -38,7 +38,7 @@ def round_robin_schedule(group_ids, games_per_day=1, maps=None):
 
     Each unordered pairing of base groups becomes exactly one game-day lobby, ordered
     by `itertools.combinations` (so for [A, B, C] → A+B, A+C, B+C). Pure: ids in,
-    lobby-spec dicts out — the caller materialises these into StageGroups rows.
+    lobby-spec dicts out - the caller materialises these into StageGroups rows.
 
     Args:
         group_ids:     ordered base-group ids (e.g. RoundRobinGroup pks, A→B→C).
@@ -53,7 +53,7 @@ def round_robin_schedule(group_ids, games_per_day=1, maps=None):
     # One match per map (owner 2026-06-17): a meeting plays `games_per_day` matches, each on its
     # OWN map, so `match_count` and `len(match_maps)` stay in lock-step. The FE meeting editor
     # derives the match count from the maps list, so when these drifted (count=3 but a single
-    # ["bermuda"] map) a "3 matches per meeting" setting rendered — and re-saved — as 1, which is
+    # ["bermuda"] map) a "3 matches per meeting" setting rendered - and re-saved - as 1, which is
     # the "matches per meeting always changes" bug. We expand the supplied maps to exactly
     # `games_per_day` entries, cycling them when fewer maps than matches are given
     # (e.g. 3 matches over ["bermuda","kalahari"] → bermuda, kalahari, bermuda).
@@ -163,7 +163,7 @@ def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
     """Fold a TournamentTeamMatchStats queryset into a per-team points table.
 
     Shared core of `cumulative_standings` (whole stage) and `day_standings` (one game
-    day) — both differ ONLY in which match-stats rows they feed in, so the grouping,
+    day) - both differ ONLY in which match-stats rows they feed in, so the grouping,
     points formula and sort live here once. The aggregation mirrors the per-group OVERALL
     block in `get_all_leaderboard_details_for_event` exactly, so a team's number is the
     same whether read per-lobby, per-day or cumulatively:
@@ -173,7 +173,7 @@ def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
       tiebreakers     = −effective_total, −total_booyah, −total_kills   (same chain, DB-side)
 
     Grouping by `tournament_team` is what makes a team that plays MORE THAN ONE lobby
-    collapse to a single summed row — the whole point of cumulative standings (a team gets
+    collapse to a single summed row - the whole point of cumulative standings (a team gets
     one lobby per game day, so without this each day would be a separate row).
 
     Returns a list of plain dicts (so callers can JSON it straight out). Each row carries
@@ -200,7 +200,7 @@ def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
         # team_country rides along (owner 2026-07-03: a team's FLAG must show EVERYWHERE its name shows
         # within an event). Team.country is auto-derived (afc_team.views._derive_team_country) and is
         # single-valued per team, so adding it to .values() does NOT split the GROUP BY nor change any
-        # score/order — grouping stays effectively by tournament_team. Every standings row this core
+        # score/order - grouping stays effectively by tournament_team. Every standings row this core
         # emits (cumulative_standings / group_standings / day_standings, and the overlay feed +
         # advancement/event_links readers built from these rows) now carries the ISO-2-or-name string
         # the FE CountryFlag/TeamLink (@/lib/countryFlag) renders beside team_name.
@@ -256,7 +256,7 @@ def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
 def cumulative_standings(stage):
     """Whole-stage standings: every team summed across ALL of the stage's lobbies.
 
-    This is the round-robin table the format is built around — a raw cumulative points
+    This is the round-robin table the format is built around - a raw cumulative points
     table over the entire stage (Champion-Point / Point-Rush overlays stay per-lobby and
     are NOT applied here, per spec). `match__group__stage=stage` walks
     TournamentTeamMatchStats → Match → StageGroups(lobby) → Stages, so it picks up every
@@ -270,7 +270,7 @@ def group_standings(group):
     """Whole-GROUP standings: every team summed across only THAT group's (lobby's) matches.
 
     Same aggregate as `cumulative_standings`, but scoped to one StageGroups via
-    `match__group=group` — identical to the per-group "Overall Leaderboard" filter in
+    `match__group=group` - identical to the per-group "Overall Leaderboard" filter in
     `get_all_leaderboard_details_for_event` (views.py). The graphic export uses this when a
     group is selected so the exported image matches EXACTLY what the user sees on the page
     (owner 2026-06-16: export showed the design background but no rows because the stage-wide

@@ -4,8 +4,8 @@ test_public_gating.py
 Covers the PUBLIC monthly-ladder publish gate in ``afc_rankings.views`` (owner 2026-08-03:
 "public ranking page shows no PLAYER rankings").
 
-The bug: ``_gated_monthly`` resolved the gate season with ``_resolve_season`` — the season that is
-ACTIVE today — instead of the season the requested MONTH belongs to. The public rankings page
+The bug: ``_gated_monthly`` resolved the gate season with ``_resolve_season`` - the season that is
+ACTIVE today - instead of the season the requested MONTH belongs to. The public rankings page
 (frontend app/(user)/rankings) only sends ``month`` on the monthly endpoints, so as soon as a new
 quarter rolled over unpublished, EVERY month was judged against that unpublished season and both
 ladders read as empty, including months whose own season had been published.
@@ -14,7 +14,7 @@ Second, smaller bug covered here: ``_resolve_month`` always defaulted to the lat
 TeamMonthlyScore month, even for the players ladder, so a month with team rows but no player rows
 sent the players endpoint to an empty month.
 
-Both endpoints are exercised through APIRequestFactory (no URL routing needed) — the same
+Both endpoints are exercised through APIRequestFactory (no URL routing needed) - the same
 function-view idiom the rest of afc_rankings tests use.
 """
 import datetime

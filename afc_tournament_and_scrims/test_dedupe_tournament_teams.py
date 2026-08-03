@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims.test_dedupe_tournament_teams — the TournamentTeam merge command
+afc_tournament_and_scrims.test_dedupe_tournament_teams - the TournamentTeam merge command
 (owner 2026-07-06, prod migrate failure on uniq_event_team_registration).
 
 Verifies dedupe_tournament_teams safely MERGES a duplicate (event, team) registration into the

@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# backfill_prize_currency — one-off fix (owner 2026-07-01).
+# backfill_prize_currency - one-off fix (owner 2026-07-01).
 #
 # WHY: Event.prize_currency defaulted to "NGN" and create_event/edit_event never set it, so EVERY
 # existing event is tagged NGN even though AFC enters prize pools in USD (the platform's base

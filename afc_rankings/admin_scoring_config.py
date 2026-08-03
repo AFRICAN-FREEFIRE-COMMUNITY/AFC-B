@@ -1,5 +1,5 @@
 """
-Admin write API for rankings & tiering (Phase 2) — Scoring Config surface.
+Admin write API for rankings & tiering (Phase 2) - Scoring Config surface.
 
 Versioned, admin-editable snapshot of the scoring rule set. The engine hardcodes
 its scales in ``scoring/constants.py``; this surface lets a ranking admin draft a
@@ -23,7 +23,7 @@ Endpoints (mounted by the coordinator under the existing ``rankings/`` prefix):
   POST scoring-config/           → draft + activate a new version (head_admin / metrics_admin)
 
 NOTE on recalc: editing the scoring rules changes how EVERY score is computed, so
-activating a new config implies a GLOBAL recalc of all teams/players — not the
+activating a new config implies a GLOBAL recalc of all teams/players - not the
 per-entity ``enqueue_team`` / ``enqueue_player`` used by data-entry surfaces. That
 global sweep is the coordinator's concern; this module deliberately does NOT
 enqueue anything.
@@ -42,7 +42,7 @@ from .scoring import constants as C
 
 # ───────────────────────── defaults snapshot ─────────────────────────
 # Links to scoring/constants.py: these canonical defaults come straight from
-# scoring/constants.py — the SAME tables scoring/engine.py reads at compute time. Keep
+# scoring/constants.py - the SAME tables scoring/engine.py reads at compute time. Keep
 # every key here 1:1 with the constants.py section names so a saved ``ScoringConfig.config``
 # blob can be fed straight back to the engine (and a reviewer can diff the two one-to-one).
 def _defaults_snapshot():
@@ -65,27 +65,27 @@ def _defaults_snapshot():
         return [{"max": upper, "points": value} for (upper, value) in table]
 
     return {
-        # §4 — tier scoring multipliers (placement, kills, finals only)
+        # §4 - tier scoring multipliers (placement, kills, finals only)
         "tier_multiplier": dict(C.TIER_MULTIPLIER),
-        # §4.1 — placement points per match finish (keys coerced to str for JSON object keys)
+        # §4.1 - placement points per match finish (keys coerced to str for JSON object keys)
         "placement_points": {str(finish): pts for finish, pts in C.PLACEMENT_POINTS.items()},
-        # §4.2 / §4.3 — cumulative compression scales
+        # §4.2 / §4.3 - cumulative compression scales
         "kill_compression": _brackets(C.KILL_COMPRESSION),
         "placement_compression": _brackets(C.PLACEMENT_COMPRESSION),
-        # §4.4 — flat win bonus per tier (not compressed, not multiplied)
+        # §4.4 - flat win bonus per tier (not compressed, not multiplied)
         "win_bonus": dict(C.WIN_BONUS),
-        # §4.5 — finals appearance bonus base (finals_bonus = base * tier_multiplier)
+        # §4.5 - finals appearance bonus base (finals_bonus = base * tier_multiplier)
         "finals_base": C.FINALS_BASE,
-        # §7.2 / §7.3 — quarterly tiering brackets
+        # §7.2 / §7.3 - quarterly tiering brackets
         "prize_money_points": _brackets(C.PRIZE_MONEY_POINTS),
         "social_media_points": _brackets(C.SOCIAL_MEDIA_POINTS),
-        # §11 — tier cutoffs. (min_score_inclusive, tier_int) + the default (Entry).
+        # §11 - tier cutoffs. (min_score_inclusive, tier_int) + the default (Entry).
         "tier_thresholds": {
             "brackets": [{"min": min_score, "tier": tier} for (min_score, tier) in C.TIER_THRESHOLDS],
             "default_tier": C.TIER_DEFAULT,
             "labels": {str(k): v for k, v in C.TIER_LABELS.items()},
         },
-        # §6 / §12 — scrim rules
+        # §6 / §12 - scrim rules
         "scrim": {
             "weight": C.SCRIM_WEIGHT,             # placement & kill weight (0.5x tournament)
             "win_flat": C.SCRIM_WIN_FLAT,         # flat points per scrim win
@@ -93,7 +93,7 @@ def _defaults_snapshot():
             "daily_cap": C.SCRIM_DAILY_CAP,       # max scrims/day counted (enforced upstream)
             "monthly_cap": C.SCRIM_MONTHLY_CAP,   # max scrims/month counted (enforced upstream)
         },
-        # §7 — player ranking flat weights
+        # §7 - player ranking flat weights
         "player_weights": {
             "mvp_pts": C.PLAYER_MVP_PTS,
             "finals_pts": C.PLAYER_FINALS_PTS,
@@ -114,7 +114,7 @@ def serialize_scoring_config(cfg):
         "is_active": cfg.is_active,
         "config": cfg.config,
         "note": cfg.note,
-        # created_by is nullable (SET_NULL) — guard the username lookup.
+        # created_by is nullable (SET_NULL) - guard the username lookup.
         "created_by": cfg.created_by.username if cfg.created_by_id else None,
         "created_at": cfg.created_at.isoformat(),
     }
@@ -146,7 +146,7 @@ def scoring_config(request):
         return err
 
     active = ScoringConfig.objects.filter(is_active=True).order_by("-version").first()
-    # Version history (newest first) — list is small, no pagination needed.
+    # Version history (newest first) - list is small, no pagination needed.
     versions = [_version_row(c) for c in ScoringConfig.objects.all().order_by("-version")]
 
     if active:
@@ -196,7 +196,7 @@ def scoring_config_save(request):
     single ``_audit`` row records the save (object_type="scoring_config",
     action="save").
     """
-    # (1) auth gate — default roles = head_admin / metrics_admin.
+    # (1) auth gate - default roles = head_admin / metrics_admin.
     user, err = _auth(request)
     if err:
         return err
@@ -229,7 +229,7 @@ def scoring_config_save(request):
             else {"version": None, "note": "(defaults)"}
         )
 
-        # Next version number — Max over all rows (None on first save → start at 1).
+        # Next version number - Max over all rows (None on first save → start at 1).
         next_version = (ScoringConfig.objects.aggregate(m=Max("version"))["m"] or 0) + 1
 
         # Deactivate every existing row, then create the new active one.
@@ -244,13 +244,13 @@ def scoring_config_save(request):
 
         after = {"version": new_cfg.version, "note": new_cfg.note}
 
-        # (4) audit — one row per write. Not season-scoped (config is global), so season=None.
+        # (4) audit - one row per write. Not season-scoped (config is global), so season=None.
         _audit(
             user, "scoring_config", "save", reason,
             object_ref=new_cfg.id, before=before, after=after,
         )
 
-    # TODO(recalc): global recalc on activate — every score must be recomputed
+    # TODO(recalc): global recalc on activate - every score must be recomputed
     # against the new scales. Left to the coordinator (not a per-entity enqueue).
 
     return Response(serialize_scoring_config(new_cfg), status=status.HTTP_201_CREATED)

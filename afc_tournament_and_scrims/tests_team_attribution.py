@@ -239,7 +239,7 @@ class TeamAttributionTests(TestCase):
         self.assertEqual(by_match.get(m2.match_id), 23)
         self.assertEqual(by_match.get(m3.match_id), 25)
 
-    # ── 5. ID: 0 SENTINEL — zero-UID players must NOT be collapsed (owner 2026-07-11) ───────────────
+    # ── 5. ID: 0 SENTINEL - zero-UID players must NOT be collapsed (owner 2026-07-11) ───────────────
     # Free Fire can export EVERY player with ID: 0 (a "UID unknown" sentinel, not a real identity). All
     # four below are different players. Before the fix they all shared the key "0", so the per-block
     # de-dupe kept only the first and dropped the other three BEFORE they became counted flags -> the
@@ -286,7 +286,7 @@ class TeamAttributionTests(TestCase):
     # ── 6. PLAYER-NAME PLURALITY team resolution (owner 2026-07-11) ─────────────────────────────────
     def _register_named(self, team_name, members):
         """Register a team with EXPLICIT (username, uid) members so the file names can be made to
-        match (or not) the roster — used by the player-name resolution tests."""
+        match (or not) the roster - used by the player-name resolution tests."""
         team = Team.objects.create(
             team_name=team_name, team_tag=team_name[:3], join_settings="open",
             team_creator=self.admin, team_owner=self.admin, country="NG",

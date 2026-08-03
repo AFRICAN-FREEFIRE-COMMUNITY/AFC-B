@@ -64,11 +64,11 @@ class DuplicateEventTests(TestCase):
         return reverse("duplicate_event", args=[event_id])
 
     def setUp(self):
-        # An AFC admin (role=admin) — passes _is_event_admin, may duplicate anything.
+        # An AFC admin (role=admin) - passes _is_event_admin, may duplicate anything.
         self.admin = User.objects.create_user(
             username="afc_admin", email="admin@example.com", password="x", role="admin"
         )
-        # A plain player who is NOT an admin and NOT an org member — must be 403'd.
+        # A plain player who is NOT an admin and NOT an org member - must be 403'd.
         self.outsider = User.objects.create_user(
             username="outsider", email="out@example.com", password="x", role="player"
         )
@@ -83,7 +83,7 @@ class DuplicateEventTests(TestCase):
 
     def _make_event(self, *, creator, organization=None, with_results=True):
         """Build a SOURCE event with 2 stages, groups under each, a leaderboard + a
-        match (results-side rows), plus a registration and a tournament team — exactly
+        match (results-side rows), plus a registration and a tournament team - exactly
         the kinds of rows the duplicate MUST NOT copy. Stage 1 is a Point-Rush source
         whose carry-over target is Stage 2, so the second-pass target resolution is
         exercised. Returns the Event."""
@@ -103,16 +103,16 @@ class DuplicateEventTests(TestCase):
             prizepool_cash_value=1000,
             prize_distribution={"1": "50%", "2": "30%", "3": "20%"},
             event_rules="No cheating",
-            event_status="ongoing",        # source is live — copy must reset to upcoming
+            event_status="ongoing",        # source is live - copy must reset to upcoming
             registration_link="https://example.com/reg",
             tournament_tier="tier_1",
             number_of_stages=2,
             creator=creator,
             organization=organization,
-            is_draft=False,                # source is published — copy must be a draft
-            is_public=True,                # source is public — copy must be private
-            rankings_verified=True,        # source verified — copy must reset
-            partner_published=True,        # source published to partners — copy must reset
+            is_draft=False,                # source is published - copy must be a draft
+            is_public=True,                # source is public - copy must be private
+            rankings_verified=True,        # source verified - copy must reset
+            partner_published=True,        # source published to partners - copy must reset
         )
 
         # ── Stage 1 (Point-Rush source) + a group with a leaderboard + a match ──
@@ -177,7 +177,7 @@ class DuplicateEventTests(TestCase):
         stage1.save(update_fields=["point_rush_target_stage"])
 
         if with_results:
-            # A registration + a tournament team on the SOURCE — these must NOT survive
+            # A registration + a tournament team on the SOURCE - these must NOT survive
             # the duplicate.
             team = Team.objects.create(
                 team_name="Source Team",
@@ -295,7 +295,7 @@ class DuplicateEventTests(TestCase):
         self.assertEqual(Event.objects.count(), before)
 
     def test_organizer_cannot_duplicate_native_afc_event(self):
-        """An organizer may NOT duplicate a native AFC event (organization=None) — that
+        """An organizer may NOT duplicate a native AFC event (organization=None) - that
         path is admin-only."""
         src = self._make_event(creator=self.admin, organization=None)
         resp = self.client.post(self._url(src.event_id), **self._auth(self.organizer))
@@ -360,7 +360,7 @@ class SponsorEditRosterReapprovalTests(TestCase):
     def setUp(self):
         today = date.today()
 
-        # Sponsor admin (role=admin + sponsor_admin UserRole) — the only identity the
+        # Sponsor admin (role=admin + sponsor_admin UserRole) - the only identity the
         # sponsor dashboard (get_list_of_players_in_sponsor_event) accepts.
         self.sponsor = User.objects.create_user(
             username="sponsor", email="sponsor@example.com", password="x", role="admin"
@@ -370,12 +370,12 @@ class SponsorEditRosterReapprovalTests(TestCase):
         )
         UserRoles.objects.create(user=self.sponsor, role=self.sponsor_role)
 
-        # AFC event admin (role=admin) — passes _is_event_admin, may confirm/reject players.
+        # AFC event admin (role=admin) - passes _is_event_admin, may confirm/reject players.
         self.admin = User.objects.create_user(
             username="afc_admin2", email="admin2@example.com", password="x", role="admin"
         )
 
-        # Team owner (captain/owner) — the identity that edits the roster.
+        # Team owner (captain/owner) - the identity that edits the roster.
         self.owner = User.objects.create_user(
             username="owner", email="owner@example.com", password="x",
             role="player", country="Nigeria",
@@ -523,7 +523,7 @@ class SponsorEditRosterReapprovalTests(TestCase):
             },
         )
 
-        # 200, NOT the old 403 — the swapped roster actually saved.
+        # 200, NOT the old 403 - the swapped roster actually saved.
         self.assertEqual(resp.status_code, 200, resp.content)
 
         # D's member row is gone; E is present and PENDING.
@@ -590,7 +590,7 @@ class SponsorEditRosterReapprovalTests(TestCase):
 
     def test_noop_edit_keeps_team_active(self, _send_email):
         """A no-op edit (identical roster + identical sponsor ids) on an all-active team
-        must KEEP the team active — re-derivation must not gratuitously downgrade it."""
+        must KEEP the team active - re-derivation must not gratuitously downgrade it."""
         self._approve_all_four()
 
         resp = self._edit_roster(
@@ -649,7 +649,7 @@ class SponsorEditRosterReapprovalTests(TestCase):
 
     def test_confirm_player_still_activates_team_when_all_active(self, _send_email):
         """Guard test for the check_and_activate_team change: the ORIGINAL all-active
-        behavior of confirm_player must be unchanged — the last confirm still flips the
+        behavior of confirm_player must be unchanged - the last confirm still flips the
         team to active and its RC to registered."""
         # Team starts pending; RC starts registered (as register leaves it).
         self.assertEqual(self.tt.status, "pending")
@@ -711,7 +711,7 @@ class SponsorEditRosterReapprovalTests(TestCase):
 
     def test_captain_edit_after_close_still_blocked(self, _send_email):
         """A normal captain/owner editing AFTER registration closes is still 403
-        'Registration closed' — the override is staff-only, not a general bypass."""
+        'Registration closed' - the override is staff-only, not a general bypass."""
         self._close_registration()
 
         resp = self._edit_roster(
@@ -737,7 +737,7 @@ class SponsorEditRosterReapprovalTests(TestCase):
 
     def test_random_user_edit_still_blocked_permission(self, _send_email):
         """A non-manager, non-captain active user editing (window still OPEN) is still 403
-        on the permission guard — the override only lifts the gate for managers."""
+        on the permission guard - the override only lifts the gate for managers."""
         outsider = User.objects.create_user(
             username="outsider_roster", email="outr@example.com", password="x",
             role="player", country="Nigeria",

@@ -2,7 +2,7 @@
 Recalc dispatch + Celery tasks (§18 real-time recalculation).
 
 Local dev: settings.RANKINGS_RECALC_SYNC (defaults to DEBUG) runs recalc inline on
-commit — no Celery worker needed. Production: set it False + run
+commit - no Celery worker needed. Production: set it False + run
 `celery -A afc worker -Q rankings_recalc` for async, deduplicated recalcs.
 
 Dedup: a short Redis lock (recalc_lock:{key}) collapses bursts of edits to one
@@ -103,7 +103,7 @@ def recalculate_ghost_player_quarterly(ghost_player_id, season_id):
 # ───────────────────────── dispatch (sync-in-dev / async-in-prod) ─────────────────────────
 def _dispatch(task, *args):
     if _sync():
-        # run inline (no worker); skip the Redis lock — caller is already debounced via on_commit
+        # run inline (no worker); skip the Redis lock - caller is already debounced via on_commit
         task.run(*args)
     else:
         task.delay(*args)

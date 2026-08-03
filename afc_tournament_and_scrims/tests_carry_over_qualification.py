@@ -1,7 +1,7 @@
 """
 Owner override (2026-06-29): Point-Rush carry-over must influence QUALIFICATION, not just display.
 
-"The point adds to the team's total points" — so a team's source-stage placement bonus, carried into
+"The point adds to the team's total points" - so a team's source-stage placement bonus, carried into
 the connected/TARGET stage, is part of that team's TOTAL POINTS there and must count when ranking the
 target stage to decide WHO ADVANCES OUT of it. views._fold_carry_over applies the SAME on-read bonus
 (views._carry_over_for_stage) the leaderboard shows to the three advancement ranking paths:
@@ -10,7 +10,7 @@ target stage to decide WHO ADVANCES OUT of it. views._fold_carry_over applies th
   • advancement_routing._ranking_for_rule     (branching engine, both shapes)
 
 These tests build a real event where, in the TARGET stage, team A leads on RAW points but team B's
-source carry-over lifts B's TOTAL above A — and prove qualification ORDER flips to B. TestCase =>
+source carry-over lifts B's TOTAL above A - and prove qualification ORDER flips to B. TestCase =>
 every row is rolled back, no MySQL state leaks. Nothing is persisted by the feature (mirrors the
 leaderboard overlay; avoids the seed-time double-count flagged earlier).
 """
@@ -214,7 +214,7 @@ class CarryOverQualificationDBTests(TestCase):
         # CROSS-EVENT linked qualification (event_links): the top-N of a stage qualify INTO another
         # event. fire_link takes _stage_top_rows(source_stage)[:qualify_count], so the ORDER decides
         # who qualifies. With the carry-over fold, B (raw 9 + 50 carry = 59) outranks A (raw 12), so a
-        # top-1 link off the Target stage would qualify B, not A — consistent with in-event advance.
+        # top-1 link off the Target stage would qualify B, not A - consistent with in-event advance.
         rows = event_links._stage_top_rows(self.target, self.event.participant_type)
         self.assertEqual(rows[0]["team_id"], self.team_b.team_id)  # B leads on the carry-inclusive total
         self.assertEqual(rows[1]["team_id"], self.team_a.team_id)

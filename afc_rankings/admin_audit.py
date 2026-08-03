@@ -13,7 +13,7 @@ disputed score) can answer two questions:
         GET admin/players/<player_id>/raw/
 
 Because everything is read-only, the mutating-endpoint protocol in
-``admin_views`` (``_require_reason`` + ``_audit``) does NOT apply — there is no
+``admin_views`` (``_require_reason`` + ``_audit``) does NOT apply - there is no
 ranking state being changed, so there is nothing to reason-gate or to log. We
 keep ONLY step (1): ``_auth(request)`` to confirm the caller is a ranking admin.
 
@@ -30,7 +30,7 @@ The "raw" endpoints deliberately call the SAME aggregation helpers
 (``aggregation.compute_team_quarterly`` / ``compute_player_quarterly``) that the
 recalc layer uses to persist scores. So the component breakdown returned here is
 exactly what produced the stored ``TeamQuarterlyScore`` / ``PlayerQuarterlyScore``
-row — that is the whole point of a verification surface: it must recompute, not
+row - that is the whole point of a verification surface: it must recompute, not
 re-read, so an admin can confirm the stored number is right.
 """
 import datetime
@@ -45,7 +45,7 @@ from afc_auth.models import User
 from . import aggregation
 from . import serializers as S
 from . import views                             # reuse views._resolve_season (?season_id= or active)
-from .admin_views import _auth                  # the shared auth gate — do NOT reimplement
+from .admin_views import _auth                  # the shared auth gate - do NOT reimplement
 from .models import RankingAuditLog
 
 
@@ -55,7 +55,7 @@ def serialize_audit(row):
 
     ``changed_by`` is flattened to the admin's username (the FK id is noise for a
     human-facing audit view). ``before_snapshot`` / ``after_snapshot`` are passed
-    through untouched — they are already JSON blobs written by ``_audit``.
+    through untouched - they are already JSON blobs written by ``_audit``.
     """
     return {
         "audit_id": row.audit_id,
@@ -124,7 +124,7 @@ def _parse_date(raw):
     """Parse a ?date_from / ?date_to value (YYYY-MM-DD) → date, or None if absent/bad.
 
     Returns ``None`` for a missing OR malformed value so a typo in the query
-    string degrades to "no filter" rather than a 500 — the same forgiving
+    string degrades to "no filter" rather than a 500 - the same forgiving
     posture ``views._resolve_month`` takes with ?month=.
     """
     if not raw:
@@ -140,7 +140,7 @@ def _parse_date(raw):
 def audit_log(request):
     """Filtered, paginated view of the §16 RankingAuditLog (read-only).
 
-    Auth-gated (ranking admin) but NOT reason/audit-gated — reading the audit log
+    Auth-gated (ranking admin) but NOT reason/audit-gated - reading the audit log
     is itself not a ranking write.
 
     Query params (all optional, AND-combined):
@@ -148,8 +148,8 @@ def audit_log(request):
       changed_by    the admin's user id (User.user_id)
       season_id     rows tagged to a given season
       object_ref    exact object reference string the write recorded
-      date_from     YYYY-MM-DD — rows on/after this day (inclusive)
-      date_to       YYYY-MM-DD — rows up to/including this day (inclusive)
+      date_from     YYYY-MM-DD - rows on/after this day (inclusive)
+      date_to       YYYY-MM-DD - rows up to/including this day (inclusive)
 
     Ordered newest-first (-changed_at). Bad/absent date filters are ignored.
     """
@@ -199,7 +199,7 @@ def audit_log(request):
 def team_raw(request, team_id):
     """Raw aggregation behind a team's CURRENT-quarter score (read-only).
 
-    Recomputes — does not re-read — the component breakdown that produced the
+    Recomputes - does not re-read - the component breakdown that produced the
     stored ``TeamQuarterlyScore`` row, so an admin can verify a disputed total.
     Season is resolved exactly like the public views: ?season_id= wins, else the
     active season. 404 if the team or the season can't be resolved.
@@ -229,7 +229,7 @@ def team_raw(request, team_id):
 def player_raw(request, player_id):
     """Raw aggregation behind a player's CURRENT-quarter score (read-only).
 
-    Mirror of ``team_raw`` for the individual player track — recomputes the
+    Mirror of ``team_raw`` for the individual player track - recomputes the
     component breakdown that produced the stored ``PlayerQuarterlyScore`` row.
     404 if the player or the active season can't be resolved.
     """

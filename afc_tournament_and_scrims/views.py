@@ -62,9 +62,9 @@ from afc_auth.views import deliver_broadcast
 # Single helper replacing the duplicated inline admin checks scattered across the event
 # endpoints. True for the core staff roles OR users carrying the event_admin / head_admin
 # granular role. Org-scope permissions (organizer owners / sub_organizers) are handled
-# separately via org_can / org_can_event — this only answers "is this an AFC event admin?".
+# separately via org_can / org_can_event - this only answers "is this an AFC event admin?".
 def _is_event_admin(user):
-    # NOTE: UserRoles has no `role_name` field — the granular role name lives on the related
+    # NOTE: UserRoles has no `role_name` field - the granular role name lives on the related
     # Roles row, so the correct lookup is `role__role_name__in` (the older inline gates in this
     # file use the buggy `role_name__in`, which FieldErrors for a non-staff event_admin; this
     # helper uses the correct path so org/event-admin checks actually work).
@@ -81,7 +81,7 @@ def _is_event_admin(user):
 # records who made the event, and delete_event already trusts it. This helper lets us thread the
 # creator in as an additive OR-term so a creator can always edit / manage their own event. It does
 # NOT relax the team-deletion results guard (removing teams that already have match results stays
-# blocked) — that check is independent of this bypass.
+# blocked) - that check is independent of this bypass.
 def _is_event_creator(user, event):
     return bool(user) and bool(event.creator_id) and event.creator_id == user.pk
 
@@ -89,9 +89,9 @@ def _is_event_creator(user, event):
 # ── all-groups ROOM-DETAILS visibility (owner 2026-06-29) ──
 # Seeing EVERY group's room id/name/password is a competitive-integrity surface (you could peek at
 # or grief other groups' lobbies), so it is restricted MORE tightly than the general event-admin
-# check above. Per the owner: "only super, head and event admins" — i.e. the platform super-admin
+# check above. Per the owner: "only super, head and event admins" - i.e. the platform super-admin
 # (User.role == "admin") plus the granular head_admin / event_admin roles. Deliberately EXCLUDES
-# organizers (an organizer is no longer treated as event staff for room visibility — they fall
+# organizers (an organizer is no longer treated as event staff for room visibility - they fall
 # through to the per-group path and, like any player, only see their OWN group's room) AND the
 # moderator/support staff roles (not in the owner's list). Used only by get_event_details'
 # _can_see_room gate; everything else still uses the broader _is_event_admin.
@@ -104,7 +104,7 @@ def _can_see_all_group_rooms(user):
 
 # ── tier override gate (owner 2026-06-30) ──
 # Who may MANUALLY override an event's auto-classified tournament tier: ONLY a super admin
-# (User.role == "admin") or a head_admin. NOT event_admins, NOT organizers — the owner wants the
+# (User.role == "admin") or a head_admin. NOT event_admins, NOT organizers - the owner wants the
 # tier (a cross-event ranking weight) lockable only at the top. Tighter than _is_event_admin.
 def _is_head_or_super_admin(user):
     if not user:
@@ -123,7 +123,7 @@ def _is_head_or_super_admin(user):
 # Event 172 DYNASTY CUP GRAND FINALS SSA is exactly that case: $400 = ₦544,563 at the stored FxRate,
 # comfortably over the ₦100,000 Tier-1 rule, yet it sat at tier_3.
 #
-# We reuse prize_sync._amount_ngn — the SAME converter the rankings prize-money path already uses
+# We reuse prize_sync._amount_ngn - the SAME converter the rankings prize-money path already uses
 # (FxRate.rate = units per 1 USD, NGN passthrough, and it keeps the raw number when FX data is
 # missing rather than dropping the value). One conversion path, so tiering and prize points can
 # never disagree about what an event's pool is worth.
@@ -161,7 +161,7 @@ def auto_classify_event(event):
         # physical leg); the classifier ignores an unknown/None format (no format rule fires).
         fmt = {"physical(lan)": "lan", "virtual": "virtual", "hybrid": "lan"}.get(event.event_mode)
         sample = {
-            # NGN, not the raw stored amount — see _prize_pool_ngn above.
+            # NGN, not the raw stored amount - see _prize_pool_ngn above.
             "prize": _prize_pool_ngn(event),
             "teams": 0 if is_solo else cap,
             "players": cap if is_solo else 0,
@@ -201,7 +201,7 @@ def _event_zone(event):
     """The tz to interpret an event's naive start/end TIMES in. event.event_start_time /
     event_end_time are stored as the HOST's wall clock, so a Lagos event's "16:00" means 16:00 WAT.
     Combining them with the SERVER tz (UTC on prod) mis-times same-day transitions by the offset
-    (Lagos off by 1h, Johannesburg 2h) — bug 2026-07-06. Use the event's stored IANA `timezone`
+    (Lagos off by 1h, Johannesburg 2h) - bug 2026-07-06. Use the event's stored IANA `timezone`
     when set, else the server tz (older events / time TBD). Consumed by
     update_event_and_stage_statuses + effective_event_status."""
     tzname = getattr(event, "timezone", None)
@@ -220,7 +220,7 @@ def update_event_and_stage_statuses():
 
     # EVENTS
     # Completions route through complete_event_core (NOT a bare .update()/.save()) so qualification
-    # links, prize sync + notifications fire — a bulk .update() skipped every side effect, which is
+    # links, prize sync + notifications fire - a bulk .update() skipped every side effect, which is
     # why scheduling this sweep used to double-complete against close_finished_events with no links
     # firing (bug 2026-07-06). auto_complete_suppressed (a manually REOPENED event) is never
     # re-completed here (owner 2026-06-25 reopen contract).
@@ -232,7 +232,7 @@ def update_event_and_stage_statuses():
             complete_event_core(_ev, None, source="auto-date")
         except Exception:
             continue
-    # Reset entirely-FUTURE events to upcoming — but NEVER touch a cancelled or (manually) completed
+    # Reset entirely-FUTURE events to upcoming - but NEVER touch a cancelled or (manually) completed
     # one: without excluding those, this bulk un-cancels / re-opens a future-dated cancelled event on
     # every run (bug 2026-07-06, now that this sweep is scheduled every 5 min).
     Event.objects.filter(is_draft=False, start_date__gt=today).exclude(event_status__in=["upcoming", "completed", "cancelled"]).update(event_status="upcoming")
@@ -270,7 +270,7 @@ def update_event_and_stage_statuses():
             _ev.event_status = _new
             _ev.save(update_fields=["event_status"])
 
-    # STAGES — only for LIVE parent events. Skip stages of draft, cancelled or manually-reopened
+    # STAGES - only for LIVE parent events. Skip stages of draft, cancelled or manually-reopened
     # (auto_complete_suppressed) events so this date march doesn't drive stage_status independently of
     # the event's real state (bug 2026-07-06). `_live_stage` scopes every stage update below.
     _live_stage = Stages.objects.filter(event__is_draft=False).exclude(
@@ -315,17 +315,17 @@ def update_event_and_stage_statuses():
         pass
 
 
-# ── effective (display) event status — owner 2026-07-01 ──
+# ── effective (display) event status - owner 2026-07-01 ──
 # WHY: the stored Event.event_status is only converged by the daily Celery sweep above
-# (update_event_and_stage_statuses), which compares DATES ONLY and runs on a beat schedule — so an
+# (update_event_and_stage_statuses), which compares DATES ONLY and runs on a beat schedule - so an
 # event that has actually begun (its start_date + event_start_time instant has passed) keeps reading
 # "upcoming" until the next sweep fires. The owner: "when an event has started it should show ongoing;
 # upcoming is only while registration is open and BEFORE the event date AND time is reached." So we
-# compute the badge status at READ time from the real start instant — a pure time comparison, no cron —
+# compute the badge status at READ time from the real start instant - a pure time comparison, no cron - 
 # mirroring the roster_edit_until "auto-close, no cron" pattern already used elsewhere in this file.
 #
 # Rules:
-#   • "completed" is authoritative and never re-opened here — that state is owned by results-based
+#   • "completed" is authoritative and never re-opened here - that state is owned by results-based
 #     auto-complete / manual complete / the date sweep (a reopened event is NOT "completed", so it
 #     correctly falls through to the time check below).
 #   • otherwise: "ongoing" once now >= start instant, else "upcoming".
@@ -334,13 +334,13 @@ def update_event_and_stage_statuses():
 # Built as an aware datetime with make_aware(..., get_current_timezone()) to match the existing
 # date+time combination pattern in this file (set_roster_edit_window, ~L19601).
 #
-# CONNECTS TO: consumed by the user-facing event serializers — get_all_events (tournaments list cards,
+# CONNECTS TO: consumed by the user-facing event serializers - get_all_events (tournaments list cards,
 # home, organizer/admin event lists), get_event_details and get_event_details_not_logged_in (the event
 # detail badge). The FE renders event_status directly (tournaments/page.tsx statusColors +
 # EventDetailsWrapper), so this makes the badge reflect reality without waiting on the sweep. Audit /
 # admin-edit surfaces (snapshot_event, get_event_details_for_admin) keep the raw stored value on purpose.
 def effective_event_status(event):
-    # A finished event stays finished — do not let a time comparison re-open it.
+    # A finished event stays finished - do not let a time comparison re-open it.
     if event.event_status == "completed":
         return "completed"
     # A cancelled event stays cancelled: without this it fell through to the start/end time
@@ -488,7 +488,7 @@ def get_all_events(request):
             ),
             "rankings_verified": event.rankings_verified,
             # partner_published (owner 2026-06-27): whether this event is currently exposed through the
-            # read-only PARTNER API (afc_partner_api scope.py gates on it FIRST). Additive boolean —
+            # read-only PARTNER API (afc_partner_api scope.py gates on it FIRST). Additive boolean - 
             # consumed by the admin "API Keys" partner detail page (app/(a)/a/partners/[slug]) so each
             # event's "Publish to partner API" button reflects the LIVE published state instead of only
             # session actions. Harmless everywhere else (ignored by callers that don't read it).
@@ -928,7 +928,7 @@ def _validate_scoring_modes(stages_data):
       • Champion-Point on  → champion_point_threshold must be a positive int.
       • Point-Rush on      → point_rush_reward must be a non-empty mapping AND a
                              point_rush_target_index must be supplied.
-      • A Point-Rush stage must target a strictly LATER stage (carry-over only flows forward —
+      • A Point-Rush stage must target a strictly LATER stage (carry-over only flows forward - 
         it may not target itself OR an earlier/equal stage). Mirrors the advancement cycle guard.
     Callers turn the returned message into a 400 Response so no partial event is written."""
     n = len(stages_data)
@@ -981,7 +981,7 @@ def _rr_stage_data(stage_data):
     `stage_data["round_robin"]` (the form's RoundRobinConfig: round_robin_groups,
     generate_schedule, games_per_day, game_days), and sends it verbatim. But every builder /
     validator below reads those keys at the top level of `stage_data`. When they drift apart the
-    builder sees no base groups and the edit path then DELETES the whole round-robin stage —
+    builder sees no base groups and the edit path then DELETES the whole round-robin stage - 
     owner 2026-06-17: "matches per meeting resets / add base group doesn't save / date doesn't
     save" were all the same bug, because every save sent the config nested and the backend looked
     for it flat. Merge the nested dict up (nested wins) so both the nested (current FE) and a flat
@@ -1005,7 +1005,7 @@ def _validate_round_robin_groups(stages_data):
     so no partial event is written). `stages_data` is the submit-ordered list of stage dicts.
 
     Returns an error message string on the first problem, or None if every round-robin stage is
-    clean. (Unknown/blank team ids are ignored here — `_resolve_round_robin_team_ids` already
+    clean. (Unknown/blank team ids are ignored here - `_resolve_round_robin_team_ids` already
     skips them; we only police the uniqueness invariant the plan calls out.)
     """
     for stage_data in stages_data:
@@ -1045,7 +1045,7 @@ def _validate_advancement_rules(stages_data):
     Rules enforced (plan DECISIONS):
       • position_from >= 1 and position_to >= position_from (a non-empty 1-based inclusive range).
       • target_stage_index in range AND strictly LATER than the rule's own stage (no cycles /
-        self-routing — advancement only ever flows forward).
+        self-routing - advancement only ever flows forward).
       • source_group_index, when given, is a valid 0-based group index of that stage (null allowed
         = stage-wide). A stage with no groups (e.g. round-robin) only allows stage-wide rules.
       • NO OVERLAP within a scope: two rules of the SAME stage + SAME scope (same source_group_index,
@@ -1178,13 +1178,13 @@ def _resolve_round_robin_team_ids(team_ids, event, user):
     """Turn the FE-supplied `team_ids` into THIS event's TournamentTeam rows.
 
     A base group carries `team_ids` (Team primary keys). The round-robin stage lives on a
-    just-created/edited event, so a Team may not yet have a TournamentTeam for it — we
+    just-created/edited event, so a Team may not yet have a TournamentTeam for it - we
     create one on demand (status "active", registered_by=user), exactly the shape
     `register_*` uses elsewhere in this file. Already-linked teams are reused, so calling
     this for overlapping groups (or re-editing) never duplicates a TournamentTeam.
 
     Returns the TournamentTeam rows in the SAME order as `team_ids` (skipping ids whose
-    Team doesn't exist — a bad id can't poison the whole stage build).
+    Team doesn't exist - a bad id can't poison the whole stage build).
     """
     resolved = []
     for team_id in team_ids or []:
@@ -1284,7 +1284,7 @@ def _materialise_round_robin_lobby(stage, event, user, lobby_spec, source_groups
         Match.objects.bulk_create(matches_to_create, batch_size=500)
 
     # Seed the lobby's competitors from the UNION of its merged base groups' teams. A team
-    # that sits in two merged groups (shouldn't happen — a team belongs to one base group —
+    # that sits in two merged groups (shouldn't happen - a team belongs to one base group - 
     # but be defensive) collapses to a single competitor via the dedupe + ignore_conflicts.
     seen = set()
     sgc_rows = []
@@ -1313,7 +1313,7 @@ def _build_round_robin_groups(stage, event, user, stage_data, reuse_groups_by_la
     that MUST survive because a played lobby still points at them (see `_edit_round_robin_stage`).
     A payload group whose label matches one of these REUSES that exact row (re-attaching teams +
     updating order) instead of creating a new one. Without this, the edit path would keep the
-    protected rows AND create fresh duplicates of the same labels — corrupting the base-group set
+    protected rows AND create fresh duplicates of the same labels - corrupting the base-group set
     (Task 4 bug: 3 base groups → 5 with duplicate A/B). When None (create path), every group is
     created fresh as before.
     """
@@ -1355,7 +1355,7 @@ def _edit_round_robin_stage(stage, event, user, stage_data):
     """Rebuild a round-robin stage's base groups + lobbies on EDIT, preserving played play.
 
     Mirrors `_build_round_robin_stage` but is non-destructive about real results:
-      • lobbies with entered results (result_inputted=True on any match) are KEPT verbatim —
+      • lobbies with entered results (result_inputted=True on any match) are KEPT verbatim - 
         their base groups, matches, stats and competitors are never touched;
       • every UNPLAYED lobby is deleted and regenerated from the (possibly edited) payload.
 
@@ -1368,7 +1368,7 @@ def _edit_round_robin_stage(stage, event, user, stage_data):
     # Read the FE's nested round_robin config at the top level (see _rr_stage_data).
     stage_data = _rr_stage_data(stage_data)
 
-    # Played lobbies are sacred — keep them and the base groups they reference.
+    # Played lobbies are sacred - keep them and the base groups they reference.
     existing_lobbies = list(stage.groups.filter(game_day__isnull=False))
     played_lobbies = [lb for lb in existing_lobbies if _round_robin_lobby_is_played(lb)]
     kept_lobby_ids = [lb.group_id for lb in played_lobbies]
@@ -1376,7 +1376,7 @@ def _edit_round_robin_stage(stage, event, user, stage_data):
     # Base groups still referenced by a kept (played) lobby must survive too, so we don't
     # orphan a played lobby's source_groups. Everything else is rebuildable. We key these
     # protected groups by LABEL: the payload below re-sends the same labels (A/B/C…), and a
-    # played lobby points at the protected A/B rows — so the regenerated lobbies must reuse
+    # played lobby points at the protected A/B rows - so the regenerated lobbies must reuse
     # those exact rows, not freshly-created duplicates of the same labels (Task 4 bug:
     # recreating the full set alongside the survivors leaked 3 base groups → 5).
     protected_group_ids = set()
@@ -1510,7 +1510,7 @@ def _advancement_rules_echo(stage):
         target_stage_index and source_group_id -> source_group_index client-side.
     Source of the rows: StageAdvancementRule (Meta.ordering = source_stage, order, id), written by
     _wire_advancement_rules in create_event/edit_event. NOTE for the next-phase (letter-avatars)
-    agent: this key is appended to the SAME stages_payload dict as `round_robin` below — add your
+    agent: this key is appended to the SAME stages_payload dict as `round_robin` below - add your
     echo as another sibling key; do not rewrite the dict."""
     rules = (
         StageAdvancementRule.objects
@@ -1545,7 +1545,7 @@ def _round_robin_stage_echo(stage):
         ],
       }
     `team_ids` are TournamentTeam ids (what the builder seeds from); `source_group_ids` are
-    RoundRobinGroup ids — together they let the FE redraw the groups + the schedule exactly.
+    RoundRobinGroup ids - together they let the FE redraw the groups + the schedule exactly.
     """
     if stage.stage_format != ROUND_ROBIN_FORMAT:
         return None
@@ -1674,7 +1674,7 @@ def create_event(request):
 
     # ── org-aware permission gate ──
     # AFC event admins can always create native (org=None) events. If an organization_id is
-    # supplied, the request is an organizer creating an event under THEIR org — allow it only
+    # supplied, the request is an organizer creating an event under THEIR org - allow it only
     # when the user is an AFC admin OR has can_create_events on that org (org_can also lets
     # owners + platform admins through). No org_id + not an AFC admin → blocked.
     is_admin_creator = _is_event_admin(user)
@@ -1989,7 +1989,7 @@ def create_event(request):
                 # "true"/"1"/bool from the wizard toggles; enforced in register_for_event.
                 require_team_logo=_as_bool(request.data.get("require_team_logo")),
                 require_esport_images=_as_bool(request.data.get("require_esport_images")),
-                # F3 extra registration requirements (owner 2026-06-19) — same parse pattern.
+                # F3 extra registration requirements (owner 2026-06-19) - same parse pattern.
                 require_player_uid=_as_bool(request.data.get("require_player_uid")),
                 require_player_profile_image=_as_bool(request.data.get("require_player_profile_image")),
                 # WhatsApp number requirement (owner 2026-08-03) - same parse pattern; sent by the
@@ -2054,7 +2054,7 @@ def create_event(request):
                     point_rush_enabled=bool(stage_data.get("point_rush_enabled", False)),
                     point_rush_reward=stage_data.get("point_rush_reward") or {},
                     # Manual display order (reorder feature, owner 2026-06-15): persist if the payload
-                    # carries one, else 0. 0 means "auto-arrange by date" — we do NOT force submit-index
+                    # carries one, else 0. 0 means "auto-arrange by date" - we do NOT force submit-index
                     # ordering here, so new events default to the date sort until someone drags to reorder.
                     stage_order=int(stage_data.get("stage_order", 0) or 0),
                 )
@@ -2073,7 +2073,7 @@ def create_event(request):
                 # 2026-07-13) ──────────────────────────────────────────────────────────────────
                 # A `cs - *` stage runs as a HeadToHeadMatch bracket (head_to_head.py), generated
                 # later from the event page via events/stages/<id>/bracket/generate/ with an
-                # explicit team_ids seed list — it needs NO StageGroups to seed from. The stage-
+                # explicit team_ids seed list - it needs NO StageGroups to seed from. The stage-
                 # config wizard still forces a BR-style group (name/maps/match_count) so the payload
                 # carries one, but materialising it here creates PHANTOM "Pending" BR Match rows +
                 # a manual Leaderboard sitting next to the real bracket, and entering a result into
@@ -2131,7 +2131,7 @@ def create_event(request):
                     if matches_to_create:
                         Match.objects.bulk_create(matches_to_create, batch_size=500)
 
-                # Done with this stage's groups — record them (in submit order) for the advancement pass.
+                # Done with this stage's groups - record them (in submit order) for the advancement pass.
                 created_stage_groups.append(stage_groups_in_order)
 
             # ── Second pass: wire Point-Rush carry-over targets now that every Stages row
@@ -2208,7 +2208,7 @@ def duplicate_event(request, event_id):
         (organization=None) are admin-only. Same gate shape as create_event's create path.
 
     CLONES (config + structure only)
-        • Event: every config field is copied; identity + lifecycle are RESET — new event_id,
+        • Event: every config field is copied; identity + lifecycle are RESET - new event_id,
           fresh unique slug (base "-copy" then "-2", "-3"... like create_event), creator=actor,
           is_draft=True, is_public=False, event_status="upcoming", rankings_verified=False,
           partner_published=False. organization is KEPT. event_name gets a " (Copy)" suffix.
@@ -2220,7 +2220,7 @@ def duplicate_event(request, event_id):
           create_event resolves point_rush_target_index.
         • StageGroups: config only (names, dates/times, qualifying, match_count, match_maps,
           prizepool). NO leaderboard/match rows are created (unlike create_event, which seeds an
-          empty leaderboard + matches — a clone starts with nothing on the results side).
+          empty leaderboard + matches - a clone starts with nothing on the results side).
         • RoundRobinGroup: base-group skeleton (label, order) is cloned WITHOUT its teams, and
           game-day lobby groups are skipped (they reference TournamentTeam rows we never copy).
 
@@ -2324,7 +2324,7 @@ def duplicate_event(request, event_id):
             event_end_time=source.event_end_time,
             registration_start_time=source.registration_start_time,
             registration_end_time=source.registration_end_time,
-            # Registration requirements — carry the source's gates onto the clone (these were
+            # Registration requirements - carry the source's gates onto the clone (these were
             # previously dropped, so a duplicated event silently lost its require_* toggles). F3.
             require_team_logo=source.require_team_logo,
             require_esport_images=source.require_esport_images,
@@ -2355,7 +2355,7 @@ def duplicate_event(request, event_id):
                 stage_format=old_stage.stage_format,
                 teams_qualifying_from_stage=old_stage.teams_qualifying_from_stage,
                 stage_discord_role_id=old_stage.stage_discord_role_id,
-                # Stage status resets with the event — a cloned stage hasn't run.
+                # Stage status resets with the event - a cloned stage hasn't run.
                 stage_status="upcoming",
                 prizepool=old_stage.prizepool,
                 prizepool_cash_value=old_stage.prizepool_cash_value,
@@ -2393,7 +2393,7 @@ def duplicate_event(request, event_id):
             # ── 2b) Clone the round-robin BASE-GROUP skeleton (label + order) WITHOUT teams ──
             # RoundRobinGroup.teams is a M2M of TournamentTeam rows (never copied), so we clone
             # only the empty A/B/C structure. Game-day lobbies are intentionally NOT recreated
-            # (they merge teams) — the owner regenerates the schedule after re-seeding teams.
+            # (they merge teams) - the owner regenerates the schedule after re-seeding teams.
             for old_rr in old_stage.round_robin_groups.order_by("order"):
                 RoundRobinGroup.objects.create(
                     stage=new_stage,
@@ -3476,7 +3476,7 @@ def edit_event(request):
 
     # Re-slug when the name actually changed, so the URL follows the rename (owner 2026-06-29).
     # Mirrors Event.save()'s generator (slugify + a -2/-3 uniqueness suffix), but runs on rename
-    # too — save() alone only fires when the slug is blank, which is why a renamed "...-copy" event
+    # too - save() alone only fires when the slug is blank, which is why a renamed "...-copy" event
     # kept the stale slug. We only re-slug on a real change (not every save) to avoid needlessly
     # churning a live event's URL; uniqueness excludes THIS event so a no-op name keeps its slug.
     if event.event_name and event.event_name != _old_event_name:
@@ -3611,7 +3611,7 @@ def edit_event(request):
                 # 2026-07-13) ──────────────────────────────────────────────────────────────────
                 # Mirror create_event: a `cs - *` stage is a HeadToHeadMatch bracket, NOT a set of BR
                 # lobbies, so never materialise the config wizard's forced group here (phantom BR
-                # rows that double-write scoring — see the create_event note). Also PROTECT any group
+                # rows that double-write scoring - see the create_event note). Also PROTECT any group
                 # the bracket already owns from the delete_missing sweep below: write_placement_stats
                 # synthesises a "Bracket Results" StageGroups (holding the synthetic result Match +
                 # per-team stats) that the FE never echoes back in `groups`, so without this it would
@@ -3625,11 +3625,11 @@ def edit_event(request):
                 # entirely by _edit_round_robin_stage above. On EDIT the FE sends its tempGroups (the
                 # current lobby list) in `groups`, so running the normal group loop over it would
                 # re-create those lobbies as PLAIN groups (clearing game_day, orphaning the base
-                # groups) and corrupt the whole round-robin structure — that was the real cause of
+                # groups) and corrupt the whole round-robin structure - that was the real cause of
                 # "matches per meeting resets / add base group doesn't save / date doesn't save":
                 # every RR edit-save wiped the stage. create_event avoids this only because the FE
                 # sends empty `groups` on create; edit must defend explicitly. So skip the loop here.
-                # (CS stages skip for the same reason — the bracket owns the structure, not `groups`.)
+                # (CS stages skip for the same reason - the bracket owns the structure, not `groups`.)
                 for group_data in ([] if (_is_round_robin_stage or _is_cs_stage) else stage_data.get("groups", [])):
                     group_id = group_data.get("group_id")
 
@@ -3739,7 +3739,7 @@ def edit_event(request):
                         .exclude(match_number__in=kept_match_numbers)\
                         .delete()
 
-                # Done with this stage's groups — record them for the advancement second pass.
+                # Done with this stage's groups - record them for the advancement second pass.
                 upserted_stage_groups.append(stage_groups_in_order)
 
             # ── Second pass: wire Point-Rush carry-over targets now that every stage is
@@ -4040,7 +4040,7 @@ def edit_event(request):
 
 @api_view(["GET"])
 def get_total_events_count(request):
-    # FIX: QuerySet.count() takes no kwargs — the is_draft predicate must go in .filter()
+    # FIX: QuerySet.count() takes no kwargs - the is_draft predicate must go in .filter()
     # (matches sibling count views below, e.g. get_total_tournaments_count). Counts published (non-draft) events.
     total_events = Event.objects.filter(is_draft=False).count()
     return Response({"total_events": total_events}, status=status.HTTP_200_OK)
@@ -4064,7 +4064,7 @@ def get_upcoming_events_count(request):
 # ── total prize pool across all hosted events (owner 2026-07-01) ──
 # The home page "Total Prize Pool" stat was a hardcoded "$5,750". The owner wants it DERIVED from the
 # real event prize pools AND shown in each viewer's own currency. This sums every published (non-draft)
-# event's prizepool_cash_value, NORMALISED to USD (the platform's FX base — afc_auth.FxRate stores
+# event's prizepool_cash_value, NORMALISED to USD (the platform's FX base - afc_auth.FxRate stores
 # `rate` = units per 1 USD, and money is stored/served in USD). Each Event stores prizepool_cash_value
 # in prize_currency (USD|NGN, default NGN) plus a locked usd_to_ngn_rate (rankings §4/§7.2 lock the
 # award-date rate). NGN pools convert to USD via that locked rate, or the current FxRate NGN rate as a
@@ -4800,7 +4800,7 @@ def get_event_details(request):
             for se in sponsors
         ],
         # M: waitlist flags. Keys were previously emitted with stray spaces
-        # ("is_waitlist enabled") so the frontend could never read them — fixed to
+        # ("is_waitlist enabled") so the frontend could never read them - fixed to
         # clean snake_case keys the EventDetails interface can consume.
         "is_waitlist_enabled": event.is_waitlist_enabled,
         # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
@@ -5084,7 +5084,7 @@ def get_event_details(request):
 
             # -------- OVERALL LEADERBOARD --------
             # PUBLIC == ADMIN (owner 2026-07-06): the public page must show EXACTLY what the
-            # admin/organizer results editor collected + set + edited — same stored stats, same
+            # admin/organizer results editor collected + set + edited - same stored stats, same
             # computed columns, and the SAME ranking/tiebreak. This used to sum only total_points and
             # order by (-total_points,-total_kills,name), omitting the booyah + last-map-placement
             # tiebreaks the editor (get_all_leaderboard_details_for_event) uses, so equal-point teams
@@ -5223,7 +5223,7 @@ def get_event_details(request):
 
             # ── Point-Rush carry-over overlay (scoring-modes) ─────────────────────────────────────
             # Fold any bonus banked by an earlier stage that targets THIS stage into the PUBLIC
-            # standings, so the carried-over points show on the user-facing tournament page too — not
+            # standings, so the carried-over points show on the user-facing tournament page too - not
             # only in the admin results editor. Computed on read, never persisted (mirrors the admin
             # builder). Skipped when results are withheld (overall is returned [] anyway), which also
             # avoids the extra source-stage ranking queries for the common no-Point-Rush event.
@@ -5879,7 +5879,7 @@ def get_event_details_not_logged_in(request):
                     "stats": list(stats),
                 })
 
-            # overall leaderboard for group — PUBLIC == ADMIN (owner 2026-07-06): identical annotations
+            # overall leaderboard for group - PUBLIC == ADMIN (owner 2026-07-06): identical annotations
             # + tiebreak to get_all_leaderboard_details_for_event (and to the logged-in public endpoint
             # above), so anonymous, logged-in, and admin views rank the same stored stats identically.
             if event.participant_type == "solo":
@@ -6385,7 +6385,7 @@ def register_for_event(request):
     is_public = event.is_public  # True/False
 
     # -------------------------
-    # STATUS GATE (2026-07-06): the date window below is NOT enough — a cancelled or completed event
+    # STATUS GATE (2026-07-06): the date window below is NOT enough - a cancelled or completed event
     # can still have an open registration window (cancelled early, or a short event completed while its
     # reg window is technically still open), and without this it kept accepting new registrations into
     # a dead event. Only upcoming/ongoing events accept registrations.
@@ -6497,7 +6497,7 @@ def register_for_event(request):
 
         if is_public == False:
             # ── private-event invite gate (SOLO) ──
-            # Mirrors the TEAM gate below — keep both in sync.
+            # Mirrors the TEAM gate below - keep both in sync.
             invite_token = request.data.get("invite_token")
             if not invite_token:
                 return Response({"message": "invite_token is required for private events."}, status=400)
@@ -6668,7 +6668,7 @@ def register_for_event(request):
                 competitor.status = "pending"
                 competitor.save(update_fields=["status"])
 
-            # Mark the token used — but ONLY for single-use tokens. A SHARED token
+            # Mark the token used - but ONLY for single-use tokens. A SHARED token
             # (is_shared=True) is the reusable FCFS link and must stay open for the next
             # registrant; the capacity check above is what eventually closes it.
             if is_public == False and not invite.is_shared:
@@ -6832,7 +6832,7 @@ def register_for_event(request):
         # Prevent players being in two rosters for the same event.
         # Fetch the conflicting roster rows WITH the player + the team they are
         # already registered in (select_related = one query, no N+1), so the error
-        # can name WHO is the problem and WHERE they're already registered — a
+        # can name WHO is the problem and WHERE they're already registered - a
         # captain needs that to know which player to drop. (Previously this only
         # returned a generic message + bare user_ids.)
         #
@@ -6976,7 +6976,7 @@ def register_for_event(request):
         # Other verification
         if is_public == False:
             # ── private-event invite gate (TEAM) ──
-            # Mirrors the SOLO gate above — keep both in sync.
+            # Mirrors the SOLO gate above - keep both in sync.
             invite_token = request.data.get("invite_token")
             if not invite_token:
                 return Response({"message": "invite_token is required for private events."}, status=400)
@@ -7220,7 +7220,7 @@ def register_for_event(request):
                     event=event, team=team, status="registered",
                 ).update(status="pending")
 
-            # Mark the token used — but ONLY for single-use tokens. A SHARED token
+            # Mark the token used - but ONLY for single-use tokens. A SHARED token
             # (is_shared=True) is the reusable FCFS link and must stay open for the next
             # team; the capacity check above is what eventually closes it.
             if is_public == False and not invite.is_shared:
@@ -7715,7 +7715,7 @@ def confirm_player(request):
 #     team_owner_email = member.tournament_team.team.team_owner.email
 
 
-#     subject = f'AFC Registration Update – Player {player_username} has been Accepted for {event_name}'
+#     subject = f'AFC Registration Update - Player {player_username} has been Accepted for {event_name}'
 #     message = f'''Dear {team_leader_username} (Team {team_name}),
 
 # We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
@@ -7738,7 +7738,7 @@ def confirm_player(request):
 #     send_email(team_owner_email, subject, message)
 
 #     #----- SEND CONFIRMATION MAIL TO USER -----
-#     subject = f'AFC Registration Update – Your Application for {event_name} Has Been Accepted'
+#     subject = f'AFC Registration Update - Your Application for {event_name} Has Been Accepted'
 #     message = f'''Dear {player_username} (or {team_name}),
 
 # Thank you for submitting your registration for the AFC {event_name}.
@@ -8006,7 +8006,7 @@ def reject_player(request):
 #     team_owner_email = member.tournament_team.team.team_owner.email
 
 
-#     subject = f'AFC Registration Update – Player {player_username} has been Rejected for {event_name}'
+#     subject = f'AFC Registration Update - Player {player_username} has been Rejected for {event_name}'
 #     message = f'''Dear {team_leader_username} (Team {team_name}),
 
 # We wanted to inform you that player {player_username} from your team has had their individual registration reviewed for the AFC {event_name}.
@@ -8032,7 +8032,7 @@ def reject_player(request):
 #     #------ SEND REJECTION EMAIL TO USER -----
 
 
-#     subject = f'AFC Registration Update – Your Application for {event_name} Has Been Rejected'
+#     subject = f'AFC Registration Update - Your Application for {event_name} Has Been Rejected'
 #     message = f'''Dear {player_username} (or {team_name}),
 
 # Thank you for submitting your registration for the AFC {event_name}.
@@ -10386,7 +10386,7 @@ def retry_failed_discord_roles(request):
     stage_id = request.data.get("stage_id")
     if not stage_id:
         return Response({"message": "stage_id is required."}, status=400)
-    # SECURITY (#8 audit 2026-07-06): was completely UNAUTHENTICATED — any anonymous caller could
+    # SECURITY (#8 audit 2026-07-06): was completely UNAUTHENTICATED - any anonymous caller could
     # re-dispatch Discord role tasks. Gate: AFC staff OR the owning organizer (can_manage_registrations).
     stage = get_object_or_404(Stages, stage_id=stage_id)
     user, err = _get_event_action_user(request, event=stage.event, org_perm="can_manage_registrations")
@@ -12376,7 +12376,7 @@ def create_leaderboard(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    # NOTE: permission is finalised below, once the owning event is resolved from event_id —
+    # NOTE: permission is finalised below, once the owning event is resolved from event_id - 
     # org members with can_upload_results may create leaderboards for THEIR org's events.
 
     event_id = request.data.get("event_id")
@@ -12810,7 +12810,7 @@ def upload_solo_match_result(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    # NOTE: auth is finalised below, after the owning event is resolved — org members with
+    # NOTE: auth is finalised below, after the owning event is resolved - org members with
     # can_upload_results may upload for THEIR org's events, so we need the event in hand first.
 
     # ---------------- INPUT ----------------
@@ -12826,7 +12826,7 @@ def upload_solo_match_result(request):
     # FULL parse + RegisteredCompetitors mapping + scoring and build the SAME response summary, but
     # roll the whole write transaction back at the end so NOTHING persists. Mirrors the team endpoint
     # (upload_team_match_result dry_run) so MultiMapLogPanel can drive a per-map "Review before apply"
-    # step for solo events too — the FE calls this per file with dry_run=true, then re-calls WITHOUT
+    # step for solo events too - the FE calls this per file with dry_run=true, then re-calls WITHOUT
     # dry_run to actually save. Real path unchanged.
     dry_run = _as_bool(request.data.get("dry_run"))
 
@@ -12944,7 +12944,7 @@ def upload_solo_match_result(request):
         SoloPlayerMatchStats.objects.filter(match=match).delete()
         SoloPlayerMatchStats.objects.bulk_create(stats_to_create, batch_size=500)
         # result_inputted now lives INSIDE the atomic block (was a bare save below) so the dry-run
-        # rollback also reverts it — otherwise a preview would flip the match to "results inputted".
+        # rollback also reverts it - otherwise a preview would flip the match to "results inputted".
         match.result_inputted = True
         match.save(update_fields=["result_inputted"])
 
@@ -13478,7 +13478,7 @@ from django.shortcuts import get_object_or_404
 
 # ── Scoring-modes (sub-project A): on-read helpers for the standings builder below. ──
 # Champion-Point + Point-Rush are computed ON READ (nothing derived is persisted), so an
-# admin edit auto-corrects the leaderboard — these two helpers feed the pure logic in
+# admin edit auto-corrects the leaderboard - these two helpers feed the pure logic in
 # scoring.py (champion_for_group / rewards_from_standings) the per-lobby data it needs.
 # Both live at module scope (not nested) so the builder can call them per group cheaply.
 
@@ -13487,7 +13487,7 @@ def _group_ranked_ids(group, participant_type):
     """Return this lobby's competitor ids in current finishing order (1st..last).
 
     The id is the tournament_team_id (team events) or competitor_id (solo events). The sort
-    mirrors the standings sort the builder uses — total effective points first, then kills —
+    mirrors the standings sort the builder uses - total effective points first, then kills - 
     so Point-Rush rewards land on whoever is actually 1st/2nd/3rd in the lobby right now.
     Kept in sync deliberately with the per-group OVERALL aggregate below, per participant type:
     the TEAM total is the stored Σtotal_points (placement + kill + ASSIST + DAMAGE + bonus -
@@ -13530,7 +13530,7 @@ def _carry_over_for_stage(stage, participant_type):
     """Sum Point-Rush bonuses banked for `stage` by every source stage that targets it.
 
     A source stage hands out its `point_rush_reward` table (placement->bonus) PER LOBBY of
-    that source stage — so a 2-lobby source seeds two sets of 1st/2nd/3rd bonuses. We walk
+    that source stage - so a 2-lobby source seeds two sets of 1st/2nd/3rd bonuses. We walk
     `stage.point_rush_sources` (the reverse FK of point_rush_target_stage) and accumulate,
     keyed by competitor id, into a {id: bonus} dict the builder folds into each row's total."""
     from collections import defaultdict
@@ -13556,16 +13556,16 @@ def _apply_public_carry_over(stage, rows, participant_type):
         the placement->bonus a competitor banked in every earlier stage whose point_rush_target_stage
         is THIS stage. The admin results editor (get_all_leaderboard_details_for_event, see the
         carry-over overlay at the OVERALL block) already applies it, so admins saw the carried points
-        — but the two USER-FACING endpoints (get_event_details / get_event_details_not_logged_in)
+        - but the two USER-FACING endpoints (get_event_details / get_event_details_not_logged_in)
         summed only the stored per-match total_points, so a normal viewer's leaderboard for the
         connected stage showed NO carry-over. From the user's seat the points "didn't carry over".
         This applies the SAME on-read overlay to the public rows so they DO.
 
     WHAT IT DOES
         `rows` is the materialised list of dict rows from a public OVERALL aggregation (each carries
-        the seed id — tournament_team_id / competitor_id — the name alias, total_kills and the summed
+        the seed id - tournament_team_id / competitor_id - the name alias, total_kills and the summed
         total_points). For every row we set `carry_over_points` (0 when none) and add any nonzero
-        bonus into `total_points` — the field the public leaderboard both displays and sorts on. We
+        bonus into `total_points` - the field the public leaderboard both displays and sorts on. We
         re-sort ONLY when a nonzero bonus actually lands, on exactly the public DB key
         (-total_points, -total_kills, name); a stage with no Point-Rush source is left byte-identical
         (its DB .order_by() stays authoritative, and the appended seeded-at-0 rows keep their place).
@@ -13606,11 +13606,11 @@ def _apply_public_carry_over(stage, rows, participant_type):
 def _fold_carry_over(rows, stage, participant_type, *, id_key, metric_key, sort_key, carry=None):
     """OWNER OVERRIDE (2026-06-29): Point-Rush carry-over IS part of a competitor's TOTAL POINTS and
     must count toward QUALIFICATION, not only display. (This intentionally supersedes the earlier
-    "advancement/round-robin standings exclude per-lobby overlays" spec note — the owner: "the point
+    "advancement/round-robin standings exclude per-lobby overlays" spec note - the owner: "the point
     adds to the team's total points.")
 
     When `stage` is a Point-Rush TARGET (i.e. has point_rush_sources), add each competitor's banked
-    carry-over — the SAME on-read bonus _carry_over_for_stage computes for the leaderboard — into the
+    carry-over - the SAME on-read bonus _carry_over_for_stage computes for the leaderboard - into the
     ranking metric `metric_key`, then re-rank with `sort_key`. So a team whose source-stage placement
     bonus lifts its total above a rival now advances AHEAD of it. NO-OP when the stage has no
     Point-Rush source (carry == {} -> rows returned untouched), so a normal stage advances
@@ -13620,7 +13620,7 @@ def _fold_carry_over(rows, stage, participant_type, *, id_key, metric_key, sort_
     Shared by both legacy advance endpoints (advance_group_competitors_to_next_stage via total_points,
     advance_round_robin via effective_total), by the branching engine
     (advancement_routing._ranking_for_rule), AND by CROSS-EVENT linked qualification
-    (event_links._stage_top_rows) — all via lazy import — so the leaderboard + in-event advancement +
+    (event_links._stage_top_rows) - all via lazy import - so the leaderboard + in-event advancement +
     cross-event qualification + the admin editor all rank on the same carry-over-inclusive total.
 
     `carry` lets a caller pass a PRE-COMPUTED {id: bonus} dict instead of having this resolve it from
@@ -13914,7 +13914,7 @@ def get_all_leaderboard_details_for_event(request):
             # ── Scoring-modes overlay (sub-project A): applied ON READ, per lobby. ──
             # `overall` is a QuerySet of dict rows; materialize it so we can mutate each row
             # (add carry-over, re-sort, flag the champion). The id key is competitor_id for
-            # solo and tournament_team_id for team — both already present in the rows above.
+            # solo and tournament_team_id for team - both already present in the rows above.
             overall = list(overall)
             id_key = "competitor_id" if event.participant_type == "solo" else "tournament_team_id"
             # Name tiebreaker key matches the DB .order_by() tail for each branch:
@@ -13997,7 +13997,7 @@ def get_all_leaderboard_details_for_event(request):
                 )
                 stage_is_decided = champion_id is not None
 
-            # (3) Re-sort ONLY when a scoring-mode overlay actually changed something — i.e. a
+            # (3) Re-sort ONLY when a scoring-mode overlay actually changed something - i.e. a
             # nonzero carry-over bonus landed, or a champion was crowned. On a plain stage (both
             # toggles off, no carry-over) the DB `.order_by()` above is already authoritative and
             # we MUST NOT touch it: re-sorting here would drop the DB's full tiebreaker chain
@@ -14023,7 +14023,7 @@ def get_all_leaderboard_details_for_event(request):
                 from .round_robin import apply_tie_breakers as _apply_tb, _resolve_tie_breakers as _res_tb
                 if _res_tb(event, stage, group):
                     overall = _apply_tb(overall, event, stage, group)
-            # Pin the champion to #0 if one exists — the FE renders server order verbatim
+            # Pin the champion to #0 if one exists - the FE renders server order verbatim
             # (qualified/eliminated badges are positional), so the champion must physically lead
             # the list, not just be flagged. Stable sort preserves the tiebreaker order above for
             # everyone else.
@@ -14182,7 +14182,7 @@ def get_event_group_rosters(request):
     # event, grouped by tournament_team_id. This is what keeps the loops from doing a
     # query per team. Only meaningful for team events; harmless (empty) for solo. We
     # carry only the roster fields TournamentTeamMember actually has (it has NO
-    # management_role / in_game_role — those live on afc_team.TeamMembers and must not
+    # management_role / in_game_role - those live on afc_team.TeamMembers and must not
     # be exposed here). username IS the in-game name (User.in_game_name is commented
     # out, USERNAME_FIELD == "username"). ──
     members_by_team = defaultdict(list)
@@ -14376,10 +14376,10 @@ def get_event_group_rosters(request):
 
 # ── BR Round-Robin (sub-project B, Task 3): three-view standings endpoint ──
 # A round-robin stage's results read three ways off the SAME match stats:
-#   • per-lobby   — already served by get_all_leaderboard_details_for_event (a lobby is a
+#   • per-lobby   - already served by get_all_leaderboard_details_for_event (a lobby is a
 #                   StageGroups row), so we do NOT duplicate it here;
-#   • per-day     — round_robin.day_standings(stage, day): sum one game day's lobbies;
-#   • cumulative  — round_robin.cumulative_standings(stage): sum the whole stage, the
+#   • per-day     - round_robin.day_standings(stage, day): sum one game day's lobbies;
+#   • cumulative  - round_robin.cumulative_standings(stage): sum the whole stage, the
 #                   round-robin table the format is built around.
 # ── PUBLIC combined standings (owner 2026-07-05, complaint C) ─────────────────────────────────────
 # "A way to COMBINE and VIEW the combined leaderboards under View Leaderboard." The combine aggregation
@@ -14419,7 +14419,7 @@ def get_event_combined_standings(request):
                          "results_published": event.results_published, "group_ids": [],
                          "standings": [], "note": "Combined standings are available for team events."})
     # Authed event staff (AFC admin, or the owning organizer with can_upload_results) may read the
-    # combined standings BEFORE the event is published — the admin/organizer leaderboard editor's new
+    # combined standings BEFORE the event is published - the admin/organizer leaderboard editor's new
     # "Combined" tab (frontend CombinedStandings) uses this endpoint and must show numbers while the
     # event is still mid-flight. The PUBLIC caller keeps the published-only withholding below.
     can_see_unpublished = False
@@ -14959,7 +14959,7 @@ def advance_group_competitors_to_next_stage(request):
             "missing_results_matches_count": not_done,
         }, status=400)
 
-    # 2) Find next stage — follow the CANONICAL display order so advancement honours a manual
+    # 2) Find next stage - follow the CANONICAL display order so advancement honours a manual
     #    reorder (owner 2026-06-15). order_by("stage_order", "start_date", "stage_id") is the same
     #    ordering get_event_details + the standings builder use: manual stage_order wins, and when
     #    orders are equal (all 0 = auto) it falls back to start_date then stage_id. The "next stage"
@@ -15125,7 +15125,7 @@ def advance_round_robin(request):
     """Advance teams out of a finished BR Round-Robin stage into the next stage (Task 5).
 
     A round-robin stage is decided by its CUMULATIVE table (every team summed across every
-    lobby it played) — NOT by any one lobby — so it can't reuse
+    lobby it played) - NOT by any one lobby - so it can't reuse
     `advance_group_competitors_to_next_stage`, which advances from a single StageGroups/lobby.
     This is the parallel path for the whole stage:
 
@@ -15133,7 +15133,7 @@ def advance_round_robin(request):
         `round_robin.cumulative_standings(stage)` (the same authoritative, server-sorted table
         the standings endpoint returns), then
       • mode="per_group": instead take the top `qualify_per_group` teams of EACH base group
-        (RoundRobinGroup), by ranking that group's members within the cumulative table — for
+        (RoundRobinGroup), by ranking that group's members within the cumulative table - for
         formats that guarantee per-group qualifiers rather than a single overall cut.
 
     Either way the winners are seeded into the NEXT stage using the SAME plumbing the existing
@@ -15599,7 +15599,7 @@ def edit_solo_match_result(request):
         return Response({"message": "Unauthorized."}, status=403)
 
     # NOTE: permission is finalised below, once the owning event is resolved via
-    # match_id -> match.group.stage.event — org members with can_upload_results may edit
+    # match_id -> match.group.stage.event - org members with can_upload_results may edit
     # solo results for THEIR org's events.
 
     match_id = request.data.get("match_id")
@@ -15654,7 +15654,7 @@ def edit_solo_match_result(request):
                 stats.penalty_points = int(r["penalty_points"] or 0)
 
             # Recalc points through the shared solo formula so this edit path can never
-            # drift from manual/OCR solo entry (Task 2 — route EVERY live point-calc site
+            # drift from manual/OCR solo entry (Task 2 - route EVERY live point-calc site
             # through scoring.compute_*). This row is always being re-scored, so played=True.
             #
             # NOTE: this endpoint (unlike the manual-entry solo path) folds bonus/penalty
@@ -15772,7 +15772,7 @@ def delete_match(request):
         return Response({"message": "Invalid or expired session token."}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved via
-    # match_id -> match.group.stage.event — org members with can_upload_results may delete
+    # match_id -> match.group.stage.event - org members with can_upload_results may delete
     # matches for THEIR org's events.
 
     # -------------- INPUT --------------
@@ -15831,7 +15831,7 @@ def delete_match(request):
 # REDO MAP (owner 2026-06-15): clear ONE map's results without deleting the Match.
 #
 # Difference from delete_match (above): delete_match removes the Match row entirely
-# (and renumbers the rest). clear_match_result KEEPS the Match — it only wipes the
+# (and renumbers the rest). clear_match_result KEEPS the Match - it only wipes the
 # entered stats so the admin can re-enter results for that single map. Used by the
 # "Redo this map" button on the admin leaderboard edit page.
 #
@@ -15868,7 +15868,7 @@ def clear_match_result(request):
     force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
     match = get_object_or_404(Match, match_id=match_id)
 
-    # ── AUTH (event-scoped): same gate as delete_match — event derived via
+    # ── AUTH (event-scoped): same gate as delete_match - event derived via
     #    match_id -> match.group.stage.event. Native (org=None) events stay admin-only.
     _event = match.group.stage.event if match.group else None
     if not _is_event_admin(admin) and not (_event and org_can_event(admin, "can_upload_results", _event)):
@@ -15878,7 +15878,7 @@ def clear_match_result(request):
         return Response({"message": "This map has no results to clear.", "match_id": match.match_id}, status=400)
 
     with transaction.atomic():
-        # Run all three deletes unconditionally — each is a no-op for the wrong event type
+        # Run all three deletes unconditionally - each is a no-op for the wrong event type
         # (team events have team/player stats, solo events have solo stats).
         TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
         TournamentTeamMatchStats.objects.filter(match=match).delete()
@@ -15913,7 +15913,7 @@ def edit_match_details(request):
 
     # AUTH (owner 2026-06-17): was admin-only, so an ORGANIZER editing room details silently 403'd
     # and their entry never saved (looked like it "reverted to the default"). Allow AFC event admins
-    # OR an organizer who can edit / upload results for THIS event — parity with broadcast_to_group.
+    # OR an organizer who can edit / upload results for THIS event - parity with broadcast_to_group.
     event = match.group.stage.event if (match.group and match.group.stage) else None
     if not (_is_event_admin(user) or (event and (
         org_can_event(user, "can_edit_events", event) or org_can_event(user, "can_upload_results", event)
@@ -16041,7 +16041,7 @@ def create_leaderboard_manually(request):
     if not admin:
         return Response({"message": "No permission"}, status=403)
 
-    # NOTE: permission is finalised below, once the owning event is resolved from event_id —
+    # NOTE: permission is finalised below, once the owning event is resolved from event_id - 
     # org members with can_upload_results may create leaderboards for THEIR org's events.
 
     event_id = request.data.get("event_id")
@@ -16283,7 +16283,7 @@ def enter_team_match_result_manual(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    # NOTE: permission is finalised below, after the owning event is resolved — org members
+    # NOTE: permission is finalised below, after the owning event is resolved - org members
     # with can_upload_results may enter results for THEIR org's events.
 
     # ---------------- INPUT ----------------
@@ -16415,7 +16415,7 @@ def enter_team_match_result_manual(request):
             bonus = int(team_item.get("bonus_points") or 0)
             penalty = int(team_item.get("penalty_points") or 0)
 
-            # Shared team formula — the three point columns now come from scoring (no inline copy).
+            # Shared team formula - the three point columns now come from scoring (no inline copy).
             pts = scoring_lib.compute_team_points(
                 placement_points=placement_points, kill_point=kill_point,
                 points_per_assist=points_per_assist, points_per_1000_damage=points_per_1000_damage,
@@ -16887,7 +16887,7 @@ def enter_solo_match_result_manual(request):
     if not admin:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    # NOTE: permission is finalised below, after the owning event is resolved — org members
+    # NOTE: permission is finalised below, after the owning event is resolved - org members
     # with can_upload_results may enter results for THEIR org's events.
 
     match_id = request.data.get("match_id")
@@ -17023,7 +17023,7 @@ def edit_match_result(request):
         return Response({"message": "Invalid or expired session token."}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved via the match's
-    # leaderboard (lb.event) — org members with can_upload_results may edit results for THEIR
+    # leaderboard (lb.event) - org members with can_upload_results may edit results for THEIR
     # org's events.
 
     # ---------------- INPUT ----------------
@@ -17148,7 +17148,7 @@ def edit_match_result(request):
                     p["played"] = False
 
             # Max-4-played is already validated above (before the delete) so there is no early
-            # return in this transaction body — keeping the delete + recreate atomic and safe.
+            # return in this transaction body - keeping the delete + recreate atomic and safe.
             played_players = [p for p in players if p.get("played", True)]
 
             total_kills = sum(int(p.get("kills") or 0) for p in played_players)
@@ -17158,7 +17158,7 @@ def edit_match_result(request):
             bonus = int(team_item.get("bonus_points") or 0)
             penalty = int(team_item.get("penalty_points") or 0)
 
-            # Shared team formula — the three point columns now come from scoring (no inline copy).
+            # Shared team formula - the three point columns now come from scoring (no inline copy).
             pts = scoring_lib.compute_team_points(
                 placement_points=placement_points, kill_point=kill_point,
                 points_per_assist=points_per_assist, points_per_1000_damage=points_per_1000_damage,
@@ -17930,12 +17930,12 @@ def _resolve_event_team(request):
 
 @api_view(["POST"])
 def remove_team_from_event(request):
-    """POST events/remove-team-from-event/ {event_id, tournament_team_id|team_id} — REMOVE a team
+    """POST events/remove-team-from-event/ {event_id, tournament_team_id|team_id} - REMOVE a team
     from an event ENTIRELY (owner 2026-06-22). Distinct from disqualify_team (which KEEPS the record,
     marked 'disqualified'): this DELETES the team's registration + tournament-team + members + any
     stage/group seeds, freeing the slot as if they never registered. Gated: AFC admin OR organizer
     with can_manage_registrations. BLOCKED when the team already has match results (deleting would
-    orphan TournamentTeamMatchStats) — disqualify instead. Best-effort Discord-role cleanup.
+    orphan TournamentTeamMatchStats) - disqualify instead. Best-effort Discord-role cleanup.
     Consumed by RegisteredTeamsTab's Remove button (admin + organizer)."""
     admin, event, tt, err = _resolve_event_team(request)
     if err:
@@ -17994,7 +17994,7 @@ def remove_team_from_event(request):
 
 @api_view(["POST"])
 def reactivate_team(request):
-    """POST events/reactivate-team/ {event_id, tournament_team_id|team_id} — reverse a team
+    """POST events/reactivate-team/ {event_id, tournament_team_id|team_id} - reverse a team
     disqualification (owner 2026-06-22): set the tournament-team + its registration + stage/group
     seeds back to active. Gated like disqualify_team. Team events only. Consumed by the Reactivate
     button that replaces Disqualify once a team is disqualified."""
@@ -18172,7 +18172,7 @@ def generate_single_use_invite_link_for_private_event(request):
     )
     # Construct the invite link (replace with your frontend URL). The user-side
     # registration page reads ?invitation=<token>, so a shared link works with the
-    # existing flow — it just is not consumed.
+    # existing flow - it just is not consumed.
     invite_link = f"https://africanfreefirecommunity.com/tournaments/{event_slug}?invitation={token}"
     return Response({
         "message": "Invite link generated.",
@@ -19149,19 +19149,19 @@ PLAYER_RE = re.compile(
 # LIVE OBS OVERLAY + CAPTURE-CLIENT AUTH (owner 2026-07-01, live-leaderboard spec §2 + §4)
 # ════════════════════════════════════════════════════════════════════════════════════════════
 # Three endpoints power the live-leaderboard overlay + desktop capture client:
-#   • ensure_overlay_token  (POST events/<id>/overlay/token/)  — mint/rotate the public READ key.
-#   • overlay_feed          (GET  events/overlay/feed/)         — PUBLIC design+standings feed the
+#   • ensure_overlay_token  (POST events/<id>/overlay/token/)  - mint/rotate the public READ key.
+#   • overlay_feed          (GET  events/overlay/feed/)         - PUBLIC design+standings feed the
 #                                                                 OBS Browser Source polls.
-#   • ensure_upload_token   (POST events/<id>/upload/token/)    — mint/rotate the revocable WRITE key
+#   • ensure_upload_token   (POST events/<id>/upload/token/)    - mint/rotate the revocable WRITE key
 #                                                                 the capture client uploads with.
 # They reuse this file's helpers (_is_event_admin, effective_event_status, _org_hidden) plus
 # _resolve_event_design + the per-row field_type mapping from views_event_graphic, round_robin's
-# standings aggregators, and afc_organizers _serialize_design — so the overlay needs ONE public call.
+# standings aggregators, and afc_organizers _serialize_design - so the overlay needs ONE public call.
 
 
 def _overlay_bearer_user(request):
     """Resolve the Bearer user for the overlay/upload TOKEN-MINTING endpoints, mirroring the
-    validate_token pattern used across this file. Returns (user, error_response) — exactly one of
+    validate_token pattern used across this file. Returns (user, error_response) - exactly one of
     the two is non-None. Kept tiny + local so both token endpoints gate identically."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
@@ -19186,7 +19186,7 @@ def _overlay_live_key(event_id, stage_id, group_id):
     segment when the stage or group is unset (a blank stage/group = the cumulative-stage / whole-event
     slice, matching how overlay_feed builds it from ?stage=&group=).
 
-    Extracted so the WRITER (live_push) and the READER (overlay_feed) build the key IDENTICALLY — a
+    Extracted so the WRITER (live_push) and the READER (overlay_feed) build the key IDENTICALLY - a
     single source of truth prevents the two sides drifting (the exact bug the spec warns about). Each
     segment is normalised: an int / digit-string passes through, None / "" / anything non-digit -> ""."""
     def _seg(v):
@@ -19199,12 +19199,12 @@ def _overlay_live_key(event_id, stage_id, group_id):
 
 def _resolve_event_upload_token(request):
     """Resolve the revocable EventUploadToken the desktop capture client authenticates WRITEs with
-    (owner 2026-07-01, spec §4). Reads the token from ?token= (query) or the X-Upload-Token header —
-    the SAME two places upload_team_match_result accepts — so both write endpoints look it up
+    (owner 2026-07-01, spec §4). Reads the token from ?token= (query) or the X-Upload-Token header - 
+    the SAME two places upload_team_match_result accepts - so both write endpoints look it up
     identically (single source of truth; the spec's "reuse the same lookup").
 
     Returns (value, token):
-      • value = the raw token string presented, "" when none — lets a caller tell "no token given"
+      • value = the raw token string presented, "" when none - lets a caller tell "no token given"
         (fall back to Bearer, as upload_team_match_result does) apart from "given but invalid" (403).
       • token = the matching non-revoked EventUploadToken row (select_related event + created_by),
         or None when the string matched no active token.
@@ -19225,7 +19225,7 @@ def _resolve_event_upload_token(request):
 # The AFC Capture desktop app used to make the user TYPE event_id/stage_id/group_id. Instead, since the
 # capture KEY (EventUploadToken) is tied to ONE event, this returns that event + its stages/groups (+ a
 # best-guess ACTIVE stage/group) so the app fills them in as name dropdowns. No numeric IDs typed.
-# AUTH: the upload token IS the capability (?token= or X-Upload-Token) — 403 if missing/invalid/revoked.
+# AUTH: the upload token IS the capability (?token= or X-Upload-Token) - 403 if missing/invalid/revoked.
 # CONSUMED BY: afc-capture config window "Fetch from key" (afc-capture/afc_capture/app.py).
 @api_view(["GET"])
 def capture_resolve(request):
@@ -19274,21 +19274,21 @@ def capture_resolve(request):
 #
 # HOW THE CLIENT USES IT (afc-capture/afc_capture/roster.py + app.py CaptureController)
 #   The client fetches this ONCE after the operator sets event/stage/group, holds it, and compares:
-#     • every MatchResult_*.log block (team NAME + player Free Fire UID + IGN) — the STRONG check,
+#     • every MatchResult_*.log block (team NAME + player Free Fire UID + IGN) - the STRONG check,
 #       because UID is an exact identity (watcher.py), and
-#     • every live debugger AddPlayer / OnTeamScoreInited line (player + team NAME only — the debugger
-#       stream carries an in-game entity id, NOT the account UID) — a weaker NAME-only check (tailer.py).
+#     • every live debugger AddPlayer / OnTeamScoreInited line (player + team NAME only - the debugger
+#       stream carries an in-game entity id, NOT the account UID) - a weaker NAME-only check (tailer.py).
 #   A mismatch above a small threshold raises a tray warning. The comparison + warning are ADDITIVE and
 #   NEVER block or drop an upload (the operator may have legitimately mis-set it; data must still flow).
 #
-# AUTH: identical to capture_resolve — the event-scoped upload token IS the capability (?token= query or
+# AUTH: identical to capture_resolve - the event-scoped upload token IS the capability (?token= query or
 #   the X-Upload-Token header). 400 if missing, 403 if invalid/revoked. Read-only (GET); a token minted
 #   for event A can only ever read event A's roster (event scoping enforced by _resolve_event_upload_token).
-# QUERY PARAMS (both optional): ?stage=<stage_id>&group=<group_id> — the operator's current picks. Each is
+# QUERY PARAMS (both optional): ?stage=<stage_id>&group=<group_id> - the operator's current picks. Each is
 #   validated to belong to the token's event; anything foreign is ignored and we fall back to the SAME
 #   "active stage/group" capture_resolve chooses (first 'ongoing' stage, else the first stage; its first
 #   group), so a call with no params still returns a sensible default.
-# EXTENSIBILITY (complaint D, attribution — this endpoint is SHARED): the response is intentionally shaped
+# EXTENSIBILITY (complaint D, attribution - this endpoint is SHARED): the response is intentionally shaped
 #   so D can later ADD existing-match-slot info (e.g. a top-level "matches" list or per-group "match_slots")
 #   WITHOUT breaking F. F reads only teams[].players[].uid/username, teams[].team_name, and maps.
 # CONNECTS TO: EventUploadToken (auth), Stages/StageGroups (target), StageGroupCompetitor/StageCompetitor
@@ -19339,7 +19339,7 @@ def capture_context(request):
     # The capture client (and the mid-series START flow) needs to know WHICH map slots already exist in
     # this group and which are scored, so it can (a) tell the operator "maps 1-2 already recorded, the
     # next capture fills map 3", and (b) build the REPLACE dropdown in the attribution prompt. F's shape
-    # was designed to be extended with exactly this — F reads only teams[]/team_name/uid/username/maps,
+    # was designed to be extended with exactly this - F reads only teams[]/team_name/uid/username/maps,
     # so adding these keys is backwards-compatible. See _capture_group_match_slots.
     match_slots = _capture_group_match_slots(group)
     expected_map_count = _capture_expected_map_count(group)
@@ -19355,7 +19355,7 @@ def capture_context(request):
         "group_id": group.group_id if group else None,
         "group_name": group.group_name if group else None,
         # Maps the set group/stage expects (informational; the client shows them, they are NOT part of
-        # the mismatch threshold — a map swap is legitimate and must not cry wolf).
+        # the mismatch threshold - a map swap is legitimate and must not cry wolf).
         "maps": maps_out,
         "teams": teams_out,
         "team_count": len(teams_out),
@@ -19385,7 +19385,7 @@ def _capture_expected_teams(event, stage, group):
     Returns (teams, source). Solo events carry no team rosters, so teams is [] there (F's check is
     team+UID oriented and the result-upload endpoint is team-only). Members are fetched in ONE query
     (no N+1). Each player: {user_id, username (IGN), uid (Free Fire UID, "" when the member never set
-    one — the client treats a blank uid as name-only)."""
+    one - the client treats a blank uid as name-only)."""
     from collections import defaultdict
 
     # Which tournament_team rows are due here, most-specific source first.
@@ -19534,7 +19534,7 @@ def _overlay_rows_from_standings(standings, max_rows, request):
         if tt.team:
             country_by_tt[tt.tournament_team_id] = tt.team.country or ""
 
-    # Per-row dicts keyed by field_type — the SAME keys the design's placed fields bind to, so the
+    # Per-row dicts keyed by field_type - the SAME keys the design's placed fields bind to, so the
     # FE DesignBoard can render whichever columns the chosen design places (pos/team_name/team_logo/
     # booyah/placement_points/kill_points/total_points/kills/matches/base_total/bonus/penalty).
     rows = []
@@ -19546,7 +19546,7 @@ def _overlay_rows_from_standings(standings, max_rows, request):
             "team_logo": logo_by_tt.get(tt_id),
             # Country flag column (owner 2026-07-04): DesignBoard resolves this to a flag.
             "team_country": country_by_tt.get(tt_id, ""),
-            # Player esport image (owner 2026-07-02): a PLAYER-scoped column — TEAM standings rows
+            # Player esport image (owner 2026-07-02): a PLAYER-scoped column - TEAM standings rows
             # have no single player, so it's None here (blank cell). Solo standings + the versus/H2H
             # feeds populate it with User.esports_pic.
             "esports_image": None,
@@ -19566,7 +19566,7 @@ def _overlay_rows_from_standings(standings, max_rows, request):
             "carry_over_points": r.get("carry_over_points", 0),
             # ── LIVE-ONLY rich stats (owner 2026-07-01, spec §12) ──────────────────────────────────
             # These 8 exist ONLY in the Tier-2 debugger stream (the live_push snapshot); the OFFICIAL
-            # per-round standings do NOT carry them — MatchResult_*.log / round_robin standings are
+            # per-round standings do NOT carry them - MatchResult_*.log / round_robin standings are
             # kills-only (see memory project_freefire_live_capture §2b). We still emit them here,
             # defaulted to 0 (blank for the textual most_used_weapon), so a design column bound to one
             # renders 0/"" rather than "undefined" in official mode. In LIVE mode the pushed snapshot
@@ -19585,28 +19585,28 @@ def _overlay_rows_from_standings(standings, max_rows, request):
 
 def _overlay_seed_and_carry(standings, event, stage, group):
     """Bring the overlay's team standings into AGREEMENT WITH THE PUBLIC LEADERBOARD for a single
-    group / whole-stage slice — the two must never disagree (owner rule: the overlay is "based off
+    group / whole-stage slice - the two must never disagree (owner rule: the overlay is "based off
     what is in the leaderboard"). The raw round_robin standings are built from PLAYED match stats
     only, so they skip the two things the public tournament page (get_event_details -> the OVERALL
     block + _apply_public_carry_over) does. This adds both, in place:
 
-      1. SEED 0-point rows — a team advanced/seeded into this stage or group
+      1. SEED 0-point rows - a team advanced/seeded into this stage or group
          (StageGroupCompetitor) but with no played match yet is absent from the stats aggregation,
          so it was missing from the overlay entirely. Append a 0-row (same keys as a real row) for
-         each, so a FINALS board shows every qualifier BEFORE the first finals game is played — the
+         each, so a FINALS board shows every qualifier BEFORE the first finals game is played - the
          exact moment the owner was looking at an "empty" GRAND FINALS overlay. Mirrors the seeded
          block in get_event_details (~L5108).
-      2. FOLD Point-Rush carry-over — _carry_over_for_stage(stage) banks each qualifier's
+      2. FOLD Point-Rush carry-over - _carry_over_for_stage(stage) banks each qualifier's
          placement bonus from the source RUSH-POINT stage (keyed by tournament_team_id for team
          events). Add it into effective_total (the column _overlay_rows_from_standings maps to
          total_points / base_total) so the carried "rush points" SHOW on the overlay, exactly as
          _apply_public_carry_over folds them into the site leaderboard. Without this the carry never
-         appeared on the overlay although it shows on the site — the disconnect the owner reported.
+         appeared on the overlay although it shows on the site - the disconnect the owner reported.
 
     Re-sorts ONLY when a carry bonus actually landed (mirrors _apply_public_carry_over's `changed`
     guard), on the same tiebreak chain round_robin used, so a plain group with config tie-breakers
     and no Point-Rush source stays byte-identical (seeded 0-rows just append at the end like the
-    public page). Team events only — overlay standings are team-based (solo returns [] upstream).
+    public page). Team events only - overlay standings are team-based (solo returns [] upstream).
     Mutates and returns `standings`. CONNECTS TO: _carry_over_for_stage (the same on-read bonus the
     leaderboard uses) + StageGroupCompetitor (advancement seeding); consumed by
     _overlay_standings_rows -> overlay_feed / _overlay_config_leaderboard_standings."""
@@ -19633,7 +19633,7 @@ def _overlay_seed_and_carry(standings, event, stage, group):
             "effective_total": 0, "last_match_placement": 999,
         })
 
-    # (2) Fold the Point-Rush carry-over banked for `stage` (on-read, never persisted — identical to
+    # (2) Fold the Point-Rush carry-over banked for `stage` (on-read, never persisted - identical to
     # _apply_public_carry_over). Keys are tournament_team_id for team events (see _group_ranked_ids).
     carry = _carry_over_for_stage(stage, event.participant_type)
     changed = False
@@ -19659,7 +19659,7 @@ def _overlay_seed_and_carry(standings, event, stage, group):
 
 def _overlay_standings_rows(event, stage, group, max_rows, request):
     """Overlay standings for a single GROUP or a whole STAGE (the graphic-export slices): mirrors the
-    export EXACTLY so the overlay numbers match the site — round_robin.group_standings(group) when a
+    export EXACTLY so the overlay numbers match the site - round_robin.group_standings(group) when a
     group is selected, else cumulative_standings(stage). [] when neither is given. Capped at max_rows.
 
     Then reconciled with the PUBLIC LEADERBOARD via _overlay_seed_and_carry (owner: overlay == what
@@ -19733,7 +19733,7 @@ def _expand_overlay_combine(event, group_ids, stage_ids):
 def _parse_overlay_combine(request, event):
     """Read a per-overlay COMBINE selection off the overlay_feed query (?groups=<csv|repeated>&
     stages=<csv|repeated>) and resolve it to a validated group_id list, or None when NO combine params
-    were sent — so single-group/stage and follow-broadcast callers stay on their existing paths
+    were sent - so single-group/stage and follow-broadcast callers stay on their existing paths
     untouched. An all-invalid selection also yields None (graceful fall-through, never an empty board)."""
     def _multi(name):
         out = []
@@ -19795,7 +19795,7 @@ def _overlay_config_leaderboard_standings(event, config, request):
         return _overlay_cumulative_rows(event, gids, max_rows, request)
 
     # single scope (default, and every legacy config row that has no `scope`): the chosen stage +
-    # optional group — the original per-overlay behaviour, preserved for backward compatibility.
+    # optional group - the original per-overlay behaviour, preserved for backward compatibility.
     stage = None
     if str(config.get("stage_id") or "").isdigit():
         stage = Stages.objects.filter(stage_id=int(config["stage_id"]), event=event).first()
@@ -19809,10 +19809,10 @@ def _overlay_config_leaderboard_standings(event, config, request):
 
 @api_view(["POST"])
 def ensure_overlay_token(request, event_id):
-    """POST events/<event_id>/overlay/token/  — ensure (create-if-null) + return the event's public
+    """POST events/<event_id>/overlay/token/  - ensure (create-if-null) + return the event's public
     overlay READ key; ?regenerate=1 rotates it. (owner 2026-07-01, live-leaderboard spec §2.1.)
 
-    Auth: Bearer. Gate: _can_manage_overlay (AFC event admin — super-admin included — OR an organizer
+    Auth: Bearer. Gate: _can_manage_overlay (AFC event admin - super-admin included - OR an organizer
     who can_edit_events on the event's org). Response: {"overlay_token": "<token>"}.
     CONNECTS TO: Event.overlay_token (models.py) + the public overlay_feed reader; consumed by the FE
     "Copy OBS link" dialog on the event leaderboard page (organizer + admin) to build the Browser
@@ -19834,20 +19834,20 @@ def ensure_overlay_token(request, event_id):
 
 @api_view(["GET"])
 def overlay_feed(request):
-    """GET events/overlay/feed/?token=&stage=&group=&design=&size=&live=  — PUBLIC (no auth) data
+    """GET events/overlay/feed/?token=&stage=&group=&design=&size=&live=  - PUBLIC (no auth) data
     source for the OBS live-leaderboard overlay (owner 2026-07-01, live-leaderboard spec §2.1).
 
     Resolves the Event by its overlay_token (404 if none / the owning org is hidden), then returns the
     chosen DESIGN (embedded via _serialize_design so the overlay needs only this one call) + the live
     STANDINGS. The token authorizes the organizer's own broadcast, so the feed intentionally bypasses
-    results_published (results_hidden is always false) — a suspended-org event still 404s.
+    results_published (results_hidden is always false) - a suspended-org event still 404s.
 
-    Params: token (required); stage / group (which standings slice, mirrors the graphic export —
+    Params: token (required); stage / group (which standings slice, mirrors the graphic export - 
     group_standings if a group is given, else cumulative_standings for the stage); groups / stages
-    (owner 2026-07-05, complaint C — a per-overlay COMBINE: comma-separated or repeated group ids and/or
+    (owner 2026-07-05, complaint C - a per-overlay COMBINE: comma-separated or repeated group ids and/or
     whole-stage ids, summed into ONE cumulative board via _overlay_cumulative_rows; supersedes
     stage/group + broadcast-follow when present); design (which OrgLeaderboardDesign to render, else the
-    library default); size (youtube|instagram, default youtube); live (0/1 — when 1 and a Redis snapshot
+    library default); size (youtube|instagram, default youtube); live (0/1 - when 1 and a Redis snapshot
     exists at overlay:live:<event>:<stage>:<group>, that provisional in-round snapshot is returned with
     live=true).
 
@@ -19859,7 +19859,7 @@ def overlay_feed(request):
         return Response({"message": "token is required."}, status=400)
 
     # Resolve the event by its public overlay key. A hidden (suspended/deleted) org's event 404s so a
-    # leaked token can't surface it — same visibility rule as every public event surface (_org_hidden).
+    # leaked token can't surface it - same visibility rule as every public event surface (_org_hidden).
     event = Event.objects.select_related("organization").filter(overlay_token=token).first()
     if not event or _org_hidden(event):
         return Response({"message": "Overlay not found."}, status=404)
@@ -19886,7 +19886,7 @@ def overlay_feed(request):
     # ── Broadcast follow (owner 2026-07-01) ──────────────────────────────────────────────────────
     # A "follow broadcast" overlay link OMITS ?stage=/?group=. With neither pinned, use the event's
     # saved BROADCAST selection so an organizer can switch what the overlay shows from the site
-    # (BroadcastControl -> events/<id>/broadcast/set/) WITHOUT touching the OBS link — the overlay
+    # (BroadcastControl -> events/<id>/broadcast/set/) WITHOUT touching the OBS link - the overlay
     # self-polls, so it follows within one poll. Explicit ?stage=/?group= above OVERRIDE this.
     #   group  -> that single group      | stage  -> that whole stage (cumulative_standings)
     #   event  -> cumulative across ALL groups of ALL stages | custom -> across broadcast_group_ids.
@@ -19896,7 +19896,7 @@ def overlay_feed(request):
     # ── Per-overlay COMBINE (owner 2026-07-05, complaint C) ───────────────────────────────────────
     # A studio leaderboard overlay whose config has {scope:"combine", group_ids, stage_ids} rides the
     # stable link's inner URL as ?groups=<csv>&stages=<csv>. When present, aggregate EXACTLY those
-    # groups (stages already expanded to their groups by the FE-independent _expand_overlay_combine) —
+    # groups (stages already expanded to their groups by the FE-independent _expand_overlay_combine) - 
     # this per-link combination supersedes any ?stage=/?group= and the event-wide broadcast follow, and
     # reuses the same cumulative path as the broadcast 'custom' scope. Absent params => untouched below.
     combine_group_ids = _parse_overlay_combine(request, event)
@@ -20006,8 +20006,8 @@ def overlay_feed(request):
 
 
 # ── Broadcast control (owner 2026-07-01) ──────────────────────────────────────────────────────────
-# The organizer/admin picks WHICH standings the live overlay shows — a single group, a whole stage
-# cumulative, a whole event cumulative, or a custom combination of groups — from the WEBSITE, and a
+# The organizer/admin picks WHICH standings the live overlay shows - a single group, a whole stage
+# cumulative, a whole event cumulative, or a custom combination of groups - from the WEBSITE, and a
 # "follow broadcast" overlay link (no ?stage=/?group=) follows it live (overlay_feed reads the saved
 # Event.broadcast_* each poll). CONSUMED BY: the FE BroadcastControl on the event leaderboard pages.
 def _broadcast_gate(request, event_id):
@@ -20048,7 +20048,7 @@ def _event_stage_structure(event):
 
 @api_view(["GET"])
 def get_broadcast(request, event_id):
-    """GET events/<event_id>/broadcast/ — the event's current broadcast selection + its stage/group
+    """GET events/<event_id>/broadcast/ - the event's current broadcast selection + its stage/group
     structure, so the FE BroadcastControl can render the picker + preselect the live scope."""
     event, err = _broadcast_gate(request, event_id)
     if err:
@@ -20064,7 +20064,7 @@ def get_broadcast(request, event_id):
 
 @api_view(["POST"])
 def set_broadcast(request, event_id):
-    """POST events/<event_id>/broadcast/set/  body {scope, stage_id?, group_id?, group_ids?} — save
+    """POST events/<event_id>/broadcast/set/  body {scope, stage_id?, group_id?, group_ids?} - save
     which standings the live overlay follows. Validates that any ids belong to THIS event, so a bad id
     can't point the overlay at another event's data. The overlay picks the change up on its next poll."""
     event, err = _broadcast_gate(request, event_id)
@@ -20109,7 +20109,7 @@ def set_broadcast(request, event_id):
 
 @api_view(["POST", "PUT"])
 def live_push(request):
-    """POST|PUT events/live/push/?token=<upload-token>  — the desktop capture client's Tier-2 (true
+    """POST|PUT events/live/push/?token=<upload-token>  - the desktop capture client's Tier-2 (true
     in-round LIVE) channel (owner 2026-07-01, live-leaderboard spec §5).
 
     Accepts BOTH POST and PUT: the capture client's LivePusher (afc-capture/uploader.py) sends PUT
@@ -20117,7 +20117,7 @@ def live_push(request):
     upload endpoints + manual/curl callers. Both take the identical body + do the identical cache write.
 
     The observer-PC capture client tails the Free Fire debugger log, reconstructs PROVISIONAL per-team
-    standings (with the rich live stats the debugger stream exposes — kills/deaths/knockdowns/headshots/
+    standings (with the rich live stats the debugger stream exposes - kills/deaths/knockdowns/headshots/
     most_used_weapon/survival_time/revives_received/gloowall_used/medkit_used; see memory
     project_freefire_live_capture §2b), and PUSHes a snapshot here every ~2s / on change. We stash the
     standings list in the Redis CACHE under EXACTLY overlay:live:<event>:<stage>:<group> (the SAME key
@@ -20125,7 +20125,7 @@ def live_push(request):
     stale snapshot self-clears the moment the client stops pushing (round end / app closed). overlay_feed
     then serves it with live=true until it expires or the authoritative Tier-1 MatchResult upload lands.
 
-    Auth: an EventUploadToken via ?token= or the X-Upload-Token header — the SAME revocable WRITE key the
+    Auth: an EventUploadToken via ?token= or the X-Upload-Token header - the SAME revocable WRITE key the
     capture client uploads MatchResult files with (NOT Bearer; the client can't do an interactive login),
     resolved by the shared _resolve_event_upload_token. 403 when the token is missing / invalid / revoked,
     or when it was minted for a DIFFERENT event than the pushed event_id (a token is scoped to ONE event,
@@ -20142,10 +20142,10 @@ def live_push(request):
     Returns 200 {"ok": true}.
     CONNECTS TO: EventUploadToken + _resolve_event_upload_token (auth), _overlay_live_key (shared key),
     overlay_feed (the reader). CONSUMED BY: the afc-capture desktop client's debugger tailer (Tier 2)."""
-    # ── AUTH: event-scoped upload token ONLY (no Bearer path — this is a machine client) ──
+    # ── AUTH: event-scoped upload token ONLY (no Bearer path - this is a machine client) ──
     token_value, upload_token = _resolve_event_upload_token(request)
     if not token_value or not upload_token:
-        # Covers missing (no ?token=/header), unknown, and revoked keys — all a flat 403.
+        # Covers missing (no ?token=/header), unknown, and revoked keys - all a flat 403.
         return Response({"message": "Invalid or revoked upload token."}, status=403)
 
     # event_id is required and must be an int so it can be compared to the token's scope + used in the key.
@@ -20169,7 +20169,7 @@ def live_push(request):
     # Stash under the EXACT key overlay_feed reads. Short 15s TTL bounds staleness: when the client stops
     # pushing (round ends / app closed) the snapshot evaporates and the feed falls back to official.
     # ── Normalize the live snapshot to the OFFICIAL scoring (owner 2026-07-05, live-overlay bug) ──
-    # The capture client pushed rows where KP/PP/BOOYAH were 0 (only TP populated) — a thin/stale client
+    # The capture client pushed rows where KP/PP/BOOYAH were 0 (only TP populated) - a thin/stale client
     # sends a raw score without the kill_points/placement_points split, so a LIVE overlay rendered
     # KP=PP=BOOYAH=0 while the official (non-live) board is fine. Recompute the point columns HERE from
     # the SAME per-group Leaderboard scoring upload_team_match_result uses (Leaderboard.kill_point +
@@ -20246,10 +20246,10 @@ def live_push(request):
 
 @api_view(["POST"])
 def ensure_upload_token(request, event_id):
-    """POST events/<event_id>/upload/token/  — create-or-return a non-revoked EventUploadToken for the
+    """POST events/<event_id>/upload/token/  - create-or-return a non-revoked EventUploadToken for the
     event; ?regenerate=1 revokes every existing token + issues a fresh one (owner 2026-07-01, spec §4).
 
-    Auth: Bearer. Gate: _can_manage_overlay (same as the overlay token — AFC event admin OR an
+    Auth: Bearer. Gate: _can_manage_overlay (same as the overlay token - AFC event admin OR an
     organizer who can_edit_events). Optional body `label` (a human note like "Observer PC 1").
     Response: {"upload_token": "<token>"}.
     CONNECTS TO: EventUploadToken (models.py) + upload_team_match_result's token-auth branch; consumed
@@ -20294,7 +20294,7 @@ def upload_team_match_result(request):
     purely by User.uid (string-exact). Matched kills are written to
     TournamentPlayerMatchStats and the team total to TournamentTeamMatchStats. A UID in the
     file that is NOT on the block's site roster is FLAGGED (never silently dropped) so the
-    admin/organizer can reconcile it — this is the fix for "kills not attributed to the
+    admin/organizer can reconcile it - this is the fix for "kills not attributed to the
     appropriate person": the old code matched by UID correctly but `continue`d (dropped) on
     any miss, so subs / typo'd UIDs / players whose UID is unset just vanished with no notice.
 
@@ -20309,9 +20309,9 @@ def upload_team_match_result(request):
                                    duplicate_in_file | no_team_stats |
                                    name_matched_uid_changed | name_matched_other_team
                         NAME-MATCH (owner 2026-06-29): a non-UID player whose in-game NAME matches a
-                          roster member becomes a PENDING flag (count_kills=False) — name_matched_
+                          roster member becomes a PENDING flag (count_kills=False) - name_matched_
                           uid_changed (this team, scope=same_team) or name_matched_other_team
-                          (another team, scope=other_team) — carrying matched_user_id/matched_username
+                          (another team, scope=other_team) - carrying matched_user_id/matched_username
                           and a flag_id the FE approves inline via PATCH events/flagged-kills/flag/.
                           belongs_to_other_team is now PENDING too (was auto-counted). Approving a
                           pending flag (set_match_kill_flag count_kills=true) adds its kills to the
@@ -20323,8 +20323,8 @@ def upload_team_match_result(request):
 
     # -------- AUTH --------
     # Two accepted auth modes (owner 2026-07-01, live-capture spec §4):
-    #   (1) Bearer token — the interactive admin/organizer web upload (the original flow, unchanged).
-    #   (2) Event UPLOAD TOKEN — the desktop capture client on the observer PC can't do an interactive
+    #   (1) Bearer token - the interactive admin/organizer web upload (the original flow, unchanged).
+    #   (2) Event UPLOAD TOKEN - the desktop capture client on the observer PC can't do an interactive
     #       login, so it presents a revocable EventUploadToken via ?token= (query) or the X-Upload-Token
     #       header. A valid, non-revoked token authorizes AS its granting user (created_by) but ONLY to
     #       upload a result to ITS OWN event (verified once the match's event is resolved below); it
@@ -20335,7 +20335,7 @@ def upload_team_match_result(request):
     if upload_token_value:
         if not upload_token:
             return Response({"message": "Invalid or revoked upload token."}, status=403)
-        # Act as the granting user; may be None if that user was deleted (SET_NULL) — harmless because
+        # Act as the granting user; may be None if that user was deleted (SET_NULL) - harmless because
         # the token path skips every `admin`-based gate and `admin` is not read after the auth block.
         admin = upload_token.created_by
     else:
@@ -20347,20 +20347,20 @@ def upload_team_match_result(request):
         if not admin:
             return Response({"message": "Unauthorized."}, status=403)
 
-    # NOTE: permission is finalised below, after the owning event is resolved — org members
+    # NOTE: permission is finalised below, after the owning event is resolved - org members
     # with can_upload_results may upload for THEIR org's events (Bearer path); an upload token is
     # instead verified to belong to that exact event.
 
     # ── ATTRIBUTION CONTRACT (owner 2026-07-05, complaint D) ─────────────────────────────────────────
     # The desktop AFC Capture client posts each round with a stage + group but NO match_id (it only knows
     # the Free Fire match id, not the AFC Match slot). Historically the backend filled the next UNSCORED
-    # slot and, once every slot was scored, SILENTLY created a brand-new slot — so an accidental extra
+    # slot and, once every slot was scored, SILENTLY created a brand-new slot - so an accidental extra
     # game (a re-run, or capture left running on the wrong event) quietly became a phantom "map". That
     # silent auto-create is the complaint-D bug and is now GATED. The optional `attribution` form field
-    # lets the client say what to do with an extra game. The gate must NEVER drop a real result — worst
+    # lets the client say what to do with an extra game. The gate must NEVER drop a real result - worst
     # case it is PARKED to the pending bucket for a human to resolve on the website:
     #   • (absent)        -> fill the next unscored slot (UNCHANGED normal mid-series path). If EVERY slot
-    #                        is already scored, DO NOT create one — return 409 {needs_attribution:true,...}
+    #                        is already scored, DO NOT create one - return 409 {needs_attribution:true,...}
     #                        so the operator is asked to decide (desktop prompt).
     #   • "new"           -> create AND score a brand-new extra map slot (the ONLY path that auto-makes a
     #                        slot now).
@@ -20388,14 +20388,14 @@ def upload_team_match_result(request):
             return Response({"message": "Group not found."}, status=404)
         _event = _grp.stage.event
         # Event scoping (mirrors the match-path guard below): a capture token minted for event A can
-        # never write into event B via a group id — enforced here too so pending/new/409 all respect it.
+        # never write into event B via a group id - enforced here too so pending/new/409 all respect it.
         if upload_token is not None and upload_token.event_id != _event.event_id:
             return Response({"message": "This upload token is not valid for this event."}, status=403)
 
         # Bearer manager gate (auth fix 2026-07-06): the token path is event-scoped just above, but a
         # BEARER user reaching this no-match_id branch (pending / new / next-slot fill / 409) writes
         # PendingCaptureUpload or a fresh Match BELOW, BEFORE the manager gate that the match_id path
-        # applies later — so any authenticated non-manager could write into an event they don't run.
+        # applies later - so any authenticated non-manager could write into an event they don't run.
         # Gate the Bearer path here (native org=None events stay admin-only), mirroring the match path.
         if upload_token is None and not (_is_event_admin(admin) or org_can_event(admin, "can_upload_results", _event)):
             return Response({"message": "You do not have permission to manage results for this event."}, status=403)
@@ -20449,7 +20449,7 @@ def upload_team_match_result(request):
     # DRY-RUN preview (owner 2026-06-22, multi-map .log upload): when truthy, do the FULL parse +
     # roster attribution + flag derivation and build the SAME response summary, but roll the whole
     # write transaction back at the end so NOTHING persists. This powers the per-map "Review before
-    # apply" step — the FE calls this per file with dry_run=true to show matched / unknown / flagged
+    # apply" step - the FE calls this per file with dry_run=true to show matched / unknown / flagged
     # players, then re-calls the SAME endpoint WITHOUT dry_run to actually save. Real path unchanged.
     dry_run = _as_bool(request.data.get("dry_run"))
 
@@ -20539,17 +20539,17 @@ def upload_team_match_result(request):
 
     # ── ID: 0 (or blank) = the game's "UID unknown" SENTINEL, not a real identity (owner 2026-07-11) ──
     # Free Fire exports ID: 0 for a player whose UID it could not resolve (seen when a lobby is exported
-    # by an observer/replay client — e.g. DYNASTY CUP GRAND FINALS "RUSH POINT" map 6, where most players
+    # by an observer/replay client - e.g. DYNASTY CUP GRAND FINALS "RUSH POINT" map 6, where most players
     # came through as ID: 0). Everything downstream keys a player by their UID STRING: the per-block and
     # per-match de-dupe (seen_block / seen_uids), the flag identity (MatchKillFlag.unique_together(match,
     # tournament_team, uid) + the (tt, uid) prior-approval snapshot + flags_by_uid). With every ID: 0
     # player sharing the single key "0", that de-dupe kept only the FIRST such player in each team block
-    # and silently dropped the rest BEFORE they could become a counted flag — so their kills vanished and
+    # and silently dropped the rest BEFORE they could become a counted flag - so their kills vanished and
     # the "count flagged kills" toggle could not recover them (FROZEN EMPIRE 9→5, FORSE ESP 6→2, ALPHA
     # WOLVES 5→1, SPACE X 3→1). FIX: give each sentinel-UID player a STABLE, per-player synthetic key so
     # the existing UID-keyed logic treats them as the distinct people they are. The key is name-derived
-    # (ascii-folded, mirroring _norm_pname) so it is IDENTICAL across a re-upload — keeping the §1i
-    # approval-restore stable — with a positional fallback for all-emoji names and a per-block suffix so
+    # (ascii-folded, mirroring _norm_pname) so it is IDENTICAL across a re-upload - keeping the §1i
+    # approval-restore stable - with a positional fallback for all-emoji names and a per-block suffix so
     # two same-name sentinels in one block don't recollide. Real UIDs are untouched, so a normal file's
     # attribution is byte-for-byte unchanged. Capped at 64 chars to fit MatchKillFlag.uid.
     import unicodedata as _ud
@@ -20574,7 +20574,7 @@ def upload_team_match_result(request):
     # The file carries each player's uid + kills; we resolve uid -> TournamentTeamMember for
     # THIS event only. A uid in the file that is NOT on the event roster is "unknown" (a sub
     # who played in-game but was never registered, a typo, or a player on another team) and is
-    # FLAGGED for the admin/organizer below — never silently dropped (the old bug).
+    # FLAGGED for the admin/organizer below - never silently dropped (the old bug).
     from collections import defaultdict
     from .models import MatchKillFlag  # ringer flags persisted below (owner 2026-06-16)
     from .models import UnmatchedTeamBlock  # unmatched team blocks persisted below (owner 2026-06-30)
@@ -20591,7 +20591,7 @@ def upload_team_match_result(request):
     uid_to_member = {m.user.uid: m for m in members}
 
     # Full event roster (incl. members who never set a UID) so we can tell an "unknown UID"
-    # apart from a "registered player who has no UID set" — the latter can never UID-match and
+    # apart from a "registered player who has no UID set" - the latter can never UID-match and
     # is the usual reason a known player shows 0 kills (surfaced separately as roster_no_uid).
     roster_by_team = defaultdict(list)  # tournament_team_id -> [{user_id, username, uid}]
     for m in TournamentTeamMember.objects.select_related("tournament_team", "user").filter(
@@ -20616,7 +20616,7 @@ def upload_team_match_result(request):
         return re.sub(r"[^a-z0-9]", "", (n or "").lower())
     # Singular/plural fold (owner 2026-06-30): drop a single trailing 's' so "the saint" still resolves
     # to the registered "The saints" (and vice versa). Used ONLY as a fallback when the exact normalized
-    # name misses, and ONLY when it yields a UNIQUE team — so it never silently merges two distinct teams.
+    # name misses, and ONLY when it yields a UNIQUE team - so it never silently merges two distinct teams.
     def _sing_tname(s):
         return s[:-1] if s.endswith("s") else s
     name_to_tt = {}
@@ -20627,7 +20627,7 @@ def upload_team_match_result(request):
     # When a file player does NOT UID-match a roster member, fall back to matching by in-game NAME so
     # a player whose Free Fire UID changed (or who never set it) is still recognised. Every name match
     # is created as a PENDING MatchKillFlag (count_kills=False) and only joins the team total once an
-    # admin/organizer approves it (set_match_kill_flag) — so a missed/over-eager match degrades safely
+    # admin/organizer approves it (set_match_kill_flag) - so a missed/over-eager match degrades safely
     # to a visible, uncounted flag. _norm_pname mirrors _norm_tname but ASCII-folds first so
     # "龙 | ProGamer" and "[XTR] Pro.Gamer" both normalise to a bare a-z0-9 key.
     def _norm_pname(n):
@@ -20636,7 +20636,7 @@ def upload_team_match_result(request):
         return re.sub(r"[^a-z0-9]", "", s)
 
     def _clan_tail(raw):
-        # Segment AFTER the last clan separator (| ｜ ] } ) : .) — "[XTR] ProGamer" -> "ProGamer".
+        # Segment AFTER the last clan separator (| ｜ ] } ) : .) - "[XTR] ProGamer" -> "ProGamer".
         # Used only by the two-pass fallback below when the full normalized name found nothing.
         parts = re.split(r"[|｜\]\})\:\.]", raw or "")
         return parts[-1] if parts else (raw or "")
@@ -20689,11 +20689,11 @@ def upload_team_match_result(request):
             tt_by_id[_tt.tournament_team_id] = _tt
 
     def _resolve_team_by_player_names(players, claimed):
-        """Player-name PLURALITY team resolution (owner 2026-07-11) — the fallback used when a block
+        """Player-name PLURALITY team resolution (owner 2026-07-11) - the fallback used when a block
         matches NO registered team by UID (all ID:0) or by team name (abbreviated / off, e.g. the file's
         "BERSERK GEN" vs registered "BERSERK GENERATION"). Count, per registered team, how many of the
         block's players' NAMES are on that team's roster (ascii-folded + clan-tag-stripped, via
-        global_name_idx), then adopt the team with a CLEAR plurality — the whole lineup names the team, so
+        global_name_idx), then adopt the team with a CLEAR plurality - the whole lineup names the team, so
         a single ambiguous / borrowed name is outvoted by its teammates (owner: "compare with teammate
         names"). Guards against a coincidental grab: needs >=2 matched players, at least half the block, a
         strict winner over the runner-up, and an UNCLAIMED team (per-match uniqueness). A player whose name
@@ -20807,7 +20807,7 @@ def upload_team_match_result(request):
             players = team_data["players"]
 
             # Site team resolved by the plurality + per-match-uniqueness pre-pass above
-            # (bug fix 2026-06-29) — no longer "first rostered UID wins", which double-counted a
+            # (bug fix 2026-06-29) - no longer "first rostered UID wins", which double-counted a
             # team whose player was fielded in another block's lineup.
             team_obj = team_data.get("_team_obj")
 
@@ -20830,7 +20830,7 @@ def upload_team_match_result(request):
                     ]
                 # TEAM NAME-MATCH ADOPTION (requirement 1, owner 2026-06-29): adopt the team by NAME so
                 # it is scored (placement points) instead of being skipped entirely. Adopt ONLY a
-                # UNIQUE (len==1) name match that no UID block already claimed this match — preserving
+                # UNIQUE (len==1) name match that no UID block already claimed this match - preserving
                 # the per-match unique_together(match, tournament_team) and not stealing a team a real
                 # UID block already owns. Its players still flow through the per-player classification
                 # below, so their kills stay gated behind the pending flags (0 until approved).
@@ -20871,7 +20871,7 @@ def upload_team_match_result(request):
                         })
                     else:
                         # PLAYER-NAME PLURALITY (owner 2026-07-11): before giving up, identify the team
-                        # from its PLAYERS' NAMES — count how many of the block's players sit on each
+                        # from its PLAYERS' NAMES - count how many of the block's players sit on each
                         # registered roster and adopt the clear-plurality team. Resolves an abbreviated /
                         # off in-game team name whose UIDs are all ID:0, e.g. "BERSERK GEN" -> registered
                         # "BERSERK GENERATION": all 4 names match, so the lineup itself names the team. The
@@ -20922,7 +20922,7 @@ def upload_team_match_result(request):
                                 )
                             continue
 
-            # Classify this block into ROSTERED players (count normally) vs FLAGGED ringers — a UID
+            # Classify this block into ROSTERED players (count normally) vs FLAGGED ringers - a UID
             # that played for this team but is NOT on its site roster (not_on_roster) or is
             # registered on a DIFFERENT team (belongs_to_other_team). The team's stored kills =
             # rostered kills + the flagged kills that currently COUNT (owner 2026-06-16). A fresh
@@ -21238,8 +21238,8 @@ def upload_team_match_result(request):
         if flag_rows:
             MatchKillFlag.objects.bulk_create(flag_rows, ignore_conflicts=True)
 
-        # §1h — inject flag_id onto every response row (skip on dry_run, where no row persists). MySQL
-        # leaves PKs null on bulk_create, so re-fetch and map by (team, uid) — the same pattern used
+        # §1h - inject flag_id onto every response row (skip on dry_run, where no row persists). MySQL
+        # leaves PKs null on bulk_create, so re-fetch and map by (team, uid) - the same pattern used
         # for ts_map above. Lets the review panel approve a pending row inline via set_match_kill_flag.
         if not dry_run:
             fid = {(fl.tournament_team_id, fl.uid): fl.id
@@ -21247,7 +21247,7 @@ def upload_team_match_result(request):
             for row in unknown_players:
                 row["flag_id"] = fid.get((row.get("tournament_team_id"), row.get("uid")))
 
-        # §1i — RESTORE admin approvals across a re-upload. `prior` (snapshotted before the idempotent
+        # §1i - RESTORE admin approvals across a re-upload. `prior` (snapshotted before the idempotent
         # clear) holds each (team, uid) -> count_kills the admin had set; re-apply it to the freshly
         # re-derived flag so the re-upload does not silently discard the decision. Skipped on dry_run.
         if not dry_run and prior:
@@ -21353,7 +21353,7 @@ def upload_team_match_result(request):
     # ── MAP-WINNER SURFACE (owner 2026-07-06 booyah bug) ─────────────────────────────────────────
     # A .log upload can silently DROP the map winner: the 1st-place block fails UID/name matching, is
     # parked to UnmatchedTeamBlock (missing_teams / roster_mismatch), and NO placement==1 row is
-    # written — so the map contributes 0 booyahs and the standings undercount (the DYNASTY map-3005
+    # written - so the map contributes 0 booyahs and the standings undercount (the DYNASTY map-3005
     # case). Unlike manual entry (which now HARD-BLOCKS a winner-less map) this path must NOT block: a
     # guest/unregistered team legitimately winning a scrim map means no registered booyah. So we WARN.
     # missing_winner tells the FE (FileUploadStep.tsx) to show a "map winner not attributed" banner
@@ -21412,7 +21412,7 @@ def upload_team_match_result(request):
 def notify_watchlist_on_register(event, *, team=None, player=None):
     """WATCHLIST soft heads-up (owner 2026-06-21): if a team being registered/added (or any player on
     its roster), or a solo player, is on the ACTIVE watchlist, notify the event's RUNNERS (the event
-    creator + the owning org's owners) so they're aware a watched entity entered. Advisory ONLY — it
+    creator + the owning org's owners) so they're aware a watched entity entered. Advisory ONLY - it
     NEVER blocks. Best-effort: any failure is swallowed so it can never break registration. Reused by
     add_teams_to_event now; drop the same call into register_for_event's success paths to cover public/
     organizer registration. Notification carries an event deep link (target_type=event)."""
@@ -21579,7 +21579,7 @@ def add_teams_to_event(request):
     seed_result = autoseed_entry_stage(event)
 
     # WATCHLIST soft-warning (owner 2026-06-21): if any added team (or a player on it) is on the
-    # active watchlist, give the event's runners a heads-up. Advisory only — the add already happened.
+    # active watchlist, give the event's runners a heads-up. Advisory only - the add already happened.
     for _team in teams:
         notify_watchlist_on_register(event, team=_team)
 
@@ -21954,7 +21954,7 @@ def edit_match_scoring_config(request):
         return Response({"message": "Unauthorized."}, status=403)
 
     # NOTE: permission is finalised below, once the owning event is resolved via
-    # match_id -> match.group.stage.event — org members with can_upload_results may edit a
+    # match_id -> match.group.stage.event - org members with can_upload_results may edit a
     # match's scoring config for THEIR org's events.
 
     match_id = request.data.get("match_id")
@@ -22268,7 +22268,7 @@ def set_roster_edit_window(request):
 
     Auth: AFC event admins, OR organizers holding can_manage_registrations on the event's owning org
     (the same manager gate edit_roster / disqualify_team use). Validation: `until` must be in the
-    FUTURE and no later than the event's end_date (end of that day) — the window can never outlive
+    FUTURE and no later than the event's end_date (end of that day) - the window can never outlive
     the event. The window AUTO-CLOSES purely by time (Event.roster_edit_open compares now <= until),
     so no scheduled job is needed.
 
@@ -22312,7 +22312,7 @@ def set_roster_edit_window(request):
         until = timezone.make_aware(until, timezone.get_current_timezone())
     if until <= timezone.now():
         return Response({"message": "The roster-edit window must close at a time in the future."}, status=400)
-    # Cap at the event end (end_date treated as end of that day) — the window can't outlive the event.
+    # Cap at the event end (end_date treated as end of that day) - the window can't outlive the event.
     end_of_event = timezone.make_aware(_dt.combine(event.end_date, _time.max), timezone.get_current_timezone())
     if until > end_of_event:
         return Response({"message": "The roster-edit window can't go past the event's end date."}, status=400)
@@ -22688,7 +22688,7 @@ def edit_roster(request):
     is_manager = _is_event_admin(user) or org_can_event(user, "can_manage_registrations", event)
 
     # ---------------- REGISTRATION WINDOW ----------------
-    # Managers may edit after close (staff correction); a normal captain/owner cannot — UNLESS an
+    # Managers may edit after close (staff correction); a normal captain/owner cannot - UNLESS an
     # organizer/admin has opened a roster-edit window (owner 2026-06-15). That window is a controlled
     # ALLOW-path that lets captains self-edit past registration close until it AUTO-CLOSES at
     # event.roster_edit_until (capped at the event end; see set_roster_edit_window). The match-start
@@ -23386,7 +23386,7 @@ def upload_match_result_image(request):
         return Response({"message": "Invalid or expired session token."}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved via
-    # match_id -> match.group.stage.event — org members with can_upload_results may run OCR
+    # match_id -> match.group.stage.event - org members with can_upload_results may run OCR
     # result uploads for THEIR org's events.
 
     match_id = request.data.get("match_id")
@@ -23694,7 +23694,7 @@ def delete_match_result_image(request):
         return Response({"message": "Invalid or expired session token."}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved via the image's
-    # match (image -> match -> group.stage.event) — org members with can_upload_results may
+    # match (image -> match -> group.stage.event) - org members with can_upload_results may
     # delete result images for THEIR org's events.
 
     image_id = request.data.get("image_id")
@@ -24027,7 +24027,7 @@ def reopen_event(request):
     completed (manually, by results auto-complete, or by the date sweep).
 
     Auth gate (admins AND orgs, per owner): an AFC event admin (_is_event_admin) OR an organizer
-    holding can_edit_events on the owning org (org_can_event) — the SAME gate as edit_event, so an
+    holding can_edit_events on the owning org (org_can_event) - the SAME gate as edit_event, so an
     organizer can reopen THEIR own event. Unlike complete_event/cancel_event (admin-only), this is
     intentionally org-capable. Native (org=None) events stay admin-only via org_can_event.
 
@@ -24186,8 +24186,8 @@ def _recompute_team_kills_for_event(event):
     """Rebuild every team-match total in `event` from ROSTERED player kills + the flagged kills that
     currently COUNT (MatchKillFlag.effective_count = per-flag override else event default). Saves
     kills + kill_points + total_points back on each TournamentTeamMatchStats and returns the number
-    updated. Uses the SAME formula as upload/manual entry — placement + kills + assist + damage points
-    (read from each match's own scoring_settings) + bonus - penalty — so a flag toggle / per-flag
+    updated. Uses the SAME formula as upload/manual entry - placement + kills + assist + damage points
+    (read from each match's own scoring_settings) + bonus - penalty - so a flag toggle / per-flag
     override recount never silently DROPS assist or damage points (bug #15, 2026-07-06; previously this
     path hardcoded assist/damage to 0 and disagreed with the stored totals). Called after the toggle or
     a per-flag override changes."""
@@ -24292,7 +24292,7 @@ def _as_bool_nullable(v, default=None):
     `_as_bool`, and the module-level redefinition silently shadowed the first, so the always-False
     toggles (waitlist, F3 registration gates) were actually getting None back for omitted fields and
     risked an IntegrityError into their NOT NULL BooleanField columns. Only the flagged-kill per-player
-    OVERRIDE wants the nullable behaviour — it now calls this explicitly."""
+    OVERRIDE wants the nullable behaviour - it now calls this explicitly."""
     if isinstance(v, bool):
         return v
     if v in (None, "null", ""):
@@ -24302,7 +24302,7 @@ def _as_bool_nullable(v, default=None):
 
 @api_view(["GET"])
 def get_event_flagged_kills(request):
-    """GET events/flagged-kills/?event_id=[&stage_ids=..&group_ids=..] — the event-wide
+    """GET events/flagged-kills/?event_id=[&stage_ids=..&group_ids=..] - the event-wide
     count_flagged_kills default + flagged ringers, OPTIONALLY scoped to specific stages/groups.
 
     SCOPING (owner 2026-07-10 "flagged players should only show for the stage/group they were flagged
@@ -24315,7 +24315,7 @@ def get_event_flagged_kills(request):
     no group) so the panel can label + group rows, and the response echoes the event's stage->group
     structure so the panel builds its combine picker from this one call.
 
-    DISPLAY-ONLY: scoping changes WHAT IS SHOWN, never any team total — the count/exclude decisions and
+    DISPLAY-ONLY: scoping changes WHAT IS SHOWN, never any team total - the count/exclude decisions and
     _recompute_team_kills_for_event are unchanged (still event-wide).
 
     Auth: AFC event admin OR org member with can_upload_results. Consumed by FlaggedKillsPanel on the
@@ -24431,7 +24431,7 @@ def get_event_flagged_kills(request):
 
 @api_view(["PATCH"])
 def set_event_flagged_kills(request):
-    """PATCH events/flagged-kills/ — flip the event-wide count_flagged_kills default, then recompute
+    """PATCH events/flagged-kills/ - flip the event-wide count_flagged_kills default, then recompute
     every team total so the standings reflect it. Body: {event_id, count_flagged_kills: bool}. Auth:
     AFC event admin OR org member with can_upload_results."""
     event_id = request.data.get("event_id")
@@ -24456,7 +24456,7 @@ def set_event_flagged_kills(request):
 
 @api_view(["PATCH"])
 def set_match_kill_flag(request):
-    """PATCH events/flagged-kills/flag/ — override ONE flagged player's count_kills (True=always
+    """PATCH events/flagged-kills/flag/ - override ONE flagged player's count_kills (True=always
     count, False=never, null=follow the event default), then recompute the event's team totals.
     Body: {flag_id, count_kills: bool|null}. Auth: AFC event admin OR org member with
     can_upload_results on the flag's event."""
@@ -24485,7 +24485,7 @@ def set_match_kill_flag(request):
 
 def _cleanup_attribution_only_stat(match, tt_id):
     """Delete the TournamentTeamMatchStats for (match, tt_id) IF that team only existed in the match via
-    an unmatched-block attribution that has now been removed/changed — i.e. it has NO player stats, NO
+    an unmatched-block attribution that has now been removed/changed - i.e. it has NO player stats, NO
     ringer flags, and NO (remaining) attributed block in the match. Guards a real played/manual row from
     deletion (those have player_stats or flags). owner 2026-06-30."""
     from .models import MatchKillFlag, UnmatchedTeamBlock
@@ -24500,7 +24500,7 @@ def _cleanup_attribution_only_stat(match, tt_id):
 
 @api_view(["PATCH"])
 def attribute_unmatched_team(request):
-    """PATCH events/flagged-kills/unmatched-team/ — attribute one unmatched in-game team block to a
+    """PATCH events/flagged-kills/unmatched-team/ - attribute one unmatched in-game team block to a
     registered team (its placement + kills are then scored for that team), or clear it (null = don't
     count). Body: {block_id, tournament_team_id: int|null}. Auth: AFC event admin OR org member with
     can_upload_results on the block's event. Consumed by the FlaggedKillsPanel unmatched-teams section.
@@ -24550,7 +24550,7 @@ def attribute_unmatched_team(request):
 
 @api_view(["PATCH"])
 def set_flagged_kills_bulk(request):
-    """PATCH events/flagged-kills/bulk/ — apply MANY flagged-player decisions and/or unmatched-team
+    """PATCH events/flagged-kills/bulk/ - apply MANY flagged-player decisions and/or unmatched-team
     attributions for ONE event in a single call, then recompute the event's team totals EXACTLY ONCE.
 
     WHY (owner 2026-07-13): each single set_match_kill_flag / attribute_unmatched_team PATCH runs a
@@ -24629,7 +24629,7 @@ def set_flagged_kills_bulk(request):
                 _cleanup_attribution_only_stat(block.match, old_tt_id)
             blocks_updated += 1
 
-        # ONE recompute for the entire batch — the whole point of this endpoint.
+        # ONE recompute for the entire batch - the whole point of this endpoint.
         recomputed = _recompute_team_kills_for_event(event)
 
     return Response({
@@ -24644,7 +24644,7 @@ def set_flagged_kills_bulk(request):
 @api_view(["POST"])
 def broadcast_announcement(request):
     # Auth: validate the token, then gate AFTER resolving the event so an ORGANIZER who can edit this
-    # event can broadcast event-wide too (owner 2026-06-17 organizer parity) — matching the per-group
+    # event can broadcast event-wide too (owner 2026-06-17 organizer parity) - matching the per-group
     # / per-stage gate. Previously this was AFC-staff-only (_get_event_action_user), so an organizer
     # using the shared ActionsTab "Whole event" scope got a 403.
     auth = request.headers.get("Authorization")
@@ -24850,7 +24850,7 @@ def _group_room_details_text(event, group):
 @api_view(["POST"])
 def broadcast_match_room_details(request):
     """POST /events/broadcast-match-room-details/  body: { match_id }  (owner 2026-06-18)
-    Broadcast ONE map's (one Match's) room details to the group's players — per-map send, vs
+    Broadcast ONE map's (one Match's) room details to the group's players - per-map send, vs
     broadcast_to_group which sends the whole group's maps at once. Sets that match's
     room_details_released_at so the room appears on the user event page for the group's competitors.
     Gate: AFC event admin OR an organizer who can edit / upload results for the event.
@@ -24998,7 +24998,7 @@ def broadcast_to_group(request):
     mode = (request.data.get("mode") or "custom").strip()
 
     # AUTH (owner 2026-07-06 #9 parity): organizers may send ROOM DETAILS to the whole group just like
-    # the per-map broadcast_match_room_details path — so a results-only organizer (can_upload_results)
+    # the per-map broadcast_match_room_details path - so a results-only organizer (can_upload_results)
     # is allowed for mode='room_details'. Sending an ARBITRARY custom message is a broader power kept to
     # AFC admins + organizers who can EDIT the event (can_edit_events). The existing per-organizer rate
     # limit below (5/hr + 5-min cooldown) still bounds spam. Native (org=None) events stay admin-only.
@@ -25163,7 +25163,7 @@ def broadcast_to_stage(request):
         if not blocks:
             return Response({"message": "No room details have been set for this stage's groups yet."}, status=400)
         message = "\n\n".join(blocks)
-        # RELEASE (owner 2026-06-17): same as broadcast_to_group, but across every group in the stage —
+        # RELEASE (owner 2026-06-17): same as broadcast_to_group, but across every group in the stage - 
         # stamp room_details_released_at so the user event page shows each group's room to its members.
         Match.objects.filter(group__stage=stage).exclude(
             room_id__isnull=True, room_name__isnull=True, room_password__isnull=True
@@ -25280,7 +25280,7 @@ def search_events(request):
     """GET /events/search/?q=&limit= (owner 2026-06-17)
     Lightweight event typeahead for the broadcast link picker (NotificationTargetSelector multi-event
     mode). Returns up to `limit` non-draft events whose name or slug matches `q` (id, name, slug only).
-    Auth: any authenticated user — events are public data (the tournaments page lists them), so this
+    Auth: any authenticated user - events are public data (the tournaments page lists them), so this
     exposes nothing new; it just powers search-and-select instead of typing a slug.
     Consumed by: frontend NotificationTargetSelector event search-select."""
     auth = request.headers.get("Authorization")
@@ -25352,7 +25352,7 @@ def _notify_promoted(event, recipients, display_name):
 
 def _apply_no_show_record(event, *, user_obj=None, team_obj=None, value=True, actor=None, source="manual"):
     """Mirror the is_no_show flag into NoShowRecord history (F1) that powers the repeat-no-show
-    warning. Marking creates ONE STANDING record per (event, target) — idempotent, so re-marking
+    warning. Marking creates ONE STANDING record per (event, target) - idempotent, so re-marking
     never double-counts; undoing SOFT-CLEARS the standing record(s) (cleared_at = now) so the
     7-day warning count drops while the audit row survives. team_obj for team events, user_obj for
     solo. Called by mark_no_show (manual) and confirm-detected-no-show (suggest-then-confirm)."""
@@ -25470,7 +25470,7 @@ def _no_show_warning_for(team_ids=None, user_ids=None):
 def get_no_show_warnings(request):
     """POST /events/no-show-warnings/  body {team_ids?:[int], user_ids?:[int]}
     Bulk no-show warning status for badges (mirrors the blacklist-counts bulk pattern). Auth: AFC
-    admin OR any active organization member — no-show reputation is staff/organizer-only info and the
+    admin OR any active organization member - no-show reputation is staff/organizer-only info and the
     badges only render on admin/organizer surfaces, so a regular player must not be able to enumerate
     other teams'/users' no-show counts (adversarial-review fix, owner 2026-06-19).
     Consumed by FE useNoShowWarnings -> NoShowWarningBadge (RegisteredTeamsTab rows + admin Teams)."""
@@ -25491,7 +25491,7 @@ def get_no_show_warnings(request):
 def detect_no_shows(request):
     """POST /events/detect-no-shows/  body { event_id, stage_id? }
     SUGGEST-ONLY (owner decision): list registered, ACTIVE, non-waitlisted competitors that have
-    ZERO results entered for the event (or a given stage) — i.e. they look like no-shows. Does NOT
+    ZERO results entered for the event (or a given stage) - i.e. they look like no-shows. Does NOT
     set any flag; the admin/organizer confirms each via mark-no-show. Gate: event admin OR organizer
     who can edit the event. Consumed by the FE "Check for no-shows" suggestions panel."""
     user, event, err = _waitlist_gate(request)
@@ -25547,7 +25547,7 @@ def detect_no_shows(request):
             sgc = sgc.filter(stage_group__stage_id=stage_id)
             played = played.filter(match__group__stage_id=stage_id)
         # SoloPlayerMatchStats keys the player by its `competitor` FK (RegisteredCompetitors pk),
-        # NOT a `player` field — so collect competitor_id and compare against the RegisteredCompetitors
+        # NOT a `player` field - so collect competitor_id and compare against the RegisteredCompetitors
         # pk (row.player is the RegisteredCompetitors instance, .id is that pk). The earlier code used
         # `player_id`, which raised FieldError and (under the old broad except) silently returned zero
         # suggestions for EVERY solo event. Fixed 2026-06-19 (adversarial review).
@@ -25852,7 +25852,7 @@ def export_participants(request):
 # ── verify an event for rankings integrity ──
 # Toggles Event.rankings_verified. This is the AFC oversight gate that decides whether an
 # (organizer-run) event counts toward afc_rankings, so it is restricted to PLATFORM org
-# admins only (head_admin / organizer_admin) via is_platform_org_admin — not the broader
+# admins only (head_admin / organizer_admin) via is_platform_org_admin - not the broader
 # _is_event_admin set. AFC keeps the final say on what feeds the ranking system.
 @api_view(["POST"])
 def verify_event(request):

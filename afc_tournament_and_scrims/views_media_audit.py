@@ -1,14 +1,14 @@
 # ── EVENT MEDIA AUDIT + FLAGS + OPT-OUTS (owner 2026-07-02) ─────────────────────
 # Broadcast-media hygiene for one event, surfaced on the overlay STUDIO (admin + organizer):
-#   • AUDIT   — which registered TEAMS have no team logo, which roster PLAYERS have no esport image
+#   • AUDIT   - which registered TEAMS have no team logo, which roster PLAYERS have no esport image
 #               (both render on overlays/graphics at a fixed size, so gaps + bad art show on stream).
-#   • FLAG    — tag a bad team logo / player esport image; the owner gets a Notification asking for
+#   • FLAG    - tag a bad team logo / player esport image; the owner gets a Notification asking for
 #               a replacement (deep-linkable). Flags stay listed until resolved.
-#   • OPT-OUT — per-event suppression: remove a team's logo / a player's image from THIS event's
+#   • OPT-OUT - per-event suppression: remove a team's logo / a player's image from THIS event's
 #               broadcast surfaces without deleting the upload (EventMediaOptOut; the overlay feed
 #               skips suppressed logos).
 #
-# ENDPOINTS (gate = _broadcast_gate — AFC event admin OR org can_edit_events):
+# ENDPOINTS (gate = _broadcast_gate - AFC event admin OR org can_edit_events):
 #   GET  events/<event_id>/media-audit/            -> teams+players with media status, flags, opt-outs
 #   POST events/<event_id>/media-flags/            -> {kind, team_id?|user_id?, reason?} flag + notify
 #   POST events/<event_id>/media-flags/<id>/resolve/
@@ -88,7 +88,7 @@ def _player_rows(event, request):
 
 @api_view(["GET"])
 def media_audit(request, event_id):
-    """GET events/<event_id>/media-audit/ — the studio's media hygiene report."""
+    """GET events/<event_id>/media-audit/ - the studio's media hygiene report."""
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
@@ -104,7 +104,7 @@ def media_audit(request, event_id):
 
 @api_view(["POST"])
 def media_flag(request, event_id):
-    """POST events/<event_id>/media-flags/ {kind, team_id?|user_id?, reason?} — flag bad media +
+    """POST events/<event_id>/media-flags/ {kind, team_id?|user_id?, reason?} - flag bad media +
     notify the owner (team owner for a logo; the player for an esport image)."""
     event, err = _broadcast_gate(request, event_id)
     if err:
@@ -167,7 +167,7 @@ def media_flag(request, event_id):
 
 @api_view(["POST"])
 def media_flag_resolve(request, event_id, flag_id):
-    """POST events/<event_id>/media-flags/<flag_id>/resolve/ — close a flag (media replaced)."""
+    """POST events/<event_id>/media-flags/<flag_id>/resolve/ - close a flag (media replaced)."""
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
@@ -181,7 +181,7 @@ def media_flag_resolve(request, event_id, flag_id):
 
 @api_view(["POST"])
 def media_opt_out(request, event_id):
-    """POST events/<event_id>/media-opt-outs/ {kind, team_id?|user_id?, remove?} — suppress (or
+    """POST events/<event_id>/media-opt-outs/ {kind, team_id?|user_id?, remove?} - suppress (or
     restore with remove=true) a team logo / player image on THIS event's broadcast surfaces."""
     event, err = _broadcast_gate(request, event_id)
     if err:
@@ -211,7 +211,7 @@ def media_opt_out(request, event_id):
 # POST events/<event_id>/media-upload/   multipart form:
 #   kind = "team_logo" (+ team_id = Team pk)  |  "player_image" (+ user_id = User pk)
 #   file = the image (normalized/re-encoded via afc_auth.image_utils.normalize_image_upload)
-# Response: {message, url} — url = the new absolute media URL.
+# Response: {message, url} - url = the new absolute media URL.
 @api_view(["POST"])
 def media_upload(request, event_id):
     event, err = _broadcast_gate(request, event_id)
@@ -226,7 +226,7 @@ def media_upload(request, event_id):
     # (was AFC-admin-only). _broadcast_gate above already confirmed staff OR owning-org access to THIS
     # event. AFC staff (is_stats_admin) may overwrite ANY target; an organizer only a target that is
     # actually registered in this event (enforced per-kind below via `is_staff`). NOTE this write is
-    # GLOBAL (Team.team_logo / UserProfile.esports_pic change everywhere) — the owner accepted that for
+    # GLOBAL (Team.team_logo / UserProfile.esports_pic change everywhere) - the owner accepted that for
     # an organizer editing their own event's participants.
     is_staff = is_stats_admin(viewer)
 

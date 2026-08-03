@@ -1,5 +1,5 @@
 """
-afc_leaderboard.views — REST endpoints for Standalone Leaderboards (Phase 1).
+afc_leaderboard.views - REST endpoints for Standalone Leaderboards (Phase 1).
 
 PURPOSE
     All create/list/detail/edit/delete + participant + map + results endpoints for the event-less
@@ -18,8 +18,8 @@ HOUSE IDIOMS (mirrors afc_auth.views / afc_tournament_and_scrims.views / afc_par
 
 HOW IT CONNECTS
     - Point math: afc_tournament_and_scrims.scoring.compute_team_points / compute_solo_points
-      (single source of truth) — called in save_match_results.
-    - Standings: afc_leaderboard.standings.standalone_standings — called in leaderboard_detail.
+      (single source of truth) - called in save_match_results.
+    - Standings: afc_leaderboard.standings.standalone_standings - called in leaderboard_detail.
     - Ghosts: afc_rankings.GhostTeam / GhostPlayer, created inline in add_participant.
     - Orgs: afc_organizers.models.Organization / OrganizationMember + org_can for org scoping.
     - Consumed by the FE wizard (/a/leaderboards/standalone/create) + view page
@@ -64,7 +64,7 @@ from afc_tournament_and_scrims.scoring import (
     compute_team_points,
     compute_solo_points,
 )
-# P2 OCR assist — the shared extraction service + platform-wide matchers. extract.extract_rows is
+# P2 OCR assist - the shared extraction service + platform-wide matchers. extract.extract_rows is
 # the SAME local-first-then-Gemini router the event OCR flow uses; the matching helpers un-gate the
 # candidate pool to the whole platform (a standalone leaderboard has no event roster).
 from afc_ocr.services import extract
@@ -96,7 +96,7 @@ from .ocr import (
     build_rows_from_match_log as _build_rows_from_match_log,
 )
 from .tasks import process_leaderboard_ocr_job
-# Match-log file parser (the "upload result file" option) — shared format knowledge in utils.
+# Match-log file parser (the "upload result file" option) - shared format knowledge in utils.
 from utils.match_log import parse_team_match_log
 # Punctuation/leet-insensitive search (same util search-teams / search-users use), for the
 # ghost-team / ghost-player typeahead endpoints below.
@@ -262,7 +262,7 @@ def _apply_rankings_feed_fields(lb, data, user):
     Used by create_leaderboard + edit_leaderboard. The two columns are read downstream by
     afc_rankings.standalone (effective_date / ranking_tier) when the LB feeds the rankings engine.
     """
-    # Non-admins never set these (same rule as counts_toward_rankings) — skip silently.
+    # Non-admins never set these (same rule as counts_toward_rankings) - skip silently.
     if not can_set_rankings_flag(user):
         return None
 
@@ -291,19 +291,19 @@ def _apply_rankings_feed_fields(lb, data, user):
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════
-# Task 4 — CRUD
+# Task 4 - CRUD
 #
 # NOTE on routing: the spec §4 lists RESTful paths (POST/GET on `standalone/`, GET/PATCH/DELETE on
 # `standalone/<id>/`). The existing AFC codebase, however, gives each handler its OWN verb-suffixed
-# path (e.g. create-team/, edit-team/, disband-team/). We follow the repo's actual idiom here — one
-# function view per URL — so urls.py mounts list at `standalone/`, create at `standalone/create/`,
+# path (e.g. create-team/, edit-team/, disband-team/). We follow the repo's actual idiom here - one
+# function view per URL - so urls.py mounts list at `standalone/`, create at `standalone/create/`,
 # detail at `standalone/<id>/`, edit at `standalone/<id>/edit/`, delete at `standalone/<id>/delete/`.
 # Each view still guards its own HTTP method via @api_view.
 # ════════════════════════════════════════════════════════════════════════════════════════════
 @api_view(["POST"])
 def create_leaderboard(request):
     """
-    POST leaderboards/standalone/  — create a draft standalone leaderboard.
+    POST leaderboards/standalone/  - create a draft standalone leaderboard.
 
     Auth: Bearer SessionToken. Must be an AFC admin OR an organizer with can_upload_results on the
     target org (enforced by _resolve_organization_for_create).
@@ -349,7 +349,7 @@ def create_leaderboard(request):
     counts_toward_rankings = wants_rankings if can_set_rankings_flag(user) else False
 
     # Build the row unsaved so the P3 rankings-feed fields (played_on + ranking_tier) can be applied
-    # + validated BEFORE the INSERT — a bad tier/date returns 400 without creating a leaderboard.
+    # + validated BEFORE the INSERT - a bad tier/date returns 400 without creating a leaderboard.
     lb = StandaloneLeaderboard(
         name=name,
         format=fmt,
@@ -374,7 +374,7 @@ def create_leaderboard(request):
 @api_view(["GET"])
 def list_leaderboards(request):
     """
-    GET leaderboards/standalone/  — list standalone leaderboards visible to the caller (paginated).
+    GET leaderboards/standalone/  - list standalone leaderboards visible to the caller (paginated).
 
     Auth: Bearer SessionToken.
     Visibility:
@@ -431,7 +431,7 @@ def list_leaderboards(request):
 @api_view(["GET"])
 def leaderboard_detail(request, lb_id):
     """
-    GET leaderboards/standalone/<id>/  — full detail: header + participants + matches + computed standings.
+    GET leaderboards/standalone/<id>/  - full detail: header + participants + matches + computed standings.
 
     Auth: Bearer SessionToken. A draft is visible only to a manager of it; a published leaderboard
     is visible to any logged-in user.
@@ -456,7 +456,7 @@ def leaderboard_detail(request, lb_id):
 
     manager = can_manage_standalone_lb(user, lb)
     if lb.status == "draft" and not manager:
-        # A draft leaderboard is hidden from non-managers (spec §1.6 — published makes it viewable).
+        # A draft leaderboard is hidden from non-managers (spec §1.6 - published makes it viewable).
         return Response({"message": "This leaderboard is not published."}, status=403)
 
     participants = (
@@ -477,14 +477,14 @@ def leaderboard_detail(request, lb_id):
 @api_view(["PATCH"])
 def edit_leaderboard(request, lb_id):
     """
-    PATCH leaderboards/standalone/<id>/  — edit basics / scoring / publish.
+    PATCH leaderboards/standalone/<id>/  - edit basics / scoring / publish.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb(user, lb).
     Request body (all optional): name, format (only allowed while it has no matches/participants),
         placement_points, kill_point, points_per_assist, points_per_1000_damage,
         status ("draft"|"published"), counts_toward_rankings (AFC admin only, ignored otherwise),
         played_on ("YYYY-MM-DD"|null, AFC admin only) and ranking_tier ("tier_1"|"tier_2"|"tier_3",
-        AFC admin only) — the P3 rankings-feed config, gated like counts_toward_rankings.
+        AFC admin only) - the P3 rankings-feed config, gated like counts_toward_rankings.
     Response 200: { "leaderboard": <header dict> }.
     Errors: 404 not found; 403 non-manager; 400 invalid format/status / format-change after results /
             bad ranking_tier / bad played_on.
@@ -539,7 +539,7 @@ def edit_leaderboard(request, lb_id):
     if "counts_toward_rankings" in data and can_set_rankings_flag(user):
         lb.counts_toward_rankings = bool(data.get("counts_toward_rankings"))
 
-    # P3 rankings-feed fields (played_on + ranking_tier) — same AFC-admin gate as the flag above.
+    # P3 rankings-feed fields (played_on + ranking_tier) - same AFC-admin gate as the flag above.
     # Validated before save so a bad tier/date returns 400 without persisting the edit.
     feed_err = _apply_rankings_feed_fields(lb, data, user)
     if feed_err:
@@ -552,7 +552,7 @@ def edit_leaderboard(request, lb_id):
 @api_view(["DELETE"])
 def delete_leaderboard(request, lb_id):
     """
-    DELETE leaderboards/standalone/<id>/  — delete a leaderboard (cascades participants/matches/results).
+    DELETE leaderboards/standalone/<id>/  - delete a leaderboard (cascades participants/matches/results).
 
     Auth: Bearer SessionToken + can_manage_standalone_lb. Ghosts are NOT deleted (they are
     platform-wide reusable entities; only the participant link is removed via cascade).
@@ -653,7 +653,7 @@ def leaderboard_graphic(request, lb_id):
     # Standings for both render paths: the legacy auto-table reads the standalone_standings list;
     # the field-layout path (when the design places its own columns) reads per-row dicts keyed by
     # field_type. A standalone leaderboard only tracks rank/name/total/kills, so booyah/PP/KP/rush
-    # columns (if placed) render empty here — those stats only exist on EVENT stage standings.
+    # columns (if placed) render empty here - those stats only exist on EVENT stage standings.
     std = standalone_standings(lb)
     rows = [{
         "pos": i + 1,
@@ -797,7 +797,7 @@ def leaderboard_graphic(request, lb_id):
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════
-# Task 5 — Participants
+# Task 5 - Participants
 # ════════════════════════════════════════════════════════════════════════════════════════════
 class _ParticipantResolutionError(Exception):
     """Raised by _resolve_or_create_participant when a resolution cannot be turned into a
@@ -940,11 +940,11 @@ def _resolve_or_create_participant(lb, resolution, actor):
 @api_view(["POST"])
 def add_participant(request, lb_id):
     """
-    POST leaderboards/standalone/<id>/participants/  — add a participant (real, ghost_new, or ghost_existing).
+    POST leaderboards/standalone/<id>/participants/  - add a participant (real, ghost_new, or ghost_existing).
 
     Auth: Bearer SessionToken + can_manage_standalone_lb (this is also the gate for inline ghost
-    creation — NOT the stricter rankings-admin gate; spec §5).
-    Request body — `kind` selects the path, and MUST match the leaderboard's format:
+    creation - NOT the stricter rankings-admin gate; spec §5).
+    Request body - `kind` selects the path, and MUST match the leaderboard's format:
         kind="real":
             team format  → {"team_id": int}
             solo format  → {"user_id": int}
@@ -991,7 +991,7 @@ def add_participant(request, lb_id):
 
     # Explicit duplicate guard (unchanged behavior): reject a second add of the same real/ghost
     # entity with a 400, BEFORE delegating creation. The OCR apply path deliberately does NOT do
-    # this (it reuses the participant) — that divergence lives here, not in the shared helper.
+    # this (it reuses the participant) - that divergence lives here, not in the shared helper.
     dup_msg = _duplicate_participant_message(lb, kind, resolution, is_team)
     if dup_msg:
         return Response({"message": dup_msg}, status=400)
@@ -1016,7 +1016,7 @@ def _duplicate_participant_message(lb, kind, resolution, is_team):
     if not entity_id:
         return None  # missing-id errors are surfaced by the helper, not here
     # A malformed id (e.g. a non-UUID ghost_team_id) raises here; swallow it and let the helper
-    # produce the proper "Invalid ghost_team_id." 400 — never 500 from this pre-check.
+    # produce the proper "Invalid ghost_team_id." 400 - never 500 from this pre-check.
     try:
         if kind == "real":
             if is_team and LeaderboardParticipant.objects.filter(leaderboard=lb, team_id=entity_id).exists():
@@ -1037,7 +1037,7 @@ def _duplicate_participant_message(lb, kind, resolution, is_team):
 @api_view(["DELETE"])
 def remove_participant(request, lb_id, pid):
     """
-    DELETE leaderboards/standalone/<id>/participants/<pid>/  — remove a participant from a leaderboard.
+    DELETE leaderboards/standalone/<id>/participants/<pid>/  - remove a participant from a leaderboard.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb. Cascades the participant's results. The
     underlying real entity / ghost is NOT deleted (ghosts are platform-wide reusable).
@@ -1061,12 +1061,12 @@ def remove_participant(request, lb_id, pid):
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════
-# Task 6 — Matches + results
+# Task 6 - Matches + results
 # ════════════════════════════════════════════════════════════════════════════════════════════
 @api_view(["POST"])
 def add_match(request, lb_id):
     """
-    POST leaderboards/standalone/<id>/matches/  — add a map to the leaderboard.
+    POST leaderboards/standalone/<id>/matches/  - add a map to the leaderboard.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb.
     Request body (optional): {"match_number": int, "match_map": str}. If match_number is omitted it
@@ -1107,7 +1107,7 @@ def add_match(request, lb_id):
 @api_view(["DELETE"])
 def delete_match(request, mid):
     """
-    DELETE leaderboards/standalone/matches/<mid>/  — delete a map (cascades its results).
+    DELETE leaderboards/standalone/matches/<mid>/  - delete a map (cascades its results).
 
     Auth: Bearer SessionToken + can_manage_standalone_lb (of the match's leaderboard).
     Response 200: { "message": "Match deleted." }.
@@ -1134,7 +1134,7 @@ def _save_one_result(match, participant, row, lb):
     (placement, kills, damage, assists, bonus, penalty, played), computes the point columns via the
     single-source-of-truth scoring helpers (compute_team_points for a team lb, compute_solo_points
     for solo, using `lb`'s scoring config + its normalized placement table), then upserts (unique per
-    match+participant — re-saving overwrites). Returns the {participant_id, placement, kills,
+    match+participant - re-saving overwrites). Returns the {participant_id, placement, kills,
     placement_points, kill_points, total_points} summary the callers echo back. Must be called inside
     a transaction by the caller (both callers wrap it in transaction.atomic()).
     """
@@ -1200,7 +1200,7 @@ def _save_one_result(match, participant, row, lb):
             played=played,
         )
 
-    # Upsert: unique per (match, participant) — re-saving overwrites the prior row.
+    # Upsert: unique per (match, participant) - re-saving overwrites the prior row.
     ParticipantMatchResult.objects.update_or_create(
         match=match,
         participant=participant,
@@ -1233,7 +1233,7 @@ def _save_one_result(match, participant, row, lb):
 @api_view(["POST"])
 def save_match_results(request, mid):
     """
-    POST leaderboards/standalone/matches/<mid>/results/  — bulk save + score one map's results.
+    POST leaderboards/standalone/matches/<mid>/results/  - bulk save + score one map's results.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb (of the match's leaderboard).
     Request body:
@@ -1246,7 +1246,7 @@ def save_match_results(request, mid):
         }
     For each row we compute points via afc_tournament_and_scrims.scoring.compute_team_points (team
     format) or compute_solo_points (solo format) using the leaderboard's scoring config, then upsert
-    a ParticipantMatchResult (unique per match+participant — re-saving overwrites). Standings re-derive
+    a ParticipantMatchResult (unique per match+participant - re-saving overwrites). Standings re-derive
     on the next detail read.
     Response 200: { "saved": <count>, "results": [ {participant_id, placement, kills,
                     placement_points, kill_points, total_points} ] }.
@@ -1293,7 +1293,7 @@ def save_match_results(request, mid):
 @api_view(["GET"])
 def participant_roster(request, lb_id, pid):
     """
-    GET leaderboards/standalone/<lb_id>/participants/<pid>/roster/  — the participant's player list.
+    GET leaderboards/standalone/<lb_id>/participants/<pid>/roster/  - the participant's player list.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb.
     Purpose (owner 2026-06-12): the manual ResultsStep shows each selected TEAM's players with a
@@ -1352,7 +1352,7 @@ def participant_roster(request, lb_id, pid):
 @api_view(["GET"])
 def search_ghost_teams(request):
     """
-    GET leaderboards/standalone/search-ghost-teams/?q=<text>&limit=10  — ghost-team typeahead.
+    GET leaderboards/standalone/search-ghost-teams/?q=<text>&limit=10  - ghost-team typeahead.
 
     Auth: Bearer SessionToken (any authenticated user - ghost names/countries are not sensitive,
     same openness as /team/search-teams/).
@@ -1396,7 +1396,7 @@ def search_ghost_teams(request):
 @api_view(["GET"])
 def search_ghost_players(request):
     """
-    GET leaderboards/standalone/search-ghost-players/?q=<text>&limit=10  — ghost-player typeahead.
+    GET leaderboards/standalone/search-ghost-players/?q=<text>&limit=10  - ghost-player typeahead.
 
     Auth: Bearer SessionToken (any authenticated user).
     Query: q (min 2 chars), limit (1..25, default 10). Matches ign (icontains OR the normalized
@@ -1437,7 +1437,7 @@ def search_ghost_players(request):
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════
-# Task 2.4 / 2.5 — OCR assist (Phase 2)
+# Task 2.4 / 2.5 - OCR assist (Phase 2)
 #
 # These two endpoints let a manager upload a result screenshot and turn it into participants +
 # results WITHOUT the event-OCR commit machinery (which is Match/OCRSession-bound). The flow is:
@@ -1452,20 +1452,20 @@ def search_ghost_players(request):
 @api_view(["POST"])
 def ocr_extract(request, lb_id):
     """
-    POST leaderboards/standalone/<id>/ocr/  — read a result screenshot into a draft of review rows.
+    POST leaderboards/standalone/<id>/ocr/  - read a result screenshot into a draft of review rows.
 
     PURPOSE
         Run the shared OCR extraction engine on an uploaded screenshot, then match the read names
         against the WHOLE platform (every Team for a team leaderboard, every User for a solo one),
         and return a STATELESS draft the FE review table renders for correction. Nothing is persisted
-        here (no OCRSession — that model is event-Match-bound); the draft is returned to the client
+        here (no OCRSession - that model is event-Match-bound); the draft is returned to the client
         and applied later via ocr_apply.
     AUTH
         Bearer SessionToken + can_manage_standalone_lb(user, lb) (the same gate as every other
         mutation on this leaderboard, and the gate for inline ghost creation at apply-time). A
         non-manager gets 403.
     REQUEST (multipart/form-data)
-        screenshot (file: PNG / JPG / WEBP)   — required.
+        screenshot (file: PNG / JPG / WEBP)   - required.
     RESPONSE 200
         {
           "draft_id": "<uuid>",          # opaque id for the FE to track this draft (not stored)
@@ -1536,7 +1536,7 @@ def ocr_extract(request, lb_id):
     else:
         rows = _build_solo_ocr_rows(raw_output, all_platform_players())
 
-    # draft_id is a stateless correlation id for the FE only (we never persist an OCRSession here —
+    # draft_id is a stateless correlation id for the FE only (we never persist an OCRSession here - 
     # the standalone flow has no Match to bind one to). The FE echoes it back on apply for tracing.
     return Response({"draft_id": str(uuid.uuid4()), "format": lb.format, "rows": rows})
 
@@ -1544,7 +1544,7 @@ def ocr_extract(request, lb_id):
 @api_view(["POST"])
 def results_file_extract(request, lb_id):
     """
-    POST leaderboards/standalone/<id>/results-file/  — parse a match-log RESULT FILE into review rows.
+    POST leaderboards/standalone/<id>/results-file/  - parse a match-log RESULT FILE into review rows.
 
     PURPOSE
         The "upload result file" option (owner 2026-06-12: every upload option the event flow has
@@ -1557,7 +1557,7 @@ def results_file_extract(request, lb_id):
     AUTH
         Bearer SessionToken + can_manage_standalone_lb(user, lb) (same gate as ocr_extract).
     REQUEST (multipart/form-data)
-        file (text export from the game)   — required. TEAM leaderboards only (the file format is
+        file (text export from the game)   - required. TEAM leaderboards only (the file format is
         team-shaped; solo leaderboards keep manual + OCR).
     RESPONSE 200
         { "draft_id": "<uuid>", "format": "team", "rows": [<same team row shape as ocr_extract,
@@ -1607,7 +1607,7 @@ def results_file_extract(request, lb_id):
 @api_view(["POST"])
 def ocr_apply(request, lb_id):
     """
-    POST leaderboards/standalone/<id>/ocr/apply/  — turn reviewed OCR rows into participants + a scored map.
+    POST leaderboards/standalone/<id>/ocr/apply/  - turn reviewed OCR rows into participants + a scored map.
 
     PURPOSE
         Take the reviewed/corrected rows from ocr_extract and, in ONE transaction, (1) resolve each
@@ -1748,7 +1748,7 @@ def _apply_ocr_rows(lb, rows, match_map, user, draft_id=None):
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════
-# Task 2.6 — OCR BATCH (async, multi-image)
+# Task 2.6 - OCR BATCH (async, multi-image)
 #
 # Lets an admin upload SEVERAL maps, each with ONE OR MORE screenshots, and read them in the
 # background so the synchronous request can never time out (the old ocr_extract died on prod's ~30s
@@ -1791,7 +1791,7 @@ def _get_job_or_404(lb, job_id):
 @api_view(["POST"])
 def ocr_job_create(request, lb_id):
     """
-    POST leaderboards/standalone/<id>/ocr/jobs/  — create ONE map's OCR job from 1+ uploaded screenshots.
+    POST leaderboards/standalone/<id>/ocr/jobs/  - create ONE map's OCR job from 1+ uploaded screenshots.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb. Does NOT start the read (call run/ or run-all/).
     Request (multipart/form-data): images (1+ files, field name "images"), map_label (optional str).
@@ -1828,7 +1828,7 @@ def ocr_job_create(request, lb_id):
 @api_view(["POST"])
 def ocr_job_run(request, lb_id, job_id):
     """
-    POST leaderboards/standalone/<id>/ocr/jobs/<job_id>/run/  — enqueue ONE map's background read.
+    POST leaderboards/standalone/<id>/ocr/jobs/<job_id>/run/  - enqueue ONE map's background read.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb. Resets the job to pending + clears any prior
     error, then dispatches the Celery task (process_leaderboard_ocr_job). Idempotent-ish: a job already
@@ -1857,7 +1857,7 @@ def ocr_job_run(request, lb_id, job_id):
 @api_view(["POST"])
 def ocr_run_all(request, lb_id):
     """
-    POST leaderboards/standalone/<id>/ocr/run-all/  — enqueue EVERY not-yet-read map at once.
+    POST leaderboards/standalone/<id>/ocr/run-all/  - enqueue EVERY not-yet-read map at once.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb. Enqueues all jobs in pending/failed state so a
     whole batch processes in parallel across Celery workers (the owner's "run them as a group
@@ -1886,7 +1886,7 @@ def ocr_run_all(request, lb_id):
 @api_view(["GET"])
 def ocr_job_list(request, lb_id):
     """
-    GET leaderboards/standalone/<id>/ocr/jobs/  — list this leaderboard's OCR jobs (the poll endpoint).
+    GET leaderboards/standalone/<id>/ocr/jobs/  - list this leaderboard's OCR jobs (the poll endpoint).
 
     Auth: Bearer SessionToken + can_manage_standalone_lb (OCR drafts are manager-only). Returns every job
     with its status + merged review rows (rows are null until done). The FE polls this until each job is
@@ -1907,7 +1907,7 @@ def ocr_job_list(request, lb_id):
 @api_view(["POST"])
 def ocr_job_apply(request, lb_id, job_id):
     """
-    POST leaderboards/standalone/<id>/ocr/jobs/<job_id>/apply/  — apply ONE map's reviewed rows.
+    POST leaderboards/standalone/<id>/ocr/jobs/<job_id>/apply/  - apply ONE map's reviewed rows.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb. Takes the admin-corrected rows (apply-shape:
     each row carries a `resolution`) and creates one map + participants + scored results via the shared
@@ -1960,10 +1960,10 @@ def ocr_job_apply(request, lb_id, job_id):
 @api_view(["DELETE"])
 def ocr_job_delete(request, lb_id, job_id):
     """
-    DELETE leaderboards/standalone/<id>/ocr/jobs/<job_id>/  — discard a map's OCR job + its screenshots.
+    DELETE leaderboards/standalone/<id>/ocr/jobs/<job_id>/  - discard a map's OCR job + its screenshots.
 
     Auth: Bearer SessionToken + can_manage_standalone_lb. Cascades the job's LeaderboardOcrImage rows. The
-    created map (if already applied) is NOT deleted — only the OCR job. Response 200: { "message": ... }.
+    created map (if already applied) is NOT deleted - only the OCR job. Response 200: { "message": ... }.
     """
     user, err = _auth_user(request)
     if err:

@@ -1,5 +1,5 @@
 """
-Social-media admin write API (Phase 2) — manage the §7.3 team social snapshots.
+Social-media admin write API (Phase 2) - manage the §7.3 team social snapshots.
 
 This is the social-media write surface of the Phase-2 admin API. Teams self-link
 their Instagram / TikTok handles (the captain-facing "connect" lives on the team
@@ -12,19 +12,19 @@ It builds on the shared foundation in ``admin_views.py`` (``_auth`` / ``_require
 / ``_audit`` / ``RANKING_ADMIN_ROLES``) and deliberately mirrors the existing house
 style so the original dev reads it without surprises:
 
-  * function-based DRF views (``@api_view``), NOT class-based — same as ``views.py``.
+  * function-based DRF views (``@api_view``), NOT class-based - same as ``views.py``.
   * manual-dict serialization (local ``serialize_*`` functions), NO DRF Serializer
-    classes — same as ``serializers.py``.
-  * ``Response({"message": ...}, status=...)`` for every validation/error path — same
+    classes - same as ``serializers.py``.
+  * ``Response({"message": ...}, status=...)`` for every validation/error path - same
     message-dict shape as ``afc_auth.views``.
   * every mutating endpoint runs: (1) auth gate, (2) reason gate, (3) the write inside
     ``transaction.atomic()``, then (4) a ``RankingAuditLog`` row via ``_audit`` (§16),
-    and (5) — because social points feed the quarterly score — an ``enqueue_team``
+    and (5) - because social points feed the quarterly score - an ``enqueue_team``
     quarterly recalc scheduled on ``transaction.on_commit`` (never inline, never before
     the row is committed).
 
 Endpoints (mounted by the coordinator under the existing ``rankings/`` prefix). Season
-is taken from the URL path (``<int:season_id>``) — 404 if that season does not exist:
+is taken from the URL path (``<int:season_id>``) - 404 if that season does not exist:
 
     GET   seasons/<int:season_id>/social/                    social_list      (read-only)
     PATCH seasons/<int:season_id>/social/<int:team_id>/      social_edit      (admin corrects counts/handles)
@@ -45,7 +45,7 @@ snapshot, in the same write:
     social_media_pts   = engine.social_media_points(combined_followers)   # 0..10
 ``_recompute_social`` centralises that so no endpoint can set followers and forget to
 re-derive the combined total and the points. (The aggregation layer only *uses* the
-points when ``is_verified`` is True — but we always keep the stored value correct so
+points when ``is_verified`` is True - but we always keep the stored value correct so
 the admin table shows the would-be points even before verification.)
 
 A NOTE ON ``verified_at``
@@ -78,9 +78,9 @@ def serialize_social_row(team, snap):
     way so the admin table renders a clean "not connected" row instead of a hole.
 
     ``connected`` means the team self-submitted its handles (snapshot exists AND
-    ``connected_by_team``) — distinct from an admin having typed the counts in directly.
+    ``connected_by_team``) - distinct from an admin having typed the counts in directly.
     ``verified_by`` is the verifying admin's username (or None); ``verified_at`` is the
-    snapshot's creation timestamp (see the module note — the column is auto_now_add and
+    snapshot's creation timestamp (see the module note - the column is auto_now_add and
     not writable on verify).
     """
     if snap is None:
@@ -138,7 +138,7 @@ def _get_season_or_404(season_id):
     """Resolve the season from the URL path. Returns ``(season, None)`` or ``(None, Response)``.
 
     Season is path-scoped for this surface (``seasons/<int:season_id>/social/...``), so
-    unlike the public read views — which fall back to the active season — a missing path
+    unlike the public read views - which fall back to the active season - a missing path
     season is a hard 404.
     """
     season = Season.objects.filter(pk=season_id).first()
@@ -178,7 +178,7 @@ def _parse_followers(value, field_name):
 
 # ── points curve lives in scoring/engine.py, never re-implemented here ──
 # social_media_points (the spec curve) is owned by scoring/engine.py; this helper only calls it.
-# aggregation ADDS these points to the quarterly score ONLY when the snapshot is_verified — which
+# aggregation ADDS these points to the quarterly score ONLY when the snapshot is_verified - which
 # is why verify/unverify enqueue a recalc.
 def _recompute_social(snap):
     """Re-derive ``combined_followers`` + ``social_media_pts`` from the two raw counts.
@@ -196,7 +196,7 @@ def _enqueue_quarterly_recalc(team_id, season_id):
 
     Social points feed ONLY the quarterly score (§7.3), so we enqueue just the quarterly
     leg via ``enqueue_team`` (which also dispatches monthly, but a team with no monthly
-    activity is harmlessly re-ranked). Never recalc inline — the on_commit hook reads the
+    activity is harmlessly re-ranked). Never recalc inline - the on_commit hook reads the
     committed snapshot and dedups bursts via the Redis lock in ``tasks``.
     """
     transaction.on_commit(
@@ -209,7 +209,7 @@ def _enqueue_quarterly_recalc(team_id, season_id):
 def social_list(request, season_id):
     """List every team with its social snapshot for the season (newest-named last). Read-only.
 
-    Auth required (ranking admins) but — being read-only — this endpoint skips the reason
+    Auth required (ranking admins) but - being read-only - this endpoint skips the reason
     gate and the audit write. We list ALL teams LEFT JOIN their season snapshot so the
     admin sees not-yet-connected teams too (each renders as a "connected: false" row).
 
@@ -217,7 +217,7 @@ def social_list(request, season_id):
     The team list is the paginated query; we batch-load the matching snapshots for just
     that page (one query) to avoid an N+1 over ``TeamSocialSnapshot``.
     """
-    # auth only — read-only endpoint skips the reason gate and the audit write.
+    # auth only - read-only endpoint skips the reason gate and the audit write.
     user, err = _auth(request)
     if err:
         return err
@@ -251,11 +251,11 @@ def social_list(request, season_id):
 def social_edit(request, season_id, team_id):
     """Admin corrects a team's follower counts / handles for the season.
 
-    Ranking admins (head_admin OR metrics_admin — default ``_auth`` set). Body:
+    Ranking admins (head_admin OR metrics_admin - default ``_auth`` set). Body:
       * ``instagram_followers`` (required, non-negative int)
       * ``tiktok_followers``    (required, non-negative int)
-      * ``instagram_handle``    (optional — only updated if present)
-      * ``tiktok_handle``       (optional — only updated if present)
+      * ``instagram_handle``    (optional - only updated if present)
+      * ``tiktok_handle``       (optional - only updated if present)
       * ``reason``              (mandatory audit reason)
 
     ``get_or_create`` the snapshot (an admin may enter counts before a team ever
@@ -263,7 +263,7 @@ def social_edit(request, season_id, team_id):
     ``social_media``/``edit``, then enqueue the quarterly recalc on commit (the counts
     feed the score whenever the snapshot is verified).
     """
-    # (1) auth — default ranking-admin set.
+    # (1) auth - default ranking-admin set.
     user, err = _auth(request)
     if err:
         return err
@@ -321,16 +321,16 @@ def social_edit(request, season_id, team_id):
 # ───────────────────────── POST seasons/<id>/social/<team_id>/verify/ ─────────────────────────
 @api_view(["POST"])
 def social_verify(request, season_id, team_id):
-    """Mark a team's social snapshot verified — its points now COUNT toward the score.
+    """Mark a team's social snapshot verified - its points now COUNT toward the score.
 
     Ranking admins (default ``_auth`` set). Body: ``reason`` (mandatory). The snapshot
     must already exist (a team self-connects or an admin enters counts first); verifying
     a never-connected team is a 404. Sets ``is_verified=True`` + ``verified_by=user``,
-    re-derives points (defensive — keeps the invariant if counts drifted), audits as
+    re-derives points (defensive - keeps the invariant if counts drifted), audits as
     ``social_media``/``verify``, then enqueues a recalc on commit so the now-verified
     social points are folded into the quarterly score.
     """
-    # (1) auth — default ranking-admin set.
+    # (1) auth - default ranking-admin set.
     user, err = _auth(request)
     if err:
         return err
@@ -347,11 +347,11 @@ def social_verify(request, season_id, team_id):
     if err:
         return err
 
-    # Must already have a snapshot to verify — don't conjure one on verify.
+    # Must already have a snapshot to verify - don't conjure one on verify.
     snap = TeamSocialSnapshot.objects.filter(team=team, season=season).first()
     if not snap:
         return Response(
-            {"message": "No social snapshot to verify — the team must connect (or an admin must enter counts) first."},
+            {"message": "No social snapshot to verify - the team must connect (or an admin must enter counts) first."},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -380,7 +380,7 @@ def social_verify(request, season_id, team_id):
 # ───────────────────────── POST seasons/<id>/social/<team_id>/unverify/ ─────────────────────────
 @api_view(["POST"])
 def social_unverify(request, season_id, team_id):
-    """Revoke verification — the team's social points DROP to 0 on the next recalc.
+    """Revoke verification - the team's social points DROP to 0 on the next recalc.
 
     Ranking admins (default ``_auth`` set). Body: ``reason`` (mandatory). Sets
     ``is_verified=False`` (the stored ``social_media_pts`` is kept for display, but the
@@ -388,7 +388,7 @@ def social_unverify(request, season_id, team_id):
     404 if no snapshot exists. Audits as ``social_media``/``unverify``, then enqueues a
     recalc on commit so the score drop lands.
     """
-    # (1) auth — default ranking-admin set.
+    # (1) auth - default ranking-admin set.
     user, err = _auth(request)
     if err:
         return err
@@ -433,26 +433,26 @@ def social_unverify(request, season_id, team_id):
 # ───────────────────────── POST seasons/<id>/social/<team_id>/connect/  (self-connect) ─────────────────────────
 @api_view(["POST"])
 def social_connect(request, season_id, team_id):
-    """Self-connect — a team links its IG / TikTok handles (pending admin verification).
+    """Self-connect - a team links its IG / TikTok handles (pending admin verification).
 
-    Auth here stays on the ranking-admin set (head_admin OR metrics_admin) — this is the
+    Auth here stays on the ranking-admin set (head_admin OR metrics_admin) - this is the
     admin-side connect form. The captain-facing version of connect lives on the team
     dashboard (a separate, team-scoped surface) and is intentionally NOT in this module.
 
     Body:
       * ``instagram_handle``    (required)
       * ``tiktok_handle``       (required)
-      * ``instagram_followers`` (optional, non-negative int — default 0)
-      * ``tiktok_followers``    (optional, non-negative int — default 0)
+      * ``instagram_followers`` (optional, non-negative int - default 0)
+      * ``tiktok_followers``    (optional, non-negative int - default 0)
       * ``reason``              (mandatory audit reason)
 
     ``get_or_create`` the snapshot, set the handles + ``connected_by_team=True``, force
     ``is_verified=False`` (a fresh/updated connect always re-enters the pending-verify
-    state — admin must re-verify), re-derive combined + points, audit as
+    state - admin must re-verify), re-derive combined + points, audit as
     ``social_media``/``connect``, then enqueue the recalc on commit (the connect resets
     verification, so any previously-counted social must be recomputed to 0).
     """
-    # (1) auth — default ranking-admin set (admin-side connect; captain form lives on the team dashboard).
+    # (1) auth - default ranking-admin set (admin-side connect; captain form lives on the team dashboard).
     user, err = _auth(request)
     if err:
         return err

@@ -1,5 +1,5 @@
 """
-Aggregation adapter — ORM → scoring-engine inputs.
+Aggregation adapter - ORM → scoring-engine inputs.
 
 The keystone glue: queries real tournament/scrim match stats from
 afc_tournament_and_scrims, recomputes raw placement points via the canonical
@@ -8,12 +8,12 @@ win/finals from the admin-set markers, builds the engine's frozen dataclasses,
 and returns the engine Result plus tiebreaker counts. The recalc layer persists.
 
 Bucketing uses Match.played_on (falls back to match_date entry date).
-Registered teams/players only — ghost-team scoring lands in Phase 3.
+Registered teams/players only - ghost-team scoring lands in Phase 3.
 
 Driven by recalc.recalc_* (the compute_* entry points below). Reads the rankings
-columns on afc_tournament_and_scrims — Match.played_on, Match.mvp,
+columns on afc_tournament_and_scrims - Match.played_on, Match.mvp,
 Stages.is_finals_stage, TournamentTeam.is_tournament_winner /
-TournamentTeam.finals_appearances, EventPrizePayout.amount — so changing any of
+TournamentTeam.finals_appearances, EventPrizePayout.amount - so changing any of
 those models changes the scoring inputs here.
 """
 import calendar
@@ -101,7 +101,7 @@ def _unverified_org_event_ids(event_ids):
 
     NOTE (F5, owner 2026-06-19): this gate intentionally does NOT exclude events whose org was later
     SUSPENDED or soft-DELETED. F5 hides a dead org's events from the listings/detail/directory, but
-    the owner rule is that RESULTS are ALWAYS retained — a verified result that already counted keeps
+    the owner rule is that RESULTS are ALWAYS retained - a verified result that already counted keeps
     counting in the rankings even after its org is removed. So the divergence from the _ACTIVE_ORG_EVENT
     list filter is deliberate retention, not an oversight; do not add an org-status filter here."""
     from afc_tournament_and_scrims.models import Event
@@ -197,7 +197,7 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
             continue
         if ev.competition_type == "scrims":
             # Carry the event_id so the admin counting controls / exclusions below can reach scrims
-            # too — before this they applied to tournaments only and a scrim event had no off switch.
+            # too - before this they applied to tournaments only and a scrim event had no off switch.
             scrim_rows.append((_match_day(s.match), s.placement, s.kills, ev.event_id))
             scrim_event_ids.add(ev.event_id)
         else:
@@ -205,14 +205,14 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
 
     # admin counting controls + per-team exclusions (§16, Result Markers surface).
     # Scrim event ids are included so a scrim can be toggled off / excluded exactly like a
-    # tournament — the owner's rule is that everything counts by DEFAULT and the admin switches
+    # tournament - the owner's rule is that everything counts by DEFAULT and the admin switches
     # individual ones off (2026-08-03).
     event_ids = list(tour_events.keys()) + list(scrim_event_ids)
     controls = _counting_controls(event_ids)
     excluded = _excluded_event_ids(event_ids, team=team)
     # The organizer-verification gate is applied to TOURNAMENTS ONLY, on purpose. Every scrim in
     # production today is org-owned with rankings_verified=False, so folding scrims into this gate
-    # would silently switch off every scrim that currently counts — the opposite of the owner's
+    # would silently switch off every scrim that currently counts - the opposite of the owner's
     # "count by default" rule. Whether an unverified org's SCRIMS should also be gated is an open
     # policy question for the owner, not something to decide here.
     excluded |= _unverified_org_event_ids(list(tour_events.keys()))
@@ -271,13 +271,13 @@ def compute_team_quarterly(team: Team, season) -> TeamAgg:
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
     tournaments, scrims, wins, kills = _collect_team(team, start, end)
 
-    # prize money (§7.2) — sum payouts to this team's tournament-teams in the season window
+    # prize money (§7.2) - sum payouts to this team's tournament-teams in the season window
     prize = (EventPrizePayout.objects
              .filter(tournament_team__team=team,
                      created_at__date__gte=start, created_at__date__lt=end)
              .aggregate(total=Sum("amount"))["total"] or 0)
 
-    # social (§7.3) — quarter snapshot. Only a VERIFIED snapshot contributes points
+    # social (§7.3) - quarter snapshot. Only a VERIFIED snapshot contributes points
     # (self-connect → admin verify); an unverified or absent snapshot scores 0.
     snap = TeamSocialSnapshot.objects.filter(team=team, season=season).first()
     followers = snap.combined_followers if (snap and snap.is_verified) else 0
@@ -360,7 +360,7 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
             if not ctrl.count_winner:
                 team_won = False
             # count_placement: players score on kills/mvp/finals/team-win/participation,
-            # not raw placement (personal_placement_pts is already 0) — nothing to zero here.
+            # not raw placement (personal_placement_pts is already 0) - nothing to zero here.
         tournaments.append(PlayerTournamentInput(
             tier=ev.tournament_tier, personal_kills=kills, personal_placement_pts=0,
             mvp_count=b["mvp"], finals_appearances=b["finals"],
@@ -372,7 +372,7 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
 
     # P3: a published, counts_toward_rankings SOLO standalone leaderboard contributes one
     # PlayerTournamentInput per real-user participant (kills + participation only, never raw
-    # placement — symmetric with the event player path above). Lazy import avoids the load-order
+    # placement - symmetric with the event player path above). Lazy import avoids the load-order
     # cycle; fold the standalone personal_kills into kill_total for the §6.4 tiebreaker.
     from . import standalone
     sa_inputs = standalone.standalone_player_inputs(player, start, end)
@@ -381,7 +381,7 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
 
     # Player scrim aggregate, with the same per-event toggles the team path applies: count_kills
     # gates the scrim kills, count_winner gates the scrim win bonus. (count_placement has no player
-    # analogue — a player never scores raw placement, see the tournament loop above.)
+    # analogue - a player never scores raw placement, see the tournament loop above.)
     s_kills = sum(k for _, k, _, evid in scrim_rows
                   if not (c := controls.get(evid)) or c.count_kills)
     s_wins = sum(1 for _, _, win, evid in scrim_rows
@@ -401,7 +401,7 @@ def compute_player_monthly(player, month: datetime.date) -> PlayerAgg:
 def compute_player_quarterly(player, season) -> PlayerAgg:
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
     tournaments, scrims, mvp, finals, kills = _collect_player(player, start, end)
-    # inherited prize money — payouts to any team the player was rostered on (Phase 1: via tournament_team membership)
+    # inherited prize money - payouts to any team the player was rostered on (Phase 1: via tournament_team membership)
     prize = (EventPrizePayout.objects
              .filter(tournament_team__members__user=player,
                      created_at__date__gte=start, created_at__date__lt=end)

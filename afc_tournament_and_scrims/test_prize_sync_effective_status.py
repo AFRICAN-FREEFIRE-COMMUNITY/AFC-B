@@ -2,7 +2,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Regression tests for the prize auto-sync sweep (prize_sync.sync_completed_events).
 #
-# BUG (owner 2026-07-14 — DYNASTY CUP GRAND FINALS SSA): the sweep gated on the RAW
+# BUG (owner 2026-07-14 - DYNASTY CUP GRAND FINALS SSA): the sweep gated on the RAW
 # Event.event_status == "completed". The ongoing->completed auto-complete beat is not
 # scheduled live, so a finished event can sit at raw status "ongoing"/"upcoming" while
 # effective_event_status() (read-time derivation, used by every badge/leaderboard) already

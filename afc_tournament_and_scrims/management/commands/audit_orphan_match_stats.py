@@ -112,7 +112,7 @@ class Command(BaseCommand):
         """Report-only (never auto-deletes): per (event, team), distinct matches that have stats vs
         the event's actual match count. Surfaces 'team shows N maps but only M were played' cases
         that are NOT plain duplicates (e.g. stats pointing at a since-removed match) for MANUAL
-        review — deleting those is judgement-dependent, so we only flag them."""
+        review - deleting those is judgement-dependent, so we only flag them."""
         from afc_tournament_and_scrims.models import Event
         events = Event.objects.all()
         if event_id:
@@ -134,7 +134,7 @@ class Command(BaseCommand):
                                     r["distinct_matches"], n_event_matches))
         if flagged:
             self.stdout.write(self.style.WARNING(
-                "\nReview (NOT auto-cleaned) — teams with stats on more matches than the event has:"))
+                "\nReview (NOT auto-cleaned) - teams with stats on more matches than the event has:"))
             for eid, ename, tname, dm, em in flagged:
                 self.stdout.write(f"  event {eid} {ename!r}: {tname} has {dm} matches w/ stats, "
                                   f"event has {em}. Likely stats on a removed match; check manually.")

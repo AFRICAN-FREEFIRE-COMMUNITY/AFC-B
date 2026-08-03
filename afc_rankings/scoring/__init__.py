@@ -1,4 +1,4 @@
-"""AFC Ranking & Tiering — pure scoring engine.
+"""AFC Ranking & Tiering - pure scoring engine.
 
 This package is the deterministic, side-effect-free computational core of the
 AFC ranking system. It contains NO Django imports, NO ORM access, NO Celery,

@@ -86,11 +86,11 @@ class OcrRingerFlagTests(TestCase):
         a0, a1 = self.a_players
         b0, b1 = self.b_players
         return [
-            # Alpha block — first row is a rostered Alpha player so commit credits the block to Alpha.
+            # Alpha block - first row is a rostered Alpha player so commit credits the block to Alpha.
             self._row(1, self.alpha.tournament_team_id, a0, 5),
             self._row(1, self.alpha.tournament_team_id, a1, 4),
             self._row(1, self.bravo.tournament_team_id, b0, 3),   # RINGER (Bravo player under Alpha)
-            # Bravo block — clean.
+            # Bravo block - clean.
             self._row(2, self.bravo.tournament_team_id, b1, 2),
         ]
 

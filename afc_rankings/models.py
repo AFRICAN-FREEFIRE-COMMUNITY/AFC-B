@@ -1,11 +1,11 @@
 """
-AFC Ranking & Tiering — data models (afc_rankings).
+AFC Ranking & Tiering - data models (afc_rankings).
 Spec: AFC_RANKING_TIERING_SPEC.md §19. Plan: tasks/ranking-tiering-plan.md.
 
 Conventions (locked in master plan):
 - Season PK = season_id (AutoField); GhostTeam PK = ghost_team_id (UUID); score models use default `id`.
 - Tiebreaker fields denormalized: tournament_wins / total_kills / tournaments_played (team),
-  total_kills / mvp_count / finals_appearances (player) — recalc reorder sorts on these exact names.
+  total_kills / mvp_count / finals_appearances (player) - recalc reorder sorts on these exact names.
 - `finalized` on monthly scores (archive + skip-closed-month).
 - team XOR ghost_team enforced via CheckConstraint (MySQL 8.0.16+; afc_db = mysql:8.0 ✓).
 """
@@ -62,7 +62,7 @@ class Season(models.Model):
     )
     scores_frozen_at = models.DateTimeField(null=True, blank=True)
 
-    # Publishing — the ranked scores and the tier assignments are published to the public
+    # Publishing - the ranked scores and the tier assignments are published to the public
     # INDEPENDENTLY ("rankings done separately from tiering"). The public read API hides each
     # until its flag is set; admins always see the computed draft so they can preview first,
     # and can unpublish either at any time.
@@ -290,7 +290,7 @@ class TeamQuarterlyScore(models.Model):
 
     is_zeroed = models.BooleanField(default=False)
     zeroed_reason = models.CharField(max_length=255, blank=True)
-    # §16 manual partial penalty — an admin deducts points without a full ban-zero.
+    # §16 manual partial penalty - an admin deducts points without a full ban-zero.
     # Sticky across recalc (recalc's update_or_create only writes the raw component
     # fields, never this), so a deduction persists until an admin clears it. The
     # effective ranking score is max(0, total_score - points_deducted).
@@ -376,7 +376,7 @@ class PlayerQuarterlyScore(models.Model):
     TIER_SOURCE = [("team", "From Team"), ("individual", "Individual")]
 
     # player is NULLABLE so a GHOST player can hold a quarterly score row + tier too (its tier is
-    # always the individual tier — a ghost has no team to inherit from). Written by
+    # always the individual tier - a ghost has no team to inherit from). Written by
     # afc_rankings.standalone.recalc_ghost_player_quarterly and ranked by rerank_player_quarter
     # alongside real players. player XOR ghost_player (mirrors TeamQuarterlyScore team-XOR-ghost).
     player = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -493,7 +493,7 @@ class RankingAuditLog(models.Model):
         ("tier_override", "Tier Override"),
         ("ban_zeroing", "Ban Zeroing"),
         ("transfer_window", "Transfer Window"),
-        # Phase 2 additions — one bucket per admin write surface so the audit log filters cleanly.
+        # Phase 2 additions - one bucket per admin write surface so the audit log filters cleanly.
         ("season", "Season"),                  # create / edit season, transfer window
         ("evaluation", "Quarterly Evaluation"),  # run-evaluation (tier lock)
         ("scoring_config", "Scoring Config"),    # edits to the scoring rule set
@@ -561,11 +561,11 @@ class GhostPlayer(models.Model):
 
     ``ghost_team`` is OPTIONAL: a NULL ghost_team is a standalone / "parked" ghost player
     (an in-game name created on its own, not yet attached to any ghost team). Standalone
-    rows are inert for scoring — nothing in the scoring/aggregation/recalc path reads
-    GhostPlayer — so they are purely parked IGN data that can be attached/claimed later.
+    rows are inert for scoring - nothing in the scoring/aggregation/recalc path reads
+    GhostPlayer - so they are purely parked IGN data that can be attached/claimed later.
     """
     # ghost_team is OPTIONAL (null=True): a NULL ghost_team means a standalone / "parked"
-    # ghost player — a provisional in-game name that exists on its own, not yet attached to
+    # ghost player - a provisional in-game name that exists on its own, not yet attached to
     # any ghost team. It can be attached/claimed later. Such a row is inert for scoring:
     # nothing in the scoring/aggregation/recalc path reads GhostPlayer (result attribution is
     # GhostTeam-keyed, via TeamMonthlyScore.ghost_team / TeamQuarterlyScore.ghost_team), so a
@@ -687,7 +687,7 @@ class EventTierRule(models.Model):
 
 
 class EventTierConfig(models.Model):
-    """Singleton settings row for tournament-tier classification — the fall-through tier
+    """Singleton settings row for tournament-tier classification - the fall-through tier
     used when an event matches no ``EventTierRule``. (Kept as its own row so it is editable
     from the admin surface alongside the rules.)"""
     default_tier = models.PositiveSmallIntegerField(default=3)
@@ -697,14 +697,14 @@ class EventTierConfig(models.Model):
         return f"EventTierConfig (default Tier {self.default_tier})"
 
 
-# ──────────────────────── Result Markers — counting controls ────────────────────────
+# ──────────────────────── Result Markers - counting controls ────────────────────────
 # Cross-file: both models below are read in aggregation._counting_controls /
-# aggregation._excluded_event_ids BEFORE the engine inputs are built — a disabled
+# aggregation._excluded_event_ids BEFORE the engine inputs are built - a disabled
 # component is zeroed and an excluded event row is skipped, so the scoring engine stays pure.
 class EventCountingControl(models.Model):
     """Per-tournament admin toggles for whether each scoring component COUNTS toward
     rankings (the Result Markers surface). Checked in ``aggregation.py`` BEFORE the engine
-    input is built — a disabled component is zeroed out for every team/player in that event,
+    input is built - a disabled component is zeroed out for every team/player in that event,
     so the scoring engine itself stays pure. No row for an event ⇒ everything counts.
     """
     event = models.OneToOneField(
@@ -724,7 +724,7 @@ class EventCountingControl(models.Model):
 
 
 class ResultExclusion(models.Model):
-    """Per-event opt-out for ONE team or player — their results in this event don't count
+    """Per-event opt-out for ONE team or player - their results in this event don't count
     toward rankings (e.g. a disqualification or a protest). Checked in ``aggregation.py``:
     the entity's tournament row for that event is skipped entirely. team XOR player.
     """

@@ -64,7 +64,7 @@ def _is_payments_admin(user) -> bool:
     NARROWED 2026-06-19 (adversarial review): no longer authorizes any user merely holding ANY granular
     UserRoles row (e.g. a player who is also a news_admin). Releasing/refunding escrow now (re)triggers
     the ORGANIZER PAYOUT settlement (OrganizationEarning ledger), so the act that CREATES financial
-    liabilities must not be gated more loosely than the payout-admin endpoints — those use the narrow
+    liabilities must not be gated more loosely than the payout-admin endpoints - those use the narrow
     is_platform_org_admin. A non-finance granular role is no longer a payments credential."""
     return getattr(user, "role", None) in ("admin", "moderator", "support")
 
@@ -348,7 +348,7 @@ def admin_release_payment(request):
     payment.released_at = timezone.now()
     payment.released_by = user
     payment.save(update_fields=["release_status", "released_at", "released_by"])
-    # F6-P4 (owner 2026-06-19): releasing revenue (re)settles the event's organizer payout split —
+    # F6-P4 (owner 2026-06-19): releasing revenue (re)settles the event's organizer payout split - 
     # the event's released revenue is divided among the owning orgs (primary + accepted co-owners by
     # payout_percent), minus the AFC fee, into OrganizationEarning ledger rows. Best-effort/idempotent.
     try:

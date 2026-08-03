@@ -64,7 +64,7 @@ def _award_pool(dist, ordered_ids, currency, rate_map, totals):
 def compute_event_prize_totals(event):
     """PURE (no writes): the NGN winnings each team SHOULD get, per the current rule.
 
-    Owner rule (2026-07-14): a team's prize is the SUM of every prize it earned across the event —
+    Owner rule (2026-07-14): a team's prize is the SUM of every prize it earned across the event - 
     the event-level pool PLUS any per-stage and per-group pools. Each pool is mapped onto the
     standings it belongs to:
       - EVENT pool  -> the event's FINAL standings (rank by LAST STAGE PLAYED; the same table the
@@ -178,7 +178,7 @@ def sync_completed_events(seasons_start=None, seasons_end=None):
     """On-read sweep for the rankings prize page: sync every EFFECTIVELY-completed event (optionally
     inside the season window) that has a prize_distribution but no auto rows yet. Cheap when idle.
 
-    EFFECTIVE, not raw event_status (owner 2026-07-14 bug — DYNASTY CUP GRAND FINALS SSA): the
+    EFFECTIVE, not raw event_status (owner 2026-07-14 bug - DYNASTY CUP GRAND FINALS SSA): the
     ongoing->completed auto-complete sweep is NOT scheduled in the live celery beat, so a finished
     event can sit at raw event_status "ongoing"/"upcoming" long after its end instant while every
     badge/leaderboard already reads it as "completed" via effective_event_status (read-time

@@ -14,7 +14,7 @@ one off. The scrim rows now carry their event_id and go through the same three g
 WHAT IS DELIBERATELY *NOT* CHANGED (spec §5.1 Step 3 / §12): scrim points are capped at 30% of the
 team's TOURNAMENT points, so a team with no tournament results scores 0 from scrims, and the §5.2
 participation floor then drops it from the ladder entirely. ``test_scrim_only_team_scores_nothing``
-locks that in as the CURRENT contract — changing it is a spec change, not a bug fix.
+locks that in as the CURRENT contract - changing it is a spec change, not a bug fix.
 
 The fixture builds the minimal object graph aggregation walks:
 Event(competition_type=...) -> Stages -> StageGroups -> Match -> TournamentTeam ->
@@ -120,7 +120,7 @@ class ScrimCountingControlTests(TestCase):
         )
         agg = aggregation.compute_team_monthly(self.team, MONTH)
         self.assertEqual(agg.result.scrim_pts, 0)
-        # The tournament half is untouched — the toggle is per event, not global.
+        # The tournament half is untouched - the toggle is per event, not global.
         self.assertGreater(agg.result.tournament_pts, 0)
 
     def test_result_exclusion_removes_a_teams_scrim_results(self):

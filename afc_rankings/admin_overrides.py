@@ -4,13 +4,13 @@ Admin manual-override write API for rankings & tiering (Phase 2).
 These endpoints are the human-judgement escape hatches on top of the automatic
 score engine. Five surfaces, all keyed on a quarterly score row for a given season:
 
-  * tier override        — pin a team's tier by hand (§5 / §11), or clear the pin.
-  * ban-zeroing (team)   — zero a team's quarterly score on a ban (§2.15), and undo.
-  * ban-zeroing (player) — zero a player's quarterly score on a ban (§2.15, §2.11).
-  * point deduction      — a partial penalty: subtract points without a full ban (§16).
-  * clear deduction      — remove a partial penalty.
+  * tier override        - pin a team's tier by hand (§5 / §11), or clear the pin.
+  * ban-zeroing (team)   - zero a team's quarterly score on a ban (§2.15), and undo.
+  * ban-zeroing (player) - zero a player's quarterly score on a ban (§2.15, §2.11).
+  * point deduction      - a partial penalty: subtract points without a full ban (§16).
+  * clear deduction      - remove a partial penalty.
 
-WHY these live apart from recalc.py: the score engine is purely *derived* — it
+WHY these live apart from recalc.py: the score engine is purely *derived* - it
 recomputes from raw stats and would happily wipe any manual decision. Each of these
 writes sets a *sticky* field that recalc.py already knows to respect:
   - ``tier_overridden`` → recalc keeps ``tier_assigned`` instead of the projected tier.
@@ -19,16 +19,16 @@ writes sets a *sticky* field that recalc.py already knows to respect:
                           ranking score the coordinator exposes is max(0, total - deducted).
 So the pattern everywhere below is: flip the sticky field inside a transaction, audit it,
 then enqueue a recalc on commit. The recalc re-ranks the period and honours the sticky
-state — it does NOT undo the manual decision.
+state - it does NOT undo the manual decision.
 
-Idiom (matches admin_views.py / views.py / serializers.py — do not class-ify):
+Idiom (matches admin_views.py / views.py / serializers.py - do not class-ify):
   * function-based ``@api_view`` views, manual-dict serialization, message-dict errors.
   * every mutation: ``_auth`` → ``_require_reason`` → ``with transaction.atomic()`` →
     write → ``_audit`` → enqueue recalc via ``transaction.on_commit`` (never inline).
 
 The season is taken from the URL path (``seasons/<int:season_id>/...``) and looked up
 directly; 404 if it doesn't exist. The (team|player, season) quarterly score row must
-already exist (it is produced by the read-side recalc) — 404 if it doesn't.
+already exist (it is produced by the read-side recalc) - 404 if it doesn't.
 
 URL routes (coordinator mounts these under the existing ``rankings/`` prefix):
   PATCH seasons/<season_id>/team-tier/<team_id>/        team_tier_override
@@ -60,7 +60,7 @@ BAN_TIER = 3
 
 # ───────────────────────── local serializer ─────────────────────────
 def serialize_team_quarterly_admin(s):
-    """Admin view of a TeamQuarterlyScore — surfaces the manual-override state the
+    """Admin view of a TeamQuarterlyScore - surfaces the manual-override state the
     public ``serializers.team_quarterly`` omits (override flag, ban flag, deduction)
     plus the *effective* score the ranking actually uses after a deduction.
 
@@ -87,7 +87,7 @@ def serialize_team_quarterly_admin(s):
 
 
 def serialize_player_quarterly_admin(s):
-    """Admin view of a PlayerQuarterlyScore — players only carry the ban flag (§2.11:
+    """Admin view of a PlayerQuarterlyScore - players only carry the ban flag (§2.11:
     no per-player tier override or deduction), so this surface is intentionally smaller."""
     return {
         "player_id": s.player_id,
@@ -117,7 +117,7 @@ def _get_season(season_id):
 def _get_team_score(team_id, season):
     """Resolve the TeamQuarterlyScore row for (team, season), or return (None, 404).
 
-    The row must already exist — it is created by the derived recalc, never here.
+    The row must already exist - it is created by the derived recalc, never here.
     select_related("team") so the serializer can read team_name without an extra query.
     """
     score = (TeamQuarterlyScore.objects
@@ -158,7 +158,7 @@ def team_tier_override(request, season_id, team_id):
 
     Clearing rule (per spec): if the requested tier equals the tier the team currently
     holds (its computed/assigned tier *before* this override is applied), we treat the
-    request as "no manual deviation needed" and CLEAR the override flag — letting recalc
+    request as "no manual deviation needed" and CLEAR the override flag - letting recalc
     resume projecting the tier automatically. Otherwise we lock the requested tier and
     set ``tier_overridden=True`` so recalc's guard (recalc.py §83) keeps it.
 
@@ -187,7 +187,7 @@ def team_tier_override(request, season_id, team_id):
         )
     if tier not in VALID_TIERS:
         return Response(
-            {"message": "Invalid tier — must be one of 0 (Elite), 1 (Competitive), 2 (Rising), 3 (Entry)."},
+            {"message": "Invalid tier - must be one of 0 (Elite), 1 (Competitive), 2 (Rising), 3 (Entry)."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -226,7 +226,7 @@ def team_tier_override(request, season_id, team_id):
             object_ref=f"team:{team_id}:season:{season.season_id}",
             before=before, after=after, season=season,
         )
-        # Enqueue AFTER commit — recalc re-ranks the quarter and honours the override guard.
+        # Enqueue AFTER commit - recalc re-ranks the quarter and honours the override guard.
         transaction.on_commit(
             lambda: tasks.enqueue_team(team_id, recalc.current_month(), season.season_id)
         )
@@ -290,7 +290,7 @@ def zero_team(request, season_id, team_id):
 
 @api_view(["POST"])
 def unzero_team(request, season_id, team_id):
-    """Lift a team's ban-zero (§2.15) — clears ``is_zeroed`` + the reason so the next
+    """Lift a team's ban-zero (§2.15) - clears ``is_zeroed`` + the reason so the next
     recalc recomputes the score and tier fresh. Audited as ``ban_zeroing`` / ``unzero``.
 
     Note we do NOT restore the old score here; clearing the flag and triggering a recalc
@@ -449,7 +449,7 @@ def deduct_points(request, season_id, team_id):
 
 @api_view(["POST"])
 def clear_deduction(request, season_id, team_id):
-    """Remove a team's manual point penalty (§16) — resets ``points_deducted`` to 0 and
+    """Remove a team's manual point penalty (§16) - resets ``points_deducted`` to 0 and
     clears the reason, restoring the full derived score. Audited as ``point_deduction`` /
     ``clear``, then a recalc re-ranks without the penalty.
     """

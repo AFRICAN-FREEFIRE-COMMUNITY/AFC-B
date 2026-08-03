@@ -1,5 +1,5 @@
 """
-Admin write API — Ghost teams + ghost players + claim lifecycle (Phase 2).
+Admin write API - Ghost teams + ghost players + claim lifecycle (Phase 2).
 
 A *ghost team* is a placeholder for an off-platform squad that shows up in tournament
 results before its real members have AFC accounts (§19.4). Admins create the ghost +
@@ -15,7 +15,7 @@ This module owns the admin CRUD + claim transitions for that lifecycle:
 Standalone ("parked") ghost players
 -----------------------------------
 ``GhostPlayer.ghost_team`` is NULLABLE (see the model), so a ghost player can also exist on
-its own — a provisional in-game name that is not yet attached to any ghost team. The flat
+its own - a provisional in-game name that is not yet attached to any ghost team. The flat
 ghost-player surface here owns that case (so an admin no longer has to pick a ghost team
 just to park an IGN):
 
@@ -33,7 +33,7 @@ deletable. The flat create is consumed by the FE CreateGhostPlayerModal
 
 It is function-based DRF (``@api_view``) with manual-dict serialization, matching
 ``views.py`` / ``serializers.py``. The auth + audit foundation is reused verbatim from
-``admin_views.py`` — DO NOT reimplement it here:
+``admin_views.py`` - DO NOT reimplement it here:
 
     user, err = _auth(request)              # 401/403 short-circuit (head_admin | metrics_admin)
     if err: return err
@@ -48,7 +48,7 @@ Audit bucket: every write here logs under ``object_type="ghost_claim"`` (one of
 
 Recalc note: claiming a ghost re-attributes historical results to the claiming team and
 therefore needs a retroactive, cross-period recalc. That spans many months/seasons and is
-NOT a single enqueue_team() call, so it is intentionally left to the coordinator — see the
+NOT a single enqueue_team() call, so it is intentionally left to the coordinator - see the
 ``# TODO(recalc)`` marker in ``approve_claim``. We do NOT enqueue inline here.
 """
 from django.db import models, transaction
@@ -57,7 +57,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-# Reuse the shared auth/audit foundation (admin_views.py) — never re-implemented locally.
+# Reuse the shared auth/audit foundation (admin_views.py) - never re-implemented locally.
 from .admin_views import _auth, _require_reason, _audit
 # validate_token is the house Bearer-token -> User resolver (afc_auth.views). The user-facing
 # request-claim endpoints below use it directly (a normal logged-in user, NOT the admin gate).
@@ -72,7 +72,7 @@ from . import claims
 def serialize_ghost_player(p, team_name=...):
     """One ghost roster slot → dict. ``slot`` is 1-based display order.
 
-    ``ghost_team_id`` / ``ghost_team_name`` are NULL for a standalone ("parked") player —
+    ``ghost_team_id`` / ``ghost_team_name`` are NULL for a standalone ("parked") player - 
     one created on its own, not attached to any ghost team. They are additive: the existing
     ``id`` / ``ign`` / ``slot`` keys are unchanged, so the nested-roster callers (serialize_ghost)
     keep working as before while the flat ghost-player surface gets the team context it needs.
@@ -84,7 +84,7 @@ def serialize_ghost_player(p, team_name=...):
     """
     if team_name is ...:
         # no hint from the caller: read the team name off the (select_related) relation,
-        # null-safe — None for a standalone player.
+        # null-safe - None for a standalone player.
         team_name = p.ghost_team.team_name if p.ghost_team_id else None
     return {
         "id": p.id,
@@ -93,7 +93,7 @@ def serialize_ghost_player(p, team_name=...):
         # null-safe: read the FK id without a DB hit; None means standalone (no team).
         "ghost_team_id": str(p.ghost_team_id) if p.ghost_team_id else None,
         "ghost_team_name": team_name,
-        # claim lifecycle (ghost-claim-process-design.md §7) — mirrors serialize_ghost's claim block,
+        # claim lifecycle (ghost-claim-process-design.md §7) - mirrors serialize_ghost's claim block,
         # but claimed_by / claim_requested_by / claim_approved_by are User ids (a player claims itself).
         # Consumed by the admin pending-claim queue (ghost_players_list?claim_status=pending) and the
         # FE claim dialog (to hide the Claim action on an already-pending/claimed ghost).
@@ -159,7 +159,7 @@ def _clean_players(raw):
 
     Body shape is ``[{"ign": "..."}, ...]`` with >=1 non-blank ign. Returns
     ``(cleaned_list, None)`` or ``(None, Response 400)``. Slot numbers are NOT taken from
-    the body — they are assigned positionally (index+1) by the caller so the roster is
+    the body - they are assigned positionally (index+1) by the caller so the roster is
     always a clean 1..N sequence.
     """
     if not isinstance(raw, list) or len(raw) < 1:
@@ -230,7 +230,7 @@ def _user_can_act_for_team(user, team):
 # ───────────────────────── LIST + DETAIL (read-only) ─────────────────────────
 @api_view(["GET"])
 def ghost_list(request):
-    """GET ghost-teams/ — paginated list with nested rosters.
+    """GET ghost-teams/ - paginated list with nested rosters.
 
     Filters:
       ?claim_status=unclaimed|pending|claimed|revoked   exact match on claim_status
@@ -265,7 +265,7 @@ def ghost_list(request):
 
 @api_view(["GET"])
 def ghost_detail(request, ghost_team_id):
-    """GET ghost-teams/<uuid>/ — one ghost team with its roster + claim fields. Read-only."""
+    """GET ghost-teams/<uuid>/ - one ghost team with its roster + claim fields. Read-only."""
     user, err = _auth(request)
     if err:
         return err
@@ -278,14 +278,14 @@ def ghost_detail(request, ghost_team_id):
 # ───────────────────────── CREATE ─────────────────────────
 @api_view(["POST"])
 def ghost_create(request):
-    """POST ghost-teams/ — create a ghost team + its initial roster.
+    """POST ghost-teams/ - create a ghost team + its initial roster.
 
     Body:
       team_name   (required)
       country     (required)
       external_id (optional)
-      players     (required, >=1) — [{"ign": "..."}]
-      reason      (required, >=10 chars — the audit reason)
+      players     (required, >=1) - [{"ign": "..."}]
+      reason      (required, >=10 chars - the audit reason)
 
     Roster slots are assigned positionally (index+1). ``created_by`` is the acting admin.
     Audit: object_type="ghost_claim", action="create".
@@ -316,7 +316,7 @@ def ghost_create(request):
             external_id=external_id,
             created_by=user,
             # is_provisional / is_active / claim_status keep their model defaults
-            # (True / True / "unclaimed") — a freshly created ghost is always unclaimed.
+            # (True / True / "unclaimed") - a freshly created ghost is always unclaimed.
         )
         # slot = index + 1 → clean 1..N roster ordering.
         GhostPlayer.objects.bulk_create([
@@ -337,21 +337,21 @@ def ghost_create(request):
 # ───────────────────────── ADD SINGLE PLAYER ─────────────────────────
 @api_view(["POST"])
 def ghost_player_create(request, ghost_team_id):
-    """POST ghost-teams/<uuid>/players/ — append ONE ghost player to an existing ghost team.
+    """POST ghost-teams/<uuid>/players/ - append ONE ghost player to an existing ghost team.
 
     This is the surface the admin *Players* page uses to "create a ghost player": a ghost
     player is always a roster slot on a ghost team (``GhostPlayer.ghost_team`` is non-null),
     so the body must say which ghost team it belongs to (the <uuid> in the path).
 
     Body:
-      ign     (required) — the in-game name for the new slot
-      reason  (required, >=10 chars — the audit reason)
+      ign     (required) - the in-game name for the new slot
+      reason  (required, >=10 chars - the audit reason)
 
     Unlike ``ghost_update`` (which REPLACES the whole roster), this only APPENDS one slot, so
     the existing roster is left untouched. The new slot number is ``max(existing slots) + 1``
     so the roster stays a clean 1..N sequence even after repeated single adds.
 
-    Same freeze rule as ``ghost_update``: only allowed while ``claim_status == 'unclaimed'`` —
+    Same freeze rule as ``ghost_update``: only allowed while ``claim_status == 'unclaimed'`` - 
     a pending/claimed ghost is frozen (adding to a claimed ghost would silently rewrite a real
     team's roster), so we 400 instead. Audit: object_type="ghost_claim", action="add_player".
     """
@@ -365,7 +365,7 @@ def ghost_player_create(request, ghost_team_id):
     if err:
         return err
 
-    # freeze guard — mirror ghost_update: only unclaimed ghosts accept roster edits.
+    # freeze guard - mirror ghost_update: only unclaimed ghosts accept roster edits.
     if ghost.claim_status != "unclaimed":
         return Response(
             {"message": f"Cannot add a player to a ghost team with claim_status '{ghost.claim_status}'. "
@@ -373,7 +373,7 @@ def ghost_player_create(request, ghost_team_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # one ign, non-blank — same normalisation rule _clean_players applies per entry.
+    # one ign, non-blank - same normalisation rule _clean_players applies per entry.
     ign = (request.data.get("ign") or "").strip()
     if not ign:
         return Response({"message": "ign is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -419,21 +419,21 @@ def _get_player_or_404(player_id):
 
 @api_view(["POST"])
 def ghost_player_create_flat(request):
-    """POST ghost-players/ — create ONE ghost player, with the ghost team OPTIONAL.
+    """POST ghost-players/ - create ONE ghost player, with the ghost team OPTIONAL.
 
     This is the surface the admin *Players* page uses to "create a ghost player" without being
     forced onto a ghost team. CONSUMED BY the FE CreateGhostPlayerModal
     (``rankingsAdminApi.createGhostPlayerFlat``).
 
     Request body:
-      ign           (required, non-blank) — the in-game name for the new player
-      ghost_team_id (optional, uuid)      — if given, attach the player to that ghost team;
+      ign           (required, non-blank) - the in-game name for the new player
+      ghost_team_id (optional, uuid)      - if given, attach the player to that ghost team;
                                             if absent/blank, create a STANDALONE (team-less) player
-      reason        (required, >=10 chars — the audit reason; KEPT for every write)
+      reason        (required, >=10 chars - the audit reason; KEPT for every write)
 
     Behaviour:
       - attached (ghost_team_id given): re-apply the freeze guard (the team must be
-        ``claim_status == 'unclaimed'`` or 400), then slot = max(existing slots) + 1 — mirrors
+        ``claim_status == 'unclaimed'`` or 400), then slot = max(existing slots) + 1 - mirrors
         ``ghost_player_create`` so the roster stays a clean 1..N sequence.
       - standalone (no ghost_team_id): create GhostPlayer(ghost_team=None, slot=1); slot is not
         meaningful with no roster, so it is a fixed 1. The freeze guard is skipped (a team-less
@@ -451,7 +451,7 @@ def ghost_player_create_flat(request):
     if err:
         return err
 
-    # one ign, non-blank — same normalisation rule the nested route + _clean_players apply.
+    # one ign, non-blank - same normalisation rule the nested route + _clean_players apply.
     ign = (request.data.get("ign") or "").strip()
     if not ign:
         return Response({"message": "ign is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -493,7 +493,7 @@ def ghost_player_create_flat(request):
 
 @api_view(["GET"])
 def ghost_players_list(request):
-    """GET ghost-players/ — paginated list of ALL ghost players (attached + standalone).
+    """GET ghost-players/ - paginated list of ALL ghost players (attached + standalone).
 
     Read-only (skips the reason + audit steps, per the admin_views.py contract).
 
@@ -506,7 +506,7 @@ def ghost_players_list(request):
     ``ghost-players/?claim_status=pending`` (and ``ghost-teams/?claim_status=pending``) to build one
     combined queue of ghost claims awaiting review.
 
-    Sort: ``-id`` (creation order) — for standalone rows ``slot`` is always 1, so it is not a
+    Sort: ``-id`` (creation order) - for standalone rows ``slot`` is always 1, so it is not a
     meaningful sort key; newest-first by id is the predictable order across both kinds.
 
     Response: ``{results: [serialize_ghost_player...], pagination}`` (the canonical envelope).
@@ -549,7 +549,7 @@ def ghost_players_list(request):
 
 @api_view(["GET"])
 def ghost_player_detail(request, player_id):
-    """GET ghost-players/<int:player_id>/ — one ghost player (attached or standalone). Read-only.
+    """GET ghost-players/<int:player_id>/ - one ghost player (attached or standalone). Read-only.
 
     Response: serialize_ghost_player(player). Auth: head_admin | metrics_admin (via _auth).
     """
@@ -564,19 +564,19 @@ def ghost_player_detail(request, player_id):
 
 @api_view(["PATCH"])
 def ghost_player_update(request, player_id):
-    """PATCH ghost-players/<int:player_id>/ — edit ign and/or slot of one ghost player.
+    """PATCH ghost-players/<int:player_id>/ - edit ign and/or slot of one ghost player.
 
     Request body (all optional except reason; only present fields are patched):
-      ign     (optional, non-blank if present) — new in-game name
-      slot    (optional, positive int)         — new display order
-      reason  (required, >=10 chars — the audit reason)
+      ign     (optional, non-blank if present) - new in-game name
+      slot    (optional, positive int)         - new display order
+      reason  (required, >=10 chars - the audit reason)
 
     Freeze: applied ONLY when the player is attached to a team whose ``claim_status`` is not
     "unclaimed" (editing a claimed team's roster would rewrite a real team's history → 400).
     A standalone player (ghost_team NULL) is ALWAYS editable.
 
     First cut: this does NOT move a standalone player onto a team (no ghost_team_id field is
-    accepted here) — attaching/claiming is a separate, later step.
+    accepted here) - attaching/claiming is a separate, later step.
 
     Response: serialize_ghost_player(player). Auth: head_admin | metrics_admin (via _auth).
     Audit: object_type="ghost_claim", action="update_player".
@@ -591,7 +591,7 @@ def ghost_player_update(request, player_id):
     if err:
         return err
 
-    # freeze guard — only bites when attached to a non-unclaimed team; standalone is free.
+    # freeze guard - only bites when attached to a non-unclaimed team; standalone is free.
     if player.ghost_team_id and player.ghost_team.claim_status != "unclaimed":
         return Response(
             {"message": f"Cannot edit a player on a ghost team with claim_status "
@@ -632,10 +632,10 @@ def ghost_player_update(request, player_id):
 
 @api_view(["DELETE"])
 def ghost_player_delete(request, player_id):
-    """DELETE ghost-players/<int:player_id>/ — remove one ghost player.
+    """DELETE ghost-players/<int:player_id>/ - remove one ghost player.
 
     Request body:
-      reason  (required, >=10 chars — the audit reason)
+      reason  (required, >=10 chars - the audit reason)
 
     Freeze: applied ONLY when the player is attached to a team whose ``claim_status`` is not
     "unclaimed" (deleting a claimed team's slot would rewrite a real team's roster → 400). A
@@ -654,7 +654,7 @@ def ghost_player_delete(request, player_id):
     if err:
         return err
 
-    # freeze guard — only bites when attached to a non-unclaimed team; standalone is free.
+    # freeze guard - only bites when attached to a non-unclaimed team; standalone is free.
     if player.ghost_team_id and player.ghost_team.claim_status != "unclaimed":
         return Response(
             {"message": f"Cannot delete a player on a ghost team with claim_status "
@@ -677,9 +677,9 @@ def ghost_player_delete(request, player_id):
 # ───────────────────────── UPDATE ─────────────────────────
 @api_view(["PATCH"])
 def ghost_update(request, ghost_team_id):
-    """PATCH ghost-teams/<uuid>/ — edit name/country/external_id AND replace the roster.
+    """PATCH ghost-teams/<uuid>/ - edit name/country/external_id AND replace the roster.
 
-    Only allowed while ``claim_status == 'unclaimed'`` — once a claim is pending/claimed the
+    Only allowed while ``claim_status == 'unclaimed'`` - once a claim is pending/claimed the
     ghost is frozen (editing a claimed ghost would silently rewrite a real team's history),
     so we 400 instead. The roster is fully REPLACED from body ``players[]`` (>=1), re-slotted
     1..N. Audit: object_type="ghost_claim", action="update".
@@ -723,7 +723,7 @@ def ghost_update(request, ghost_team_id):
             ghost.external_id = (request.data.get("external_id") or "").strip() or None
         ghost.save()
 
-        # full roster replacement — delete the old slots, recreate 1..N from the body.
+        # full roster replacement - delete the old slots, recreate 1..N from the body.
         ghost.players.all().delete()
         GhostPlayer.objects.bulk_create([
             GhostPlayer(ghost_team=ghost, ign=p["ign"], slot=i + 1)
@@ -743,7 +743,7 @@ def ghost_update(request, ghost_team_id):
 # ───────────────────────── DELETE ─────────────────────────
 @api_view(["DELETE"])
 def ghost_delete(request, ghost_team_id):
-    """DELETE ghost-teams/<uuid>/ — remove a ghost team (and its roster, via FK cascade).
+    """DELETE ghost-teams/<uuid>/ - remove a ghost team (and its roster, via FK cascade).
 
     Blocked if ``claim_status == 'claimed'`` (deleting a claimed ghost would orphan a real
     team's attributed history) → 400. Audit: object_type="ghost_claim", action="delete".
@@ -779,7 +779,7 @@ def ghost_delete(request, ghost_team_id):
 # ───────────────────────── CLAIM LIFECYCLE ─────────────────────────
 @api_view(["POST"])
 def ghost_approve_claim(request, ghost_team_id):
-    """POST ghost-teams/<uuid>/approve-claim/ — approve a PENDING team claim + re-attribute history.
+    """POST ghost-teams/<uuid>/approve-claim/ - approve a PENDING team claim + re-attribute history.
 
     Request: body { reason (>=10 chars) }. Auth: head_admin | metrics_admin (_auth).
     FE consumer: the admin claim queue's Approve button (a section under admin rankings listing
@@ -792,7 +792,7 @@ def ghost_approve_claim(request, ghost_team_id):
     LeaderboardParticipant from this ghost onto the requested team, deletes the ghost's score rows,
     and recomputes the real team for every affected month + season so it inherits the ghost's points,
     rank, and tier. If the real team is already a participant alongside the ghost in some leaderboard,
-    the service raises claims.ClaimConflict and we 400 with its message (nothing is committed — the
+    the service raises claims.ClaimConflict and we 400 with its message (nothing is committed - the
     raise rolls back the whole transaction). On success we flip claim_status='claimed', stamp
     claimed_at + claim_approved_by, and audit ghost_claim/approve with the service summary in `after`.
     """
@@ -840,16 +840,16 @@ def ghost_approve_claim(request, ghost_team_id):
     return Response(after)
 
 
-# ───────────────────────── CLAIM REQUEST (user-facing — the initiate step) ─────────────────────────
+# ───────────────────────── CLAIM REQUEST (user-facing - the initiate step) ─────────────────────────
 @api_view(["POST"])
 def ghost_team_request_claim(request, ghost_team_id):
-    """POST ghost-teams/<uuid>/request-claim/ — a real team OWNER/CAPTAIN/MANAGER requests a claim.
+    """POST ghost-teams/<uuid>/request-claim/ - a real team OWNER/CAPTAIN/MANAGER requests a claim.
 
     Request body:
-      team_id   (required) — the real afc_team.Team the requester wants to map this ghost onto
-      evidence  (optional) — free-text the admin reads when reviewing (stored in claim_note)
+      team_id   (required) - the real afc_team.Team the requester wants to map this ghost onto
+      evidence  (optional) - free-text the admin reads when reviewing (stored in claim_note)
 
-    Auth: a normal logged-in user (Bearer SessionToken via _auth_user) — this is a USER action, NOT
+    Auth: a normal logged-in user (Bearer SessionToken via _auth_user) - this is a USER action, NOT
     an admin action, so it is NOT gated by _auth. The requester MUST run team_id (owner/captain/manager
     via _user_can_act_for_team) or 403.
 
@@ -884,7 +884,7 @@ def ghost_team_request_claim(request, ghost_team_id):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    # one pending claim per ghost — only an unclaimed ghost can be requested.
+    # one pending claim per ghost - only an unclaimed ghost can be requested.
     if ghost.claim_status != "unclaimed":
         return Response(
             {"message": f"This ghost team already has a claim ({ghost.claim_status}); "
@@ -919,7 +919,7 @@ def ghost_team_request_claim(request, ghost_team_id):
 # ───────────────────────── REJECT a pending TEAM claim (admin) ─────────────────────────
 @api_view(["POST"])
 def ghost_reject_claim(request, ghost_team_id):
-    """POST ghost-teams/<uuid>/reject-claim/ — reject a PENDING team claim (no re-attribution).
+    """POST ghost-teams/<uuid>/reject-claim/ - reject a PENDING team claim (no re-attribution).
 
     Request: body { reason (>=10 chars) }. Auth: head_admin | metrics_admin (_auth). FE consumer: the
     admin claim queue's Reject button.
@@ -969,10 +969,10 @@ def ghost_reject_claim(request, ghost_team_id):
 # ───────────────────────── PLAYER claim lifecycle (request / approve / reject) ─────────────────────────
 @api_view(["POST"])
 def ghost_player_request_claim(request, player_id):
-    """POST ghost-players/<int:player_id>/request-claim/ — a real user claims this IGN as THEMSELVES.
+    """POST ghost-players/<int:player_id>/request-claim/ - a real user claims this IGN as THEMSELVES.
 
     Request body:
-      evidence  (optional) — free-text the admin reads when reviewing (stored in claim_note)
+      evidence  (optional) - free-text the admin reads when reviewing (stored in claim_note)
 
     Auth: a normal logged-in user (Bearer SessionToken via _auth_user). Unlike the team request,
     there is no role gate: a player claims their OWN account (claimed_by = the requester).
@@ -1023,7 +1023,7 @@ def ghost_player_request_claim(request, player_id):
 
 @api_view(["POST"])
 def ghost_player_approve_claim(request, player_id):
-    """POST ghost-players/<int:player_id>/approve-claim/ — approve a PENDING player claim + re-attribute.
+    """POST ghost-players/<int:player_id>/approve-claim/ - approve a PENDING player claim + re-attribute.
 
     Request: body { reason (>=10 chars) }. Auth: head_admin | metrics_admin (_auth). FE consumer: the
     admin claim queue's Approve button (combined teams + players queue).
@@ -1075,7 +1075,7 @@ def ghost_player_approve_claim(request, player_id):
 
 @api_view(["POST"])
 def ghost_player_reject_claim(request, player_id):
-    """POST ghost-players/<int:player_id>/reject-claim/ — reject a PENDING player claim.
+    """POST ghost-players/<int:player_id>/reject-claim/ - reject a PENDING player claim.
 
     Request: body { reason (>=10 chars) }. Auth: head_admin | metrics_admin (_auth). FE consumer: the
     admin claim queue's Reject button. Mirror of ghost_reject_claim for the solo side: requires
@@ -1120,7 +1120,7 @@ def ghost_player_reject_claim(request, player_id):
 
 @api_view(["POST"])
 def ghost_revoke_claim(request, ghost_team_id):
-    """POST ghost-teams/<uuid>/revoke-claim/ — undo a claim.
+    """POST ghost-teams/<uuid>/revoke-claim/ - undo a claim.
 
     Sets claim_status back to 'unclaimed' (the editable state), clears claimed_by / claimed_at /
     claim_approved_by, and stamps claim_revoked_at=now. Audit: object_type="ghost_claim",

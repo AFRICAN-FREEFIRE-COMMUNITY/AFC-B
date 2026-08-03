@@ -4,11 +4,11 @@ DB-level enforcement test for the per-event assigned-letter uniqueness (Gap 3, f
 TournamentTeam.assigned_letter is the single A-Z letter an admin/organizer assigns to a registered
 team for in-game use in one event (see assign_team_letter). The Meta UniqueConstraint
 `uniq_assigned_letter_per_event` must guarantee, AT THE DATABASE LEVEL, that no two teams in the
-same event hold the same non-null letter — while leaving any number of UNASSIGNED teams
+same event hold the same non-null letter - while leaving any number of UNASSIGNED teams
 (assigned_letter = NULL) free of collisions.
 
-The constraint used to carry `condition=Q(assigned_letter__isnull=False)` (a partial index). MySQL —
-the production database — silently IGNORES that condition, so it gave ZERO enforcement there. It is
+The constraint used to carry `condition=Q(assigned_letter__isnull=False)` (a partial index). MySQL - 
+the production database - silently IGNORES that condition, so it gave ZERO enforcement there. It is
 now a PLAIN UniqueConstraint, which MySQL DOES enforce, and because MySQL/Postgres both allow
 MULTIPLE NULLs in a unique index, unassigned teams still don't collide. These tests pin both halves:
 duplicate non-null letter -> IntegrityError; many NULLs -> fine; same letter in a DIFFERENT event ->
@@ -69,7 +69,7 @@ class AssignedLetterUniqueConstraintTests(TestCase):
                 )
 
     def test_multiple_null_letters_in_same_event_coexist(self):
-        # Several UNASSIGNED teams (assigned_letter=NULL) in one event must NOT collide — the whole
+        # Several UNASSIGNED teams (assigned_letter=NULL) in one event must NOT collide - the whole
         # reason we keep NULLs out of the uniqueness. Three null-letter rows save cleanly.
         for name, tag in (("N1", "N1"), ("N2", "N2"), ("N3", "N3")):
             TournamentTeam.objects.create(

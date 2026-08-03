@@ -1,11 +1,11 @@
 """
-Task 2.6 — tests for the ASYNC multi-image OCR batch (afc_leaderboard.ocr + the ocr_job_* endpoints).
+Task 2.6 - tests for the ASYNC multi-image OCR batch (afc_leaderboard.ocr + the ocr_job_* endpoints).
 
 The batch lets an admin upload several maps, each with one or more screenshots, and read them in the
 BACKGROUND (Celery) so the synchronous request can never time out. These tests:
   - merge_placements: several screenshots of ONE map are unioned + de-duped into one ordered list.
   - process_job: the worker body reads each image via the SHARED extractor (mocked at the
-    afc_ocr.services.extract boundary — never hits Gemini), merges, matches, stores rows + status.
+    afc_ocr.services.extract boundary - never hits Gemini), merges, matches, stores rows + status.
   - endpoints: create (multipart, many images) → run / run-all (eager Celery) → list (poll) → apply
     (reuses _apply_ocr_rows, so a map + participants + scored results appear) → delete. Plus the
     non-manager 403 gate on every mutation.

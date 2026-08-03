@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# sync_event_prizes — attribute prize pools for finished events (owner 2026-07-14).
+# sync_event_prizes - attribute prize pools for finished events (owner 2026-07-14).
 #
 # WHY: the event -> prize auto-sync (prize_sync.sync_completed_events) only runs when an admin opens
 # the rankings "Prize Money" page. So a finished event's prize pool (e.g. DYNASTY CUP GRAND FINALS SSA)
@@ -46,7 +46,7 @@ class Command(BaseCommand):
 
         # ── Preview: finished events whose auto payouts are MISSING or STALE ──
         # event_prize_is_stale is True when the stored auto payouts differ from what the CURRENT rule
-        # (last-stage-played, summed pools) produces — so this catches both never-attributed events AND
+        # (last-stage-played, summed pools) produces - so this catches both never-attributed events AND
         # ones left with an out-of-date amount/team from the earlier cumulative rule (owner 2026-07-14).
         today = datetime.date.today()
         candidates = (Event.objects

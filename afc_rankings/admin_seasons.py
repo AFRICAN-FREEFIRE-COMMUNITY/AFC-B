@@ -1,15 +1,15 @@
 """
-Seasons admin write API (Phase 2) — create / edit seasons + drive the transfer window.
+Seasons admin write API (Phase 2) - create / edit seasons + drive the transfer window.
 
 This is the first of the Phase-2 admin *write* surfaces. It builds on the shared
 foundation in ``admin_views.py`` (``_auth`` / ``_require_reason`` / ``_audit`` /
 ``RANKING_ADMIN_ROLES``) and deliberately mirrors the existing house style so the
 original dev reads it without surprises:
 
-  * function-based DRF views (``@api_view``), NOT class-based — same as ``views.py``.
+  * function-based DRF views (``@api_view``), NOT class-based - same as ``views.py``.
   * manual-dict serialization (local ``serialize_*`` functions), NO DRF Serializer
-    classes — same as ``serializers.py``.
-  * ``Response({"message": ...}, status=...)`` for every validation/error path —
+    classes - same as ``serializers.py``.
+  * ``Response({"message": ...}, status=...)`` for every validation/error path - 
     same message-dict shape as ``afc_auth.views``.
   * every mutating endpoint runs: (1) auth gate, (2) reason gate (for writes that
     change ranking state), (3) the write inside ``transaction.atomic()``, then
@@ -32,7 +32,7 @@ the public read API resolves to in ``views._resolve_season``). Whenever a write 
 NO RECALC HERE
 --------------
 Editing a season's metadata / dates / transfer window does NOT change any computed
-score, so — unlike the result/prize/roster write surfaces — these endpoints never
+score, so - unlike the result/prize/roster write surfaces - these endpoints never
 enqueue a recalc. (Re-running quarterly tier evaluation is a separate Phase-2
 surface, ``run-evaluation``.)
 """
@@ -75,7 +75,7 @@ def serialize_season(s):
 
 
 def serialize_transfer_log(row):
-    """One ``TransferWindowLog`` row — the prev/new window dates for an open/close/extend."""
+    """One ``TransferWindowLog`` row - the prev/new window dates for an open/close/extend."""
     return {
         "id": row.id,
         "season_id": row.season_id,
@@ -124,10 +124,10 @@ def season_create(request):
     ``transfer_window_open``, ``transfer_window_close`` (all dates ISO ``YYYY-MM-DD``),
     plus the mandatory audit ``reason``. Optional: ``is_active`` (default False).
 
-    The ``(year, quarter)`` pair is unique at the DB level — a clashing pair surfaces as
+    The ``(year, quarter)`` pair is unique at the DB level - a clashing pair surfaces as
     an ``IntegrityError`` which we translate to a clean 400 rather than a 500.
     """
-    # (1) auth — head_admin only (override the default head_admin|metrics_admin set).
+    # (1) auth - head_admin only (override the default head_admin|metrics_admin set).
     user, err = _auth(request, roles=("head_admin",))
     if err:
         return err
@@ -184,7 +184,7 @@ def season_create(request):
 
     is_active = bool(data.get("is_active", False))
 
-    # (3) the write — inside a single transaction so create + one-active invariant commit together.
+    # (3) the write - inside a single transaction so create + one-active invariant commit together.
     try:
         with transaction.atomic():
             season = Season.objects.create(
@@ -197,7 +197,7 @@ def season_create(request):
             if is_active:
                 _deactivate_other_seasons(season.pk)
 
-            # (4) audit — before is empty (nothing existed), after is the created row.
+            # (4) audit - before is empty (nothing existed), after is the created row.
             after = serialize_season(season)
             _audit(
                 user, "season", "create", reason,
@@ -218,11 +218,11 @@ def season_create(request):
 def season_update(request, season_id):
     """Edit a season's name / dates / transfer-window dates / ``is_active``.
 
-    Ranking admins (head_admin OR metrics_admin — the default ``_auth`` set). Partial:
+    Ranking admins (head_admin OR metrics_admin - the default ``_auth`` set). Partial:
     only the fields present in the body are touched. If ``is_active`` is set true we
     re-assert the one-active-season invariant in the same transaction.
     """
-    # (1) auth — default ranking-admin set.
+    # (1) auth - default ranking-admin set.
     user, err = _auth(request)
     if err:
         return err
@@ -274,13 +274,13 @@ def season_update(request, season_id):
         set_active = bool(data.get("is_active"))
         season.is_active = set_active
 
-    # (3) the write — save + (if activated) re-assert the one-active invariant atomically.
+    # (3) the write - save + (if activated) re-assert the one-active invariant atomically.
     with transaction.atomic():
         season.save()
         if set_active:
             _deactivate_other_seasons(season.pk)
 
-        # (4) audit — before/after snapshots make the change self-explanatory + reversible.
+        # (4) audit - before/after snapshots make the change self-explanatory + reversible.
         after = serialize_season(season)
         _audit(
             user, "season", "update", reason,
@@ -295,18 +295,18 @@ def season_update(request, season_id):
 def transfer_window_action(request, season_id):
     """Open / close / extend a season's transfer window.
 
-    Ranking admins (head_admin OR metrics_admin — default ``_auth`` set). Body:
+    Ranking admins (head_admin OR metrics_admin - default ``_auth`` set). Body:
       * ``action``         one of "opened" | "closed" | "extended" (matches
                            ``TransferWindowLog.ACTION_CHOICES``).
-      * ``new_open_date``  optional ISO date — new window-open date.
-      * ``new_close_date`` optional ISO date — new window-close date.
+      * ``new_open_date``  optional ISO date - new window-open date.
+      * ``new_close_date`` optional ISO date - new window-close date.
       * ``reason``         mandatory audit reason.
 
     Writes BOTH a ``TransferWindowLog`` row (capturing prev → new dates) AND a
     ``RankingAuditLog`` row with ``object_type="transfer_window"`` so the change shows
     up in the general ranking audit feed as well as the season's transfer-window history.
     """
-    # (1) auth — default ranking-admin set.
+    # (1) auth - default ranking-admin set.
     user, err = _auth(request)
     if err:
         return err
@@ -359,7 +359,7 @@ def transfer_window_action(request, season_id):
 
     before = serialize_season(season)
 
-    # (3) the write — update the season's window + log the transition, atomically.
+    # (3) the write - update the season's window + log the transition, atomically.
     with transaction.atomic():
         season.transfer_window_open = new_open
         season.transfer_window_close = new_close
@@ -377,7 +377,7 @@ def transfer_window_action(request, season_id):
             reason=reason,
         )
 
-        # (4) audit — object_type="transfer_window" so it threads into the general audit feed too.
+        # (4) audit - object_type="transfer_window" so it threads into the general audit feed too.
         after = serialize_season(season)
         _audit(
             user, "transfer_window", action, reason,
@@ -396,10 +396,10 @@ def transfer_log_list(request, season_id):
     """List a season's transfer-window history (newest first). Read-only → no reason, no audit.
 
     Auth still required (admin surface), but using the default read gate via ``_auth``
-    keeps it consistent with the write endpoints — only ranking admins see the log.
+    keeps it consistent with the write endpoints - only ranking admins see the log.
     Paginated with the canonical envelope ({"results": [...], "pagination": meta}).
     """
-    # auth only — read-only endpoint skips the reason gate and the audit write.
+    # auth only - read-only endpoint skips the reason gate and the audit write.
     user, err = _auth(request)
     if err:
         return err

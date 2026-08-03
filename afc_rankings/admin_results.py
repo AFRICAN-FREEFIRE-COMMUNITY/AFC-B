@@ -1,18 +1,18 @@
 """
-Admin write API — Result Markers: per-tournament counting controls + result exclusions (Phase 2).
+Admin write API - Result Markers: per-tournament counting controls + result exclusions (Phase 2).
 
 WHAT THIS COVERS
 ----------------
 Two human-judgement levers over how a *tournament's* results feed the rankings. Both are
 read at aggregation time (see ``aggregation.py`` -> ``_counting_controls`` /
 ``_excluded_event_ids``), so flipping either one and recalculating re-derives the affected
-scores. Neither lever mutates a score directly — the score engine stays pure.
+scores. Neither lever mutates a score directly - the score engine stays pure.
 
-  * EventCountingControl  — per-event toggles for whether each scoring COMPONENT counts:
+  * EventCountingControl  - per-event toggles for whether each scoring COMPONENT counts:
                             ``count_winner`` (winner bonus), ``count_placement`` (placement
                             points), ``count_kills`` (kill points). OneToOne with Event.
                             NO row for an event ⇒ everything counts (defaults all-True).
-  * ResultExclusion       — per-event opt-out for ONE team or player: their results in this
+  * ResultExclusion       - per-event opt-out for ONE team or player: their results in this
                             event don't count at all (e.g. a disqualification / protest).
                             team XOR player (enforced here AND by a DB CheckConstraint).
 
@@ -24,7 +24,7 @@ mirrors admin_prize.py / admin_overrides.py exactly:
     flip the row inside a transaction -> _audit -> enqueue recalc on transaction.on_commit.
 We NEVER recalc inline (project rule). We recalc for the *current month* + the *active
 season* (recalc.current_month() / recalc.current_season()), consistent with the other
-data-entry surfaces — the affected event may span an older month, but the live ranking the
+data-entry surfaces - the affected event may span an older month, but the live ranking the
 admin is curating is the current one, and enqueue_team/enqueue_player fire both the monthly
 and quarterly recalcs harmlessly.
 
@@ -35,16 +35,16 @@ and quarterly recalcs harmlessly.
 WHICH EVENTS BELONG TO A SEASON
 -------------------------------
 Event has no Season FK. A competition belongs to a season when its ``start_date`` falls in the
-season's [start_date, end_date] window — the same date-window approach admin_prize.py uses
+season's [start_date, end_date] window - the same date-window approach admin_prize.py uses
 for payouts. Both tournaments AND scrims are listed (owner 2026-08-03): a scrim's placement, kill
 and win points feed the monthly/quarterly scores through ``aggregation._apply_scrim_caps``, so it
 needs the same off switch every other counting result has. Drafts are excluded.
 
-IDIOM (matches the rest of afc_rankings — read views.py / serializers.py / admin_views.py):
+IDIOM (matches the rest of afc_rankings - read views.py / serializers.py / admin_views.py):
   * function-based ``@api_view`` views, NOT class-based; NO DRF Serializer classes.
   * manual-dict serialization via the LOCAL ``serialize_event_markers`` /
     ``serialize_exclusion`` helpers below.
-  * the auth + audit foundation is REUSED from ``admin_views.py`` — never reimplemented:
+  * the auth + audit foundation is REUSED from ``admin_views.py`` - never reimplemented:
         user, err = _auth(request, roles=...)    # 401/403 short-circuit
         reason, err = _require_reason(request)    # mandatory >= 10-char audit reason (writes only)
         with transaction.atomic(): ...write...
@@ -74,7 +74,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-# Shared auth/audit foundation — do NOT reimplement these here (project rule).
+# Shared auth/audit foundation - do NOT reimplement these here (project rule).
 from .admin_views import _auth, _require_reason, _audit
 from . import recalc
 from . import tasks
@@ -127,7 +127,7 @@ def _enqueue_entity_recalc(*, team_id=None, player_id=None):
     """Enqueue a recalc for the single team OR player an exclusion touches, AFTER commit.
 
     Used when a ResultExclusion is created (entity newly excluded) or deleted (entity freed)
-    — either way that one entity's score must be re-derived. Current month + active season,
+    - either way that one entity's score must be re-derived. Current month + active season,
     consistent with the rest of the data-entry surfaces.
     """
     month = recalc.current_month()
@@ -223,7 +223,7 @@ def _get_event(event_id):
 
 
 # ── season membership is a date-window match (no Season FK on Event) ──
-# Event has no Season FK, so season membership is a date-window match on start_date — the same
+# Event has no Season FK, so season membership is a date-window match on start_date - the same
 # convention admin_prize.tournament_prizes_list uses for payouts. Keep the two in sync.
 def _season_event_qs(season):
     """Every competition belonging to a season: start_date inside the season's window.
@@ -233,7 +233,7 @@ def _season_event_qs(season):
 
     SCRIMS ARE INCLUDED (owner 2026-08-03: "admin toggle so all events count by default, with
     admins able to switch individual ones off"). They used to be filtered out on the reasoning that
-    counting controls only apply to tournaments — but a scrim's placement/kill/win points DO feed
+    counting controls only apply to tournaments - but a scrim's placement/kill/win points DO feed
     the monthly and quarterly scores through aggregation._apply_scrim_caps, so excluding them from
     this list left the admin with results that count and no switch to turn them off. Drafts are
     still excluded: an unpublished event has nothing to curate yet.
@@ -251,7 +251,7 @@ def _season_event_qs(season):
 def results_markers_list(request):
     """List a season's tournaments with their counting-control state + active-exclusion count.
 
-    Query: ``?season_id=`` — which season's tournaments to list. Defaults to the active season
+    Query: ``?season_id=`` - which season's tournaments to list. Defaults to the active season
     when omitted. An unknown season_id returns an empty page (consistent envelope, no 404), so
     the admin UI can render "no tournaments this season" cleanly.
 
@@ -334,7 +334,7 @@ def event_counting_detail(request, event_id):
 def event_counting_update(request, event_id):
     """Set an event's counting toggles (count_winner / count_placement / count_kills).
 
-    Body: any subset of the three booleans + the mandatory ``reason``. Partial — only the
+    Body: any subset of the three booleans + the mandatory ``reason``. Partial - only the
     fields present in the body are changed; absent fields keep their current (or default-True)
     value. ``get_or_create`` materialises the control row on first edit (so the implicit
     all-True default becomes explicit), and ``updated_by`` is stamped to the acting admin.
@@ -389,7 +389,7 @@ def event_counting_update(request, event_id):
             object_ref=f"event:{event.event_id}",
             before=before, after=after, season=recalc.current_season(),
         )
-        # Recalc every team in the event — the toggle changed how their results score.
+        # Recalc every team in the event - the toggle changed how their results score.
         _enqueue_event_team_recalc(event.event_id)
 
     return Response(after)
@@ -447,7 +447,7 @@ def result_exclusion_create(request):
     """Create a result exclusion for ONE team or player in an event.
 
     Body: ``{ event_id, entity_type ("team"|"player"), team_id|player_id, reason }``.
-    Exactly one of team_id / player_id must be set, matching ``entity_type`` (team XOR player —
+    Exactly one of team_id / player_id must be set, matching ``entity_type`` (team XOR player - 
     enforced here AND by the model's DB CheckConstraint). The (event, team) / (event, player)
     pair is unique at the DB level; a duplicate surfaces as an IntegrityError we translate to
     a clean 400.
@@ -510,7 +510,7 @@ def result_exclusion_create(request):
             )
         except IntegrityError:
             # The unique (event, team) / (event, player) constraint rejected a duplicate, or a
-            # bad team/player FK was supplied — surface as a clean 400 rather than a 500.
+            # bad team/player FK was supplied - surface as a clean 400 rather than a 500.
             return Response(
                 {"message": "This team/player is already excluded from this event (or the id is invalid)."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -526,7 +526,7 @@ def result_exclusion_create(request):
             object_ref=f"event:{event.event_id}:{entity_type}:{team_id or player_id}",
             before={}, after=after, season=recalc.current_season(),
         )
-        # Recalc the now-excluded entity — its results stop counting.
+        # Recalc the now-excluded entity - its results stop counting.
         _enqueue_entity_recalc(
             team_id=team_id if entity_type == "team" else None,
             player_id=player_id if entity_type == "player" else None,
@@ -538,7 +538,7 @@ def result_exclusion_create(request):
 # ───────────────────────── DELETE result-exclusions/<exclusion_id>/  (delete) ─────────────────────────
 @api_view(["DELETE"])
 def result_exclusion_delete(request, exclusion_id):
-    """Remove a result exclusion — the freed entity's results count again.
+    """Remove a result exclusion - the freed entity's results count again.
 
     The audit row's before-snapshot preserves the deleted exclusion (hand-reversible). On
     commit we enqueue a recalc for the freed team/player so its score picks the results back
@@ -572,7 +572,7 @@ def result_exclusion_delete(request, exclusion_id):
             object_ref=object_ref,
             before=before, after={}, season=recalc.current_season(),
         )
-        # Recalc the freed entity — its results count again.
+        # Recalc the freed entity - its results count again.
         _enqueue_entity_recalc(team_id=freed_team_id, player_id=freed_player_id)
 
     return Response({"message": "Result exclusion deleted."})

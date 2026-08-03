@@ -1,5 +1,5 @@
 """
-afc_rankings.claims — ghost -> real-entity RE-ATTRIBUTION service (the core of the claim process).
+afc_rankings.claims - ghost -> real-entity RE-ATTRIBUTION service (the core of the claim process).
 
 PURPOSE
     When an admin APPROVES a ghost-team / ghost-player claim, the ghost's entire ranked history must
@@ -19,7 +19,7 @@ PURPOSE
     FUTURE recompute (a later result edit, a re-publish) stays correct and idempotent without ever
     looking at the ghost again.
 
-CONFLICT GUARD (out of scope to merge — reject + manual, per the design §re-attribution)
+CONFLICT GUARD (out of scope to merge - reject + manual, per the design §re-attribution)
     If a leaderboard the ghost participated in ALSO already has the real team/user as a separate
     participant, re-pointing would create two rows for the same entity in one leaderboard (a self-
     duplicate the standings + rerank cannot reconcile). We refuse the whole claim with a ``ClaimConflict``
@@ -28,7 +28,7 @@ CONFLICT GUARD (out of scope to merge — reject + manual, per the design §re-a
 CALLERS
     - admin_ghost.ghost_approve_claim       (teams)   -> reattribute_ghost_team(ghost, ghost.claimed_by, user)
     - admin_ghost.ghost_player_approve_claim (players) -> reattribute_ghost_player(ghost, ghost.claimed_by, user)
-    Both catch ClaimConflict and surface it as a 400 (nothing is committed — the whole body runs inside
+    Both catch ClaimConflict and surface it as a 400 (nothing is committed - the whole body runs inside
     the endpoint's transaction.atomic, and these services open their own nested atomic block too).
 
 WHAT IT READS / WRITES
@@ -92,7 +92,7 @@ def reattribute_ghost_team(ghost, real_team, actor):
       2. CONFLICT GUARD (before any mutation): for each such participant's leaderboard, if a
          participant with ``team=real_team`` already exists there, raise ClaimConflict naming it.
       3. Re-point each participant: ``ghost_team=None, team=real_team`` (honors the participant XOR).
-      4. Delete the ghost's TeamMonthlyScore / TeamQuarterlyScore rows (now orphaned — its
+      4. Delete the ghost's TeamMonthlyScore / TeamQuarterlyScore rows (now orphaned - its
          participations have moved, so a ghost recompute would produce nothing anyway; deleting is the
          clean floor).
       5. Recompute the REAL team for every affected month + season (recalc.recalc_team_monthly /

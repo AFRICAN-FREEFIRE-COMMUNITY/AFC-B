@@ -21,7 +21,7 @@ def close_finished_events():
     """Daily sweep: auto-complete events whose last match date has passed.
 
     Marks every Event with end_date < today that is NOT a draft and NOT already
-    completed/cancelled as completed (scrims included since owner 2026-07-06 — they
+    completed/cancelled as completed (scrims included since owner 2026-07-06 - they
     close on date as a backstop to results-based completion). Idempotent: an
     already-completed event is excluded, and
     complete_event_core no-ops if it somehow slips through. Best-effort per event so

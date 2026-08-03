@@ -1,43 +1,43 @@
 """
-Admin write API for tournament prize entry (Phase 2) — feeds quarterly prize_money_pts.
+Admin write API for tournament prize entry (Phase 2) - feeds quarterly prize_money_pts.
 
 WHAT THIS COVERS
 ----------------
 Admins record the prize money a tournament team was awarded. Those payouts roll up
-into a team's quarterly score as ``prize_money_pts`` (spec §6.2 / §7.2) — so every
+into a team's quarterly score as ``prize_money_pts`` (spec §6.2 / §7.2) - so every
 create / edit / delete here must trigger a quarterly recalc for the affected team.
 
 There is NO inventory or exchange-rate model: prize is entered already-converted to
 NGN (Naira) as a plain decimal ``amount``. We do not convert anything.
 
-MODEL MAPPING (IMPORTANT — read before changing field names)
+MODEL MAPPING (IMPORTANT - read before changing field names)
 ------------------------------------------------------------
 The persisted model is ``afc_tournament_and_scrims.models.EventPrizePayout``, NOT a
 rankings-local model. Its real fields are::
 
     event            FK -> Event            (the tournament; related_name="payouts")
-    user             FK -> User             (nullable; for solo payouts — unused here)
+    user             FK -> User             (nullable; for solo payouts - unused here)
     tournament_team  FK -> TournamentTeam   (nullable; the team that was paid)
     amount           DecimalField(12,2)     (NGN, default 0)
-    created_at       DateTimeField(auto_now_add)  (the awarded date — read-only)
+    created_at       DateTimeField(auto_now_add)  (the awarded date - read-only)
 
 Because the FK is ``event`` (a tournament Event) and the team FK is ``tournament_team``
 (a TournamentTeam row, NOT a bare Team), the create body uses ``event_id`` +
 ``tournament_team_id``. The brief's ``team_id`` is interpreted as the TournamentTeam id
-(``tournament_team_id``) — that is what the model + the §18 signal in ``signals.py``
+(``tournament_team_id``) - that is what the model + the §18 signal in ``signals.py``
 key off (``instance.tournament_team.team_id``). See the create view for the note.
 
 WHY THE RECALC IS QUARTERLY-ONLY
 --------------------------------
 ``prize_money_pts`` only exists on the quarterly score (§6.2), so we enqueue the team's
 quarterly recalc on commit. ``tasks.enqueue_team`` fires both monthly + quarterly, which
-is harmless — the monthly recalc just re-derives the same monthly figures — and it keeps
+is harmless - the monthly recalc just re-derives the same monthly figures - and it keeps
 us consistent with the existing ``on_prize_payout`` signal. We pass the payout's month
 (``recalc.current_month()`` for new rows, the row's ``created_at`` month for edits) and
 the active season's id.
 
 This module is built entirely on the shared foundation in ``admin_views.py``
-(``_auth`` / ``_require_reason`` / ``_audit`` / ``RANKING_ADMIN_ROLES``) — it does not
+(``_auth`` / ``_require_reason`` / ``_audit`` / ``RANKING_ADMIN_ROLES``) - it does not
 reimplement auth or the §16 audit trail. The public *read* rankings API lives in
 ``views.py``; this is a *write* surface and so every mutation is reason-gated + audited.
 
@@ -53,7 +53,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-# Shared auth/audit foundation — do NOT reimplement these here (project rule).
+# Shared auth/audit foundation - do NOT reimplement these here (project rule).
 from .admin_views import _auth, _require_reason, _audit, RANKING_ADMIN_ROLES
 from . import recalc
 from . import tasks
@@ -87,7 +87,7 @@ def _active_season():
 
 
 def _payout_month(payout):
-    """The month (day=1) a payout belongs to — its awarded date, else the current month.
+    """The month (day=1) a payout belongs to - its awarded date, else the current month.
 
     ``created_at`` is auto-set on insert, so for a brand-new row it is None until the
     object is saved; callers pass the saved instance, so this is populated by then.
@@ -149,13 +149,13 @@ def serialize_prize(p):
 #
 # WHAT THIS DOES
 #   A payout (EventPrizePayout) records what a WHOLE TEAM (or a solo player) was awarded for an
-#   event. On its own that only feeds the team's quarterly score + Team.total_earnings — it never
+#   event. On its own that only feeds the team's quarterly score + Team.total_earnings - it never
 #   lands on the individual players' profiles. This helper writes one PlayerWinning row PER winning
 #   player so the prize ALSO shows up in each player's OWN tournament-winnings history, which the
 #   public player profile reads back (afc_player.views.get_public_player_stats -> tournament_winnings).
 #
 # WHEN IT RUNS (baked-in decision)
-#   On payout CREATE — i.e. the moment an admin/organizer records the prize, NOT on event completion.
+#   On payout CREATE - i.e. the moment an admin/organizer records the prize, NOT on event completion.
 #   It is called from prize_create below, inside that view's existing transaction.atomic() block, so
 #   the PlayerWinning rows commit together with the payout (and roll back together on any error).
 #
@@ -208,7 +208,7 @@ def _distribute_payout(payout):
                 )
             count = len(members)
             if count == 0:
-                return  # nothing to split among — leave it to the team total only
+                return  # nothing to split among - leave it to the team total only
 
             # Equal split. Decimal keeps NGN precision; share_percentage is informational.
             share = (amount / Decimal(count)).quantize(Decimal("0.01"))
@@ -334,7 +334,7 @@ def prize_create(request):
     if not tt:
         return Response({"message": "Tournament team not found."}, status=status.HTTP_404_NOT_FOUND)
     if tt.event_id != event.pk:
-        # Guard against pairing a team with the wrong tournament — the payout must belong
+        # Guard against pairing a team with the wrong tournament - the payout must belong
         # to the event the team is registered in, or the recalc would attribute it wrongly.
         return Response(
             {"message": "This team is not registered in the given event."},
@@ -367,7 +367,7 @@ def prize_create(request):
             after=after,
             season=_active_season(),
         )
-        # Recalc AFTER commit — prize feeds the quarterly score (§6.2).
+        # Recalc AFTER commit - prize feeds the quarterly score (§6.2).
         _enqueue_prize_recalc(tt)
 
     return Response(after, status=status.HTTP_201_CREATED)
@@ -378,7 +378,7 @@ def prize_create(request):
 def prize_update(request, payout_id):
     """Edit a payout's amount.
 
-    Body: { amount, reason }. Only ``amount`` is editable — event/team are fixed at
+    Body: { amount, reason }. Only ``amount`` is editable - event/team are fixed at
     creation (re-targeting a payout to a different team would be a delete + create).
     Audits ``prize_money`` / ``update`` with a before/after snapshot and re-enqueues
     the team's quarterly recalc on commit.

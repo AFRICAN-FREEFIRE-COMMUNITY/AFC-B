@@ -522,7 +522,7 @@ class PlayerRankingBridgeTests(H2HBase):
     """CS results feed PLAYER rankings too (owner 2026-07-13: "cs should be both team and player
     ranking"). write_placement_stats writes a PLAYED TournamentPlayerMatchStats (kills 0) per rostered
     member of each placed team, so every CS player counts as having played the event (participation)
-    and the champion's roster gets the team-win bonus — afc_rankings._collect_player scores on
+    and the champion's roster gets the team-win bonus - afc_rankings._collect_player scores on
     participation + kills + team_won + finals, never raw placement."""
 
     def setUp(self):
@@ -700,7 +700,7 @@ class CreateEventCSGroupGuardTests(TestCase):
         cs_stage = Stages.objects.get(event=event, stage_format="cs - knockout")
         br_stage = Stages.objects.get(event=event, stage_format="br - normal")
 
-        # CS stage: the forced group + its matches + leaderboard were IGNORED (no phantom rows) —
+        # CS stage: the forced group + its matches + leaderboard were IGNORED (no phantom rows) - 
         # the bracket owns the structure, generated later from team_ids with zero groups.
         self.assertEqual(StageGroups.objects.filter(stage=cs_stage).count(), 0)
         self.assertEqual(Match.objects.filter(group__stage=cs_stage).count(), 0)

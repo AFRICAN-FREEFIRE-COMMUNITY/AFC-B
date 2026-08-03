@@ -1,5 +1,5 @@
 # ── DEBUGGER-LOG BACKFILL (owner 2026-07-02) ────────────────────────────────────
-# "Uploading the debugger file even when not live can still give all the needed data" — CONFIRMED on
+# "Uploading the debugger file even when not live can still give all the needed data" - CONFIRMED on
 # real logs (memory project_freefire_live_capture): the Free Fire 3D observer client's
 # Free Fire_64_Data/Debugger/debugger-*.log PERSISTS per session and carries, per round:
 #   • the identity mapping  "Player Join, <UID>, <slotId>, <IGN>"        (UID ↔ in-match slot)
@@ -14,7 +14,7 @@
 #   2. POST ... with `apply` = JSON [{"round_index": i, "match_id": m}, ...]      → for each mapped
 #      round, fill deaths/knockdowns/headshots/revives_received/survival_seconds on that match's
 #      TournamentPlayerMatchStats rows (matched by player UID) + set rich_stats_filled.
-# Gate: _broadcast_gate (AFC event admin OR org can_edit_events) — same as the other overlay tooling.
+# Gate: _broadcast_gate (AFC event admin OR org can_edit_events) - same as the other overlay tooling.
 # Unlocks: MVP criteria deaths/survival_time/headshots/kdr + the design columns of the same names.
 # CONSUMED BY: the "Debugger log" panel on the leaderboard edit Upload tab (DebuggerBackfillPanel).
 
@@ -134,7 +134,7 @@ def parse_debugger_log(text):
 
 @api_view(["POST"])
 def debugger_backfill(request, event_id):
-    """POST events/<event_id>/debugger-backfill/ — multipart `file` (+ optional `apply` JSON).
+    """POST events/<event_id>/debugger-backfill/ - multipart `file` (+ optional `apply` JSON).
     Without `apply`: DRY RUN (parse + report). With `apply` = [{"round_index", "match_id"}, ...]:
     fill each mapped match's player rows (by UID) with the round's rich stats."""
     event, err = _broadcast_gate(request, event_id)

@@ -3,7 +3,7 @@ Parity tests for afc_tournament_and_scrims.scoring.
 
 These pin the new shared point formula (scoring.compute_team_points /
 compute_solo_points) to the exact numbers the live inline code in views.py has
-always produced — so the upcoming refactor that routes every call site through
+always produced - so the upcoming refactor that routes every call site through
 scoring.* cannot silently change a single stored score.
 
 They are SimpleTestCase (no DB) on purpose: the formula is pure arithmetic, so
@@ -68,7 +68,7 @@ class ComputeTeamPointsTests(SimpleTestCase):
         # Pre-refactor parity: a not-played team scores no placement points (played=False
         # zeroes placement_pts), and the live manual/edit callers pre-zero kills/damage/assists
         # (played_players is filtered to played==True), so those terms are 0 too. But bonus/penalty
-        # still fold into the total — the live paths read bonus_points/penalty_points off the
+        # still fold into the total - the live paths read bonus_points/penalty_points off the
         # payload even for a not-played team and stored total_points = bonus - penalty. Mirror that
         # call shape (zeroed kills/damage/assists, a real penalty) and prove (a) a winning placement
         # does not leak through, (b) the total is exactly bonus - penalty so it reconciles with the
@@ -130,7 +130,7 @@ class EnterTeamMatchResultManualDBTests(TestCase):
     formula in isolation; this one proves the *endpoint* still stores the exact
     pre-refactor numbers through the full request → transaction → DB write path
     (the SimpleTestCase suite never touches the DB or the view, so a wiring bug
-    in the view — wrong column, swapped argument — would slip past it).
+    in the view - wrong column, swapped argument - would slip past it).
 
     Canonical case from the plan: placement 1 (=12 placement points) + 8 kills
     at kill_point 1 => total_points 20.
@@ -259,7 +259,7 @@ class EnterTeamMatchResultManualDBTests(TestCase):
 
 class MapWinnerRequiredDBTests(EnterTeamMatchResultManualDBTests):
     """A manually-entered played map MUST have a placement==1 (the map winner = the booyah).
-    Regression for the booyah miscount (owner 2026-07-06: "5 maps but only 3 booyahs") — a map saved
+    Regression for the booyah miscount (owner 2026-07-06: "5 maps but only 3 booyahs") - a map saved
     with no 1st place silently contributes 0 booyahs to the standings."""
 
     def _post(self, placement):
@@ -298,14 +298,14 @@ class EditScoringConfigRecomputeDBTests(EnterTeamMatchResultManualDBTests):
     "Apply to group/stage/entire event" fan-out POST."""
 
     def test_edit_scoring_config_recomputes_stored_points(self):
-        # Arrange: a stored result under the ORIGINAL config — placement 1 (=12) + 8 kills @1 => 20.
+        # Arrange: a stored result under the ORIGINAL config - placement 1 (=12) + 8 kills @1 => 20.
         TournamentTeamMatchStats.objects.create(
             match=self.match, tournament_team=self.tt,
             placement=1, kills=8, damage=0, assists=0,
             placement_points=12, kill_points=8, total_points=20, played=True,
         )
 
-        # Act: change the config — placement 1 now worth 20, kill_point now 2.
+        # Act: change the config - placement 1 now worth 20, kill_point now 2.
         resp = self.client.post(
             "/events/edit-match-scoring-config/",
             data=json.dumps({
@@ -317,7 +317,7 @@ class EditScoringConfigRecomputeDBTests(EnterTeamMatchResultManualDBTests):
         )
 
         # Assert: endpoint recomputed the one team row, and the STORED points now reflect the NEW
-        # config — placement 1 -> 20, 8 kills @2 -> 16, total 36 (was 12/8/20).
+        # config - placement 1 -> 20, 8 kills @2 -> 16, total 36 (was 12/8/20).
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json().get("recomputed_teams"), 1)
         stat = TournamentTeamMatchStats.objects.get(match=self.match, tournament_team=self.tt)
@@ -332,7 +332,7 @@ class CreateEventScoringModesDBTests(TestCase):
 
     The endpoint receives a JSON-stringified `stages` array. The target stage is
     referenced by `point_rush_target_index` (0-based position in that array) because the
-    target stage row does not exist yet while the source stage is being created — so the
+    target stage row does not exist yet while the source stage is being created - so the
     view resolves it in a second pass. This proves that second pass links source→target.
     """
 
@@ -523,7 +523,7 @@ class CreateEventScoringModesDBTests(TestCase):
         self.assertFalse(Event.objects.filter(event_name="Self Target Cup").exists())
 
 
-# ── Phase 2 (Task 4): the two PURE on-read helpers — no DB, no Django ORM. ──
+# ── Phase 2 (Task 4): the two PURE on-read helpers - no DB, no Django ORM. ──
 # These pin the Champion-Point win rule and the Point-Rush per-lobby reward mapping in
 # isolation, so the standings builder (Task 5) can lean on them without re-deriving the
 # logic. SimpleTestCase: they touch no model, so the suite half that exercises them needs
@@ -589,7 +589,7 @@ class GetAllLeaderboardDetailsScoringModesDBTests(TestCase):
     match 1 to reach exactly 20 (crossing during the match, so NOT champion yet), then
     Booyahs match 2 while already at 20 entering it -> B is crowned. The endpoint must:
       - pin B to overall[0] with is_champion True (even though A could otherwise tie/beat
-        it on raw points in a different scenario — here B leads anyway, but the crown flag
+        it on raw points in a different scenario - here B leads anyway, but the crown flag
         and the is_decided group flag are what we assert),
       - mark the group payload is_decided True with champion_id == B.
 
@@ -763,7 +763,7 @@ class GetAllLeaderboardDetailsScoringModesDBTests(TestCase):
         grp = self._group_for_stage(self._fetch_details(), stage.stage_id)
         overall = grp["overall_leaderboard"]
 
-        # Ordered by points: A first, B second — exactly as before this feature.
+        # Ordered by points: A first, B second - exactly as before this feature.
         self.assertEqual(overall[0]["tournament_team_id"], self.tt_a.tournament_team_id)
         self.assertEqual(overall[0]["effective_total"], 17)
         self.assertEqual(overall[1]["tournament_team_id"], self.tt_b.tournament_team_id)
@@ -779,7 +779,7 @@ class GetAllLeaderboardDetailsScoringModesDBTests(TestCase):
         # Regression guard for the unconditional-resort bug: on a PLAIN stage (both toggles
         # off, no carry-over), two teams tied on effective_total must stay in the DB's full
         # tiebreaker order (-total_booyah, then -total_kills, ...). The old code re-sorted
-        # every stage by (effective_total, total_kills) only — which promotes kills ABOVE
+        # every stage by (effective_total, total_kills) only - which promotes kills ABOVE
         # booyahs and can flip which team leads (and therefore which team the FE's positional
         # qualified/eliminated badge marks). test_plain_stage_is_unchanged never hits this
         # path because its two teams differ on points (17 vs 9).
@@ -933,7 +933,7 @@ class PublicCarryOverDBTests(TestCase):
 
     def test_apply_public_carry_over_folds_and_reorders(self):
         # The helper stamps carry_over_points, folds it into total_points, and re-sorts so the bigger
-        # carry-over leads — even though the input list had B first.
+        # carry-over leads - even though the input list had B first.
         from afc_tournament_and_scrims import views
         self._enter_semis()
         rows = [
@@ -1051,7 +1051,7 @@ class OverlayCarryOverDBTests(TestCase):
             leaderboard=self.semis_lb, group=self.semis_group, match_number=1, match_map="bermuda",
             scoring_settings={"placement_points": {"1": 12, "2": 9}, "kill_point": 1},
         )
-        # Finals group with NO results — teams are only SEEDED in (advanced), the exact GRAND FINALS
+        # Finals group with NO results - teams are only SEEDED in (advanced), the exact GRAND FINALS
         # pre-game state the owner was looking at.
         self.finals_group = StageGroups.objects.create(
             stage=self.finals, group_name="Finals A", playing_date=today,
@@ -1107,7 +1107,7 @@ class OverlayCarryOverDBTests(TestCase):
         self.assertEqual(rows[0]["team_name"], "Alpha")            # ranked by carry (10 > 7)
 
     def test_overlay_group_slice_matches_stage_slice(self):
-        # The per-group overlay link (?group=) must agree with the whole-stage slice — same carry.
+        # The per-group overlay link (?group=) must agree with the whole-stage slice - same carry.
         self._enter_semis()
         data = self._feed(stage=self.finals.stage_id, group=self.finals_group.group_id)
         by_name = {r["team_name"]: r for r in data["standings"]}

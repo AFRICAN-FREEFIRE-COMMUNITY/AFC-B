@@ -3,7 +3,7 @@ Dedupe duplicate (event, team) TournamentTeam rows.
 
 WHY THIS EXISTS (owner 2026-07-06, prod migrate failure): TournamentTeam had no unique constraint
 on (event, team), so a team could be registered TWICE for the same event (a double-registration
-race — the app-level guard in event_links._promote / register_for_event now prevents NEW ones, but
+race - the app-level guard in event_links._promote / register_for_event now prevents NEW ones, but
 prod already holds strays). Adding the uniq_event_team_registration constraint (models.py Meta) then
 FAILS on prod:
 
@@ -19,13 +19,13 @@ into one BEFORE the constraint migration applies:
     python manage.py makemigrations afc_tournament_and_scrims
     python manage.py migrate                                # now succeeds (no dupes)
 
-SURVIVOR RULE: within each (event, team) group keep the row with the MOST real data — most
+SURVIVOR RULE: within each (event, team) group keep the row with the MOST real data - most
 match_stats, then most roster members, then the LOWEST id as a stable tiebreak. That survivor is the
 canonical registration every other surface already references.
 
 SAFE MERGE (never orphan / never lose data): we do NOT bare-delete a duplicate (that would cascade
 away its children). Instead we walk EVERY reverse relation Django knows points at TournamentTeam
-(TournamentTeam._meta.related_objects — TournamentTeamMember, TournamentTeamMatchStats, MatchKillFlag,
+(TournamentTeam._meta.related_objects - TournamentTeamMember, TournamentTeamMatchStats, MatchKillFlag,
 StageCompetitor, StageGroupCompetitor, the H2H team_a/team_b/winner and UnmatchedTeamBlock.attributed
 SET_NULL links, plus anything added later in any app) and REPOINT each child from the loser to the
 survivor. If a repoint would violate a child's own unique key (e.g. the survivor already has a stats

@@ -1,8 +1,8 @@
-"""AFC Ranking & Tiering — pure scoring functions.
+"""AFC Ranking & Tiering - pure scoring functions.
 
 Every function maps to a spec section (cited in its docstring). The module is
 pure: no Django, no ORM, no I/O, no global mutable state. Same input -> same
-output, always. This Django-free purity is a hard requirement — do not import
+output, always. This Django-free purity is a hard requirement - do not import
 Django here.
 
 Built and called exclusively by afc_rankings/aggregation.py (_collect_team /
@@ -22,12 +22,12 @@ Compression granularity (LOCKED CONVENTION, resolves spec FLAG A):
     against the ``compress_kills`` PRIMITIVE directly (which is unambiguous),
     not against a multi-tournament aggregate.
 
-Participation floors (spec §5.2, §7.4, §9.2) are NOT enforced here — the score
+Participation floors (spec §5.2, §7.4, §9.2) are NOT enforced here - the score
 functions are pure arithmetic. The caller passes an explicit ``meets_floor``
 flag to ``assign_tier`` / ``player_tier`` where the floor matters.
 
 The §12 daily (4/day) and monthly (60/month) scrim COUNT caps are enforced
-UPSTREAM by the aggregation subsystem when it builds ``ScrimInput`` — only the
+UPSTREAM by the aggregation subsystem when it builds ``ScrimInput`` - only the
 30%-of-tournament-total POINTS cap lives here (it depends on the tournament
 total, which only the engine knows). The count-cap constants are exported from
 ``constants.py`` so the aggregation layer reads them from one place.
@@ -63,7 +63,7 @@ TierStr = str  # "tier_1" | "tier_2" | "tier_3" (matches Event.tournament_tier)
 
 
 # ===========================================================================
-# Input dataclasses — the I/O contract the aggregation subsystem builds.
+# Input dataclasses - the I/O contract the aggregation subsystem builds.
 # ===========================================================================
 @dataclass(frozen=True)
 class TournamentInput:
@@ -118,11 +118,11 @@ class PlayerScrimInput:
 
 
 # ===========================================================================
-# Result dataclasses — mirror the DB score-model field breakdowns (§19).
+# Result dataclasses - mirror the DB score-model field breakdowns (§19).
 # ===========================================================================
 @dataclass(frozen=True)
 class TeamScoreResult:
-    """Monthly team score breakdown — mirrors TeamMonthlyScore (§19.5)."""
+    """Monthly team score breakdown - mirrors TeamMonthlyScore (§19.5)."""
 
     tournament_pts: float
     scrim_pts: float
@@ -131,7 +131,7 @@ class TeamScoreResult:
 
 @dataclass(frozen=True)
 class TeamQuarterlyResult:
-    """Quarterly team score breakdown — mirrors TeamQuarterlyScore (§19.6)."""
+    """Quarterly team score breakdown - mirrors TeamQuarterlyScore (§19.6)."""
 
     tournament_pts: float
     scrim_pts: float
@@ -142,7 +142,7 @@ class TeamQuarterlyResult:
 
 @dataclass(frozen=True)
 class PlayerScoreResult:
-    """Monthly player score breakdown — mirrors PlayerMonthlyScore (§19.7)."""
+    """Monthly player score breakdown - mirrors PlayerMonthlyScore (§19.7)."""
 
     kill_pts: float
     placement_pts: float
@@ -157,7 +157,7 @@ class PlayerScoreResult:
 
 @dataclass(frozen=True)
 class PlayerQuarterlyResult:
-    """Quarterly player score breakdown — mirrors PlayerQuarterlyScore (§19.8).
+    """Quarterly player score breakdown - mirrors PlayerQuarterlyScore (§19.8).
 
     ``prize_money_pts`` is inherited from the team(s) the player rostered for
     (spec §6.2 / §9.1) and is only applied at the quarterly level.
@@ -203,7 +203,7 @@ def compress_kills(raw_kills: float) -> int:
 
     The bracket determines the value (not additive): 120 raw kills -> 12.
 
-    Zero-stat floor (product decision): raw == 0 returns 0 — a no-kill
+    Zero-stat floor (product decision): raw == 0 returns 0 - a no-kill
     appearance scores nothing. Any raw > 0 uses the bracket table unchanged
     (1 -> 3, 50 -> 3, 51 -> 7, ...).
     """
@@ -239,7 +239,7 @@ def social_media_points(combined_followers: float) -> int:
 def placement_points(finish: int) -> int:
     """Raw placement points for a single match finish. Spec §4.1.
 
-    Finishes 11th+ award 0. This is the canonical mapping — callers must NOT
+    Finishes 11th+ award 0. This is the canonical mapping - callers must NOT
     trust any legacy ``placement_points`` column on existing models.
     """
     return PLACEMENT_POINTS.get(finish, 0)
@@ -270,7 +270,7 @@ def finals_bonus(tier: TierStr, appearances: int = 1) -> float:
 
 
 # ===========================================================================
-# Per-tournament team score — spec §5.1 Step 1
+# Per-tournament team score - spec §5.1 Step 1
 # ===========================================================================
 def tournament_score(t: TournamentInput) -> float:
     """Score for ONE tournament for a team. Spec §5.1 Step 1.
@@ -280,7 +280,7 @@ def tournament_score(t: TournamentInput) -> float:
                          + win_bonus           (if won)
                          + 5 * tier_multiplier * finals_appearances
 
-    The tier multiplier applies to placement, kills, and finals — NOT to the
+    The tier multiplier applies to placement, kills, and finals - NOT to the
     flat win bonus (spec §4).
     """
     mult = tier_multiplier(t.tier)
@@ -291,7 +291,7 @@ def tournament_score(t: TournamentInput) -> float:
 
 
 # ===========================================================================
-# Scrims — spec §5.1 Step 3 + §12
+# Scrims - spec §5.1 Step 3 + §12
 # ===========================================================================
 def raw_scrim_points(s: ScrimInput) -> float:
     """Raw (uncapped) scrim points for a team. Spec §5.1 Step 3 / §12.
@@ -315,7 +315,7 @@ def capped_scrim_points(raw_scrim: float, total_tournament_pts: float) -> float:
 
 
 # ===========================================================================
-# Team aggregates — spec §6 (monthly) + §8 (quarterly)
+# Team aggregates - spec §6 (monthly) + §8 (quarterly)
 # ===========================================================================
 def monthly_team_score(
     tournaments: list[TournamentInput],
@@ -356,7 +356,7 @@ def quarterly_team_score(
     Uses the SAME per-tournament formula as monthly (§8.1) over the full
     3-month raw dataset (the ``tournaments`` list spans all 3 months), then adds
     prize money (§7.2) and social media (§7.3). Tier assignment / participation
-    floor are NOT applied here — see ``assign_tier``.
+    floor are NOT applied here - see ``assign_tier``.
     """
     base = monthly_team_score(tournaments, scrims)  # §8.1 "same formula as monthly"
     prize = quarterly_team_prize_money_points(prize_money_naira)
@@ -371,7 +371,7 @@ def quarterly_team_score(
 
 
 # ===========================================================================
-# Player aggregates — spec §7 (monthly) + §9 (quarterly)
+# Player aggregates - spec §7 (monthly) + §9 (quarterly)
 # ===========================================================================
 def _player_components(
     tournaments: list[PlayerTournamentInput],
@@ -379,7 +379,7 @@ def _player_components(
 ) -> tuple[float, float, float, float, float, float, float, float]:
     """Shared component computation for monthly & quarterly player scoring.
 
-    Per-tournament compression (kills AND placement) then summed — matches the
+    Per-tournament compression (kills AND placement) then summed - matches the
     locked team-path convention so the two stay symmetric. MVP/finals/team-win/
     participation are flat per spec §7 (and §2: team win = 5, not 20).
     """
@@ -465,11 +465,11 @@ def quarterly_player_score(
 
     Same per-tournament components as monthly (over the full 3-month raw data)
     PLUS prize money inherited from any team the player rostered for (§6.2 /
-    §9.1) — applied only at the quarterly level.
+    §9.1) - applied only at the quarterly level.
 
     This is the player's INDIVIDUAL score. Whether it is used (unattached) or
     overridden by team-tier inheritance (attached) is decided by
-    ``player_tier`` — not here.
+    ``player_tier`` - not here.
     """
     (
         kill_pts,
@@ -508,7 +508,7 @@ def quarterly_player_score(
 
 
 # ===========================================================================
-# Tier classification — spec §11 + §9.1
+# Tier classification - spec §11 + §9.1
 # ===========================================================================
 def score_to_tier(score: float) -> int:
     """Map a quarterly score to a tier int 0..3 by raw threshold. Spec §11.
@@ -547,7 +547,7 @@ def player_tier(
     """Resolve a player's quarterly tier and its source. Spec §9.1 / §9.2.
 
     Attached (on a registered team at evaluation): inherit the team's tier,
-    source = "team", no personal modifier — regardless of individual score.
+    source = "team", no personal modifier - regardless of individual score.
 
     Unattached: tier from the player's individual score via ``assign_tier``
     (the §9.2 floor of >=1 tournament applies), source = "individual".
@@ -562,13 +562,13 @@ def player_tier(
 
 
 # ===========================================================================
-# Annual — spec §10
+# Annual - spec §10
 # ===========================================================================
 def annual_score(q1: float, q2: float, q3: float, q4: float) -> float:
     """Annual leaderboard score = sum of the four quarterly scores. Spec §10.
 
     Zero-activity quarters simply contribute 0. The annual track assigns NO
-    tier (§10.3 — ranking only), so this engine intentionally exposes no
+    tier (§10.3 - ranking only), so this engine intentionally exposes no
     annual_tier function.
     """
     return q1 + q2 + q3 + q4

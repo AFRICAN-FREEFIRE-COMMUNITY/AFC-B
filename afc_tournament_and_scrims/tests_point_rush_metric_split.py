@@ -8,7 +8,7 @@ THE BUG
                                             -> effective_total = Sum(placement+kill+bonus-penalty)
                                                (DROPS assist + damage points)
     So an event that awarded assist/damage points could send DIFFERENT teams forward depending on
-    which surface you looked at — the leaderboard could show team B on top while round-robin /
+    which surface you looked at - the leaderboard could show team B on top while round-robin /
     branching / cross-event advancement promoted team A.
 
 THE FIX
@@ -246,7 +246,7 @@ class PointRushMetricSplitTeamTests(TestCase):
         self.assertEqual(overall[1]["tournament_team_id"], self.tt_a.tournament_team_id)
 
         # 4) advance_group (the one surface that ranks Sum(total_points) directly, not via the
-        #    aggregator) must advance B into the next stage — and not A.
+        #    aggregator) must advance B into the next stage - and not A.
         resp = self.client.post(
             "/events/advance-group-competitors-to-next-stage/",
             data={"event_id": self.event.event_id, "group_id": self.group.group_id},

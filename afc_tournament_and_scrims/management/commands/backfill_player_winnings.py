@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# backfill_player_winnings — one-off fix (owner 2026-07-14).
+# backfill_player_winnings - one-off fix (owner 2026-07-14).
 #
 # WHY: prize_sync.sync_event_prize_payouts creates the TEAM payout (EventPrizePayout) but, until the
 # 2026-07-14 fix, never wrote the per-player PlayerWinning shares that player profiles read. So every
@@ -14,7 +14,7 @@
 #
 # RUN (prod, once, after deploy):  python manage.py backfill_player_winnings --apply
 # CONNECTS TO: afc_player.views.get_public_player_stats -> tournament_winnings (player-profile card),
-# and the team page's total_earnings (unaffected — that already worked off EventPrizePayout).
+# and the team page's total_earnings (unaffected - that already worked off EventPrizePayout).
 # ─────────────────────────────────────────────────────────────────────────────
 from django.core.management.base import BaseCommand
 

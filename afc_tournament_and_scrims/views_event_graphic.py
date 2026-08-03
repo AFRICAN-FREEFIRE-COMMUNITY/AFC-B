@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims.views_event_graphic — render an EVENT stage's standings onto a
+afc_tournament_and_scrims.views_event_graphic - render an EVENT stage's standings onto a
 leaderboard DESIGN (owner 2026-06-14).
 
 The standalone-leaderboard design system (afc_organizers.OrgLeaderboardDesign + the positionable
@@ -91,7 +91,7 @@ def _design_max_rank(design, size):
 
 # ── COMBINE selection (owner 2026-07-05, complaint B) ─────────────────────────────────────────────
 # The base export renders ONE group or ONE stage. Complaint B lets the user COMBINE the leaderboards
-# of SELECTED units — any mix of whole STAGES and individual GROUPS — into ONE merged, re-ranked board
+# of SELECTED units - any mix of whole STAGES and individual GROUPS - into ONE merged, re-ranked board
 # and download it through the chosen design (paginated across ALL pages via ?page=all). The combine
 # UNIT rule is owner-locked: whole stages AND individual groups are both selectable, and a stage
 # expands to its groups.
@@ -102,7 +102,7 @@ def _design_max_rank(design, size):
 #     groups; cross-event / malformed ids are dropped so a forged id can never pull another event's
 #     data). Imported LAZILY inside _parse_combine_selection to keep this module free of the 21k-line
 #     views.py at import time (same pattern views.py uses to lazy-import round_robin / this module).
-#   • round_robin._aggregate_team_standings(qs, event=event)  does the actual TEAM merge+re-rank — the
+#   • round_robin._aggregate_team_standings(qs, event=event)  does the actual TEAM merge+re-rank - the
 #     SAME aggregator every team-ranking surface (cumulative_standings / group_standings / the overlay
 #     _overlay_cumulative_rows) funnels through, so a combined export agrees with the site's tables.
 def _parse_combine_selection(request, event):
@@ -136,7 +136,7 @@ def _parse_combine_selection(request, event):
 
 
 def _solo_combined_standings(group_ids):
-    """Combined SOLO standings across a set of groups (owner 2026-07-05, complaint B) — the solo twin
+    """Combined SOLO standings across a set of groups (owner 2026-07-05, complaint B) - the solo twin
     of the TEAM combine path (round_robin._aggregate_team_standings over the matched TTMS).
 
     Folds every SoloPlayerMatchStats row whose match is in `group_ids` into ONE per-competitor points
@@ -153,7 +153,7 @@ def _solo_combined_standings(group_ids):
 
     TIE-BREAK CAVEAT (Task 3): solo uses the fixed -effective_total -> -total_kills -> username chain
     (identical to _solo_standings / the legacy solo advance). The event's CONFIG tie-breakers
-    (round_robin.apply_tie_breakers) are TEAM-scoped — they read tournament_team_id + team fields — so
+    (round_robin.apply_tie_breakers) are TEAM-scoped - they read tournament_team_id + team fields - so
     they are intentionally NOT applied to solo here, exactly as the single-stage solo standings path
     does not apply them either. Team combines DO honour the event-level config tie-breakers (via
     _aggregate_team_standings(event=event))."""
@@ -206,7 +206,7 @@ def event_stage_graphic(request, event_id, stage_id):
     combine_group_ids = _parse_combine_selection(request, event)
     is_combined = combine_group_ids is not None
 
-    # SOLO: the single-stage/group graphic export is still unsupported (400 as before) — but a COMBINE
+    # SOLO: the single-stage/group graphic export is still unsupported (400 as before) - but a COMBINE
     # export IS supported through _solo_combined_standings, so only 400 for solo when this is NOT a
     # combine request (owner 2026-07-05: combined solo boards download too).
     if event.participant_type == "solo" and not is_combined:
@@ -259,7 +259,7 @@ def event_stage_graphic(request, event_id, stage_id):
     # a team SEEDED into the stage/group but not yet scored produces zero match-stats rows and is
     # silently absent from the export. The on-site leaderboard PAGE already fixes this by zero-filling
     # seeded competitors (afc_tournament_and_scrims/views.py get_all_leaderboard_details_for_event,
-    # the "Include SEEDED competitors with no results yet" block, owner 2026-06-21) — the download was
+    # the "Include SEEDED competitors with no results yet" block, owner 2026-06-21) - the download was
     # the only surface still dropping them, so the page showed the team while the PNG did not. This
     # brings the export to PARITY with the page: append a 0-point row (keyed exactly like the
     # round_robin rows: tournament_team_id / team_name / team_country / games_played / *_sum /
@@ -268,7 +268,7 @@ def event_stage_graphic(request, event_id, stage_id):
     # 0-point seeded teams sink to the bottom (alphabetical among themselves). Runs BEFORE the design
     # row cap below, so scored teams still win the limited slots on a small design. TEAM events only
     # (solo-combined rows carry username, not tournament_team, so there is no seeded-team roster to
-    # zero-fill here — left as-is). Opt out with ?include_unscored=0 for the legacy scored-only board.
+    # zero-fill here - left as-is). Opt out with ?include_unscored=0 for the legacy scored-only board.
     include_unscored = str(
         request.query_params.get("include_unscored") or "1"
     ).strip().lower() not in ("0", "false", "no", "off")
@@ -319,7 +319,7 @@ def event_stage_graphic(request, event_id, stage_id):
         standings = standings[: max(1, max_rows)]
 
     # Team logos in bulk (tournament_team_id -> team_logo filesystem path). SOLO rows carry a
-    # competitor_id + username (no tournament_team), so there is no team logo/flag to fetch — the PNG
+    # competitor_id + username (no tournament_team), so there is no team logo/flag to fetch - the PNG
     # field-layout renderer just skips a team_logo/team_flag cell whose value is None (see graphic.py
     # _render_fields), so a combined SOLO board renders its name + stat columns cleanly.
     logo_by_tt = {}
@@ -397,7 +397,7 @@ def event_stage_graphic(request, event_id, stage_id):
     title = request.query_params.get("title") or event.event_name
     subtitle = request.query_params.get("subtitle")
     if subtitle is None:
-        # A combined board spans multiple stages/groups, so a single stage name would mislead — leave
+        # A combined board spans multiple stages/groups, so a single stage name would mislead - leave
         # the subtitle blank for combine (the FE / design's own freeform header supplies any label).
         subtitle = "" if is_combined else (stage.stage_name or "")
     # Filename scope tag (owner 2026-07-05, complaint B): "combined" for a combine export, else the

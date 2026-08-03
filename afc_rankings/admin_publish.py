@@ -25,17 +25,17 @@ from .models import Season, TeamQuarterlyScore, PlayerQuarterlyScore
 # season's rankings until ``rankings_published`` and nulls out each row's tier until
 # ``tiers_published``. The admin preview endpoints below (admin_teams_quarterly /
 # admin_players_quarterly) deliberately BYPASS that gate so an admin can see the full
-# computed draft — incl. unpublished tiers — before flipping these flags.
+# computed draft - incl. unpublished tiers - before flipping these flags.
 @api_view(["PATCH"])
 def publish_state(request, season_id):
     """Set the rankings / tiers publish flags for a season.
 
-    Body may include ``rankings_published`` and/or ``tiers_published`` (bool) — only the keys
+    Body may include ``rankings_published`` and/or ``tiers_published`` (bool) - only the keys
     present are changed, so rankings and tiers publish/unpublish independently. ``reason``
     (>=10 chars) is mandatory and goes to the audit log.
     """
     # Gate order matches the sibling admin files (admin_seasons.py): (1) auth, (2) reason,
-    # (3) Season lookup/404 — so a real write never half-runs the reason check after the lookup.
+    # (3) Season lookup/404 - so a real write never half-runs the reason check after the lookup.
     user, err = _auth(request)
     if err:
         return err
