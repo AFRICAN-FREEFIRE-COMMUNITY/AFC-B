@@ -48,9 +48,15 @@ class MatchNameAliasRosterGateTests(TestCase):
         self.assertEqual(row["matched_team_name"], "Alpha")
 
     def test_alias_not_in_roster_falls_through(self):
-        # The alias points at an OFF-ROSTER user, but a fuzzy-similar roster user exists. The alias must
-        # be ignored and the row must resolve to the FUZZY roster user (not the off-event alias), at a
-        # confidence below 1.0, with a non-empty candidate list the reviewer can pick from.
+        # The alias points at an OFF-ROSTER user, but a fuzzy-similar roster user exists. The alias
+        # must be ignored and the row must fall through to the fuzzy pass, so the roster user is
+        # SURFACED as a candidate rather than the off-event alias being asserted at 1.0.
+        #
+        # What the fall-through produces is a SUGGESTION, not a bind: "ARDNT" vs "ARENDT" scores
+        # 72.7 (a 5-character read against a 6-character username), under MATCH_FLOOR, so the row
+        # comes back unmatched with ARENDT as its top candidate. That is exactly what the owner
+        # asked for when this path was built (2026-06-12: "it should have had this ARENDT player as
+        # part of the OPTIONS for that ARDNT") - one click in the review table, not a silent guess.
         off_roster = _user("arendt_offevent")
         roster_user = _user("ARENDT")
         OCRNameAlias.objects.create(raw_name="ARDNT", user=off_roster)
@@ -58,11 +64,11 @@ class MatchNameAliasRosterGateTests(TestCase):
 
         row = match_name("ARDNT", registered)
 
-        self.assertEqual(row["matched_user_id"], roster_user.pk)   # fuzzy roster user, NOT the alias
-        self.assertNotEqual(row["matched_user_id"], off_roster.pk)
-        self.assertLess(row["confidence"], 1.0)                    # fuzzy score, never the 1.0 fast-path
-        self.assertTrue(row["top_candidates"])                    # real candidates surfaced
-        self.assertIn(roster_user.pk, [c["user_id"] for c in row["top_candidates"]])
+        self.assertNotEqual(row["matched_user_id"], off_roster.pk)  # the alias never wins
+        self.assertIsNone(row["matched_user_id"])                   # and the near miss is not asserted
+        self.assertEqual(row["unmatched_reason"], "below_floor")
+        self.assertTrue(row["top_candidates"])                      # real candidates surfaced
+        self.assertEqual(row["top_candidates"][0]["user_id"], roster_user.pk)
 
     def test_alias_not_in_roster_no_fuzzy_match(self):
         # The alias is off-roster AND nothing on the roster is fuzzy-similar to the read name. The row
