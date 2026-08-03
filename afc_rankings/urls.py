@@ -20,6 +20,7 @@ from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 
 from . import views as v
+from . import player_roles          # public per-role player ladders (sniper / rusher / ...)
 from . import (
     admin_seasons,
     admin_audit,
@@ -66,6 +67,11 @@ urlpatterns = [
     # player rankings
     path("players/monthly/", v.players_monthly, name="rankings_players_monthly"),
     path("players/quarterly/", v.players_quarterly, name="rankings_players_quarterly"),
+    # Per-role player ladders (owner: "sniper rankings, rusher rankings, etc"). A FILTER over
+    # the ladders above - same scores, the subset of players who play that role, ranks
+    # renumbered within the role. Listed before <int:player_id> so the literal path wins for
+    # readability (it could not collide anyway - that converter only matches digits).
+    path("players/by-role/", player_roles.players_by_role, name="rankings_players_by_role"),
     path("players/annual/", v.players_annual, name="rankings_players_annual"),
     path("players/<int:player_id>/score/", v.player_score_detail, name="rankings_player_score"),
 
