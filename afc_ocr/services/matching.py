@@ -49,11 +49,54 @@ SHORT_OTHER_CAP = 55      # tag that merely resembles it: a visible candidate, b
 #       unmatched row costs the organizer one click.
 # SHORT_OTHER_CAP sits BELOW MATCH_FLOOR by construction, so every "short fragment coincidence"
 # ("XIT" vs team "QX4") can only ever be a suggestion, never an assertion.
+#
+# MATCH_FLOOR is 75 because that is the number the REST of the stack already calls "confident":
+# afc_leaderboard.ocr.PLAYER_TRUST (the gate a player must clear before their team counts as a vote)
+# and the review tables' own auto-pick gate (OcrReviewTable.tsx ROW_AUTO_RESOLVE_MIN) are both 0.75.
+# It used to be 60, which meant the backend ASSERTED matches that every consumer above it then
+# treated as untrustworthy - and the EVENT review table (OCRReviewTable.tsx) has no gate of its own,
+# so it pre-selected every one of them for commit. Replaying the clone's stored event session (44
+# reads against its 66-player roster) shows the two bands do not overlap at all: every correct fuzzy
+# match scored 0.88-1.00, and everything in 0.60-0.68 was wrong -
+#     "AW.TRAP7"     -> "AMG GAARA7"   @0.68   (the real AW.trap7 is not in this event)
+#     "WhiteTOES CN" -> "BOSS CN"      @0.66   (BOSS CN is already bound by its own read)
+#     "LMG KOLA"     -> "LMG   SALMAN" @0.62   (SALMAN is already bound by his own read, @1.00)
+#     "ZN.Levix02"   -> "IL.EZIO"      @0.61   (EZIO is already bound by his own read, @1.00)
+#     "HOMIE.RENA"   -> "ZN.ATOMIC"    @0.60   (ATOMIC is already bound by his own read, @1.00)
+# so raising the floor to 75 removes exactly those five and costs no correct match.
 CANDIDATE_CUTOFF = 30
-MATCH_FLOOR = 60
+MATCH_FLOOR = 75
 # How many raw-scored candidates the C-level scan hands back before the short-fragment cap is applied
 # and the top 5 are kept. Generous headroom, see the PERFORMANCE note in match_name.
 SHORTLIST_LIMIT = 50
+
+# ── short-TAG corroboration guard (teams only) ───────────────────────────────────────────────────
+# A team's `team_tag` is 2-5 characters, and there are 608 teams on the platform, so a bare tag read
+# off a result screen collides by accident constantly. score_names gives an EXACT tag hit 100 (it is
+# a normalized identity), which used to bind the standing outright: on the clone's stored standalone
+# job the team cell "ST" bound to the team "Satolas" at full confidence purely because "ST" happens
+# to be Satolas' registered tag, while that placement's four players ("bopFR@g™R", "Deceit S4X™R",
+# "SNEIJDER ™R", "RENASAR™R") belong to no such team. A short tag is therefore treated as ONE signal,
+# never as proof: at or below this length it must be corroborated by something outside the team cell
+# (see _short_tag_is_corroborated) or the row surfaces for review with the tag hit as its top
+# suggestion. Above this length an exact tag hit still binds on its own - a 5+ character tag is
+# specific enough that a coincidence is unlikely.
+SHORT_TAG_MAX_LEN = 4
+
+# ── why a row did NOT bind ──────────────────────────────────────────────────────────────────────
+# Returned on every match row as `unmatched_reason` (empty string when the row DID bind). The review
+# tables render it verbatim as a key into their i18n catalogue, so the reviewer sees why the matcher
+# declined instead of an unexplained blank cell. Keep these values stable: they are part of the
+# API contract with frontend/app/(a)/a/leaderboards/**/O*ReviewTable.tsx.
+# Nothing bindable scored above CANDIDATE_CUTOFF. On the team matcher that also covers "only GHOST
+# teams scored", since a ghost is never an automatic resolution either way.
+REASON_NO_CANDIDATES = "no_candidates"
+REASON_BELOW_FLOOR = "below_floor"        # the best candidate scored under MATCH_FLOOR
+REASON_AMBIGUOUS = "ambiguous"            # the top score is SHARED by two different records
+REASON_TAG_ONLY = "tag_needs_corroboration"   # teams: a short tag hit with no second signal
+# Emitted one layer up, by afc_leaderboard.ocr._resolve_row_team, but the vocabulary lives here so
+# the frontend has ONE list of reasons to translate no matter which matcher produced the row.
+REASON_TEAM_CONFLICT = "team_conflict"    # teams: the team cell and the players name DIFFERENT teams
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -130,6 +173,60 @@ def score_names(read_norm: str, candidate_norm: str) -> float:
         else:
             score = min(score, SHORT_OTHER_CAP)
     return score
+
+
+def _top_is_ambiguous(candidates: list, id_key: str) -> bool:
+    """True when the best candidate SHARES its exact score with a DIFFERENT record.
+
+    Two records that score identically against the same read are a coin flip, and the tie is broken
+    today by nothing better than alphabetical order (see the deterministic sorts below). Binding one
+    of them silently credits a stranger's kills or a stranger's placement, so a tied top must surface
+    for review instead.
+
+    This is the FUZZY-pass twin of the collision rule match_name already applies on the exact pass
+    (_exact_norm_hits -> "more than one user normalizes the same -> assert nothing"). The exact pass
+    only catches a read that IS one of the colliding names; on the clone's real data the same coin
+    flip was happening one rung down, inside the fuzzy scan:
+        read "IL.SHADOW"   -> accounts "SHADOW " and "SHADOW."        both 1.00, picked "SHADOW "
+        read "KN DANTE F♡" -> accounts "Dante"   and "KN.DANTE"       both 1.00, picked "Dante"
+                              (the placement is the KN team, so "KN.DANTE" was the right answer)
+        read "NXT.SNIPE"   -> 5 accounts, all 0.90, picked alphabetically
+        read "TRY"         -> teams "TRY HARD ", "TRY HARDS ", "TRY US." all 0.88
+    `id_key` is "user_id" for players / "team_id" for teams: comparing the IDENTITY (not the display
+    name) means two records that merely LOOK alike are still distinguished, while the same record
+    listed twice would not falsely read as a tie.
+    """
+    if len(candidates) < 2:
+        return False
+    top = candidates[0]
+    return any(
+        c.get(id_key) != top.get(id_key)
+        and abs(c["confidence"] - top["confidence"]) < 1e-9
+        for c in candidates[1:]
+    )
+
+
+def _short_tag_is_corroborated(team: dict, player_team_ids, players_tag: str) -> bool:
+    """Does anything OUTSIDE the team cell back up a short-tag hit on `team`? (See SHORT_TAG_MAX_LEN.)
+
+    Two signals count, both supplied by the caller from the placement's PLAYERS (the row builders in
+    afc_leaderboard.ocr, which have already matched every read player against the platform):
+
+      1. MEMBERSHIP - a confidently matched player of this placement is actually a member of this
+         team. The strongest available signal: the read team cell and a roster record agree.
+         Real clone row: team cell "IL" + player "IL.DAMIAN" who is a member of "IL ESPORTS".
+      2. WORN TAG - the placement's player IGNs carry this team's registered tag (derive_team_tag
+         over the read names). Independent of the team cell because it comes from different pixels:
+         team cell "fns" + players "生活 X FNS" / "里克 X FNS" / "米奇 X FNS" all wearing FNS.
+         The caller must NOT pass players_tag when the read itself was derived from the players
+         (unreadable team cell), or one observation would be vouching for itself.
+
+    Returns False when neither holds, which is the "ST" -> "Satolas" case: the tag matched, and
+    nothing else about that placement has anything to do with that team.
+    """
+    if team.get("team_id") is not None and team["team_id"] in (player_team_ids or ()):
+        return True
+    return bool(players_tag) and _norm(team.get("team_tag")) == players_tag
 
 
 def _exact_norm_hits(read_norm: str, candidates: list, key) -> list:
@@ -321,9 +418,9 @@ def all_platform_teams_with_ghosts() -> list:
     return pool
 
 
-def match_team_name(raw_name: str, teams: list) -> dict:
+def match_team_name(raw_name: str, teams: list, player_team_ids=None, players_tag: str = "") -> dict:
     """The team-format mirror of match_name: fuzzy-match a raw OCR-read team name against the
-    platform team pool (from all_platform_teams), returning the best match + top-3 candidates.
+    platform team pool (from all_platform_teams), returning the best match + top-5 candidates.
 
     Scoring: the SHARED score_names ladder (normalized identity -> rapidfuzz WRatio on the normalized
     pair -> short-read cap) over BOTH the team_name and the team_tag of each team; a team's score is
@@ -331,10 +428,32 @@ def match_team_name(raw_name: str, teams: list) -> dict:
     still resolves at 100 against that team's tag while scoring far lower against unrelated long
     names. Cutoff 30, top-5.
 
-    Returns {row_id, raw_name, matched_team_id, matched_team_name, confidence,
+    THREE guards stand between the best score and an actual bind, because a wrong team silently
+    rewrites a tournament standing while an unmatched row costs the organizer one click:
+      1. MATCH_FLOOR - too weak to assert (reason "below_floor").
+      2. a TIE at the top between two different teams (reason "ambiguous", see _top_is_ambiguous):
+         real clone read "TRY" scored "TRY HARD ", "TRY HARDS " and "TRY US." all at 0.88.
+      3. a SHORT TAG hit with nothing else backing it (reason "tag_needs_corroboration", see
+         SHORT_TAG_MAX_LEN / _short_tag_is_corroborated): real clone read "ST" bound "Satolas" at
+         1.00 purely because "ST" is that team's registered team_tag.
+    In every one of those cases the candidate is still LISTED at its real score, so the reviewer
+    picks it in one click; only the automatic assertion is withheld.
+
+    CORROBORATION INPUTS (guard 3 only), supplied by the row builders in afc_leaderboard.ocr, which
+    have already matched this placement's players against the platform:
+      player_team_ids : ids of the platform teams this placement's CONFIDENT player matches belong to.
+      players_tag     : the clan tag those players wear on their IGNs (derive_team_tag). Pass "" when
+                        the read itself was derived from the players, or it vouches for itself.
+    Both default to "no corroboration available", which is the safe direction: a caller that knows
+    nothing about the players gets the short tag surfaced for review rather than bound.
+
+    Returns {row_id, raw_name, matched_team_id, matched_team_name, confidence, unmatched_reason,
              top_candidates:[{team_id, team_name, confidence}]}. No match -> matched_team_id None,
-             matched_team_name None, confidence 0.0, top_candidates []. Consumed by ocr_extract;
-             the FE review table renders top_candidates as the per-row dropdown.
+             matched_team_name None, confidence 0.0, and unmatched_reason set to one of the
+             REASON_* constants above. Consumed by afc_leaderboard.ocr.build_team_ocr_rows /
+             build_rows_from_match_log (and through them by views.ocr_extract /
+             results_file_extract); the FE review table renders top_candidates as the per-row
+             dropdown and unmatched_reason as the "why not" line beside it.
 
     GHOST entries (from all_platform_teams_with_ghosts) carry ghost_team_id/is_ghost; those keys are
     passed through into their candidate dicts, but matched_team_id/matched_team_name (the FE
@@ -348,6 +467,7 @@ def match_team_name(raw_name: str, teams: list) -> dict:
         "matched_team_id":   None,
         "matched_team_name": None,
         "confidence":        0.0,
+        "unmatched_reason":  REASON_NO_CANDIDATES,
         "top_candidates":    [],
     }
     if not teams:
@@ -367,14 +487,24 @@ def match_team_name(raw_name: str, teams: list) -> dict:
         # players' derived tag / plurality in build_team_ocr_rows is the real signal for these).
         return empty
 
+    # Score every team by the better of its name-score and tag-score, but KEEP the two apart: which
+    # of the two carried the team decides whether guard 3 (short tag) applies to it. A read that
+    # opens the team NAME ("NXT" -> "NXT ESP", 88 via the prefix cap) is evidence about the name and
+    # is never a bare-tag coincidence, even when that team's tag also happens to match.
     scored = []
+    is_short_read = len(read_norm) <= SHORT_TAG_MAX_LEN
     for t in teams:
-        score = max(
-            score_names(read_norm, _norm(t.get("team_name"))),
-            score_names(read_norm, _norm(t.get("team_tag"))),
-        )
+        name_score = score_names(read_norm, _norm(t.get("team_name")))
+        tag_score = score_names(read_norm, _norm(t.get("team_tag")))
+        score = max(name_score, tag_score)
         if score >= CANDIDATE_CUTOFF:
-            scored.append((score, t))
+            # Guard 3 applies only when the TAG is the sole thing carrying this team: a short read
+            # that also clears the floor on the team's NAME already has its second signal in-record.
+            tag_only = is_short_read and tag_score >= MATCH_FLOOR and name_score < MATCH_FLOOR
+            needs_corroboration = tag_only and not _short_tag_is_corroborated(
+                t, player_team_ids, players_tag,
+            )
+            scored.append((score, needs_corroboration, t))
 
     if not scored:
         return empty
@@ -382,9 +512,9 @@ def match_team_name(raw_name: str, teams: list) -> dict:
     # Deterministic order: score desc, then REAL teams before ghosts (a ghost is never an auto-resolve
     # so it must not occupy the top slot on a tie), then by team name so the same read always produces
     # the same candidate list.
-    scored.sort(key=lambda s: (-s[0], bool(s[1].get("is_ghost")), (s[1].get("team_name") or "")))
+    scored.sort(key=lambda s: (-s[0], bool(s[2].get("is_ghost")), (s[2].get("team_name") or "")))
     top_candidates = []
-    for score, t in scored[:5]:
+    for score, needs_corroboration, t in scored[:5]:
         cand = {
             "team_id": t["team_id"],
             "team_name": t["team_name"],
@@ -395,20 +525,39 @@ def match_team_name(raw_name: str, teams: list) -> dict:
         if t.get("is_ghost"):
             cand["ghost_team_id"] = t.get("ghost_team_id")
             cand["is_ghost"] = True
+        # Only stamped when True, so an ordinary candidate payload is byte-identical to before.
+        # It is what turns the BEST candidate into a REASON_TAG_ONLY refusal below; it also rides
+        # out to the FE, where a future per-candidate "tag only" label can read it without another
+        # backend change (today the row-level reason line carries the explanation).
+        if needs_corroboration:
+            cand["needs_corroboration"] = True
         top_candidates.append(cand)
 
     # Auto-resolve from the best REAL candidate only; ghosts are explicit picks, never automatic.
-    # And only when it clears MATCH_FLOOR - a weaker best candidate is still LISTED (the reviewer
-    # picks it in one click) but is not asserted as the row's team.
-    best_real = next((c for c in top_candidates if not c.get("is_ghost")), None)
-    if best_real and best_real["confidence"] * 100 < MATCH_FLOOR:
+    # Then walk the three guards in the docstring, keeping the reason so the review table can say
+    # WHY it is asking. Ghost candidates are excluded from the tie test as well: a ghost sharing the
+    # top score is not a competing answer, because it could never have been auto-resolved anyway.
+    real_candidates = [c for c in top_candidates if not c.get("is_ghost")]
+    best_real = real_candidates[0] if real_candidates else None
+    reason = ""
+    if best_real is None:
+        reason = REASON_NO_CANDIDATES
+    elif best_real["confidence"] * 100 < MATCH_FLOOR:
+        reason = REASON_BELOW_FLOOR
+    elif _top_is_ambiguous(real_candidates, "team_id"):
+        reason = REASON_AMBIGUOUS
+    elif best_real.get("needs_corroboration"):
+        reason = REASON_TAG_ONLY
+    if reason:
         best_real = None
+
     return {
         "row_id":            row_id,
         "raw_name":          raw_name,
         "matched_team_id":   best_real["team_id"] if best_real else None,
         "matched_team_name": best_real["team_name"] if best_real else None,
         "confidence":        best_real["confidence"] if best_real else 0.0,
+        "unmatched_reason":  reason,
         "top_candidates":    top_candidates,
     }
 
@@ -435,6 +584,15 @@ def match_name(raw_name: str, registered: list) -> dict:
     "it should have had this ARENDT player as part of the options for that ARDNT"). Cutoff 30 +
     top-5 mirrors match_team_name's deliberately LOOSE candidate net - the candidates exist to be
     PICKED from; only the best one drives any auto-resolve.
+
+    Two guards stand between the best fuzzy score and an actual bind: MATCH_FLOOR (too weak to
+    assert) and a TIE at the top between two different accounts (_top_is_ambiguous - the fuzzy twin
+    of step 2's collision rule; on the clone the read "IL.SHADOW" scored the accounts "SHADOW " and
+    "SHADOW." at 1.00 each and bound the alphabetically-first one). Either way the candidates are
+    still returned, so the reviewer picks in one click.
+
+    Every return carries `unmatched_reason`: "" when the row bound, else one of the REASON_*
+    constants, which the review tables render as the "why not" line next to the picker.
     """
     from afc_ocr.models import OCRNameAlias
 
@@ -465,6 +623,7 @@ def match_name(raw_name: str, registered: list) -> dict:
                 "confidence":        1.0,
                 "matched_team_id":   reg["team_id"],
                 "matched_team_name": reg["team_name"],
+                "unmatched_reason":  "",
                 "top_candidates":    [],
             }
         # Alias points at a user NOT registered for this event -> ignore it and fall through
@@ -495,6 +654,7 @@ def match_name(raw_name: str, registered: list) -> dict:
             "confidence":        1.0,
             "matched_team_id":   hit.get("team_id"),
             "matched_team_name": hit.get("team_name"),
+            "unmatched_reason":  "",
             "top_candidates": [{
                 "user_id": hit["user_id"], "username": hit["username"],
                 "team_name": hit.get("team_name"), "confidence": 1.0,
@@ -514,6 +674,7 @@ def match_name(raw_name: str, registered: list) -> dict:
             "confidence":        0.0,
             "matched_team_id":   None,
             "matched_team_name": None,
+            "unmatched_reason":  REASON_AMBIGUOUS,
             "top_candidates": [
                 {"user_id": p["user_id"], "username": p["username"],
                  "team_name": p.get("team_name"), "confidence": 1.0}
@@ -595,6 +756,7 @@ def match_name(raw_name: str, registered: list) -> dict:
             "confidence":        0.0,
             "matched_team_id":   None,
             "matched_team_name": None,
+            "unmatched_reason":  REASON_NO_CANDIDATES,
             "top_candidates":    [],
         }
 
@@ -620,14 +782,21 @@ def match_name(raw_name: str, registered: list) -> dict:
             "confidence":        0.0,
             "matched_team_id":   None,
             "matched_team_name": None,
+            "unmatched_reason":  REASON_NO_CANDIDATES,
             "top_candidates":    [],
         }
 
+    # The two fuzzy guards (see docstring). Either way the row comes back UNMATCHED but keeps every
+    # candidate, so the review table shows "not on platform" with the near misses one click away
+    # rather than pre-selecting a stranger who happened to score highest (or, on a tie, the stranger
+    # who happened to sort first).
     best = top_candidates[0]
+    reason = ""
     if best["confidence"] * 100 < MATCH_FLOOR:
-        # Too weak to assert (see MATCH_FLOOR). Return the row UNMATCHED but keep every candidate, so
-        # the review table shows "not on platform" with the near misses one click away rather than
-        # pre-selecting a stranger who happened to score highest.
+        reason = REASON_BELOW_FLOOR
+    elif _top_is_ambiguous(top_candidates, "user_id"):
+        reason = REASON_AMBIGUOUS
+    if reason:
         return {
             "row_id":            row_id,
             "raw_name":          raw_name,
@@ -636,6 +805,7 @@ def match_name(raw_name: str, registered: list) -> dict:
             "confidence":        0.0,
             "matched_team_id":   None,
             "matched_team_name": None,
+            "unmatched_reason":  reason,
             "top_candidates":    top_candidates,
         }
     player = next((p for p in registered if p["user_id"] == best["user_id"]), {})
@@ -648,6 +818,7 @@ def match_name(raw_name: str, registered: list) -> dict:
         "confidence":        best["confidence"],
         "matched_team_id":   player.get("team_id"),
         "matched_team_name": player.get("team_name"),
+        "unmatched_reason":  "",
         "top_candidates":    top_candidates,
     }
 

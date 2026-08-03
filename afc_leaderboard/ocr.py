@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from afc_ocr.services import extract
 from afc_ocr.services.matching import (
     all_platform_players, all_platform_teams_with_ghosts, match_team_name, match_name,
-    derive_team_tag,
+    derive_team_tag, REASON_TEAM_CONFLICT,
 )
 from utils.search_utils import normalize_search_text
 
@@ -81,6 +81,28 @@ def team_from_players(players_detail):
     return team_id, names.get(team_id), count, voters
 
 
+def trusted_player_team_ids(players_detail):
+    """Every platform team a CONFIDENTLY matched player of this placement belongs to.
+
+    The corroboration input for afc_ocr.services.matching's short-tag guard (SHORT_TAG_MAX_LEN): a
+    bare 2-4 character team cell only binds when something outside that cell agrees, and "one of the
+    players we read is actually on this team" is the strongest form of that agreement. Reuses the
+    same PLAYER_TRUST gate team_from_players votes on, so the two signals are drawn from exactly the
+    same set of players the reviewer sees pre-selected.
+
+    A SET, not a plurality: for corroboration we only need to know whether the tag's team appears at
+    all, and demanding a plurality here would throw away the very case the guard exists to allow (a
+    placement where the OCR only managed to match one of the four players).
+
+    Passed to match_team_name by build_team_ocr_rows / build_rows_from_match_log below.
+    """
+    return {
+        p["matched_team_id"]
+        for p in players_detail or []
+        if (p.get("confidence") or 0) >= PLAYER_TRUST and p.get("matched_team_id")
+    }
+
+
 def _resolve_row_team(name_match, players_detail):
     """Combine the team-NAME match with the team-FROM-PLAYERS signal into the row's final identity.
 
@@ -98,16 +120,21 @@ def _resolve_row_team(name_match, players_detail):
                           the row surfaces for a human instead of silently binding a wrong team to a
                           tournament standing.
 
-    Returns (matched_team_id, matched_team_name, confidence, top_candidates).
+    Returns (matched_team_id, matched_team_name, confidence, top_candidates, unmatched_reason).
+    `unmatched_reason` is "" when the row ends up bound, else the REASON_* string the review table
+    renders as its "why not" line: it is inherited from match_team_name (below the floor / a tie /
+    an uncorroborated short tag) and CLEARED here when the players end up carrying the row, because
+    a row that binds has nothing to explain.
     """
     p_team_id, p_team_name, votes, voters = team_from_players(players_detail)
     name_id = name_match["matched_team_id"]
     name_conf = name_match["confidence"]
+    name_reason = name_match.get("unmatched_reason", "")
     candidates = list(name_match["top_candidates"])
 
     # No player signal at all -> the name match is all we have, unchanged.
     if not p_team_id or votes < 2:
-        return name_id, name_match["matched_team_name"], name_conf, candidates
+        return name_id, name_match["matched_team_name"], name_conf, candidates, name_reason
 
     players_majority = votes * 2 >= voters
     player_cand = {"team_id": p_team_id, "team_name": p_team_name, "confidence": 0.8}
@@ -117,19 +144,21 @@ def _resolve_row_team(name_match, players_detail):
         conf = max(name_conf, 0.9)
         candidates = [dict(c, confidence=conf) if c.get("team_id") == p_team_id else c
                       for c in candidates] or [dict(player_cand, confidence=conf)]
-        return name_id, name_match["matched_team_name"], conf, candidates
+        return name_id, name_match["matched_team_name"], conf, candidates, ""
 
     if name_conf < PLAYER_TRUST and players_majority:
-        # The team cell was unreadable or matched weakly; the players carry the row.
+        # The team cell was unreadable, matched weakly, or was withheld by one of match_team_name's
+        # guards; the players carry the row, so whatever that guard objected to no longer applies.
         rest = [c for c in candidates if c.get("team_id") != p_team_id]
-        return p_team_id, p_team_name, 0.8, [player_cand] + rest
+        return p_team_id, p_team_name, 0.8, [player_cand] + rest, ""
 
     if name_conf >= PLAYER_TRUST and players_majority:
         # CONFLICT: two confident, disagreeing signals. Surface both, auto-resolve neither.
         rest = [c for c in candidates if c.get("team_id") != p_team_id]
-        return name_id, name_match["matched_team_name"], min(name_conf, 0.7), [player_cand] + rest
+        return (name_id, name_match["matched_team_name"], min(name_conf, 0.7),
+                [player_cand] + rest, REASON_TEAM_CONFLICT)
 
-    return name_id, name_match["matched_team_name"], name_conf, candidates
+    return name_id, name_match["matched_team_name"], name_conf, candidates, name_reason
 
 
 # ── row builders (one review row per competitor) ─────────────────────────────────────────────────
@@ -141,14 +170,21 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
     summed team kills when present, else the sum of the placement's players' kills (tolerant fallback
     when Gemini omitted the placement total). Returns the team-shaped rows:
       {row_id, raw_name, players_read, players_detail, placement, kills, matched_team_id, matched_name,
-       confidence, top_candidates, is_unmatched}.
+       confidence, unmatched_reason, top_candidates, is_unmatched}.
+
+    unmatched_reason is "" on a bound row and otherwise one of afc_ocr.services.matching's REASON_*
+    strings ("below_floor" / "ambiguous" / "tag_needs_corroboration" / "team_conflict" /
+    "no_candidates"), which the review table renders as the one-line explanation of why it is asking
+    the admin to pick. It is the ONLY place that answer exists, so it must ride on every row.
 
     players_pool (optional): the platform user pool from afc_ocr.matching.all_platform_players. When
     given, EACH read player is also matched against it (owner 2026-06-12: "like it brings out
     suggestions for teams it should also try to find matches for the players") and the row carries
-    players_detail = [{name, kills, matched_user_id, matched_username, confidence, top_candidates,
-    is_unmatched}] for the FE per-player approve/search/ghost controls (OcrReviewTable). When None
-    (older callers), only the plain players_read name list is produced, exactly as before.
+    players_detail = [{name, kills, matched_user_id, matched_username, confidence, unmatched_reason,
+    top_candidates, is_unmatched}] for the FE per-player approve/search/ghost controls
+    (OcrReviewTable). Those per-player matches are ALSO what corroborates a short team-cell tag (see
+    trusted_player_team_ids). When None (older callers), only the plain players_read name list is
+    produced, exactly as before - and a short tag then has no corroboration available, so it surfaces.
     """
     rows = []
     for entry in raw_output.get("placements", []):
@@ -183,6 +219,9 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
                     "matched_team_id": pm.get("matched_team_id"),
                     "matched_team_name": pm.get("matched_team_name"),
                     "confidence": pm["confidence"],
+                    # Why this player did not auto-bind (afc_ocr.services.matching REASON_*), so the
+                    # players panel can say "two accounts matched" instead of a bare "not on platform".
+                    "unmatched_reason": pm.get("unmatched_reason", ""),
                     "top_candidates": pm["top_candidates"],
                     "is_unmatched": pm["matched_user_id"] is None,
                 })
@@ -190,16 +229,23 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
             kills = int(entry.get("kills") or 0)
         else:
             kills = sum(int(p.get("kills", 0) or 0) for p in entry.get("players", []))
-        # Match on the read team name; if it is blank (FF often shows only a logo for the team), fall
-        # back to the tag shared across the placement's player IGNs (e.g. "AE.John" + "AE.Mike" -> "AE"),
-        # which match_team_name scores against each team's team_tag. This is the owner's "team tags help
-        # when searching for teams through the tags on the players names".
-        derived_tag = derive_team_tag(players_read) if not raw_name else ""
-        m = match_team_name(raw_name or derived_tag, teams)
+        # The clan tag the placement's player IGNs wear ("AE.John" + "AE.Mike" -> "AE"). It has TWO
+        # jobs: it stands in as the read when the team cell is blank (FF often shows only a logo),
+        # and it CORROBORATES a short team-cell tag against each team's registered team_tag. This is
+        # the owner's "team tags help when searching for teams through the tags on the players names".
+        derived_tag = derive_team_tag(players_read)
+        m = match_team_name(
+            raw_name or derived_tag, teams,
+            # Corroboration for the short-tag guard (matching.SHORT_TAG_MAX_LEN). players_tag is only
+            # passed when the team cell WAS read: if the read is itself the derived tag, handing it
+            # back as corroboration would let one observation vouch for itself.
+            player_team_ids=trusted_player_team_ids(players_detail),
+            players_tag=derived_tag if raw_name else "",
+        )
         # Fold in the team the PLAYERS resolve to (see _resolve_row_team): agreement raises the
         # confidence, an unreadable team cell is carried by the players, and a genuine disagreement
         # drops below the review gate instead of silently binding the wrong team.
-        team_id, team_name, confidence, candidates = _resolve_row_team(m, players_detail)
+        team_id, team_name, confidence, candidates, reason = _resolve_row_team(m, players_detail)
         rows.append({
             "row_id": m["row_id"],
             # Display the team name when read, else the tag we inferred from the players (so the row is
@@ -212,6 +258,9 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
             "matched_team_id": team_id,
             "matched_name": team_name,
             "confidence": confidence,
+            # Why this row did not auto-bind (one of afc_ocr.services.matching's REASON_* strings),
+            # "" when it did. The review table turns it into a one-line explanation next to the picker.
+            "unmatched_reason": reason,
             "top_candidates": candidates,
             "is_unmatched": team_id is None,
         })
@@ -241,6 +290,8 @@ def build_solo_ocr_rows(raw_output, players):
                 "matched_user_id": m["matched_user_id"],
                 "matched_name": m["matched_username"],
                 "confidence": m["confidence"],
+                # Why this row did not auto-bind (afc_ocr.services.matching REASON_*), "" when it did.
+                "unmatched_reason": m.get("unmatched_reason", ""),
                 "top_candidates": m["top_candidates"],
                 "is_unmatched": m["matched_user_id"] is None,
             })
@@ -290,6 +341,7 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
                     "matched_team_id": hit["teammembers__team_id"],
                     "matched_team_name": hit["teammembers__team__team_name"],
                     "confidence": 1.0,
+                    "unmatched_reason": "",
                     "top_candidates": [
                         {
                             "user_id": hit["user_id"],
@@ -310,16 +362,24 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
                 "matched_team_id": pm.get("matched_team_id"),
                 "matched_team_name": pm.get("matched_team_name"),
                 "confidence": pm["confidence"],
+                "unmatched_reason": pm.get("unmatched_reason", ""),
                 "top_candidates": pm["top_candidates"],
                 "is_unmatched": pm["matched_user_id"] is None,
             })
 
         raw_name = (entry.get("team_name") or "").strip()
-        derived_tag = derive_team_tag(players_read) if not raw_name else ""
-        m = match_team_name(raw_name or derived_tag, teams)
+        derived_tag = derive_team_tag(players_read)
+        # Same corroborated team match as the screenshot path (see build_team_ocr_rows). The
+        # membership signal is STRONGER here: a UID hit is a certain identity, so "this player is on
+        # that team" is a fact rather than an inference.
+        m = match_team_name(
+            raw_name or derived_tag, teams,
+            player_team_ids=trusted_player_team_ids(players_detail),
+            players_tag=derived_tag if raw_name else "",
+        )
         # Same player-plurality fold as the screenshot path. It matters MORE here: every UID hit is a
         # certain identity, so the players' team is near-proof of which team the row is.
-        team_id, team_name, confidence, candidates = _resolve_row_team(m, players_detail)
+        team_id, team_name, confidence, candidates, reason = _resolve_row_team(m, players_detail)
         rows.append({
             "row_id": m["row_id"],
             "raw_name": raw_name or derived_tag,
@@ -332,6 +392,7 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
             "matched_team_id": team_id,
             "matched_name": team_name,
             "confidence": confidence,
+            "unmatched_reason": reason,
             "top_candidates": candidates,
             "is_unmatched": team_id is None,
         })

@@ -24,7 +24,7 @@ from afc_auth.models import User
 from afc_team.models import Team
 from afc_ocr.services import matching
 from afc_ocr.services.matching import (
-    MATCH_FLOOR, derive_team_tag, match_name, match_team_name, score_names,
+    MATCH_FLOOR, SHORT_TAG_MAX_LEN, derive_team_tag, match_name, match_team_name, score_names,
 )
 
 
@@ -123,6 +123,155 @@ class AmbiguousIdentityTests(TestCase):
 
         self.assertIsNone(row["matched_user_id"])
         self.assertEqual({c["username"] for c in row["top_candidates"]}, {"KILLUA", "K1LLUA"})
+
+
+class FuzzyTieTests(TestCase):
+    """A tie at the top of the FUZZY list is a coin flip and must not bind either side.
+
+    AmbiguousIdentityTests above covers the read that IS one of two colliding names (the exact
+    pass). These are the same coin flip one rung down, inside the fuzzy scan, where the read is not
+    identical to anything but two or more accounts score the SAME against it. All four were bound
+    silently, by alphabetical order, when the clone's stored standalone job was replayed.
+    """
+
+    # (read, the accounts that all tie at the top, what the old matcher bound)
+    REAL_FUZZY_TIES = [
+        # Two accounts differing only in trailing punctuation; both normalize to "shadow" and so
+        # both score 100 against the tag-stripped read.
+        ("IL.SHADOW", ["SHADOW ", "SHADOW."], "SHADOW "),
+        # The placement is the KN team, so "KN.DANTE" was the RIGHT answer - and the matcher took
+        # the other one purely because "Dante" sorts first.
+        ("KN DANTE F♡", ["Dante", "KN.DANTE"], "Dante"),
+        # Five accounts contain "snipe"; none of them is this player.
+        ("NXT.SNIPE", ["Gil Sniper GS", "Jacasonsnipe ", "Korexsnipe "], "Gil Sniper GS"),
+        ("☆DEON☆™ja", ["D3MON", "DEMON", "DEMON. "], "D3MON"),
+    ]
+
+    def test_tied_top_scores_surface_instead_of_binding(self):
+        for read, accounts, old_pick in self.REAL_FUZZY_TIES:
+            with self.subTest(read=read):
+                pool = [{"user_id": _user(a).pk, "username": a, "team_id": None, "team_name": None}
+                        for a in accounts]
+
+                row = match_name(read, pool)
+
+                self.assertIsNone(
+                    row["matched_user_id"],
+                    f"{read!r} ties across {accounts}; before the fix it bound {old_pick!r}",
+                )
+                self.assertEqual(row["unmatched_reason"], "ambiguous")
+                # Every tied account is handed to the reviewer to choose between.
+                listed = {c["username"] for c in row["top_candidates"]}
+                self.assertTrue(set(accounts).issubset(listed))
+
+    def test_a_clear_winner_still_binds(self):
+        # Guard against over-correcting: the tie rule must only fire on an ACTUAL tie. "SABATH24"
+        # beats every other account outright on the real data and still resolves.
+        for username in ("KN SABATH24", "Abula", "Bs BAN"):
+            _user(username)
+        pool = [{"user_id": u.pk, "username": u.username, "team_id": None, "team_name": None}
+                for u in User.objects.all()]
+
+        row = match_name("SABATH24", pool)
+
+        self.assertEqual(row["matched_username"], "KN SABATH24")
+        self.assertEqual(row["unmatched_reason"], "")
+
+
+class ShortTagCorroborationTests(TestCase):
+    """A 2-4 character team_tag hit is one signal, never proof (see SHORT_TAG_MAX_LEN).
+
+    THE CASE: the clone's stored standalone job has a placement whose team cell read "ST". "ST" is
+    the registered team_tag of the platform team "Satolas", so it scored a normalized-identity 100
+    and bound the standing outright - while that placement's four players ("bopFR@g™R",
+    "Deceit S4X™R", "SNEIJDER ™R", "RENASAR™R") have nothing to do with Satolas: none of them is a
+    member, and none of them wears "ST" on their IGN. With 608 teams on the platform a two-letter
+    collision is close to certain, and a wrong team rewrites a tournament standing, so the tag now
+    has to be backed by something outside the team cell before it binds.
+    """
+
+    def setUp(self):
+        owner = _user("owner")
+        self.satolas = _team("Satolas", owner, tag="ST")
+        self.il = _team("IL ESPORTS", owner, tag="IL")
+        self.teams = matching.all_platform_teams()
+
+    def test_uncorroborated_short_tag_surfaces_with_the_team_as_top_candidate(self):
+        row = match_team_name("ST", self.teams)
+
+        self.assertIsNone(row["matched_team_id"],
+                          "before the fix 'ST' bound 'Satolas' at 1.00 on the tag alone")
+        self.assertEqual(row["unmatched_reason"], "tag_needs_corroboration")
+        # Recall is untouched: the team is still the first thing the reviewer sees, at full score.
+        self.assertEqual(row["top_candidates"][0]["team_id"], self.satolas.team_id)
+        self.assertEqual(row["top_candidates"][0]["confidence"], 1.0)
+
+    def test_membership_corroborates(self):
+        # The real "IL" row: its player "IL.DAMIAN" is a member of "IL ESPORTS", so the team cell
+        # and a roster record agree and the row binds.
+        row = match_team_name("IL", self.teams, player_team_ids={self.il.team_id})
+
+        self.assertEqual(row["matched_team_id"], self.il.team_id)
+        self.assertEqual(row["unmatched_reason"], "")
+
+    def test_the_players_worn_tag_corroborates(self):
+        # The read team cell says "IL" and the placement's IGNs ("IL.DAMIAN", "IL.BOPA", "IL.SHADOW")
+        # independently carry the same tag. Different pixels, so it is a real second observation.
+        players_tag = derive_team_tag(["IL.DAMIAN", "IL.BOPA", "IL.SHADOW", "IL.Xtc**"])
+        self.assertEqual(players_tag, "il")
+
+        row = match_team_name("IL", self.teams, players_tag=players_tag)
+
+        self.assertEqual(row["matched_team_id"], self.il.team_id)
+
+    def test_a_different_teams_players_do_not_corroborate(self):
+        # The exact "ST" failure: the players resolved to a team, just not this one.
+        row = match_team_name("ST", self.teams, player_team_ids={self.il.team_id})
+
+        self.assertIsNone(row["matched_team_id"])
+        self.assertEqual(row["unmatched_reason"], "tag_needs_corroboration")
+
+    def test_a_tag_that_also_opens_the_team_name_needs_no_corroboration(self):
+        # The real "NXT" row: "NXT ESP" is matched by its tag AND by its NAME (the read opens it,
+        # 0.88 through the prefix cap). The second signal is already inside the team record, so the
+        # guard does not apply and the row keeps binding with no player evidence at all.
+        owner = User.objects.get(username="owner")
+        nxt = _team("NXT ESP", owner, tag="NXT")
+
+        row = match_team_name("NXT", matching.all_platform_teams())
+
+        self.assertEqual(row["matched_team_id"], nxt.team_id)
+        self.assertEqual(row["unmatched_reason"], "")
+
+    def test_a_long_tag_is_specific_enough_on_its_own(self):
+        # Team.team_tag is max_length=5, so "2 to 4 needs corroboration" leaves exactly one exempt
+        # width: a full-length 5-character tag.
+        owner = User.objects.get(username="owner")
+        longtag = _team("Phantom Crew", owner, tag="PHNTM")
+        self.assertGreater(len("phntm"), SHORT_TAG_MAX_LEN)
+
+        row = match_team_name("PHNTM", matching.all_platform_teams())
+
+        self.assertEqual(row["matched_team_id"], longtag.team_id)
+        self.assertEqual(row["unmatched_reason"], "")
+
+
+class AmbiguousTeamTests(TestCase):
+    """Two teams that score identically are a coin flip, exactly like two colliding accounts."""
+
+    def test_three_way_prefix_tie_surfaces(self):
+        # Real clone row: the team cell read "TRY" and three platform teams start with it, so all
+        # three scored 0.88 through the prefix cap. The matcher bound "TRY HARD " on nothing but
+        # alphabetical order.
+        owner = _user("owner")
+        for name in ("TRY HARD ", "TRY HARDS ", "TRY US."):
+            _team(name, owner, tag=None)
+
+        row = match_team_name("TRY", matching.all_platform_teams())
+
+        self.assertIsNone(row["matched_team_id"])
+        self.assertEqual(row["unmatched_reason"], "ambiguous")
+        self.assertEqual(len({c["team_id"] for c in row["top_candidates"]}), 3)
 
 
 class WeakPlayerMatchTests(TestCase):
