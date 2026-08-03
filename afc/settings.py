@@ -141,13 +141,16 @@ OAUTH2_PROVIDER = {
     },
     "DEFAULT_SCOPES": ["openid"],
 }
-# OAUTH2_PROVIDER_APPLICATION_MODEL is ALSO deliberately omitted here, for the same reason as
-# OAUTH2_VALIDATOR_CLASS above: afc_sso.AFCSSOApplication does not exist until Task 2, and
-# django.contrib.admin autodiscover imports oauth2_provider.admin, which resolves this setting
-# EAGERLY at module import time (apps.get_model(...) with no lazy fallback), crashing
-# `manage.py` entirely with LookupError rather than merely failing to boot. Task 2 adds
-# OAUTH2_PROVIDER_APPLICATION_MODEL = "afc_sso.AFCSSOApplication" back once the model exists.
-# Until then, Applications use the library's own default oauth2_provider.Application model.
+# Swap django-oauth-toolkit's Application for ours. AFCSSOApplication (afc_sso/models.py)
+# is the per-org permission record: the share_* toggles decide what a partner org may ever
+# read about a player. Every call to oauth2_provider.models.get_application_model() in the
+# library and in our code resolves to it because of this line.
+#
+# Ordering note, do not move this above the app: django.contrib.admin autodiscover imports
+# oauth2_provider.admin, which resolves this setting EAGERLY at module import time
+# (apps.get_model(...) with no lazy fallback), so pointing it at a model that does not exist
+# crashes `manage.py` outright with LookupError. It is safe now that Task 2 has landed the model.
+OAUTH2_PROVIDER_APPLICATION_MODEL = "afc_sso.AFCSSOApplication"
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
