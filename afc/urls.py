@@ -46,9 +46,14 @@ urlpatterns = [
     path("api/v1/partner/", include('afc_partner_api.partner_urls')),
     # AFC-staff partner-admin surface (provision partners, set scope/toggles, issue/
     # revoke keys, publish events). Mounted at partners/ so its routes are
-    # partners/admin/… — the human Bearer-authenticated provisioning surface, kept
+    # partners/admin/…, the human Bearer-authenticated provisioning surface, kept
     # OFF the versioned partner-facing read tree above.
     path("partners/", include('afc_partner_api.admin_urls')),
+    # AFC acting as an OpenID Connect PROVIDER ("Sign in with AFC"). Everything under this
+    # prefix is django-oauth-toolkit's standard OIDC surface (authorize, token, userinfo,
+    # discovery, JWKS) plus, from later tasks, AFC's own consent screen. See afc_sso/urls.py
+    # and WEBSITE/tasks/afc-sso-provider-design.md.
+    path("sso/", include('afc_sso.urls')),
 
 ]
 

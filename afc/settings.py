@@ -73,6 +73,8 @@ INSTALLED_APPS = [
     'afc_organizers',
     'afc_partner_api',
     'afc_sponsors',
+    'oauth2_provider',
+    'afc_sso',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -107,6 +109,45 @@ GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
 # the button can be a full-width AFC-styled button instead of Google's locked iframe). The
 # original id-token (credential) path does NOT use this. Secret, env-only, never committed.
 GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+
+# ── AFC as an OpenID Connect provider ("Sign in with AFC") ────────────────────
+# Partner orgs authenticate AFC players on their own sites. Which FIELDS each org
+# receives is NOT configured here: it lives on AFCSSOApplication toggles and is
+# enforced by AFCOAuth2Validator. See WEBSITE/tasks/afc-sso-provider-design.md.
+#
+# OIDC_RSA_PRIVATE_KEY signs ID tokens (RS256). It MUST come from the environment.
+# An empty value disables signing, so a missing env var fails loudly at boot rather
+# than quietly issuing unsigned tokens.
+OIDC_RSA_PRIVATE_KEY = os.environ.get("AFC_OIDC_RSA_PRIVATE_KEY", "")
+
+OAUTH2_PROVIDER = {
+    "OIDC_ENABLED": True,
+    "OIDC_RSA_PRIVATE_KEY": OIDC_RSA_PRIVATE_KEY,
+    # OAUTH2_VALIDATOR_CLASS is deliberately OMITTED here: afc_sso.validators.AFCOAuth2Validator
+    # does not exist until Task 4 lands, and importing it now would break boot. Task 4 adds this
+    # key back once the validator module exists.
+    # PKCE defaults to True in 3.4.0. Stated explicitly so nobody "simplifies" it away.
+    "PKCE_REQUIRED": True,
+    "SCOPES": {
+        "openid": "Confirm who you are on AFC",
+        "profile": "Your in-game name, avatar, country and language",
+        "email": "Your email address",
+        "afc.freefire": "Your Free Fire UID",
+        "afc.team": "Your current team and your role in it",
+        "afc.history": "Tournaments you have played and how you placed",
+        "afc.stats": "Your match statistics",
+        "afc.ranking": "Your AFC tier, rank and points",
+        "afc.standing": "Whether your AFC account is in good standing",
+    },
+    "DEFAULT_SCOPES": ["openid"],
+}
+# OAUTH2_PROVIDER_APPLICATION_MODEL is ALSO deliberately omitted here, for the same reason as
+# OAUTH2_VALIDATOR_CLASS above: afc_sso.AFCSSOApplication does not exist until Task 2, and
+# django.contrib.admin autodiscover imports oauth2_provider.admin, which resolves this setting
+# EAGERLY at module import time (apps.get_model(...) with no lazy fallback), crashing
+# `manage.py` entirely with LookupError rather than merely failing to boot. Task 2 adds
+# OAUTH2_PROVIDER_APPLICATION_MODEL = "afc_sso.AFCSSOApplication" back once the model exists.
+# Until then, Applications use the library's own default oauth2_provider.Application model.
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
