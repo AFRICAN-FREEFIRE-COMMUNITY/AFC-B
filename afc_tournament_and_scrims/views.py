@@ -113,6 +113,31 @@ def _is_head_or_super_admin(user):
         user.userroles.filter(role__role_name="head_admin").exists()
 
 
+# ── prize pool in the tier rules' base currency (NGN) ──
+# WHY (owner 2026-08-03, "Dynasty Cup SSA Grand Finals is being marked tier 4"): the admin
+# EventTierRule thresholds are authored in NAIRA (the seeded rules read 100000 / 300000 / 1000000,
+# and the spec §4 says "prize pool USD amounts are converted to ₦ ... then compared to the
+# threshold"). But Event.prizepool_cash_value is stored in the event's OWN prize_currency, which
+# create_event defaults to USD. So a $400 event was compared as the bare number 400 against a
+# ₦100,000 threshold, matched nothing, and fell through to EventTierConfig.default_tier (Tier 3).
+# Event 172 DYNASTY CUP GRAND FINALS SSA is exactly that case: $400 = ₦544,563 at the stored FxRate,
+# comfortably over the ₦100,000 Tier-1 rule, yet it sat at tier_3.
+#
+# We reuse prize_sync._amount_ngn — the SAME converter the rankings prize-money path already uses
+# (FxRate.rate = units per 1 USD, NGN passthrough, and it keeps the raw number when FX data is
+# missing rather than dropping the value). One conversion path, so tiering and prize points can
+# never disagree about what an event's pool is worth.
+def _prize_pool_ngn(event) -> int:
+    from .prize_sync import _amount_ngn
+    from afc_auth.models import FxRate
+    raw = event.prizepool_cash_value
+    if not raw:
+        return 0
+    rate_map = {f.currency: f.rate for f in FxRate.objects.all()}
+    ngn = _amount_ngn(raw, getattr(event, "prize_currency", "USD"), rate_map)
+    return int(ngn) if ngn else 0
+
+
 # ── automatic tournament-tier classification (owner 2026-06-30) ──
 # Compute an event's tier (tier_1/2/3) from the admin "Tournament Tiers" rules
 # (afc_rankings.EventTierRule, first-match-wins) so events are "actually ranked into tiers"
@@ -120,6 +145,12 @@ def _is_head_or_super_admin(user):
 # classifier expects (prize / teams / players / format), then maps the int tier back to the
 # Event.tournament_tier code string. Fail-soft: any error / no rules -> keep the event's current
 # tier (never crash event create/edit over a classification hiccup).
+#
+# Callers: apply_event_tier (create_event / edit_event) and the
+# `reclassify_event_tiers` management command, which re-runs this over existing events after a
+# rule or FX change. The tier it returns is what afc_rankings.aggregation feeds the scoring engine
+# as TournamentInput.tier (tier_1 = 2.0x, tier_2 = 1.5x, tier_3 = 1.0x), so this function decides
+# how much every result in the event is worth in the rankings.
 def auto_classify_event(event):
     try:
         from afc_rankings.admin_tournament_tiers import classify, _get_config
@@ -130,7 +161,8 @@ def auto_classify_event(event):
         # physical leg); the classifier ignores an unknown/None format (no format rule fires).
         fmt = {"physical(lan)": "lan", "virtual": "virtual", "hybrid": "lan"}.get(event.event_mode)
         sample = {
-            "prize": int(event.prizepool_cash_value or 0),
+            # NGN, not the raw stored amount — see _prize_pool_ngn above.
+            "prize": _prize_pool_ngn(event),
             "teams": 0 if is_solo else cap,
             "players": cap if is_solo else 0,
             "format": fmt,
@@ -24891,15 +24923,22 @@ def broadcast_match_room_details(request):
         stage_id=group.stage_id, stage_name=group.stage.stage_name,
         group_id=group.group_id, group_name=group.group_name,
     )
-    # ── WhatsApp room details via Zernio (owner 2026-07-02): opted-in players ALSO get the room
-    # ID/password straight on WhatsApp. Inert until ZERNIO_API_KEY/ACCOUNT_ID are set; best-effort
-    # (a WhatsApp hiccup never blocks the site notification above). ──
+    # ── WhatsApp room details (owner 2026-08-03): opted-in players ALSO get the room ID and
+    # password straight on WhatsApp. Now sent through AFC's OWN Meta WhatsApp Business account
+    # (afc_whatsapp), replacing the Zernio middleman, so every message is logged and Meta reports
+    # back whether it was delivered and read. Inert until the WHATSAPP_* env vars are set;
+    # best-effort, a WhatsApp hiccup never blocks the site notification and email above. ──
     whatsapped = 0
+    wa_skipped = 0
     try:
-        from .whatsapp_zernio import send_room_details
-        whatsapped = send_room_details(recipients, event, match)
+        from .whatsapp_room_details import send_room_details
+        whatsapped, wa_skipped = send_room_details(recipients, event, match)
     except Exception:
-        pass
+        # This module has no module-level logger; it fetches one inline where needed.
+        import logging
+        logging.getLogger("afc_tournament_and_scrims").exception(
+            "room details: WhatsApp send failed for match %s", match.match_id
+        )
     remaining = record_broadcast_send(user)
 
     AdminHistory.objects.create(
@@ -24908,7 +24947,7 @@ def broadcast_match_room_details(request):
             f"Sent room details for match {match.match_number} "
             f"({match.match_map or 'map'}) in {group.stage.stage_name} > {group.group_name}, "
             f"{event.event_name} (ID: {event.event_id}): {len(recipients)} recipients "
-            f"[{pushed} pushed, {emailed} emailed]"
+            f"[{pushed} pushed, {emailed} emailed, {whatsapped} whatsapped]"
         ),
     )
     set_audit(
@@ -24920,6 +24959,10 @@ def broadcast_match_room_details(request):
     return Response(
         {"message": f"Room details sent to {len(recipients)} players for this map.",
          "recipients": len(recipients), "pushed": pushed, "emailed": emailed,
+         # whatsapped/whatsapp_skipped are REPORTED now. The old Zernio call returned a count
+         # that was assigned and never used, so nobody could tell whether a single WhatsApp
+         # went out. skipped counts players with no number on file or who opted out.
+         "whatsapped": whatsapped, "whatsapp_skipped": wa_skipped,
          "rate_remaining": remaining, "rate_limit": rl["limit"]},
         status=200,
     )

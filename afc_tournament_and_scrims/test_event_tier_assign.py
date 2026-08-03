@@ -13,11 +13,12 @@ Targets afc_tournament_and_scrims.views.apply_event_tier / auto_classify_event:
 """
 
 from datetime import date, timedelta
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from afc_auth.models import Roles, UserRoles
+from afc_auth.models import Roles, UserRoles, FxRate
 from afc_tournament_and_scrims.models import Event
 from afc_tournament_and_scrims.views import apply_event_tier, auto_classify_event
 from afc_rankings.models import EventTierRule, EventTierConfig
@@ -93,3 +94,55 @@ class EventTierAssignTests(TestCase):
         e.refresh_from_db()
         self.assertEqual(e.tournament_tier, "tier_1")
         self.assertFalse(e.tier_overridden)
+
+
+# ── prize-pool currency conversion (owner 2026-08-03, DYNASTY CUP GRAND FINALS SSA) ──
+# The EventTierRule thresholds are authored in NAIRA (spec §4: USD pools are converted to ₦ and
+# THEN compared), but Event.prizepool_cash_value is stored in the event's own prize_currency, which
+# defaults to USD. Before the fix a $400 event was compared as the bare number 400 against the
+# ₦100,000 Tier-1 threshold, matched nothing, and fell through to the default Tier 3 — the real
+# reason event 172 sat at tier_3. auto_classify_event now converts through the same FxRate table
+# prize_sync uses.
+class EventTierCurrencyTests(TestCase):
+    def setUp(self):
+        self.creator = User.objects.create(username="ccy", email="ccy@x.com")
+        EventTierConfig.objects.get_or_create(id=1, defaults={"default_tier": 3})
+        # The seeded production rule: pools of ₦100,000 or more are Tier 1.
+        EventTierRule.objects.create(
+            priority=0, match="all", tier=1, enabled=True,
+            conditions=[{"field": "prize", "op": "gte", "value": 100000}],
+        )
+        # rate = units per 1 USD, matching afc_auth.FxRate's contract.
+        FxRate.objects.create(currency="USD", rate=Decimal("1"))
+        FxRate.objects.create(currency="NGN", rate=Decimal("1361.407563"))
+
+    def test_usd_pool_converts_to_naira_before_matching(self):
+        # $400 = ~₦544,563, comfortably over the ₦100,000 Tier-1 threshold. The pre-fix code
+        # compared the bare 400 and returned tier_3.
+        e = _event(self.creator, prize=400)
+        e.prize_currency = "USD"
+        e.save(update_fields=["prize_currency"])
+        self.assertEqual(auto_classify_event(e), "tier_1")
+
+    def test_naira_pool_is_used_verbatim(self):
+        # An event already priced in NGN must not be converted again (DECA CUP SEASON 5 is this case).
+        e = _event(self.creator, prize=1000000)
+        e.prize_currency = "NGN"
+        e.save(update_fields=["prize_currency"])
+        self.assertEqual(auto_classify_event(e), "tier_1")
+
+    def test_small_usd_pool_still_falls_through_to_default(self):
+        # $50 = ~₦68,070, under the threshold -> no rule matches -> EventTierConfig.default_tier.
+        e = _event(self.creator, prize=50)
+        e.prize_currency = "USD"
+        e.save(update_fields=["prize_currency"])
+        self.assertEqual(auto_classify_event(e), "tier_3")
+
+    def test_missing_fx_data_keeps_the_raw_amount(self):
+        # No FX rows at all -> _amount_ngn returns the number unchanged rather than dropping it, so
+        # classification degrades to the old behaviour instead of silently zeroing every pool.
+        FxRate.objects.all().delete()
+        e = _event(self.creator, prize=250000)
+        e.prize_currency = "USD"
+        e.save(update_fields=["prize_currency"])
+        self.assertEqual(auto_classify_event(e), "tier_1")

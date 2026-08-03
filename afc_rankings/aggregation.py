@@ -131,26 +131,40 @@ class PlayerAgg:
 
 
 # ───────────────────────── scrim cap helper (§12) ─────────────────────────
-def _apply_scrim_caps(scrim_match_rows):
+def _apply_scrim_caps(scrim_match_rows, controls=None):
     """
-    scrim_match_rows: list of (day, placement, kills). Enforce 4/day + 60/month,
+    scrim_match_rows: list of (day, placement, kills, event_id). Enforce 4/day + 60/month,
     then return raw (scrim_placement_pts, scrim_kills, scrim_wins) for the kept rows.
+
+    ``controls``: {event_id: EventCountingControl} from ``_counting_controls``. A scrim event whose
+    admin toggles are off contributes nothing for that component (owner 2026-08-03: "admin toggle so
+    all events count by default, with admins able to switch individual ones off"). The toggles were
+    previously honoured for tournaments only, so a scrim event could not be switched off at all.
+    A disabled component is zeroed here, AFTER the day/month caps have chosen which scrims count,
+    so turning kills off does not silently promote a later scrim into a freed cap slot.
     """
+    controls = controls or {}
     per_day = defaultdict(int)
     total = 0
     placement_pts = 0.0
     kills = 0.0
     wins = 0
-    for day, placement, k in sorted(scrim_match_rows, key=lambda r: (r[0] or datetime.date.max)):
+    for day, placement, k, event_id in sorted(scrim_match_rows,
+                                              key=lambda r: (r[0] or datetime.date.max)):
         if total >= 60:
             break
         if day is not None and per_day[day] >= 4:
             continue
         per_day[day] += 1
         total += 1
-        placement_pts += engine.placement_points(placement)
-        kills += k
-        if placement == 1:
+        ctrl = controls.get(event_id)
+        # count_placement / count_kills / count_winner map onto the scrim components the same way
+        # they do for a tournament: placement points, kill points, and the win bonus.
+        if not ctrl or ctrl.count_placement:
+            placement_pts += engine.placement_points(placement)
+        if not ctrl or ctrl.count_kills:
+            kills += k
+        if placement == 1 and (not ctrl or ctrl.count_winner):
             wins += 1
     return placement_pts, kills, wins
 
@@ -161,7 +175,12 @@ def _apply_scrim_caps(scrim_match_rows):
 # TournamentTeam.finals_appearances, EventPrizePayout.amount. Changing those
 # models changes the scoring inputs the engine sees.
 def _collect_team(team: Team, start: datetime.date, end: datetime.date):
-    """Returns (tournaments: list[TournamentInput], scrim_rows, win_count, kill_total)."""
+    """Returns (tournaments: list[TournamentInput], scrims: ScrimInput, win_count, kill_total).
+
+    The scrim side is returned already day/month-capped AND already filtered by the admin counting
+    controls, because those controls are keyed by event_id and only this function still knows which
+    event each scrim row came from.
+    """
     stats = (
         TournamentTeamMatchStats.objects
         .filter(tournament_team__team=team)
@@ -170,21 +189,34 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
                         "tournament_team", "tournament_team__event")
     )
     tour_events = defaultdict(list)     # event -> [stats]
-    scrim_rows = []                     # (day, placement, kills)
+    scrim_rows = []                     # (day, placement, kills, event_id)
+    scrim_event_ids = set()
     for s in stats:
         ev = _event_of_match(s.match)
         if ev is None:
             continue
         if ev.competition_type == "scrims":
-            scrim_rows.append((_match_day(s.match), s.placement, s.kills))
+            # Carry the event_id so the admin counting controls / exclusions below can reach scrims
+            # too — before this they applied to tournaments only and a scrim event had no off switch.
+            scrim_rows.append((_match_day(s.match), s.placement, s.kills, ev.event_id))
+            scrim_event_ids.add(ev.event_id)
         else:
             tour_events[ev.event_id].append((ev, s))
 
-    # admin counting controls + per-team exclusions (§16, Result Markers surface)
-    event_ids = list(tour_events.keys())
+    # admin counting controls + per-team exclusions (§16, Result Markers surface).
+    # Scrim event ids are included so a scrim can be toggled off / excluded exactly like a
+    # tournament — the owner's rule is that everything counts by DEFAULT and the admin switches
+    # individual ones off (2026-08-03).
+    event_ids = list(tour_events.keys()) + list(scrim_event_ids)
     controls = _counting_controls(event_ids)
     excluded = _excluded_event_ids(event_ids, team=team)
-    excluded |= _unverified_org_event_ids(event_ids)  # unverified org events don't count
+    # The organizer-verification gate is applied to TOURNAMENTS ONLY, on purpose. Every scrim in
+    # production today is org-owned with rankings_verified=False, so folding scrims into this gate
+    # would silently switch off every scrim that currently counts — the opposite of the owner's
+    # "count by default" rule. Whether an unverified org's SCRIMS should also be gated is an open
+    # policy question for the owner, not something to decide here.
+    excluded |= _unverified_org_event_ids(list(tour_events.keys()))
+    scrim_rows = [r for r in scrim_rows if r[3] not in excluded]
 
     tournaments = []
     win_count = 0
@@ -223,22 +255,21 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
     sa_inputs = standalone.standalone_team_inputs(team, start, end)
     tournaments += sa_inputs
     kill_total += sum(t.raw_kills for t in sa_inputs)
-    return tournaments, scrim_rows, win_count, kill_total
+    sp, sk, sw = _apply_scrim_caps(scrim_rows, controls)
+    return tournaments, ScrimInput(sp, sk, sw), win_count, kill_total
 
 
 def compute_team_monthly(team: Team, month: datetime.date) -> TeamAgg:
     start, end = month_bounds(month)
-    tournaments, scrim_rows, wins, kills = _collect_team(team, start, end)
-    sp, sk, sw = _apply_scrim_caps(scrim_rows)
-    result = engine.monthly_team_score(tournaments, ScrimInput(sp, sk, sw))
+    tournaments, scrims, wins, kills = _collect_team(team, start, end)
+    result = engine.monthly_team_score(tournaments, scrims)
     return TeamAgg(result=result, tournament_wins=wins, total_kills=kills,
                    tournaments_played=len(tournaments))
 
 
 def compute_team_quarterly(team: Team, season) -> TeamAgg:
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
-    tournaments, scrim_rows, wins, kills = _collect_team(team, start, end)
-    sp, sk, sw = _apply_scrim_caps(scrim_rows)
+    tournaments, scrims, wins, kills = _collect_team(team, start, end)
 
     # prize money (§7.2) — sum payouts to this team's tournament-teams in the season window
     prize = (EventPrizePayout.objects
@@ -252,7 +283,7 @@ def compute_team_quarterly(team: Team, season) -> TeamAgg:
     followers = snap.combined_followers if (snap and snap.is_verified) else 0
 
     result = engine.quarterly_team_score(
-        tournaments, ScrimInput(sp, sk, sw),
+        tournaments, scrims,
         prize_money_naira=float(prize), combined_followers=followers,
     )
     return TeamAgg(result=result, tournament_wins=wins, total_kills=kills,
@@ -261,7 +292,12 @@ def compute_team_quarterly(team: Team, season) -> TeamAgg:
 
 # ───────────────────────── PLAYER ─────────────────────────
 def _collect_player(player, start: datetime.date, end: datetime.date):
-    """Build per-tournament PlayerTournamentInput list + scrim rows for a player."""
+    """Build the per-tournament PlayerTournamentInput list + the player's scrim aggregate.
+
+    Returns (tournaments, scrims: PlayerScrimInput, mvp_total, finals_total, kill_total). Like the
+    team path, the scrim side comes back already filtered by the admin counting controls /
+    exclusions, since only this function knows which event each scrim row belongs to.
+    """
     pstats = (
         TournamentPlayerMatchStats.objects
         .filter(player=player, played=True)
@@ -271,14 +307,18 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
                         "team_stats__match__leaderboard__event", "team_stats__tournament_team")
     )
     tour = defaultdict(lambda: {"kills": 0, "ev": None, "finals": 0, "team_won": False, "mvp": 0})
-    scrim_rows = []   # (day, kills, is_win)
+    scrim_rows = []   # (day, kills, is_win, event_id)
+    scrim_event_ids = set()
     for ps in pstats:
         match = ps.team_stats.match
         ev = _event_of_match(match)
         if ev is None:
             continue
         if ev.competition_type == "scrims":
-            scrim_rows.append((_match_day(match), ps.kills, ps.team_stats.placement == 1))
+            # event_id carried so the counting controls / exclusions below reach scrims too.
+            scrim_rows.append((_match_day(match), ps.kills,
+                               ps.team_stats.placement == 1, ev.event_id))
+            scrim_event_ids.add(ev.event_id)
             continue
         bucket = tour[ev.event_id]
         bucket["ev"] = ev
@@ -296,11 +336,14 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
         if match.mvp_id == getattr(player, "user_id", None):
             bucket["mvp"] += 1
 
-    # admin counting controls + per-player exclusions (§16)
-    event_ids = list(tour.keys())
+    # admin counting controls + per-player exclusions (§16). Scrim event ids are in the lookup so a
+    # scrim can be toggled off / excluded exactly like a tournament. The organizer-verification gate
+    # stays tournament-only for the reason spelled out in _collect_team.
+    event_ids = list(tour.keys()) + list(scrim_event_ids)
     controls = _counting_controls(event_ids)
     excluded = _excluded_event_ids(event_ids, player=player)
-    excluded |= _unverified_org_event_ids(event_ids)  # unverified org events don't count
+    excluded |= _unverified_org_event_ids(list(tour.keys()))  # unverified org events don't count
+    scrim_rows = [r for r in scrim_rows if r[3] not in excluded]
 
     tournaments = []
     mvp_total = finals_total = kill_total = 0
@@ -335,31 +378,36 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
     sa_inputs = standalone.standalone_player_inputs(player, start, end)
     tournaments += sa_inputs
     kill_total += sum(t.personal_kills for t in sa_inputs)
-    return tournaments, scrim_rows, mvp_total, finals_total, kill_total
+
+    # Player scrim aggregate, with the same per-event toggles the team path applies: count_kills
+    # gates the scrim kills, count_winner gates the scrim win bonus. (count_placement has no player
+    # analogue — a player never scores raw placement, see the tournament loop above.)
+    s_kills = sum(k for _, k, _, evid in scrim_rows
+                  if not (c := controls.get(evid)) or c.count_kills)
+    s_wins = sum(1 for _, _, win, evid in scrim_rows
+                 if win and (not (c := controls.get(evid)) or c.count_winner))
+    return (tournaments, PlayerScrimInput(scrim_kills=s_kills, scrim_wins=s_wins),
+            mvp_total, finals_total, kill_total)
 
 
 def compute_player_monthly(player, month: datetime.date) -> PlayerAgg:
     start, end = month_bounds(month)
-    tournaments, scrim_rows, mvp, finals, kills = _collect_player(player, start, end)
-    s_kills = sum(k for _, k, _ in scrim_rows)
-    s_wins = sum(1 for _, _, win in scrim_rows if win)
-    result = engine.monthly_player_score(tournaments, PlayerScrimInput(scrim_kills=s_kills, scrim_wins=s_wins))
+    tournaments, scrims, mvp, finals, kills = _collect_player(player, start, end)
+    result = engine.monthly_player_score(tournaments, scrims)
     return PlayerAgg(result=result, total_kills=kills, mvp_count=mvp,
                      finals_appearances=finals, tournaments_played=len(tournaments))
 
 
 def compute_player_quarterly(player, season) -> PlayerAgg:
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
-    tournaments, scrim_rows, mvp, finals, kills = _collect_player(player, start, end)
-    s_kills = sum(k for _, k, _ in scrim_rows)
-    s_wins = sum(1 for _, _, win in scrim_rows if win)
+    tournaments, scrims, mvp, finals, kills = _collect_player(player, start, end)
     # inherited prize money — payouts to any team the player was rostered on (Phase 1: via tournament_team membership)
     prize = (EventPrizePayout.objects
              .filter(tournament_team__members__user=player,
                      created_at__date__gte=start, created_at__date__lt=end)
              .aggregate(total=Sum("amount"))["total"] or 0)
     result = engine.quarterly_player_score(
-        tournaments, PlayerScrimInput(scrim_kills=s_kills, scrim_wins=s_wins),
+        tournaments, scrims,
         inherited_prize_money_naira=float(prize),
     )
     return PlayerAgg(result=result, total_kills=kills, mvp_count=mvp,

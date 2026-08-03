@@ -34,11 +34,11 @@ and quarterly recalcs harmlessly.
 
 WHICH EVENTS BELONG TO A SEASON
 -------------------------------
-Event has no Season FK. A tournament belongs to a season when its ``start_date`` falls in the
+Event has no Season FK. A competition belongs to a season when its ``start_date`` falls in the
 season's [start_date, end_date] window — the same date-window approach admin_prize.py uses
-for payouts. "Tournament" means ``competition_type != "scrims"`` (the brief's wording; the
-model's other value is "tournament"). Scrims never carry counting controls / exclusions in
-the rankings sense, so they're excluded from the markers list.
+for payouts. Both tournaments AND scrims are listed (owner 2026-08-03): a scrim's placement, kill
+and win points feed the monthly/quarterly scores through ``aggregation._apply_scrim_caps``, so it
+needs the same off switch every other counting result has. Drafts are excluded.
 
 IDIOM (matches the rest of afc_rankings — read views.py / serializers.py / admin_views.py):
   * function-based ``@api_view`` views, NOT class-based; NO DRF Serializer classes.
@@ -159,6 +159,10 @@ def serialize_event_markers(event, control, exclusion_count):
         # Event has both a date and a tier; expose them so the admin UI can show context.
         "date": event.start_date.isoformat() if event.start_date else None,
         "tier": event.tournament_tier,                       # "tier_1" | "tier_2" | "tier_3"
+        # "tournament" | "scrims". Scrims carry a tournament_tier column too, but spec §12 gives
+        # them NO tier multiplier, so the admin table badges them as a scrim instead of printing a
+        # tier that does not apply.
+        "competition_type": event.competition_type,
         "team_count": TournamentTeam.objects.filter(event=event).count(),
         # Counting state: read from the control row, else default True (everything counts).
         "count_winner": control.count_winner if control else True,
@@ -222,15 +226,21 @@ def _get_event(event_id):
 # Event has no Season FK, so season membership is a date-window match on start_date — the same
 # convention admin_prize.tournament_prizes_list uses for payouts. Keep the two in sync.
 def _season_event_qs(season):
-    """Tournaments belonging to a season: competition_type != "scrims", start_date in window.
+    """Every competition belonging to a season: start_date inside the season's window.
 
     Event has no Season FK, so we use the season's date window on ``start_date`` (the same
-    date-window approach admin_prize.py uses for payouts). Scrims are excluded — counting
-    controls / exclusions only apply to tournaments in the rankings sense.
+    date-window approach admin_prize.py uses for payouts).
+
+    SCRIMS ARE INCLUDED (owner 2026-08-03: "admin toggle so all events count by default, with
+    admins able to switch individual ones off"). They used to be filtered out on the reasoning that
+    counting controls only apply to tournaments — but a scrim's placement/kill/win points DO feed
+    the monthly and quarterly scores through aggregation._apply_scrim_caps, so excluding them from
+    this list left the admin with results that count and no switch to turn them off. Drafts are
+    still excluded: an unpublished event has nothing to curate yet.
     """
     return (
         Event.objects
-        .exclude(competition_type="scrims")
+        .filter(is_draft=False)
         .filter(start_date__gte=season.start_date, start_date__lte=season.end_date)
         .order_by("start_date", "event_id")
     )
