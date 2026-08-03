@@ -3,11 +3,11 @@
 # Organization + membership models for the Organizer feature.
 #
 # An Organization is an AFC-provisioned tenant under which external organizers run
-# tournaments (the events themselves reuse afc_tournament_and_scrims — an Event simply
+# tournaments (the events themselves reuse afc_tournament_and_scrims - an Event simply
 # gains a nullable `organization` FK). OrganizationMember connects EXISTING user accounts
 # to an org with a role (owner / sub_organizer) and granular per-member permissions.
 #
-# Permission checks never read these rows directly — they go through
+# Permission checks never read these rows directly - they go through
 # afc_organizers/permissions.py::org_can so the owner/admin-bypass rules live in one place.
 # Full spec: WEBSITE/tasks/organizers-design.md.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ class Organization(models.Model):
     name = models.CharField(max_length=120)
     logo = models.ImageField(upload_to="organization_logos/", null=True, blank=True)
     default_banner = models.ImageField(upload_to="organization_banners/", null=True, blank=True)
-    email = models.EmailField(null=True, blank=True)              # public contact only — not auth
+    email = models.EmailField(null=True, blank=True)              # public contact only - not auth
     description = models.TextField(blank=True, default="")
     socials = models.JSONField(default=dict, blank=True)          # {"x","instagram","youtube","discord"}
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="active")
@@ -57,7 +57,7 @@ class Organization(models.Model):
 
     # ── Soft-delete audit (F5, owner 2026-06-19) ──
     # An owner (or AFC admin) can SOFT-delete an org: status="deleted" + these stamps. The clean
-    # soft-delete does NOT re-home events or remove members — the org + its events are simply HIDDEN
+    # soft-delete does NOT re-home events or remove members - the org + its events are simply HIDDEN
     # (status-filtered) so an AFC admin can RESTORE everything intact. deleted_by is the actor.
     # Event/results data is ALWAYS retained by AFC regardless (owner rule 2026-06-19).
     deleted_at = models.DateTimeField(null=True, blank=True)
@@ -69,7 +69,7 @@ class Organization(models.Model):
     # ── Payout account (F6-P4, owner 2026-06-19) ──────────────────────────────────────────────
     # Where AFC pays this org its share of paid-event registration revenue (after the AFC fee).
     # Mirrors the marketplace Vendor payout fields. payout_provider picks the rail: "paystack"
-    # (African orgs — bank_code + account_number → a Paystack transfer recipient) or "stripe"
+    # (African orgs - bank_code + account_number → a Paystack transfer recipient) or "stripe"
     # (Stripe Connect account). The recipient/account ids are created lazily when the owner saves
     # their bank details (organizers/<slug>/payout-account/). No money moves until an AFC admin
     # releases a settled OrganizationEarning (see settle_event_payouts + the admin payouts page).
@@ -138,13 +138,13 @@ class OrganizationMember(models.Model):
         return f"{self.user_id} @ {self.organization_id} ({self.role})"
 
 
-# ════════ Phase 3 — leaderboard-design request (organizer submits → AFC builds) ════════
+# ════════ Phase 3 - leaderboard-design request (organizer submits → AFC builds) ════════
 
 
 class LeaderboardDesignRequest(models.Model):
     """An organizer's request for a custom look for their leaderboards/results. The organizer
     submits a reference image + notes; an AFC designer builds it and marks it applied (the
-    "design request → AFC builds it" decision). Human-in-the-loop — no self-serve renderer."""
+    "design request → AFC builds it" decision). Human-in-the-loop - no self-serve renderer."""
 
     STATUS_CHOICES = [
         ("open", "Open"),               # submitted, awaiting AFC
@@ -203,7 +203,7 @@ class OrgLeaderboardDesign(models.Model):
     # When True the design has NO opaque background fill: the PNG renderer
     # (afc_leaderboard.graphic) draws the placed fields/logos/texts onto a fully-transparent RGBA
     # canvas instead of the dark AFC default, and the DOM overlay (FE DesignBoard) renders with a
-    # transparent page — so the design can sit over an OBS scene / game capture with only its
+    # transparent page - so the design can sit over an OBS scene / game capture with only its
     # columns showing. Defaults False so every EXISTING design keeps its current opaque render.
     # Toggled in the design editor; wired through event_stage_graphic + leaderboard_graphic and
     # echoed to the overlay feed via _serialize_design.
@@ -454,7 +454,7 @@ class OrgLeaderboardDesignField(models.Model):
     # size is False (instagram -> require show_instagram; youtube -> require show_youtube). This mirrors
     # the position (x_pct / x_pct_youtube) and geometry (column_groups / column_groups_youtube) per-size
     # splits already in place. Both default True so EVERY pre-existing field keeps rendering on both
-    # sizes (backward safe — no data migration needed). Toggled per-size in DesignFieldsEditor.tsx
+    # sizes (backward safe - no data migration needed). Toggled per-size in DesignFieldsEditor.tsx
     # (the palette add/remove + the style-panel "Shown on Instagram / YouTube" switches) and reset to
     # "shown on both" by the apply_field_enablement_to_all endpoint ("Apply to all").
     show_instagram = models.BooleanField(default=True)
@@ -517,7 +517,7 @@ class OrgLeaderboardDesignText(models.Model):
         return f"OrgLeaderboardDesignText(design={self.design_id}, {self.text[:20]!r})"
 
 
-# ════════ Phase 4 — reports, ratings & comments ════════
+# ════════ Phase 4 - reports, ratings & comments ════════
 
 
 class OrganizationReport(models.Model):
@@ -558,8 +558,8 @@ class OrganizationReport(models.Model):
 
 
 class EventRating(models.Model):
-    """A user's 1–5 rating of an event. Editable by the user (unique per event+user), and
-    ANONYMOUS to the organizer — only the aggregate is shown publicly + to the organizer."""
+    """A user's 1-5 rating of an event. Editable by the user (unique per event+user), and
+    ANONYMOUS to the organizer - only the aggregate is shown publicly + to the organizer."""
 
     event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.CASCADE,
                               related_name="ratings")
@@ -578,7 +578,7 @@ class EventRating(models.Model):
 
 class EventComment(models.Model):
     """A user's free-text comment on an event. ONLY the event's organizer (+ AFC) can read it
-    — never shown publicly or to other users."""
+    - never shown publicly or to other users."""
 
     event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.CASCADE,
                               related_name="comments")
@@ -715,7 +715,7 @@ class EventCoOrganizer(models.Model):
     """An additional Organization invited to CO-ORGANIZE an Event.
 
     `Event.organization` stays the PRIMARY/creator org; this table holds the EXTRA co-owning orgs.
-    Only the creator org's OWNER may invite (mutual consent — the invited org's owner must accept).
+    Only the creator org's OWNER may invite (mutual consent - the invited org's owner must accept).
     The granted can_* flags SCOPE what the co-owner may do on the event (they reuse the
     OrganizationMember permission names). An empty table = today's single-org behaviour, so the
     feature is fully backward-compatible.
@@ -737,7 +737,7 @@ class EventCoOrganizer(models.Model):
     )
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="pending")
 
-    # Scoped grant — what THIS co-owner may do on the event (mirrors OrganizationMember can_*).
+    # Scoped grant - what THIS co-owner may do on the event (mirrors OrganizationMember can_*).
     can_create_events = models.BooleanField(default=False)
     can_edit_events = models.BooleanField(default=False)
     can_upload_results = models.BooleanField(default=False)
@@ -778,7 +778,7 @@ class OrganizationEarning(models.Model):
     READ/WRITTEN BY: afc_organizers.payouts (settle_event_payouts on EventRegistrationPayment
     release; admin list/release/pay endpoints; org self-serve earnings view). The actual bank
     transfer reuses the org's payout_provider rail (Paystack recipient / Stripe Connect) and is an
-    explicit admin release — no money moves at settlement time."""
+    explicit admin release - no money moves at settlement time."""
     STATUS = [("owed", "Owed"), ("released", "Released"), ("paid", "Paid")]
     SOURCE = [("registration_fee", "Registration fee")]
 

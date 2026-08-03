@@ -1,5 +1,5 @@
 """
-afc_sponsors/test_engagements.py — endpoint tests for sponsor P2/P3/P4 (engagements +
+afc_sponsors/test_engagements.py - endpoint tests for sponsor P2/P3/P4 (engagements +
 submissions + approval gate).
 
 Covers: the wizard configure endpoint (schema validation + permissions), the public for-event

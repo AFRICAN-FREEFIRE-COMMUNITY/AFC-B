@@ -7,7 +7,7 @@ from django.utils.text import slugify
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Category — admin-managed product categories (generalisation of the shop).
+# Category - admin-managed product categories (generalisation of the shop).
 #
 # WHY this exists:
 #   The shop started life selling only Free Fire diamonds. The `Product` model
@@ -72,7 +72,7 @@ class Category(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Vendor — an AFC-invited third-party seller in the marketplace.
+# Vendor - an AFC-invited third-party seller in the marketplace.
 #
 # WHY this exists (marketplace Phase A, spec: WEBSITE/tasks/marketplace-design.md):
 #   The shop is becoming a multi-vendor marketplace. A Vendor is a partner who
@@ -209,11 +209,11 @@ class Product(models.Model):
     currency = models.CharField(max_length=3, default="NGN")
 
     # Legacy string category. Still written (kept in sync with `category.slug`)
-    # so existing reads — e.g. the diamond-only frontend filter — never break.
+    # so existing reads - e.g. the diamond-only frontend filter - never break.
     product_type = models.CharField(max_length=40, choices=PRODUCT_TYPES)
 
     # New structured category (admin-managed). Nullable so existing diamond rows
-    # — created before this table existed — stay valid until backfilled.
+    # - created before this table existed - stay valid until backfilled.
     # on_delete=SET_NULL: deleting a category must never cascade-delete products.
     category = models.ForeignKey(
         "Category",
@@ -352,7 +352,7 @@ class ProductVariant(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ProductMedia — a gallery of images AND videos for a product.
+# ProductMedia - a gallery of images AND videos for a product.
 #
 # WHY this exists:
 #   `Product.image` only holds ONE image. The shop now sells physical goods that
@@ -367,7 +367,7 @@ class ProductVariant(models.Model):
 #   - Frontend renders the array in a fixed-dimension gallery with object-fit so
 #     odd source sizes still fit the layout (ShopClient card + ProductDetailPage).
 #   - Size limits are enforced server-side in the upload view (images and videos
-#     have separate caps) — the model only stores the validated file.
+#     have separate caps) - the model only stores the validated file.
 # ─────────────────────────────────────────────────────────────────────────────
 class ProductMedia(models.Model):
     MEDIA_TYPES = (
@@ -497,7 +497,7 @@ class Order(models.Model):
     # The live courier-quoted delivery fee for a PHYSICAL order, charged on top of
     # subtotal + tax. Default 0.00 so digital orders (diamond topups) and any order
     # placed while shipping is DISABLED (no SHIPPING_PROVIDER configured) are charged
-    # exactly as before — this field is inert until a shipping provider is wired.
+    # exactly as before - this field is inert until a shipping provider is wired.
     # Set by the checkout views from the courier the buyer picked at /shop/shipping/quote/
     # (see afc_shop/services/shipping/). The chosen courier + tracking live on the
     # related `Shipment` row (below), not here; this is only the money line so the
@@ -624,7 +624,7 @@ class Fulfillment(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FulfillmentEvidence — proof-of-shipment media for a marketplace order.
+# FulfillmentEvidence - proof-of-shipment media for a marketplace order.
 #
 # WHY this exists (marketplace Phase A):
 #   When a vendor marks an order "shipped" they attach photo/video evidence (a
@@ -721,7 +721,7 @@ class MintrouteLog(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VendorPayout — the ledger of what AFC owes / has paid each vendor (Phase B3).
+# VendorPayout - the ledger of what AFC owes / has paid each vendor (Phase B3).
 #
 # WHY this exists (marketplace Phase B3, spec: WEBSITE/tasks/marketplace-design.md):
 #   AFC is the CUSTODIAN of marketplace money (same posture as the event paid-events
@@ -806,7 +806,7 @@ class VendorPayout(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SavedDeliveryProfile — a buyer's reusable delivery/contact details.
+# SavedDeliveryProfile - a buyer's reusable delivery/contact details.
 #
 # WHY this exists (owner request 2026-06-29):
 #   At checkout a buyer can tick "save my info for next time"; on a later checkout they
@@ -820,7 +820,7 @@ class VendorPayout(models.Model):
 #   - buy_now (views.py) / stripe_buy_now (stripe_checkout.py) call delivery.persist_delivery_profile
 #     when save_delivery_info is sent, and set Order.saved_profile when a saved entry was used.
 #   - The SUPER-ADMIN PII view (delivery.admin_list_delivery_info) reads ORDER rows, NOT this
-#     table — every checkout already snapshots the address onto its Order.
+#     table - every checkout already snapshots the address onto its Order.
 #   - Default uniqueness is enforced in the view layer inside a transaction (MySQL has no
 #     partial unique index): saving is_default=True clears is_default on the user's others.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -828,7 +828,7 @@ class SavedDeliveryProfile(models.Model):
     user = models.ForeignKey(
         "afc_auth.User", on_delete=models.CASCADE, related_name="delivery_profiles",
     )
-    label = models.CharField(max_length=60, blank=True)   # "Home", "Office" — shown in the picker
+    label = models.CharField(max_length=60, blank=True)   # "Home", "Office" - shown in the picker
     first_name = models.CharField(max_length=50)
     last_name = models.CharField(max_length=50)
     email = models.EmailField()
@@ -850,7 +850,7 @@ class SavedDeliveryProfile(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Wishlist — a product a user saved for later (the shop "save for later" list).
+# Wishlist - a product a user saved for later (the shop "save for later" list).
 #
 # WHY this exists (owner request 2026-06-29):
 #   Buyers want to save products they are interested in and come back to them. One row per
@@ -881,7 +881,7 @@ class Wishlist(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shipment — provider-AGNOSTIC delivery record for one physical order.
+# Shipment - provider-AGNOSTIC delivery record for one physical order.
 #
 # WHY this exists (shipping integration, owner 2026-06-29):
 #   AFC holds no couriers of its own. At checkout the buyer picks a live-quoted

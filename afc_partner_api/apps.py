@@ -1,4 +1,4 @@
-# App config for afc_partner_api — the read-only, versioned Partner Data API.
+# App config for afc_partner_api - the read-only, versioned Partner Data API.
 # AFC-provisioned partners pull completed/published per-event data through scoped,
 # toggle-gated endpoints. See WEBSITE/tasks/partner-api-design.md.
 from django.apps import AppConfig

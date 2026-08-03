@@ -270,29 +270,29 @@ class TrialChatMessage(models.Model):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODERATION — player-market reporting + bans  (feature "J-market-reporting")
+#  MODERATION - player-market reporting + bans  (feature "J-market-reporting")
 # ──────────────────────────────────────────────────────────────────────────────
 #  Two models power the moderation surface built from
 #  WEBSITE/tasks/market-reporting-mockup.html:
 #
-#    • MarketReport — a user-filed abuse report against a market post (a team's
+#    • MarketReport - a user-filed abuse report against a market post (a team's
 #      recruitment post or a player's availability post). Copied IN SPIRIT from
 #      afc_organizers.OrganizationReport: a category + free-text details + optional
 #      evidence image + a triage status (open / reviewing / resolved / dismissed /
 #      banned), with reviewed_by + resolution_notes for the moderator's record.
 #
-#    • MarketBan — a moderator-applied ban that blocks a PLAYER or a whole TEAM from
+#    • MarketBan - a moderator-applied ban that blocks a PLAYER or a whole TEAM from
 #      acting on the market (posting, applying, inviting). Copied from afc_auth's
 #      TeamBan / BannedPlayer shape: a start date, a duration in days (null = a
 #      permanent ban), a computed ban_end_date, a reason (shown to the banned user),
 #      banned_by, and an is_active flag. Enforcement lives in afc_player_market/views.py
-#      (see _active_market_ban) — every post/apply/invite entry point checks it first.
+#      (see _active_market_ban) - every post/apply/invite entry point checks it first.
 #
 #  Why a NEW MarketBan rather than reusing afc_auth.TeamBan / BannedPlayer: those
 #  models are the SITE-WIDE ban (they flip Team.is_banned / gate auth) and TeamBan is
 #  a OneToOne, so one team can hold only one. A market ban is scoped to the player
 #  market alone, must coexist with the site-wide ban, and a subject can be re-banned
-#  over time — so it needs its own table. The field shape is intentionally identical
+#  over time - so it needs its own table. The field shape is intentionally identical
 #  so the original dev reads it the same way.
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -311,7 +311,7 @@ class MarketReport(models.Model):
     delete the report (the abuse record must outlive the post).
 
     Consumed by:
-      • POST /player-market/report-post/          (file_market_report)   — any user
+      • POST /player-market/report-post/          (file_market_report)   - any user
       • GET  /player-market/admin/reports/        (admin_list_market_reports)
       • PATCH/player-market/admin/reports/<id>/   (admin_update_market_report)
     Frontend: the Report dialog on app/(user)/player-markets/page.tsx (file) and the
@@ -325,7 +325,7 @@ class MarketReport(models.Model):
         ("player", "Player"),
     ]
 
-    # Report reasons — match the radio options in the mockup's Report dialog 1:1.
+    # Report reasons - match the radio options in the mockup's Report dialog 1:1.
     CATEGORY_CHOICES = [
         ("bad_tryout", "Negative tryout experience"),
         ("scam", "Scam / fraud"),
@@ -356,7 +356,7 @@ class MarketReport(models.Model):
         "afc_auth.User", null=True, blank=True, on_delete=models.SET_NULL,
         related_name="market_reports_against",
     )
-    # The post that prompted the report. SET_NULL — the report survives the post.
+    # The post that prompted the report. SET_NULL - the report survives the post.
     post = models.ForeignKey(
         "RecruitmentPost", null=True, blank=True, on_delete=models.SET_NULL,
         related_name="reports",
@@ -409,7 +409,7 @@ class MarketReportEvidence(models.Model):
     "video") so the admin UI can pick an <img> vs a <video controls> player without sniffing the URL.
 
     Consumed by:
-      • POST /player-market/report-post/  (file_market_report)  — rows created here (_save_report_evidence).
+      • POST /player-market/report-post/  (file_market_report)  - rows created here (_save_report_evidence).
       • serialized (relative url + media_type, ordered) by views_moderation._serialize_report -> the
         admin "Reports & Flags" gallery on app/(a)/a/player-markets/page.tsx.
     """
@@ -446,12 +446,12 @@ class MarketBan(models.Model):
         the acting user's team membership, see views._active_market_ban).
 
     A ban is "active" when is_active is True AND (it is permanent OR ban_end_date is in
-    the future). Enforcement never trusts is_active alone — it also checks expiry, the
+    the future). Enforcement never trusts is_active alone - it also checks expiry, the
     same belt-and-braces pattern BannedPlayer uses, so an un-swept expired row can't
     keep blocking a user.
 
     Consumed by:
-      • POST /player-market/admin/ban/         (admin_market_ban)        — moderators
+      • POST /player-market/admin/ban/         (admin_market_ban)        - moderators
       • the enforcement guard in create_recruitment_post / apply_to_team /
         invite_player_to_trial (block a banned poster before the row is created).
     Frontend: the Ban dialog on the admin "Reports & Flags" tab.
@@ -511,7 +511,7 @@ class MarketBan(models.Model):
 
     @property
     def is_permanent(self) -> bool:
-        """True when no duration was set — the ban has no end date."""
+        """True when no duration was set - the ban has no end date."""
         return self.ban_duration is None
 
     def is_currently_active(self) -> bool:

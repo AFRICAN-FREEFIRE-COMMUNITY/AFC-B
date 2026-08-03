@@ -1,5 +1,5 @@
 """
-migrate_legacy_sponsors — bridge the LEGACY sponsor accounts into the new entity system.
+migrate_legacy_sponsors - bridge the LEGACY sponsor accounts into the new entity system.
 
 WHAT IT DOES (idempotent, additive only - safe to re-run)
     For every legacy sponsor USER (role=admin + the sponsor_admin granular role, the old

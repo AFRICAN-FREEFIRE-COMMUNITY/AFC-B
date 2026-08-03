@@ -1,6 +1,6 @@
 # afc_partner_api/tests.py
 # ──────────────────────────────────────────────────────────────────────────────
-# Task 1 — model-level tests for the Partner Data API scaffold.
+# Task 1 - model-level tests for the Partner Data API scaffold.
 #
 # These lock in the least-privilege contract: every resource/field toggle on a new
 # Partner defaults OFF, the PARTNER_TOGGLE_FIELDS whitelist only ever names real
@@ -43,12 +43,12 @@ class PartnerModelTests(TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Task 2 — X-API-Key auth tests.
+# Task 2 - X-API-Key auth tests.
 #
 # These lock in the credential contract the read endpoints depend on: a valid key
 # resolves to its Partner and stamps last_used_at; the secret is only ever stored
 # as a sha256 hash (never plaintext); and EVERY failure mode an attacker could try
-# — bad/unknown key, missing header, revoked key, suspended partner, expired key —
+# - bad/unknown key, missing header, revoked key, suspended partner, expired key - 
 # raises PartnerAuthError (which the views translate to a 401). RequestFactory lets
 # us inject the X-API-Key header directly (HTTP_X_API_KEY) without a live request.
 # Full spec: WEBSITE/tasks/partner-api-design.md (§6 auth).
@@ -84,7 +84,7 @@ class PartnerAuthTests(TestCase):
     def test_forged_secret_with_known_prefix_rejected(self):
         # The critical branch: an attacker who knows a key's PREFIX but not its secret.
         # The prefix matches a stored active row (so the lookup succeeds), but the secret
-        # tail is wrong — the constant-time compare_digest must reject it. Without this
+        # tail is wrong - the constant-time compare_digest must reject it. Without this
         # test the actual credential check is never exercised on a mismatch.
         full = self._issue()
         ns, prefix, _secret = full.split("_")            # afcp_<prefix>_<secret>
@@ -126,7 +126,7 @@ class PartnerAuthTests(TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Task 3 — scope predicate tests.
+# Task 3 - scope predicate tests.
 #
 # partner_visible_events(partner) is the ONE place that decides which Events a
 # partner may read, so these lock in its three independent grant paths AND the
@@ -135,7 +135,7 @@ class PartnerAuthTests(TestCase):
 #   • whole-organization grant  (Partner.allowed_organizations / Org.partner_grants)
 #   • all native AFC events      (allow_all_native_afc -> organization IS NULL)
 # The last test is the security guard: even a directly-granted event stays invisible
-# while partner_published=False — the publish flag wins over any grant.
+# while partner_published=False - the publish flag wins over any grant.
 # We seed one native event (organization=None) and one org-owned event, then assert
 # each grant path surfaces EXACTLY the expected event and nothing else.
 # Full spec: WEBSITE/tasks/partner-api-design.md (§6 scope).
@@ -196,14 +196,14 @@ class ScopeTests(TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Task 4 — serialization firewall tests (the PII/PK/room-cred guard).
+# Task 4 - serialization firewall tests (the PII/PK/room-cred guard).
 #
 # serialize.py is the ONE boundary that turns internal ORM rows into partner-facing
 # JSON, so it is the single most security-critical module in this app. These tests
 # lock in two contracts the spec (§8) makes non-negotiable:
 #
 #   1. DENYLIST (the firewall): json.dumps() of EVERY serializer's output must contain
-#      none of FORBIDDEN_KEYS — raw PKs (event_id/match_id/.../organization_id), room
+#      none of FORBIDDEN_KEYS - raw PKs (event_id/match_id/.../organization_id), room
 #      credentials (room_id/password/name), PII (contact_email/email/discord_role_id),
 #      scoring internals (scoring_settings), and internal flags (creator/is_draft/
 #      rankings_verified). If a field is not explicitly public + toggle-gated, it must
@@ -262,7 +262,7 @@ class SerializeTests(TestCase):
             playing_time="18:00", teams_qualifying=2, match_count=1, match_maps=["bermuda"],
             group_discord_role_id="888888888")
 
-        # ── creator user for the leaderboard (internal — never serialized) ──
+        # ── creator user for the leaderboard (internal - never serialized) ──
         self.admin = User.objects.create_user(
             username="afcstaff", email="afc@x.com", password="x", full_name="AFC Staff",
             role="admin")
@@ -449,7 +449,7 @@ class SerializeTests(TestCase):
         self.partner.save()
         # Scope the fold to player1's team in THIS event (the per-event/roster contract).
         out = serialize_player(self.player1, self.partner, tournament_team=self.tteam)
-        # public in-game handle + id only — NEVER full_name/email/discord.
+        # public in-game handle + id only - NEVER full_name/email/discord.
         self.assertEqual(out["username"], "ProGamer")
         self.assertEqual(out["in_game_id"], "UID0001")
         self.assertNotIn("Real Name One", json.dumps(out, default=str))  # PII name never leaks
@@ -531,7 +531,7 @@ class SerializeTests(TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Task 5 — per-key rate-limit tests.
+# Task 5 - per-key rate-limit tests.
 #
 # check_rate_limit(key) is the abuse guard every read endpoint runs right after
 # auth: a fixed window of one wall-clock minute, counted per key in the shared
@@ -539,8 +539,8 @@ class SerializeTests(TestCase):
 # window pass, and the very next call (the (N+1)th) raises RateLimitExceeded.
 #
 # We drive it with a tiny stand-in object (not a real PartnerApiKey row) because the
-# limiter only touches two attributes — .key_prefix (the bucket id) and
-# .rate_limit_per_min (the ceiling) — so a DB row would be pure overhead and would
+# limiter only touches two attributes - .key_prefix (the bucket id) and
+# .rate_limit_per_min (the ceiling) - so a DB row would be pure overhead and would
 # couple this unit test to the model. cache.clear() first so a leftover bucket from a
 # previous run (Redis persists across the test process) can't make the count start
 # above zero and flip the pass/raise boundary.
@@ -577,7 +577,7 @@ class RateLimitTests(TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Task 6 — read-endpoint tests (the whole request→response stack, end-to-end).
+# Task 6 - read-endpoint tests (the whole request→response stack, end-to-end).
 #
 # These drive the live Django test Client against the mounted /api/v1/partner/
 # routes, so they exercise EVERY layer of the partner_endpoint decorator together:
@@ -590,7 +590,7 @@ class RateLimitTests(TestCase):
 #                                        total_count} pagination envelope
 #   • resource toggle OFF             -> 403 resource_not_enabled (auth succeeded but
 #                                        the partner isn't entitled to that resource)
-#   • out-of-scope / unpublished slug -> 404 (NOT 403 — we never confirm an event a
+#   • out-of-scope / unpublished slug -> 404 (NOT 403 - we never confirm an event a
 #                                        partner can't see even exists; spec landmine)
 #   • bad / missing key               -> 401 (PartnerAuthError -> 401)
 #   • over the per-minute limit       -> 429 with a Retry-After header
@@ -879,7 +879,7 @@ class PartnerEndpointTests(TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Task 7 — AFC admin (provisioning) endpoint tests.
+# Task 7 - AFC admin (provisioning) endpoint tests.
 #
 # views_admin.py is the AFC-staff surface that stands a Partner up and configures
 # everything the read API later enforces: scope, the 14 toggles, the API keys, and
@@ -888,10 +888,10 @@ class PartnerEndpointTests(TestCase):
 # head_admin / partner_admin via _is_partner_admin. These tests lock in the
 # security-critical contracts (spec §9 admin surface):
 #   • GATE: a logged-in user WITHOUT head_admin/partner_admin gets 403 on every
-#     endpoint (and a missing/garbage token is 400/401) — least privilege.
+#     endpoint (and a missing/garbage token is 400/401) - least privilege.
 #   • CREATE: a head_admin provisions a Partner (defaults: active, all toggles off).
 #   • KEY ISSUE: issue_key returns the FULL plaintext exactly ONCE, and the stored
-#     row holds only prefix+hash — the plaintext secret is never persisted and never
+#     row holds only prefix+hash - the plaintext secret is never persisted and never
 #     returned again (the get_partner detail exposes key metadata, never plaintext).
 #   • REVOKE: a revoked key fails authenticate_partner (-> the read API 401s).
 #   • EDIT: PATCH accepts ONLY whitelisted keys (PARTNER_TOGGLE_FIELDS + the scope
@@ -900,7 +900,7 @@ class PartnerEndpointTests(TestCase):
 #   • PUBLISH: publish_event flips Event.partner_published (the read API's gate).
 #
 # We forge the Bearer session token directly (SessionToken.objects.create) exactly
-# like afc_tournament_and_scrims/tests_scoring.py — no login round-trip needed.
+# like afc_tournament_and_scrims/tests_scoring.py - no login round-trip needed.
 # Full spec: WEBSITE/tasks/partner-api-design.md (§9 admin surface).
 # ──────────────────────────────────────────────────────────────────────────────
 class PartnerAdminEndpointTests(TestCase):
@@ -1072,7 +1072,7 @@ class PartnerAdminEndpointTests(TestCase):
         body = resp.json()
         full = body["api_key"]                        # the plaintext, shown once
         self.assertTrue(full.startswith("afcp_"))
-        # The stored row carries ONLY prefix + hash — never the plaintext secret.
+        # The stored row carries ONLY prefix + hash - never the plaintext secret.
         row = PartnerApiKey.objects.get(partner=p)
         self.assertEqual(row.key_hash, auth.hash_key(full))
         self.assertNotIn(full.split("_")[-1], row.key_hash)  # secret never stored raw

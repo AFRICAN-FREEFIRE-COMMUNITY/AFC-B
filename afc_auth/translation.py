@@ -39,7 +39,7 @@ import logging
 
 import requests  # same HTTP client afc_ocr/services/gemini.py uses, kept consistent on purpose
 from django.conf import settings
-from django.core.cache import cache  # circuit-breaker store (Redis db 1) — see _engine_down/_trip_breaker
+from django.core.cache import cache  # circuit-breaker store (Redis db 1) - see _engine_down/_trip_breaker
 
 logger = logging.getLogger(__name__)
 

@@ -1,5 +1,5 @@
 """
-afc_sponsors.tests — endpoint tests for the sponsor-system P1.
+afc_sponsors.tests - endpoint tests for the sponsor-system P1.
 
 Covers: sponsor-admin gating, sponsor CRUD, member add (+ notification + reactivation) /
 remove, event attach/detach, the MEMBER-SCOPED portal reads (mine, events, submissions with

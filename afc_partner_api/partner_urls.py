@@ -2,13 +2,13 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # URL map for the public partner read API, mounted in afc/urls.py at
 #   path("api/v1/partner/", include("afc_partner_api.partner_urls"))
-# so every route below lives under /api/v1/partner/ — the version is baked into the
+# so every route below lives under /api/v1/partner/ - the version is baked into the
 # mount point (spec §9), giving us room to ship a /api/v2/partner/ later without
 # breaking existing partner integrations.
 #
 # Seven GET endpoints, each a function-based @api_view (DRF returns 405 for the wrong
 # verb, so one path() per view is enough). Events are addressed by their human-readable
-# slug (<slug:event_slug>) — never the raw event_id — because the serializer firewall
+# slug (<slug:event_slug>) - never the raw event_id - because the serializer firewall
 # never exposes PKs, so the slug is the only handle a partner ever has.
 # Full spec: WEBSITE/tasks/partner-api-design.md (§9 endpoints).
 # ──────────────────────────────────────────────────────────────────────────────

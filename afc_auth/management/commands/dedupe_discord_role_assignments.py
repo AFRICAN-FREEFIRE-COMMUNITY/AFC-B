@@ -1,5 +1,5 @@
 """
-dedupe_discord_role_assignments — one-off data repair for duplicate Discord role rows.
+dedupe_discord_role_assignments - one-off data repair for duplicate Discord role rows.
 
 WHY (bug "failed to start", 2026-06-12): DiscordRoleAssignment has no unique constraint
 on (user, role_id, stage, group) - MySQL cannot enforce one across the nullable

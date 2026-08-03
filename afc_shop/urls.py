@@ -55,7 +55,7 @@ from .connect import (
     admin_list_vendor_payouts,
     admin_release_owed_payouts,
 )
-# Marketplace Phase B3: Paystack Transfers vendor payouts (afc_shop/paystack_payout.py) —
+# Marketplace Phase B3: Paystack Transfers vendor payouts (afc_shop/paystack_payout.py) - 
 # the PRIMARY payout rail. AFC's vendors are majority African; Stripe Connect cannot pay
 # out to NGN/most-African banks but Paystack can, and the shop already charges via Paystack.
 # A vendor saves their local bank (resolve -> save = create a Paystack Transfer Recipient),

@@ -1,5 +1,5 @@
 """
-afc_sponsors.urls — route table for the sponsor-system P1 endpoints.
+afc_sponsors.urls - route table for the sponsor-system P1 endpoints.
 
 Mounted at `sponsors/` in afc/urls.py. Literal routes (mine/, create/) are declared before the
 <int:sponsor_id> patterns so they are never swallowed. See views.py's header for request/response

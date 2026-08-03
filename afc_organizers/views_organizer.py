@@ -1,27 +1,27 @@
 # afc_organizers/views_organizer.py
 # ──────────────────────────────────────────────────────────────────────────────
-# Member-scoped Organizer endpoints — the surface that org OWNERS and SUB_ORGANIZERS
+# Member-scoped Organizer endpoints - the surface that org OWNERS and SUB_ORGANIZERS
 # use to manage their OWN organization. Each endpoint is scoped to a single org
 # (resolved by <slug>) and the caller must be an active member of that org; nobody
-# reaches across into another org here. (The AFC-staff oversight surface — provisioning,
-# suspending, cross-org listing — lives elsewhere and is gated by the platform-admin
+# reaches across into another org here. (The AFC-staff oversight surface - provisioning,
+# suspending, cross-org listing - lives elsewhere and is gated by the platform-admin
 # bypass inside permissions.org_can.)
 #
 # Why this file mirrors afc_team / afc_tournament_and_scrims and NOT the rankings app:
 #   • Function-based @api_view views, one concern per function.
 #   • The auth handshake is done inline at the top of every view: read the
 #     "Authorization" header, require the "Bearer " prefix, split the token, and hand
-#     it to afc_auth's validate_token() — the exact pattern afc_team/views.py uses.
+#     it to afc_auth's validate_token() - the exact pattern afc_team/views.py uses.
 #   • Responses are serialized INLINE as plain dicts (no serializers.py module), so the
 #     original developer can read a view top-to-bottom and see the whole request/response
 #     shape in one place.
 #
 # Permission rule of thumb (all enforced via permissions.org_can / org_is_owner so the
-# owner/admin bypass stays in ONE place — never re-implement it here):
+# owner/admin bypass stays in ONE place - never re-implement it here):
 #   • owner               → every can_* is effectively True.
 #   • sub_organizer       → only the granular toggles the owner granted.
 #   • non-member          → 403 (cannot see or touch the org at all).
-# EXCEPTION — member + permission management (add / edit-permissions / remove member) and
+# EXCEPTION - member + permission management (add / edit-permissions / remove member) and
 # rebrand are OWNER-ONLY: they use org_is_owner, NOT org_can(can_manage_members), so a
 # sub_organizer can never touch the permission surface or grow/shrink the team (would be
 # self-escalation). (owner, 2026-07-14)
@@ -50,7 +50,7 @@ from afc_auth.act_as import resolve_acting_org
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §0  Shared helpers (DRY — used by several views below)
+# §0  Shared helpers (DRY - used by several views below)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -58,7 +58,7 @@ def _effective_permissions(member):
     """Collapse a member row into the {can_*: bool} map the frontend actually needs.
     The owner implicitly has EVERYTHING, so we short-circuit to all-True for them; a
     sub_organizer reports the literal column values. This mirrors permissions.org_can's
-    owner rule — we surface the same truth, just as a serialized map instead of a gate."""
+    owner rule - we surface the same truth, just as a serialized map instead of a gate."""
     if member.role == "owner":
         return {field: True for field in PERMISSION_FIELDS}
     return {field: bool(getattr(member, field, False)) for field in PERMISSION_FIELDS}
@@ -81,8 +81,8 @@ def _serialize_member(member):
 
 def _paginate(request, default_limit=25, max_limit=100):
     """Parse ?limit/?offset off the query string with safe bounds. Every list endpoint
-    in this file uses the same contract — limit defaults to 25, hard-capped at 100, and
-    offset floors at 0 — so the response envelope ({results,total_count,has_more}) is
+    in this file uses the same contract - limit defaults to 25, hard-capped at 100, and
+    offset floors at 0 - so the response envelope ({results,total_count,has_more}) is
     consistent and can never be asked to load an unbounded result set."""
     try:
         limit = int(request.GET.get("limit", default_limit))
@@ -99,7 +99,7 @@ def _paginate(request, default_limit=25, max_limit=100):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §1  GET /  — the caller's own active memberships (the "switcher" feed)
+# §1  GET /  - the caller's own active memberships (the "switcher" feed)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def get_my_organizations(request):
@@ -126,7 +126,7 @@ def get_my_organizations(request):
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
-    # Active memberships only — a removed member should not see the org at all.
+    # Active memberships only - a removed member should not see the org at all.
     # select_related("organization") avoids an N+1 across the org rows we serialize.
     memberships = (
         OrganizationMember.objects.filter(user=user, status="active")
@@ -179,7 +179,7 @@ def get_my_organizations(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §2  GET /<slug>  — full profile of one org the caller belongs to
+# §2  GET /<slug>  - full profile of one org the caller belongs to
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def get_organization(request, slug):
@@ -214,7 +214,7 @@ def get_organization(request, slug):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Membership is the gate — must be an active member of THIS org.
+    # Membership is the gate - must be an active member of THIS org.
     member = _member_or_403(user, org)
     # ── super-admin god-mode (act_as.py) ──
     # A god-mode admin (head_admin/super_admin) acting "as" THIS org (X-Act-As-Org == slug)
@@ -232,7 +232,7 @@ def get_organization(request, slug):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-    # Full inline serialization — includes branding, contact, description, socials.
+    # Full inline serialization - includes branding, contact, description, socials.
     organization = {
         "organization_id": org.organization_id,
         "slug": org.slug,
@@ -261,12 +261,12 @@ def get_organization(request, slug):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §3  PATCH /<slug>  — edit org branding/contact (OWNER ONLY)
+# §3  PATCH /<slug>  - edit org branding/contact (OWNER ONLY)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["PATCH"])
 def edit_organization_profile(request, slug):
     """Update an organization's public profile: email, description, socials, and the
-    uploaded logo / default_banner files. Restricted to the OWNER — not even a
+    uploaded logo / default_banner files. Restricted to the OWNER - not even a
     sub_organizer with can_manage_members may rebrand the org, since branding is an
     identity-level action reserved for the account holder."""
     # ── auth handshake (Bearer + validate_token) ──
@@ -309,7 +309,7 @@ def edit_organization_profile(request, slug):
     # explicitly without us guessing intent on absent keys.
     # Display NAME (owner 2026-06-23): the organizer can rename their org. This changes only the
     # display name, NOT the slug (the public /organizations/<slug> handle stays stable so existing
-    # links never break). A blank name is rejected — the org must always have a name.
+    # links never break). A blank name is rejected - the org must always have a name.
     if "name" in request.data:
         new_name = (request.data.get("name") or "").strip()
         if not new_name:
@@ -367,12 +367,12 @@ def edit_organization_profile(request, slug):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §4  GET /<slug>/members  — roster of one org (active members only)
+# §4  GET /<slug>/members  - roster of one org (active members only)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def get_organization_members(request, slug):
     """List the active members of an organization (owner + sub_organizers) with each
-    member's role and effective permission map. Any active member may view the roster —
+    member's role and effective permission map. Any active member may view the roster - 
     it is read-only and the org's own people legitimately need to see who else is on it."""
     # ── auth handshake (Bearer + validate_token) ──
     session_token = request.headers.get("Authorization")
@@ -401,7 +401,7 @@ def get_organization_members(request, slug):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Membership gate — only the org's own people may see the roster.
+    # Membership gate - only the org's own people may see the roster.
     if not _member_or_403(user, org):
         return Response(
             {"message": "You are not a member of this organization."},
@@ -420,14 +420,14 @@ def get_organization_members(request, slug):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §5  POST /<slug>/members  — invite/add a sub_organizer
+# §5  POST /<slug>/members  - invite/add a sub_organizer
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def add_organization_member(request, slug):
     """Add an existing user to the org as a sub_organizer (creating, or reactivating a
     previously-removed, OrganizationMember row) and grant them the platform-level
     'organizer' role. OWNER-ONLY (owner, 2026-07-14): only the org owner (or an AFC admin)
-    may grow the team — a sub_organizer must never add members, as that is part of the
+    may grow the team - a sub_organizer must never add members, as that is part of the
     permission surface they are not allowed to touch. Optional `permissions` toggles seed
     the new member's grants."""
     # ── auth handshake (Bearer + validate_token) ──
@@ -457,7 +457,7 @@ def add_organization_member(request, slug):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Permission gate — OWNER-ONLY (org_is_owner keeps the AFC-admin oversight bypass but
+    # Permission gate - OWNER-ONLY (org_is_owner keeps the AFC-admin oversight bypass but
     # rejects any sub_organizer, even one holding can_manage_members).
     if not org_is_owner(user, org):
         return Response(
@@ -479,7 +479,7 @@ def add_organization_member(request, slug):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Whitelist the incoming permission toggles to known PERMISSION_FIELDS only — we
+    # Whitelist the incoming permission toggles to known PERMISSION_FIELDS only - we
     # never let a request set arbitrary attributes on the member row.
     requested_perms = request.data.get("permissions") or {}
     if not isinstance(requested_perms, dict):
@@ -527,12 +527,12 @@ def add_organization_member(request, slug):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §6  PATCH /<slug>/members/<user_id>  — retune a sub_organizer's permissions
+# §6  PATCH /<slug>/members/<user_id>  - retune a sub_organizer's permissions
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["PATCH"])
 def edit_organization_member(request, slug, user_id):
     """Toggle the granular permission booleans on one sub_organizer's membership row.
-    OWNER-ONLY (owner, 2026-07-14): only the org owner (or an AFC admin) may edit permissions —
+    OWNER-ONLY (owner, 2026-07-14): only the org owner (or an AFC admin) may edit permissions - 
     a sub_organizer can never re-tune anyone's grants (that would be self-escalation). The
     owner's own row is off-limits (400): the owner already has everything implicitly and must
     never be down-scoped through this path."""
@@ -563,7 +563,7 @@ def edit_organization_member(request, slug, user_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Permission gate — OWNER-ONLY (owner/AFC-admin only; sub_organizers can never edit perms).
+    # Permission gate - OWNER-ONLY (owner/AFC-admin only; sub_organizers can never edit perms).
     if not org_is_owner(user, org):
         return Response(
             {"message": "Only the organization owner can edit member permissions."},
@@ -580,7 +580,7 @@ def edit_organization_member(request, slug, user_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # The owner's row carries every permission implicitly — never editable here.
+    # The owner's row carries every permission implicitly - never editable here.
     if member.role == "owner":
         return Response(
             {"message": "The organization owner's permissions cannot be edited."},
@@ -605,7 +605,7 @@ def edit_organization_member(request, slug, user_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §7  DELETE /<slug>/members/<user_id>  — soft-remove a sub_organizer
+# §7  DELETE /<slug>/members/<user_id>  - soft-remove a sub_organizer
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["DELETE"])
 def remove_organization_member(request, slug, user_id):
@@ -640,7 +640,7 @@ def remove_organization_member(request, slug, user_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Permission gate — OWNER-ONLY (owner/AFC-admin only; sub_organizers can never remove members).
+    # Permission gate - OWNER-ONLY (owner/AFC-admin only; sub_organizers can never remove members).
     if not org_is_owner(user, org):
         return Response(
             {"message": "Only the organization owner can remove members."},
@@ -657,7 +657,7 @@ def remove_organization_member(request, slug, user_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # The owner is structural — refuse to remove them through the member endpoint.
+    # The owner is structural - refuse to remove them through the member endpoint.
     if member.role == "owner":
         return Response(
             {"message": "The organization owner cannot be removed."},

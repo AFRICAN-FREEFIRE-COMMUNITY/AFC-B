@@ -1,6 +1,6 @@
 # afc_partner_api/views_partner.py
 # ──────────────────────────────────────────────────────────────────────────────
-# The seven read-only partner endpoints — the public face of the partner API.
+# The seven read-only partner endpoints - the public face of the partner API.
 #
 # Every view runs the SAME pipeline, in this exact order, via the partner_endpoint
 # decorator (so the order can never drift per-view):
@@ -15,7 +15,7 @@
 #
 # Two deliberate status choices the spec calls out (and the tests guard):
 #   • 403 vs 404. A toggle the partner doesn't HAVE returns 403 (resource_not_enabled)
-#     — we admit the resource exists but they aren't entitled. An EVENT the partner
+#     - we admit the resource exists but they aren't entitled. An EVENT the partner
 #     can't see returns 404, NOT 403: confirming "this event exists but you can't read
 #     it" would leak the existence of private/unpublished events, so out-of-scope reads
 #     are indistinguishable from a typo'd slug. (spec §9 landmine)
@@ -46,7 +46,7 @@ def partner_endpoint(resource_toggle=None):
     ``resource_toggle`` is the name of the Partner.can_read_* boolean that gates this
     endpoint (e.g. "can_read_events"). When set, the partner must have it ON or the
     request is rejected 403 before the view body runs. The wrapped view is called as
-    ``fn(request, partner, *args, **kwargs)`` — it receives the authenticated Partner
+    ``fn(request, partner, *args, **kwargs)`` - it receives the authenticated Partner
     so it never re-derives it, and the rate-limit/auth plumbing stays out of the view.
     """
     def deco(fn):
@@ -59,7 +59,7 @@ def partner_endpoint(resource_toggle=None):
                 return Response({"error": str(exc)}, status=401)
             # 2) Count this request against the key's per-minute budget, else 429.
             #    Retry-After tells a well-behaved client exactly how long to back off
-            #    (the window is one wall-clock minute — see ratelimit.py). On success the
+            #    (the window is one wall-clock minute - see ratelimit.py). On success the
             #    call returns the running count, which we turn into rate-limit headers
             #    below so a well-behaved client can self-throttle BEFORE it gets 429'd.
             try:
@@ -77,7 +77,7 @@ def partner_endpoint(resource_toggle=None):
             # 5) Advertise the rate-limit budget on every SUCCESSFUL (2xx) read, mirroring
             #    the GitHub-style X-RateLimit-* convention: -Limit is the per-minute
             #    ceiling, -Remaining is calls left in THIS window (never negative). We
-            #    only stamp 2xx responses — a 403/404 isn't a metered read against quota,
+            #    only stamp 2xx responses - a 403/404 isn't a metered read against quota,
             #    and the 429 path already carries its own Retry-After above.
             if 200 <= response.status_code < 300:
                 response["X-RateLimit-Limit"] = str(key.rate_limit_per_min)
@@ -146,7 +146,7 @@ def _visible_event_or_404(partner, slug):
 
     Goes through partner_visible_events so the publish gate + grant rules apply: an
     unpublished or un-granted event resolves to None here, which each caller turns into
-    a 404 (never confirming the event exists — see the module header)."""
+    a 404 (never confirming the event exists - see the module header)."""
     return partner_visible_events(partner).filter(slug=slug).first()
 
 
@@ -154,7 +154,7 @@ def _visible_event_or_404(partner, slug):
 @api_view(["GET"])
 @partner_endpoint("can_read_events")
 def list_events(request, partner):
-    """GET /events/ — paginated list of the published events this partner may read,
+    """GET /events/ - paginated list of the published events this partner may read,
     newest first."""
     qs = partner_visible_events(partner).order_by("-start_date", "-event_id")
     return _paginate(request, qs, serialize.serialize_event, partner)
@@ -164,7 +164,7 @@ def list_events(request, partner):
 @api_view(["GET"])
 @partner_endpoint("can_read_events")
 def event_detail(request, partner, event_slug):
-    """GET /events/<slug>/ — one event's public card, or 404 if out of scope."""
+    """GET /events/<slug>/ - one event's public card, or 404 if out of scope."""
     event = _visible_event_or_404(partner, event_slug)
     if not event:
         return Response({"error": "not_found"}, status=404)
@@ -175,7 +175,7 @@ def event_detail(request, partner, event_slug):
 @api_view(["GET"])
 @partner_endpoint("can_read_stages")
 def event_stages(request, partner, event_slug):
-    """GET /events/<slug>/stages/ — paginated stages of the event, each with its groups
+    """GET /events/<slug>/stages/ - paginated stages of the event, each with its groups
     nested. Resolve the event first so an out-of-scope slug 404s before we read stages."""
     event = _visible_event_or_404(partner, event_slug)
     if not event:
@@ -185,7 +185,7 @@ def event_stages(request, partner, event_slug):
 
     def _serialize_stage_with_groups(stage, p):
         # A stage's public row plus its groups (groups are part of the stage resource,
-        # gated by the same can_read_stages toggle — they carry no extra stat fields).
+        # gated by the same can_read_stages toggle - they carry no extra stat fields).
         out = serialize.serialize_stage(stage, p)
         out["groups"] = [serialize.serialize_group(g, p) for g in stage.groups.order_by("group_id")]
         return out
@@ -197,7 +197,7 @@ def event_stages(request, partner, event_slug):
 @api_view(["GET"])
 @partner_endpoint("can_read_matches")
 def event_matches(request, partner, event_slug):
-    """GET /events/<slug>/matches/ — paginated matches of the event (room creds stripped
+    """GET /events/<slug>/matches/ - paginated matches of the event (room creds stripped
     by the serializer firewall)."""
     from afc_tournament_and_scrims.models import Match
 
@@ -216,7 +216,7 @@ def event_matches(request, partner, event_slug):
 @api_view(["GET"])
 @partner_endpoint("can_read_standings")
 def event_standings(request, partner, event_slug):
-    """GET /events/<slug>/standings/ — the event's final ranked standings.
+    """GET /events/<slug>/standings/ - the event's final ranked standings.
 
     serialize_standings returns a fully-ranked LIST (not a queryset), so we paginate it
     in memory with the same envelope. The whole event-wide fold is computed once; we
@@ -233,7 +233,7 @@ def event_standings(request, partner, event_slug):
 @api_view(["GET"])
 @partner_endpoint("can_read_teams")
 def event_teams(request, partner, event_slug):
-    """GET /events/<slug>/teams/ — paginated tournament teams of the event with their
+    """GET /events/<slug>/teams/ - paginated tournament teams of the event with their
     event-wide aggregated, toggled stats."""
     event = _visible_event_or_404(partner, event_slug)
     if not event:
@@ -247,11 +247,11 @@ def event_teams(request, partner, event_slug):
 @api_view(["GET"])
 @partner_endpoint("can_read_players")
 def event_players(request, partner, event_slug):
-    """GET /events/<slug>/players/ — paginated list of the players who recorded stats in
+    """GET /events/<slug>/players/ - paginated list of the players who recorded stats in
     the event, each with their per-event (NOT lifetime) toggled stats.
 
     Players are reached through their tournament team so each player's stats fold scoped
-    to THIS event (serialize_player needs the tournament_team for the per-event fold —
+    to THIS event (serialize_player needs the tournament_team for the per-event fold - 
     see serialize.py). We flatten (player, team) pairs into one list and paginate it,
     because the per-event scoping is keyed on the team, not the user.
     """

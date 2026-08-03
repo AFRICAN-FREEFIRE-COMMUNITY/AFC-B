@@ -4,13 +4,13 @@ test_ip_country.py
 Covers the IP-derived per-PLAYER flag country (owner ask 2026-06-29).
 
 Two layers under test:
-  1. afc_auth.views.set_ip_country() — the denormalizer that writes User.ip_country on each login.
+  1. afc_auth.views.set_ip_country() - the denormalizer that writes User.ip_country on each login.
      Guards: skip on VPN, skip on empty country, skip when unchanged, persist when it changes.
   2. The reader fallback `ip_country or country` used by the player-flag serializers
      (afc_team.get_team_details, afc_player.aggregation, afc_player.views). We assert the contract
      directly (model-level) so a regression in either serializer's coalesce is caught here too.
 
-These are pure unit tests — no network: set_ip_country takes the already-resolved country + is_vpn,
+These are pure unit tests - no network: set_ip_country takes the already-resolved country + is_vpn,
 so geo_for_ip()/ipinfo is never hit.
 """
 

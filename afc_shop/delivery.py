@@ -7,7 +7,7 @@ collected customer delivery PII.
 TWO surfaces, kept in this one module (like fulfilment.py / vendors.py so the big
 views.py is not churned), all registered under shop/ in afc_shop/urls.py:
 
-  A) USER saved delivery profiles (Bearer -> validate_token, OWNER-SCOPED) — a buyer
+  A) USER saved delivery profiles (Bearer -> validate_token, OWNER-SCOPED) - a buyer
      saves their delivery/contact details at checkout and reuses them next time:
        - list_my_delivery_profiles    : the picker feed (default first)
        - create_delivery_profile      : save a new entry (+ optional default)
@@ -23,7 +23,7 @@ views.py is not churned), all registered under shop/ in afc_shop/urls.py:
      /profile/addresses manage page.
 
   B) SUPER-ADMIN delivery-info view (require_head_admin = head_admin/super_admin/superuser
-     ONLY — NOT plain role=="admin", NOT shop_admin) — browse every customer's collected
+     ONLY - NOT plain role=="admin", NOT shop_admin) - browse every customer's collected
      delivery PII, sourced from ORDER rows (every checkout already snapshots the address
      onto its Order, so no extra table is read):
        - admin_list_delivery_info   : masked, searchable, paginated list (POST so the
@@ -100,7 +100,7 @@ def _make_sole_default(user, profile):
 
 def _paginate(data, default_limit=25, max_limit=100):
     """Parse limit/offset from a dict (request body for the admin POST reads) with safe
-    bounds — limit defaults to 25, hard-capped at 100, offset floors at 0."""
+    bounds - limit defaults to 25, hard-capped at 100, offset floors at 0."""
     try:
         limit = int(data.get("limit", default_limit))
     except (TypeError, ValueError):
@@ -113,7 +113,7 @@ def _paginate(data, default_limit=25, max_limit=100):
 
 
 def _mask_email(email):
-    """j***@example.com — keep the first character + the domain, hide the rest."""
+    """j***@example.com - keep the first character + the domain, hide the rest."""
     e = (email or "").strip()
     if "@" not in e:
         return e
@@ -122,7 +122,7 @@ def _mask_email(email):
 
 
 def _mask_phone(phone):
-    """***123 — show only the last 3 digits."""
+    """***123 - show only the last 3 digits."""
     p = (phone or "").strip()
     return f"***{p[-3:]}" if len(p) > 3 else "***"
 
@@ -204,7 +204,7 @@ def _auth_user(request):
 
 @api_view(["GET"])
 def list_my_delivery_profiles(request):
-    """GET shop/delivery-profiles/ — the caller's saved delivery entries (default first).
+    """GET shop/delivery-profiles/ - the caller's saved delivery entries (default first).
     Powers the checkout picker (CartDetails.tsx) and the /profile/addresses manage page."""
     user, err = _auth_user(request)
     if err:
@@ -215,7 +215,7 @@ def list_my_delivery_profiles(request):
 
 @api_view(["POST"])
 def create_delivery_profile(request):
-    """POST shop/delivery-profiles/create/ — save a new delivery entry for the caller.
+    """POST shop/delivery-profiles/create/ - save a new delivery entry for the caller.
     Body: the 7 required delivery fields (+ optional postcode, label, is_default). The first
     entry a user saves becomes the default; passing is_default makes this the sole default."""
     user, err = _auth_user(request)
@@ -256,7 +256,7 @@ def create_delivery_profile(request):
 
 @api_view(["POST"])
 def update_delivery_profile(request):
-    """POST shop/delivery-profiles/update/ — edit one of the caller's saved entries.
+    """POST shop/delivery-profiles/update/ - edit one of the caller's saved entries.
     Body: { profile_id, ...any delivery fields, label, is_default }. Cross-user id -> 404."""
     user, err = _auth_user(request)
     if err:
@@ -286,7 +286,7 @@ def update_delivery_profile(request):
 
 @api_view(["POST"])
 def delete_delivery_profile(request):
-    """POST shop/delivery-profiles/delete/ — remove one of the caller's saved entries.
+    """POST shop/delivery-profiles/delete/ - remove one of the caller's saved entries.
     If the deleted entry was the default, the next most-recent entry becomes the default."""
     user, err = _auth_user(request)
     if err:
@@ -312,7 +312,7 @@ def delete_delivery_profile(request):
 
 @api_view(["POST"])
 def set_default_delivery_profile(request):
-    """POST shop/delivery-profiles/set-default/ — make one of the caller's entries the default."""
+    """POST shop/delivery-profiles/set-default/ - make one of the caller's entries the default."""
     user, err = _auth_user(request)
     if err:
         return err
@@ -330,11 +330,11 @@ def set_default_delivery_profile(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# B) SUPER-ADMIN delivery-info view (require_head_admin — head_admin/super_admin ONLY)
+# B) SUPER-ADMIN delivery-info view (require_head_admin - head_admin/super_admin ONLY)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def admin_list_delivery_info(request):
-    """POST shop/admin/delivery-info/ — masked, searchable, paginated list of collected
+    """POST shop/admin/delivery-info/ - masked, searchable, paginated list of collected
     customer delivery PII, sourced from ORDER rows. POST (not GET) so AuditLogMiddleware
     records every super-admin browse. require_head_admin (head_admin/super_admin/superuser
     only). Body: { q?, date_from?, date_to?, limit?<=100 def25, offset? }.
@@ -368,7 +368,7 @@ def admin_list_delivery_info(request):
         "username": o.user.username if o.user_id else None,
         "first_name": o.first_name,
         "last_name": o.last_name,
-        # PII masked in the list — full values only via the audited reveal endpoint below.
+        # PII masked in the list - full values only via the audited reveal endpoint below.
         "email": _mask_email(o.email),
         "phone_number": _mask_phone(o.phone_number),
         "city": o.city,
@@ -389,7 +389,7 @@ def admin_list_delivery_info(request):
 
 @api_view(["POST"])
 def admin_reveal_delivery_info(request):
-    """POST shop/admin/delivery-info/reveal/ — the FULL unmasked delivery record for one
+    """POST shop/admin/delivery-info/reveal/ - the FULL unmasked delivery record for one
     order. POST so each reveal is audited per-record. require_head_admin. Body: { order_id }.
     Consumed by: the "Reveal full details" control on /a/shop/customers."""
     admin, err = require_head_admin(request)

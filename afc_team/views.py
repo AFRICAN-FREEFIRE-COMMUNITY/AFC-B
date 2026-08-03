@@ -61,15 +61,15 @@ def _is_player_banned(user):
 # (manage_team_roster, the invite-accept path) shares one definition.
 #
 # Consumed by:
-#   - manage_team_roster (POST /team/manage-roster/) — enforces the 6 PLAYING cap when a
+#   - manage_team_roster (POST /team/manage-roster/) - enforces the 6 PLAYING cap when a
 #     member is moved INTO a playing role.
-#   - respond_to_invite (POST /team/respond-to-invite/) — the invite-accept path that adds
+#   - respond_to_invite (POST /team/respond-to-invite/) - the invite-accept path that adds
 #     a new member; rejects a 7th playing member.
 #   - afc_tournament_and_scrims.register_for_event / add_player_to_event_roster import
 #     STAFF_ROLES from here to keep coach/manager/analyst off event rosters (single rule).
 # ──────────────────────────────────────────────────────────────────────────
-PLAYER_ROLES = {"team_captain", "vice_captain", "member"}   # PLAYING — count toward the 6 cap
-STAFF_ROLES = {"coach", "manager", "analyst"}               # MANAGEMENT — never play / never rostered
+PLAYER_ROLES = {"team_captain", "vice_captain", "member"}   # PLAYING - count toward the 6 cap
+STAFF_ROLES = {"coach", "manager", "analyst"}               # MANAGEMENT - never play / never rostered
 MAX_PLAYERS = 6
 
 
@@ -502,7 +502,7 @@ def disband_team(request):
         # Validate team ownership
         team = Team.objects.get(team_id=team_id, team_owner=user)
 
-        # Roster moves are locked outside the transfer window — a team cannot be disbanded
+        # Roster moves are locked outside the transfer window - a team cannot be disbanded
         # while the window is CLOSED (matches the player-leave lock in exit_team). The window
         # is the active ranking season's range (afc_rankings.Season), toggled by admins.
         from afc_rankings.models import Season
@@ -962,7 +962,7 @@ def edit_team(request):
         # "" -> clear the tag (NULL); otherwise store the cleaned, upper-cased handle.
         team.team_tag = normalized_tag if normalized_tag else None
 
-    # Team description (owner 2026-06-23): editable from the team-edit page. PATCH semantics — only
+    # Team description (owner 2026-06-23): editable from the team-edit page. PATCH semantics - only
     # touched when the client sends the key. Capped at 200 chars (matches the model field). A blank
     # value falls back to the same default the create flow uses, so the profile never shows an empty
     # description. Consumed by the team-edit page (app/(user)/teams/[id]/edit) + shown on the team profile.
@@ -1076,7 +1076,7 @@ def get_all_teams(request):
 def _team_tier_history(team):
     """
     Per-season tier + rank history for a team, sourced from the real afc_rankings
-    TeamQuarterlyScore table — ONLY for seasons whose tiers/rankings have been published.
+    TeamQuarterlyScore table - ONLY for seasons whose tiers/rankings have been published.
 
     tier is exposed only when Season.tiers_published; rank only when
     Season.rankings_published (the two are independent publish gates, matching the public
@@ -1123,7 +1123,7 @@ def _team_tier_history(team):
 # ──────────────────────────────────────────────────────────────────────────────
 # Detailed team statistics (win/loss totals, win rate, average kills/placement,
 # per-event tournament performance, recent matches) are PRIVATE: only CURRENT
-# members of that team — plus AFC admins — may see them. Anonymous or non-member
+# members of that team - plus AFC admins - may see them. Anonymous or non-member
 # viewers get the team's public identity (name, tier, member list) but NOT the
 # detailed numbers.
 #
@@ -1157,9 +1157,9 @@ def _can_view_team_stats(viewer, team):
 
     Owner rule (2026-06-24 lockdown + 2026-06-27 team opt-in): team statistics are PRIVATE BY DEFAULT.
     Visible to:
-      • current members of THIS team (so a player always sees their OWN team's stats) — regardless of
+      • current members of THIS team (so a player always sees their OWN team's stats) - regardless of
         the toggle, and
-      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role) —
+      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role) - 
         always, and
       • ANY other viewer (organizers, sponsors, non-member players, the public, anonymous) ONLY when the
         team has OPTED IN via team.stats_visible == True, which only the team owner/manager can set
@@ -1175,7 +1175,7 @@ def _can_view_team_stats(viewer, team):
     if viewer is not None and is_stats_admin(viewer):
         return True
 
-    # Current member of this exact team — always sees their own team's aggregate.
+    # Current member of this exact team - always sees their own team's aggregate.
     if viewer is not None and TeamMembers.objects.filter(team=team, member=viewer).exists():
         return True
 
@@ -1184,7 +1184,7 @@ def _can_view_team_stats(viewer, team):
 
 
 # Leadership roles allowed to change team-level settings like the stats-privacy toggle. The OWNER is
-# always allowed (Team.team_owner). Among TeamMembers, only the leadership roles qualify — a plain
+# always allowed (Team.team_owner). Among TeamMembers, only the leadership roles qualify - a plain
 # member/coach/analyst cannot expose the whole team's stats. "manager" is the role the owner named;
 # captain/vice are the de-facto team leads, so they're included too. (Coach/analyst deliberately excluded.)
 _TEAM_MANAGER_ROLES = ("manager", "team_captain", "vice_captain")
@@ -1207,7 +1207,7 @@ def _is_team_owner_or_manager(viewer, team):
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Letter Avatars (A-Z) — team-side helpers (feature owner 2026-06-29)
+# Letter Avatars (A-Z) - team-side helpers (feature owner 2026-06-29)
 #
 # Free Fire ships 26 fixed "letter avatars" (one per A-Z). A team's USABLE letters are
 # LIVE-DERIVED, never stored: union(each current member's afc_auth.User.letter_avatars) ∪
@@ -1237,7 +1237,7 @@ def _normalize_letters(raw):
     Mirrors the frontend picker's normalizeLetters (components/ui/letter-avatar-picker.tsx) byte for
     byte, so a value the user toggles round-trips cleanly through set_team_letters. Accepts a list/
     iterable of strings (a lone string is treated as a single entry). Anything that is not a real
-    single letter A-Z is dropped defensively — this is the NORMALIZER, not the validator; the write
+    single letter A-Z is dropped defensively - this is the NORMALIZER, not the validator; the write
     endpoint validates+rejects bad input separately before calling this. Never raises.
     """
     if not raw:
@@ -1285,7 +1285,7 @@ def _team_available_letters(team, members_qs=None):
         manual_letters : team.manual_letter_avatars (the EXTRA letters a manager declared by hand)
         available      : the de-duplicated union of the two (what the team can actually field)
 
-    Nothing here is stored — it is recomputed every read so it self-corrects when a member joins/
+    Nothing here is stored - it is recomputed every read so it self-corrects when a member joins/
     leaves or edits their own letters (plan Open Q (c)). `letter_avatars` lives on afc_auth.User and
     is read via getattr so this stays resilient (treats a missing/None value as "no letters"). When
     `members_qs` is supplied it is reused (get_team_details passes its already-evaluated roster
@@ -1303,7 +1303,7 @@ def _team_available_letters(team, members_qs=None):
 
 @api_view(["POST"])
 def set_team_letters(request):
-    """POST /team/set-team-letters/ — owner/captain/vice-captain/manager/coach declares the team's
+    """POST /team/set-team-letters/ - owner/captain/vice-captain/manager/coach declares the team's
     MANUAL letter-avatar EXTRAS (letters the team can field that no current member already covers).
 
     Request  : { "team_id": <int>, "manual_letters": ["B","Q", ...] }   (Bearer session token required)
@@ -1314,7 +1314,7 @@ def set_team_letters(request):
     coach). A plain member/analyst cannot. Each entry must be a single A-Z letter; anything else is
     REJECTED (a typo surfaces an error instead of being silently dropped). The empty list is valid and
     clears all manual extras. Stores Team.manual_letter_avatars (normalized to sorted/deduped/UPPER).
-    The team's AVAILABLE letters are NOT stored — they are recomputed live (member union ∪ manual) and
+    The team's AVAILABLE letters are NOT stored - they are recomputed live (member union ∪ manual) and
     returned so the FE can refresh its chips without a second round-trip. Mirrors the narrow
     single-purpose shape of set_team_stats_visibility (so a manager who isn't the owner can still save).
     Frontend caller: the "Team letter avatars" panel on app/(user)/teams/[id]/edit, rendered only when
@@ -1391,7 +1391,7 @@ def set_team_letters(request):
 
 @api_view(["POST"])
 def set_team_stats_visibility(request):
-    """POST /team/set-stats-visibility/ — owner/manager toggles whether the team's aggregate stats are
+    """POST /team/set-stats-visibility/ - owner/manager toggles whether the team's aggregate stats are
     PUBLIC (visible to outsiders).
 
     Request  : { "team_id": <int>, "stats_visible": <bool> }  (Bearer session token required)
@@ -1462,7 +1462,7 @@ def get_team_details(request):
     `stats_visible` is False and those sensitive numbers are ZEROED / EMPTIED.
     The team's public IDENTITY (name, tag, logo, tier, description, country,
     member count, member list, social links, ban info, tier_history) is ALWAYS
-    returned. Back-compatible: no keys renamed — we only add `stats_visible` and
+    returned. Back-compatible: no keys renamed - we only add `stats_visible` and
     gate the values behind it. TeamStatisticsTab.tsx reads `stats_visible` and
     shows a "members only" message when it is False.
     """
@@ -1566,7 +1566,7 @@ def get_team_details(request):
         for m in members_qs
     ]
 
-    # ── Letter Avatars (A-Z) — LIVE-DERIVED team coverage (owner 2026-06-29) ───
+    # ── Letter Avatars (A-Z) - LIVE-DERIVED team coverage (owner 2026-06-29) ───
     # available_letters = union(each member's User.letter_avatars) ∪ team.manual_letter_avatars,
     # never stored (see _team_available_letters). member_letters / manual_letters are also returned
     # so the team-edit picker can lock member-covered letters (disabledLetters) and the FE can show
@@ -1651,7 +1651,7 @@ def get_team_details(request):
                 # CURRENT rule produces. event_prize_is_stale is True both when there are NO auto rows yet
                 # (a newly-finished event) AND when the stored rows are STALE (left over from the old
                 # cumulative-across-stages rule, now last-stage-played). So just VIEWING the team page
-                # both attributes a new prize AND corrects an out-of-date one — owner 2026-07-14: after
+                # both attributes a new prize AND corrects an out-of-date one - owner 2026-07-14: after
                 # the rule change the placement flipped to 6th but the prize still showed the old
                 # 4th-place amount because the self-heal used to SKIP any event that already had payouts.
                 if effective_event_status(_ev) == "completed" and event_prize_is_stale(_ev):
@@ -1675,7 +1675,7 @@ def get_team_details(request):
             # "Final placement" = the team's rank in the LAST STAGE it actually played
             # (event_final_standings: teams that reached a deeper stage outrank teams eliminated
             # earlier, ordered within a stage by that stage's OFFICIAL leaderboard). NOT best_placement
-            # (Min(placement) = best single map) and NOT cumulative points summed across every stage —
+            # (Min(placement) = best single map) and NOT cumulative points summed across every stage - 
             # a team that topped one semifinal map but exited the Grand Finals low now shows its real
             # finish. `reached_final_stage` marks teams that actually PLAYED the deciding stage so the
             # UI can badge finalists differently (owner: "if the team got to the last stage it should
@@ -1827,7 +1827,7 @@ def get_team_details(request):
 
     # ── ADDITIVE: per-season tier / rank history (from afc_rankings, publish-gated) ──
     # Sourced from the real TeamQuarterlyScore table. tier is shown only for seasons whose
-    # tiers are published; rank only when rankings are published — mirroring the public
+    # tiers are published; rank only when rankings are published - mirroring the public
     # rankings read API's two independent publish gates. Empty list when nothing published.
     tier_history = _team_tier_history(team)
 
@@ -1839,11 +1839,11 @@ def get_team_details(request):
         tournament_team__team=team
     ).aggregate(total=Sum("amount"))["total"] or 0
 
-    # ── Registered events (PUBLIC — owner 2026-06-30) ─────────────────────────
+    # ── Registered events (PUBLIC - owner 2026-06-30) ─────────────────────────
     # The upcoming/ongoing events this team is CURRENTLY registered for. Deliberately
     # computed OUTSIDE the stats_visible privacy block above: a team's registration
     # schedule is public information (not sensitive performance data), so every viewer
-    # — anonymous, non-member, member, admin — gets it. We read the team's live
+    # - anonymous, non-member, member, admin - gets it. We read the team's live
     # TournamentTeam rows, dropping cancelled entries (disqualified/withdrawn/left; a
     # re-link withdraws the old row, so this also collapses stale duplicates) and draft
     # events, and keep only events whose status is upcoming or ongoing (completed events
@@ -1904,7 +1904,7 @@ def get_team_details(request):
         # a "Team stats are visible to team members only." message instead of the
         # numbers, keeping the public identity above visible.
         "stats_visible": stats_visible,
-        # ── Team stats PRIVACY SETTING (owner 2026-06-27) — distinct from the computed `stats_visible`
+        # ── Team stats PRIVACY SETTING (owner 2026-06-27) - distinct from the computed `stats_visible`
         # above. `stats_visible` = "can THIS viewer see the numbers" (membership/admin/opt-in resolved).
         # `stats_public` = the TEAM's own toggle value (Team.stats_visible), which the owner/manager sets
         # to open team stats to OUTSIDERS. The FE "Show team stats publicly" switch seeds itself from
@@ -1937,10 +1937,10 @@ def get_team_details(request):
         "tournament_performance": tournament_performance,
         "recent_matches": recent_matches,
         # additive: per-season tier / rank history (publish-gated; [] when nothing published)
-        # Always returned — tier/rank are public ranking data, not private team stats.
+        # Always returned - tier/rank are public ranking data, not private team stats.
         "tier_history": tier_history,
         # additive: events this team is CURRENTLY registered for (upcoming/ongoing). Always
-        # returned — registration schedule is public, NOT gated by stats_visible. Built above.
+        # returned - registration schedule is public, NOT gated by stats_visible. Built above.
         "registered_events": registered_events,
     }
 
@@ -1999,7 +1999,7 @@ def get_user_current_team(request):
 
 @api_view(["POST"])
 def get_player_details(request):
-    # AUTH (2026-06-08): returns PII (user.email) + profile pics. Previously UNGATED — any
+    # AUTH (2026-06-08): returns PII (user.email) + profile pics. Previously UNGATED - any
     # caller could POST a player_ign and read that player's email. No current frontend caller
     # (effectively orphaned), so we lock it to AFC staff (coarse role OR any granular UserRoles
     # row). Mirrors the gate added to afc_player.get_player_details.
@@ -2091,7 +2091,7 @@ def exit_team(request):
         if team.team_owner == user:
             return Response({"message": "Team owners cannot exit their own team. Please transfer ownership or disband the team."}, status=status.HTTP_403_FORBIDDEN)
 
-        # Roster moves are locked outside the transfer window — a player can only leave a
+        # Roster moves are locked outside the transfer window - a player can only leave a
         # team while the window is OPEN. The window is defined on the active ranking season
         # (afc_rankings.Season) and toggled by admins. Admin kicks/removals are unaffected.
         from afc_rankings.models import Season
@@ -2374,7 +2374,7 @@ def _member_in_active_event_roster(team, member_id) -> bool:
 def _transfer_window_open():
     """True when player<->staff roster moves are allowed.
 
-    Tied to the active ranking season's transfer window (admins toggle it) — the SAME lock
+    Tied to the active ranking season's transfer window (admins toggle it) - the SAME lock
     that already gates kicks. If there is no active season, there is no lock (treated as open).
     """
     from afc_rankings.models import Season
@@ -2424,7 +2424,7 @@ def manage_team_roster(request):
         # mirrors _transfer_window_open() used for the player<->staff move below. The check gates
         # ONLY the in_game_role path: a request that supplies "in_game_role" for any member is a
         # position change, so the whole call is rejected with 403 when the window is closed.
-        # Management-role (captain / manager / etc.) changes are NOT newly restricted here — they
+        # Management-role (captain / manager / etc.) changes are NOT newly restricted here - they
         # keep only the crossing rule already enforced per-member below. With no active season the
         # guard does not fire (positions stay editable), matching the existing pattern.
         #
@@ -2564,7 +2564,7 @@ def manage_team_roster(request):
                             pass
                     tm.management_role = new_m_role
 
-            # In-game role — None means skip, "" means clear
+            # In-game role - None means skip, "" means clear
             if new_i_role is not None:
                 if new_i_role == "":
                     tm.in_game_role = None
@@ -2614,7 +2614,7 @@ def manage_team_roster(request):
 
         any_failed = any(r["status"] in ("failed", "partial") for r in results)
         return Response({
-            "message": "Roster update completed" if not any_failed else "Some updates could not be applied — see results for details.",
+            "message": "Roster update completed" if not any_failed else "Some updates could not be applied - see results for details.",
             "results": results,
             "has_errors": any_failed,
         }, status=200)
@@ -2656,7 +2656,7 @@ def kick_team_member(request):
         if not _can_manage_roster(user, team):
             return Response({"error": "Only the team owner or a coach can kick members"}, status=403)
 
-        # Roster moves are locked outside the transfer window — members cannot be kicked
+        # Roster moves are locked outside the transfer window - members cannot be kicked
         # while the window is CLOSED (matches the player-leave + disband locks). The window
         # is the active ranking season's range (afc_rankings.Season), toggled by admins.
         from afc_rankings.models import Season
@@ -2842,7 +2842,7 @@ def get_team_with_highest_wins(request):
         .filter(placement=1)
         .values(team_id=F("tournament_team__team__team_id"),
                 team_name=F("tournament_team__team__team_name"))
-        # Count by the model's real PK "team_stats_id" — TournamentTeamMatchStats has no auto "id" field (explicit AutoField PK), matching Count("team_stats_id") used elsewhere in this file
+        # Count by the model's real PK "team_stats_id" - TournamentTeamMatchStats has no auto "id" field (explicit AutoField PK), matching Count("team_stats_id") used elsewhere in this file
         .annotate(total_wins=Count("team_stats_id"))
         .order_by("-total_wins", "team_name")
         .first()

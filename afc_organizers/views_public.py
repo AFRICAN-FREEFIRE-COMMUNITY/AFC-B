@@ -9,13 +9,13 @@
 #
 # Why "public" still defines a Bearer-token auth helper:
 #   The org page itself needs no login, BUT this file follows the same hand as
-#   afc_tournament_and_scrims / afc_team — function-based @api_view views, manual
+#   afc_tournament_and_scrims / afc_team - function-based @api_view views, manual
 #   inline dict serialization (no serializers.py), and the validate_token() pattern
 #   imported the same way afc_team/views.py imports it. Keeping the shape identical
 #   means the original dev can read these views without friction, and any future
 #   "members-only" sibling view dropped in here already has the auth helper to hand.
 #
-# Route mounting lives in afc_organizers/urls.py and is owned by the coordinator —
+# Route mounting lives in afc_organizers/urls.py and is owned by the coordinator - 
 # this file ONLY defines the view function(s).
 # ──────────────────────────────────────────────────────────────────────────────
 from rest_framework.decorators import api_view
@@ -46,7 +46,7 @@ from afc_tournament_and_scrims.models import Event
 # never leak that a slug exists but is frozen.
 @api_view(["GET"])
 def get_organization_public(request, slug):
-    # No auth header needed here — this is a public surface. The Bearer helper above
+    # No auth header needed here - this is a public surface. The Bearer helper above
     # exists so a future members-only sibling view can reuse the same pattern.
 
     # Fetch by slug. We do NOT use get_object_or_404 because we want the exact same
@@ -61,12 +61,12 @@ def get_organization_public(request, slug):
     # ── org's public events ──
     # Public = published (is_draft=False). Newest first by start_date, which is the
     # real date field on Event (confirmed against afc_tournament_and_scrims/models.py;
-    # there is no separate "event_date" column — start_date is it).
+    # there is no separate "event_date" column - start_date is it).
     events = Event.objects.filter(
         organization=org, is_draft=False
     ).order_by("-start_date")
 
-    # Small card dicts — only the fields the public profile page needs to list an event.
+    # Small card dicts - only the fields the public profile page needs to list an event.
     # Image fields use (img.url if img else None) per the endpoint contract.
     events_data = []
     for event in events:
@@ -83,7 +83,7 @@ def get_organization_public(request, slug):
 
     # ── inline serialization of the org itself ──
     # Manual dict (no serializers module), mirroring the rest of this codebase.
-    # rating is null for now — the reviews/ratings aggregate is not part of this
+    # rating is null for now - the reviews/ratings aggregate is not part of this
     # endpoint yet, so we return an explicit null rather than omit the key, keeping
     # the response shape stable for the frontend.
     return Response(
@@ -131,10 +131,10 @@ def _tier_label(tier_code):
 #   event_count                    → number of that org's published events
 #   verified                       → True when the org has >=1 event whose results
 #                                     AFC has marked rankings_verified (a real
-#                                     integrity signal — NOT a separate "verified"
+#                                     integrity signal - NOT a separate "verified"
 #                                     flag, which the schema does not have)
 #   tier                           → "Tier 1/2/3" derived from the BEST tournament_tier
-#                                     across the org's events (null if none) — also
+#                                     across the org's events (null if none) - also
 #                                     real data off the events, not invented
 #
 # Request:  GET, no auth, no body. No params (the directory is small; the frontend
@@ -146,12 +146,12 @@ def _tier_label(tier_code):
 # (events/get-all-events/) carries organization_id/name/slug but NOT the org LOGO or
 # description. The directory card needs the logo, so we expose it here. AFC-official
 # events (organization=None) are surfaced by the frontend itself from the events it
-# already holds — they are not a real Organization row, so they don't belong in this
+# already holds - they are not a real Organization row, so they don't belong in this
 # list. Suspended/deleted orgs are excluded (status="active" only), same visibility
 # rule as get_organization_public above.
 @api_view(["GET"])
 def get_organizations_directory(request):
-    # No auth header — public surface, identical posture to get_organization_public.
+    # No auth header - public surface, identical posture to get_organization_public.
 
     # Annotate every active org with its published-event stats in the DB:
     #   - pub_event_count: count of non-draft events under the org

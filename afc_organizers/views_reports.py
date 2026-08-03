@@ -1,22 +1,22 @@
 # afc_organizers/views_reports.py
 # ──────────────────────────────────────────────────────────────────────────────
-# Organization ABUSE-REPORT endpoints — the Phase 4 "report → AFC reviews → integrity
+# Organization ABUSE-REPORT endpoints - the Phase 4 "report → AFC reviews → integrity
 # action" surface for the Organizer feature.
 #
 # Two audiences live in this file:
 #   • Any logged-in USER can file a report against an organization (suspected rankings
 #     manipulation, fake results, unfair conduct, …) with optional evidence.
 #   • AFC PLATFORM STAFF (head_admin / organizer_admin) list, triage, and resolve those
-#     reports — and, when a report is upheld, perform the integrity action: flip the
+#     reports - and, when a report is upheld, perform the integrity action: flip the
 #     offending event's `rankings_verified` to False so it stops counting toward the
 #     official rankings.
 #
 # Convention note (why the code looks like this): this module deliberately mirrors the
-# original hand in afc_team/views.py and the sibling afc_organizers views — NOT the
+# original hand in afc_team/views.py and the sibling afc_organizers views - NOT the
 # newer rankings app. So:
 #   * function-based @api_view views, one job each;
 #   * auth done inline by reading the Authorization header and calling validate_token
-#     (imported the SAME way afc_team/views.py imports it — from afc_auth.views);
+#     (imported the SAME way afc_team/views.py imports it - from afc_auth.views);
 #     missing header → 400, wrong scheme → 400, bad/expired token → 401;
 #   * dict serialization written out inline in each view (no serializers.py);
 #   * Response({...}, status=status.HTTP_*) for every return.
@@ -27,7 +27,7 @@
 # identical to the rest of the app, even though the report-filing view intentionally
 # only requires a logged-in user.)
 #
-# Route mounting lives in afc_organizers/urls.py and is owned by the coordinator —
+# Route mounting lives in afc_organizers/urls.py and is owned by the coordinator - 
 # this file ONLY defines view functions; it does not touch urls.py.
 # Full spec: WEBSITE/tasks/organizers-design.md.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-# validate_token lives in afc_auth.views — import it the SAME way afc_team/views.py
+# validate_token lives in afc_auth.views - import it the SAME way afc_team/views.py
 # does (confirmed: `from afc_auth.views import validate_token`). It returns the User
 # for a valid, non-expired session token, or None otherwise.
 from afc_auth.views import validate_token
@@ -47,7 +47,7 @@ from afc.api_utils import authenticate as _authenticate
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §0  Shared auth helper (DRY — the Bearer handshake is identical across views)
+# §0  Shared auth helper (DRY - the Bearer handshake is identical across views)
 # ──────────────────────────────────────────────────────────────────────────────
 # Resolve the caller from the Authorization header exactly like the original hand:
 # read the raw header, require the "Bearer " scheme, strip it, and hand the token to
@@ -93,7 +93,7 @@ def _serialize_report(report):
         "organization_id": report.organization_id,
         # organization is non-nullable on the model, but guard defensively anyway.
         "organization_name": report.organization.name if report.organization else None,
-        # event is nullable (SET_NULL) — a report may be org-wide, not event-specific.
+        # event is nullable (SET_NULL) - a report may be org-wide, not event-specific.
         "event_id": report.event_id,
         "event_name": report.event.event_name if report.event else None,
         "category": report.category,
@@ -101,7 +101,7 @@ def _serialize_report(report):
         "evidence": report.evidence.url if report.evidence else None,
         "status": report.status,
         "resolution_notes": report.resolution_notes,
-        # reporter / reviewed_by are SET_NULL FKs — surface the username or None.
+        # reporter / reviewed_by are SET_NULL FKs - surface the username or None.
         "reporter_username": report.reporter.username if report.reporter else None,
         "reviewed_by_username": report.reviewed_by.username if report.reviewed_by else None,
         "created_at": report.created_at.isoformat() if report.created_at else None,
@@ -109,17 +109,17 @@ def _serialize_report(report):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §1  POST /<slug>/reports  — file a report against an organization
+# §1  POST /<slug>/reports  - file a report against an organization
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def report_organization(request, slug):
-    """File an abuse report against an organization. Open to ANY logged-in user — the
+    """File an abuse report against an organization. Open to ANY logged-in user - the
     floor here is just a valid session, not org membership (the whole point is that an
     outsider who suspects manipulation can flag it). Accepts a multipart body: a
     category (validated against the model choices, defaulting to 'other'), required
     free-text details, an optional event_id (must belong to THIS org), and optional
     evidence image upload. The row is created 'open' with the caller as reporter."""
-    # ── auth handshake (Bearer + validate_token) — any logged-in user passes ──
+    # ── auth handshake (Bearer + validate_token) - any logged-in user passes ──
     user, err = _authenticate(request)
     if err:
         return err
@@ -177,13 +177,13 @@ def report_organization(request, slug):
     )
 
     return Response(
-        {"message": "Report submitted. Thank you — AFC will review it."},
+        {"message": "Report submitted. Thank you - AFC will review it."},
         status=status.HTTP_201_CREATED,
     )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §2  GET /reports  — AFC-staff triage list of every report
+# §2  GET /reports  - AFC-staff triage list of every report
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def admin_list_reports(request):
@@ -197,7 +197,7 @@ def admin_list_reports(request):
     if err:
         return err
 
-    # AFC-staff gate — this is an oversight surface, not for organizers or users.
+    # AFC-staff gate - this is an oversight surface, not for organizers or users.
     if not is_platform_org_admin(user):
         return Response(
             {"message": "You do not have permission to view organization reports."},
@@ -205,7 +205,7 @@ def admin_list_reports(request):
         )
 
     # Base queryset, newest first. select_related pulls the FK rows the serializer
-    # touches (org / event / reporter / reviewed_by) in one query — no N+1 per page.
+    # touches (org / event / reporter / reviewed_by) in one query - no N+1 per page.
     qs = (
         OrganizationReport.objects.select_related(
             "organization", "event", "reporter", "reviewed_by"
@@ -235,7 +235,7 @@ def admin_list_reports(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §3  PATCH /reports/<report_id>  — AFC-staff resolve / triage a report
+# §3  PATCH /reports/<report_id>  - AFC-staff resolve / triage a report
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["PATCH"])
 def admin_update_report(request, report_id):
@@ -243,7 +243,7 @@ def admin_update_report(request, report_id):
     acting admin as reviewed_by. Gated by is_platform_org_admin. The INTEGRITY ACTION
     lives here too: when `exclude_event` is true AND the report names an event, that
     event's `rankings_verified` is flipped to False so its results stop counting toward
-    the official rankings — the concrete "uphold the report" lever AFC pulls."""
+    the official rankings - the concrete "uphold the report" lever AFC pulls."""
     # ── auth handshake (Bearer + validate_token) ──
     user, err = _authenticate(request)
     if err:
@@ -286,7 +286,7 @@ def admin_update_report(request, report_id):
     if "resolution_notes" in request.data:
         report.resolution_notes = request.data.get("resolution_notes") or ""
 
-    # ── reviewed_by: always stamp the acting admin — they handled this report ──
+    # ── reviewed_by: always stamp the acting admin - they handled this report ──
     report.reviewed_by = user
     report.save()
 

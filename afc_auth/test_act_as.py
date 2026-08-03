@@ -8,7 +8,7 @@ X-Act-As-Vendor headers, and NOBODY else can.
 
 What these tests pin down (owner decisions 2026-06-29):
   • Gate breadth: ONLY head_admin / super_admin / Django superuser are god-mode.
-    organizer_admin and plain role=="admin" are NOT — the header is inert for them.
+    organizer_admin and plain role=="admin" are NOT - the header is inert for them.
   • The header only SELECTS a target; it grants nothing on its own (a non-god-mode
     caller sending the header is treated exactly as if they had not sent it).
   • Bank / payout is OUT of scope: the paystack_payout vendor gate must NOT honor
@@ -53,16 +53,16 @@ class _Base(TestCase):
         UserRoles.objects.create(user=self.superadmin, role=self.r_super)
         self.super_tok = self._token(self.superadmin)
 
-        # Django superuser flag (god-mode) — no granular role at all
+        # Django superuser flag (god-mode) - no granular role at all
         self.djsuper = self._user("djsuper", role="player", is_superuser=True)
         self.djsuper_tok = self._token(self.djsuper)
 
-        # organizer_admin — NOT god-mode (excluded by owner decision)
+        # organizer_admin - NOT god-mode (excluded by owner decision)
         self.orgadmin = self._user("orgadmin", role="admin")
         UserRoles.objects.create(user=self.orgadmin, role=self.r_orgadmin)
         self.orgadmin_tok = self._token(self.orgadmin)
 
-        # plain player — NOT god-mode
+        # plain player - NOT god-mode
         self.player = self._user("player", role="player")
         self.player_tok = self._token(self.player)
 
@@ -82,7 +82,7 @@ class _Base(TestCase):
         )
         ProductVariant.objects.create(product=self.vproduct, sku="vh-sku", price="10.00")
 
-    # — helpers —
+    # - helpers - 
     def _user(self, name, role="player", is_superuser=False):
         return User.objects.create(
             username=name, email=f"{name}@x.com", full_name=name.title(),
@@ -239,7 +239,7 @@ class VendorOrdersActAsTests(_Base):
     URL = "/shop/fulfilment/my-orders/"
 
     def test_god_mode_acting_as_vendor_gets_queue(self):
-        # Empty queue is fine — the point is a 200 (the gate resolved the target vendor)
+        # Empty queue is fine - the point is a 200 (the gate resolved the target vendor)
         # rather than the 403 a non-vendor caller would get without act-as.
         resp = self.client.get(
             self.URL,
@@ -263,7 +263,7 @@ class VendorOrdersActAsTests(_Base):
 class BankPayoutNotActAsTests(_Base):
     def test_paystack_bank_gate_ignores_act_as_for_god_mode(self):
         # A god-mode admin sending X-Act-As-Vendor at the PAYSTACK PAYOUT gate must NOT be
-        # resolved to the target vendor — bank/payout is deliberately out of god-mode
+        # resolved to the target vendor - bank/payout is deliberately out of god-mode
         # scope. The head_admin owns no Vendor, so the gate returns its normal 403.
         req = self.rf.get(
             "/shop/payout/bank/",

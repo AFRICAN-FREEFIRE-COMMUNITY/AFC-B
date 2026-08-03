@@ -2310,7 +2310,7 @@ def upload_news_video(request):
 def get_all_news(request):
     # PERFORMANCE (2026-06-08): the news page was slow for two compounding reasons.
     #  1. Backend N+1: this loop lazy-loaded news.author + news.related_event per row
-    #     (~2N+1 queries) — the same anti-pattern get_all_teams already fixed. Now
+    #     (~2N+1 queries) - the same anti-pattern get_all_teams already fixed. Now
     #     select_related both FKs (one join).
     #  2. Frontend 1+N waterfall: app/(user)/news/page.tsx fired one POST
     #     /auth/get-news-likes-dislikes-count/ PER article and blocked the whole page until
@@ -2380,7 +2380,7 @@ def get_all_news(request):
             "author": news.author.username if news.author else None,
             "created_at": news.created_at,
             "slug": news.slug,
-            # Folded-in reaction data — removes the per-article frontend request.
+            # Folded-in reaction data - removes the per-article frontend request.
             "likes": like_counts.get(news.news_id, 0),
             "dislikes": dislike_counts.get(news.news_id, 0),
             "is_liked_by_user": news.news_id in liked_ids,
@@ -2525,7 +2525,7 @@ def _competitor_in_active_stage(ev, tt, rc) -> bool:
     in any non-completed stage and falls "out". If a later recalculation flips who qualifies, those rows
     move, so the answer tracks live qualification with no extra bookkeeping.
 
-    SAFE DEFAULT — this gates the identity lock, so erring toward "still in" (locked) protects result
+    SAFE DEFAULT - this gates the identity lock, so erring toward "still in" (locked) protects result
     attribution: if there are NO StageCompetitor rows for this competitor at all (stages not seeded yet, or
     a data gap), return True. The stage-over release therefore only fires when we positively have stage data
     that shows the competitor out of every active stage. Consumed by `_has_active_event_registration`.
@@ -2550,12 +2550,12 @@ def _has_active_event_registration(user) -> bool:
     True when `user` is currently signed up for an event that has NOT finished yet
     (event_status "upcoming" or "ongoing", and not a draft).
 
-    Used to LOCK the two identity fields — in-game name (User.username) and UID (User.uid) — on the
+    Used to LOCK the two identity fields - in-game name (User.username) and UID (User.uid) - on the
     profile while a player is committed to a live event, so the link between the player and their
     match results / leaderboard rows stays stable for the duration of the event. The lock RELEASES
     once all their events are completed, so a player can still fix a typo between tournaments
     (owner decision 2026-06-15: "while in an active event"). It ALSO releases for any event whose
-    organizer/admin has an OPEN roster-edit window (Event.roster_edit_open) — during roster editing
+    organizer/admin has an OPEN roster-edit window (Event.roster_edit_open) - during roster editing
     players must be able to fix IGN/UID to meet registration requirements (owner 2026-06-22). See
     the roster-edit-window unlock below.
 
@@ -2566,7 +2566,7 @@ def _has_active_event_registration(user) -> bool:
     commitment).
 
     Consumers:
-      - edit_profile (POST /auth/edit-profile/): server-side write guard — rejects a change to
+      - edit_profile (POST /auth/edit-profile/): server-side write guard - rejects a change to
         username/uid while this is True.
       - get_user_profile (GET /auth/get-user-profile/): returns it as `identity_locked` so the
         frontend profile-edit form (app/(user)/profile/edit/page.tsx) disables + explains the two
@@ -2711,7 +2711,7 @@ def edit_profile(request):
     # `user.uid = uid` write below is UNCONDITIONAL, so an absent/blank uid would silently
     # blank a previously-set Free Fire UID. That player then FAILS the event "Require player
     # UID" gate (afc_tournament_and_scrims._missing_registration_assets) even though they had
-    # added it — the exact "all players have UIDs but it says one is missing" report. Treat an
+    # added it - the exact "all players have UIDs but it says one is missing" report. Treat an
     # absent/empty uid as "no change": fall back to the stored value, and store NULL (not "")
     # when it was genuinely never set (matches User.uid null=True). Nothing in the product
     # intentionally CLEARS a UID, so preserving here is always correct.
@@ -2727,7 +2727,7 @@ def edit_profile(request):
         return Response({"message": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
 
     # IDENTITY LOCK (owner 2026-06-15): a player committed to a LIVE event (upcoming/ongoing) cannot
-    # change their in-game name or UID — those identify them for match-result / leaderboard
+    # change their in-game name or UID - those identify them for match-result / leaderboard
     # attribution while the event runs. Everything else (name, email, language, picture) stays
     # editable. The lock releases once all their events are completed (see
     # _has_active_event_registration). get_user_profile returns `identity_locked` so the frontend
@@ -4660,7 +4660,7 @@ def connect_discord_account(request):
     return_to_enc = quote(return_to)
 
     # state carries user identity + return path
-    # Use your session token (or a short-lived oauth nonce) – session token is okay but better as short-lived nonce.
+    # Use your session token (or a short-lived oauth nonce) - session token is okay but better as short-lived nonce.
     token = session_token
     state = f"{token}|{return_to_enc}"
 
@@ -6334,10 +6334,10 @@ def broadcast_letter_assignments(request):
 
 @api_view(["GET"])
 def get_general_broadcast_history(request):
-    """GET /auth/broadcast-history/?limit=&offset= — the admin Settings broadcast history.
+    """GET /auth/broadcast-history/?limit=&offset= - the admin Settings broadcast history.
 
     Lists the GENERAL + DIRECT broadcasts (sent from admin Settings > Notifications, or as a direct
-    player/team message) — i.e. the ones NOT tied to an event. Event / stage / group / room-details
+    player/team message) - i.e. the ones NOT tied to an event. Event / stage / group / room-details
     broadcasts have their own per-event history (afc_tournament_and_scrims.get_broadcast_history).
     Admin only. Paginated (limit default 20, max 100) with has_more / next_offset / total_count.
     Consumed by: frontend admin Settings > Notifications tab "Sent broadcasts" list.
@@ -6376,23 +6376,23 @@ def get_general_broadcast_history(request):
 
 @api_view(["GET"])
 def get_all_broadcasts(request):
-    """GET /auth/all-broadcasts/ — ADMIN GLOBAL broadcast audit (owner 2026-06-27).
+    """GET /auth/all-broadcasts/ - ADMIN GLOBAL broadcast audit (owner 2026-06-27).
 
     The missing cross-event admin view: lists EVERY broadcast ever sent, across ALL scopes (general,
-    direct, event, stage, group, room_details) and ALL senders — crucially the ORGANIZER event
+    direct, event, stage, group, room_details) and ALL senders - crucially the ORGANIZER event
     broadcasts that get_general_broadcast_history filters OUT (it only shows general/direct) and that
     the per-event get_broadcast_history only shows one event at a time. So an admin can finally see, in
     one place, every message an organizer sent to players: who, when, the scope/event, recipient count,
     and the FULL message content.
 
     Filters (all optional, AND-combined):
-      • scope=<scope>        — restrict to one scope (event/stage/group/room_details/general/direct)
-      • sender_id=<id>       — only broadcasts from this user (e.g. one organizer)
-      • event_id=<id>        — only broadcasts tied to this event
-      • search=<text>        — case-insensitive match on title, message, or sender username
+      • scope=<scope>        - restrict to one scope (event/stage/group/room_details/general/direct)
+      • sender_id=<id>       - only broadcasts from this user (e.g. one organizer)
+      • event_id=<id>        - only broadcasts tied to this event
+      • search=<text>        - case-insensitive match on title, message, or sender username
     Paginated (limit default 20, max 100) with has_more / next_offset / total_count, newest first.
 
-    Auth: AFC admins only (is_broadcast_admin — coarse admin/moderator/support or a granular platform
+    Auth: AFC admins only (is_broadcast_admin - coarse admin/moderator/support or a granular platform
     admin role); organizers/sponsors/players get 403. Read-only.
     Source rows: SentBroadcast (afc_auth.models), written by deliver_broadcast on every send.
     Consumed by: the admin "Broadcasts" audit page (frontend app/(a)/a/broadcasts)."""
@@ -6780,7 +6780,7 @@ def get_news_likes_dislikes_count(request):
     }, status=status.HTTP_200_OK)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# fx_rates — public FX rates for the frontend money layer (multi-currency, owner 2026-06-30).
+# fx_rates - public FX rates for the frontend money layer (multi-currency, owner 2026-06-30).
 #
 # GET /auth/fx-rates/  ->  {
 #   "base": "USD",
@@ -6814,11 +6814,11 @@ def fx_rates(request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# set_preferred_currency — set ONLY the user's display currency (multi-currency, owner 2026-06-30).
+# set_preferred_currency - set ONLY the user's display currency (multi-currency, owner 2026-06-30).
 #
 # POST /auth/set-currency/  body { "currency": "NGN" }  (or "" to clear -> country-derived default)
 # Dedicated endpoint (NOT edit_profile, which sets every profile field unconditionally and would WIPE
-# the profile on a partial save — the UID-wipe lesson). Bearer auth. Returns the saved currency.
+# the profile on a partial save - the UID-wipe lesson). Bearer auth. Returns the saved currency.
 # Called by the frontend CurrencyContext.setCurrency (the currency picker).
 # ─────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])

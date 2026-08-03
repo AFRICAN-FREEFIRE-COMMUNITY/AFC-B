@@ -1,5 +1,5 @@
 """
-afc_auth/middleware.py — sitewide AUTOMATIC admin audit-log capture.
+afc_auth/middleware.py - sitewide AUTOMATIC admin audit-log capture.
 
 AuditLogMiddleware records EVERY mutating request (POST/PUT/PATCH/DELETE) made by a user who holds
 an admin/staff role into the afc_auth.AuditLog table, with zero per-view code. It is the "automatic"
@@ -281,7 +281,7 @@ _ACTION_SENTENCES = {
         f"Viewed admin details of the {_noun(c, 'event', 'slug', 'event_id', 'event_name')}"
     ),
 
-    # ── shop: super-admin customer delivery PII view (afc_shop/delivery.py) — both are POST
+    # ── shop: super-admin customer delivery PII view (afc_shop/delivery.py) - both are POST
     #    reads so this middleware records every browse + per-record reveal of customer PII. ──
     "admin_list_delivery_info": lambda c: "Browsed collected customer delivery information",
     "admin_reveal_delivery_info": lambda c: (

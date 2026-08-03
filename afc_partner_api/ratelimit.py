@@ -3,11 +3,11 @@
 # Per-key fixed-window rate limiter. Every read endpoint runs check_rate_limit(key)
 # right after authenticate_partner, so a single partner key cannot hammer the API.
 #
-# Design — fixed window of one wall-clock minute, counted in the shared Redis cache
-# (django_redis, db 1 — see afc/settings.py CACHES):
+# Design - fixed window of one wall-clock minute, counted in the shared Redis cache
+# (django_redis, db 1 - see afc/settings.py CACHES):
 #   • bucket key = "partner_rl:<key_prefix>:<YYYYMMDDHHMM>". The minute stamp IS the
 #     window, so when the clock rolls to the next minute we look at a brand-new bucket
-#     and the count starts fresh — no sweep/reset job needed.
+#     and the count starts fresh - no sweep/reset job needed.
 #   • the bucket is created with a 60s TTL and auto-expires, so stale minutes clean
 #     themselves up; Redis never accumulates dead counters.
 #   • we count THIS request, then compare to the ceiling, so a limit of N admits
@@ -19,13 +19,13 @@
 #   window would crash. cache.add(bucket, 0, 60) is a no-op if the bucket already
 #   exists and a create-with-TTL if it doesn't, so it guarantees the key is present
 #   before incr(). incr() does NOT reset the TTL set by add(), so the window expires
-#   60s after its FIRST request — true fixed-window semantics (also verified).
+#   60s after its FIRST request - true fixed-window semantics (also verified).
 # Full spec: WEBSITE/tasks/partner-api-design.md (§7 rate limiting).
 # ──────────────────────────────────────────────────────────────────────────────
 from django.core.cache import cache
 from django.utils import timezone
 
-# Window length / TTL in seconds — one wall-clock minute, matching the minute stamp
+# Window length / TTL in seconds - one wall-clock minute, matching the minute stamp
 # used to build the bucket key. A named constant keeps the two in lockstep.
 WINDOW_SECONDS = 60
 
@@ -55,7 +55,7 @@ def check_rate_limit(key):
     # Atomic +1 for THIS request; returns the new running total for the window.
     #
     # TTL-boundary race guard: there is a tiny window where add() succeeds but the
-    # bucket's 60s TTL elapses (or the minute rolls over) BEFORE incr() runs — django_redis'
+    # bucket's 60s TTL elapses (or the minute rolls over) BEFORE incr() runs - django_redis'
     # incr() then raises ValueError on the now-missing key. Rather than 500 on that rare
     # race, we treat it as the FIRST request of a brand-new window: re-create the bucket at
     # count 1 with a fresh TTL. (Worst case we under-count by the one expired request, which

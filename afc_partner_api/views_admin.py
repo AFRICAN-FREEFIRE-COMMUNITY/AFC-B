@@ -5,7 +5,7 @@
 # This is the surface the platform team (head_admin / partner_admin) uses to stand
 # a Partner up and configure EVERYTHING the read API (views_partner.py) later
 # enforces: the partner's scope, its 14 resource/field toggles, its rotatable API
-# keys, and the per-event publish gate. The read API trusts these views completely —
+# keys, and the per-event publish gate. The read API trusts these views completely - 
 # a partner can only ever see what an admin granted here.
 #
 # Convention note (why the code looks like this): this module deliberately mirrors
@@ -13,7 +13,7 @@
 # the original hand in afc_team/views.py:
 #   * function-based @api_view views, one job each;
 #   * USER-SESSION auth done inline by reading the Authorization header and calling
-#     validate_token (imported the SAME way afc_team/views.py imports it) — this is
+#     validate_token (imported the SAME way afc_team/views.py imports it) - this is
 #     the human AFC-staff surface, NOT the X-API-Key partner surface (auth.py);
 #   * a single _require_partner_admin gate every view calls first (DRY, and the
 #     header-parse/token/role logic lives in exactly one place);
@@ -24,12 +24,12 @@
 #   * 403 GATE: every endpoint requires head_admin OR partner_admin (least privilege).
 #   * KEY SECRECY: issue_key returns the plaintext key EXACTLY ONCE; the stored row
 #     holds only prefix + sha256 hash. No other endpoint ever returns the plaintext
-#     (or the hash) — get_partner exposes key METADATA only.
+#     (or the hash) - get_partner exposes key METADATA only.
 #   * WHITELIST EDIT: edit_partner accepts ONLY PARTNER_TOGGLE_FIELDS + the scope
 #     id-lists + allow_all_native_afc; any other key is a 400 (a typo or a malicious
 #     body can never set an arbitrary Partner attribute, e.g. status or contact_email).
 #
-# The coordinator owns route mounting — this file ONLY defines view functions; the
+# The coordinator owns route mounting - this file ONLY defines view functions; the
 # routes live in admin_urls.py. Full spec: WEBSITE/tasks/partner-api-design.md (§9).
 # ──────────────────────────────────────────────────────────────────────────────
 from django.utils.text import slugify
@@ -37,7 +37,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-# validate_token lives in afc_auth.views — import it the SAME way afc_team/views.py
+# validate_token lives in afc_auth.views - import it the SAME way afc_team/views.py
 # and afc_organizers/views_admin.py do (confirmed import path).
 from afc_auth.views import validate_token
 
@@ -60,18 +60,18 @@ def _is_partner_admin(user) -> bool:
     """True for AFC staff entitled to manage partners (head_admin / partner_admin).
 
     The role lives on the related Roles row, reached through the UserRoles join, so
-    we filter ``role__role_name__in`` — NEVER ``role_name__in`` (UserRoles itself has
+    we filter ``role__role_name__in`` - NEVER ``role_name__in`` (UserRoles itself has
     no role_name column; that field is on Roles).
 
     DELIBERATE DIVERGENCE from afc_organizers/permissions.py:is_platform_org_admin:
-    that reference gates on TWO factors — ``user.role == "admin"`` AND a granular
+    that reference gates on TWO factors - ``user.role == "admin"`` AND a granular
     UserRoles row. We intentionally gate on the granular row ALONE here, per the
     Task 7 plan (partner-api-plan.md §"Admin management endpoints", Step 2-3), which
     specifies the helper as ``user.userroles.filter(...).exists()`` with no coarse
     ``User.role`` predicate. Rationale: the granular ``UserRoles`` table is the
     authoritative, fine-grained grant for the partner program (head_admin /
     partner_admin are issued there), so holding one of those rows IS the entitlement
-    to manage partners — the coarse ``User.role`` tier is not a prerequisite for it.
+    to manage partners - the coarse ``User.role`` tier is not a prerequisite for it.
     Granting head_admin / partner_admin without the coarse ``admin`` tier is the
     grantor's deliberate choice, and it is honored here.
     """
@@ -91,7 +91,7 @@ def _require_partner_admin(request):
     # Read the raw Authorization header exactly like the original hand does.
     session_token = request.headers.get("Authorization")
 
-    # 400 when the header is missing entirely — it's a malformed request, not yet an
+    # 400 when the header is missing entirely - it's a malformed request, not yet an
     # auth failure (matches afc_organizers/views_admin.py wording/shape).
     if not session_token:
         return None, Response(
@@ -99,7 +99,7 @@ def _require_partner_admin(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # 400 when the scheme is wrong — the token format is the caller's mistake.
+    # 400 when the scheme is wrong - the token format is the caller's mistake.
     if not session_token.startswith("Bearer "):
         return None, Response(
             {"message": "Invalid token format"},
@@ -161,9 +161,9 @@ def _serialize_partner_summary(partner):
 
 def _serialize_partner_detail(partner):
     """Full partner config for the detail view: the summary, plus every toggle the FE
-    renders as a switch, the scope id-lists, and contact_email (INTERNAL — this is the
+    renders as a switch, the scope id-lists, and contact_email (INTERNAL - this is the
     admin surface, so it is fine here; the partner-facing serializer firewall never
-    emits it). Key plaintext/hash are NEVER included — keys are listed separately as
+    emits it). Key plaintext/hash are NEVER included - keys are listed separately as
     metadata-only by _serialize_key."""
     out = _serialize_partner_summary(partner)
     # Every resource + field toggle, straight off the row so the FE can bind switches.
@@ -181,11 +181,11 @@ def _serialize_partner_detail(partner):
 
 def _serialize_key(key):
     """Metadata-only view of a PartnerApiKey. The plaintext is unrecoverable (only the
-    hash is stored) and the hash itself is internal, so NEITHER is ever returned — the
+    hash is stored) and the hash itself is internal, so NEITHER is ever returned - the
     admin sees the prefix (to identify the key), its label, status, and audit stamps."""
     return {
         "key_id": key.key_id,
-        "key_prefix": key.key_prefix,          # safe handle — not the secret
+        "key_prefix": key.key_prefix,          # safe handle - not the secret
         "label": key.label,
         "status": key.status,
         "rate_limit_per_min": key.rate_limit_per_min,
@@ -222,7 +222,7 @@ def _paginate(request, queryset):
 # 1) create_partner  (POST partners/admin/create/)
 # ──────────────────────────────────────────────────────────────────────────────
 # Provision a brand-new Partner. Only ``name`` is required; everything else (scope,
-# toggles, keys) is configured afterward via edit_partner / issue_key — a fresh
+# toggles, keys) is configured afterward via edit_partner / issue_key - a fresh
 # partner starts with every toggle OFF (least privilege) and an "active" status but
 # can read nothing until an admin grants scope + flips toggles.
 @api_view(["POST"])
@@ -322,9 +322,9 @@ def partner_detail(request, slug):
     return _get_partner(request, slug)
 
 
-# get_partner — full config for one partner: the detail dict (identity + all 14
+# get_partner - full config for one partner: the detail dict (identity + all 14
 # toggles + scope id-lists + internal contact_email) plus its keys as METADATA only.
-# The plaintext secret is unrecoverable and the hash is internal — neither is ever
+# The plaintext secret is unrecoverable and the hash is internal - neither is ever
 # returned here.
 def _get_partner(request, slug):
     # Auth + partner-admin gate.
@@ -345,10 +345,10 @@ def _get_partner(request, slug):
     }, status=status.HTTP_200_OK)
 
 
-# edit_partner — whitelist-validated partial update of a partner's scope + toggles.
+# edit_partner - whitelist-validated partial update of a partner's scope + toggles.
 # The whitelist IS the security boundary: only the 14 PARTNER_TOGGLE_FIELDS, the two
 # scope id-lists (allowed_events / allowed_organizations), and allow_all_native_afc
-# may be set. ANY other key in the body is a 400 — so a typo or a malicious payload
+# may be set. ANY other key in the body is a 400 - so a typo or a malicious payload
 # can never set an attribute it shouldn't (e.g. status to bypass suspend, or
 # contact_email). True PATCH semantics: only keys actually present in the body are
 # touched.
@@ -367,7 +367,7 @@ def _edit_partner(request, slug):
     allowed_keys = set(PARTNER_TOGGLE_FIELDS) | set(SCOPE_FIELDS)
 
     # Reject the WHOLE request if any unknown key is present (fail closed, don't
-    # silently ignore — a rejected field tells the admin their payload was wrong).
+    # silently ignore - a rejected field tells the admin their payload was wrong).
     unknown = set(request.data.keys()) - allowed_keys
     if unknown:
         return Response(
@@ -439,7 +439,7 @@ def suspend_partner(request, slug):
 # ──────────────────────────────────────────────────────────────────────────────
 # Mint a new API key for a partner. auth.generate_key() returns (full, prefix, hash);
 # we persist ONLY the prefix + hash and return the FULL plaintext exactly ONCE in this
-# response. The plaintext is never stored and can never be re-fetched — this is the
+# response. The plaintext is never stored and can never be re-fetched - this is the
 # only moment the admin can copy it (the FE shows a "you won't see this again" dialog).
 @api_view(["POST"])
 def issue_key(request, slug):
@@ -477,7 +477,7 @@ def issue_key(request, slug):
     # Return the plaintext ONCE alongside the key's metadata. This is the ONLY place
     # `api_key` (the full plaintext) is ever present in any response.
     return Response({
-        "message": "API key issued. Copy it now — it will not be shown again.",
+        "message": "API key issued. Copy it now - it will not be shown again.",
         "api_key": full_key,
         "key": _serialize_key(key),
     }, status=status.HTTP_201_CREATED)
@@ -488,7 +488,7 @@ def issue_key(request, slug):
 # ──────────────────────────────────────────────────────────────────────────────
 # Permanently disable a single key. authenticate_partner only matches status="active"
 # rows, so a revoked key fails auth immediately (the read API 401s with it). Keyed by
-# key_id (not slug) because a key is the addressable thing here; idempotent — revoking
+# key_id (not slug) because a key is the addressable thing here; idempotent - revoking
 # an already-revoked key is a no-op success.
 @api_view(["POST"])
 def revoke_key(request, key_id):
@@ -535,7 +535,7 @@ def delete_key(request, key_id):
 # ──────────────────────────────────────────────────────────────────────────────
 # 8) publish_event  (POST partners/admin/events/<event_slug>/publish/)
 # ──────────────────────────────────────────────────────────────────────────────
-# Flip Event.partner_published — the gate the read API's scope predicate applies
+# Flip Event.partner_published - the gate the read API's scope predicate applies
 # FIRST (scope.py): no partner, however broadly scoped, can see an event until an AFC
 # admin publishes it here. body {published: bool}. Imported locally to avoid a
 # module-level cross-app import cycle (afc_tournament_and_scrims doesn't import us, and

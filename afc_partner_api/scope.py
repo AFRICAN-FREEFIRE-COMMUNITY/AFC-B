@@ -6,17 +6,17 @@
 #
 # Two invariants, in order:
 #   1. PUBLISH GATE (always first): partner_published=True. An AFC admin must have
-#      explicitly published an event before ANY partner — however broadly scoped —
+#      explicitly published an event before ANY partner - however broadly scoped - 
 #      can see it. This filter is applied before the grant union, so an unpublished
 #      event is unreachable even when directly granted.
 #   2. GRANT UNION (any one path is enough):
-#        • explicit event grants  — Event in partner.allowed_events
-#        • whole-org grants        — event owned by an org in partner.allowed_organizations
-#        • native AFC events       — organization IS NULL, only if allow_all_native_afc
+#        • explicit event grants  - Event in partner.allowed_events
+#        • whole-org grants        - event owned by an org in partner.allowed_organizations
+#        • native AFC events       - organization IS NULL, only if allow_all_native_afc
 #
 # `partner_grants` is the related_name shared by Partner.allowed_events (on Event)
-# and Partner.allowed_organizations (on Organization) — the same accessor name on two
-# different models — so Q(partner_grants=partner) reads the event-level grant while
+# and Partner.allowed_organizations (on Organization) - the same accessor name on two
+# different models - so Q(partner_grants=partner) reads the event-level grant while
 # Q(organization__partner_grants=partner) hops to the org-level grant.
 # Full spec: WEBSITE/tasks/partner-api-design.md (§6 scope).
 # ──────────────────────────────────────────────────────────────────────────────

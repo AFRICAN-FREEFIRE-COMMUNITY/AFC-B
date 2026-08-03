@@ -1,5 +1,5 @@
 """
-afc_organizers.views_leaderboard_design — CRUD for an org's leaderboard DESIGN LIBRARY.
+afc_organizers.views_leaderboard_design - CRUD for an org's leaderboard DESIGN LIBRARY.
 
 OWNER 2026-06-13: organizers upload branded leaderboard backgrounds (a library of designs),
 and when exporting a leaderboard pick which design + size to download. This module is the
@@ -35,7 +35,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 import json as _json
 from rest_framework import status
-# Pillow (pillow==10.4.0, a declared backend dep — same one afc_leaderboard.graphic uses) generates
+# Pillow (pillow==10.4.0, a declared backend dep - same one afc_leaderboard.graphic uses) generates
 # the AFC-branded default background PNGs for create_default_design below. Imported at module top to
 # mirror graphic.py; the pieces are only touched by the default-design generator.
 from PIL import Image, ImageDraw, ImageFilter
@@ -432,7 +432,7 @@ def _apply_fields(d, data):
         d.accent_color = (data.get("accent_color") or "#34d27b").strip()
     # Booleans arrive as "true"/"false" strings over multipart. transparent_background (owner
     # 2026-07-01) rides the same coercion so the editor's "Transparent background (for live overlay)"
-    # toggle persists — without it here the flag could never be set off its False default.
+    # toggle persists - without it here the flag could never be set off its False default.
     for flag in ("show_title", "show_subtitle", "transparent_background"):
         if flag in data:
             v = data.get(flag)
@@ -507,8 +507,8 @@ def _library_qs(org):
 
 @api_view(["GET", "POST"])
 def designs_collection(request):
-    """GET  organizers/leaderboard-designs/?organization_id=<id?>  — list a library.
-    POST organizers/leaderboard-designs/  (body organization_id?) — create one (multipart with
+    """GET  organizers/leaderboard-designs/?organization_id=<id?>  - list a library.
+    POST organizers/leaderboard-designs/  (body organization_id?) - create one (multipart with
     name + optional background_instagram / background_youtube + style fields).
 
     organization_id absent = the AFC-native library (AFC admins). Present = that org's library."""
@@ -564,8 +564,8 @@ def designs_collection(request):
 
 @api_view(["PATCH", "DELETE"])
 def design_item(request, design_id):
-    """PATCH  organizers/leaderboard-designs/by-id/<id>/  — edit (style, name, replace images,
-    set default). DELETE — remove a design. Both gated by can_submit_designs on the owning org."""
+    """PATCH  organizers/leaderboard-designs/by-id/<id>/  - edit (style, name, replace images,
+    set default). DELETE - remove a design. Both gated by can_submit_designs on the owning org."""
     user, err = _authenticate(request)
     if err:
         return err
@@ -632,7 +632,7 @@ def _get_design_for_write(user, design_id):
 
 @api_view(["POST"])
 def design_logos(request, design_id):
-    """POST organizers/leaderboard-designs/by-id/<design_id>/logos/ — add a logo to a design.
+    """POST organizers/leaderboard-designs/by-id/<design_id>/logos/ - add a logo to a design.
 
     Multipart body: image (required file) + x_pct + y_pct (0..100 centre position) + size
     (small|medium|large). Returns {logo}. Gated like the design itself (can_submit_designs / AFC
@@ -659,8 +659,8 @@ def design_logos(request, design_id):
 
 @api_view(["PATCH", "DELETE"])
 def design_logo_item(request, design_id, logo_id):
-    """PATCH organizers/leaderboard-designs/by-id/<design_id>/logos/<logo_id>/ — reposition/resize
-    (x_pct, y_pct, size). DELETE — remove the logo. Gated like the parent design."""
+    """PATCH organizers/leaderboard-designs/by-id/<design_id>/logos/<logo_id>/ - reposition/resize
+    (x_pct, y_pct, size). DELETE - remove the logo. Gated like the parent design."""
     user, err = _authenticate(request)
     if err:
         return err
@@ -675,7 +675,7 @@ def design_logo_item(request, design_id, logo_id):
         logo.delete()
         return Response({"message": "Logo removed."})
 
-    # PATCH — only the fields present are changed (drag updates x/y; the dropdown updates size).
+    # PATCH - only the fields present are changed (drag updates x/y; the dropdown updates size).
     if "x_pct" in request.data:
         logo.x_pct = _clamp_pct(request.data.get("x_pct"), logo.x_pct)
     if "y_pct" in request.data:
@@ -704,7 +704,7 @@ def _next_page_number(design):
 
 @api_view(["POST"])
 def design_pages(request, design_id):
-    """POST organizers/leaderboard-designs/by-id/<design_id>/pages/ — create a new page.
+    """POST organizers/leaderboard-designs/by-id/<design_id>/pages/ - create a new page.
 
     Creates a new OrgLeaderboardDesignPage for the design. page_number auto-increments
     (max existing + 1). Accepts multipart: background_instagram (file), background_youtube (file),
@@ -831,8 +831,8 @@ def apply_background_to_all(request, design_id):
     owner/admin from re-uploading the same backdrop on each page tab.
 
     Multipart body (at least one file required):
-      • background_instagram  — the IG/portrait backdrop to apply to all pages
-      • background_youtube     — the YT/landscape backdrop to apply to all pages
+      • background_instagram  - the IG/portrait backdrop to apply to all pages
+      • background_youtube     - the YT/landscape backdrop to apply to all pages
     Whichever file(s) are present are applied; the other size is left untouched on every page.
 
     Response 200: {"design": <updated design dict>} (full design so the editor refreshes every page).
@@ -855,7 +855,7 @@ def apply_background_to_all(request, design_id):
 
     # Read each upload's bytes ONCE. A single uploaded file object can't be re-saved onto many model
     # instances (its stream is consumed on the first save), so we wrap the bytes in a fresh ContentFile
-    # per target — each page/design gets its own stored copy. Mirrors how other multipart saves here
+    # per target - each page/design gets its own stored copy. Mirrors how other multipart saves here
     # take request.FILES[...] directly, just fanned out to N targets.
     from django.core.files.base import ContentFile
     ig_bytes = ig_file.read() if ig_file else None
@@ -889,7 +889,7 @@ def apply_background_to_all(request, design_id):
 @api_view(["POST"])
 def apply_field_enablement_to_all(request, design_id):
     """POST organizers/leaderboard-designs/by-id/<design_id>/apply-field-enablement-to-all/
-    (owner 2026-07-05, audit complaint A — "Apply to all")
+    (owner 2026-07-05, audit complaint A - "Apply to all")
 
     Copy a placed column's per-size enablement so it applies to BOTH sizes (and, for a single field,
     across ALL pages of a multi-page design). This is the field-level twin of apply_background_to_all:
@@ -898,16 +898,16 @@ def apply_field_enablement_to_all(request, design_id):
 
     The per-size split (OrgLeaderboardDesignField.show_instagram / show_youtube) lets a column render on
     Instagram but not YouTube (or vice-versa). After splitting layouts per size an operator often wants
-    to say "actually, show this everywhere" — that is this endpoint. It sets BOTH flags True on the
+    to say "actually, show this everywhere" - that is this endpoint. It sets BOTH flags True on the
     target field(s), so build_field_layout("instagram") and build_field_layout("youtube") both include
     them again.
 
     Body (JSON or multipart):
-      • field_id  (optional int) — a single field to enable on both sizes. Omit / "all" / blank =>
+      • field_id  (optional int) - a single field to enable on both sizes. Omit / "all" / blank =>
         EVERY field on the design (turn the whole design's columns back on for both sizes).
     When a single field_id is given AND the design is multi-page, the SAME column (matched by
     field_type + column_group) is also enabled on both sizes on every OTHER page, so "apply to all"
-    means all sizes AND all pages for that column. (No new fields are created — only existing rows are
+    means all sizes AND all pages for that column. (No new fields are created - only existing rows are
     flipped, mirroring how apply_background_to_all only touches existing page rows.)
 
     Response 200: {"design": <updated design dict>} (full design so the editor refreshes every field).
@@ -1011,7 +1011,7 @@ def _apply_field_attrs(f, data, design):
 
 @api_view(["POST"])
 def design_fields(request, design_id):
-    """POST organizers/leaderboard-designs/by-id/<design_id>/fields/ — add a connected column.
+    """POST organizers/leaderboard-designs/by-id/<design_id>/fields/ - add a connected column.
     Body: field_type (required, must be a known stat) + column_group + x_pct + align + font_id? +
     font_size_pct? + color?. Returns {field}."""
     user, err = _authenticate(request)
@@ -1039,7 +1039,7 @@ def design_fields(request, design_id):
 
 @api_view(["PATCH", "DELETE"])
 def design_field_item(request, design_id, field_id):
-    """PATCH .../fields/<field_id>/ — reposition/restyle a column. DELETE — remove it."""
+    """PATCH .../fields/<field_id>/ - reposition/restyle a column. DELETE - remove it."""
     user, err = _authenticate(request)
     if err:
         return err
@@ -1102,7 +1102,7 @@ def _apply_text_attrs(t, data, design):
 
 @api_view(["POST"])
 def design_texts(request, design_id):
-    """POST .../by-id/<design_id>/texts/ — add a freeform text element. Body: text + x_pct + y_pct
+    """POST .../by-id/<design_id>/texts/ - add a freeform text element. Body: text + x_pct + y_pct
     + align + font_id? + font_size_pct? + color?."""
     user, err = _authenticate(request)
     if err:
@@ -1126,7 +1126,7 @@ def design_texts(request, design_id):
 
 @api_view(["PATCH", "DELETE"])
 def design_text_item(request, design_id, text_id):
-    """PATCH .../texts/<text_id>/ — edit a freeform text. DELETE — remove it."""
+    """PATCH .../texts/<text_id>/ - edit a freeform text. DELETE - remove it."""
     user, err = _authenticate(request)
     if err:
         return err
@@ -1150,8 +1150,8 @@ FONT_EXTS = (".ttf", ".otf")
 
 @api_view(["GET", "POST"])
 def fonts_collection(request):
-    """GET organizers/leaderboard-fonts/?organization_id=<id?> — list a font library.
-    POST — upload a font (multipart: file + name?). org id absent = AFC-native library. Read floor
+    """GET organizers/leaderboard-fonts/?organization_id=<id?> - list a font library.
+    POST - upload a font (multipart: file + name?). org id absent = AFC-native library. Read floor
     = org member or AFC admin (mirrors designs); write = can_submit_designs / AFC admin."""
     user, err = _authenticate(request)
     if err:
@@ -1193,7 +1193,7 @@ def fonts_collection(request):
 
 @api_view(["DELETE"])
 def font_item(request, font_id):
-    """DELETE organizers/leaderboard-fonts/by-id/<font_id>/ — remove an uploaded font. Fields/texts
+    """DELETE organizers/leaderboard-fonts/by-id/<font_id>/ - remove an uploaded font. Fields/texts
     referencing it fall back to the default font (FK is SET_NULL). Gated like its library."""
     user, err = _authenticate(request)
     if err:
@@ -1213,7 +1213,7 @@ def font_item(request, font_id):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def font_file(request, font_id):
-    """GET organizers/leaderboard-fonts/by-id/<font_id>/file/ — stream a font's raw bytes.
+    """GET organizers/leaderboard-fonts/by-id/<font_id>/file/ - stream a font's raw bytes.
 
     WHY THIS EXISTS (owner 2026-06-21 "see how the fonts will look"): uploaded fonts live under
     /media/, which in PRODUCTION is served by nginx directly and therefore carries NO
@@ -1245,7 +1245,7 @@ def font_file(request, font_id):
 
 @api_view(["POST"])
 def design_duplicate(request, design_id):
-    """POST organizers/leaderboard-designs/by-id/<design_id>/duplicate/ — full copy of a design
+    """POST organizers/leaderboard-designs/by-id/<design_id>/duplicate/ - full copy of a design
     (owner 2026-07-02: "users should be able to duplicate a design"): scalars + configs + logos +
     placed fields + freeform texts + pages (page fields/texts re-parented to the copied pages).
     Same write gate as editing the library. Returns the new design serialized. Name gets " copy"."""
@@ -1333,7 +1333,7 @@ def design_duplicate(request, design_id):
 #   15 -> ONE column group of 15 rows        (single-column / single page)
 #   24 -> TWO side-by-side column groups of 12 rows each = 24 capacity (2-column layout)
 #
-# HOW IT CONNECTS: it reuses the SAME model rows the drag editor persists — OrgLeaderboardDesign +
+# HOW IT CONNECTS: it reuses the SAME model rows the drag editor persists - OrgLeaderboardDesign +
 # its OrgLeaderboardDesignField (placed columns) / OrgLeaderboardDesignText (freeform brand text) /
 # OrgLeaderboardDesignLogo (positioned org logo). Because it places its own fields, the export
 # renderer (afc_leaderboard.graphic.render_leaderboard_graphic) takes its FIELD-LAYOUT path: it tiles
@@ -1350,7 +1350,7 @@ AFC_DEFAULT_ACCENT_COLOR = "#34d27b"
 # The default design must ship LOOKING finished: a real AFC background image SET on the design (not
 # the renderer's plain-dark fallback) and the AFC logo as a real IMAGE (not editable "AFC" text). Both
 # assets live under afc_organizers/assets/ (app code, version-controlled) so they are guaranteed
-# present on every deploy — unlike a media/ file, which is not committed and may be absent on a fresh
+# present on every deploy - unlike a media/ file, which is not committed and may be absent on a fresh
 # server. They are copied into the design's own ImageFields (via ContentFile) at create time so each
 # design serialises with a proper /media/ URL that the FE editor + the PNG renderer both resolve.
 _ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
@@ -1405,7 +1405,7 @@ def _afc_default_background_path(size):
     generated/ephemeral default design shares the identical background art without re-rendering.
     Two consumers: create_default_design copies the BYTES into a persisted design's ImageField (via
     _afc_default_background_bytes below), while the EXPORT fallback (build_ephemeral_afc_default)
-    hands this PATH straight to the renderer, which opens it — no media file / DB row needed."""
+    hands this PATH straight to the renderer, which opens it - no media file / DB row needed."""
     fname, (w, h) = _AFC_BG_ASSETS.get(size, _AFC_BG_ASSETS["instagram"])
     path = os.path.join(_ASSETS_DIR, fname)
     if not os.path.exists(path):
@@ -1451,7 +1451,7 @@ _SC_COLUMNS = [
 ]
 # _LEFT_COLUMNS / _RIGHT_COLUMNS = the TWO-COLUMN layout (preset 24): the same columns compressed
 # into the left half (0..50%), then mirrored into the right half (+50%). Group 0 uses the left set,
-# group 1 the right set — matching the two column_groups in _afc_default_spec("24").
+# group 1 the right set - matching the two column_groups in _afc_default_spec("24").
 _LEFT_COLUMNS = [
     ("pos", 3.0, "center"),
     ("team_logo", 6.5, "center"),
@@ -1503,14 +1503,14 @@ def _afc_default_spec(preset):
 
 @api_view(["POST"])
 def create_default_design(request):
-    """POST organizers/leaderboard-designs/create-default/ — one-click AFC default design.
+    """POST organizers/leaderboard-designs/create-default/ - one-click AFC default design.
 
     Request (multipart or JSON):
-        preset            "12" | "15" | "24" (required) — the team-capacity size preset.
+        preset            "12" | "15" | "24" (required) - the team-capacity size preset.
         organization_id   optional. Absent/blank => the AFC-native library (AFC admins). Present =>
                           that org's library.
 
-    Auth/gate: IDENTICAL to designs_collection POST — org_can(can_submit_designs) for an org
+    Auth/gate: IDENTICAL to designs_collection POST - org_can(can_submit_designs) for an org
     library (owner / granted sub-organizer / AFC platform-admin bypass), AFC staff admin
     (user.role == "admin") for the AFC-native one. Resolved by _resolve_library.
 
@@ -1580,7 +1580,7 @@ def create_default_design(request):
         ContentFile(_afc_default_background_bytes("youtube")), save=False)
     d.save(update_fields=["background_instagram", "background_youtube"])
 
-    # Placed data columns — one full set per column group. Placing >=1 field switches the renderer
+    # Placed data columns - one full set per column group. Placing >=1 field switches the renderer
     # to its field-layout path (the built-in auto-table is skipped), so these ARE the leaderboard.
     order = 0
     for gi, columns in enumerate(spec["columns_by_group"]):
@@ -1634,7 +1634,7 @@ def create_default_design(request):
 # ═══════════ Ephemeral branded-default for the EXPORT FALLBACK (owner 2026-07-05, complaint J) ═══
 #
 # WHAT / WHY: create_default_design (above) PERSISTS a branded default into a library. But the export
-# endpoints must ALSO produce a branded PNG when a leaderboard/event has NO saved design at all —
+# endpoints must ALSO produce a branded PNG when a leaderboard/event has NO saved design at all - 
 # without writing anything to the library, and without polluting an org/event that legitimately has
 # an empty design library. build_ephemeral_afc_default builds the SAME visual IN MEMORY ONLY: it
 # reuses _afc_default_spec's column geometry, the cached AFC background asset
@@ -1659,7 +1659,7 @@ class _EphemeralBackground:
     """A stand-in for an ImageField that only needs to expose `.path` to the renderer.
     render_design_all_pages resolves a page's background via page_spec["background_*"].path, so an
     ephemeral (unsaved) default supplies its cached AFC background asset through this tiny shim
-    instead of a real media file / DB row (there is none — nothing is persisted)."""
+    instead of a real media file / DB row (there is none - nothing is persisted)."""
     __slots__ = ("path",)
 
     def __init__(self, path):
@@ -1667,7 +1667,7 @@ class _EphemeralBackground:
 
 
 class _EphemeralAfcDefault:
-    """The render-ready result of build_ephemeral_afc_default. NOT a model instance — nothing is
+    """The render-ready result of build_ephemeral_afc_default. NOT a model instance - nothing is
     persisted. Carries exactly what the two export callers pass to render_design_all_pages:
 
         pages_spec : list of per-page dicts in the SAME shape build_pages_for_export returns
@@ -1688,7 +1688,7 @@ class _EphemeralAfcDefault:
         self.text_color = AFC_DEFAULT_TEXT_COLOR
         self.accent_color = AFC_DEFAULT_ACCENT_COLOR
         # The branded default places its own columns (field-layout path), which does NOT draw the
-        # built-in title/subtitle — identical to create_default_design (it adds no title text). These
+        # built-in title/subtitle - identical to create_default_design (it adds no title text). These
         # flags are passed through only for signature parity; they do not change the field-layout look.
         self.show_title = True
         self.show_subtitle = True
@@ -1702,7 +1702,7 @@ class _EphemeralAfcDefault:
 def _fields_from_columns(columns_by_group):
     """Turn the _afc_default_spec column tuples (field_type, x_pct, align) into the field dicts the
     renderer's field_layout expects. font_path / font_size_pct / color are left unset so the renderer
-    uses its defaults (2.1% row height, the design text colour) — identical to a freshly created
+    uses its defaults (2.1% row height, the design text colour) - identical to a freshly created
     default, whose OrgLeaderboardDesignField rows also carry no custom font/size/colour."""
     out = []
     for gi, columns in enumerate(columns_by_group):
@@ -1717,7 +1717,7 @@ def _fields_from_columns(columns_by_group):
 def build_ephemeral_afc_default(n, *, org=None):
     """Build an in-memory AFC-branded default sized to `n` teams/players. Persists NOTHING.
 
-    `n`   the ACTUAL number of standings rows being exported (auto row detection — the caller passes
+    `n`   the ACTUAL number of standings rows being exported (auto row detection - the caller passes
           len(rows), never a hardcoded 16). Clamped to >= 1.
     `org` the owning organization (or None). When it has a logo, that logo is placed top-right
           opposite the AFC logo, mirroring create_default_design.

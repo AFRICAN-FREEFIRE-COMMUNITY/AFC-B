@@ -34,7 +34,7 @@ def generate_key():
 
 
 def hash_key(full_key: str) -> str:
-    """sha256 hex digest of the full key — the only form ever persisted/compared."""
+    """sha256 hex digest of the full key - the only form ever persisted/compared."""
     return hashlib.sha256(full_key.encode()).hexdigest()
 
 
@@ -56,7 +56,7 @@ def authenticate_partner(request):
            .select_related("partner")
            .filter(key_prefix=prefix, status="active").first())
     if not key:
-        # Same generic error whether the prefix is unknown or the key was revoked —
+        # Same generic error whether the prefix is unknown or the key was revoked - 
         # don't leak which one to a caller probing for valid prefixes.
         raise PartnerAuthError("Unknown or revoked key.")
     if key.expires_at and key.expires_at < timezone.now():

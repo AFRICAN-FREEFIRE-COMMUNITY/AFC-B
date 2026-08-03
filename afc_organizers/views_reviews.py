@@ -3,9 +3,9 @@
 # Event reviews (ratings + comments) and per-organization performance metrics.
 #
 # This module holds the "how good was this event / how is this org doing" surface:
-#   • Users rate an event 1–5 and leave free-text comments.
+#   • Users rate an event 1-5 and leave free-text comments.
 #   • The aggregate rating is PUBLIC (anyone can read the average + count).
-#   • Individual ratings and comments are ANONYMOUS to the organizer — an organizer
+#   • Individual ratings and comments are ANONYMOUS to the organizer - an organizer
 #     only ever sees the aggregate score and de-identified comment text, never who
 #     said what. This is enforced here at the serialization boundary (we simply do
 #     not emit the commenter's identity), mirroring the EventRating/EventComment
@@ -18,16 +18,16 @@
 #   • Function-based @api_view views, one concern per function.
 #   • The auth handshake is done inline at the top of every protected view: read the
 #     "Authorization" header, require the "Bearer " prefix (400 if missing/malformed),
-#     split the token, and hand it to afc_auth's validate_token() (401 if invalid) —
+#     split the token, and hand it to afc_auth's validate_token() (401 if invalid) - 
 #     the exact pattern views_organizer.py / afc_team/views.py use.
 #   • Responses are serialized INLINE as plain dicts (no serializers.py module) so the
 #     original developer can read a view top-to-bottom and see the whole shape at once.
 #
 # Permission gating routes through afc_organizers.permissions (org_can / org_can_event /
-# is_platform_org_admin) so the owner / AFC-admin bypass stays in ONE place — it is never
+# is_platform_org_admin) so the owner / AFC-admin bypass stays in ONE place - it is never
 # re-implemented here.
 #
-# Route mounting lives in afc_organizers/urls.py and is owned by the coordinator — this
+# Route mounting lives in afc_organizers/urls.py and is owned by the coordinator - this
 # file ONLY defines the view function(s). Full spec: WEBSITE/tasks/organizers-design.md.
 # ──────────────────────────────────────────────────────────────────────────────
 from collections import OrderedDict
@@ -35,7 +35,7 @@ from datetime import date
 
 from django.db.models import Avg, Count, Sum
 # parse_date turns a "YYYY-MM-DD" query param into a date, or None for absent/malformed
-# input — the SAME forgiving posture afc_rankings.admin_audit._parse_date and
+# input - the SAME forgiving posture afc_rankings.admin_audit._parse_date and
 # afc_tournament_and_scrims.views use for date filters (a typo degrades to "no filter",
 # never a 500).
 from django.utils.dateparse import parse_date
@@ -76,7 +76,7 @@ from afc_tournament_and_scrims.models import (
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §0  Shared helpers (DRY — used by several views below)
+# §0  Shared helpers (DRY - used by several views below)
 # ──────────────────────────────────────────────────────────────────────────────
 def _require_auth(request):
     """Run the standard Bearer handshake and return (user, error_response).
@@ -89,7 +89,7 @@ def _require_auth(request):
 
     Every PROTECTED view in this file calls this so the 400-vs-401 contract is identical
     to views_organizer.py. The OPTIONAL-auth view (event_rating) deliberately does NOT use
-    this — see _optional_user below."""
+    this - see _optional_user below."""
     session_token = request.headers.get("Authorization")
     if not session_token:
         return None, Response(
@@ -113,13 +113,13 @@ def _require_auth(request):
 
 def _optional_user(request):
     """Best-effort identity for endpoints where auth is OPTIONAL (anonymous viewers are
-    welcome). Parse the Bearer token IF present and valid, otherwise return None — never
+    welcome). Parse the Bearer token IF present and valid, otherwise return None - never
     raise, never 400/401. Used by event_rating so a logged-out viewer still gets the public
     aggregate while a logged-in viewer additionally gets their own my_score."""
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
         return None
-    # Token may still be expired/garbage — validate_token returns None in that case, which
+    # Token may still be expired/garbage - validate_token returns None in that case, which
     # is exactly the "treat as anonymous" outcome we want here.
     return validate_token(session_token.split(" ")[1])
 
@@ -128,7 +128,7 @@ def _rating_aggregate(event_id):
     """Return (average_or_None, count) over EventRating for one event, computed in a single
     DB round-trip. average is left as a raw float (callers round/format as their contract
     needs); count is 0 (and average None) when the event has no ratings yet."""
-    # EventRating declares no explicit pk, so Django's auto "id" IS the primary key — Count("id")
+    # EventRating declares no explicit pk, so Django's auto "id" IS the primary key - Count("id")
     # is the model-agnostic way to count rows alongside the Avg in one query.
     agg = EventRating.objects.filter(event_id=event_id).aggregate(
         average=Avg("score"), count=Count("id"),
@@ -137,12 +137,12 @@ def _rating_aggregate(event_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §1  POST /events/<event_id>/rate  — rate an event 1–5 (AUTH REQUIRED)
+# §1  POST /events/<event_id>/rate  - rate an event 1-5 (AUTH REQUIRED)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def rate_event(request, event_id):
-    """Create or update the caller's 1–5 rating for an event. One rating per (event, user)
-    — re-rating overwrites the previous score (update_or_create on the unique pair). Returns
+    """Create or update the caller's 1-5 rating for an event. One rating per (event, user)
+    - re-rating overwrites the previous score (update_or_create on the unique pair). Returns
     the caller's score plus the fresh public aggregate so the frontend can update in place."""
     # ── auth handshake (Bearer + validate_token) ──
     user, err = _require_auth(request)
@@ -190,15 +190,15 @@ def rate_event(request, event_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §2  GET /events/<event_id>/rating  — public aggregate (+ my_score) (AUTH OPTIONAL)
+# §2  GET /events/<event_id>/rating  - public aggregate (+ my_score) (AUTH OPTIONAL)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def event_rating(request, event_id):
     """Return an event's PUBLIC rating aggregate (average rounded to 1dp + count). Auth is
     OPTIONAL: if a valid Bearer token is present we also return the caller's own my_score so
     the UI can pre-fill their stars; if it is missing/invalid we simply return my_score=null.
-    Anonymous viewers are NEVER rejected — the aggregate is a public surface."""
-    # Optional identity — never 400/401 here. A logged-out viewer just gets my_score=null.
+    Anonymous viewers are NEVER rejected - the aggregate is a public surface."""
+    # Optional identity - never 400/401 here. A logged-out viewer just gets my_score=null.
     user = _optional_user(request)
 
     average, count = _rating_aggregate(event_id)
@@ -221,7 +221,7 @@ def event_rating(request, event_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §3  POST /events/<event_id>/comment  — leave a comment on an event (AUTH REQUIRED)
+# §3  POST /events/<event_id>/comment  - leave a comment on an event (AUTH REQUIRED)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def comment_event(request, event_id):
@@ -241,7 +241,7 @@ def comment_event(request, event_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Store with both the event and the author (author kept for moderation only — it is
+    # Store with both the event and the author (author kept for moderation only - it is
     # never surfaced to the organizer via the read endpoint).
     EventComment.objects.create(event_id=event_id, user=user, text=text)
 
@@ -252,12 +252,12 @@ def comment_event(request, event_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §4  GET /events/<event_id>/comments  — organizer reads event comments (AUTH REQUIRED)
+# §4  GET /events/<event_id>/comments  - organizer reads event comments (AUTH REQUIRED)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def event_comments(request, event_id):
     """Return an event's comments for the organizer, NEWEST FIRST. Gated by
-    org_can_event(can_view_reviews) — only the event's own org (or an AFC admin) may read.
+    org_can_event(can_view_reviews) - only the event's own org (or an AFC admin) may read.
     The response is DE-IDENTIFIED: it carries only {text, created_at}, never the commenter's
     identity, consistent with reviews being anonymous to organizers."""
     # ── auth handshake (Bearer + validate_token) ──
@@ -273,14 +273,14 @@ def event_comments(request, event_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Permission gate — central owner/admin bypass via org_can_event.
+    # Permission gate - central owner/admin bypass via org_can_event.
     if not org_can_event(user, "can_view_reviews", event):
         return Response(
             {"message": "You do not have permission to view reviews for this event."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    # Newest first. We intentionally select ONLY text + created_at — the commenter is never
+    # Newest first. We intentionally select ONLY text + created_at - the commenter is never
     # exposed (anonymity to the organizer is enforced here at the serialization boundary).
     comments = EventComment.objects.filter(event=event).order_by("-created_at")
 
@@ -296,11 +296,11 @@ def event_comments(request, event_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §5  GET /<slug>/metrics  — per-organization performance metrics (AUTH REQUIRED)
+# §5  GET /<slug>/metrics  - per-organization performance metrics (AUTH REQUIRED)
 # ──────────────────────────────────────────────────────────────────────────────
 # ── §5 helpers (org_metrics only) ───────────────────────────────────────────────
 # A hard ceiling on every "top N" / per-event list this endpoint returns. The brief
-# asks for rich data but also for it to stay bounded — these lists are sorted + sliced
+# asks for rich data but also for it to stay bounded - these lists are sorted + sliced
 # server-side so the payload can never balloon, no matter how many events an org runs.
 _TOP_N = 10            # top teams / top players leaderboards
 _PER_EVENT_LIMIT = 50  # per-event breakdown rows (most orgs run far fewer)
@@ -319,7 +319,7 @@ _PER_EVENT_LIMIT = 50  # per-event breakdown rows (most orgs run far fewer)
 #     tournament_teams.filter(status="active") across views.py). disqualified/withdrawn/left
 #     are entries that did not remain confirmed.
 # INCOMPLETE for either shape is simply "a registration row whose status is not in the
-# complete set" — we never need to enumerate the incomplete values, we subtract.
+# complete set" - we never need to enumerate the incomplete values, we subtract.
 _SOLO_COMPLETE_STATUSES = ("registered", "approved")
 _TEAM_COMPLETE_STATUSES = ("active",)
 
@@ -339,7 +339,7 @@ def _parse_range(request):
     Forgiving by design (mirrors afc_rankings.admin_audit._parse_date): a missing OR
     malformed value yields None for that bound, so a typo degrades to "no filter on that
     side" rather than a 500. When BOTH are None the endpoint behaves exactly as before
-    (all-time). The bounds are INCLUSIVE day boundaries — callers below apply them as
+    (all-time). The bounds are INCLUSIVE day boundaries - callers below apply them as
     `<timestamp>__date__gte=start` / `<timestamp>__date__lte=end` so a plain date captures
     the whole day on a DateTimeField, not just midnight (same trick admin_audit uses)."""
     start = parse_date(request.query_params.get("start") or "")
@@ -353,7 +353,7 @@ def _apply_range(qs, field, start, end):
     "created_at"). No-ops for whichever bound is None, so all-time is just "pass None, None".
 
     Uses the `__date__gte` / `__date__lte` lookups so the filter is evaluated DB-side on the
-    DATE part of a DateTimeField — efficient (no Python-side row scan) and identical to the
+    DATE part of a DateTimeField - efficient (no Python-side row scan) and identical to the
     convention in afc_rankings.admin_audit.audit_log."""
     if start:
         qs = qs.filter(**{f"{field}__date__gte": start})
@@ -370,7 +370,7 @@ def org_metrics(request, slug):
 
     OPTIONAL DATE RANGE (?start=YYYY-MM-DD&?end=YYYY-MM-DD, INCLUSIVE day bounds):
       When either param is present, every TIME-BOUNDED aggregate is restricted to that window
-      on the relevant timestamp — registrations by registration_date, matches (and the kills
+      on the relevant timestamp - registrations by registration_date, matches (and the kills
       derived from them) by Match.match_date, page views by viewed_at, ratings by created_at,
       and the monthly trend buckets by those same registration/match timestamps. When BOTH
       are absent the endpoint is all-time (its original behaviour). NOTE: the set of events
@@ -397,10 +397,10 @@ def org_metrics(request, slug):
       • top_players[]     - the org's most active players (by in-range kills). Top _TOP_N.
       • events[]          - a per-event breakdown row enriched with: participants, complete vs
                             incomplete registrations, views + unique viewers, matches, kills,
-                            prize, and rating (avg + count) — all measured IN RANGE. Capped at
+                            prize, and rating (avg + count) - all measured IN RANGE. Capped at
                             _PER_EVENT_LIMIT, newest first by start_date.
 
-    EFFICIENCY (this repo just fixed several N+1s — keep that discipline):
+    EFFICIENCY (this repo just fixed several N+1s - keep that discipline):
       Every metric is a single grouped/aggregate query over the event-id set or a
       .values(...).annotate(...) group-by. There is NO per-event loop that hits the DB:
       per-event participant counts, registrations, views, kills, prizes and ratings are each
@@ -414,7 +414,7 @@ def org_metrics(request, slug):
     if err:
         return err
 
-    # Resolve the org by its public slug (404 if missing — same body the rest of the app uses).
+    # Resolve the org by its public slug (404 if missing - same body the rest of the app uses).
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return Response(
@@ -422,7 +422,7 @@ def org_metrics(request, slug):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Permission gate — central owner/admin bypass via org_can.
+    # Permission gate - central owner/admin bypass via org_can.
     if not org_can(user, "can_view_metrics", org):
         return Response(
             {"message": "You do not have permission to view metrics for this organization."},
@@ -436,7 +436,7 @@ def org_metrics(request, slug):
     # ── The org's events (one fetch). Every metric below is scoped to these rows. ──
     # We pull the columns we need once and iterate in Python for the splits/trend so we never
     # re-query per event. `max_teams_or_players` is the registration capacity (drives fill-rate).
-    # F6 (owner 2026-06-19): SHARED STATISTICS — include events this org PRIMARY-owns OR
+    # F6 (owner 2026-06-19): SHARED STATISTICS - include events this org PRIMARY-owns OR
     # co-owns (an accepted EventCoOrganizer), so a co-owned event's numbers show in BOTH orgs'
     # dashboards. .distinct() guards the join. Single-org orgs are unaffected (no co-owned rows).
     from django.db.models import Q as _Q
@@ -499,7 +499,7 @@ def org_metrics(request, slug):
     # one row per event-detail load, written by get_event_details). Windowed on viewed_at.
     #   • views   = raw row count (every load counts).
     #   • unique  = distinct logged-in users (user_id) PLUS distinct anonymous IPs (ip_address
-    #               where user_id is null) — a de-dupe that counts each human ~once whether or
+    #               where user_id is null) - a de-dupe that counts each human ~once whether or
     #               not they were logged in. Two grouped distinct-count queries (logged-in vs
     #               anonymous), merged per event so there is still no per-event DB loop. ──
     _pv_qs = _apply_range(
@@ -637,7 +637,7 @@ def org_metrics(request, slug):
     total_participants = 0          # team-or-solo registrations summed across events (in range)
     completed_count = 0
 
-    # One pass over the org's events fills the splits and the capacity/fill-rate inputs —
+    # One pass over the org's events fills the splits and the capacity/fill-rate inputs - 
     # all without another DB hit.
     for e in events:
         eid = e["event_id"]
@@ -669,7 +669,7 @@ def org_metrics(request, slug):
     registrations_incomplete = registrations_total - registrations_complete
 
     # ── Monthly trend (in range), built from the ACTUAL activity timestamps so the chart moves
-    # with the selected window — three grouped TruncMonth queries (registrations by
+    # with the selected window - three grouped TruncMonth queries (registrations by
     # registration_date, matches by match_date, page views by viewed_at), merged by month key.
     # This replaces the old "bucket events by start_date" trend, which ignored the date range.
     from django.db.models.functions import TruncMonth  # local import keeps the header lean
@@ -729,7 +729,7 @@ def org_metrics(request, slug):
         round((total_participants / total_capacity) * 100, 1) if total_capacity else None
     )
     # completion rate = share of the org's events that have reached "completed" (roster fact,
-    # not date-bounded — it reflects the org's events overall).
+    # not date-bounded - it reflects the org's events overall).
     completion_rate = (
         round((completed_count / events_count) * 100, 1) if events_count else None
     )
@@ -831,7 +831,7 @@ def org_metrics(request, slug):
 
     # ════════════════════ §E  Per-event breakdown rows (newest first, capped) ════════════════════
     # Sort the org's events newest-first by start_date (undated events sink to the bottom), cap
-    # at _PER_EVENT_LIMIT, and stitch in each event's per-event metric from the dicts above —
+    # at _PER_EVENT_LIMIT, and stitch in each event's per-event metric from the dicts above - 
     # all in memory, no further DB work.
     def _sort_key(e):
         # date.min for undated events so they order last under reverse=True.

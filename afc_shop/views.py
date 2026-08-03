@@ -435,7 +435,7 @@ def edit_product(request):
         "is_limited_stock": product.is_limited_stock,
     }
 
-    # plain text product fields (skip is_limited_stock — coerced below)
+    # plain text product fields (skip is_limited_stock - coerced below)
     # Selling currency (owner 2026-07-04 route): normalise + persist when provided (NGN-only today).
     if "currency" in request.data:
         product.currency = _normalize_sell_currency(request.data.get("currency"))

@@ -1,5 +1,5 @@
 """
-afc_sponsors.engagements — ENGAGEMENT CONFIG + SUBMISSIONS + APPROVAL (P2/P3/P4).
+afc_sponsors.engagements - ENGAGEMENT CONFIG + SUBMISSIONS + APPROVAL (P2/P3/P4).
 
 PURPOSE
     Everything the sponsor redesign adds ON TOP of the P1 entities:
@@ -19,7 +19,7 @@ HOW IT CONNECTS
       create_submissions_for_registration() right after it creates the registration rows; the
       payload rides the register body under "sponsorships" (see that helper's docstring).
     - Activation: _sync_registration_state() flips the registration active once every
-      approval-requiring submission of that registrant is approved — solo via
+      approval-requiring submission of that registrant is approved - solo via
       RegisteredCompetitors.status, team via the member row + the EXISTING
       check_and_activate_team() (the legacy sponsored-team machinery, reused not duplicated).
     - Consumed by frontend lib/sponsors.ts -> the event wizard sponsor tab (configure), the
@@ -147,7 +147,7 @@ def configure_sponsorship(request, sponsor_id, event_id):
     body: {requires_approval?: bool, engagements?: [...]}
 
     Saves the wizard's per-sponsorship config. Auth: sponsor-admin OR an organizer who can
-    edit this event (org_can_event "can_edit_events" — organizers configure sponsors on their
+    edit this event (org_can_event "can_edit_events" - organizers configure sponsors on their
     OWN events; they pick from existing sponsors only, creation stays admin)."""
     user, err = _auth_user(request)
     if err:
@@ -195,7 +195,7 @@ def _serialize_sponsorship(sp):
 
 @api_view(["GET"])
 def sponsorships_for_event(request, event_id):
-    """GET sponsors/for-event/<event_id>/  — PUBLIC read of an event's sponsorships + their
+    """GET sponsors/for-event/<event_id>/  - PUBLIC read of an event's sponsorships + their
     engagement config. Two consumers: the registration page (renders the engagement inputs)
     and the wizard sponsor tab (rehydrates the builder). Engagement config is not secret
     (registrants see it anyway), so no auth."""
@@ -213,7 +213,7 @@ def create_submissions_for_registration(event, user_payloads, acting_user):
     """Create SponsorEngagementSubmission rows for one registration. Called by
     register_for_event INSIDE its transaction, after the registration rows exist.
 
-    `user_payloads`: {user_id: [{sponsorship_id, engagement_index, payload}, ...]} — solo has
+    `user_payloads`: {user_id: [{sponsorship_id, engagement_index, payload}, ...]} - solo has
     one key (the registrant), squad has one per rostered player (captain fills per-player
     values, spec section 4).
 
@@ -602,7 +602,7 @@ def resubmit_submission(request, submission_id):
 
 @api_view(["GET"])
 def my_event_submissions(request, event_id):
-    """GET sponsors/my-submissions/<event_id>/  — the CALLER's own submissions for one event
+    """GET sponsors/my-submissions/<event_id>/  - the CALLER's own submissions for one event
     (status + rejection reasons), so the event page can show 'waiting for <sponsor> approval'
     badges and the re-input prompt for rejected entries. Auth: any logged-in user."""
     user, err = _auth_user(request)

@@ -1,6 +1,6 @@
 # afc_player_market/views_moderation.py
 # ──────────────────────────────────────────────────────────────────────────────
-# Player-market MODERATION endpoints — reporting + bans (feature "J-market-reporting").
+# Player-market MODERATION endpoints - reporting + bans (feature "J-market-reporting").
 #
 # Built from the approved mockup WEBSITE/tasks/market-reporting-mockup.html. Two
 # audiences live here, exactly like the sibling afc_organizers/views_reports.py this
@@ -14,11 +14,11 @@
 #     market for a duration (or permanently).
 #
 # Convention note (why the code looks like this): this module deliberately mirrors the
-# original hand in afc_player_market/views.py and afc_organizers/views_reports.py — NOT
+# original hand in afc_player_market/views.py and afc_organizers/views_reports.py - NOT
 # the newer rankings app. So:
 #   * function-based @api_view views, one job each;
 #   * auth done inline by reading the Authorization header and calling validate_token
-#     (imported the SAME way the rest of this app imports it — from afc_auth.views);
+#     (imported the SAME way the rest of this app imports it - from afc_auth.views);
 #     missing/garbled header → 400, bad/expired token → 401;
 #   * dict serialization written out inline (no serializers.py);
 #   * Response({...}, status=...) for every return.
@@ -26,16 +26,16 @@
 # ENFORCEMENT (the load-bearing rule): `_active_market_ban(user)` is the single guard
 # that the post/apply/invite entry points in views.py call BEFORE creating a row, so a
 # banned poster (or a member of a banned team) is blocked from acting on the market.
-# Reporting itself is NEVER gated — see file_market_report.
+# Reporting itself is NEVER gated - see file_market_report.
 #
-# Route mounting lives in afc_player_market/urls.py — this file ONLY defines view
+# Route mounting lives in afc_player_market/urls.py - this file ONLY defines view
 # functions; it does not touch urls.py.
 # ──────────────────────────────────────────────────────────────────────────────
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-# validate_token lives in afc_auth.views — import it the SAME way the rest of this app
+# validate_token lives in afc_auth.views - import it the SAME way the rest of this app
 # does. Returns the User for a valid, non-expired session token, or None otherwise.
 from afc_auth.views import validate_token
 
@@ -120,12 +120,12 @@ def _active_market_ban(user):
       • a player-scoped ban targets them directly, OR
       • a team-scoped ban targets a team they belong to (owner or member).
 
-    Only bans that are CURRENTLY active count (is_active AND not expired) — see
+    Only bans that are CURRENTLY active count (is_active AND not expired) - see
     MarketBan.is_currently_active. Returns the first matching active ban (so the caller
     can surface its reason + end date), or None when the user is clear.
 
     Called by afc_player_market/views.py wherever a market action is created. It is NOT
-    called by the reporting endpoint — reporting is always available, banned or not.
+    called by the reporting endpoint - reporting is always available, banned or not.
     """
     # ── player-scoped bans against this user ──
     for ban in MarketBan.objects.filter(
@@ -238,11 +238,11 @@ def _serialize_report(report, request=None):
         ],
         "status": report.status,
         "resolution_notes": report.resolution_notes,
-        # reporter / reviewed_by are SET_NULL FKs — surface the username or None.
+        # reporter / reviewed_by are SET_NULL FKs - surface the username or None.
         # reporter_id is the reporter's User id, exposed so the admin "Ban reporter
         # (false report)" action (feature "J-market-rules", J5) can call admin_market_ban
         # with scope="player", target_id=reporter_id when a report is judged false or
-        # abusive. None when the reporter row was deleted (SET_NULL) — the FE hides the
+        # abusive. None when the reporter row was deleted (SET_NULL) - the FE hides the
         # ban-reporter action in that case.
         "reporter_id": report.reporter_id,
         "reporter_username": report.reporter.username if report.reporter else None,
@@ -272,34 +272,34 @@ def _serialize_ban(ban):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §1  POST /report-post/  — file a report against a market post  (ANY logged-in user)
+# §1  POST /report-post/  - file a report against a market post  (ANY logged-in user)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def file_market_report(request):
     """File an abuse report against a player-market post. Open to ANY logged-in user.
 
     Request (JSON or multipart):
-      • post_id   (required) — the RecruitmentPost being reported. Its post_type tells
+      • post_id   (required) - the RecruitmentPost being reported. Its post_type tells
                                us whether the subject is a team or a player; we resolve
                                and store the concrete team/player from the post itself
                                (the client cannot spoof who it is reporting).
-      • category  (optional) — one of MarketReport.CATEGORY_CHOICES; defaults "other".
-      • details   (required) — free text describing what happened.
-      • evidence  (required) — image upload (screenshot / screen recording frame). As of
+      • category  (optional) - one of MarketReport.CATEGORY_CHOICES; defaults "other".
+      • details   (required) - free text describing what happened.
+      • evidence  (required) - image upload (screenshot / screen recording frame). As of
                                feature "J-market-rules" (J4) this is COMPULSORY; a report
                                with no evidence is rejected with 400.
 
     Response: 201 {"message"} on success; 400 on bad input; 404 if the post is gone.
     Auth: Bearer token (any valid session). 400/401 on bad auth.
 
-    🛑 Always available regardless of the transfer-season window — reporting is never
+    🛑 Always available regardless of the transfer-season window - reporting is never
     gated even when posting is. (Posting is not window-gated server-side today either;
     see note in views.py. This endpoint deliberately performs NO ban / window check.)
 
     Frontend consumer: the Report (red flag) dialog on each post card in
     app/(user)/player-markets/page.tsx.
     """
-    # ── auth handshake — any logged-in user passes (no moderator gate, no ban gate) ──
+    # ── auth handshake - any logged-in user passes (no moderator gate, no ban gate) ──
     user, err = _authenticate(request)
     if err:
         return err
@@ -325,7 +325,7 @@ def file_market_report(request):
     elif post.post_type == "PLAYER_AVAILABLE":
         subject_type = "player"
         reported_team = None
-        # player posts store the author on both created_by and player — prefer player.
+        # player posts store the author on both created_by and player - prefer player.
         reported_player = post.player or post.created_by
         if reported_player is None:
             return Response({"message": "This post has no player to report."}, status=400)
@@ -348,7 +348,7 @@ def file_market_report(request):
     # screen-recording videos, so a reporter can fully document the abuse and a moderator can view/
     # play all of it. Files arrive as the repeated multipart field `evidence_files`; the legacy single
     # `evidence` field is still accepted (folded in) so an older client keeps working. At least one
-    # file is required — the FE disables submit until one is attached, mirroring this 400.
+    # file is required - the FE disables submit until one is attached, mirroring this 400.
     evidence_files = request.FILES.getlist("evidence_files")
     legacy = request.FILES.get("evidence")
     if legacy:
@@ -385,7 +385,7 @@ def file_market_report(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §2  GET /admin/reports/  — moderator triage list of every market report
+# §2  GET /admin/reports/  - moderator triage list of every market report
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def admin_list_market_reports(request):
@@ -405,7 +405,7 @@ def admin_list_market_reports(request):
         return Response({"message": "You do not have permission to view market reports."}, status=403)
 
     # Base queryset, newest first. select_related pulls the FK rows the serializer
-    # touches (team / player / reporter / reviewed_by) in one query — no N+1 per page.
+    # touches (team / player / reporter / reviewed_by) in one query - no N+1 per page.
     qs = (
         MarketReport.objects.select_related(
             "reported_team", "reported_player", "reporter", "reviewed_by"
@@ -445,20 +445,20 @@ def admin_list_market_reports(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §3  PATCH /admin/reports/<report_id>/  — moderator triage one report
+# §3  PATCH /admin/reports/<report_id>/  - moderator triage one report
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["PATCH"])
 def admin_update_market_report(request, report_id):
     """Triage one report: update its status and/or resolution_notes, recording the
     acting moderator as reviewed_by. Gated by _is_market_moderator.
 
-    Body (true PATCH semantics — only applies keys that are present):
-      • status            — one of MarketReport.STATUS_CHOICES (400 if invalid).
-      • resolution_notes  — replaces the note (send "" to clear it).
+    Body (true PATCH semantics - only applies keys that are present):
+      • status            - one of MarketReport.STATUS_CHOICES (400 if invalid).
+      • resolution_notes  - replaces the note (send "" to clear it).
 
     Response: 200 {"message", "report": <serialized>}; 404 if the report is gone.
     Frontend consumer: the Resolve / Dismiss / Mark-reviewing buttons in the admin
-    "Reports & Flags" tab. (Banning a subject is a SEPARATE call — admin_market_ban.)
+    "Reports & Flags" tab. (Banning a subject is a SEPARATE call - admin_market_ban.)
     """
     user, err = _authenticate(request)
     if err:
@@ -489,7 +489,7 @@ def admin_update_market_report(request, report_id):
     if "resolution_notes" in request.data:
         report.resolution_notes = request.data.get("resolution_notes") or ""
 
-    # ── reviewed_by: always stamp the acting moderator — they handled this report ──
+    # ── reviewed_by: always stamp the acting moderator - they handled this report ──
     report.reviewed_by = user
     report.save()
 
@@ -500,7 +500,7 @@ def admin_update_market_report(request, report_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §4  POST /admin/ban/  — moderator bans a player or a team from the market
+# §4  POST /admin/ban/  - moderator bans a player or a team from the market
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def admin_market_ban(request):
@@ -508,14 +508,14 @@ def admin_market_ban(request):
     Gated by _is_market_moderator.
 
     Request (JSON):
-      • scope        (required) — "player" or "team".
-      • target_id    (required) — the player's user id (scope=player) or the team_id
+      • scope        (required) - "player" or "team".
+      • target_id    (required) - the player's user id (scope=player) or the team_id
                                    (scope=team).
-      • duration_days(optional) — positive integer number of days. Omit / null / 0 →
+      • duration_days(optional) - positive integer number of days. Omit / null / 0 →
                                    a PERMANENT ban (mirrors the mockup's "Permanent"
                                    preset, which sends days:null).
-      • reason       (required) — shown to the banned user (max 255).
-      • report_id    (optional) — the originating report; when given, that report is
+      • reason       (required) - shown to the banned user (max 255).
+      • report_id    (optional) - the originating report; when given, that report is
                                    stamped status="banned" so the queue reflects it.
 
     Response: 201 {"message", "ban": <serialized>}; 400 on bad input; 404 if the

@@ -8,8 +8,8 @@
 # sender is held to TWO limits, both counted in the shared Redis cache (django_redis, same backend as
 # afc_partner_api/ratelimit.py and the Mintroute limiter):
 #
-#   1. HOURLY CAP  — at most RATE_LIMIT_PER_HOUR (5) broadcasts per organizer per clock hour.
-#   2. COOLDOWN    — at least COOLDOWN_SECONDS (300 = 5 min) between two consecutive broadcasts.
+#   1. HOURLY CAP  - at most RATE_LIMIT_PER_HOUR (5) broadcasts per organizer per clock hour.
+#   2. COOLDOWN    - at least COOLDOWN_SECONDS (300 = 5 min) between two consecutive broadcasts.
 #
 # AFC ADMINS ARE EXEMPT (coarse role admin/moderator/support, or a granular platform-admin role): they
 # run the platform and may need to message everyone immediately. The event broadcast endpoints are
@@ -32,7 +32,7 @@
 from django.core.cache import cache
 from django.utils import timezone
 
-# Tunables — kept as named constants so the endpoint code + the FE copy stay in lockstep with one edit.
+# Tunables - kept as named constants so the endpoint code + the FE copy stay in lockstep with one edit.
 RATE_LIMIT_PER_HOUR = 5      # max broadcasts per organizer per clock hour
 COOLDOWN_SECONDS = 300       # min gap between two consecutive broadcasts (5 minutes)
 
@@ -64,7 +64,7 @@ def _cooldown_key(user_id):
 
 
 def _next_hour_iso():
-    """ISO timestamp of the next clock-hour boundary — when the hourly bucket rolls over (resets_at)."""
+    """ISO timestamp of the next clock-hour boundary - when the hourly bucket rolls over (resets_at)."""
     now = timezone.now()
     # zero out minutes/seconds, add one hour
     nxt = now.replace(minute=0, second=0, microsecond=0) + timezone.timedelta(hours=1)
@@ -72,17 +72,17 @@ def _next_hour_iso():
 
 
 def check_broadcast_rate(user):
-    """Decide whether `user` may send a broadcast RIGHT NOW. Read-only (does NOT consume a slot — call
+    """Decide whether `user` may send a broadcast RIGHT NOW. Read-only (does NOT consume a slot - call
     record_broadcast_send AFTER a successful send).
 
     Returns (allowed: bool, info: dict). `info` always carries:
-      • remaining   — broadcasts left in the current hour (after this one would be 0 when blocked by cap)
-      • limit       — RATE_LIMIT_PER_HOUR
-      • exempt      — True for admins (no limits apply)
+      • remaining   - broadcasts left in the current hour (after this one would be 0 when blocked by cap)
+      • limit       - RATE_LIMIT_PER_HOUR
+      • exempt      - True for admins (no limits apply)
     and WHEN BLOCKED additionally:
-      • reason      — "cooldown" | "hourly"
-      • resets_at   — ISO time when sending re-opens (cooldown end, or the next hour boundary)
-      • message     — a human sentence the FE can show directly
+      • reason      - "cooldown" | "hourly"
+      • resets_at   - ISO time when sending re-opens (cooldown end, or the next hour boundary)
+      • message     - a human sentence the FE can show directly
     """
     # Admins bypass every limit.
     if is_broadcast_admin(user):
@@ -120,7 +120,7 @@ def check_broadcast_rate(user):
 
 
 def record_broadcast_send(user):
-    """Consume one slot for `user` — call ONLY after a broadcast actually went out (so a failed/empty
+    """Consume one slot for `user` - call ONLY after a broadcast actually went out (so a failed/empty
     send never costs the organizer a slot). No-op for admins. Stamps the 5-min cooldown and increments
     the hourly counter. Returns the remaining hourly allowance after this send (for the FE counter)."""
     if is_broadcast_admin(user):

@@ -1,5 +1,5 @@
 # afc_organizers/tests.py
-# Unit tests for the permission helper — the security core of the feature. Covers the four
+# Unit tests for the permission helper - the security core of the feature. Covers the four
 # rules in permissions.org_can plus the event-scoped variant. Org/membership rows are real
 # DB objects; for org_can_event we use a tiny stand-in object carrying only the attributes
 # the helper reads (organization_id / organization) so we don't have to build a full Event
@@ -82,7 +82,7 @@ class OrgIsOwnerTests(TestCase):
     all-permissions accomplice. Mirrors the FE OrganizerContext.isOwner gate on the members page."""
 
     def setUp(self):
-        # AFC oversight staff (must keep the bypass — org_is_owner allows platform admins).
+        # AFC oversight staff (must keep the bypass - org_is_owner allows platform admins).
         self.organizer_admin_role, _ = Roles.objects.get_or_create(role_name="organizer_admin")
         self.afc_admin = User.objects.create_user(
             username="afcstaff", email="afc@x.com", password="x", full_name="AFC Staff", role="admin"
@@ -93,7 +93,7 @@ class OrgIsOwnerTests(TestCase):
         self.owner = User.objects.create_user(
             username="owner", email="owner@x.com", password="x", full_name="Owner", role="player"
         )
-        # A sub-organizer who WAS granted can_manage_members — the exact escalation risk.
+        # A sub-organizer who WAS granted can_manage_members - the exact escalation risk.
         self.sub_mgr = User.objects.create_user(
             username="submgr", email="submgr@x.com", password="x", full_name="Sub Mgr", role="player"
         )

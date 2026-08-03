@@ -1,7 +1,7 @@
 """
 test_fx.py
 ──────────
-Covers the multi-currency FX layer (afc_auth.fx) — owner 2026-06-30.
+Covers the multi-currency FX layer (afc_auth.fx) - owner 2026-06-30.
 
 No live network: FxRate rows are seeded directly + FX_TTL is made huge so get_rates() never tries to
 re-fetch. Verifies the conversion math, the protective CHARGE buffer (so we don't lose money on the

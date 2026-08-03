@@ -1,6 +1,6 @@
 # afc_partner_api/serialize.py
 # ──────────────────────────────────────────────────────────────────────────────
-# The partner-facing serialization FIREWALL — the single most security-critical
+# The partner-facing serialization FIREWALL - the single most security-critical
 # module in this app. Every read endpoint passes its ORM objects through one of the
 # functions here before anything reaches the wire, so this file is the ONE boundary
 # that decides what a partner can ever see.
@@ -20,20 +20,20 @@
 #      Toggles default OFF (least privilege), so a brand-new partner sees handles only.
 #
 # What is NEVER emitted, anywhere (the test denylist enforces this):
-#   • raw DB PKs            — event_id, match_id, stage_id, group_id,
+#   • raw DB PKs            - event_id, match_id, stage_id, group_id,
 #                             tournament_team_id, player_id, competitor_id,
 #                             leaderboard_id, organization_id
-#   • room credentials      — room_id, room_password, room_name
-#   • PII / contact         — contact_email, email, full_name/real names, discord_id,
+#   • room credentials      - room_id, room_password, room_name
+#   • PII / contact         - contact_email, email, full_name/real names, discord_id,
 #                             discord_role_id (stage/group/waitlist discord role ids)
-#   • internal config/flags — scoring_settings, rankings_verified, is_draft, creator,
+#   • internal config/flags - scoring_settings, rankings_verified, is_draft, creator,
 #                             partner_published
 # `is_native_afc` is derived as `organization_id is None` (a boolean), so partners
 # learn an event is a native AFC event WITHOUT ever receiving the raw org PK.
 #
 # Aggregation note: match/team/standings/player stats are folded from the
 # ALREADY-FINALIZED stat rows (TournamentTeamMatchStats for squad/duo events,
-# SoloPlayerMatchStats for solo events) — the same rows the admin standings view sums
+# SoloPlayerMatchStats for solo events) - the same rows the admin standings view sums
 # (afc_tournament_and_scrims.views.get_all_leaderboard_details_for_event). We reuse
 # that summation but strip the result to the public, toggled-on fields only.
 # Full spec: WEBSITE/tasks/partner-api-design.md (§8 serialization rules).
@@ -52,7 +52,7 @@ from afc_tournament_and_scrims.models import (
 def serialize_event(ev, partner):
     """Public event card: slug + display fields + dates + status. No PKs, no flags.
 
-    `is_native_afc` is the ONLY thing we expose about ownership — derived from
+    `is_native_afc` is the ONLY thing we expose about ownership - derived from
     organization_id so the raw org PK never crosses the firewall.
     """
     out = {
@@ -78,7 +78,7 @@ def serialize_stage(stage, partner):
 
     `order` is computed from the stage's position among its event's stages (ordered
     by stage_id, the same ordering the admin standings view uses) rather than exposing
-    the raw stage_id — partners get a stable sequence number, never a DB PK.
+    the raw stage_id - partners get a stable sequence number, never a DB PK.
     """
     # Position of this stage among its siblings, ordered by stage_id (creation order).
     # Counting stages created before-or-at this one yields a 1-based ordinal.
@@ -115,7 +115,7 @@ def serialize_match(match, partner):
     """Public match row: match_number + status. Room credentials are STRIPPED.
 
     The match carries room_id / room_password / room_name + scoring_settings, none of
-    which may ever reach a partner — so we hand-pick only match_number and the public
+    which may ever reach a partner - so we hand-pick only match_number and the public
     result flag, and gate map (include_maps) and mvp (include_mvp) behind toggles.
     """
     out = {
@@ -125,7 +125,7 @@ def serialize_match(match, partner):
     if partner.include_maps:
         out["map"] = match.match_map
     if partner.include_mvp:
-        # MVP is the in-game handle only (or null if none recorded — spec §11 edge case).
+        # MVP is the in-game handle only (or null if none recorded - spec §11 edge case).
         out["mvp"] = match.mvp.username if match.mvp else None
     return out
 
@@ -166,7 +166,7 @@ def serialize_team(tt, partner):
     if partner.include_assists:
         out["assists"] = agg["assists"] or 0
     if partner.include_rosters:
-        # Public handles only — username + in-game id, never name/email/discord.
+        # Public handles only - username + in-game id, never name/email/discord.
         # Pass `tt` so each roster player's stats are folded ONLY from this team's rows
         # in THIS event (scoped), not the player's lifetime stats across every event.
         out["roster"] = [serialize_player(p, partner, tournament_team=tt) for p in _team_players(tt)]
@@ -199,7 +199,7 @@ def serialize_player(user, partner, tournament_team=None):
     `tournament_team` SCOPES the stat fold to a single team-in-one-event. It MUST be
     passed for any per-event payload (rosters, the per-event players endpoint): a
     TournamentPlayerMatchStats row links to its team via team_stats.tournament_team,
-    and a tournament_team belongs to exactly one Event — so filtering on it confines
+    and a tournament_team belongs to exactly one Event - so filtering on it confines
     the aggregate to this player's stats IN THIS EVENT. Without it the aggregate spans
     every event the player ever played (lifetime totals), which would leak wrong,
     cross-event numbers into a per-event response. (Left optional only for a future
@@ -225,10 +225,10 @@ def serialize_player(user, partner, tournament_team=None):
 
 # ── standings ──────────────────────────────────────────────────────────────────
 #
-# Ranking metric — why `effective_total`, not the stored `total_points` column:
+# Ranking metric - why `effective_total`, not the stored `total_points` column:
 # the official admin standings view (afc_tournament_and_scrims.views.
 # get_all_leaderboard_details_for_event) does NOT trust the persisted total_points
-# column — it RECOMPUTES the rank metric on read as
+# column - it RECOMPUTES the rank metric on read as
 #       effective_total = placement_points + kill_points + bonus_points - penalty_points
 # precisely because total_points can be STALE (e.g. a bonus/penalty edited after the
 # row was first saved). To keep partner rankings aligned with official AFC standings we
@@ -238,7 +238,7 @@ def serialize_player(user, partner, tournament_team=None):
 #
 # Honest scope note (so this comment can't drift false like the old one): the admin view
 # is computed PER LOBBY/GROUP and carries two extra steps we deliberately do NOT
-# replicate in this event-wide partner aggregate — (a) its final `last_match_placement`
+# replicate in this event-wide partner aggregate - (a) its final `last_match_placement`
 # tiebreaker (a per-group "placement in the latest match" subquery) and (b) the
 # scoring-mode carry-over overlay. Those are lobby-local; the partner standings are a
 # single event-wide ranking. We match the admin's PRIMARY ordering exactly; the residual
@@ -253,7 +253,7 @@ def serialize_standings(event, partner):
 
     Solo events fold SoloPlayerMatchStats by competitor; squad/duo events fold
     TournamentTeamMatchStats by team. Either way we emit ONLY a public handle, the
-    rank, and the toggled-on stat fields — never the underlying competitor/team PK.
+    rank, and the toggled-on stat fields - never the underlying competitor/team PK.
     """
     if event.participant_type == "solo":
         return _solo_standings(event, partner)
@@ -279,7 +279,7 @@ _EFFECTIVE_TOTAL = (
 
 def _team_standings(event, partner):
     # Fold every team's finalized match rows in this event into one summary per team,
-    # then rank by recomputed effective_total (admin parity), booyahs, kills — winners
+    # then rank by recomputed effective_total (admin parity), booyahs, kills - winners
     # first. total_points is still summed only to expose it; it is NOT the sort key.
     rows = (
         TournamentTeamMatchStats.objects
