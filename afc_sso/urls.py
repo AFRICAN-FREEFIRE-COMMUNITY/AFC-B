@@ -26,10 +26,15 @@ from .admin_api import (
     suspend_sso_application,
 )
 from .api import list_connected_apps, revoke_connected_app
-from .views import AFCAuthorizationView
+from .views import AFCAuthorizationView, AFCRPInitiatedLogoutView
 
 urlpatterns = [
     path("authorize/", AFCAuthorizationView.as_view(), name="authorize"),
+    # RP-initiated logout. Declared BEFORE the library include for the same reason
+    # authorize/ is: AFC's subclass has to win the route. The library's own view deletes
+    # the player's tokens at EVERY partner, not just the one asking; ours scopes the
+    # disconnection to the requesting application. See afc_sso/views.py.
+    path("logout/", AFCRPInitiatedLogoutView.as_view(), name="rp-initiated-logout"),
 
     # ── Player-facing: Connected apps (frontend profile area) ──
     path("me/connected-apps/", list_connected_apps, name="connected-apps"),

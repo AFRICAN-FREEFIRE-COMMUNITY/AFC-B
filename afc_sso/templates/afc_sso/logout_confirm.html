@@ -1,0 +1,78 @@
+<!-- backend/afc_sso/templates/afc_sso/logout_confirm.html
+     AFC's "sign out of AFC too?" screen, shown when a partner sends a player to
+     /sso/logout/ (RP-initiated logout) and that player has a live AFC session.
+
+     Same deliberately plain HTML and inline styles as afc_sso/authorize.html, and the
+     same reason: this page is rendered by Django, not the Next.js app, so it cannot use
+     the site's component library. Keep it readable on a phone.
+
+     WHY THE PAGE EXISTS AT ALL: OIDC_RP_INITIATED_LOGOUT_ALWAYS_PROMPT is on
+     (afc/settings.py), which is the spec's SHOULD and, more practically, what stops a
+     partner ending a player's AFC session from a hidden iframe without the player ever
+     seeing it. Cancelling leaves the AFC session alone.
+
+     It lives under afc_sso/ rather than overriding oauth2_provider/logout_confirm.html
+     because `oauth2_provider` is listed BEFORE `afc_sso` in INSTALLED_APPS, so an
+     override there would silently lose to the library's own copy. The view names this
+     path explicitly instead (afc_sso/views.py AFCRPInitiatedLogoutView.template_name).
+
+     Context comes from the library's RPInitiatedLogoutView: `form` (hidden fields
+     carrying id_token_hint, client_id, post_logout_redirect_uri and state), the
+     `application` that asked, and `error` on the failure path.
+
+     LANGUAGE: as with the consent screen, every sentence is translated in
+     locale/<lang>/LC_MESSAGES/django.po and the active language is set per request by
+     afc_sso.middleware.SSOLanguageMiddleware. Do NOT name a translation tag inside an
+     HTML comment: Django parses template tags in comments too. -->
+{% load i18n %}{% get_current_language as LANGUAGE_CODE %}<!doctype html>
+<html lang="{{ LANGUAGE_CODE }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% trans "Sign out of AFC" %}</title>
+  <style>
+    body { background:#0d0f0e; color:#e8e8e8; font-family:system-ui, sans-serif;
+           margin:0; padding:24px; }
+    .card { max-width:420px; margin:0 auto; background:#151816; border:1px solid #2a2f2b;
+            border-radius:6px; padding:24px; }
+    h1 { font-size:20px; color:#22c55e; margin:0 0 12px; }
+    p { line-height:1.6; }
+    button { width:100%; padding:12px; border-radius:6px; border:0; font-size:16px;
+             margin-top:8px; cursor:pointer; }
+    .allow { background:#22c55e; color:#06210f; font-weight:600; }
+    .deny { background:#2a2f2b; color:#e8e8e8; }
+    .note { font-size:12px; color:#9aa39c; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    {% if error %}
+      <h1>{% trans "That sign-out request could not be completed" %}</h1>
+      <p class="note">{{ error.error }}</p>
+    {% else %}
+      {% if application %}
+        <h1>{% blocktrans with org=application.display_name|default:application.name %}{{ org }} is signing you out{% endblocktrans %}</h1>
+      {% else %}
+        <h1>{% trans "Sign out of AFC" %}</h1>
+      {% endif %}
+      <p>{% trans "Do you also want to sign out of AFC on this device?" %}</p>
+      <form method="post">
+        {% csrf_token %}
+        {% comment %}
+          Hidden fields ONLY (id_token_hint, client_id, post_logout_redirect_uri, state).
+          The library's form also carries a visible "allow" checkbox, which reads as a
+          stray unlabelled tickbox: the Sign out button already submits allow, and its
+          absence is what the view reads as a cancellation. Same decision, and the same
+          {% templatetag openblock %} comment {% templatetag closeblock %} form, as the consent screen.
+        {% endcomment %}
+        {% for field in form %}{% if field.is_hidden %}{{ field }}{% endif %}{% endfor %}
+        <button class="allow" type="submit" name="allow" value="Logout">{% trans "Sign out of AFC" %}</button>
+        <button class="deny" type="submit">{% trans "Stay signed in" %}</button>
+      </form>
+      <p class="note">
+        {% trans "Signing out here ends your AFC session on this device and disconnects only the site that asked. Your other connected apps are not affected." %}
+      </p>
+    {% endif %}
+  </div>
+</body>
+</html>

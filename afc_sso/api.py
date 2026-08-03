@@ -34,8 +34,7 @@ from django.conf import settings
 from django.utils import timezone
 from oauth2_provider.models import (
     get_access_token_model,
-    get_grant_model,
-    get_id_token_model,
+    get_application_model,
     get_refresh_token_model,
 )
 from rest_framework import status
@@ -43,6 +42,8 @@ from rest_framework.decorators import api_view, authentication_classes
 from rest_framework.response import Response
 
 from .claims import describe_scopes
+from .tokens import revoke_tokens_for
+from .webhooks import REASON_PLAYER_REVOKED, notify_disconnected
 
 # `openid` is on every single connection and releases nothing but the pairwise sub, so it
 # is noise on a screen whose job is to tell the player what a partner can see about them.
@@ -291,41 +292,29 @@ def revoke_connected_app(request, application_id):
     call naming an org they never connected to) deletes nothing and still returns 200 with
     zero counts rather than a 404 or a 500.
 
-    NOT IN SCOPE HERE: AFCSSOApplication.deletion_webhook_url, the outbound "this player left"
-    signal from section 7b of the spec, is a later plan and is deliberately not fired.
+    THE DELETION SIGNAL (owner 2026-08-03): once the local revoke has committed, the partner
+    is told, so it can delete its own copy of the player's data. That is what makes "Remove"
+    mean something beyond AFC's own database. It is a SIGNED JWT carrying the pairwise sub,
+    delivered by afc_sso/tasks.py with retries; the whole scheme is documented in
+    afc_sso/webhooks.py. It is best effort ON PURPOSE and cannot affect this response: a
+    partner whose server is down does not get to make a player's revoke fail, so a delivery
+    problem is retried in the background and, at worst, logged.
     """
     user, err = _require_player(request)
     if err:
         return err
 
-    # `user=user` is repeated on every queryset on purpose: it is the one line standing
-    # between this endpoint and a player revoking somebody else's connection, so it should be
-    # visible on each query rather than hidden in a shared filter.
-    access_tokens = get_access_token_model().objects.filter(
-        user=user, application_id=application_id)
-    refresh_tokens = get_refresh_token_model().objects.filter(
-        user=user, application_id=application_id)
-    grants = get_grant_model().objects.filter(
-        user=user, application_id=application_id)
-    id_tokens = get_id_token_model().objects.filter(
-        user=user, application_id=application_id)
+    # The four-table delete lives in afc_sso/tokens.py because RP-initiated logout has to do
+    # exactly the same thing (afc_sso/views.py AFCRPInitiatedLogoutView). One implementation
+    # means the two ways a connection ends cannot end it differently.
+    revoked = revoke_tokens_for(user, application_id)
 
-    # Counted BEFORE anything is deleted: IDToken is the parent of AccessToken.id_token with
-    # on_delete=CASCADE, so deleting in the wrong order would make the counts lie.
-    revoked = {
-        "access_tokens": access_tokens.count(),
-        "refresh_tokens": refresh_tokens.count(),
-        "grants": grants.count(),
-        "id_tokens": id_tokens.count(),
-    }
-
-    # Order: grants first (nothing depends on them), then refresh tokens (their access_token
-    # link is SET_NULL), then access tokens, and finally the id tokens whose children are by
-    # then already gone.
-    grants.delete()
-    refresh_tokens.delete()
-    access_tokens.delete()
-    id_tokens.delete()
+    # Only signal a partner the player was ACTUALLY connected to. A repeat click, or an id
+    # for an org they never used, deletes nothing and must not send anything either.
+    if any(revoked.values()):
+        application = get_application_model().objects.filter(pk=application_id).first()
+        if application is not None:
+            notify_disconnected(application, user, REASON_PLAYER_REVOKED)
 
     return Response(
         {

@@ -12,8 +12,11 @@
 # THIS class everywhere in the codebase, including the /sso/ views the library
 # ships and the consent screen added in Task 6.
 # ──────────────────────────────────────────────────────────────────────────────
+from django.core.exceptions import ValidationError
 from django.db import models
 from oauth2_provider.models import AbstractApplication
+
+from .redirect_policy import RedirectURIPolicyError, validate_redirect_uris
 
 # Toggle -> the OIDC scope it unlocks. Drives allowed_scopes(), the admin edit form,
 # and the consent screen copy, so the three can never drift apart. Adding a scope
@@ -61,7 +64,11 @@ class AFCSSOApplication(AbstractApplication):
         choices=[("active", "Active"), ("suspended", "Suspended")],
     )
 
-    # Where a deletion signal is sent when a player revokes (spec 7b). Used in a later plan.
+    # Where the "this player disconnected you" signal is POSTed. Blank means the partner
+    # has not asked for one and none is sent. The payload, the signature and the retry
+    # behaviour all live in afc_sso/webhooks.py and afc_sso/tasks.py; the two things that
+    # fire it are afc_sso/api.py revoke_connected_app (the player pressed Remove) and the
+    # pre_delete receiver in afc_sso/signals.py (the AFC account itself went away).
     deletion_webhook_url = models.URLField(blank=True)
 
     # ── Field toggles, all default OFF ──
@@ -76,6 +83,50 @@ class AFCSSOApplication(AbstractApplication):
 
     class Meta(AbstractApplication.Meta):
         swappable = "OAUTH2_PROVIDER_APPLICATION_MODEL"
+
+    def clean(self):
+        """AFC's redirect URI policy, enforced on the model so no editing path escapes it.
+
+        The Django admin (and any ModelForm) runs full_clean, so a superuser editing a row
+        at /admin/ hits exactly the same rules as the staff API in afc_sso/admin_api.py,
+        which calls the same validator directly. Both redirect_uris and
+        post_logout_redirect_uris are checked, because both are addresses AFC sends a real
+        player to. The rules themselves, and why they are what they are, live in
+        afc_sso/redirect_policy.py.
+
+        Errors are raised against the FIELD rather than the form as a whole, so the admin
+        prints the message next to the textarea the offending URI was typed into.
+
+        AFC'S POLICY RUNS FIRST, before super().clean(), and that ordering is deliberate.
+        The library's own clean() also validates redirect_uris, but it reports a
+        non-field error ("URI validation error ... Enter a valid URL") that says nothing
+        about which rule was broken. AFC's rules are strictly narrower, so anything that
+        passes here would pass the library's check anyway; running ours first means the
+        admin reads "Wildcards are not allowed" next to the field instead.
+        """
+        errors = {}
+
+        try:
+            self.redirect_uris = validate_redirect_uris(
+                self.redirect_uris, required=True, label="redirect URI")
+        except RedirectURIPolicyError as err:
+            errors["redirect_uris"] = str(err)
+
+        try:
+            self.post_logout_redirect_uris = validate_redirect_uris(
+                self.post_logout_redirect_uris,
+                required=False,
+                label="post-logout redirect URI",
+            )
+        except RedirectURIPolicyError as err:
+            errors["post_logout_redirect_uris"] = str(err)
+
+        if errors:
+            raise ValidationError(errors)
+
+        # Only once the URIs are known to be legal, so the library never gets the chance
+        # to report the same problem in worse words.
+        super().clean()
 
     def save(self, *args, **kwargs):
         """No partner org ever skips the player's consent screen.

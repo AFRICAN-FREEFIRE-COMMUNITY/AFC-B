@@ -145,6 +145,32 @@ OAUTH2_PROVIDER = {
     # partners the exact opposite and would have been a reasonable thing for them to
     # rely on. Discovery must describe what we actually do.
     "OIDC_SUBJECT_TYPES_SUPPORTED": ["pairwise"],
+    # ── RP-initiated logout (owner 2026-08-03) ────────────────────────────────────────
+    # Turns /sso/logout/ on and makes `end_session_endpoint` appear in discovery, so a
+    # partner can offer "sign out of AFC too" instead of leaving the player signed in at
+    # AFC after signing out of the partner site.
+    #
+    # READ afc_sso/views.py AFCRPInitiatedLogoutView BEFORE CHANGING ANY OF THIS. The
+    # library's own logout view deletes EVERY token the player holds, at every partner,
+    # not just the partner asking (views/oidc.py do_logout filters on user + client_type
+    # + grant_type and never on the application). That would let one partner cut a player
+    # off from all the others. AFC mounts its own subclass ahead of the library's route
+    # and scopes the deletion to the requesting application.
+    "OIDC_RP_INITIATED_LOGOUT_ENABLED": True,
+    # Ask the player before ending their AFC session. This is the spec's SHOULD, and it
+    # is what stops a partner silently signing a player out of AFC in a hidden iframe.
+    # AFC ships its own confirm page (afc_sso/templates/oauth2_provider/logout_confirm.html)
+    # so it looks like the consent screen rather than a bare library form.
+    "OIDC_RP_INITIATED_LOGOUT_ALWAYS_PROMPT": True,
+    # Refuse an http post-logout redirect for a public client. Belt and braces: AFC's own
+    # policy (afc_sso/redirect_policy.py) already refuses to REGISTER one outside
+    # loopback, and every AFC partner is a confidential client.
+    "OIDC_RP_INITIATED_LOGOUT_STRICT_REDIRECT_URIS": True,
+    # An EXPIRED id_token_hint still identifies which player and which partner, and a
+    # player signing out an hour later is the normal case rather than an attack. It
+    # authorises nothing on its own: the hint only selects whose tokens are deleted, and
+    # AFC scopes that to the partner that presented it.
+    "OIDC_RP_INITIATED_LOGOUT_ACCEPT_EXPIRED_TOKENS": True,
     # i18n (owner 2026-08-03): these are the only English strings in this file a PLAYER ever
     # reads, so they are wrapped in gettext_lazy and translated in locale/<lang>/LC_MESSAGES/
     # django.po alongside the consent template itself. Lazy, not eager: settings load long
