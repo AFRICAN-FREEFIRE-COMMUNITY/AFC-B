@@ -12,9 +12,28 @@
 # Installed via OAUTH2_PROVIDER["OAUTH2_VALIDATOR_CLASS"] in afc/settings.py, which is
 # how every /sso/ endpoint picks it up. Nothing imports it directly.
 # ──────────────────────────────────────────────────────────────────────────────
+import hashlib
+
+from django.conf import settings
 from oauth2_provider.oauth2_validators import OAuth2Validator
 
 from .claims import build_claims
+
+
+def pairwise_sub(user, application):
+    """A stable, opaque subject identifier that DIFFERS per partner application.
+
+    Derived from (SECRET_KEY, application pk, user pk) so it is deterministic without
+    a lookup table, reveals nothing about the user, and cannot be reproduced by a
+    partner. Keyed on the application's PRIMARY KEY, not its name, so renaming an org
+    does not silently orphan every account link on their side.
+
+    Operational warning: this is derived from SECRET_KEY, so rotating SECRET_KEY changes
+    every partner's view of every player and breaks all existing account links. If
+    SECRET_KEY ever has to rotate, this needs a stored per-application salt first.
+    """
+    material = f"{settings.SECRET_KEY}:{application.pk}:{user.pk}".encode()
+    return hashlib.sha256(material).hexdigest()
 
 
 class AFCOAuth2Validator(OAuth2Validator):
@@ -30,7 +49,10 @@ class AFCOAuth2Validator(OAuth2Validator):
         scopes = request.scopes if isinstance(request.scopes, (list, set, tuple)) else (
             (request.scope or "").split()
         )
-        return build_claims(user, application, scopes)
+        claims = build_claims(user, application, scopes)
+        # Overrides the library's default sub (the raw user pk, identical for every org).
+        claims["sub"] = pairwise_sub(user, application)
+        return claims
 
     def get_additional_claims(self, request):
         return self._afc_claims(request)
