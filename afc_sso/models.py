@@ -34,7 +34,25 @@ SSO_FIELD_TOGGLES = tuple(TOGGLE_TO_SCOPE)
 class AFCSSOApplication(AbstractApplication):
     # Human-facing identity, shown on the consent screen so the player knows who is asking.
     display_name = models.CharField(max_length=120, blank=True)
+
+    # ── The partner's logo (owner 2026-08-03: was a URL, is now a real upload) ──
+    # `logo` is AFC's OWN copy of the mark; `logo_url` is the legacy third-party URL some
+    # rows still hold. NEVER read either directly - read resolved_logo_url() below, so no
+    # caller has to know which of the two is set.
+    #
+    # WHY THE UPLOAD REPLACED THE URL: this image is rendered on the CONSENT SCREEN
+    # (afc_sso/templates/afc_sso/authorize.html), the page where a player decides whether
+    # to trust this org with their data. A URL field meant AFC embedded a
+    # third-party-controlled image on its own security-critical page: the partner could
+    # swap it for anything at any moment, and every player load pinged their server.
+    # Hosting the file ourselves means what AFC staff approved is what players see.
+    #
+    # WHY logo_url SURVIVES: rows provisioned before the upload existed still hold one,
+    # and a partner may legitimately have no file yet. Keeping it as a read-time fallback
+    # is what makes the migration a non-event - see resolved_logo_url().
+    logo = models.ImageField(upload_to="sso_partner_logos/", null=True, blank=True)
     logo_url = models.URLField(blank=True)
+
     homepage_url = models.URLField(blank=True)
 
     status = models.CharField(
@@ -82,6 +100,39 @@ class AFCSSOApplication(AbstractApplication):
             if getattr(self, toggle, False):
                 scopes.add(scope)
         return scopes
+
+    def logo_file_url(self):
+        """URL of the UPLOADED logo, or "" when this partner has no file of its own.
+
+        FileField.url raises ValueError when no file is associated (the same trap noted in
+        afc_sso/claims.py), so the emptiness check and the guard both live here rather than
+        being repeated, and forgotten, at each call site.
+        """
+        if not self.logo:
+            return ""
+        try:
+            return self.logo.url
+        except ValueError:
+            return ""
+
+    def resolved_logo_url(self):
+        """THE one logo value every caller should read: uploaded file first, legacy
+        `logo_url` second, "" when this partner has neither.
+
+        CONSUMED BY:
+          * the consent screen - afc_sso/views.py AFCAuthorizationView.get_context_data
+            passes it to authorize.html as `afc_logo_url`;
+          * the admin API - afc_sso/admin_api.py _serialize_detail, which makes it absolute
+            for the Next.js dashboard (a different origin), feeding the logo preview in
+            frontend/app/(a)/a/partners/_components/SsoAppsPanel.tsx.
+
+        The fallback is what makes the URL-to-upload switch safe in both directions: a row
+        that still holds only a legacy URL keeps rendering exactly as it did, and the moment
+        staff upload a file that file wins, with no second step and no data migration.
+        Returning "" rather than None matters too - authorize.html tests this value before
+        drawing an <img>, so a partner with no logo simply gets no logo, never an error.
+        """
+        return self.logo_file_url() or (self.logo_url or "")
 
     def is_active_partner(self):
         return self.status == "active"

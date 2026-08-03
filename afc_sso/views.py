@@ -148,6 +148,13 @@ class AFCAuthorizationView(AuthorizationView):
         context["afc_org_name"] = (
             getattr(application, "display_name", "") or getattr(application, "name", "")
         )
-        context["afc_logo_url"] = getattr(application, "logo_url", "")
+        # ONE resolved value, from AFCSSOApplication.resolved_logo_url(): the file AFC
+        # HOSTS when staff have uploaded one, the legacy third-party URL otherwise, and ""
+        # when the partner has neither - in which case authorize.html renders no <img> at
+        # all. This screen must never fail to render because of a logo, so an application
+        # that somehow lacks the method (or has none at all) resolves to "" rather than
+        # raising: a player who cannot read this page cannot make a decision on it.
+        resolve_logo = getattr(application, "resolved_logo_url", None)
+        context["afc_logo_url"] = resolve_logo() if callable(resolve_logo) else ""
         context["afc_scope_lines"] = describe_scopes(scopes)
         return context
