@@ -267,3 +267,33 @@ def event_players(request, partner, event_slug):
         for player in serialize._team_players(tteam)
     ]
     return _paginate_list(request, rows)
+
+
+# ── 8. event leaderboard designs ────────────────────────────────────────────────
+@api_view(["GET"])
+@partner_endpoint("can_read_designs")
+def event_designs(request, partner, event_slug):
+    """GET /events/<slug>/designs/ - paginated branded leaderboard DESIGN templates a
+    broadcaster can use to reproduce this event's standings graphics.
+
+    Purpose: a partner covering an AFC event needs the same brand package AFC/the organizer
+    uses on air - the background canvases (Instagram 1080x1350 + YouTube 1920x1080), the
+    positioned logos, and the text/accent colours. Serving them here means the partner
+    renders on-brand graphics itself instead of asking AFC for a file drop.
+
+    Request:  ?limit (<=100, default 25) & ?offset. Auth: X-API-Key header.
+    Response: the standard {results, has_more, next_offset, total_count} envelope; each row
+              is serialize.serialize_design (name + colours + flags always; the ART urls
+              only when include_media is on, and always ABSOLUTE).
+    Gating:   can_read_designs (403 when off) + the event must be in scope (404 otherwise).
+              Which designs belong to the event is decided by serialize.designs_for_event -
+              the owning organization's library, or the AFC-native one for native events -
+              so one partner can never read another organizer's brand art.
+    Consumed by: external partner integrations (broadcast graphics packages). No AFC
+              frontend surface calls this - the admin UI only toggles can_read_designs.
+    """
+    event = _visible_event_or_404(partner, event_slug)
+    if not event:
+        return Response({"error": "not_found"}, status=404)
+    qs = serialize.designs_for_event(event)
+    return _paginate(request, qs, serialize.serialize_design, partner)

@@ -38,7 +38,8 @@
 # that summation but strip the result to the public, toggled-on fields only.
 # Full spec: WEBSITE/tasks/partner-api-design.md (§8 serialization rules).
 # ──────────────────────────────────────────────────────────────────────────────
-from django.db.models import Case, Count, IntegerField, Min, Sum, Value, When
+from django.conf import settings
+from django.db.models import Case, Count, IntegerField, Min, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 
 from afc_tournament_and_scrims.models import (
@@ -46,6 +47,32 @@ from afc_tournament_and_scrims.models import (
     TournamentPlayerMatchStats,
     TournamentTeamMatchStats,
 )
+
+
+# ── media urls ─────────────────────────────────────────────────────────────────
+def _media_url(filefield):
+    """ABSOLUTE url for an ImageField/FileField, or None when the field is empty.
+
+    Why absolute: media lives on the AFC box's local disk (MEDIA_ROOT) and is served by
+    nginx under MEDIA_URL ("/media/..."). A partner fetches these urls from its OWN
+    infrastructure, so a site-relative path would resolve against the PARTNER's domain
+    and 404. settings.AFC_API_BASE_URL is the public origin that fronts /media/, so we
+    join the two. Same approach afc_sso.claims uses for the profile picture claim.
+
+    Guarded on purpose: an ImageField whose file is missing/blank raises ValueError on
+    .url, and every caller here is a serializer that must never 500 on absent art (spec
+    §11 "field toggle on but the underlying data absent -> emit null, not an error").
+
+    CALLERS: serialize_event (event_banner, uploaded_rules), serialize_team (team_logo),
+    serialize_player (UserProfile.esports_pic), serialize_design (background art + logos).
+    """
+    if not filefield:
+        return None
+    try:
+        path = filefield.url
+    except ValueError:
+        return None
+    return f"{settings.AFC_API_BASE_URL.rstrip('/')}{path}"
 
 
 # ── event ──────────────────────────────────────────────────────────────────────
@@ -69,6 +96,14 @@ def serialize_event(ev, partner):
     # Prize pool is a detail field, gated on include_prize.
     if partner.include_prize:
         out["prize_pool"] = ev.prizepool
+    # Event ART: the banner a broadcaster puts behind the event, plus the uploaded rules
+    # document (a real file, not prose). Both absolute; None when nothing was uploaded.
+    if partner.include_media:
+        out["banner_url"] = _media_url(ev.event_banner)
+        out["rules_file_url"] = _media_url(ev.uploaded_rules)
+    # Event COPY: the short rules blurb typed into the event form.
+    if partner.include_text:
+        out["rules_text"] = ev.event_rules or None
     return out
 
 
@@ -130,6 +165,90 @@ def serialize_match(match, partner):
     return out
 
 
+# ── team participation status ──────────────────────────────────────────────────
+# WHY THIS EXISTS
+# The teams endpoint used to list every TournamentTeam row identically: a team that won the
+# event, a team still sitting on the waitlist, a team that withdrew before the first map, and a
+# team that registered and never turned up all came back as the same shape with no way to tell
+# them apart. A partner building a bracket or a standings graphic therefore had no choice but to
+# show teams that never competed.
+#
+# We ADD a field rather than filtering the list. Filtering would silently change the results of
+# every partner already integrated against this endpoint (their team counts and their paging would
+# both move under them); an added key is backwards compatible, and it also leaves the decision of
+# what to display where it belongs, with the partner.
+#
+# EVERY value below is read straight off columns the database already keeps. Nothing here is
+# inferred from a heuristic, and there is deliberately no "eliminated", "qualified" or "champion"
+# state, because the schema cannot back those:
+#   TournamentTeam.status       - "active" in good standing, else "disqualified" / "withdrawn" /
+#                                 "left", or "pending". NOTE "pending" is real and deliberate but
+#                                 is MISSING from the model's TEAM_STATUS choices list: the
+#                                 registration view writes
+#                                 `status="pending" if event.is_sponsored else "active"`
+#                                 (afc_tournament_and_scrims.views), so on a SPONSORED event a
+#                                 registration lands awaiting approval. Django choices are
+#                                 validation-only and never constrained the column, which is why
+#                                 the clone really holds 9 such rows. Reporting them as
+#                                 "registered" would tell a partner they were accepted.
+#   TournamentTeam.is_waitlisted- registered but holding a waitlist slot, not a playing slot
+#   TournamentTeam.is_no_show   - an active team the organizer marked absent (owner 2026-06-17),
+#                                 which frees its slot for a waitlisted team
+#   TournamentTeamMatchStats.played - per match. A row with played=False is a team that was SEEDED
+#                                 into a match and did not turn up for it; the scoring code zeroes
+#                                 its placement points (afc_tournament_and_scrims.scoring). So
+#                                 "did this team ever actually play" is "does it have at least one
+#                                 stat row with played=True", not merely "does it have stat rows".
+#
+# PRECEDENCE, most specific first. A team that played two maps and then withdrew reports
+# "withdrawn", because for a partner the fact that it is out of the competition matters more than
+# the fact that it once played: the standing it left behind is stale either way.
+TEAM_STATUS_PRECEDENCE = ("disqualified", "withdrawn", "left", "pending", "waitlisted", "no_show",
+                          "played", "registered")
+
+# The status column values that ARE the answer on their own, in precedence order. Anything else
+# (today only "active") falls through to the derived states below.
+_TERMINAL_TEAM_STATUSES = ("disqualified", "withdrawn", "left", "pending")
+
+
+def team_status(tt, played_match_count):
+    """The partner-facing participation status of ONE tournament team.
+
+    `tt` is a TournamentTeam; `played_match_count` is how many of its TournamentTeamMatchStats
+    rows have played=True (serialize_team folds that into the aggregate it already runs, so this
+    costs no extra query). Returns one of TEAM_STATUS_PRECEDENCE and nothing else.
+
+    The returned set is CLOSED on purpose. TournamentTeam.status is an unconstrained CharField, so
+    a value nobody planned for can appear in it (that is exactly how "pending" got there); passing
+    such a value straight through would leak an unbounded vocabulary into a public API that
+    partners have to switch on. An unrecognised status therefore degrades into the derived states
+    rather than inventing a new contract value.
+
+    Documented for partners in WEBSITE/PARTNER_API.md ("Team participation status"). The values
+    are part of the public API contract: renaming one breaks every integration reading it, so add
+    a new value rather than repurposing an existing one.
+    """
+    # 1. Explicit states recorded on the row itself, which outrank everything derived below.
+    if tt.status in _TERMINAL_TEAM_STATUSES:
+        return tt.status
+    # 2. Holding a waitlist slot rather than a playing slot. Checked before the stat rows because
+    #    a waitlisted team can be seeded into a lobby without ever being promoted.
+    if tt.is_waitlisted:
+        return "waitlisted"
+    # 3. Active, expected, and marked absent by the organizer.
+    if tt.is_no_show:
+        return "no_show"
+    # 4. Actually turned up for at least one match. This is the distinction the whole field exists
+    #    for, and it is the SAME signal the rest of this serializer already trusts: a team with no
+    #    played rows is exactly the team whose roster comes back empty and whose stats come back
+    #    zero, because _team_players reads the stat rows too.
+    if played_match_count:
+        return "played"
+    # 5. Accepted into the event and has not played a match (yet, or ever). Also the safe landing
+    #    spot for an unrecognised status column value (see docstring).
+    return "registered"
+
+
 # ── team ───────────────────────────────────────────────────────────────────────
 def serialize_team(tt, partner):
     """One tournament team's public identity + its event-wide aggregated stats.
@@ -141,10 +260,27 @@ def serialize_team(tt, partner):
       • include_kills/damage/assists -> summed across the team's matches
       • include_rosters -> the team's player list (public handles only)
     The team name/tag are always-safe public handles; no team_id / tournament_team_id.
+
+    `status` is emitted UNGATED, alongside the handles, for the same reason they are: it is
+    structural identity, not a statistic. It also carries no information a spectator could not
+    read off the public event page. Putting it behind a toggle would have left every partner
+    already integrated exactly as unable to tell a team that played from one that never turned
+    up, which is the whole problem it exists to solve. See team_status above.
     """
     out = {"team": tt.team.team_name, "team_tag": tt.team.team_tag}
 
+    # Team BRAND art: the logo a broadcaster puts next to the team's name. Absolute url,
+    # None when the team never uploaded one.
+    if partner.include_media:
+        out["logo_url"] = _media_url(tt.team.team_logo)
+    # Team COPY: the short self-description shown on the team's site profile.
+    if partner.include_text:
+        out["description"] = tt.team.team_description or None
+
     # Aggregate this team's finalized per-match stat rows once (avoids N queries below).
+    # played_matches rides along in the SAME aggregate (a filtered Count, so it costs no extra
+    # query and leaves every other total folded over ALL rows exactly as before) and feeds
+    # team_status: it counts only the matches the team actually turned up for.
     agg = (
         TournamentTeamMatchStats.objects
         .filter(tournament_team=tt)
@@ -153,8 +289,12 @@ def serialize_team(tt, partner):
             kills=Sum("kills"),
             damage=Sum("damage"),
             assists=Sum("assists"),
+            played_matches=Count("pk", filter=Q(played=True)),
         )
     )
+
+    # Ungated, next to the handles (see docstring). Derived from columns only, never guessed.
+    out["status"] = team_status(tt, agg["played_matches"] or 0)
 
     if partner.include_placements:
         # Best result the team reached; null if it never recorded a match.
@@ -206,6 +346,19 @@ def serialize_player(user, partner, tournament_team=None):
     truly-global player view; every current caller passes the team.)
     """
     out = {"username": user.username, "in_game_id": user.uid}
+
+    # Player ESPORT IMAGE: the posed roster photo broadcasters use in lower-thirds and
+    # versus cards. It lives on UserProfile, NOT on User (bug found 2026-07-02: consumers
+    # read user.esports_pic, which does not exist, so images never showed) - so we resolve
+    # the profile through canonical_profile, the SAME lowest-profile_id row the writers
+    # (upload_esport_image) and every other reader use. Duplicate UserProfile rows exist in
+    # prod, so resolving any other row can miss an image that was really uploaded.
+    # This is a PUBLIC promo headshot, not PII: no real name, email or discord ever crosses.
+    if partner.include_media:
+        from afc_auth.models import canonical_profile
+
+        profile = canonical_profile(user)
+        out["esports_image_url"] = _media_url(profile.esports_pic) if profile else None
 
     # Only touch the stat tables if at least one stat toggle is on (avoids a needless query).
     if partner.include_kills or partner.include_damage or partner.include_assists:
@@ -330,6 +483,69 @@ def _solo_standings(event, partner):
         }
         _apply_standings_toggles(entry, r, partner)
         out.append(entry)
+    return out
+
+
+# ── leaderboard designs ────────────────────────────────────────────────────────
+def designs_for_event(event):
+    """The OrgLeaderboardDesign rows a partner may pull for ``event``.
+
+    A design is a branded leaderboard TEMPLATE (background art + placed logos + brand
+    colours) that afc_leaderboard.graphic composites live standings onto. The library is
+    scoped by owner (afc_organizers.OrgLeaderboardDesign.organization):
+      * event owned by an organization -> that organization's designs;
+      * native AFC event (organization IS NULL) -> the AFC-native library (organization
+        IS NULL), which is exactly the library AFC's own standalone leaderboards use.
+    So a partner only ever receives the brand art belonging to the event it was granted -
+    never another organizer's designs.
+
+    CALLERS: views_partner.event_designs (the can_read_designs endpoint).
+    """
+    from afc_organizers.models import OrgLeaderboardDesign
+
+    # prefetch_related("logos") folds each design's positioned logos into ONE extra query
+    # instead of one per design (serialize_design walks design.logos for every row).
+    return (OrgLeaderboardDesign.objects
+            .filter(organization=event.organization)      # None -> the AFC-native library
+            .prefetch_related("logos")
+            .order_by("-is_default", "id"))
+
+
+def serialize_design(design, partner):
+    """One leaderboard design's public template: identity + brand colours + its art.
+
+    Emitted so a broadcaster can reproduce AFC/organizer branding in its own graphics
+    package: the two background canvases (Instagram portrait 1080x1350, YouTube landscape
+    1920x1080), the positioned logos, and the text/accent colours the renderer draws with.
+
+    Art urls are gated on include_media (they are the licensed brand files) and absolute;
+    the colours/flags are cheap descriptive metadata and always emitted so a partner can
+    still colour-match when it has not been granted the art itself. No design PK: the
+    design's `name` is the handle, matching the no-raw-PKs rule the rest of this file keeps.
+    Logo positions are percent-of-canvas, centre-anchored, so they map to BOTH sizes.
+    """
+    out = {
+        "name": design.name,
+        "design_type": design.design_type,
+        "text_color": design.text_color,
+        "accent_color": design.accent_color,
+        "transparent_background": design.transparent_background,
+        "max_rows": design.max_rows,
+        "is_default": design.is_default,
+    }
+    if partner.include_media:
+        out["background_instagram_url"] = _media_url(design.background_instagram)
+        out["background_youtube_url"] = _media_url(design.background_youtube)
+        # Each positioned logo: where it sits (percent of canvas, centre-anchored) + size.
+        out["logos"] = [
+            {
+                "image_url": _media_url(logo.image),
+                "x_pct": logo.x_pct,
+                "y_pct": logo.y_pct,
+                "size": logo.size,
+            }
+            for logo in design.logos.all()
+        ]
     return out
 
 

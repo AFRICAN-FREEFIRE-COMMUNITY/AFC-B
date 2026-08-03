@@ -28,4 +28,8 @@ urlpatterns = [
     path("events/<slug:event_slug>/standings/", views_partner.event_standings, name="partner_event_standings"),
     path("events/<slug:event_slug>/teams/", views_partner.event_teams, name="partner_event_teams"),
     path("events/<slug:event_slug>/players/", views_partner.event_players, name="partner_event_players"),
+
+    # Branded leaderboard design templates for the event's owner (owner 2026-08-03), gated by
+    # can_read_designs. Same resolve-event-first pattern as the other nested resources.
+    path("events/<slug:event_slug>/designs/", views_partner.event_designs, name="partner_event_designs"),
 ]
