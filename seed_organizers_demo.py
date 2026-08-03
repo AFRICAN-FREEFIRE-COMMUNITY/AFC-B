@@ -1,4 +1,4 @@
-# Demo seed for the Organizer feature — idempotent (re-runnable).
+# Demo seed for the Organizer feature - idempotent (re-runnable).
 # Creates a few organizations with owners + sub-organizers at varied permission levels
 # so every surface shows populated data:
 #   - /a/organizations (admin list + detail/members tabs)
