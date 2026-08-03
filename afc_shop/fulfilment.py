@@ -3,8 +3,8 @@ afc_shop/fulfilment.py
 ================================================================================
 The MARKETPLACE ORDER FULFILMENT STATE MACHINE (Phase A, spec:
 WEBSITE/tasks/marketplace-design.md). ONE state machine + ONE API; the per-order
-vendor web page and the WhatsApp (Kapso) bot are both thin clients of THIS module.
-Kept isolated from views.py so the large legacy shop file is not churned.
+vendor web page and the WhatsApp bot are both thin clients of THIS module. Kept
+isolated from views.py so the large legacy shop file is not churned.
 
 THE STATE MACHINE (only physical/vendor orders enter it; digital diamond orders
 never do):
@@ -17,8 +17,8 @@ never do):
 
 Each transition: (a) is a Bearer-auth endpoint here, (b) is permission-gated to the
 order's vendor OR an AFC admin, (c) emits a buyer email where relevant
-(afc_shop/emails.py), (d) is reachable from BOTH the future vendor page AND the
-future Kapso webhook (they POST the same endpoints; the DB is the single source of
+(afc_shop/emails.py), (d) is reachable from BOTH the vendor page AND the inbound
+WhatsApp handler (afc_shop/vendor_whatsapp.py; the DB is the single source of
 truth, logic is never duplicated in the channel).
 
 WHO CALLS WHAT
@@ -29,8 +29,9 @@ WHO CALLS WHAT
     it sets fulfilment_state="received", emails the buyer, and notifies the vendor.
   - The transition endpoints (vendor_acknowledge_order, vendor_set_ship_date,
     vendor_mark_shipped, order_mark_completed) + the vendor order list
-    (vendor_my_orders) are registered in afc_shop/urls.py and will be consumed by
-    the SEPARATE per-order vendor page + the SEPARATE Kapso WhatsApp flow.
+    (vendor_my_orders) are registered in afc_shop/urls.py and are consumed by the
+    per-order vendor page. The WhatsApp channel does not POST them: it calls the
+    shared transition CORES below directly (afc_shop/vendor_whatsapp.py).
 
 MODELS TOUCHED
   Order (fulfilment_state / ship_date / acknowledged_at / shipped_at /
@@ -42,6 +43,7 @@ MODELS TOUCHED
 
 import logging
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.decorators import api_view
@@ -51,12 +53,32 @@ from afc_auth.views import validate_token
 # Super-admin god-mode: a head_admin/super_admin managing-as a vendor (X-Act-As-Vendor
 # header) sees that vendor's order queue. Inert for everyone else. See act_as.py.
 from afc_auth.act_as import resolve_acting_vendor
+# AFC's OWN WhatsApp Cloud API integration (afc_whatsapp). queue_template is the ONE
+# public send surface: it writes a WhatsAppMessage row, normalises the number to E.164,
+# checks the template is approved, and hands the send to the "whatsapp" Celery queue. It
+# never raises. This replaces the Kapso middleman notify_vendor used to send through.
+from afc_whatsapp.tasks import queue_template
 from .models import FulfillmentEvidence, Order, Vendor
 from . import emails
 
-# Module logger. notify_vendor logs here today (the Kapso WhatsApp send plugs in
-# at the marked seam); transition errors also log here for ops visibility.
+# Module logger. notify_vendor logs here (alongside the WhatsAppMessage row every send
+# writes); transition errors also log here for ops visibility.
 logger = logging.getLogger(__name__)
+
+
+# ── The vendor "new order" WhatsApp template ───────────────────────────────────
+# WhatsApp blocks free-form messages outside the recipient's 24 hour window, so a
+# business-initiated order alert to a vendor MUST be an approved TEMPLATE. These are
+# the name + language the owner registered in WhatsApp Manager, and they must match
+# EXACTLY: Meta treats "en_US" and "en" as different templates and rejects a mismatch
+# with error 132001 (afc_whatsapp/tasks.py refuses it locally first, using the
+# WhatsAppTemplate registry, so the reason lands on the message row).
+#
+# Overridable from settings so the owner can point at a re-registered template without
+# a code change; read at CALL time (not import) so override_settings works in tests.
+# They replace the deleted KAPSO_TEMPLATE_NAME / KAPSO_TEMPLATE_LANG settings.
+VENDOR_ORDER_TEMPLATE_NAME = "vendor_new_order"
+VENDOR_ORDER_TEMPLATE_LANG = "en_US"
 
 
 # ── Valid forward transitions (the ONLY legal state jumps) ─────────────────────
@@ -122,7 +144,7 @@ def _authorise(request, order):
     None and (user, vendor) are set (vendor may be None when an admin acts).
 
     Called by every transition endpoint below so the gate is identical everywhere
-    (and so the future vendor page + Kapso webhook share one auth path)."""
+    (and so the vendor page + the WhatsApp inbound handler share one auth path)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return None, None, Response({"message": "Invalid token"}, status=400)
@@ -187,27 +209,45 @@ def _transition(order, target, *, set_fields=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# notify_vendor — STUB seam for the WhatsApp (Kapso) send (SEPARATE follow-up)
+# notify_vendor — the outbound WhatsApp + email alert to the order's vendor
 # ─────────────────────────────────────────────────────────────────────────────
+def vendor_country(vendor):
+    """The country to normalise this vendor's WhatsApp number against, or None.
+
+    Vendor.whatsapp_number is stored RAW, exactly as the vendor typed it, so a large
+    share of them are in local form ("08051234567") rather than international
+    ("+2348051234567"). afc_whatsapp.phone.to_e164 can only fix that when it is told
+    which numbering plan the number belongs to, so we take the country off the vendor's
+    LOGIN (Vendor.user), using the same precedence as afc_auth.fx.user_currency: where
+    the person actually is, falling back to the country on their account.
+
+    Shared with the INBOUND side (afc_shop/vendor_whatsapp.py) so an inbound sender and
+    an outbound recipient are normalised identically, which is what makes "is this
+    sender the order's vendor?" a reliable comparison."""
+    user = getattr(vendor, "user", None)
+    if user is None:
+        return None
+    return getattr(user, "ip_country", "") or getattr(user, "country", "") or None
+
+
 def notify_vendor(order, event="received"):
-    """Notify the order's vendor that something happened (best-effort WhatsApp BUTTONS
-    via Kapso + an email heads-up).
+    """Notify the order's vendor that something happened (best-effort WhatsApp template
+    with tappable buttons + an email heads-up).
 
-    THE WHATSAPP CHANNEL (Kapso) is now two-way: this send puts TAPPABLE BUTTONS in
-    front of the vendor whose reply ids ENCODE the order + action ("ack:<order_id>",
-    "shipdate:<order_id>", "shipped:<order_id>"). When the vendor taps one, Meta/Kapso
-    POSTs the tap to our INBOUND webhook (afc_shop/whatsapp_webhook.py), which parses
-    "action:order_id" back out and drives the SAME _transition helpers below, so a tap
-    advances the order exactly like the fulfilment page would. (See the button-id map
-    in BUTTON_ACTIONS in whatsapp_webhook.py — the two sides MUST agree on these ids.)
+    THE WHATSAPP CHANNEL IS TWO-WAY: this send puts TAPPABLE QUICK-REPLY BUTTONS in
+    front of the vendor whose payloads ENCODE the order + action ("ack:<order_id>",
+    "shipdate:<order_id>", "shipped:<order_id>"). When the vendor taps one, Meta POSTs
+    the tap to AFC's single inbound webhook (afc_whatsapp/webhooks.py), which hands it
+    to afc_shop/vendor_whatsapp.py handle_inbound_message; that parses "action:order_id"
+    back out and drives the SAME transition cores below, so a tap advances the order
+    exactly like the fulfilment page would. (See BUTTON_ACTIONS in vendor_whatsapp.py:
+    the two sides MUST agree on these payload prefixes.)
 
-    For now it:
+    It:
       1. logs the event (so ops can see vendor notifications firing),
-      2. if the vendor has a whatsapp_number, sends the approved "vendor_new_order"
-         TEMPLATE via send_whatsapp_template (the only thing WhatsApp allows for COLD
-         contact, outside the 24h window) carrying the 3 action buttons; if that send
-         fails (e.g. template not approved yet), it FALLS BACK to send_whatsapp_buttons
-         (free-form, in-window only) so nothing breaks before approval. Best-effort, and
+      2. if the vendor has a whatsapp_number, queues the approved "vendor_new_order"
+         TEMPLATE through afc_whatsapp (the only thing WhatsApp allows for COLD contact,
+         outside the 24 hour window) carrying the 3 action buttons, and
       3. if the vendor has a contact_email, sends them a plain heads-up via the shared
          afc_auth send_email (best-effort; a mail failure never blocks the order).
 
@@ -219,69 +259,49 @@ def notify_vendor(order, event="received"):
 
     logger.info("notify_vendor: order #%s event=%s vendor=%s", order.id, event, vendor.display_name)
 
-    # ── WhatsApp heads-up to the vendor via Kapso (best-effort, never blocks). ──
-    # We send the order summary plus 3 reply BUTTONS. Each button's reply id encodes the
-    # action and the order id as "action:order_id" so the inbound webhook can map a tap
-    # straight back to THIS order (titles are capped at 20 chars by Meta + the kapso
-    # client, so they stay short and human-readable). afc_shop.services.kapso.* never
-    # raises (it returns {"ok": False, ...} on failure), but we still guard so notify
-    # cannot block the payment/fulfilment path.
+    # ── WhatsApp heads-up to the vendor (best-effort, never blocks the order). ──
+    # queue_template writes the WhatsAppMessage row, normalises the number, checks the
+    # template registry and hands the send to the "whatsapp" Celery queue; it never
+    # raises. We still guard the whole block so a surprise here (a bad order field, a
+    # broker hiccup) can never take down the payment/fulfilment path that called us.
+    #
+    # NOTE on what changed with the Kapso cutover: there is no free-form interactive
+    # button FALLBACK any more. The send is now ASYNCHRONOUS, so there is no synchronous
+    # "did Meta accept it" answer to branch on, and afc_whatsapp deliberately exposes
+    # only template + plain-text sends. That is not a loss: the fallback only ever
+    # delivered inside the vendor's 24 hour window, and a refused template now lands on
+    # the WhatsAppMessage row with Meta's reason instead of silently degrading.
     if vendor.whatsapp_number:
         try:
-            from django.conf import settings
-            from afc_shop.services.kapso import send_whatsapp_template, send_whatsapp_buttons
-
             full_name = f"{order.first_name} {order.last_name}".strip()
             address = f"{order.address}, {order.city}, {order.state}".strip(", ")
 
-            # reply-id / payload encoding = "<action>:<order_id>". Used IDENTICALLY by the
-            # template (button.payload) and the free-form fallback (interactive.button_reply.id),
-            # so a tap maps back to THIS order whichever channel delivered it. The inbound
-            # webhook (whatsapp_webhook.py) enforces the real state machine, so an out-of-order
-            # tap is harmlessly rejected. Titles <=20 chars (Meta limit) on the fallback buttons.
+            # Payload encoding = "<action>:<order_id>", echoed back to us verbatim when
+            # the vendor taps, which is how a tap maps back to THIS order. The inbound
+            # handler enforces the real state machine, so an out-of-order tap (say
+            # "shipped" before a ship date) is harmlessly rejected.
             ack_id = f"ack:{order.id}"
             shipdate_id = f"shipdate:{order.id}"
             shipped_id = f"shipped:{order.id}"
 
-            # ── PRIMARY: the approved WhatsApp TEMPLATE. This is the ONLY thing WhatsApp
-            # allows for COLD contact (outside the recipient's 24h window), so it is the
-            # correct first-contact path for a brand-new order alert. Body vars
-            # {{1}}..{{4}} = vendor name, order #, buyer, delivery address; the 3 quick-reply
-            # buttons carry the action payloads. The template name + language come from
-            # settings (KAPSO_TEMPLATE_NAME / KAPSO_TEMPLATE_LANG); the language MUST match
-            # the template's approved locale in Meta (en_US != en) or Meta returns 132001. ──
-            res = send_whatsapp_template(
+            queue_template(
                 vendor.whatsapp_number,
-                getattr(settings, "KAPSO_TEMPLATE_NAME", "vendor_new_order"),
+                getattr(settings, "VENDOR_ORDER_TEMPLATE_NAME", VENDOR_ORDER_TEMPLATE_NAME),
+                getattr(settings, "VENDOR_ORDER_TEMPLATE_LANG", VENDOR_ORDER_TEMPLATE_LANG),
+                # Body vars {{1}}..{{4}} of the approved template, IN ORDER:
+                # vendor name, order number, buyer name, delivery address.
                 body_params=[vendor.display_name, str(order.id), full_name, address],
                 button_payloads=[ack_id, shipdate_id, shipped_id],
-                language_code=getattr(settings, "KAPSO_TEMPLATE_LANG", "en_US"),
+                # user=None on purpose: a vendor is messaged on their BUSINESS number,
+                # which is not the WhatsApp number on their AFC profile, so neither the
+                # profile opt-in flag nor the profile number applies to this send. The
+                # WhatsAppMessage row is therefore logged against the phone only.
+                user=None,
+                # ...but we still need a country, or a locally-written number like
+                # "08051234567" cannot be resolved to E.164 at all. See vendor_country.
+                country=vendor_country(vendor),
+                context=f"vendor_order_{event}",
             )
-
-            # ── FALLBACK: if the template send failed (most commonly it is not approved yet
-            # -> Meta 132001, or a language mismatch), drop to free-form interactive buttons.
-            # These deliver ONLY inside the 24h window, but that covers active testing and any
-            # vendor who messaged us recently, so the flow keeps working before the template is
-            # live. Once the template is approved the PRIMARY path succeeds and this is skipped. ──
-            if not res.get("ok"):
-                logger.info(
-                    "notify_vendor: template send failed for order #%s (%s); "
-                    "falling back to interactive buttons.",
-                    order.id, res.get("error"),
-                )
-                msg = (
-                    f"New AFC order #{order.id} to fulfil.\n"
-                    f"Buyer: {full_name}\n"
-                    f"Deliver to: {address}\n"
-                    f"Tap a button below to act on it, or open your fulfilment page on "
-                    f"africanfreefirecommunity.com."
-                )
-                buttons = [
-                    {"id": ack_id, "title": "Order received"},
-                    {"id": shipdate_id, "title": "Set ship date"},
-                    {"id": shipped_id, "title": "Mark shipped"},
-                ]
-                send_whatsapp_buttons(vendor.whatsapp_number, msg, buttons)
         except Exception as e:  # WhatsApp must never block the order
             logger.warning("notify_vendor whatsapp failed for order #%s: %s", order.id, e)
 
@@ -354,7 +374,7 @@ def notify_order_paid(order):
         except Exception as e:
             logger.warning("order-received email failed for order #%s: %s", order.id, e)
 
-        # Notify the vendor (log + email today; Kapso WhatsApp send later).
+        # Notify the vendor (log + the WhatsApp template + an email heads-up).
         notify_vendor(order, event="received")
     except Exception as e:
         # This runs INSIDE the payment-verify path; a failure here must never turn a
@@ -363,7 +383,7 @@ def notify_order_paid(order):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Transition endpoints (vendor page + Kapso bot both POST these)
+# Transition endpoints (the vendor page POSTs these)
 # ─────────────────────────────────────────────────────────────────────────────
 def _get_order_or_404(order_id):
     """Fetch an order with its items prefetched (for the vendor walk + emails), or
@@ -375,8 +395,8 @@ def _get_order_or_404(order_id):
     )
 
 
-# ── Shared transition CORES (called by BOTH the HTTP endpoints AND the Kapso webhook) ──
-# The HTTP endpoints do their OWN Bearer auth (_authorise); the Kapso inbound webhook
+# ── Shared transition CORES (called by BOTH the HTTP endpoints AND the WhatsApp channel) ──
+# The HTTP endpoints do their OWN Bearer auth (_authorise); the WhatsApp inbound handler
 # resolves the vendor from the sender's WhatsApp number instead (no token). Both then
 # call these cores so the state change + buyer email happen IDENTICALLY no matter which
 # front door drove it (the DB is the single source of truth; logic is never duplicated).
@@ -416,8 +436,9 @@ def vendor_acknowledge_order(request):
     "shipped").
 
     AUTH: Bearer -> _authorise (this order's vendor OR an AFC admin).
-    CONSUMED BY: the per-order vendor page "Order received" button + the Kapso
-    "Order received" WhatsApp button (both SEPARATE follow-ups)."""
+    CONSUMED BY: the per-order vendor page "Order received" button. (The WhatsApp
+    "Order received" tap does not POST here; it calls apply_acknowledge directly from
+    afc_shop/vendor_whatsapp.py.)"""
     order = _get_order_or_404(request.data.get("order_id"))
     if not order:
         return Response({"message": "Order not found"}, status=404)
@@ -426,7 +447,7 @@ def vendor_acknowledge_order(request):
     if err:
         return err
 
-    # Delegate the state change to the shared core (also used by the Kapso webhook).
+    # Delegate the state change to the shared core (also used by the WhatsApp channel).
     ok, err = apply_acknowledge(order)
     if not ok:
         return err
@@ -443,7 +464,8 @@ def vendor_set_ship_date(request):
     "shipped" email).
 
     AUTH: Bearer -> _authorise (vendor OR admin).
-    CONSUMED BY: the vendor page date picker + the Kapso "Set ship date" flow."""
+    CONSUMED BY: the vendor page date picker. (The WhatsApp "Set ship date" tap
+    cannot carry a date, so it prompts the vendor to use this page.)"""
     order = _get_order_or_404(request.data.get("order_id"))
     if not order:
         return Response({"message": "Order not found"}, status=404)
@@ -456,7 +478,7 @@ def vendor_set_ship_date(request):
     if not ship_date:
         return Response({"message": "ship_date is required"}, status=400)
 
-    # Delegate the state change to the shared core (also used by the Kapso webhook).
+    # Delegate the state change to the shared core (also used by the WhatsApp channel).
     ok, err = apply_set_ship_date(order, ship_date)
     if not ok:
         return err
@@ -477,9 +499,9 @@ def vendor_mark_shipped(request):
     BUYER "your order is on the way".
 
     AUTH: Bearer -> _authorise (vendor OR admin).
-    CONSUMED BY: the vendor page "Mark shipped" + evidence upload, and the Kapso
-    "Mark shipped" flow (its inbound photo/video also lands as FulfillmentEvidence
-    via the SEPARATE Kapso media webhook)."""
+    CONSUMED BY: the vendor page "Mark shipped" + evidence upload. The WhatsApp
+    "Mark shipped" tap calls apply_mark_shipped directly, and a photo/video the vendor
+    then sends lands as FulfillmentEvidence via afc_shop/vendor_whatsapp.py."""
     order = _get_order_or_404(request.data.get("order_id"))
     if not order:
         return Response({"message": "Order not found"}, status=404)
@@ -489,14 +511,14 @@ def vendor_mark_shipped(request):
         return err
 
     # Advance state first (shared core: state change + buyer "on the way" email). If it
-    # is an illegal jump we do not store evidence. The Kapso webhook calls this same core.
+    # is an illegal jump we do not store evidence. The WhatsApp channel calls this same core.
     ok, err = apply_mark_shipped(order)
     if not ok:
         return err
 
     # Store any uploaded files as evidence. request.FILES is a MultiValueDict; accept
     # every uploaded file under any field name (the page may send "evidence",
-    # multiple files, etc.). kind is inferred from the content type prefix. (The Kapso
+    # multiple files, etc.). kind is inferred from the content type prefix. (The WhatsApp
     # webhook stores its inbound photo/video as evidence on its own side.)
     saved = 0
     note = request.data.get("note", "")
@@ -527,8 +549,7 @@ def order_mark_completed(request):
     who completes it).
 
     AUTH: Bearer -> _authorise (vendor OR admin).
-    CONSUMED BY: the vendor page "Mark delivered" + an admin order action + the
-    Kapso flow."""
+    CONSUMED BY: the vendor page "Mark delivered" + an admin order action."""
     order = _get_order_or_404(request.data.get("order_id"))
     if not order:
         return Response({"message": "Order not found"}, status=404)
@@ -593,8 +614,7 @@ def vendor_my_orders(request):
     fulfilment state. They do NOT get the buyer's email, phone, account id, payment
     references, or money internals.
 
-    CONSUMED BY: the per-order vendor page / vendor dashboard order list (SEPARATE
-    follow-up) and, indirectly, the Kapso flow when it lists a vendor's orders."""
+    CONSUMED BY: the per-order vendor page / vendor dashboard order list."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return Response({"message": "Invalid token"}, status=400)

@@ -11,8 +11,9 @@ from .stripe_checkout import stripe_buy_now, stripe_verify, stripe_webhook
 from .views_shipping import shipping_quote
 # Marketplace fulfilment state machine (Phase A, afc_shop/fulfilment.py). Imported
 # explicitly (not via *) so the vendor transition + queue endpoints are clearly
-# sourced. These are the ONE backend API the per-order vendor page AND the Kapso
-# WhatsApp flow both call (both SEPARATE follow-ups).
+# sourced. These are the ONE backend API the per-order vendor page calls; the
+# WhatsApp channel drives the SAME state machine through the shared transition cores
+# in fulfilment.py rather than over HTTP (see afc_shop/vendor_whatsapp.py).
 from .fulfilment import (
     vendor_acknowledge_order,
     vendor_set_ship_date,
@@ -68,11 +69,6 @@ from .paystack_payout import (
     vendor_payout_method,
     admin_retry_owed_paystack_payouts,
 )
-# Marketplace WhatsApp INBOUND webhook (afc_shop/whatsapp_webhook.py). The receiving half
-# of the two-way Kapso fulfilment flow: a vendor's button tap / inbound media advances the
-# SAME state machine the vendor page drives. GET verifies the URL with Meta; POST handles
-# inbound events. Public (Meta/Kapso is the caller), so it is NOT auth-gated.
-from .whatsapp_webhook import whatsapp_webhook
 # Saved delivery info (owner request 2026-06-29): user-scoped saved-address CRUD + the
 # SUPER-ADMIN-ONLY view of all collected customer delivery PII (afc_shop/delivery.py).
 from .delivery import (
@@ -165,9 +161,8 @@ urlpatterns = [
 
     # ── Marketplace order fulfilment state machine (Phase A) ──
     # The vendor (or an AFC admin) drives an order through received -> acknowledged
-    # -> ship_scheduled -> shipped (+evidence) -> completed. Consumed by the SEPARATE
-    # per-order vendor page + the SEPARATE Kapso WhatsApp flow (both POST the same
-    # endpoints). vendor-orders is the caller-vendor's PII-scoped fulfilment queue.
+    # -> ship_scheduled -> shipped (+evidence) -> completed. Consumed by the per-order
+    # vendor page. vendor-orders is the caller-vendor's PII-scoped fulfilment queue.
     path("fulfilment/acknowledge/", vendor_acknowledge_order, name="vendor_acknowledge_order"),
     path("fulfilment/set-ship-date/", vendor_set_ship_date, name="vendor_set_ship_date"),
     path("fulfilment/mark-shipped/", vendor_mark_shipped, name="vendor_mark_shipped"),
@@ -251,10 +246,10 @@ urlpatterns = [
     path("wishlist/", list_my_wishlist, name="list_my_wishlist"),
     path("wishlist/ids/", my_wishlist_ids, name="my_wishlist_ids"),
 
-    # ── Marketplace: WhatsApp INBOUND webhook (afc_shop/whatsapp_webhook.py) ──
-    # GET = Meta verification handshake (echo hub.challenge). POST = inbound events
-    # (button taps advance the order; inbound media -> FulfillmentEvidence). Public:
-    # Meta/Kapso is the caller, so NO auth gate (sender-number == vendor is the check).
-    # Pairs with fulfilment.notify_vendor (the outbound buttons whose taps land here).
-    path("whatsapp/webhook/", whatsapp_webhook, name="whatsapp_webhook"),
+    # ── Marketplace WhatsApp: there is NO route here any more (2026-08-03) ──
+    # The Kapso-era webhook at /shop/whatsapp/webhook/ is deleted. Meta allows ONE
+    # callback URL per WhatsApp number, so every inbound event now arrives at
+    # /whatsapp/webhook/ (afc_whatsapp/webhooks.py) and is dispatched from there into
+    # afc_shop/vendor_whatsapp.py handle_inbound_message, which still owns all of the
+    # marketplace's own logic. Nothing to register.
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
