@@ -1485,23 +1485,34 @@ def get_team_details(request):
 
     # Members
     members_qs = TeamMembers.objects.filter(team=team).select_related("member")
-    # Per-member profile-image presence for the registration requirement marker (owner 2026-06-22):
-    # the tournament register flow shows, per selected roster member, which event requirements they
-    # still fail (UID / Discord / esport image / profile image). uid + discord_id already come from
-    # User below; the two image flags come from UserProfile. Prefetch all profiles in ONE query
-    # (keyed by user_id) to avoid an N+1 across the roster, and expose only booleans (no media URLs)
-    # since the marker only needs "present or not". Consumed by EventDetailsWrapper's roster step.
+    # Per-member profile-asset presence for the registration requirement marker (owner 2026-06-22,
+    # WhatsApp added 2026-08-03): the tournament register flow shows, per selected roster member,
+    # which event requirements they still fail (UID / Discord / esport image / profile image /
+    # WhatsApp number). uid + discord_id already come from User below; the two image flags and the
+    # WhatsApp number come from UserProfile. Prefetch all profiles in ONE query (keyed by user_id) to
+    # avoid an N+1 across the roster, and expose only booleans (no media URLs, no phone number) since
+    # the marker only needs "present or not". Consumed by EventDetailsWrapper's roster step.
+    # Ordered DESC by profile_id so the LAST write per user is the LOWEST id: UserProfile.user is a
+    # plain FK and duplicate rows exist in prod, and this must resolve the same canonical row as
+    # afc_auth.canonical_profile() (which the profile editor writes) or the badge would contradict
+    # what the player just saved.
     from afc_auth.models import UserProfile
     member_ids = [m.member.user_id for m in members_qs]
     profiles_by_user = {
         p.user_id: p
-        for p in UserProfile.objects.filter(user_id__in=member_ids)
+        for p in UserProfile.objects.filter(user_id__in=member_ids).order_by("-profile_id")
     }
 
     def _has_image(user_id, field):
         prof = profiles_by_user.get(user_id)
         val = getattr(prof, field, None) if prof else None
         return bool(val and str(val) != "")
+
+    def _has_whatsapp(user_id):
+        """True when this member has a non-blank UserProfile.whatsapp_number on file.
+        Backs the require_whatsapp event gate's per-member badge (never returns the number)."""
+        prof = profiles_by_user.get(user_id)
+        return bool((getattr(prof, "whatsapp_number", "") or "").strip())
 
     # ── Esport-image visibility (owner 2026-07-02): "members of a team and admins should see the
     # esport images of all players on the team's profile". TIGHTER than stats_visible (which a
@@ -1536,6 +1547,10 @@ def get_team_details(request):
             # register flow can show a per-member ✓/✗ for every active event requirement.
             "has_esports_image": _has_image(m.member.user_id, "esports_pic"),
             "has_profile_image": _has_image(m.member.user_id, "profile_pic"),
+            # WhatsApp marker (owner 2026-08-03): pairs with the flags above so an event with
+            # Event.require_whatsapp on can badge exactly which roster members have no number yet.
+            # Boolean only - the number itself is never exposed to teammates.
+            "has_whatsapp": _has_whatsapp(m.member.user_id),
             # Letter-avatar marker (Letter Avatars feature, owner 2026-06-29): does this member own
             # any A-Z letter avatars of their own? Mirrors has_esports_image above. Lets the
             # team-edit letters panel show which members already contribute letters to the team's
