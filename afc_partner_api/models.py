@@ -41,6 +41,12 @@ class Partner(models.Model):
     can_read_standings = models.BooleanField(default=False)
     can_read_teams = models.BooleanField(default=False)
     can_read_players = models.BooleanField(default=False)
+    # Branded leaderboard DESIGN assets for the event's owner (owner 2026-08-03): gates
+    # GET /events/<slug>/designs/, which hands a broadcaster the background art, placed
+    # logos and brand colours behind an event's standings graphics. Its own resource
+    # toggle (not a field toggle) because it is a whole extra endpoint, and because
+    # design art is licensed brand material an admin should grant deliberately.
+    can_read_designs = models.BooleanField(default=False)
 
     # ── Field toggles (which fields appear) ──
     include_placements = models.BooleanField(default=False)
@@ -51,13 +57,26 @@ class Partner(models.Model):
     include_maps = models.BooleanField(default=False)
     include_prize = models.BooleanField(default=False)
     include_mvp = models.BooleanField(default=False)
+    # ── Media + text (owner 2026-08-03, backlog item 8) ──
+    # include_media gates every IMAGE/FILE url the API emits: event banners + uploaded
+    # rules files, team logos, player esport images, and the design art on the designs
+    # endpoint. Every such url is ABSOLUTE (settings.AFC_API_BASE_URL) because a partner
+    # fetches it from its own infrastructure, where a site-relative /media/... path is
+    # meaningless. See serialize._media_url.
+    include_media = models.BooleanField(default=False)
+    # include_text gates human-readable PROSE: the event's rules blurb and a team's
+    # description. Kept separate from include_media so an admin can hand over copy
+    # without handing over brand art (and the reverse).
+    include_text = models.BooleanField(default=False)
 
 
 # Whitelist that drives admin-edit + serialization (mirrors PERMISSION_FIELDS).
 RESOURCE_TOGGLES = ("can_read_events", "can_read_stages", "can_read_matches",
-                    "can_read_standings", "can_read_teams", "can_read_players")
+                    "can_read_standings", "can_read_teams", "can_read_players",
+                    "can_read_designs")
 FIELD_TOGGLES = ("include_placements", "include_kills", "include_damage", "include_assists",
-                 "include_rosters", "include_maps", "include_prize", "include_mvp")
+                 "include_rosters", "include_maps", "include_prize", "include_mvp",
+                 "include_media", "include_text")
 PARTNER_TOGGLE_FIELDS = RESOURCE_TOGGLES + FIELD_TOGGLES
 
 

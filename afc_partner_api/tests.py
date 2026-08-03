@@ -8,8 +8,11 @@
 # bound to its partner with the expected active/rate-limit defaults.
 # Full spec: WEBSITE/tasks/partner-api-design.md (§5 data model).
 # ──────────────────────────────────────────────────────────────────────────────
+import shutil
+import tempfile
+
 from django.db import models
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.test.client import RequestFactory
 
 from afc_partner_api import auth
@@ -528,6 +531,234 @@ class SerializeTests(TestCase):
         # Sanity: an UNSCOPED fold (the old bug) WOULD have summed both events.
         lifetime = serialize_player(self.player1, self.partner)
         self.assertEqual(lifetime["kills"], 6 + 50)  # proves the seed actually spans 2 events
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Team participation status (the audit gap: "a partner cannot tell who actually played").
+#
+# The teams endpoint listed a team that won the event, a team still on the waitlist, a team that
+# withdrew, and a team that registered and never turned up as the SAME shape. Measured on the
+# production clone, that is not a corner case: of 375 TournamentTeam rows, 191 had never played a
+# single match, against 160 that had. A partner drawing a bracket from this endpoint was showing
+# roughly half again as many teams as actually competed.
+#
+# WHY EACH CASE BELOW IS HERE: every one is a shape that really exists in the clone, with the count
+# it occurs at, so a regression is caught by the data that motivated the field. The three states
+# with no clone rows (disqualified / withdrawn / left) are covered too because they are declared
+# TournamentTeam.TEAM_STATUS choices that the organizer tooling writes.
+# ──────────────────────────────────────────────────────────────────────────────
+class TeamParticipationStatusTests(TestCase):
+    def setUp(self):
+        from afc_auth.models import User
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import (
+            Event, Stages, StageGroups, Leaderboard, Match, TournamentTeam,
+        )
+
+        self.partner = Partner.objects.create(name="ESL", slug="esl")
+        self.event = Event.objects.create(
+            event_name="AFC Open", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-01-01", end_date="2026-01-02",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="$1000", event_rules="-", event_status="completed",
+            registration_link="https://x", tournament_tier="tier_1", number_of_stages=1,
+            partner_published=True, organization=None)
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="Grand Final", start_date="2026-01-02",
+            end_date="2026-01-02", number_of_groups=1, stage_format="br - normal",
+            teams_qualifying_from_stage=2, stage_status="completed")
+        self.group = StageGroups.objects.create(
+            stage=self.stage, group_name="Group A", playing_date="2026-01-02",
+            playing_time="18:00", teams_qualifying=2, match_count=1, match_maps=["bermuda"])
+        self.admin = User.objects.create_user(
+            username="afcstaff", email="afc@x.com", password="x", full_name="AFC Staff",
+            role="admin")
+        self.leaderboard = Leaderboard.objects.create(
+            leaderboard_name="GF LB", event=self.event, stage=self.stage, group=self.group,
+            creator=self.admin, placement_points={"1": 12, "2": 9}, kill_point=1.0,
+            leaderboard_method="manual")
+        self._n = 0
+        self._match_n = 0
+
+    def _team(self, **kwargs):
+        """One TournamentTeam on the event. Each call mints its own Team so the
+        uniq_event_team_registration constraint (one row per event+team) is respected."""
+        from afc_auth.models import User
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import TournamentTeam
+
+        self._n += 1
+        owner = User.objects.create_user(
+            username=f"owner{self._n}", email=f"o{self._n}@x.com", password="x",
+            full_name="Owner", role="player")
+        team = Team.objects.create(
+            team_name=f"Team {self._n}", team_tag=f"T{self._n}", join_settings="open",
+            team_creator=owner, team_owner=owner, country="Nigeria")
+        return TournamentTeam.objects.create(event=self.event, team=team, **kwargs)
+
+    def _stats(self, tteam, played=True):
+        """One team-match-stats row for `tteam`, on a match of its own.
+
+        A NEW Match per call because of the uniq_team_stats_per_match constraint (one stats row
+        per team per match). Several tests below need a team to hold two rows, one played and one
+        not, which is only expressible across two maps anyway.
+        """
+        from afc_tournament_and_scrims.models import Match, TournamentTeamMatchStats
+
+        self._match_n += 1
+        match = Match.objects.create(
+            leaderboard=self.leaderboard, group=self.group, match_number=self._match_n,
+            match_map="bermuda", result_inputted=True)
+        return TournamentTeamMatchStats.objects.create(
+            match=match, tournament_team=tteam, placement=1, kills=10, damage=2500,
+            assists=4, placement_points=12, kill_points=10, total_points=22, played=played)
+
+    def _status(self, tteam):
+        from afc_partner_api.serialize import serialize_team
+
+        return serialize_team(tteam, self.partner)["status"]
+
+    # ── the states, each as it really occurs in the clone ──
+    def test_active_team_with_a_played_match_is_played(self):
+        # 160 clone rows.
+        tteam = self._team(status="active")
+        self._stats(tteam, played=True)
+        self.assertEqual(self._status(tteam), "played")
+
+    def test_active_team_with_no_match_stats_is_registered(self):
+        # 191 clone rows - the case the whole field exists for. This team is accepted into the
+        # event and has never appeared in a match, so a bracket must not show it as a competitor.
+        self.assertEqual(self._status(self._team(status="active")), "registered")
+
+    def test_waitlisted_team_is_waitlisted(self):
+        # 16 clone rows. The waitlist registration path leaves status="active" and only sets the
+        # flag, so reading status alone would have called this team accepted.
+        self.assertEqual(self._status(self._team(status="active", is_waitlisted=True)), "waitlisted")
+
+    def test_no_show_team_is_no_show(self):
+        # 8 clone rows. An active, expected team the organizer marked absent (owner 2026-06-17),
+        # freeing its slot for a waitlisted team.
+        self.assertEqual(self._status(self._team(status="active", is_no_show=True)), "no_show")
+
+    def test_pending_registration_is_pending(self):
+        # 9 clone rows, all on one event. The registration view writes
+        # status="pending" if event.is_sponsored else "active", so on a SPONSORED event a
+        # registration lands awaiting approval. "pending" is absent from the model's TEAM_STATUS
+        # choices (Django choices never constrained the column), which is exactly why this must be
+        # asserted: reporting it as "registered" would tell the partner the team was accepted.
+        self.assertEqual(self._status(self._team(status="pending")), "pending")
+
+    def test_declared_end_states_pass_through(self):
+        # No clone rows today, but all three are declared TEAM_STATUS choices the organizer
+        # tooling writes (afc_tournament_and_scrims.views filters on them by name).
+        for status in ("disqualified", "withdrawn", "left"):
+            with self.subTest(status=status):
+                self.assertEqual(self._status(self._team(status=status)), status)
+
+    # ── the distinctions that are easy to get wrong ──
+    def test_seeded_but_absent_is_not_played(self):
+        # TournamentTeamMatchStats.played=False is a team SEEDED into a match that did not turn up
+        # (scoring.py zeroes its placement points). Counting stat ROWS rather than PLAYED rows
+        # would have reported this team as a competitor.
+        tteam = self._team(status="active")
+        self._stats(tteam, played=False)
+        self.assertEqual(self._status(tteam), "registered")
+
+    def test_one_played_match_among_absences_counts_as_played(self):
+        tteam = self._team(status="active")
+        self._stats(tteam, played=False)
+        self._stats(tteam, played=True)
+        self.assertEqual(self._status(tteam), "played")
+
+    def test_withdrawing_outranks_having_played(self):
+        # A team that played two maps and then withdrew is OUT, and that matters more to a partner
+        # than the stale standing it left behind.
+        tteam = self._team(status="withdrawn")
+        self._stats(tteam, played=True)
+        self.assertEqual(self._status(tteam), "withdrawn")
+
+    def test_waitlisted_outranks_having_played(self):
+        # A waitlisted team can be seeded into a lobby without ever being promoted.
+        tteam = self._team(status="active", is_waitlisted=True)
+        self._stats(tteam, played=True)
+        self.assertEqual(self._status(tteam), "waitlisted")
+
+    def test_unknown_status_value_never_leaks_into_the_contract(self):
+        # TournamentTeam.status is an unconstrained CharField, which is how "pending" appeared in
+        # the first place. A value nobody planned for must degrade into a documented state rather
+        # than widening the vocabulary partners have to switch on.
+        from afc_partner_api.serialize import TEAM_STATUS_PRECEDENCE
+
+        tteam = self._team(status="some_future_state")
+        self._stats(tteam, played=True)
+        self.assertEqual(self._status(tteam), "played")
+        self.assertIn(self._status(tteam), TEAM_STATUS_PRECEDENCE)
+
+    # ── the contract around the field ──
+    def test_status_is_ungated_and_nothing_else_changed(self):
+        # status rides with the public handles, not behind a toggle: a partner already integrated
+        # would otherwise stay exactly as unable to tell a competitor from a no-show. Every OTHER
+        # key must still be toggle-gated, so a default (all-off) partner sees these three and
+        # nothing more.
+        from afc_partner_api.serialize import serialize_team
+
+        tteam = self._team(status="active")
+        self._stats(tteam, played=True)
+
+        out = serialize_team(tteam, self.partner)
+
+        self.assertEqual(set(out), {"team", "team_tag", "status"})
+        self.assertEqual(out["team"], "Team 1")
+        self.assertEqual(out["status"], "played")
+
+    def test_stat_totals_are_unaffected_by_the_played_filter(self):
+        # played_matches is a FILTERED Count folded into the aggregate that already ran. The other
+        # totals must keep folding over ALL rows, so an absent-but-penalised map still counts
+        # exactly as it did before this field existed.
+        from afc_partner_api.serialize import serialize_team
+
+        tteam = self._team(status="active")
+        self._stats(tteam, played=True)
+        self._stats(tteam, played=False)
+        for f in FIELD_TOGGLES:
+            setattr(self.partner, f, True)
+        self.partner.save()
+
+        out = serialize_team(tteam, self.partner)
+
+        self.assertEqual(out["kills"], 20)        # both rows, not just the played one
+        self.assertEqual(out["damage"], 5000)
+        self.assertEqual(out["assists"], 8)
+        self.assertEqual(out["placement"], 1)
+        self.assertEqual(out["status"], "played")
+
+    def test_endpoint_returns_the_status_on_every_row(self):
+        # End to end through the real endpoint, since that is where partners read it.
+        from afc_partner_api.models import PartnerApiKey
+
+        # The event is native AFC (organization=None) and partner_published, so the native-AFC
+        # grant path is what puts it in scope (afc_partner_api.scope.partner_visible_events).
+        self.partner.allow_all_native_afc = True
+        self.partner.can_read_teams = True
+        self.partner.save()
+        played = self._team(status="active")
+        self._stats(played, played=True)
+        self._team(status="active")                       # registered
+        self._team(status="active", is_waitlisted=True)   # waitlisted
+
+        full, prefix, h = auth.generate_key()
+        PartnerApiKey.objects.create(partner=self.partner, key_prefix=prefix, key_hash=h)
+        res = self.client.get(
+            f"/api/v1/partner/events/{self.event.slug}/teams/", HTTP_X_API_KEY=full,
+        )
+
+        self.assertEqual(res.status_code, 200)
+        rows = res.json()["results"]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(
+            sorted(r["status"] for r in rows), ["played", "registered", "waitlisted"],
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1126,3 +1357,311 @@ class PartnerAdminEndpointTests(TestCase):
             content_type="application/json", **self._auth(self.admin_token))
         ev.refresh_from_db()
         self.assertFalse(ev.partner_published)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Media + text + designs (owner 2026-08-03, backlog item 8)
+# ──────────────────────────────────────────────────────────────────────────────
+# Locks in the third pillar of the partner API: serving AFC ASSETS (event banners, team
+# logos, player esport images, branded leaderboard design art) and COPY (the event rules
+# blurb, a team description) to an approved partner.
+#
+# Three properties these tests exist to guarantee:
+#   1. LEAST PRIVILEGE - include_media / include_text / can_read_designs all default OFF,
+#      so an existing partner payload is byte-for-byte unchanged after this feature ships.
+#      The "keys absent when off" assertions are the regression guard for that.
+#   2. ABSOLUTE URLS - a partner fetches media from its OWN infrastructure, so a
+#      site-relative "/media/..." path would resolve against the partner domain and 404.
+#      Every emitted url must start with settings.AFC_API_BASE_URL.
+#   3. SCOPE STILL WINS - the designs endpoint is a new door into the data, so it must
+#      obey the same publish gate + grant rules (404 out of scope) as every other
+#      resource, and one organizer brand art must never reach a partner scoped elsewhere.
+#
+# MEDIA_ROOT is redirected to a throwaway temp dir for this class: the fixtures upload
+# real files through ImageField, and without the override every run would write junk into
+# the developer/production media tree next to genuine banners and team logos.
+# ──────────────────────────────────────────────────────────────────────────────
+_MEDIA_TMP = tempfile.mkdtemp(prefix="afc_partner_test_media_")
+
+
+@override_settings(MEDIA_ROOT=_MEDIA_TMP)
+class PartnerMediaTextDesignTests(TestCase):
+    @classmethod
+    def tearDownClass(cls):
+        # Remove the whole temp media tree once the class is done.
+        shutil.rmtree(_MEDIA_TMP, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        from django.core.cache import cache
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from afc_auth.models import User, UserProfile
+        from afc_organizers.models import (
+            Organization, OrgLeaderboardDesign, OrgLeaderboardDesignLogo,
+        )
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import (
+            Event, Stages, StageGroups, Leaderboard, Match,
+            TournamentTeam, TournamentTeamMatchStats, TournamentPlayerMatchStats,
+        )
+
+        cache.clear()   # fresh rate-limit window (Redis persists across the process)
+
+        self.partner = Partner.objects.create(name="ESL", slug="esl")
+
+        # A tiny body is enough: nothing ever OPENS these files, the serializer only reads
+        # .url, so the assertions are on the url string and not on image bytes.
+        def _img(name):
+            return SimpleUploadedFile(name, b"fake-image-bytes", content_type="image/png")
+
+        # ── native AFC event (organization None) WITH a banner + a rules blurb ──
+        self.event = Event.objects.create(
+            event_name="AFC Open", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-01-01", end_date="2026-01-02",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="$1000", event_rules="No cheating. Be on time.",
+            event_status="completed", registration_link="https://x",
+            tournament_tier="tier_1", number_of_stages=1,
+            partner_published=True, organization=None,
+            event_banner=_img("banner.png"))
+        self.partner.allowed_events.add(self.event)
+
+        # ── an ORG-owned event the partner is NOT granted. Its org owns its own design
+        #    library, which proves a partner never receives another organizer brand art. ──
+        self.org = Organization.objects.create(name="Rival Org", slug="rival-org")
+        self.org_event = Event.objects.create(
+            event_name="Rival Cup", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-03-01", end_date="2026-03-02",
+            registration_open_date="2026-02-01", registration_end_date="2026-02-20",
+            prizepool="$5", event_rules="-", event_status="completed",
+            registration_link="https://x", tournament_tier="tier_2", number_of_stages=1,
+            partner_published=True, organization=self.org)
+
+        # ── stage -> group -> leaderboard -> match -> team + finalized stats ──
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="Grand Final", start_date="2026-01-02",
+            end_date="2026-01-02", number_of_groups=1, stage_format="br - normal",
+            teams_qualifying_from_stage=2, stage_status="completed")
+        self.group = StageGroups.objects.create(
+            stage=self.stage, group_name="Group A", playing_date="2026-01-02",
+            playing_time="18:00", teams_qualifying=2, match_count=1, match_maps=["bermuda"])
+        self.admin = User.objects.create_user(
+            username="afcstaff", email="afc@x.com", password="x", full_name="AFC Staff",
+            role="admin")
+        self.leaderboard = Leaderboard.objects.create(
+            leaderboard_name="GF LB", event=self.event, stage=self.stage, group=self.group,
+            creator=self.admin, placement_points={"1": 12}, kill_point=1.0,
+            leaderboard_method="manual")
+        self.match = Match.objects.create(
+            leaderboard=self.leaderboard, group=self.group, match_number=1,
+            match_map="bermuda", result_inputted=True)
+
+        # Player WITH an esport image. The image lives on UserProfile, never on User.
+        self.player = User.objects.create_user(
+            username="ProGamer", email="p1@x.com", password="x", full_name="Real Name One",
+            uid="UID0001", role="player", discord_id="discord-1")
+        UserProfile.objects.create(user=self.player, esports_pic=_img("esport.png"))
+        # Player WITHOUT one -> must serialize as null, never an error (spec §11).
+        self.player_no_pic = User.objects.create_user(
+            username="NoPic", email="p2@x.com", password="x", full_name="Real Name Two",
+            uid="UID0002", role="player")
+
+        self.team = Team.objects.create(
+            team_name="Team Alpha", team_tag="ALP", join_settings="open",
+            team_creator=self.player, team_owner=self.player, country="Nigeria",
+            team_description="We grind every night.", team_logo=_img("logo.png"))
+        self.tteam = TournamentTeam.objects.create(
+            event=self.event, team=self.team, status="active", result_finalized=True)
+        tts = TournamentTeamMatchStats.objects.create(
+            match=self.match, tournament_team=self.tteam, placement=1, kills=10,
+            damage=2500, assists=4, placement_points=12, kill_points=10, total_points=22)
+        TournamentPlayerMatchStats.objects.create(
+            team_stats=tts, player=self.player, kills=6, damage=1500, assists=2)
+        TournamentPlayerMatchStats.objects.create(
+            team_stats=tts, player=self.player_no_pic, kills=4, damage=1000, assists=2)
+
+        # ── design libraries: one AFC-native (reachable through the native event) and one
+        #    owned by the rival org (must never surface for this partner). ──
+        self.design = OrgLeaderboardDesign.objects.create(
+            organization=None, name="AFC Classic", text_color="#FFFFFF",
+            accent_color="#34d27b", max_rows=16, is_default=True,
+            background_instagram=_img("ig.png"), background_youtube=_img("yt.png"))
+        OrgLeaderboardDesignLogo.objects.create(
+            design=self.design, image=_img("sponsor.png"), x_pct=12.5, y_pct=8.0,
+            size="medium")
+        self.rival_design = OrgLeaderboardDesign.objects.create(
+            organization=self.org, name="Rival Brand", background_instagram=_img("rival.png"))
+
+        full, prefix, h = auth.generate_key()
+        PartnerApiKey.objects.create(partner=self.partner, key_prefix=prefix, key_hash=h)
+        self.api_key = full
+
+    def _get(self, path):
+        return self.client.get(path, HTTP_X_API_KEY=self.api_key)
+
+    def _on(self, **flags):
+        """Turn the named toggles on. Everything else stays at its default OFF."""
+        for f, v in flags.items():
+            setattr(self.partner, f, v)
+        self.partner.save()
+
+    def _assert_absolute(self, url):
+        from django.conf import settings
+
+        self.assertIsNotNone(url)
+        self.assertTrue(
+            url.startswith(settings.AFC_API_BASE_URL.rstrip("/")),
+            f"media url must be absolute (AFC_API_BASE_URL-prefixed), got {url!r}")
+
+    # ── defaults: the three new toggles are OFF ──
+    def test_new_toggles_default_off(self):
+        p = Partner.objects.create(name="Fresh", slug="fresh")
+        self.assertFalse(p.include_media)
+        self.assertFalse(p.include_text)
+        self.assertFalse(p.can_read_designs)
+
+    def test_media_and_text_keys_absent_when_toggles_off(self):
+        # Regression guard: an existing partner payload must not gain keys just because
+        # this feature shipped. The keys are ABSENT, not present-and-null.
+        self._on(can_read_events=True, can_read_teams=True, can_read_players=True,
+                 include_rosters=True)
+        ev = self._get(f"/api/v1/partner/events/{self.event.slug}/").json()
+        for k in ("banner_url", "rules_file_url", "rules_text"):
+            self.assertNotIn(k, ev)
+        team = self._get(
+            f"/api/v1/partner/events/{self.event.slug}/teams/").json()["results"][0]
+        for k in ("logo_url", "description"):
+            self.assertNotIn(k, team)
+        player = self._get(
+            f"/api/v1/partner/events/{self.event.slug}/players/").json()["results"][0]
+        self.assertNotIn("esports_image_url", player)
+
+    # ── include_media ──
+    def test_include_media_emits_absolute_urls(self):
+        self._on(can_read_events=True, can_read_teams=True, can_read_players=True,
+                 include_media=True)
+        ev = self._get(f"/api/v1/partner/events/{self.event.slug}/").json()
+        self._assert_absolute(ev["banner_url"])
+        self.assertIn("/media/event_banner/", ev["banner_url"])
+        # No rules FILE was uploaded -> null, not an error.
+        self.assertIsNone(ev["rules_file_url"])
+
+        team = self._get(
+            f"/api/v1/partner/events/{self.event.slug}/teams/").json()["results"][0]
+        self._assert_absolute(team["logo_url"])
+        self.assertIn("/media/teams_logos/", team["logo_url"])
+
+        players = self._get(
+            f"/api/v1/partner/events/{self.event.slug}/players/").json()["results"]
+        by_name = {p["username"]: p for p in players}
+        self._assert_absolute(by_name["ProGamer"]["esports_image_url"])
+        self.assertIn("/media/esports_pictures/", by_name["ProGamer"]["esports_image_url"])
+        # A player with no esport image emits null rather than 500ing (spec §11).
+        self.assertIsNone(by_name["NoPic"]["esports_image_url"])
+
+    def test_include_media_does_not_leak_text(self):
+        # The two toggles are independent: art without copy.
+        self._on(can_read_events=True, can_read_teams=True, include_media=True)
+        ev = self._get(f"/api/v1/partner/events/{self.event.slug}/").json()
+        self.assertIn("banner_url", ev)
+        self.assertNotIn("rules_text", ev)
+
+    # ── include_text ──
+    def test_include_text_emits_copy(self):
+        self._on(can_read_events=True, can_read_teams=True, include_text=True)
+        ev = self._get(f"/api/v1/partner/events/{self.event.slug}/").json()
+        self.assertEqual(ev["rules_text"], "No cheating. Be on time.")
+        self.assertNotIn("banner_url", ev)          # copy without art
+        team = self._get(
+            f"/api/v1/partner/events/{self.event.slug}/teams/").json()["results"][0]
+        self.assertEqual(team["description"], "We grind every night.")
+
+    # ── designs endpoint ──
+    def test_designs_403_when_toggle_off(self):
+        self._on(can_read_events=True)
+        resp = self._get(f"/api/v1/partner/events/{self.event.slug}/designs/")
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.json()["error"], "resource_not_enabled")
+
+    def test_designs_returns_metadata_without_media_toggle(self):
+        # Colours/flags are cheap descriptive metadata so a partner can still brand-match.
+        # The ART itself stays behind include_media.
+        self._on(can_read_designs=True)
+        body = self._get(f"/api/v1/partner/events/{self.event.slug}/designs/").json()
+        self.assertEqual(body["total_count"], 1)
+        row = body["results"][0]
+        self.assertEqual(row["name"], "AFC Classic")
+        self.assertEqual(row["accent_color"], "#34d27b")
+        for k in ("background_instagram_url", "background_youtube_url", "logos"):
+            self.assertNotIn(k, row)
+
+    def test_designs_with_media_emits_absolute_art_and_logos(self):
+        self._on(can_read_designs=True, include_media=True)
+        row = self._get(
+            f"/api/v1/partner/events/{self.event.slug}/designs/").json()["results"][0]
+        self._assert_absolute(row["background_instagram_url"])
+        self._assert_absolute(row["background_youtube_url"])
+        self.assertEqual(len(row["logos"]), 1)
+        logo = row["logos"][0]
+        self._assert_absolute(logo["image_url"])
+        # Percent-of-canvas placement round-trips so a partner can reproduce the layout.
+        self.assertEqual(logo["x_pct"], 12.5)
+        self.assertEqual(logo["y_pct"], 8.0)
+        self.assertEqual(logo["size"], "medium")
+
+    def test_designs_never_expose_another_orgs_brand_art(self):
+        # The rival design must not appear on a native-event read, and the rival EVENT is
+        # out of scope entirely -> 404, never confirming it exists.
+        self._on(can_read_designs=True, include_media=True)
+        body = self._get(f"/api/v1/partner/events/{self.event.slug}/designs/").json()
+        self.assertNotIn("Rival Brand", [r["name"] for r in body["results"]])
+        resp = self._get(f"/api/v1/partner/events/{self.org_event.slug}/designs/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_designs_obey_publish_gate(self):
+        # Un-publishing hides the designs immediately (the gate is applied on read).
+        self._on(can_read_designs=True)
+        self.event.partner_published = False
+        self.event.save(update_fields=["partner_published"])
+        resp = self._get(f"/api/v1/partner/events/{self.event.slug}/designs/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_designs_require_a_valid_key(self):
+        self._on(can_read_designs=True)
+        resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}/designs/",
+                               HTTP_X_API_KEY="afcp_dead_beef")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_designs_are_paginated(self):
+        from afc_organizers.models import OrgLeaderboardDesign
+
+        OrgLeaderboardDesign.objects.create(organization=None, name="AFC Second")
+        self._on(can_read_designs=True)
+        body = self._get(
+            f"/api/v1/partner/events/{self.event.slug}/designs/?limit=1").json()
+        self.assertEqual(body["total_count"], 2)
+        self.assertTrue(body["has_more"])
+        self.assertEqual(body["next_offset"], 1)
+        self.assertEqual(len(body["results"]), 1)
+
+    # ── the firewall still holds with every new field on ──
+    def test_media_payloads_still_carry_no_pii_or_pks(self):
+        self._on(**{f: True for f in PARTNER_TOGGLE_FIELDS})
+        blob = ""
+        for path in ("/", "/stages/", "/matches/", "/standings/", "/teams/", "/players/",
+                     "/designs/"):
+            blob += self._get(
+                f"/api/v1/partner/events/{self.event.slug}{path}").content.decode()
+        for banned in ("event_id", "match_id", "stage_id", "group_id",
+                       "tournament_team_id", "player_id", "organization_id", "profile_id",
+                       "design_id", "room_id", "room_password", "room_name",
+                       "contact_email", "email", "full_name", "discord_id",
+                       "scoring_settings", "is_draft", "partner_published"):
+            self.assertNotIn(f'"{banned}"', blob,
+                             f"{banned} leaked into a partner payload")
+        # The real names on the fixture users must never appear anywhere in the output.
+        self.assertNotIn("Real Name One", blob)
+        self.assertNotIn("Real Name Two", blob)
