@@ -53,8 +53,15 @@ def recalc_team_monthly(team_id, month: datetime.date = None):
         return
     month = (month or current_month()).replace(day=1)
     agg = aggregation.compute_team_monthly(team, month)
-    if agg.tournaments_played == 0:
-        # §5.2 participation floor - no tournament activity → don't appear
+    if agg.tournaments_played == 0 and not agg.result.scrim_pts:
+        # §5.2 participation floor - no activity at all → don't appear.
+        #
+        # AMENDED (owner 2026-08-03): scrim activity now satisfies this floor too. The floor
+        # used to require a TOURNAMENT, which combined with the old scrim cap to make
+        # scrim-only teams doubly invisible: they scored zero because the cap was a
+        # percentage of zero, and then this deleted their row anyway. Scrims are meant to
+        # count toward rankings, so a team with real scrim points now stays on the ladder.
+        # A team with neither is still removed, which is the case this rule is actually for.
         TeamMonthlyScore.objects.filter(team=team, month=month).delete()
         rerank_team_month(month)
         return

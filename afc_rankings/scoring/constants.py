@@ -164,6 +164,24 @@ TIER_LABELS = MappingProxyType(
 SCRIM_WEIGHT = 0.5      # placement weight & kill weight (each 0.5x tournament value)
 SCRIM_WIN_FLAT = 3      # flat points per scrim win
 SCRIM_CAP_RATIO = 0.30  # max scrim contribution = 30% of tournament total
+# Flat scrim allowance, owner 2026-08-03. The 30% ratio above is a PERCENTAGE of a
+# team's tournament points, and 30% of zero is zero, so a team that only plays scrims
+# earned nothing at all and was then dropped by the participation floor. That is the
+# bug this fixes: scrims are supposed to count toward rankings.
+#
+# The cap is now the HIGHER of this flat allowance and the 30% ratio, so there is no
+# cliff: a scrim-only team can reach this number, and once a team's tournament points
+# pass SCRIM_FLAT_CAP / SCRIM_CAP_RATIO the proportional rule takes over and keeps
+# rising with their results. Nobody ever loses points by competing more.
+#
+# WHY IT IS A SETTING, NOT JUST THIS NUMBER: the right value depends on how busy the
+# calendar is. At 30 it currently sits ABOVE the top of the live ladder (July's leader
+# scored 28.6), so a scrim-only team could out-rank teams that won events. The owner
+# chose 30 deliberately, on the basis that scores are low today only because there are
+# few events, and expects to revisit it as the calendar fills. Admins can change it from
+# the scoring config without a deploy, so read it via scoring_flat_scrim_cap() rather
+# than importing this constant directly.
+SCRIM_FLAT_CAP = 30
 SCRIM_DAILY_CAP = 4     # max scrims/day counted (enforced UPSTREAM, not here)
 SCRIM_MONTHLY_CAP = 60  # max scrims/month counted (enforced UPSTREAM, not here)
 

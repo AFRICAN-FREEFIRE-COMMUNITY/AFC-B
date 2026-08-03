@@ -50,6 +50,7 @@ from .constants import (
     PLAYER_TEAM_WIN_PTS,
     PRIZE_MONEY_POINTS,
     SCRIM_CAP_RATIO,
+    SCRIM_FLAT_CAP,
     SCRIM_WEIGHT,
     SCRIM_WIN_FLAT,
     SOCIAL_MEDIA_POINTS,
@@ -305,13 +306,36 @@ def raw_scrim_points(s: ScrimInput) -> float:
     )
 
 
-def capped_scrim_points(raw_scrim: float, total_tournament_pts: float) -> float:
-    """Cap scrim contribution at 30% of the tournament total. Spec §5.1 Step 3.
+def capped_scrim_points(
+    raw_scrim: float,
+    total_tournament_pts: float,
+    flat_cap: float | None = None,
+) -> float:
+    """Cap a team's scrim contribution. Spec §5.1 Step 3, amended by the owner 2026-08-03.
 
-    With zero tournament points the cap is 0, so scrims cannot bank credit for a
-    team with no tournament activity (reinforces the participation floor §5.2).
+    The cap is the HIGHER of two limits:
+      - a flat allowance (SCRIM_FLAT_CAP, overridable per deployment), and
+      - 30% of the team's tournament points (the original spec rule).
+
+    WHY IT CHANGED: the rule used to be the 30% ratio alone, and 30% of zero is zero, so
+    a team that played nothing but scrims scored nothing no matter how well it did, and
+    the participation floor then removed it from the ladder entirely. Scrims are meant to
+    count toward rankings, so they now have a floor of their own.
+
+    Taking the HIGHER of the two, rather than switching between them, means there is no
+    cliff. A team with no tournament results can earn up to the flat allowance. As its
+    tournament points grow, nothing changes until 30% of them exceeds that allowance, and
+    from then on the proportional rule governs and keeps scaling. A team can never lose
+    scrim points by performing better in tournaments.
+
+    `flat_cap` is INJECTED by the caller, which is how the admin-configured value reaches
+    this function. It defaults to the constant when omitted. This module is deliberately
+    Django-free (see the module docstring), so it never reads the database itself: the
+    aggregation layer resolves the configured value and passes it down.
     """
-    return min(raw_scrim, total_tournament_pts * SCRIM_CAP_RATIO)
+    if flat_cap is None:
+        flat_cap = SCRIM_FLAT_CAP
+    return min(raw_scrim, max(float(flat_cap), total_tournament_pts * SCRIM_CAP_RATIO))
 
 
 # ===========================================================================
@@ -320,14 +344,18 @@ def capped_scrim_points(raw_scrim: float, total_tournament_pts: float) -> float:
 def monthly_team_score(
     tournaments: list[TournamentInput],
     scrims: ScrimInput | None = None,
+    scrim_flat_cap: float | None = None,
 ) -> TeamScoreResult:
     """Monthly team score. Spec §6.
 
-    Sums per-tournament scores, then adds the 30%-capped scrim contribution.
+    Sums per-tournament scores, then adds the capped scrim contribution. The scrim cap is
+    the higher of the flat allowance and 30% of the tournament total, see
+    capped_scrim_points. `scrim_flat_cap` comes from the caller so an admin-configured
+    value can reach the pure engine without it touching the database.
     """
     total_tournament_pts = sum(tournament_score(t) for t in tournaments)
     raw = raw_scrim_points(scrims) if scrims is not None else 0.0
-    counted = capped_scrim_points(raw, total_tournament_pts)
+    counted = capped_scrim_points(raw, total_tournament_pts, scrim_flat_cap)
     return TeamScoreResult(
         tournament_pts=total_tournament_pts,
         scrim_pts=counted,
