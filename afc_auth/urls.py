@@ -20,6 +20,15 @@ from .views_watchlist import (
     watchlist_item,
     watchlist_tags,
 )
+# Broadcast AUDIENCE builder (owner backlog item 15, 2026-08-03): pick WHO a broadcast goes to
+# (explicit teams/players, or by tier/country/role/language, or the entire site), see the recipient
+# COUNT before sending, and send through the existing deliver_broadcast chokepoint. See
+# views_broadcast_audience.py + audience.py.
+from .views_broadcast_audience import (
+    broadcast_audience_options,
+    broadcast_audience_preview,
+    broadcast_audience_send,
+)
 
 
 urlpatterns = [
@@ -141,6 +150,19 @@ urlpatterns = [
     # event's organizers; respects the shared broadcast rate limit. Consumed by the events
     # SendNotificationModal "Letter assignments" mode. See views.broadcast_letter_assignments.
     path("broadcast-letter-assignments/", broadcast_letter_assignments, name="broadcast_letter_assignments"),
+    # ── Broadcast AUDIENCE builder (owner backlog item 15, 2026-08-03) ──────────────────────────
+    # The RECIPIENT-SELECTION half of broadcasting (delivery already existed in deliver_broadcast).
+    # options/ populates the composer's filter dropdowns from real data; preview/ turns a filter
+    # spec into a recipient COUNT plus an email-volume verdict (there is no undo on a broadcast, so
+    # the admin must see the number first); send/ requires that count back as confirmed_count and
+    # refuses an email blast the mail provider cannot deliver. Consumed by the admin
+    # Settings > Notifications tab (frontend app/(a)/a/settings/_components/AudienceBuilder.tsx).
+    path("admin/broadcast-audience/options/", broadcast_audience_options,
+         name="broadcast_audience_options"),
+    path("admin/broadcast-audience/preview/", broadcast_audience_preview,
+         name="broadcast_audience_preview"),
+    path("admin/broadcast-audience/send/", broadcast_audience_send,
+         name="broadcast_audience_send"),
     # Admin Settings broadcast history (general + direct sends). owner 2026-06-17.
     path("broadcast-history/", get_general_broadcast_history, name="get_general_broadcast_history"),
     # Admin GLOBAL broadcast audit (ALL scopes + senders, incl. organizer event broadcasts). owner 2026-06-27.

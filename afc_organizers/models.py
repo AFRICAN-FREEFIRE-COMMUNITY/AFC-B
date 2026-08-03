@@ -602,21 +602,46 @@ class EventComment(models.Model):
 #   - The team-level OrganizerBlacklist row blocks the team ENTITY (re-registering that team).
 #   - The per-player OrganizerBlacklistPlayer rows block the PEOPLE wherever they go.
 #
+# PLAYER-TARGET blacklists (owner backlog item 1, 2026-08-03): "organizers and admins can
+# blacklist a PLAYER, not only a team". Rather than add a parallel model, the SAME two tables
+# carry it. `target_type` says what the organizer aimed at:
+#   - target_type="team"   -> `team` is set; members are snapshotted into OrganizerBlacklistPlayer.
+#     Exactly today's behaviour, unchanged.
+#   - target_type="player" -> `team` is NULL and there is exactly ONE OrganizerBlacklistPlayer row,
+#     the named person. Nothing about the team entity is blocked.
+# Because enforcement already keys off the per-player rows by (organization, player), a
+# player-target blacklist blocks that person the instant it is created, with no new enforcement
+# path and no new lifecycle: same reason, same start/end range, same status, same lift-request
+# flow, same cross-org lookup + admin dashboard. `team` is therefore nullable.
+#
+# NOT a site-wide ban: an organizer blacklist is scoped to ONE organization's events. Site-wide
+# account standing stays afc_auth.BannedPlayer (which is what afc_sso.claims reports to partners),
+# and is deliberately untouched by this feature - being blacklisted by one organizer must not
+# make a player look banned from AFC to an SSO partner.
+#
 # How this connects to the rest of the system:
 #   - Created / listed / lifted / decided by the organizer endpoints in
-#     afc_organizers/views_blacklist.py, gated by permissions.org_can(can_manage_registrations).
+#     afc_organizers/views_blacklist.py, gated by permissions.org_can(can_manage_registrations)
+#     (AFC platform admins bypass that gate, so "admins can blacklist" comes for free).
 #   - Lift requests are raised by the affected party: a team manager (captain/owner/coach/
-#     manager via afc_team helpers) or an affected player (themselves).
+#     manager via afc_team helpers) or an affected player (themselves). A player-target blacklist
+#     has no team, so only scope="player" requests apply to it.
 #   - ENFORCED at registration time by afc_organizers/blacklist.py::organizer_blacklist_block,
-#     which afc_tournament_and_scrims.views.register_for_event calls on the TEAM path (after the
-#     existing ban checks) for any event that has an owning Organization.
+#     which afc_tournament_and_scrims.views.register_for_event calls on BOTH the TEAM path and the
+#     SOLO path (after the existing ban checks) for any event that has an owning Organization.
 # Full spec: WEBSITE/tasks/organizer-blacklist-design.md.
 
 
 class OrganizerBlacklist(models.Model):
-    """A time-boxed blacklist of one team by one organization. The row blocks the team entity;
-    its related OrganizerBlacklistPlayer rows (related_name="players") block the snapshotted
-    people. The organizer picks a calendar date RANGE on create: `start_date` and `end_date` are
+    """A time-boxed blacklist by one organization, targeting either a TEAM or a single PLAYER.
+
+    `target_type` decides which: "team" sets `team` and snapshots its members into
+    OrganizerBlacklistPlayer rows (the row blocks the team entity, the snapshot rows block the
+    people); "player" leaves `team` NULL and carries exactly one OrganizerBlacklistPlayer row for
+    the named person. Either way the related rows (related_name="players") are what enforcement
+    reads, so both shapes block through the same code path.
+
+    The organizer picks a calendar date RANGE on create: `start_date` and `end_date` are
     parsed from ISO YYYY-MM-DD (end_date stored end-of-day). A legacy `duration_days` fallback in
     the create view still computes end_date = now + duration_days for old callers. Enforcement uses
     `is_currently_active()` so an expired blacklist stops blocking the instant it lapses, even
@@ -629,9 +654,18 @@ class OrganizerBlacklist(models.Model):
                                   # already treats a lapsed "active" row as not-blocking
     ]
 
+    # What the organizer aimed at. Defaults to "team" so every pre-existing row keeps its meaning
+    # after the migration with no data backfill needed.
+    TARGET_CHOICES = [
+        ("team", "Team"),         # `team` set + snapshotted members (the original behaviour)
+        ("player", "Player"),     # `team` NULL + exactly one snapshot row: the named player
+    ]
+
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE,
                                      related_name="blacklists")
-    team = models.ForeignKey("afc_team.Team", on_delete=models.CASCADE,
+    target_type = models.CharField(max_length=6, choices=TARGET_CHOICES, default="team")
+    # NULL only for target_type="player" (there is no team to block). Every "team" row still has it.
+    team = models.ForeignKey("afc_team.Team", on_delete=models.CASCADE, null=True, blank=True,
                              related_name="organizer_blacklists")
     reason = models.TextField(blank=True, default="")          # why the organizer blacklisted them
     # The organizer picks a calendar date RANGE on create. start_date is the chosen start (at
@@ -653,15 +687,17 @@ class OrganizerBlacklist(models.Model):
         return self.status == "active" and self.end_date > timezone.now()
 
     def __str__(self):
-        return f"Blacklist(org={self.organization_id} team={self.team_id} [{self.status}])"
+        return (f"Blacklist(org={self.organization_id} {self.target_type}"
+                f"={self.team_id if self.target_type == 'team' else 'player'} [{self.status}])")
 
 
 class OrganizerBlacklistPlayer(models.Model):
-    """One snapshotted player under an OrganizerBlacklist. Created from the team's CURRENT
-    TeamMembers at blacklist time, so the block follows the person, not the team membership.
-    `is_active=False` retires a single player's block (their individual lift was approved)
-    without ending the whole blacklist. Enforcement reads these per (organization, player):
-    see afc_organizers/blacklist.py."""
+    """One blocked player under an OrganizerBlacklist. On a TEAM-target blacklist these are
+    created from the team's CURRENT TeamMembers at blacklist time, so the block follows the
+    person, not the team membership. On a PLAYER-target blacklist there is exactly one of these:
+    the person the organizer named. `is_active=False` retires a single player's block (their
+    individual lift was approved) without ending the whole blacklist. Enforcement reads these per
+    (organization, player): see afc_organizers/blacklist.py."""
 
     blacklist = models.ForeignKey(OrganizerBlacklist, on_delete=models.CASCADE,
                                   related_name="players")
@@ -685,7 +721,12 @@ class BlacklistLiftRequest(models.Model):
     person to be unblocked (raised by that player, or by a team manager on their behalf). The
     organizer decides via views_blacklist.decide_lift_request: approving a team-scope request
     lifts the entire blacklist; approving a player-scope request retires just that player's
-    OrganizerBlacklistPlayer (and lifts the blacklist if no active players remain)."""
+    OrganizerBlacklistPlayer (and lifts the blacklist if no active players remain).
+
+    On a PLAYER-target blacklist (OrganizerBlacklist.target_type="player") there is no team, so
+    only scope="player" is accepted and the requester can only ever be the named player. Approving
+    it retires their single snapshot row, which leaves no active players and therefore lifts the
+    blacklist itself - the same "no active players left" branch the team case already uses."""
 
     SCOPE_CHOICES = [("team", "Team"), ("player", "Player")]
     STATUS_CHOICES = [("pending", "Pending"), ("approved", "Approved"), ("denied", "Denied")]

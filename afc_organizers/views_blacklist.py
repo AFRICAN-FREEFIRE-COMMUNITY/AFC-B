@@ -1,7 +1,13 @@
 # afc_organizers/views_blacklist.py
 # ──────────────────────────────────────────────────────────────────────────────
-# ORGANIZER BLACKLIST endpoints - the organizer-side surface for blacklisting teams and the
-# affected-party surface for requesting a lift.
+# ORGANIZER BLACKLIST endpoints - the organizer-side surface for blacklisting teams AND individual
+# players, and the affected-party surface for requesting a lift.
+#
+# TARGETS (owner backlog item 1, 2026-08-03): a blacklist targets a TEAM (the original shape:
+# blocks the team entity and snapshots its members) or a single PLAYER (team is NULL, one player
+# row). Both are the same OrganizerBlacklist model with the same lifecycle - who can apply it, the
+# reason, the start/end range, the status, the lift-request flow - so every endpoint below serves
+# both. Only _create_blacklist branches; the rest is shared.
 #
 # Two audiences live here, gated differently:
 #   • ORGANIZER staff (org_can(can_manage_registrations) on the relevant org, plus the
@@ -39,6 +45,9 @@ from rest_framework import status
 # validate_token lives in afc_auth.views - imported the SAME way afc_team/views.py and the
 # sibling organizer views import it. Returns the User for a valid, non-expired session token.
 from afc_auth.views import validate_token
+# User is resolved directly here for PLAYER-target blacklists (the organizer names a person
+# instead of a team); same import shape the sibling views_blacklist_lookup.py uses.
+from afc_auth.models import User
 
 from afc_team.models import Team, TeamMembers
 
@@ -92,15 +101,37 @@ def _is_team_manager(user, team):
     ).exists()
 
 
+def _player_target_username(blacklist):
+    """The username a PLAYER-target blacklist names, or None for a team-target one.
+
+    A player-target row carries exactly one OrganizerBlacklistPlayer (the create view writes it in
+    the same request), so we read it off the SAME prefetched `players` relation the serializer
+    already walks - reading in Python instead of issuing a fresh query keeps the list endpoints at
+    their existing query count (prefetch_related("players__user") is already in place)."""
+    if blacklist.target_type != "player":
+        return None
+    for p in blacklist.players.all():
+        if p.user:
+            return p.user.username
+    return None
+
+
 def _serialize_blacklist(blacklist, include_players=True):
     """Inline dict for one OrganizerBlacklist. When include_players, nests the snapshot rows
     (id/user_id/username/is_active) so the organizer dashboard sees exactly who is blocked.
-    Image/FK fields follow the codebase contract (value or None)."""
+    Image/FK fields follow the codebase contract (value or None).
+
+    target_type tells the FE which shape this is: "team" (team_id/team_name set, players are the
+    snapshotted roster) or "player" (team_id/team_name null, players holds exactly the one named
+    person). target_username is that person on a player-target row, null on a team-target row, so
+    the table can render one "Target" column without the FE re-deriving it."""
     data = {
         "id": blacklist.id,
         "organization_id": blacklist.organization_id,
+        "target_type": blacklist.target_type,
         "team_id": blacklist.team_id,
         "team_name": blacklist.team.team_name if blacklist.team else None,
+        "target_username": _player_target_username(blacklist),
         "reason": blacklist.reason,
         "status": blacklist.status,
         "is_currently_active": blacklist.is_currently_active(),
@@ -130,6 +161,9 @@ def _serialize_lift_request(req):
         "id": req.id,
         "blacklist_id": req.blacklist_id,
         "organization_id": req.blacklist.organization_id if req.blacklist else None,
+        # blacklist_target_type lets the organizer's "Lift requests" table label the row correctly:
+        # a request against a player-target blacklist has no team to show.
+        "blacklist_target_type": req.blacklist.target_type if req.blacklist else None,
         "team_id": req.blacklist.team_id if req.blacklist else None,
         "team_name": req.blacklist.team.team_name if req.blacklist and req.blacklist.team else None,
         "scope": req.scope,
@@ -247,11 +281,16 @@ def my_blacklists(request):
     # _serialize_blacklist - capability flags + the caller's pending request - so it is its own
     # serializer rather than a flag on the shared one).
     def _serialize_mine(blacklist):
-        can_request_team_lift = blacklist.team_id in managed_team_ids
+        # A PLAYER-target blacklist has team_id=None, which is never in managed_team_ids, so
+        # can_request_team_lift is correctly false: the only lift that applies is the player one.
+        can_request_team_lift = (
+            blacklist.target_type == "team" and blacklist.team_id in managed_team_ids
+        )
         can_request_self_lift = blacklist.id in player_blacklist_ids
         pending = pending_by_blacklist.get(blacklist.id)
         return {
             "id": blacklist.id,
+            "target_type": blacklist.target_type,
             "team_id": blacklist.team_id,
             "team_name": blacklist.team.team_name if blacklist.team else None,
             "organization_id": blacklist.organization_id,
@@ -308,12 +347,22 @@ def blacklists(request):
 
 
 def _create_blacklist(request):
-    """Create a blacklist of a team by an organization over a calendar date RANGE, snapshotting the
-    team's CURRENT members into OrganizerBlacklistPlayer rows (this snapshot is what enforcement
-    reads, so the block follows the players even after they leave the team).
+    """Create a blacklist by an organization over a calendar date RANGE, targeting either a TEAM
+    or a single PLAYER.
+
+    TEAM target (target_type="team", the default and the original behaviour): snapshots the team's
+    CURRENT members into OrganizerBlacklistPlayer rows. That snapshot is what enforcement reads, so
+    the block follows the players even after they leave the team.
+    PLAYER target (target_type="player", owner backlog item 1, 2026-08-03): blacklists ONE person.
+    Stores team=NULL and writes exactly ONE OrganizerBlacklistPlayer row for them, which is the
+    same row shape enforcement already reads - so the player is blocked from this organizer's
+    events (team registrations AND solo registrations) with no separate enforcement path.
 
     Request (JSON):
-      {organization_id, team_id,
+      {organization_id,
+       target_type?,      # "team" (default) | "player"
+       team_id,           # REQUIRED for target_type="team"
+       user_id,           # REQUIRED for target_type="player" (the person being blacklisted)
        start_date,        # ISO YYYY-MM-DD, the chosen start day. Optional: defaults to now.
                           #   Parsed to that day's START (00:00).
        end_date,          # ISO YYYY-MM-DD, the chosen end day. REQUIRED (primary path).
@@ -322,14 +371,20 @@ def _create_blacklist(request):
       Backward-compatible fallback: if BOTH start_date and end_date are omitted, an old-style
       {duration_days} (positive int) is accepted and end_date = now + duration_days.
     Validation (all 400 with a clear message):
+      - target_type must be "team" or "player";
+      - team_id (team target) / user_id (player target) is required and must resolve;
       - end_date is required (unless the duration_days fallback is used);
       - start_date / end_date must be valid ISO YYYY-MM-DD strings;
       - end_date must be strictly AFTER start_date;
-      - end_date must be in the FUTURE.
+      - end_date must be in the FUTURE;
+      - (player target) the player must not ALREADY be under an active blacklist of this org -
+        409, so an organizer does not stack duplicate blocks on the same person.
     Auth: Bearer; gated by org_can(user, "can_manage_registrations", org) (owner/AFC-admin bypass
-          included). 403 for anyone else.
+          included, which is how AFC admins blacklist on any org's behalf). 403 for anyone else.
     Response: 201 {message, blacklist: <serialized + nested players>}.
-    FE consumer: organizer dashboard "Blacklists" page (create form, calendar date-range picker).
+    FE consumer: organizer dashboard "Blacklists" page - the "Blacklist" dialog has a
+    Team / Player toggle that switches TeamSearchSelect for UserSearchSelect and sends either
+    team_id or user_id (app/(organizer)/organizer/blacklists/page.tsx, organizersApi.createBlacklist).
     """
     user, err = _authenticate(request)
     if err:
@@ -337,10 +392,18 @@ def _create_blacklist(request):
 
     # ── resolve + validate inputs ──
     organization_id = request.data.get("organization_id")
-    team_id = request.data.get("team_id")
-    if not organization_id or not team_id:
+    if not organization_id:
         return Response(
-            {"message": "organization_id and team_id are required."},
+            {"message": "organization_id is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # WHAT is being blacklisted. Defaults to "team" so every existing caller (and the legacy
+    # duration_days path) keeps working with no payload change.
+    target_type = (request.data.get("target_type") or "team").strip().lower()
+    if target_type not in ("team", "player"):
+        return Response(
+            {"message": "target_type must be 'team' or 'player'."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -348,9 +411,30 @@ def _create_blacklist(request):
     if not org:
         return Response({"message": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    team = Team.objects.filter(pk=team_id).first()
-    if not team:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+    # Resolve the target itself. Exactly one of team / target_player is set from here on; the rest
+    # of the view is shared so both shapes get an identical window, status and lifecycle.
+    team = None
+    target_player = None
+    if target_type == "team":
+        team_id = request.data.get("team_id")
+        if not team_id:
+            return Response(
+                {"message": "team_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        team = Team.objects.filter(pk=team_id).first()
+        if not team:
+            return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+    else:
+        target_user_id = request.data.get("user_id")
+        if not target_user_id:
+            return Response(
+                {"message": "user_id is required for a player blacklist."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        target_player = User.objects.filter(pk=target_user_id).first()
+        if not target_player:
+            return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
 
     # ── permission gate: only someone who can manage registrations for THIS org ──
     if not org_can(user, "can_manage_registrations", org):
@@ -428,10 +512,30 @@ def _create_blacklist(request):
 
     reason = (request.data.get("reason") or "").strip()
 
-    # ── create the blacklist over [start_date, end_date] + snapshot the roster ──
+    # ── duplicate guard (PLAYER target only): do not stack blocks on the same person ──
+    # An organizer clicking twice, or two org staff acting on the same report, would otherwise
+    # create two overlapping player blacklists that both have to be lifted separately. A team
+    # target has no equivalent guard today, so we do not add one (surgical change: only the new
+    # shape gets the new rule).
+    if target_type == "player":
+        already = OrganizerBlacklistPlayer.objects.filter(
+            user=target_player,
+            is_active=True,
+            blacklist__organization=org,
+            blacklist__status="active",
+            blacklist__end_date__gt=now,
+        ).exists()
+        if already:
+            return Response(
+                {"message": f"{target_player.username} is already blacklisted by this organizer."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+    # ── create the blacklist over [start_date, end_date] + write its player rows ──
     blacklist = OrganizerBlacklist.objects.create(
         organization=org,
-        team=team,
+        target_type=target_type,
+        team=team,                      # None on a player target
         reason=reason,
         start_date=start_date,
         end_date=end_date,
@@ -439,16 +543,25 @@ def _create_blacklist(request):
         status="active",
     )
 
-    # Snapshot the team's CURRENT members. This is the heart of the feature: enforcement keys off
-    # these rows per (organization, player), so the block tracks each person wherever they go.
-    member_user_ids = TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
-    OrganizerBlacklistPlayer.objects.bulk_create([
-        OrganizerBlacklistPlayer(blacklist=blacklist, user_id=uid, is_active=True)
-        for uid in member_user_ids
-    ])
+    # The player rows are the heart of the feature: enforcement keys off them per
+    # (organization, player), so the block tracks each person wherever they go.
+    #   - TEAM target   -> snapshot the team's CURRENT members.
+    #   - PLAYER target -> exactly one row, the person the organizer named.
+    if target_type == "team":
+        member_user_ids = TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
+        OrganizerBlacklistPlayer.objects.bulk_create([
+            OrganizerBlacklistPlayer(blacklist=blacklist, user_id=uid, is_active=True)
+            for uid in member_user_ids
+        ])
+        message = "Team blacklisted."
+    else:
+        OrganizerBlacklistPlayer.objects.create(
+            blacklist=blacklist, user=target_player, is_active=True
+        )
+        message = "Player blacklisted."
 
     return Response(
-        {"message": "Team blacklisted.", "blacklist": _serialize_blacklist(blacklist)},
+        {"message": message, "blacklist": _serialize_blacklist(blacklist)},
         status=status.HTTP_201_CREATED,
     )
 
@@ -587,6 +700,14 @@ def request_lift(request, blacklist_id):
     target_user = None
 
     if scope == "team":
+        # A PLAYER-target blacklist has no team (team is NULL), so a team-scope request is
+        # meaningless against it - and _is_team_manager would crash on None. Reject it with a
+        # message that points the requester at the scope that DOES apply.
+        if blacklist.target_type == "player" or blacklist.team is None:
+            return Response(
+                {"message": "This blacklist targets a player, not a team. Request a player lift instead."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         # Team-scope: only a manager of the blacklisted team may ask for a full lift.
         if not _is_team_manager(user, blacklist.team):
             return Response(
@@ -612,8 +733,11 @@ def request_lift(request, blacklist_id):
             )
         target_user = player_row.user
         # Permission: the player themselves, OR a manager of the team acting on their behalf.
+        # On a PLAYER-target blacklist there is no team, so the "manager acting on their behalf"
+        # route does not exist and only the named player can ask (guarding the None team as well).
         is_self = (user.user_id == target_user.user_id)
-        if not (is_self or _is_team_manager(user, blacklist.team)):
+        manager_can_act = blacklist.team is not None and _is_team_manager(user, blacklist.team)
+        if not (is_self or manager_can_act):
             return Response(
                 {"message": "You can only request a lift for yourself, or a team manager can request it for you."},
                 status=status.HTTP_403_FORBIDDEN,
