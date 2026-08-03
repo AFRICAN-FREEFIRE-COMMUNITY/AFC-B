@@ -318,6 +318,21 @@ class Event(models.Model):
     # via the shared missing_registration_assets() helper, surfaced on the public event page.
     require_player_uid = models.BooleanField(default=False)
     require_player_profile_image = models.BooleanField(default=False)
+    # ── WhatsApp-number registration requirement (owner 2026-08-03) ─────────────────────────
+    #   require_whatsapp -> every registering player (solo registrant, or each roster member of a
+    #                       team registration) must have a WhatsApp number saved on their profile
+    #                       (afc_auth.UserProfile.whatsapp_number non-empty).
+    # WHY: AFC pushes room ID / password over WhatsApp, but only ~90 of ~6,790 players have a usable
+    # number on file, so those messages reach almost nobody. Instead of nagging every player at
+    # registration, an event that actually RELIES on WhatsApp room details can demand a number up
+    # front. Read the profile through afc_auth.canonical_profile semantics (lowest profile_id):
+    # UserProfile.user is a plain FK and duplicate rows exist in prod.
+    # Same lifecycle as the require_* flags above: set in create_event / edit_event, toggles on both
+    # wizards, carried by clone_event, enforced in register_for_event (+ the event_links
+    # qualification gate) via the shared _missing_registration_assets() helper, and surfaced to
+    # players on the public event page (EventRequirementsCard) plus as a per-player red badge in the
+    # registration roster-requirements panel (EventDetailsWrapper.memberMissingRequirements).
+    require_whatsapp = models.BooleanField(default=False)
 
     # ── Letter avatars (A-Z) registration requirement (feature #7, owner 2026-06-29) ──────────────
     # 0 = off (the default; every existing event is unaffected). When > 0, a team/player may only

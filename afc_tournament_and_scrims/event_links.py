@@ -173,8 +173,10 @@ def _registration_gates(link, qual):
     does NOT bypass gates, owner decision). Returns a human reason string, or None when clear."""
     target = link.target_event
     # F3 (owner 2026-06-19): the per-player requirement checks (esports image / profile image /
-    # Free Fire UID) now go through the SAME shared helper register_for_event uses, so qualification
-    # promotions enforce the exact same gates. Lazy import avoids a views<->event_links cycle.
+    # Free Fire UID, + the WhatsApp number added 2026-08-03) now go through the SAME shared helper
+    # register_for_event uses, so qualification promotions enforce the exact same gates. Every future
+    # per-player requirement is inherited here for free by living in that helper. Lazy import avoids
+    # a views<->event_links cycle.
     from .views import _missing_registration_assets
     from afc_team.views import STAFF_ROLES  # coach/manager/analyst never play -> never on a roster
     if qual.team_id:
@@ -192,10 +194,10 @@ def _registration_gates(link, qual):
         member_ids = [m for m in TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
                       if m not in staff_ids]
         if _missing_registration_assets(member_ids, target):
-            return "target requires every rostered player to complete their profile (esports image / profile image / Free Fire UID)"
+            return "target requires every rostered player to complete their profile (esports image / profile image / Free Fire UID / WhatsApp number)"
     else:
         if qual.user_id and _missing_registration_assets([qual.user_id], target):
-            return "target requires you to complete your profile (esports image / profile image / Free Fire UID)"
+            return "target requires you to complete your profile (esports image / profile image / Free Fire UID / WhatsApp number)"
     return None
 
 

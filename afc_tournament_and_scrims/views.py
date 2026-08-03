@@ -1960,6 +1960,9 @@ def create_event(request):
                 # F3 extra registration requirements (owner 2026-06-19) — same parse pattern.
                 require_player_uid=_as_bool(request.data.get("require_player_uid")),
                 require_player_profile_image=_as_bool(request.data.get("require_player_profile_image")),
+                # WhatsApp number requirement (owner 2026-08-03) - same parse pattern; sent by the
+                # admin + organizer create wizards' Step1EventDetails "Require WhatsApp number" toggle.
+                require_whatsapp=_as_bool(request.data.get("require_whatsapp")),
                 # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars required to
                 # register (0 = off). Clamped 0-26 by the shared parser so a bad payload can't store an
                 # impossible threshold. Enforced in register_for_event; toggled in Step1EventDetails.
@@ -2295,6 +2298,9 @@ def duplicate_event(request, event_id):
             require_esport_images=source.require_esport_images,
             require_player_uid=source.require_player_uid,
             require_player_profile_image=source.require_player_profile_image,
+            # WhatsApp number requirement (owner 2026-08-03): carried like the gates above so a
+            # duplicated event keeps demanding a number instead of silently dropping the gate.
+            require_whatsapp=source.require_whatsapp,
             # Letter avatars (feature #7): carry the source's registration threshold onto the clone
             # (the per-team assigned_letter is per-registration and is NOT cloned - the clone has no
             # registrations yet).
@@ -3320,6 +3326,10 @@ def edit_event(request):
         event.require_player_uid = _as_bool(request.data.get("require_player_uid"))
     if "require_player_profile_image" in request.data:
         event.require_player_profile_image = _as_bool(request.data.get("require_player_profile_image"))
+    # WhatsApp number requirement (owner 2026-08-03): editable like the gates above; changing it
+    # only affects FUTURE registrations (enforcement lives in register_for_event, not on save).
+    if "require_whatsapp" in request.data:
+        event.require_whatsapp = _as_bool(request.data.get("require_whatsapp"))
     # Letter avatars (feature #7, owner 2026-06-29): editable like the other registration gates;
     # changing it only affects FUTURE registrations. Clamped 0-26 by the shared parser.
     if "min_letter_avatars" in request.data:
@@ -4767,6 +4777,10 @@ def get_event_details(request):
         "require_esport_images": event.require_esport_images,
         "require_player_uid": event.require_player_uid,
         "require_player_profile_image": event.require_player_profile_image,
+        # WhatsApp number requirement (owner 2026-08-03): echoed so the admin/organizer create+edit
+        # wizards rehydrate the toggle, EventRequirementsCard lists it under "Requirements to
+        # register", and the register flow's roster panel can badge who still has no number.
+        "require_whatsapp": event.require_whatsapp,
         # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars a team/player must have
         # available to register (0 = off). Read by Step1EventDetails (admin/org toggle, rehydrated
         # through the admin edit page which merges this get_event_details echo) AND the public
@@ -5684,6 +5698,9 @@ def get_event_details_not_logged_in(request):
         "require_esport_images": event.require_esport_images,
         "require_player_uid": event.require_player_uid,
         "require_player_profile_image": event.require_player_profile_image,
+        # WhatsApp number requirement (owner 2026-08-03): logged-out twin of the get_event_details
+        # echo, so an anonymous viewer sees the same "Requirements to register" list.
+        "require_whatsapp": event.require_whatsapp,
         "waitlist_capacity": event.waitlist_capacity,
         "registered_count": active_registered,
         "is_full": active_registered >= event.max_teams_or_players,
@@ -6193,22 +6210,32 @@ def determine_team_country(roster_users, team_owner):
 # ── Registration eligibility helper (F3, owner 2026-06-19) ─────────────────────────────────────
 # Single source of truth for the per-PLAYER registration requirements an event can demand before a
 # team/player may register: an esports image (UserProfile.esports_pic), a profile image
-# (UserProfile.profile_pic), and a Free Fire UID (User.uid). Each is gated by its own event toggle
-# (require_esport_images / require_player_profile_image / require_player_uid). Team-logo is a
-# TEAM-level asset and is checked by the caller (it is not per-player). This helper is shared by
-# register_for_event (solo + team roster) AND event_links._registration_gates (qualification
+# (UserProfile.profile_pic), a Free Fire UID (User.uid), and a WhatsApp number
+# (UserProfile.whatsapp_number, owner 2026-08-03). Each is gated by its own event toggle
+# (require_esport_images / require_player_profile_image / require_player_uid / require_whatsapp).
+# Team-logo is a TEAM-level asset and is checked by the caller (it is not per-player). This helper is
+# shared by register_for_event (solo + team roster) AND event_links._registration_gates (qualification
 # promotions) so the rule lives in ONE place. Returns {user_id: [field_key,...]} for players who
 # are MISSING something; field_key is a stable token the FE maps to localized copy:
-#   "esports_image" | "profile_image" | "uid". Empty dict = everyone passes (or no toggle on).
+#   "esports_image" | "profile_image" | "uid" | "whatsapp". Empty dict = everyone passes (or no toggle on).
 def _missing_registration_assets(user_ids, event):
     from afc_auth.models import UserProfile
     user_ids = [int(u) for u in user_ids if u is not None]
     need_esports = bool(getattr(event, "require_esport_images", False))
     need_profile = bool(getattr(event, "require_player_profile_image", False))
     need_uid = bool(getattr(event, "require_player_uid", False))
-    if not user_ids or not (need_esports or need_profile or need_uid):
+    need_whatsapp = bool(getattr(event, "require_whatsapp", False))
+    if not user_ids or not (need_esports or need_profile or need_uid or need_whatsapp):
         return {}
-    profiles = {p.user_id: p for p in UserProfile.objects.filter(user_id__in=user_ids)}
+    # ONE query for the whole roster (no N+1). UserProfile.user is a plain FK and duplicate rows
+    # exist in prod, so a user can have several profiles: order DESCENDING by profile_id so the dict
+    # comprehension's LAST write per user is the LOWEST profile_id - the same row
+    # afc_auth.canonical_profile() resolves. Without this, a reader here could land on a row the
+    # profile editor never writes and a player who HAS filled the field would still be blocked.
+    profiles = {
+        p.user_id: p
+        for p in UserProfile.objects.filter(user_id__in=user_ids).order_by("-profile_id")
+    }
     uids = dict(User.objects.filter(user_id__in=user_ids).values_list("user_id", "uid"))
     out = {}
     for uid_ in user_ids:
@@ -6221,6 +6248,10 @@ def _missing_registration_assets(user_ids, event):
             missing.append("profile_image")
         if need_uid and not (uids.get(uid_) or "").strip():
             missing.append("uid")
+        # WhatsApp number (owner 2026-08-03): CharField(blank=True, default="") on the profile, so
+        # "missing" means no profile row at all, or a blank/whitespace-only number.
+        if need_whatsapp and not (getattr(prof, "whatsapp_number", "") or "").strip():
+            missing.append("whatsapp")
         if missing:
             out[uid_] = missing
     return out
@@ -6404,8 +6435,9 @@ def register_for_event(request):
             return Response({"message": "You are banned from registering for this event."}, status=403)
 
         # ── PER-PLAYER REGISTRATION REQUIREMENTS (F3, owner 2026-06-19) ──
-        # esports image / profile image / Free Fire UID, each gated by its own event toggle
-        # (require_esport_images / require_player_profile_image / require_player_uid). The shared
+        # esports image / profile image / Free Fire UID / WhatsApp number, each gated by its own event
+        # toggle (require_esport_images / require_player_profile_image / require_player_uid /
+        # require_whatsapp - the last added by the owner on 2026-08-03). The shared
         # _missing_registration_assets helper returns whatever this solo registrant is missing; the
         # structured 403 lets the FE point them straight at the field to fix on their profile.
         solo_missing = _missing_registration_assets([user.user_id], event)
@@ -6758,7 +6790,7 @@ def register_for_event(request):
 
         # ── PER-PLAYER REGISTRATION REQUIREMENTS (F3, owner 2026-06-19) ──
         # EVERY rostered player must satisfy the event's enabled per-player requirements (esports
-        # image / profile image / Free Fire UID). The shared helper returns exactly who is missing
+        # image / profile image / Free Fire UID / WhatsApp number). The shared helper returns exactly who is missing
         # what, so the structured 403 NAMES each offending player + the fields they must add before
         # retrying (the FE renders a per-player "missing X" panel with Edit-Profile deep links).
         roster_missing = _missing_registration_assets(roster_member_ids, event)
@@ -10092,6 +10124,9 @@ def get_event_details_for_admin(request):
         "require_esport_images": event.require_esport_images,
         "require_player_uid": event.require_player_uid,
         "require_player_profile_image": event.require_player_profile_image,
+        # WhatsApp number requirement (owner 2026-08-03): admin-detail twin, read by the admin +
+        # organizer event EDIT pages to rehydrate the Basic Info requirement toggle.
+        "require_whatsapp": event.require_whatsapp,
             "waitlist_capacity": event.waitlist_capacity,
             "waitlist_discord_role_id": event.waitlist_discord_role_id,
             # Waitlist slot-assignment mode (owner 2026-06-17): rehydrates the edit form's mode picker.
