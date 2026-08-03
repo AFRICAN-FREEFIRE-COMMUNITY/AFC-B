@@ -123,9 +123,11 @@ OIDC_RSA_PRIVATE_KEY = os.environ.get("AFC_OIDC_RSA_PRIVATE_KEY", "")
 OAUTH2_PROVIDER = {
     "OIDC_ENABLED": True,
     "OIDC_RSA_PRIVATE_KEY": OIDC_RSA_PRIVATE_KEY,
-    # OAUTH2_VALIDATOR_CLASS is deliberately OMITTED here: afc_sso.validators.AFCOAuth2Validator
-    # does not exist until Task 4 lands, and importing it now would break boot. Task 4 adds this
-    # key back once the validator module exists.
+    # Every claim a partner org receives, in the ID token and at /sso/userinfo/, is decided by
+    # this validator, which delegates to afc_sso.claims.build_claims. Removing this line does
+    # not disable SSO, it silently hands claim selection back to the library's default map and
+    # bypasses AFC's four gates, so treat it as security-critical config.
+    "OAUTH2_VALIDATOR_CLASS": "afc_sso.validators.AFCOAuth2Validator",
     # PKCE defaults to True in 3.4.0. Stated explicitly so nobody "simplifies" it away.
     "PKCE_REQUIRED": True,
     "SCOPES": {
@@ -134,9 +136,13 @@ OAUTH2_PROVIDER = {
         "email": "Your email address",
         "afc.freefire": "Your Free Fire UID",
         "afc.team": "Your current team and your role in it",
-        "afc.history": "Tournaments you have played and how you placed",
+        # These strings are the PROMISE shown to the player on the consent screen, so each one
+        # has to match what afc_sso/claims.py actually releases. History carries event name and
+        # slug only (no placement), and ranking carries points, rank and month (tier is a TEAM
+        # attribute, team_tier, so it is not in a player claim). Change a resolver, change these.
+        "afc.history": "Tournaments you have played",
         "afc.stats": "Your match statistics",
-        "afc.ranking": "Your AFC tier, rank and points",
+        "afc.ranking": "Your AFC rank and ranking points",
         "afc.standing": "Whether your AFC account is in good standing",
     },
     "DEFAULT_SCOPES": ["openid"],
@@ -280,6 +286,13 @@ DATABASES = {
         # Without this the connection defaulted to utf8mb3 and a 4-byte char raised
         # OperationalError 1366 "Incorrect string value" even though the columns are utf8mb4.
         'OPTIONS': {'charset': 'utf8mb4'},
+        # Let a test run pick its own scratch database. Django otherwise derives one fixed
+        # name ("test_" + NAME), so two `manage.py test` runs against the same MySQL server
+        # fight over the same database: the second run finds it already there, and either
+        # prompts or destroys the first run's schema mid-test. Set AFC_TEST_DB_NAME when
+        # running suites in parallel (several agents, or tests alongside a watcher).
+        # Unset, this is exactly Django's own default, so nothing changes for a normal run.
+        'TEST': {'NAME': os.getenv("AFC_TEST_DB_NAME") or None},
     }
 }
 
