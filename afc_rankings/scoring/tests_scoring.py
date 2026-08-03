@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 
 from afc_rankings.scoring import (
+    SCRIM_FLAT_CAP,
     PlayerScrimInput,
     PlayerTournamentInput,
     ScrimInput,
@@ -317,8 +318,11 @@ class TestScrims(unittest.TestCase):
         self.assertEqual(capped_scrim_points(40, 200), 40.0)
 
     def test_cap_zero_tournament_total(self):
-        # no tournaments -> cap 0 -> no scrim credit
-        self.assertEqual(capped_scrim_points(102, 0), 0.0)
+        # AMENDED by the owner 2026-08-03. This used to assert 0.0: with no tournaments the
+        # 30% ratio produced a cap of zero, so a scrim-only team scored nothing however well
+        # it played. The cap is now the HIGHER of the flat allowance and the ratio, so scrims
+        # genuinely count toward rankings. See afc_rankings/test_scrim_flat_cap.py.
+        self.assertEqual(capped_scrim_points(102, 0), float(SCRIM_FLAT_CAP))
 
 
 class TestMonthlyTeamScore(unittest.TestCase):
@@ -328,10 +332,13 @@ class TestMonthlyTeamScore(unittest.TestCase):
         t = TournamentInput("tier_3", raw_placement_pts=120, raw_kills=120)
         s = ScrimInput(scrim_placement_pts=100, scrim_kills=80, scrim_wins=4)
         result = monthly_team_score([t], s)
-        # tourn = 29; raw_scrim = 102; cap = 29 * 0.30 = 8.7; counted = 8.7
+        # AMENDED by the owner 2026-08-03. tourn = 29; raw_scrim = 102. The cap is now the
+        # HIGHER of the flat allowance (30) and 30% of the tournament total (8.7), so the
+        # allowance governs at this size and the team counts 30 rather than 8.7. The ratio
+        # only takes over once tournament points pass SCRIM_FLAT_CAP / SCRIM_CAP_RATIO.
         self.assertEqual(result.tournament_pts, 29.0)
-        self.assertAlmostEqual(result.scrim_pts, 8.7)
-        self.assertAlmostEqual(result.total, 37.7)
+        self.assertAlmostEqual(result.scrim_pts, float(SCRIM_FLAT_CAP))
+        self.assertAlmostEqual(result.total, 29.0 + float(SCRIM_FLAT_CAP))
 
     def test_tier1_win_no_scrim(self):
         t = TournamentInput(
@@ -342,13 +349,16 @@ class TestMonthlyTeamScore(unittest.TestCase):
         self.assertEqual(result.scrim_pts, 0.0)
         self.assertEqual(result.total, 98.0)
 
-    def test_no_tournaments_scrim_zeroed(self):
-        # participation floor effect: no tournaments -> scrim cap 0 -> total 0
+    def test_no_tournaments_scrims_earn_up_to_the_flat_allowance(self):
+        # AMENDED by the owner 2026-08-03: renamed from test_no_tournaments_scrim_zeroed.
+        # A scrim-only team used to score exactly zero, because the cap was a percentage of
+        # its (zero) tournament points. Scrims are meant to count toward rankings, so the cap
+        # is now the higher of the flat allowance and that percentage.
         s = ScrimInput(scrim_placement_pts=100, scrim_kills=80, scrim_wins=4)
         result = monthly_team_score([], s)
         self.assertEqual(result.tournament_pts, 0.0)
-        self.assertEqual(result.scrim_pts, 0.0)
-        self.assertEqual(result.total, 0.0)
+        self.assertEqual(result.scrim_pts, float(SCRIM_FLAT_CAP))
+        self.assertEqual(result.total, float(SCRIM_FLAT_CAP))
 
     def test_zero_activity_no_scrim(self):
         result = monthly_team_score([])

@@ -11,10 +11,11 @@ scrim bucket WITHOUT its event_id, so the three ``EventCountingControl`` toggles
 event's placement/kill/win points counted unconditionally and there was no way for an admin to turn
 one off. The scrim rows now carry their event_id and go through the same three gates.
 
-WHAT IS DELIBERATELY *NOT* CHANGED (spec §5.1 Step 3 / §12): scrim points are capped at 30% of the
-team's TOURNAMENT points, so a team with no tournament results scores 0 from scrims, and the §5.2
-participation floor then drops it from the ladder entirely. ``test_scrim_only_team_scores_nothing``
-locks that in as the CURRENT contract - changing it is a spec change, not a bug fix.
+SUPERSEDED (owner 2026-08-03): the 30%-of-tournament-points cap used to mean a scrim-only team
+scored 0 and was then dropped by the §5.2 participation floor. The owner has since ruled that
+scrims must count toward rankings, so the cap is now the HIGHER of a flat allowance and that 30%,
+and scrim activity satisfies the participation floor. ``test_scrim_only_team_now_scores`` locks in
+the new contract; the cap itself is covered by afc_rankings/test_scrim_flat_cap.py.
 
 The fixture builds the minimal object graph aggregation walks:
 Event(competition_type=...) -> Stages -> StageGroups -> Match -> TournamentTeam ->
@@ -189,8 +190,14 @@ class ScrimOnlyEntityTests(TestCase):
             match=match, tournament_team=tt, placement=1, kills=20,
         )
 
-    def test_scrim_only_team_scores_nothing(self):
+    def test_scrim_only_team_now_scores(self):
+        """Renamed from test_scrim_only_team_scores_nothing, owner 2026-08-03.
+
+        The old name described the bug: a team that played nothing but scrims earned zero,
+        because the cap was a percentage of its zero tournament points. Scrims are meant to
+        count toward rankings, so such a team now scores up to the flat allowance.
+        """
         agg = aggregation.compute_team_monthly(self.team, MONTH)
         self.assertEqual(agg.tournaments_played, 0)
-        self.assertEqual(agg.result.scrim_pts, 0)   # 30% of zero tournament points
-        self.assertEqual(agg.result.total, 0)
+        self.assertGreater(agg.result.scrim_pts, 0)
+        self.assertEqual(agg.result.total, agg.result.scrim_pts)

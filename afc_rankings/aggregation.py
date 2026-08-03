@@ -31,7 +31,7 @@ from afc_tournament_and_scrims.models import (
 from afc_team.models import Team
 from .scoring import engine
 from .scoring.engine import TournamentInput, ScrimInput, PlayerTournamentInput, PlayerScrimInput
-from .models import TeamSocialSnapshot
+from .models import ScoringConfig, TeamSocialSnapshot
 
 
 # ───────────────────────── date helpers ─────────────────────────
@@ -259,10 +259,32 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
     return tournaments, ScrimInput(sp, sk, sw), win_count, kill_total
 
 
+def scrim_flat_cap() -> float:
+    """The flat scrim allowance an admin has configured, or the shipped default.
+
+    Lives HERE rather than in the scoring engine because that module is deliberately
+    Django-free and pure (see its docstring): it must never read the database. This is
+    the Django-aware layer, so the lookup belongs here and the value is passed down.
+
+    Read at call time so an admin edit takes effect on the next recalculation instead of
+    needing a restart. Anything missing or unparseable falls back to the constant, because
+    a scoring run must never fail over configuration.
+    """
+    try:
+        cfg = ScoringConfig.objects.filter(is_active=True).first()
+        if cfg and isinstance(cfg.config, dict):
+            value = cfg.config.get("scrim_flat_cap")
+            if value is not None:
+                return float(value)
+    except Exception:
+        pass
+    return float(engine.SCRIM_FLAT_CAP)
+
+
 def compute_team_monthly(team: Team, month: datetime.date) -> TeamAgg:
     start, end = month_bounds(month)
     tournaments, scrims, wins, kills = _collect_team(team, start, end)
-    result = engine.monthly_team_score(tournaments, scrims)
+    result = engine.monthly_team_score(tournaments, scrims, scrim_flat_cap())
     return TeamAgg(result=result, tournament_wins=wins, total_kills=kills,
                    tournaments_played=len(tournaments))
 
