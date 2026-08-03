@@ -42,6 +42,8 @@
 #             opt-in flag and the numbers used to identify a sender).
 #   HELPERS : afc_whatsapp/phone.py to_e164 / to_wa_id, so an inbound number and a
 #             stored number are compared in the same normalised form.
+#   APPS    : INBOUND_HANDLERS below, the one seam through which another app acts on
+#             an inbound message (today: the marketplace's vendor button taps).
 #   CONFIG  : WHATSAPP_APP_SECRET, WHATSAPP_WEBHOOK_VERIFY_TOKEN (afc/settings.py).
 # ──────────────────────────────────────────────────────────────────────────────
 import hashlib
@@ -53,6 +55,7 @@ from datetime import datetime, timezone as dt_timezone
 from django.conf import settings
 from django.http import HttpResponse
 from django.utils import timezone
+from django.utils.module_loading import import_string
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
@@ -79,6 +82,42 @@ OPT_OUT_KEYWORDS = {
 # Meta status values we understand. Anything else (a new value Meta adds later) is
 # logged and ignored rather than guessed at.
 KNOWN_STATUSES = {"sent", "delivered", "read", "failed"}
+
+# ── App seam: inbound messages that carry ANOTHER app's business logic ────────────
+# This app stays generic. It records every inbound message and honours opt-outs, and
+# it knows nothing about orders, matches, or any other domain. Apps that DO own logic
+# for some inbound messages register a handler here by dotted path, and every inbound
+# message is offered to each in turn.
+#
+# It exists because Meta allows ONE callback URL per WhatsApp number, so this endpoint
+# receives the whole site's inbound traffic. Without the seam, either afc_whatsapp
+# would have to learn about orders, or the marketplace would silently stop working
+# when its own /shop/whatsapp/webhook/ endpoint was retired.
+#
+# Registered today:
+#   afc_shop.vendor_whatsapp.handle_inbound_message
+#       marketplace vendor quick-reply taps ("ack:<order_id>", "shipdate:<order_id>",
+#       "shipped:<order_id>") and inbound shipment-evidence photos. Replaces the old
+#       Kapso-era /shop/whatsapp/webhook/ endpoint (deleted 2026-08-03).
+#
+# A handler is handed Meta's RAW message entry, decides for itself whether the message
+# is any of its business, and must not raise. It is imported LAZILY (on the first
+# inbound message, not at startup) so the dependency stays one-way: apps import
+# afc_whatsapp, never the reverse, and no import cycle can form.
+INBOUND_HANDLERS = ["afc_shop.vendor_whatsapp.handle_inbound_message"]
+
+
+def _dispatch_to_app_handlers(message_entry):
+    """Offer one inbound message to every registered app handler.
+
+    Each handler is isolated: an import error or a crash in one is logged, the next
+    still runs, and neither can turn a valid webhook POST into a non-2xx (Meta
+    escalates its retries against anything that is not 200)."""
+    for dotted_path in INBOUND_HANDLERS:
+        try:
+            import_string(dotted_path)(message_entry)
+        except Exception as exc:
+            logger.error("whatsapp webhook: inbound handler %s failed: %s", dotted_path, exc)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -358,6 +397,11 @@ def _process_message(message_entry):
 
     if _is_opt_out(body):
         _apply_opt_out(wa_id)
+
+    # Hand the message to whichever app owns this conversation (see INBOUND_HANDLERS).
+    # Deliberately LAST: the log row and the opt-out above are this app's own duties
+    # and must be done whatever an app handler goes on to do.
+    _dispatch_to_app_handlers(message_entry)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

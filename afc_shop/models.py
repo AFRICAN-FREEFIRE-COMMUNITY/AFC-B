@@ -94,9 +94,10 @@ class Category(models.Model):
 #     AFC admin, so a vendor can only act on their own orders.
 #   - `Product.vendor` FK (below) links each product a vendor sells back here.
 #     Existing AFC/diamond products have vendor=None (first-party AFC stock).
-#   - `whatsapp_number` + `stripe_account_id` are seams for the SEPARATE follow-ups
-#     (Kapso WhatsApp fulfilment channel; Stripe Connect payouts in Phase B3); they
-#     are stored now so the model does not need re-migrating when those land.
+#   - `whatsapp_number` is where the vendor is messaged about a paid order
+#     (afc_shop/fulfilment.py notify_vendor) and the number their button taps must
+#     come from (afc_shop/vendor_whatsapp.py). `stripe_account_id` is the Stripe
+#     Connect payout rail (Phase B3).
 #   - `created_by` FK -> the admin who granted access (audit trail).
 # ─────────────────────────────────────────────────────────────────────────────
 class Vendor(models.Model):
@@ -117,8 +118,9 @@ class Vendor(models.Model):
     # Where buyer/fulfilment notifications about THIS vendor's orders would CC, and
     # where the vendor receives the "you have a new order" email (notify_vendor).
     contact_email = models.EmailField(blank=True)
-    # Kapso WhatsApp destination for the SEPARATE WhatsApp send follow-up. Stored
-    # now (blank for vendors without WhatsApp) so notify_vendor can plug in later.
+    # Where AFC WhatsApps this vendor about a paid order (blank for vendors without
+    # WhatsApp). Stored RAW, exactly as typed, so it is normalised to E.164 at send
+    # time by afc_whatsapp.phone.to_e164, anchored on the vendor's account country.
     whatsapp_number = models.CharField(max_length=30, blank=True)
 
     status = models.CharField(max_length=20, choices=STATUS, default="active")
@@ -628,14 +630,15 @@ class Fulfillment(models.Model):
 #   When a vendor marks an order "shipped" they attach photo/video evidence (a
 #   packed box, a tracking slip). Buyers and AFC admins can later see proof the
 #   order was actually dispatched. The SAME table will also store inbound media
-#   from the WhatsApp (Kapso) fulfilment channel in the SEPARATE follow-up, so
-#   the page and the bot record evidence identically.
+#   a vendor sends over the WhatsApp fulfilment channel, so the page and the bot
+#   record evidence identically.
 #
 # HOW it connects:
 #   - `order` FK (related_name="evidence"): one order can carry several files.
 #   - Written by `vendor_mark_shipped` in afc_shop/fulfilment.py from the uploaded
-#     files on the shipped transition (and, later, by the Kapso inbound-media
-#     webhook). Read by the per-order vendor page + admin order detail.
+#     files on the shipped transition, and by afc_shop/vendor_whatsapp.py from a
+#     photo the vendor sends in. Read by the per-order vendor page + admin order
+#     detail.
 #   - `uploaded_by` FK -> the vendor User (or admin) who attached it; SET_NULL so
 #     deleting that user never deletes the evidence trail.
 # ─────────────────────────────────────────────────────────────────────────────

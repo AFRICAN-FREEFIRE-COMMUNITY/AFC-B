@@ -2,6 +2,9 @@ from django.urls import path, include
 from .views import *
 from .views_checkin import (set_event_checkin, player_checkin, get_event_checkin_status, checkin_relegate_now)
 from .views_room_release import release_room_details_to_waitlist
+# Per-player WhatsApp delivery state for a match's room details, plus a resend that
+# targets ONLY the failures. Consumed by EditMatchModal. See views_room_delivery.py.
+from .views_room_delivery import match_room_delivery, resend_room_details
 from .views_autoseed import auto_seed_now
 # Paid-event registration payments (feature "paid-events", Phase 1): Stripe Checkout init/verify,
 # the webhook backstop, and the admin escrow (list/release/refund). Kept in its own module so the
@@ -438,6 +441,8 @@ urlpatterns = [
     path("broadcast-to-stage/", broadcast_to_stage, name="broadcast_to_stage"),
     # per-MAP (single match) room-details broadcast. owner 2026-06-18. See broadcast_match_room_details.
     path("broadcast-match-room-details/", broadcast_match_room_details, name="broadcast_match_room_details"),
+    path("match-room-delivery/", match_room_delivery, name="match_room_delivery"),
+    path("resend-room-details/", resend_room_details, name="resend_room_details"),
     path("broadcast-history/", get_broadcast_history, name="get_broadcast_history"),
     # Live organizer-broadcast rate-limit snapshot for the composer counter (owner 2026-06-27).
     path("broadcast-rate-status/", broadcast_rate_status, name="broadcast_rate_status"),

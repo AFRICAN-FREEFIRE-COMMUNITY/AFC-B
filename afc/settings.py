@@ -509,39 +509,9 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 SHIPPING_PROVIDER = os.getenv("SHIPPING_PROVIDER", "")
 SHIPPING_API_KEY = os.getenv("SHIPPING_API_KEY")
 
-# Kapso (WhatsApp Cloud API proxy). Consumed by afc_shop/services/kapso.py, which the marketplace
-# fulfilment notify (afc_shop/fulfilment.py notify_vendor) calls to message product owners/vendors
-# on a paid order. Env-driven; values live in the gitignored .env locally and as server env vars on
-# prod, never in git.
-#   KAPSO_API_KEY         -> auth for the Kapso proxy, sent as the "X-API-Key" request header.
-#   KAPSO_PHONE_NUMBER_ID -> the Meta phone-number ID we send FROM (the AFC WhatsApp business number).
-#   KAPSO_PROJECT_ID / KAPSO_WHATSAPP_CONFIG_ID -> not required for the send call, but kept for the
-#   inbound webhook handler (built separately) and CLI tooling.
-KAPSO_API_KEY = os.getenv("KAPSO_API_KEY")
-KAPSO_PHONE_NUMBER_ID = os.getenv("KAPSO_PHONE_NUMBER_ID")
-KAPSO_PROJECT_ID = os.getenv("KAPSO_PROJECT_ID")
-KAPSO_WHATSAPP_CONFIG_ID = os.getenv("KAPSO_WHATSAPP_CONFIG_ID")
-# WhatsApp message TEMPLATE used for the COLD first-contact "new order" notification.
-# WhatsApp blocks free-form messages outside the recipient's 24h window, so a business-
-# initiated order alert MUST be an approved template. notify_vendor (afc_shop/fulfilment.py)
-# sends this template via send_whatsapp_template, then falls back to free-form buttons if
-# it fails (e.g. not approved yet).
-#   KAPSO_TEMPLATE_NAME -> the approved template's name (owner registered "vendor_new_order").
-#   KAPSO_TEMPLATE_LANG -> the language code the template was APPROVED under. Meta treats
-#     "en_US" and "en" as DIFFERENT and rejects a mismatch with error 132001, so this MUST
-#     equal the template's actual language in WhatsApp Manager. Default "en_US"; override via env.
-KAPSO_TEMPLATE_NAME = os.getenv("KAPSO_TEMPLATE_NAME", "vendor_new_order")
-KAPSO_TEMPLATE_LANG = os.getenv("KAPSO_TEMPLATE_LANG", "en_US")
-# OPTIONAL shared secret for verifying INBOUND webhook calls (afc_shop/whatsapp_webhook.py).
-# When set, every POST to /shop/whatsapp/webhook/ must carry an "X-Webhook-Signature" header
-# equal to the HMAC-SHA256 hex digest of the raw request body keyed with this secret; a
-# mismatch is rejected with 403. When unset (the default, e.g. local dev), the webhook
-# accepts unsigned POSTs exactly as before, so this is backward compatible. Set it on prod
-# together with the matching secret on the Kapso/proxy side.
-KAPSO_WEBHOOK_SECRET = os.getenv("KAPSO_WEBHOOK_SECRET")
 
 # ── AFC's OWN WhatsApp Cloud API integration (afc_whatsapp) ────────────────────────────────
-# The replacement for the two middlemen above and beside (Kapso for marketplace vendor alerts,
+# The replacement for the two middlemen AFC used to rent (Kapso for marketplace vendor alerts,
 # Zernio for match room details): AFC talks to Meta directly. Consumed by afc_whatsapp/client.py
 # (sends), afc_whatsapp/webhooks.py (the inbound endpoint at /whatsapp/webhook/) and
 # afc_whatsapp/tasks.py (the Celery send task). Every value is env-driven: the gitignored .env
