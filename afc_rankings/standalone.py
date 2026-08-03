@@ -1,5 +1,5 @@
 """
-afc_rankings.standalone — feed published standalone leaderboards into the rankings engine.
+afc_rankings.standalone - feed published standalone leaderboards into the rankings engine.
 
 PURPOSE
     A standalone leaderboard (afc_leaderboard.StandaloneLeaderboard) is an event-less competition
@@ -14,7 +14,7 @@ PURPOSE
       2. Ghost-team compute + recalc: real teams/users ride the existing aggregation + recalc path
          (see HOW IT CONNECTS); ghost teams have no event activity to ride, so we compute + persist
          their TeamMonthlyScore/TeamQuarterlyScore(ghost_team=...) rows here, left at rank 0 (never
-         interleaved into the real-team rank — rerank_team_* filters team__isnull=False).
+         interleaved into the real-team rank - rerank_team_* filters team__isnull=False).
       3. recompute_for_leaderboard(lb): the signal entry point that enqueues a recompute for every
          participant entity (real team, ghost team, real user) for the LB's month + season.
 
@@ -103,7 +103,7 @@ def _standings_leader_participant_id(lb):
     """The participant id ranked 1 in this LB's standings, or None when there are no standings.
 
     Reads afc_leaderboard.standings.standalone_standings (the same on-read standings the FE shows).
-    Used to set `won` on the team input — the standalone analogue of TournamentTeam.is_tournament_winner.
+    Used to set `won` on the team input - the standalone analogue of TournamentTeam.is_tournament_winner.
     """
     from afc_leaderboard.standings import standalone_standings
     rows = standalone_standings(lb)
@@ -135,7 +135,7 @@ def standalone_ghost_team_inputs(ghost_team, start, end):
     """Same as standalone_team_inputs but for a GHOST team participant (ghost_team=...).
 
     Read by compute_ghost_team_monthly / compute_ghost_team_quarterly below (ghost teams have no
-    event activity, so they do not flow through aggregation._collect_team — they are computed here
+    event activity, so they do not flow through aggregation._collect_team - they are computed here
     and persisted at rank 0).
     """
     from afc_leaderboard.models import LeaderboardParticipant, ParticipantMatchResult
@@ -155,7 +155,7 @@ def standalone_player_inputs(user, start, end):
     played.
 
     Read by aggregation._collect_player (Task 3.4): appended to the player's event tournaments list.
-    Mirrors aggregation._collect_player — a player scores on kills + participation, never on raw
+    Mirrors aggregation._collect_player - a player scores on kills + participation, never on raw
     placement (personal_placement_pts stays 0; line ~306 in aggregation). mvp/finals/team_won are
     0/0/False (a standalone solo LB has no MVP, finals stage, or team-win marker).
     """
@@ -194,7 +194,7 @@ def standalone_ghost_player_inputs(ghost_player, start, end):
 
     Mirrors standalone_player_inputs but for a GHOST player (ghost_player=...). A ghost player has no
     event activity (nothing in the event aggregation path reads GhostPlayer), so it does not flow
-    through aggregation._collect_player — it is computed here and persisted by
+    through aggregation._collect_player - it is computed here and persisted by
     recalc_ghost_player_monthly / _quarterly below, then ranked alongside real players.
     """
     from afc_leaderboard.models import LeaderboardParticipant, ParticipantMatchResult
@@ -210,7 +210,7 @@ def standalone_ghost_player_inputs(ghost_player, start, end):
 
 # ───────────────────────── ghost-team compute ─────────────────────────
 # A ghost team has no event activity, so it never flows through aggregation._collect_team. We
-# compute its score from the standalone inputs alone (no scrims — a ghost has none) and persist a
+# compute its score from the standalone inputs alone (no scrims - a ghost has none) and persist a
 # rank-0 row via the recalc helpers below. These mirror aggregation.compute_team_monthly /
 # compute_team_quarterly MINUS the event collection + scrim caps (ghosts have neither).
 def compute_ghost_team_monthly(ghost_team, month: datetime.date) -> TeamAgg:
@@ -232,7 +232,7 @@ def compute_ghost_team_monthly(ghost_team, month: datetime.date) -> TeamAgg:
 
 def compute_ghost_team_quarterly(ghost_team, season) -> TeamAgg:
     """TeamAgg for a ghost team's quarterly score from its standalone-LB inputs over the season
-    window. No prize money / social media (a ghost team has neither — passed as 0). Read by
+    window. No prize money / social media (a ghost team has neither - passed as 0). Read by
     recalc_ghost_team_quarterly below."""
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
     tours = standalone_ghost_team_inputs(ghost_team, start, end)
@@ -267,7 +267,7 @@ def recalc_ghost_team_monthly(ghost_team_id, month: datetime.date = None):
     month = (month or recalc.current_month()).replace(day=1)
     agg = compute_ghost_team_monthly(ghost, month)
     if agg.tournaments_played == 0:
-        # §5.2 participation floor — no standalone activity this month => no row. Rerank so the ghost
+        # §5.2 participation floor - no standalone activity this month => no row. Rerank so the ghost
         # vacates its rank slot and the remaining rows close the gap.
         TeamMonthlyScore.objects.filter(ghost_team=ghost, month=month).delete()
         recalc.rerank_team_month(month)
@@ -320,7 +320,7 @@ def recalc_ghost_team_quarterly(ghost_team_id, season_id):
 
 # ───────────────────────── ghost-player compute ─────────────────────────
 # A ghost player has no event activity, so it never flows through aggregation._collect_player. We
-# compute its score from the standalone solo-LB inputs alone (no scrims — a ghost has none) and
+# compute its score from the standalone solo-LB inputs alone (no scrims - a ghost has none) and
 # persist a PlayerMonthlyScore/PlayerQuarterlyScore(ghost_player=...) row via the recalc helpers
 # below. These mirror aggregation.compute_player_monthly / compute_player_quarterly MINUS the event
 # collection + scrims + inherited prize money (a ghost player has none of those).
@@ -380,7 +380,7 @@ def recalc_ghost_player_monthly(ghost_player_id, month: datetime.date = None):
     month = (month or recalc.current_month()).replace(day=1)
     agg = compute_ghost_player_monthly(ghost, month)
     if agg.tournaments_played == 0:
-        # §6 participation floor — no standalone activity this month => no row, then rerank so the
+        # §6 participation floor - no standalone activity this month => no row, then rerank so the
         # ghost vacates its rank slot.
         PlayerMonthlyScore.objects.filter(ghost_player=ghost, month=month).delete()
         recalc.rerank_player_month(month)

@@ -124,7 +124,7 @@ Global:
   character_dict_path: ./dataset_train/rec_keys.txt
   # Free Fire player names contain spaces -> the model must be able to emit a space.
   # use_space_char=True makes PaddleOCR treat space as an emittable token (handled via
-  # this flag, NOT as a line in rec_keys.txt — which is why the assembler strips the
+  # this flag, NOT as a line in rec_keys.txt - which is why the assembler strips the
   # literal space from the dict it writes).
   use_space_char: true
   save_model_dir: ./output/afc_student/
@@ -143,12 +143,12 @@ Eval:
 ```
 
 Key names, verbatim, that matter and are easy to get wrong:
-- `Global.character_dict_path` — point at the **custom** `rec_keys.txt`, not the stock
+- `Global.character_dict_path` - point at the **custom** `rec_keys.txt`, not the stock
   `ppocrv5_dict.txt`. If this is wrong the ONNX vocab will not match what AFC reads.
-- `Global.use_space_char: true` — required because names have spaces.
-- `Global.pretrained_model` — the PP-OCRv5_mobile_rec base, so we fine-tune rather than
+- `Global.use_space_char: true` - required because names have spaces.
+- `Global.pretrained_model` - the PP-OCRv5_mobile_rec base, so we fine-tune rather than
   train from scratch.
-- `Train.dataset.label_file_list` / `Eval.dataset.label_file_list` — YAML **lists**; the
+- `Train.dataset.label_file_list` / `Eval.dataset.label_file_list` - YAML **lists**; the
   paths are relative to the corresponding `data_dir`.
 
 These can also be passed as `-o Key=Value` overrides on the train command instead of
@@ -209,7 +209,7 @@ Notes:
 - If your export produced `inference.json` (newer v3.x), pass
   `--model_filename inference.json` instead. Some recent PaddleOCR builds wrap this as
   `paddlex --paddle2onnx ...`; the standalone `paddle2onnx` above is the stable path. Use
-  whichever your installed version provides — confirm with `paddle2onnx --help`.
+  whichever your installed version provides - confirm with `paddle2onnx --help`.
 - `--opset_version 11` is the safe default for onnxruntime; paddle2onnx >= 1.2.3 supports
   dynamic shapes by default (the old `--input_shape_dict` is deprecated), so the exported
   `rec.onnx` accepts variable-width crops, which is what `rapidocr_onnxruntime` feeds it.
@@ -290,7 +290,7 @@ directory (`settings.OCR_LOCAL_MODEL_PATH`, per `local_ocr.py`'s P2 note). To pr
 
 1. Copy the verified bundle to `backend/media/models/student_v<N>/`.
 2. Flip the "current" pointer to `student_v<N>` (set `OCR_LOCAL_MODEL_PATH` to that
-   directory, or update whatever symlink/setting `local_ocr` reads as current — confirm
+   directory, or update whatever symlink/setting `local_ocr` reads as current - confirm
    the exact mechanism in `local_ocr.py` / settings before flipping).
 3. Restart the workers so the lazy `get_engine()` singleton rebuilds against the new
    bundle.

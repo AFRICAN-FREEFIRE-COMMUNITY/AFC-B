@@ -90,7 +90,7 @@ class Command(BaseCommand):
             parsed = parse_team_match_log(text)
             # Key stored kills by NORMALIZED team name so a file block "ALPHA WOLVES" still maps to the
             # registered "Alpha Wolves" (case/spacing differ). An abbreviated in-game name that doesn't
-            # normalize to any registered team (e.g. "BERSERK GEN" vs "BERSERK GENERATION" — an
+            # normalize to any registered team (e.g. "BERSERK GEN" vs "BERSERK GENERATION" - an
             # unmatched/attributed block) stays None, which is correct: --apply re-derives it via re-upload.
             _n = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
             stored = {_n(ts.tournament_team.team.team_name): ts.kills

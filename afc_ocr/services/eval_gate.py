@@ -19,7 +19,7 @@ WHY A HARD GATE (and not just 'higher number wins')
 HOW IT CONNECTS TO THE REST OF THE SYSTEM
     Upstream:
       - afc_ocr.services.dataset.assemble_rec_dataset(splits=('eval',)) produces the
-        FROZEN gold eval slice (source='admin_review' only — human-confirmed truth).
+        FROZEN gold eval slice (source='admin_review' only - human-confirmed truth).
         The off-box trainer (afc_ocr/training/finetune.py) runs the new ONNX over that
         slice to produce `predictions`, and reads the SAME slice's labels as `gold`.
       - The current production model's metrics (computed once, the same way) are passed
@@ -37,13 +37,13 @@ cheap and dependency-light so it can run on the CPU box, in CI, and inside the o
 trainer alike. numpy is used only for trivial means; everything else is stdlib.
 
 §5 METRICS (the names referenced by the design doc)
-    1. name exact-match accuracy   — fraction of name cells transcribed character-perfect
-    2. name CER (char error rate)  — mean Levenshtein(pred,gold)/len(gold) over names
-    3. kill exact-match accuracy   — fraction of kill cells whose integer count is exact
-    4. per-image exact-JSON acc.   — fraction of IMAGES whose ENTIRE result matches gold
+    1. name exact-match accuracy   - fraction of name cells transcribed character-perfect
+    2. name CER (char error rate)  - mean Levenshtein(pred,gold)/len(gold) over names
+    3. kill exact-match accuracy   - fraction of kill cells whose integer count is exact
+    4. per-image exact-JSON acc.   - fraction of IMAGES whose ENTIRE result matches gold
                                       (this is the PRIMARY ship metric: it is what the
-                                      admin actually experiences — the whole screen right)
-    5. row-alignment rate          — fraction of images whose predicted row STRUCTURE
+                                      admin actually experiences - the whole screen right)
+    5. row-alignment rate          - fraction of images whose predicted row STRUCTURE
                                       (placement count + players-per-placement) matches
                                       gold, i.e. did we even line the rows up correctly
 """
@@ -57,7 +57,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Gate tolerances — the knobs of the safety spine. Kept as module constants so the
+# Gate tolerances - the knobs of the safety spine. Kept as module constants so the
 # policy is visible, auditable, and tunable in ONE place (never buried in a branch).
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -128,7 +128,7 @@ def _cer(pred: str, gold: str) -> float:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Result-shape helpers — flatten the canonical OCR JSON into comparable cells.
+# Result-shape helpers - flatten the canonical OCR JSON into comparable cells.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _placements(result: dict) -> list:
@@ -143,7 +143,7 @@ def _row_shape(result: dict) -> list[int]:
     The STRUCTURE of a result, ignoring text: a list giving the number of players in
     each placement, in placement order. Two results have the same row structure iff they
     have the same number of placements and the same player-count per placement. This is
-    what 'row-alignment' measures — did we segment the screen into the right rows, even
+    what 'row-alignment' measures - did we segment the screen into the right rows, even
     before judging whether the text in them is right.
     """
     return [len(p.get("players", []) or []) for p in _placements(result)]
@@ -296,7 +296,7 @@ def compute_metrics(predictions: list, gold: list) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PUBLIC: the regression gate — the actual ship / no-ship decision
+# PUBLIC: the regression gate - the actual ship / no-ship decision
 # ──────────────────────────────────────────────────────────────────────────────
 
 def regression_gate(new_metrics: dict, current_metrics: dict, must_pass_results) -> tuple:
@@ -308,12 +308,12 @@ def regression_gate(new_metrics: dict, current_metrics: dict, must_pass_results)
 
     Ship is granted IFF ALL of the following hold:
 
-      (A) PRIMARY GAIN — per-image exact-JSON accuracy rises by at least EPS:
+      (A) PRIMARY GAIN - per-image exact-JSON accuracy rises by at least EPS:
             new.image_exact_json_acc - current.image_exact_json_acc >= EPS
           This is the metric the admin actually feels (the whole screen correct), and the
           margin (EPS) guards against shipping on eval-set noise.
 
-      (B) NO SECONDARY REGRESSION — none of the secondary metrics slips past
+      (B) NO SECONDARY REGRESSION - none of the secondary metrics slips past
           SECONDARY_TOL:
             - name_exact_acc   may not DROP more than SECONDARY_TOL   (higher is better)
             - kill_exact_acc   may not DROP more than SECONDARY_TOL   (higher is better)
@@ -321,7 +321,7 @@ def regression_gate(new_metrics: dict, current_metrics: dict, must_pass_results)
             - name_cer         may not RISE more than SECONDARY_TOL   (LOWER is better)
           A model that buys a primary gain by wrecking a secondary metric is NOT shipped.
 
-      (C) MUST-PASS CLEAN — the curated must-pass slice has ZERO NEW failures. This slice
+      (C) MUST-PASS CLEAN - the curated must-pass slice has ZERO NEW failures. This slice
           is a hand-picked set of cases the system must never get wrong (e.g. known-hard
           but business-critical screenshots). `must_pass_results` is a list of per-case
           dicts; a case is a NEW failure if the new model fails a case the current model
@@ -341,8 +341,8 @@ def regression_gate(new_metrics: dict, current_metrics: dict, must_pass_results)
 
     Returns:
         (ship: bool, reasons: list[str])
-          ship   — True only when A AND B AND C all hold.
-          reasons— human-readable lines explaining EACH check's outcome (both the passing
+          ship   - True only when A AND B AND C all hold.
+          reasons - human-readable lines explaining EACH check's outcome (both the passing
                    and the failing ones), so the trainer can log exactly why a model was
                    or was not shipped. The decision is always auditable from `reasons`.
     """

@@ -1,5 +1,5 @@
 """
-afc_leaderboard.standings — compute a standalone leaderboard's standings ON READ.
+afc_leaderboard.standings - compute a standalone leaderboard's standings ON READ.
 
 PURPOSE
     Given a StandaloneLeaderboard, aggregate every participant's per-map results into a sorted
@@ -11,7 +11,7 @@ HOW IT CONNECTS
       surfaced on the FE view page (/leaderboards/standalone/<id>) + the wizard's Review step.
     - Reads ParticipantMatchResult columns that were COMPUTED on save by the views via
       afc_tournament_and_scrims.scoring.compute_team_points / compute_solo_points. This helper does
-      NOT re-score — it only sums the stored point columns.
+      NOT re-score - it only sums the stored point columns.
     - The sort key is the SAME chain the event standings builder uses
       (afc_tournament_and_scrims.views.get_all_leaderboard_details_for_event):
           (-effective_total, -booyahs, -total_kills, last_match_placement, name)

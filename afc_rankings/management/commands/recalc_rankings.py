@@ -18,7 +18,7 @@ USAGE (prod, inside the backend venv):
     python manage.py recalc_rankings --all-months             # every month that has score rows
     python manage.py recalc_rankings                          # current month + active season
 
-It NEVER publishes anything — publish stays a separate, explicit admin action
+It NEVER publishes anything - publish stays a separate, explicit admin action
 (afc_rankings.admin_publish.publish_state). Recompute first, eyeball the admin
 draft preview, THEN publish. Read by: ops (manual prod rebuild). Calls:
 recalc.recalc_month / recalc_season + rerank_* (afc_rankings/recalc.py).

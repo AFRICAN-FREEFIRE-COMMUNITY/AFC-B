@@ -25,7 +25,7 @@ WHAT THIS IS
            afc_ocr.services.local_ocr.LocalOCREngine can load as-is.
 
 HOW IT CONNECTS TO THE REST OF THE SYSTEM
-    - INPUT comes from afc_ocr.services.dataset (the assembler) — same rec_gt.txt +
+    - INPUT comes from afc_ocr.services.dataset (the assembler) - same rec_gt.txt +
       rec_keys.txt + crops/ layout, byte-for-byte.
     - The EVAL step calls afc_ocr.services.eval_gate (compute_metrics + regression_gate),
       the same safety spine the CPU box uses.
@@ -66,7 +66,7 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Bundle filenames — MUST match what afc_ocr.services.local_ocr.LocalOCREngine loads:
+# Bundle filenames - MUST match what afc_ocr.services.local_ocr.LocalOCREngine loads:
 # it reads <model_dir>/rec.onnx, <model_dir>/rec_keys.txt, <model_dir>/VERSION.
 # We add model_card.json + eval_report.json for provenance (local_ocr ignores extras).
 # ──────────────────────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ CHAR_DICT_FILENAME = "rec_keys.txt"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Eval-slice loading (pure stdlib — runs anywhere, no paddle needed)
+# Eval-slice loading (pure stdlib - runs anywhere, no paddle needed)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_eval_pairs(eval_dir: str):
@@ -124,7 +124,7 @@ def load_eval_pairs(eval_dir: str):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Bundle writer (pure stdlib — the emit step does not need paddle)
+# Bundle writer (pure stdlib - the emit step does not need paddle)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def write_bundle(out_dir: str, version: int, onnx_path: str, keys_path: str,
@@ -134,13 +134,13 @@ def write_bundle(out_dir: str, version: int, onnx_path: str, keys_path: str,
     Assemble the student bundle directory  <out_dir>/student_v<version>/  with everything
     local_ocr + provenance need:
 
-        rec.onnx          — copied from onnx_path (the paddle2onnx export)
-        rec_keys.txt      — copied from keys_path (the CUSTOM char dict used to train)
-        VERSION           — the string "student_v<version>" (local_ocr reads this as
+        rec.onnx          - copied from onnx_path (the paddle2onnx export)
+        rec_keys.txt      - copied from keys_path (the CUSTOM char dict used to train)
+        VERSION           - the string "student_v<version>" (local_ocr reads this as
                             self.model_version)
-        model_card.json   — provenance: when, which pretrained base, dataset_version,
+        model_card.json   - provenance: when, which pretrained base, dataset_version,
                             char count, ship decision + gate reasons
-        eval_report.json  — the full compute_metrics() dict + the gate reasons
+        eval_report.json  - the full compute_metrics() dict + the gate reasons
 
     This step is intentionally paddle-free: by the time we get here the ONNX already
     exists, so emitting the bundle is just file copies + JSON writes. That keeps the bundle
@@ -168,7 +168,7 @@ def write_bundle(out_dir: str, version: int, onnx_path: str, keys_path: str,
     except OSError:
         num_chars = None
 
-    # model_card.json — human + machine readable provenance.
+    # model_card.json - human + machine readable provenance.
     card = {
         "version": version_str,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -183,7 +183,7 @@ def write_bundle(out_dir: str, version: int, onnx_path: str, keys_path: str,
     with open(os.path.join(bundle_dir, BUNDLE_MODEL_CARD), "w", encoding="utf-8") as f:
         json.dump(card, f, indent=2)
 
-    # eval_report.json — the metrics that drove the decision.
+    # eval_report.json - the metrics that drove the decision.
     report = {
         "version": version_str,
         "metrics": metrics,
@@ -198,7 +198,7 @@ def write_bundle(out_dir: str, version: int, onnx_path: str, keys_path: str,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# The fine-tune itself — THE ONLY place paddle is imported (guarded).
+# The fine-tune itself - THE ONLY place paddle is imported (guarded).
 # ──────────────────────────────────────────────────────────────────────────────
 
 def run_finetune(
@@ -240,7 +240,7 @@ def run_finetune(
     skeleton hard-fails with guidance if paddle is missing so nobody accidentally tries to
     train on the Django box.
     """
-    # ── GUARDED HEAVY IMPORT — keep this module importable without paddle ──────────
+    # ── GUARDED HEAVY IMPORT - keep this module importable without paddle ──────────
     try:
         import paddle  # noqa: F401  (GPU dep; only present on the training box)
     except Exception as exc:  # ImportError, or a paddle init failure on a CPU box
@@ -292,7 +292,7 @@ def run_finetune(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CLI entry point — argparse only, no paddle at import time.
+# CLI entry point - argparse only, no paddle at import time.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _build_arg_parser() -> argparse.ArgumentParser:

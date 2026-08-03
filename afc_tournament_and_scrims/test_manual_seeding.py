@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims.test_manual_seeding — manual seed / unseed endpoints (owner 2026-07-06).
+afc_tournament_and_scrims.test_manual_seeding - manual seed / unseed endpoints (owner 2026-07-06).
 
 Covers seeding_management's targeted single-competitor removal + the solo-add siblings:
   • remove_competitor_from_group / remove_competitor_from_stage (team + solo),
@@ -142,7 +142,7 @@ class ManualSeedingTeamRemoveTests(APITestCase):
             stage=self.stage, tournament_team=self.tt).exists())
 
     def test_remove_team_from_group_accepts_underlying_team_id(self):
-        # add_teams_to_group / the FE AddTeamsModal key on the underlying Team FK — accept it too.
+        # add_teams_to_group / the FE AddTeamsModal key on the underlying Team FK - accept it too.
         res = self._post("seeding_remove_from_group", {
             "group_id": self.group.group_id, "team_id": self.tt.team_id,
         })

@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims.event_links — EVENT LINKING / QUALIFICATION CHAINS (P1).
+afc_tournament_and_scrims.event_links - EVENT LINKING / QUALIFICATION CHAINS (P1).
 
 PURPOSE (owner-approved design 2026-06-12, spec: WEBSITE/tasks/event-linking-design.md v2 +
 feedback round 1; mockup: frontend/public/_event_linking_preview.html)
@@ -185,7 +185,7 @@ def _registration_gates(link, qual):
             return "target requires a team logo"
         # Mirror register_for_event (views.py ~5205): EXCLUDE staff before the per-player asset check.
         # Staff are support-only and never appear on the event roster that _promote actually copies, so
-        # checking their assets here made the qualification gate STRICTER than registration — a single
+        # checking their assets here made the qualification gate STRICTER than registration - a single
         # staffer missing a UID/image would falsely hold a qualifying team pending. (Adversarial-review
         # fix, owner 2026-06-19.)
         staff_ids = set(TeamMembers.objects.filter(
@@ -312,7 +312,7 @@ def _withdraw_promotion(qual):
         # DATA-LOSS GUARD (2026-07-06): TournamentTeamMatchStats.tournament_team is on_delete=CASCADE,
         # so tt.delete() would destroy any matches this promoted team ALREADY PLAYED in the target
         # event. If results exist, do NOT delete the team (withdrawing a team that already competed is
-        # itself wrong) — just detach the qual pointer so the promotion is no longer tracked. Only a
+        # itself wrong) - just detach the qual pointer so the promotion is no longer tracked. Only a
         # team that has not yet played is safe to fully remove.
         from .models import TournamentTeamMatchStats
         has_played = TournamentTeamMatchStats.objects.filter(tournament_team=tt).exists()
@@ -581,7 +581,7 @@ def create_link(request, event_id):
 
 @api_view(["GET"])
 def list_links(request, event_id):
-    """GET events/<event_id>/links/  — the event's OUTBOUND links (with qualifications + the
+    """GET events/<event_id>/links/  - the event's OUTBOUND links (with qualifications + the
     standings-edited diff check) and INBOUND links (who feeds this event). Auth: any manager
     of this event (admin / org can_edit_events)."""
     user, err = _auth_user(request)
@@ -609,7 +609,7 @@ def list_links(request, event_id):
 
 @api_view(["GET"])
 def public_inbound_links(request, event_id):
-    """GET events/<event_id>/links/public/  — PUBLIC provenance read (linking P2): the FIRED
+    """GET events/<event_id>/links/public/  - PUBLIC provenance read (linking P2): the FIRED
     inbound links of an event with the names of who qualified through each. Powers the
     "Qualified field" banner on the public tournament page (components/qualified-from-banner
     .tsx); only promoted/replaced names are shown (pending/declined slots stay private).
@@ -636,7 +636,7 @@ def public_inbound_links(request, event_id):
 
 @api_view(["GET"])
 def public_structure_links(request, event_id):
-    """GET events/<event_id>/links/structure/  — PUBLIC, NO AUTH. Both directions of an event's
+    """GET events/<event_id>/links/structure/  - PUBLIC, NO AUTH. Both directions of an event's
     qualification links so the public tournament page can render its place in the season:
       inbound  = events that qualify INTO this event (this event is the LINK TARGET); each row
                  names the SOURCE event (slug + name), the source stage, and how many qualify.
@@ -691,7 +691,7 @@ def public_structure_links(request, event_id):
 
 @api_view(["GET"])
 def link_chain(request, event_id):
-    """GET events/<event_id>/links/chain/  — the WHOLE qualification graph this event belongs
+    """GET events/<event_id>/links/chain/  - the WHOLE qualification graph this event belongs
     to (linking P3, the chain map). BFS both directions over non-cancelled links from this
     event; returns {nodes: [{event_id, event_name, event_status, is_focus}],
     edges: [{link_id, source_event_id, source_stage_name, target_event_id, qualify_count,
@@ -910,12 +910,12 @@ def import_competitors(request, event_id):
 
 @api_view(["DELETE"])
 def cancel_link(request, link_id):
-    """DELETE events/links/<link_id>/ — cancel a qualification link AND withdraw the
+    """DELETE events/links/<link_id>/ - cancel a qualification link AND withdraw the
     registrations it auto-promoted into the target event.
 
     Owner expectation (2026-06-29): unlinking should bring the qualified teams BACK OUT of the
     target event, not leave them registered there. So for every team/competitor THIS link
-    promoted (status promoted/replaced), we call _withdraw_promotion — which removes ONLY the
+    promoted (status promoted/replaced), we call _withdraw_promotion - which removes ONLY the
     rows the link itself created (the promoted TournamentTeam + its members + the target
     RegisteredCompetitors row). A team that was ALREADY independently registered in the target
     is never touched. Pass ?keep_registrations=true to cancel the rule but LEAVE the promoted
@@ -968,7 +968,7 @@ def cancel_link(request, link_id):
 
 @api_view(["POST"])
 def fire_link_view(request, link_id):
-    """POST events/links/<link_id>/fire/ — read the stage standings now and create/promote the
+    """POST events/links/<link_id>/fire/ - read the stage standings now and create/promote the
     top-N qualifications (the manual trigger once standings are final; complete_event also
     fires unfired links automatically)."""
     user, err = _auth_user(request)

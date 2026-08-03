@@ -44,14 +44,14 @@ from afc_rankings.scoring import (
 
 
 class TestNoDjangoImport(unittest.TestCase):
-    """The engine must be pure — no django / ORM / celery imported anywhere."""
+    """The engine must be pure - no django / ORM / celery imported anywhere."""
 
     def test_no_forbidden_imports(self):
         # Probe in a FRESH subprocess: importing the engine must not pull in django/celery/requests.
         # The previous in-process check inspected this interpreter's sys.modules, which the test
         # RUNNER contaminates (Django + pytest load django.* before this test runs), so it reported a
         # false positive when run alongside the full suite. A child interpreter that imports ONLY the
-        # engine is the faithful test of the engine's own import graph — and the assertion it makes is
+        # engine is the faithful test of the engine's own import graph - and the assertion it makes is
         # strictly stronger (it would catch a real django import the in-process version could miss).
         import subprocess
         import sys
@@ -75,7 +75,7 @@ class TestNoDjangoImport(unittest.TestCase):
 
 
 class TestCompressKills(unittest.TestCase):
-    """Spec §4.2 — kill compression brackets, both sides of every edge."""
+    """Spec §4.2 - kill compression brackets, both sides of every edge."""
 
     def test_brackets(self):
         cases = [
@@ -112,7 +112,7 @@ class TestCompressKills(unittest.TestCase):
 
 
 class TestCompressPlacement(unittest.TestCase):
-    """Spec §4.3 — placement compression brackets, both sides of every edge."""
+    """Spec §4.3 - placement compression brackets, both sides of every edge."""
 
     def test_brackets(self):
         cases = [
@@ -146,7 +146,7 @@ class TestCompressPlacement(unittest.TestCase):
 
 
 class TestPrizeMoneyPoints(unittest.TestCase):
-    """Spec §7.2 — prize money brackets (inclusive-upper-bound gap closure)."""
+    """Spec §7.2 - prize money brackets (inclusive-upper-bound gap closure)."""
 
     def test_brackets(self):
         cases = [
@@ -185,7 +185,7 @@ class TestPrizeMoneyPoints(unittest.TestCase):
 
 
 class TestSocialMediaPoints(unittest.TestCase):
-    """Spec §7.3 — social media brackets, capped at 10."""
+    """Spec §7.3 - social media brackets, capped at 10."""
 
     def test_brackets(self):
         cases = [
@@ -208,7 +208,7 @@ class TestSocialMediaPoints(unittest.TestCase):
 
 
 class TestPlacementPoints(unittest.TestCase):
-    """Spec §4.1 — per-match finish points."""
+    """Spec §4.1 - per-match finish points."""
 
     def test_finishes(self):
         cases = [
@@ -232,7 +232,7 @@ class TestPlacementPoints(unittest.TestCase):
 
 
 class TestBuildingBlocks(unittest.TestCase):
-    """Spec §4 / §4.4 / §4.5 — multipliers, win bonus, finals bonus."""
+    """Spec §4 / §4.4 / §4.5 - multipliers, win bonus, finals bonus."""
 
     def test_tier_multiplier(self):
         self.assertEqual(tier_multiplier("tier_1"), 2.0)
@@ -264,7 +264,7 @@ class TestBuildingBlocks(unittest.TestCase):
 
 
 class TestTournamentScore(unittest.TestCase):
-    """Spec §5.1 Step 1 — per-tournament team score."""
+    """Spec §5.1 Step 1 - per-tournament team score."""
 
     def test_tier3_no_win_no_finals(self):
         t = TournamentInput("tier_3", raw_placement_pts=120, raw_kills=120)
@@ -299,7 +299,7 @@ class TestTournamentScore(unittest.TestCase):
 
 
 class TestScrims(unittest.TestCase):
-    """Spec §5.1 Step 3 / §12 — scrim raw points and 30% cap."""
+    """Spec §5.1 Step 3 / §12 - scrim raw points and 30% cap."""
 
     def test_raw_scrim_points(self):
         s = ScrimInput(scrim_placement_pts=100, scrim_kills=80, scrim_wins=4)
@@ -322,7 +322,7 @@ class TestScrims(unittest.TestCase):
 
 
 class TestMonthlyTeamScore(unittest.TestCase):
-    """Spec §6 — monthly team score (per-tournament sum + capped scrims)."""
+    """Spec §6 - monthly team score (per-tournament sum + capped scrims)."""
 
     def test_tier3_with_capped_scrim(self):
         t = TournamentInput("tier_3", raw_placement_pts=120, raw_kills=120)
@@ -357,7 +357,7 @@ class TestMonthlyTeamScore(unittest.TestCase):
     def test_multiple_tournaments_per_tournament_compression_summed(self):
         # LOCKED CONVENTION: compression is per-tournament then summed.
         # Two tier_3 tournaments each (pl=120, k=120) -> 29 each -> 58 total.
-        # (Cumulative would be compress(240)=24+... — NOT what we do.)
+        # (Cumulative would be compress(240)=24+... - NOT what we do.)
         t = TournamentInput("tier_3", raw_placement_pts=120, raw_kills=120)
         result = monthly_team_score([t, t])
         self.assertEqual(result.tournament_pts, 58.0)
@@ -365,7 +365,7 @@ class TestMonthlyTeamScore(unittest.TestCase):
 
 
 class TestQuarterlyTeamScore(unittest.TestCase):
-    """Spec §8 — quarterly team score (same formula + prize + social)."""
+    """Spec §8 - quarterly team score (same formula + prize + social)."""
 
     def test_basic(self):
         t = TournamentInput("tier_3", raw_placement_pts=120, raw_kills=120)
@@ -399,7 +399,7 @@ class TestQuarterlyTeamScore(unittest.TestCase):
 
 
 class TestMonthlyPlayerScore(unittest.TestCase):
-    """Spec §7 — monthly player score (team win = 5, includes placement §9.1)."""
+    """Spec §7 - monthly player score (team win = 5, includes placement §9.1)."""
 
     def test_full_single_tournament(self):
         pt = PlayerTournamentInput(
@@ -461,7 +461,7 @@ class TestMonthlyPlayerScore(unittest.TestCase):
 
 
 class TestQuarterlyPlayerScore(unittest.TestCase):
-    """Spec §9 — quarterly personal player score (+ inherited prize money)."""
+    """Spec §9 - quarterly personal player score (+ inherited prize money)."""
 
     def test_includes_inherited_prize_money(self):
         pt = PlayerTournamentInput(
@@ -499,7 +499,7 @@ class TestQuarterlyPlayerScore(unittest.TestCase):
 
 
 class TestTierClassification(unittest.TestCase):
-    """Spec §11 — 4-tier thresholds, both sides of every boundary."""
+    """Spec §11 - 4-tier thresholds, both sides of every boundary."""
 
     def test_score_to_tier_boundaries(self):
         cases = [
@@ -535,7 +535,7 @@ class TestTierClassification(unittest.TestCase):
 
 
 class TestPlayerTier(unittest.TestCase):
-    """Spec §9.1 / §9.2 — team-tier inheritance vs individual scoring."""
+    """Spec §9.1 / §9.2 - team-tier inheritance vs individual scoring."""
 
     def test_attached_inherits_team_tier(self):
         # Attached: inherit team tier regardless of individual score.
@@ -573,7 +573,7 @@ class TestPlayerTier(unittest.TestCase):
 
 
 class TestAnnualScore(unittest.TestCase):
-    """Spec §10 — annual = sum of four quarterly scores."""
+    """Spec §10 - annual = sum of four quarterly scores."""
 
     def test_sum(self):
         self.assertEqual(annual_score(40, 0, 90, 150), 280.0)

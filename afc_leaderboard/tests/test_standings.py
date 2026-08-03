@@ -1,5 +1,5 @@
 """
-Tests for afc_leaderboard.standings.standalone_standings — the on-read standings aggregator.
+Tests for afc_leaderboard.standings.standalone_standings - the on-read standings aggregator.
 
 Verifies: summed totals, booyah count, the event-standings sort chain
 (-effective_total, -booyahs, -kills, last_match_placement, name), and that a participant with no

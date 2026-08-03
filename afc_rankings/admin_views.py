@@ -1,5 +1,5 @@
 """
-Admin write API for rankings & tiering (Phase 2) — shared foundation.
+Admin write API for rankings & tiering (Phase 2) - shared foundation.
 
 This module holds the auth + audit helpers reused by every ranking admin write
 endpoint (seasons, result markers, overrides, ghost teams, scoring config,
@@ -45,7 +45,7 @@ from .models import RankingAuditLog
 # Data-entry endpoints widen this set by passing e.g. roles=RANKING_ADMIN_ROLES + ("event_admin",).
 RANKING_ADMIN_ROLES = ("head_admin", "metrics_admin")
 
-# Every ranking write must carry a human reason — it is the body of the audit row (§16).
+# Every ranking write must carry a human reason - it is the body of the audit row (§16).
 MIN_REASON_LEN = 10
 
 

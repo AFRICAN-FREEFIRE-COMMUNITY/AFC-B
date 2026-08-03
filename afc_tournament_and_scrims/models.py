@@ -78,7 +78,7 @@ class Event(models.Model):
     registration_open_date = models.DateField()
     registration_end_date = models.DateField()
     # Roster-edit window (owner 2026-06-15): organizers/admins can OPEN a time-boxed window that lets
-    # team captains edit their EVENT roster (typically AFTER registration closes — e.g. a fix-up
+    # team captains edit their EVENT roster (typically AFTER registration closes - e.g. a fix-up
     # period before the event). NULL or a PAST datetime = closed (normal registration-window rules
     # apply). A FUTURE datetime = open until then, after which it AUTO-CLOSES (a pure time comparison,
     # no cron). Capped server-side so it can never extend past end_date. Written by
@@ -99,7 +99,7 @@ class Event(models.Model):
     # the tier is auto-classified from the event's prize/teams/format. Mirrors the rankings
     # TeamQuarterlyScore.tier_overridden pattern (a manual lock the recalc respects).
     tier_overridden = models.BooleanField(default=False)
-    # rankings §4/§7.2 — prize money conversion locked at award date
+    # rankings §4/§7.2 - prize money conversion locked at award date
     prize_currency = models.CharField(max_length=3, default="USD")  # USD | NGN (owner 2026-07-01: AFC enters prizes in USD, the platform base currency)
     usd_to_ngn_rate = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
     prizepool_ngn_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
@@ -114,7 +114,7 @@ class Event(models.Model):
                                      on_delete=models.SET_NULL, related_name="events")
     # organizers integrity gate: an org-owned event's results only count toward the official
     # afc_rankings scores once an AFC admin verifies it. Native AFC events (organization=None)
-    # are unaffected — aggregation only excludes org events where this is still False.
+    # are unaffected - aggregation only excludes org events where this is still False.
     rankings_verified = models.BooleanField(default=False)
     # partner API gate: only events an AFC admin has explicitly published are reachable
     # through the read-only partner API (afc_partner_api). Defaults off; AFC flips it.
@@ -142,13 +142,13 @@ class Event(models.Model):
     # (events/overlay/feed/?token=...). Null until an organizer/admin first mints it via
     # events/<id>/overlay/token/ (see ensure_overlay_token). Because the token itself proves the
     # organizer chose to broadcast this event, the feed intentionally bypasses results_published
-    # (the organizer's own stream shows their standings even before the public reveal) — but a
+    # (the organizer's own stream shows their standings even before the public reveal) - but a
     # suspended-org event still 404s (_org_hidden). Generated with _gen_overlay_token (256-bit,
     # url-safe). CONNECTS TO: the overlay_feed endpoint (reader) + the FE OBS Browser Source URL.
     overlay_token = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True)
     # ── Live overlay BROADCAST selection (owner 2026-07-01) ───────────────────────────────────────
     # Lets an organizer choose, ON THE WEBSITE, WHICH standings the live overlay shows, and COMBINE
-    # groups/stages into a cumulative — WITHOUT touching OBS. A "follow broadcast" overlay link omits
+    # groups/stages into a cumulative - WITHOUT touching OBS. A "follow broadcast" overlay link omits
     # ?stage=/?group=, so overlay_feed reads this selection each poll: switch it here and the overlay
     # updates within one poll. broadcast_scope drives which standings the feed builds:
     #   "group" -> broadcast_group_id's group standings (default, single lobby)
@@ -168,7 +168,7 @@ class Event(models.Model):
     mvp_config = models.JSONField(default=dict, blank=True)
     # ── Leaderboard TIE-BREAKERS (owner 2026-07-02): {"default": ["booyahs","kills",...],
     #    "stages": {"<stage_id>": [...]}, "groups": {"<group_id>": [...]}}. Ordered criteria applied
-    #    AFTER effective_total when ranking teams — like maps, they apply to ALL, or per stage, or
+    #    AFTER effective_total when ranking teams - like maps, they apply to ALL, or per stage, or
     #    per group (group overrides stage overrides default; empty = the legacy hardcoded chain
     #    booyahs -> kills). Criteria keys: booyahs, kills, placement_points, kill_points, bonus,
     #    fewest_penalties, matches_played, mvp_count. Resolved by round_robin.apply_tie_breakers. ──
@@ -429,7 +429,7 @@ class Stages(models.Model):
         ("cs - double elimination", "Clash Squad - Double Elimination"),
         ("cs - round robin", "Clash Squad - Round Robin"),
         # BR Round-Robin (sub-project B): base groups A/B/C merge into game-day lobbies.
-        # Distinct from the dead "br - roundrobin" (mislabelled "Knockout") entry above —
+        # Distinct from the dead "br - roundrobin" (mislabelled "Knockout") entry above - 
         # that one is left untouched for backward compatibility.
         ("br - round robin", "Battle Royale - Round Robin")
     ]
@@ -457,7 +457,7 @@ class Stages(models.Model):
     prizepool = models.CharField(max_length=40, null=True, blank=True)
     prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     prize_distribution = models.JSONField(default=dict,null=True, blank=True) # {"1": "50%", "2": "30%", "3": "20%"}
-    is_finals_stage = models.BooleanField(default=False)  # rankings §4.5/§6.1 — admin marks the finals stage
+    is_finals_stage = models.BooleanField(default=False)  # rankings §4.5/§6.1 - admin marks the finals stage
 
     # ── Scoring-mode config (scoring-modes sub-project A). Both features are independent
     # and combinable per stage. They are computed ON READ in the standings builder
@@ -613,7 +613,7 @@ class Leaderboard(models.Model):
 
 # ---------------- Matches & Stats ----------------
 # Default per-map SCORING CONFIG (owner 2026-06-21): every new map (Match) starts pre-filled with the
-# standard Battle-Royale ladder — 1 point/kill, no assist/damage bonus, placement 12/9/8/7/6/5/4/3/2/1 —
+# standard Battle-Royale ladder - 1 point/kill, no assist/damage bonus, placement 12/9/8/7/6/5/4/3/2/1 - 
 # so admins/organizers no longer fill it in per map. It is still fully editable per map (the Scoring
 # Config tab -> POST /events/edit-match-scoring-config/ overwrites Match.scoring_settings), and "Apply
 # to..." copies one map's config to others. Persisted as Match.scoring_settings; read by every scoring
@@ -625,7 +625,7 @@ DEFAULT_PLACEMENT_POINTS = {
 
 
 def default_scoring_settings():
-    """Fresh default Match.scoring_settings dict (a NEW object each call — required for a mutable
+    """Fresh default Match.scoring_settings dict (a NEW object each call - required for a mutable
     JSONField default). The standard BR ladder above + 1 kill point, 0 assist, 0 damage."""
     return {
         "kill_point": 1,
@@ -688,10 +688,10 @@ class TournamentTeam(models.Model):
     registration_date = models.DateTimeField(auto_now_add=True)
     country = models.CharField(max_length=100, null=True, blank=True) # Store country at time of registration for historical accuracy
     is_waitlisted = models.BooleanField(default=False)
-    # No-show (owner 2026-06-17 waitlist): team-side mirror of RegisteredCompetitors.is_no_show — the
+    # No-show (owner 2026-06-17 waitlist): team-side mirror of RegisteredCompetitors.is_no_show - the
     # organizer marked this active team absent, freeing a slot for a waitlisted team. See mark_no_show.
     is_no_show = models.BooleanField(default=False)
-    # rankings result markers — set by admin at result entry via afc_rankings.admin_results
+    # rankings result markers - set by admin at result entry via afc_rankings.admin_results
     # (spec §4.4/§4.5/§5.1); consumed by afc_rankings.aggregation to award win/finals points.
     # result_finalized gates whether aggregation counts this event at all.
     is_tournament_winner = models.BooleanField(default=False)
@@ -700,7 +700,7 @@ class TournamentTeam(models.Model):
     result_finalized = models.BooleanField(default=False)
 
     # PER-TEAM roster-edit allowance (owner 2026-06-24). The event-wide Event.roster_edit_until opens
-    # roster editing for ALL teams; this opens it for THIS ONE team only — an admin/organizer can let a
+    # roster editing for ALL teams; this opens it for THIS ONE team only - an admin/organizer can let a
     # specific team fix its roster (and its members fix IGN/UID) even when the event-wide window is
     # closed. Set via set_team_roster_edit_window; honoured by edit_roster (an allow-path that also
     # overrides the match-start results freeze while open) and by afc_auth._has_active_event_registration
@@ -724,13 +724,13 @@ class TournamentTeam(models.Model):
         constraints = [
             # One letter per event: no two TournamentTeam rows in the same event may share the SAME
             # non-null assigned_letter. This is a PLAIN UniqueConstraint (no `condition=`) ON PURPOSE.
-            #   • MySQL — the PRODUCTION database — IGNORES the partial-index `condition` on a
+            #   • MySQL - the PRODUCTION database - IGNORES the partial-index `condition` on a
             #     UniqueConstraint, so the previous conditional form (condition=assigned_letter is not
             #     null) gave ZERO DB enforcement there: two teams in one event could be saved with the
             #     same letter straight through the ORM. It only ever worked on Postgres.
             #   • A plain unique index DOES enforce on MySQL. And because BOTH MySQL and Postgres allow
             #     MULTIPLE NULLs in a unique index, every unassigned team (assigned_letter = NULL) still
-            #     coexists without colliding — only two NON-NULL teams sharing a letter in the same event
+            #     coexists without colliding - only two NON-NULL teams sharing a letter in the same event
             #     are rejected at the DB level. So dropping the condition loses nothing and gains real
             #     MySQL enforcement.
             # The app-level 409 in assign_team_letter stays as the friendly first line of defence; this
@@ -839,7 +839,7 @@ class TournamentPlayerMatchStats(models.Model):
     assists = models.PositiveIntegerField(default=0)
     played = models.BooleanField(default=True)
     # ── 3D-room rich stats (owner 2026-07-02, debugger-log ingest). ─────────────────────────────
-    # Filled ONLY by the debugger-log backfill (debugger_ingest.py) or a future live-capture write —
+    # Filled ONLY by the debugger-log backfill (debugger_ingest.py) or a future live-capture write - 
     # the normal MatchResult upload has no such data, so these stay 0 for upload-only matches.
     # rich_stats_filled marks a row whose values REALLY came from a debugger log, so consumers (MVP
     # criteria, design columns, KDR) can tell "0 deaths" apart from "no data". Feeds the MVP
@@ -963,16 +963,16 @@ class EventUploadToken(models.Model):
     interactive Bearer login, so it authenticates result uploads with one of these tokens instead.
 
     Unlike the read-only Event.overlay_token (public, single, rotate-in-place), an upload token is:
-      • WRITE-scoped — it ONLY authorizes upload_team_match_result for THIS event (see that view's
+      • WRITE-scoped - it ONLY authorizes upload_team_match_result for THIS event (see that view's
         alternative-auth branch), never any other endpoint or event.
-      • Revocable + auditable — created_by records who granted it; `revoked` retires a leaked key
+      • Revocable + auditable - created_by records who granted it; `revoked` retires a leaked key
         without deleting the row (a rotate REVOKES the old + issues a new one), so the audit trail
         of who-issued-what survives.
     A request presenting the token acts AS created_by (the granting user's upload permission), so the
     event admin / organizer who minted it is accountable for what the capture PC posts.
 
     CONNECTS TO: minted/rotated by ensure_upload_token (events/<id>/upload/token/, gated like the
-    overlay token — event admin OR org_can_event can_edit_events); consumed by
+    overlay token - event admin OR org_can_event can_edit_events); consumed by
     upload_team_match_result (afc_tournament_and_scrims.views) which resolves ?token= / X-Upload-Token
     to a non-revoked row and authorizes as created_by.
     """
@@ -992,22 +992,22 @@ class EventUploadToken(models.Model):
 
 class PendingCaptureUpload(models.Model):
     """A captured result the desktop AFC Capture client could NOT auto-attribute, parked for a human to
-    resolve later on the website (owner 2026-07-05, complaint D — "decide later" bucket).
+    resolve later on the website (owner 2026-07-05, complaint D - "decide later" bucket).
 
     WHY THIS EXISTS
     ---------------
     The capture client posts each round's MatchResult file to upload_team_match_result with a stage +
     group but NO match_id; the backend fills the next unscored map slot. When EVERY configured map slot
-    for that group is already scored and an EXTRA game lands, the old code SILENTLY created a new slot —
+    for that group is already scored and an EXTRA game lands, the old code SILENTLY created a new slot - 
     the complaint-D bug (an accidental re-run / a wrong-event capture became a phantom "map"). The new
     behaviour is: the backend returns a structured 409 asking the operator to decide, and the desktop
-    prompt offers three choices — attribute as a NEW map, REPLACE an existing map, or "decide later".
+    prompt offers three choices - attribute as a NEW map, REPLACE an existing map, or "decide later".
     "Decide later" reliably parks the raw upload HERE (never dropped) so an admin/organizer resolves it
     from the website later. A pending row therefore ALWAYS carries enough to re-score it verbatim.
 
     WHAT IS STORED
     --------------
-      • raw_payload   : {file_text, file_name, file_type, stage_id, group_id} — the exact bytes + the
+      • raw_payload   : {file_text, file_name, file_type, stage_id, group_id} - the exact bytes + the
                         client's set stage/group, so resolve re-runs the IDENTICAL scoring path.
       • parsed_summary: a small human-readable digest ({teams:[{team_name, placement, players, kills}],
                         team_count, player_count}) built at intake so the resolve UI can show what the
@@ -1089,7 +1089,7 @@ class CaptureRelease(models.Model):
     -----------
     Written by views_capture_update.capture_releases (POST events/capture/releases/, gated to a super
     admin / head_admin via views._is_head_or_super_admin). Read by views_capture_update.capture_version
-    (GET events/capture/version/, PUBLIC — no token, exposes only a version + a public download URL).
+    (GET events/capture/version/, PUBLIC - no token, exposes only a version + a public download URL).
     Consumed by the desktop client afc-capture/afc_capture/updater.py, which is invoked on startup by
     app.CaptureController and from the tray "Check for updates" item.
     """
@@ -1669,9 +1669,9 @@ class EventOverlay(models.Model):
     """One SAVED, NAMED broadcast overlay of an event (owner 2026-07-02, overlay studio v2).
 
     The owner's model: an "overlay" is a persistent entity you CREATE from a design (or as a scene
-    like the countdown timer), NAME/RENAME, DUPLICATE, DELETE — and whose public link NEVER changes.
+    like the countdown timer), NAME/RENAME, DUPLICATE, DELETE - and whose public link NEVER changes.
     The link (/overlay/view/<Event.overlay_token>/<id>) polls the public config feed, so editing the
-    overlay's design/stage/group/animations from the studio updates what the SAME link renders live —
+    overlay's design/stage/group/animations from the studio updates what the SAME link renders live - 
     the operator never re-copies a URL into OBS.
 
     kind:   "leaderboard" (design + live TEAM standings) | "timer" (countdown scene) |
@@ -1681,11 +1681,11 @@ class EventOverlay(models.Model):
             photo / IGN / kills / damage / assists) through ANY design and can COMBINE selected whole
             stages + individual groups. See views_mvp.py (the CONTRACT block) + views_overlays.py
             (_mvp_payload / _top_killers_payload).
-    config: freeform per kind —
+    config: freeform per kind - 
       leaderboard:       {design_id, follow (bool), scope, stage_id, group_id, group_ids, stage_ids,
                           anim, reveal, interval, size, live}
       timer:             {end_at (ISO), label}
-      mvp / top_killers: {design_id, scope, group_ids, stage_ids, group_id, stage_id} — the SAME combine
+      mvp / top_killers: {design_id, scope, group_ids, stage_ids, group_id, stage_id} - the SAME combine
                           shape complaint C added for leaderboards (whole stages expand to their groups;
                           absent => whole event).
     active: scenes (timer) toggle visibility with it; leaderboard / mvp / top_killers overlays ignore it

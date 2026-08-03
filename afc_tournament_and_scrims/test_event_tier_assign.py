@@ -100,7 +100,7 @@ class EventTierAssignTests(TestCase):
 # The EventTierRule thresholds are authored in NAIRA (spec §4: USD pools are converted to ₦ and
 # THEN compared), but Event.prizepool_cash_value is stored in the event's own prize_currency, which
 # defaults to USD. Before the fix a $400 event was compared as the bare number 400 against the
-# ₦100,000 Tier-1 threshold, matched nothing, and fell through to the default Tier 3 — the real
+# ₦100,000 Tier-1 threshold, matched nothing, and fell through to the default Tier 3 - the real
 # reason event 172 sat at tier_3. auto_classify_event now converts through the same FxRate table
 # prize_sync uses.
 class EventTierCurrencyTests(TestCase):

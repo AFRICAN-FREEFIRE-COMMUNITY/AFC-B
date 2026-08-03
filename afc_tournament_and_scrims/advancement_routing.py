@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims.advancement_routing — BRANCHING ADVANCEMENT ENGINE (feature #9).
+afc_tournament_and_scrims.advancement_routing - BRANCHING ADVANCEMENT ENGINE (feature #9).
 
 PURPOSE (owner plan WEBSITE/tasks/advancement-routing-plan.md)
     Run a stage's StageAdvancementRule rows: rank each rule's scope (one group, or the whole
@@ -17,7 +17,7 @@ WHY A SEPARATE MODULE
     get_event_details echo). The execution engine + its endpoint live here.
 
 HOW IT CONNECTS (trace end-to-end)
-    - Model: StageAdvancementRule (models.py) — source_stage / source_group(null=stage-wide) /
+    - Model: StageAdvancementRule (models.py) - source_stage / source_group(null=stage-wide) /
       target_stage / position_from / position_to / order. Presence of rules = "branching mode".
     - Standings: reuses the CANONICAL aggregators so a routed cut matches exactly what users see
       on the leaderboard / TournamentStructure. Teams -> round_robin._aggregate_team_standings
@@ -26,13 +26,13 @@ HOW IT CONNECTS (trace end-to-end)
     - Seeding: StageCompetitor.get_or_create(stage=target, ...) + the SAME DiscordRoleAssignment
       queue + assign_stage_roles_from_db_task worker the legacy advance uses, so downstream
       (groups seeding, role assignment, standings) behaves identically. get_or_create => idempotent
-      (re-running never double-seeds). Seeds ONLY the advanced rows — it does NOT autoseed the
+      (re-running never double-seeds). Seeds ONLY the advanced rows - it does NOT autoseed the
       whole field (which would dump every team into the Finals).
     - Permissions: _advance_gate = AFC event admin OR organizer with can_manage_registrations on
       the owning org (same gate shape as seeding_management._seeding_gate), so admins AND organizers
       can fire it.
     - Consumed by: the shared Event Actions tab (ActionsTab.tsx) on the admin + organizer event-edit
-      pages — a "Branching advancement" card that previews (dry_run) then advances a stage.
+      pages - a "Branching advancement" card that previews (dry_run) then advances a stage.
 
 ENDPOINT (mounted under events/ via afc_tournament_and_scrims/urls.py)
     POST events/advance-stage-by-rules/   advance_stage_by_rules   {event_id, stage_id, dry_run?}
@@ -360,7 +360,7 @@ def route_stage_advancement(stage, *, dry_run=False):
         # re-run. get_or_create above only ADDS current qualifiers, so after a standings correction the
         # previously-seeded (now-dropped) team was left in the target stage, over-filling it. Remove a
         # target-stage StageCompetitor only when it is (a) NOT in the current qualifying set for that
-        # stage AND (b) has NOT played any match in that stage — a competitor that already competed is
+        # stage AND (b) has NOT played any match in that stage - a competitor that already competed is
         # never auto-removed (data-safe, mirrors the promotion-withdraw guard #16). Only stages this run
         # seeded are touched. Runs inside the same transaction so a failure rolls the removals back too.
         if not dry_run:
@@ -404,7 +404,7 @@ class _nullcontext:
 # ── endpoint ─────────────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def advance_stage_by_rules(request):
-    """POST events/advance-stage-by-rules/ {event_id, stage_id, dry_run?} — run (or preview) a
+    """POST events/advance-stage-by-rules/ {event_id, stage_id, dry_run?} - run (or preview) a
     stage's branching advancement rules.
 
     REQUEST  {event_id, stage_id, dry_run? (default false)}.
@@ -412,7 +412,7 @@ def advance_stage_by_rules(request):
              rules (use the per-group/round-robin legacy advance instead), or on missing input;
              403 when the caller may not manage this event; 404 unknown event/stage.
     AUTH     Bearer SessionToken; gate = AFC event admin OR organizer with can_manage_registrations
-             on the owning org (_advance_gate) — admins AND organizers, same as seeding.
+             on the owning org (_advance_gate) - admins AND organizers, same as seeding.
     FE CALLER  ActionsTab.tsx "Branching advancement" card (admin + organizer event-edit pages):
              a Preview button (dry_run=true) then an Advance button (dry_run=false), shown only for
              stages that have rules. The legacy advance endpoints stay for rule-less stages."""

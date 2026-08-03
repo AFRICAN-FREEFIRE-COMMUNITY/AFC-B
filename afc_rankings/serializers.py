@@ -196,7 +196,7 @@ def season(s):
         "transfer_window_close": s.transfer_window_close.isoformat(),
         # computed live so the public page can show a prominent OPEN/CLOSED indicator.
         # is_transfer_window_open() is the same Season method the afc_team roster guards
-        # call (exit_team / kick_team_member / disband_team) — single source of truth for
+        # call (exit_team / kick_team_member / disband_team) - single source of truth for
         # the OPEN/CLOSED state shown publicly and enforced on roster moves.
         "transfer_window_is_open": s.is_transfer_window_open(),
         "is_active": s.is_active, "tier_eval_run": s.tier_eval_run,

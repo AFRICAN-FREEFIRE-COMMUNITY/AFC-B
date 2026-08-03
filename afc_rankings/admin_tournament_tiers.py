@@ -1,5 +1,5 @@
 """
-Admin write API — tournament tier classification rules (Phase 2).
+Admin write API - tournament tier classification rules (Phase 2).
 
 This module owns the admin CRUD + reorder surface for the ordered, first-match-wins
 rule list that classifies a tournament into a tier (Tier 1/2/3), plus the singleton
@@ -7,15 +7,15 @@ fall-through default, plus a *dry-run* classifier the admin UI uses to preview w
 rule a hypothetical event would hit.
 
 Data model (see ``models.py``):
-  * ``EventTierRule``   — one rule: priority (lower = evaluated first), match ("all"/"any"),
+  * ``EventTierRule``   - one rule: priority (lower = evaluated first), match ("all"/"any"),
                           conditions JSON [{field, op, value}], tier (1-3), enabled.
-  * ``EventTierConfig`` — singleton row holding ``default_tier`` (the fall-through when an
+  * ``EventTierConfig`` - singleton row holding ``default_tier`` (the fall-through when an
                           event matches no enabled rule).
 
-Idiom (matches the rest of afc_rankings — read views.py / serializers.py / admin_views.py):
+Idiom (matches the rest of afc_rankings - read views.py / serializers.py / admin_views.py):
   * function-based ``@api_view`` views, NOT class-based; NO DRF Serializer classes.
   * manual-dict serialization via the LOCAL ``serialize_tier_rule`` helper below.
-  * the auth + audit foundation is REUSED from ``admin_views.py`` — never reimplemented:
+  * the auth + audit foundation is REUSED from ``admin_views.py`` - never reimplemented:
         user, err = _auth(request)              # 401/403 short-circuit
         reason, err = _require_reason(request)   # mandatory >= 10-char audit reason
         with transaction.atomic(): ...write...
@@ -29,8 +29,8 @@ so the §16 audit log filters every tournament-tier change into a single bucket.
 
 WHY no recalc enqueue here: editing a tier *rule* changes how FUTURE events are classified;
 it does not mutate any already-computed TeamMonthlyScore / TeamQuarterlyScore. Re-tiering of
-existing events is a separate re-evaluation pass (run-evaluation surface), so — unlike the
-data-entry surfaces — these writes deliberately do NOT call ``tasks.enqueue_*``.
+existing events is a separate re-evaluation pass (run-evaluation surface), so - unlike the
+data-entry surfaces - these writes deliberately do NOT call ``tasks.enqueue_*``.
 
 Auth: writes are gated on head_admin OR metrics_admin (the default ``_auth`` set,
 RANKING_ADMIN_ROLES). The read-only list + the dry-run classifier still require a valid
@@ -182,7 +182,7 @@ def classify(rules, default_tier, sample):
     passes the priority-ordered queryset). Disabled rules are skipped. For each enabled rule,
     its conditions are combined with all()/any() per the rule's ``match`` ("all"=AND, "any"=OR).
     A rule with NO conditions never matches (all([]) is True, but an empty rule classifying
-    everything would be a footgun — so we require at least one condition to match). The first
+    everything would be a footgun - so we require at least one condition to match). The first
     matching rule's tier wins; if none match, fall through to ``default_tier``.
     """
     for rule in rules:
@@ -259,7 +259,7 @@ def tier_rule_create(request):
             enabled=enabled,
         )
         after = serialize_tier_rule(rule)
-        # before={} — the rule did not exist prior to this write.
+        # before={} - the rule did not exist prior to this write.
         _audit(user, "event_tier", "create", reason, object_ref=rule.id, before={}, after=after)
 
     return Response(serialize_tier_rule(rule), status=status.HTTP_201_CREATED)
@@ -270,7 +270,7 @@ def tier_rule_create(request):
 def tier_rule_update(request, rule_id):
     """Partially update a rule's match / conditions / tier / enabled. Body keys are optional.
 
-    priority is NOT editable here — use the reorder endpoint, which keeps the whole order
+    priority is NOT editable here - use the reorder endpoint, which keeps the whole order
     consistent in one atomic pass.
     """
     user, err = _auth(request)
@@ -335,7 +335,7 @@ def tier_rule_delete(request, rule_id):
         # Capture the ref before .delete() clears the pk on the in-memory instance.
         object_ref = rule.id
         rule.delete()
-        # after={} — the rule no longer exists after this write.
+        # after={} - the rule no longer exists after this write.
         _audit(user, "event_tier", "delete", reason, object_ref=object_ref, before=before, after={})
 
     return Response({"message": "Tier rule deleted."})
@@ -348,7 +348,7 @@ def tier_rules_reorder(request):
 
     priority is set to the rule's INDEX in ``order`` (0-based), so order[0] becomes the
     highest-precedence rule. The id set must exactly match the current rule set (no missing,
-    no extra, no duplicates) — a partial reorder would leave the order ambiguous.
+    no extra, no duplicates) - a partial reorder would leave the order ambiguous.
     """
     user, err = _auth(request)
     if err:
@@ -363,7 +363,7 @@ def tier_rules_reorder(request):
             {"message": "`order` must be a non-empty list of rule ids."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    # Reject duplicates up front — a repeated id would silently overwrite a priority.
+    # Reject duplicates up front - a repeated id would silently overwrite a priority.
     if len(order) != len(set(order)):
         return Response(
             {"message": "`order` contains duplicate rule ids."},
@@ -423,8 +423,8 @@ def tier_config_update(request):
 # ───────────────────────── CLASSIFY (read-only dry-run) ─────────────────────────
 # ── dry-run twin of the production classifier ──
 # This previews the SAME first-match-wins classifier the real scoring path runs when an event is
-# scored. The rule semantics — priority order, first-match-wins, all/any, empty-rule means
-# non-matching — MUST stay identical to the production classifier, or the admin preview lies
+# scored. The rule semantics - priority order, first-match-wins, all/any, empty-rule means
+# non-matching - MUST stay identical to the production classifier, or the admin preview lies
 # about the tier an event would land in.
 @api_view(["POST"])
 def tier_rules_classify(request):
@@ -432,7 +432,7 @@ def tier_rules_classify(request):
 
     Body: { prize, teams, players, format("lan"|"virtual") }. Returns
     {"tier": int, "matched_rule_id": int|None}. Read-only: gated by _auth, but no reason
-    and no audit row — it mutates nothing, it only previews which rule would fire.
+    and no audit row - it mutates nothing, it only previews which rule would fire.
     """
     user, err = _auth(request)
     if err:

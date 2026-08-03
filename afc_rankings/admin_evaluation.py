@@ -1,5 +1,5 @@
 """
-Evaluation + recalc admin write API (Phase 2) — drive the quarterly tier lock and
+Evaluation + recalc admin write API (Phase 2) - drive the quarterly tier lock and
 manual recalcs.
 
 This module is the "run the maths again" side of the ranking admin API. It sits on
@@ -8,11 +8,11 @@ top of the same shared foundation every other ranking admin write surface uses
 and deliberately mirrors the house style (see ``admin_seasons.py`` for the canonical
 example) so the original dev reads it without surprises:
 
-  * function-based DRF views (``@api_view``), NOT class-based — same as ``views.py``.
-  * manual-dict serialization (inline dicts here — no separate ``serialize_*`` needed,
+  * function-based DRF views (``@api_view``), NOT class-based - same as ``views.py``.
+  * manual-dict serialization (inline dicts here - no separate ``serialize_*`` needed,
     because ``recalc.run_evaluation`` already returns a ready-to-serialise summary dict),
-    NO DRF Serializer classes — same as ``serializers.py``.
-  * ``Response({"message": ...}, status=...)`` for every validation/error path — same
+    NO DRF Serializer classes - same as ``serializers.py``.
+  * ``Response({"message": ...}, status=...)`` for every validation/error path - same
     message-dict shape as ``afc_auth.views``.
   * every *state-changing* endpoint runs: (1) auth gate, (2) reason gate, (3) the write
     inside ``transaction.atomic()``, then (4) a ``RankingAuditLog`` row via ``_audit``
@@ -27,17 +27,17 @@ Endpoints (mounted by the coordinator under the existing ``rankings/`` prefix):
 WHY THE HEAVY LIFTING LIVES ELSEWHERE
 -------------------------------------
 The actual quarterly evaluation (tier the teams, inherit tiers to players, freeze the
-season) is implemented once in ``recalc.run_evaluation`` — it already handles the
+season) is implemented once in ``recalc.run_evaluation`` - it already handles the
 re-run guard, the dry-run path, the ``select_for_update`` season lock, and returns a
 summary dict. These views are thin: they gate auth + reason, call into ``recalc`` /
 ``tasks``, audit the result, and serialise. They never re-implement scoring or recalc.
 
 RECALC IS NEVER RUN INLINE FROM A REQUEST
 -----------------------------------------
-``run-evaluation`` runs the evaluation itself (that IS the request's job — it is fast:
+``run-evaluation`` runs the evaluation itself (that IS the request's job - it is fast:
 just re-tiering already-computed scores). But a per-entity *score* recalc
 (``admin/recalc/``) is enqueued on commit via ``tasks.enqueue_*`` so it runs through the
-same debounced ``rankings_recalc`` pipeline the live edits use — never inline, never
+same debounced ``rankings_recalc`` pipeline the live edits use - never inline, never
 blocking the request. (``run_evaluation`` does NOT recompute raw scores; it only locks
 tiers, so it has no recalc to enqueue.)
 """
@@ -55,23 +55,23 @@ from .models import Season
 
 
 # ───────────────────────── POST seasons/<id>/run-evaluation/  (lock tiers) ─────────────────────────
-# Links to recalc.run_evaluation: the real work — tier the teams, inherit tiers to
+# Links to recalc.run_evaluation: the real work - tier the teams, inherit tiers to
 # players, freeze the season, PLUS the re-run guard, the dry-run branch, and the
-# select_for_update season lock — all lives in ``recalc.run_evaluation``. This view
+# select_for_update season lock - all lives in ``recalc.run_evaluation``. This view
 # stays thin: gate (auth + reason), call recalc, audit the real run, serialise the
-# summary. Do NOT move tiering logic here — it belongs in recalc, called once.
+# summary. Do NOT move tiering logic here - it belongs in recalc, called once.
 @api_view(["POST"])
 def run_evaluation(request, season_id):
     """Run the quarterly tier EVALUATION for a season (§16 tier lock).
 
-    Ranking admins (head_admin OR metrics_admin — the default ``_auth`` set). Body:
+    Ranking admins (head_admin OR metrics_admin - the default ``_auth`` set). Body:
       * ``dry_run``  optional bool (default False). A dry run computes the would-be tier
-                     changes and returns them WITHOUT writing anything — and WITHOUT
+                     changes and returns them WITHOUT writing anything - and WITHOUT
                      auditing (nothing changed). Use it to preview before committing.
       * ``force``    optional bool (default False). Re-run an already-evaluated season,
                      overwriting the previously locked tiers. Without it a second real
                      run is rejected (``recalc.run_evaluation`` returns ``ok: False``).
-      * ``reason``   mandatory audit reason — ONLY for a real (non-dry) run. A dry run
+      * ``reason``   mandatory audit reason - ONLY for a real (non-dry) run. A dry run
                      writes nothing, so it needs no reason.
 
     The heavy lifting (tier teams → inherit to players → freeze the season, preserving
@@ -79,12 +79,12 @@ def run_evaluation(request, season_id):
     audits the real run, and returns that function's summary dict.
 
     Responses:
-      * 200 — success (dry run OR a real run that committed). Body is the summary dict.
-      * 409 — ``recalc.run_evaluation`` returned ``ok: False`` (e.g. the re-run guard
+      * 200 - success (dry run OR a real run that committed). Body is the summary dict.
+      * 409 - ``recalc.run_evaluation`` returned ``ok: False`` (e.g. the re-run guard
               fired: already evaluated and ``force`` was not set). Conflict, not a
               validation error, so 409 rather than 400.
     """
-    # (1) auth — default ranking-admin set (head_admin OR metrics_admin).
+    # (1) auth - default ranking-admin set (head_admin OR metrics_admin).
     user, err = _auth(request)
     if err:
         return err
@@ -97,7 +97,7 @@ def run_evaluation(request, season_id):
     dry_run = bool(request.data.get("dry_run", False))
     force = bool(request.data.get("force", False))
 
-    # (2) reason gate — required ONLY for a real run (a dry run changes/persists nothing).
+    # (2) reason gate - required ONLY for a real run (a dry run changes/persists nothing).
     #     We pull it before calling run_evaluation so a real run never half-commits then
     #     fails the reason check.
     reason = None
@@ -110,7 +110,7 @@ def run_evaluation(request, season_id):
     # branch, and (for a real run) its own ``select_for_update`` season lock + writes.
     summary = recalc.run_evaluation(season, user, dry_run=dry_run, force=force)
 
-    # A guard inside run_evaluation (e.g. "already evaluated — re-run with force") returns
+    # A guard inside run_evaluation (e.g. "already evaluated - re-run with force") returns
     # ok:False with a human message. Surface it as a 409 Conflict.
     if not summary.get("ok"):
         return Response(
@@ -118,7 +118,7 @@ def run_evaluation(request, season_id):
             status=status.HTTP_409_CONFLICT,
         )
 
-    # (4) audit — ONLY for a real, successful run. A dry run is a no-op preview, so it is
+    # (4) audit - ONLY for a real, successful run. A dry run is a no-op preview, so it is
     #     deliberately NOT logged. ``after`` records the resulting tier distribution so the
     #     audit row alone shows the shape of the lock that was applied. ``before`` is the
     #     prior eval marker so the row is self-explanatory (was it a first run or a force?).
@@ -135,7 +135,7 @@ def run_evaluation(request, season_id):
             season=season,
         )
 
-    # Return run_evaluation's summary dict verbatim — it already has the shape the admin
+    # Return run_evaluation's summary dict verbatim - it already has the shape the admin
     # surface renders (ok, dry_run, teams_evaluated, players_evaluated, tier_distribution,
     # team_changes, player_changes).
     return Response(summary, status=status.HTTP_200_OK)
@@ -150,7 +150,7 @@ def run_evaluation(request, season_id):
 #     pq:{player_id}:{season_id}   player quarterly
 # A bare ``cache`` backend (e.g. LocMem) can't enumerate keys, and the Redis backend has
 # no portable "scan by prefix" through Django's cache API. So a true "is anything
-# recalculating right now?" answer would require probing every possible key — not
+# recalculating right now?" answer would require probing every possible key - not
 # feasible. We therefore take the documented best-effort posture: probe the locks that
 # are knowable for THIS season (the team/player quarterly locks for entities that have a
 # stored score row), and fall back to "idle" (with a note) when nothing is determinable.
@@ -169,7 +169,7 @@ def _probe_season_recalc_running(season):
                           False means "nothing to probe" → the caller reports idle + a note
                           rather than a confident False.
 
-    This is intentionally scoped to quarterly locks for this season — the only lock keys
+    This is intentionally scoped to quarterly locks for this season - the only lock keys
     whose ``{key}`` we can fully reconstruct without scanning. Monthly locks
     (``tm:``/``pm:`` keyed by an arbitrary month) are not probed; a manual recalc of those
     is short-lived and the run-evaluation flow is the status that matters here.
@@ -201,18 +201,18 @@ def _probe_season_recalc_running(season):
 def recalc_status(request):
     """Recalc / evaluation status for a season (read-only → no reason, no audit).
 
-    Auth-gated (ranking admin) but not reason/audit-gated — reading status is not a
+    Auth-gated (ranking admin) but not reason/audit-gated - reading status is not a
     ranking write. Season is resolved exactly like the public views: ``?season_id=``
     wins, else the active season.
 
     Returns:
-      * ``recalculating``    best-effort bool — True if a quarterly recalc lock is held
+      * ``recalculating``    best-effort bool - True if a quarterly recalc lock is held
                              for any entity in this season (see ``_probe_season_recalc_running``).
                              When the lock state can't be determined it returns False and
                              sets ``note`` so the caller knows the value is not authoritative.
       * ``last_evaluation``  the season's tier-eval marker: ``run`` (bool), ``at`` (ISO
                              timestamp or None), ``by`` (the admin's username or None).
-      * ``frozen_at``        ``Season.scores_frozen_at`` (ISO) — when the scores were locked.
+      * ``frozen_at``        ``Season.scores_frozen_at`` (ISO) - when the scores were locked.
       * ``season``           the resolved season dict (so the caller knows what it asked about).
     """
     user, err = _auth(request)
@@ -248,27 +248,27 @@ def recalc_entity(request):
     """Manually trigger a single entity's recalc (head_admin OR metrics_admin).
 
     Body:
-      * ``entity_type``  required — "team" or "player".
-      * ``id``           required — the team_id / player_id (int).
-      * ``season_id``    optional — recalc the quarterly score for this season too; absent
+      * ``entity_type``  required - "team" or "player".
+      * ``id``           required - the team_id / player_id (int).
+      * ``season_id``    optional - recalc the quarterly score for this season too; absent
                          → only the current month is recomputed. (The monthly recalc always
-                         runs; the season recalc only when ``season_id`` is given — matching
+                         runs; the season recalc only when ``season_id`` is given - matching
                          ``tasks.enqueue_team`` / ``enqueue_player``.)
-      * ``reason``       optional — defaults to "Manual recalc triggered." A manual recalc
+      * ``reason``       optional - defaults to "Manual recalc triggered." A manual recalc
                          doesn't change any stored figure by admin fiat (it just re-derives
                          from the source data), so a reason is courtesy, not mandatory.
 
     Enqueues the recalc on commit through the same debounced ``rankings_recalc`` pipeline
     the live edits use (``tasks.enqueue_team`` / ``enqueue_player`` on
-    ``transaction.on_commit``) — NEVER run inline. Audited as
+    ``transaction.on_commit``) - NEVER run inline. Audited as
     ``object_type="evaluation"``, ``action="recalc"``.
 
     Responses:
-      * 200 — ``{"queued": true, ...}`` once the recalc is enqueued.
-      * 400 — bad/missing ``entity_type`` or ``id`` (validation).
-      * 404 — the season_id (when given) doesn't resolve.
+      * 200 - ``{"queued": true, ...}`` once the recalc is enqueued.
+      * 400 - bad/missing ``entity_type`` or ``id`` (validation).
+      * 404 - the season_id (when given) doesn't resolve.
     """
-    # (1) auth — default ranking-admin set (head_admin OR metrics_admin).
+    # (1) auth - default ranking-admin set (head_admin OR metrics_admin).
     user, err = _auth(request)
     if err:
         return err
@@ -297,7 +297,7 @@ def recalc_entity(request):
             return Response({"message": "Season not found."}, status=status.HTTP_404_NOT_FOUND)
     season_id = season.season_id if season else None
 
-    # (2) reason — OPTIONAL for a manual recalc (it re-derives from source data, it doesn't
+    # (2) reason - OPTIONAL for a manual recalc (it re-derives from source data, it doesn't
     #     impose a value). Default a stand-in so the audit row is never blank.
     reason = (data.get("reason") or "").strip() or "Manual recalc triggered."
 
@@ -309,7 +309,7 @@ def recalc_entity(request):
     #     transaction commits (on_commit) so it reads the latest committed state and never
     #     runs inline inside the request. The audit row is written in the same transaction
     #     as the on_commit registration, so "we logged a recalc" and "we scheduled it" are
-    #     atomic — if the audit write rolls back, the recalc is never enqueued.
+    #     atomic - if the audit write rolls back, the recalc is never enqueued.
     with transaction.atomic():
         if entity_type == "team":
             transaction.on_commit(
@@ -320,7 +320,7 @@ def recalc_entity(request):
                 lambda: tasks.enqueue_player(entity_id, month, season_id)
             )
 
-        # (4) audit — object_type="evaluation", action="recalc" (per the surface spec).
+        # (4) audit - object_type="evaluation", action="recalc" (per the surface spec).
         _audit(
             user, "evaluation", "recalc", reason,
             object_ref=f"{entity_type}:{entity_id}",

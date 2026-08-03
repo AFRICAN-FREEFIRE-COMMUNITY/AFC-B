@@ -1,5 +1,5 @@
 """
-afc_rankings.test_standalone_feed — Stream P3 (standalone leaderboard -> rankings feed) tests.
+afc_rankings.test_standalone_feed - Stream P3 (standalone leaderboard -> rankings feed) tests.
 
 Sibling flat test module to afc_rankings/tests.py (afc_rankings uses a flat tests.py, not a tests
 package; this stays a flat module so both are discovered). Covers afc_rankings/standalone.py +
@@ -103,7 +103,7 @@ def _save_result(lb, match, participant, placement, kills):
     return obj
 
 
-# ═════════════════════════ Task 3.2 — input builders ═════════════════════════
+# ═════════════════════════ Task 3.2 - input builders ═════════════════════════
 class StandaloneInputBuilderTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create(username="p3owner", email="p3o@x.com")
@@ -176,7 +176,7 @@ class StandaloneInputBuilderTests(TestCase):
         self.assertFalse(inp.team_won)
 
 
-# ═════════════════════════ Task 3.3 — ghost-team compute + recalc ═════════════════════════
+# ═════════════════════════ Task 3.3 - ghost-team compute + recalc ═════════════════════════
 class GhostTeamRecalcTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create(username="ghostowner", email="go@x.com")
@@ -238,7 +238,7 @@ class GhostTeamRecalcTests(TestCase):
         self.assertEqual(ghost_row.rank, 2, "the ghost interleaves below the higher real team")
 
 
-# ═════════════════════════ Task 3.4 — wire standalone into event aggregation ═════════════════════════
+# ═════════════════════════ Task 3.4 - wire standalone into event aggregation ═════════════════════════
 class AggregationWiringTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create(username="aggowner", email="aw@x.com")
@@ -283,7 +283,7 @@ class AggregationWiringTests(TestCase):
     # ── REGRESSION (mandatory): with NO standalone LBs, the event-only output is unchanged. ──
     def test_regression_no_standalone_lb_team_output_identical(self):
         # No standalone leaderboards exist in this test DB at all, so the standalone hook must add
-        # exactly zero — the standalone builder returns [] and compute_team_monthly is a pure
+        # exactly zero - the standalone builder returns [] and compute_team_monthly is a pure
         # event-only computation. We assert the hook is a true no-op by comparing the full result to
         # the engine scoring ONLY the (empty) event input list.
         from afc_leaderboard.models import StandaloneLeaderboard
@@ -327,7 +327,7 @@ class AggregationWiringTests(TestCase):
         self.assertGreater(agg.result.total, 0)
 
 
-# ═════════════════════════ Task 3.5 — signals + recompute (sync) ═════════════════════════
+# ═════════════════════════ Task 3.5 - signals + recompute (sync) ═════════════════════════
 # RANKINGS_RECALC_SYNC=True makes tasks._dispatch run inline; captureOnCommitCallbacks(execute=True)
 # fires the transaction.on_commit hooks the receivers register (a TestCase transaction never commits
 # on its own). Together they exercise the full signal -> recompute_for_leaderboard -> enqueue ->

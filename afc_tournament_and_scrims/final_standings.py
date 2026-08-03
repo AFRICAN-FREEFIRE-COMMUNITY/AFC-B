@@ -9,7 +9,7 @@
 #
 # So a team's FINAL PLACEMENT = its rank in the LAST STAGE it actually played. A team that
 # advanced to a deeper stage ranks ABOVE every team eliminated in an earlier stage. Inside a
-# single stage, teams are ordered by that stage's OFFICIAL standings — the exact table the
+# single stage, teams are ordered by that stage's OFFICIAL standings - the exact table the
 # site shows for that stage: base cumulative points + configured tie-breakers, then the
 # Point-Rush carry-over fold and the Champion-Point pin overlaid the same way
 # get_all_leaderboard_details_for_event / get_event_details render them. So "Nth place" here
@@ -19,7 +19,7 @@
 #
 # WHY THIS EXISTS (the bug it fixes):
 #   `final_placement` (afc_team) and the prize auto-sync (prize_sync) both ranked teams with
-#   `_aggregate_team_standings(match__group__stage__event=event)` — i.e. SUMMED points across
+#   `_aggregate_team_standings(match__group__stage__event=event)` - i.e. SUMMED points across
 #   ALL stages (SEMI + RUSH POINT + GRAND FINALS merged). That ranked a team by cumulative
 #   event points instead of by how far it advanced / how it placed in the deciding stage, so a
 #   team that finished mid-table in the Grand Finals could show 4th overall (and draw the
@@ -70,9 +70,9 @@ def official_stage_standings(stage):
     Base = cumulative_standings(stage) (team rows summed across the stage's lobbies, with the
     event's configured tie-breakers already applied). We then overlay, in the SAME order the
     results builder does:
-      (1) Point-Rush carry-over — add each team's banked bonus into effective_total, re-sort on
+      (1) Point-Rush carry-over - add each team's banked bonus into effective_total, re-sort on
           the exact DB tiebreak chain, then re-apply config tie-breakers.
-      (2) Champion-Point pin — for a SINGLE-lobby stage (a champion is defined per lobby), pin
+      (2) Champion-Point pin - for a SINGLE-lobby stage (a champion is defined per lobby), pin
           the crowned team to the top. Multi-lobby stages keep the merged points order (a
           per-lobby champion has no single meaning once lobbies are merged; deciding stages are
           single-lobby in practice, e.g. a Grand Finals).
@@ -186,7 +186,7 @@ def event_final_standings(event):
                             "stage_name": st.stage_name})
 
     # "Reached the final stage" is only a meaningful distinction for a MULTI-stage event (in a
-    # single-stage event every team that played trivially "reached the last stage", so we flag none —
+    # single-stage event every team that played trivially "reached the last stage", so we flag none - 
     # the UI would otherwise badge everyone). final_placement still populates for single-stage events.
     final_id = final_stage.stage_id if final_stage else None
     reached_final_ids = (

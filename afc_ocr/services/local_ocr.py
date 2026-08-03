@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # Match the FULL elimination word (elimin\w*) so removing it leaves a clean name and never
 # a stray "inations" fragment.
 _KILLS_RE = re.compile(r"(\d+)\s*elimin\w*", re.IGNORECASE)
-# Max players in one placement group for each event format — used by the confidence gate to
+# Max players in one placement group for each event format - used by the confidence gate to
 # flag a structurally implausible read (rows merged across columns) and escalate to Gemini.
 _MAX_PLAYERS_PER_PLACEMENT = {"team": 4, "solo": 1}
 # A bare placement rank like "#1" or "1" sitting at the start of a row (best-effort only;
@@ -63,7 +63,7 @@ _NOISE_RE = re.compile(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Engine singleton — load the ONNX recognizer once per process.
+# Engine singleton - load the ONNX recognizer once per process.
 # ──────────────────────────────────────────────────────────────────────────────
 _ENGINE = None
 
@@ -71,7 +71,7 @@ _ENGINE = None
 def get_engine():
     """Return the process-wide LocalOCREngine, building it on first use (lazy so a worker
     that never does OCR pays nothing, and so import of this module never hard-fails if the
-    optional rapidocr/onnxruntime deps are absent — get_engine() raises only when actually
+    optional rapidocr/onnxruntime deps are absent - get_engine() raises only when actually
     called).
 
     Loads the FINE-TUNED student bundle that model_registry currently points at

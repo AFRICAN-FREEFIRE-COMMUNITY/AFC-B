@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims/test_event_links.py — endpoint tests for EVENT LINKING P1.
+afc_tournament_and_scrims/test_event_links.py - endpoint tests for EVENT LINKING P1.
 
 Covers: link create validation (stage ownership, participant-type match, self-link, cycle,
 duplicate), fire (standings -> qualifications -> auto-promote registers the team in the

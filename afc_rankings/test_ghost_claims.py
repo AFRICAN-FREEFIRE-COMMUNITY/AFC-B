@@ -1,5 +1,5 @@
 """
-afc_rankings.test_ghost_claims — the ghost-team / ghost-player CLAIM PROCESS + re-attribution.
+afc_rankings.test_ghost_claims - the ghost-team / ghost-player CLAIM PROCESS + re-attribution.
 
 Sibling flat test module to afc_rankings/tests.py + test_standalone_feed.py + test_ghost_rankings.py
 (afc_rankings uses flat tests modules, so all are auto-discovered). Covers the claim process built

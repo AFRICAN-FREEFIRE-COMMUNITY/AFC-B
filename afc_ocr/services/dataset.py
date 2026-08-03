@@ -299,7 +299,7 @@ def assemble_rec_dataset(
 
     # ── 1. Pull candidate crop labels: parent must be clean + in a requested split ──
     # select_related('pair') so reading label.pair.* does not fire one query per row
-    # (N+1 guard — the captured set can be large).
+    # (N+1 guard - the captured set can be large).
     qs = (
         OCRCropLabel.objects
         .select_related("pair")

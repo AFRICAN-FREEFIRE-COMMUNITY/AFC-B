@@ -16,7 +16,7 @@ class StickyBanGuardTests(TestCase):
     A zeroed (banned) team/player must survive an unrelated recalc. Before the
     guard, ``recalc_team_quarterly`` / ``recalc_player_quarterly`` overwrote
     ``total_score`` + ``tier_assigned`` from raw aggregation on every run, so any
-    later edit to the entity's data (a marker, a prize, a ghost transfer — each
+    later edit to the entity's data (a marker, a prize, a ghost transfer - each
     enqueues a recalc on commit) silently un-banned a zeroed entity: the score
     and tier returned while only the ``is_zeroed`` flag lingered.
     """

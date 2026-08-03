@@ -1,19 +1,19 @@
 # ── EVENT MVP (owner 2026-07-02, per-map semantics) ─────────────────────────────
 # "MVP picked from" has two options: the OVERALL EVENT PER MAP, or the WINNING TEAM PER MAP (the
-# team that won that map). An MVP is decided for EVERY MAP (match) by the arranged criteria — the
+# team that won that map). An MVP is decided for EVERY MAP (match) by the arranged criteria - the
 # ordered criteria act like tie-breakers (kills first, ties fall to damage, ...). The EVENT MVP is
 # then the player with the HIGHEST NUMBER of per-map MVPs; equal counts fall back to the same
 # criteria on event totals. The per-player MVP COUNT is also intended as a leaderboard TIE-BREAKER
-# criterion (owner: "mvp should then be a criteria to be used for tie breaker" — consumed when the
+# criterion (owner: "mvp should then be a criteria to be used for tie breaker" - consumed when the
 # leaderboard tie-breaker feature lands; the count is computed here).
 #
 # ENDPOINT (gate = _broadcast_gate = AFC event admin OR org can_edit_events):
 #   GET  events/<event_id>/mvp/  -> compute with the event's SAVED config (Event.mvp_config)
-#   POST events/<event_id>/mvp/  -> {criteria: [...], scope} — save, then return the recomputed
+#   POST events/<event_id>/mvp/  -> {criteria: [...], scope} - save, then return the recomputed
 #                                   ranking (save + preview in one round trip).
 #
 # AVAILABLE vs PENDING criteria: kills / damage / assists are stored today. deaths, survival_time,
-# headshots, kdr arrive with the 3D-room debugger ingest (tasks/overlay-scene-panel-plan.md) — they
+# headshots, kdr arrive with the 3D-room debugger ingest (tasks/overlay-scene-panel-plan.md) - they
 # are declared available=False so the FE tags them "needs live 3D-room data"; a saved config that
 # includes them simply skips them at compute time until the data exists.
 #
@@ -120,7 +120,7 @@ def _read_scope_params(request):
 def _resolve_player_scope(event, group_ids, stage_ids):
     """Expand a {group_ids, stage_ids} selection to the concrete list of THIS-EVENT group ids to
     aggregate over, or None (= whole event) when nothing was selected. An all-invalid selection also
-    yields None (graceful fall-through to whole event, never an empty board) — mirrors the overlay's
+    yields None (graceful fall-through to whole event, never an empty board) - mirrors the overlay's
     _parse_overlay_combine. Delegates to _expand_overlay_combine so G/H agree with the leaderboard."""
     if not group_ids and not stage_ids:
         return None
@@ -142,9 +142,9 @@ def _player_match_qs(event, group_ids):
 
 def _walk_player_stats(event, group_ids, request):
     """Accumulate this event's (or the scoped groups') player stat lines into:
-      by_match : {match_id: [(match, line_stats), ...]}   — per-map pools for MVP selection
+      by_match : {match_id: [(match, line_stats), ...]}   - per-map pools for MVP selection
       players  : {user_id: {identity + summed kills/damage/assists/deaths/... + matches + mvp_count}}
-    esports_image is the player's esport photo URL (User.esports_pic lives on UserProfile — bug fix
+    esports_image is the player's esport photo URL (User.esports_pic lives on UserProfile - bug fix
     2026-07-02). SHARED by compute_event_mvp (per-map MVP ranking) and compute_top_killers (sum-of-kills
     ranking) so the MVP (G) and Top-killers (H) boards aggregate identically."""
     from afc_auth.models import esports_pic_url
@@ -207,7 +207,7 @@ def compute_event_mvp(event, request, group_ids=None):
     criteria = [c for c in (cfg.get("criteria") or DEFAULT_CRITERIA) if c in CRITERIA_META]
     scope = cfg.get("scope") if cfg.get("scope") in ("overall", "winning_team") else DEFAULT_SCOPE
     # The 3D-room criteria become RANKABLE once this event has debugger-backfilled rows
-    # (rich_stats_filled — see debugger_ingest.py). Until then they stay tagged/pending.
+    # (rich_stats_filled - see debugger_ingest.py). Until then they stay tagged/pending.
     has_rich = TournamentPlayerMatchStats.objects.filter(
         team_stats__match__group__stage__event=event, rich_stats_filled=True
     ).exists()
@@ -272,7 +272,7 @@ def compute_top_killers(event, request, group_ids=None):
     """TOP-KILLERS (complaint H): rank players by SUM(kills) over the scope (`group_ids=None` = whole
     event, else only those groups' matches). Returns the SAME player row shape as compute_event_mvp
     (identity + kills/damage/assists + esports_image + team + matches + mvp_count), so the MVP (G) and
-    Top-killers (H) boards share ONE render path + ONE FE renderer. Ties fall to damage then assists —
+    Top-killers (H) boards share ONE render path + ONE FE renderer. Ties fall to damage then assists - 
     a stable, meaningful order for a kills board. Capped at 50 like the MVP list."""
     _by_match, players = _walk_player_stats(event, group_ids, request)
     for r in players.values():
@@ -317,7 +317,7 @@ def build_player_design_rows(players):
 
 @api_view(["GET", "POST"])
 def event_mvp(request, event_id):
-    """GET/POST events/<event_id>/mvp/ — save (POST) the criteria arrangement + scope, then return:
+    """GET/POST events/<event_id>/mvp/ - save (POST) the criteria arrangement + scope, then return:
     the per-map MVP list, the per-player MVP counts, and the event MVP (most per-map MVPs; count ties
     broken by the same criteria on event totals). See compute_event_mvp + the module docstring.
 
@@ -347,7 +347,7 @@ def event_mvp(request, event_id):
 
 @api_view(["GET"])
 def event_top_killers(request, event_id):
-    """GET events/<event_id>/top-killers/ — players ranked by SUM(kills) (complaint H), with the SAME
+    """GET events/<event_id>/top-killers/ - players ranked by SUM(kills) (complaint H), with the SAME
     optional COMBINE scope as event_mvp (group_ids[]/stage_ids[], whole stages expand to groups; absent
     => whole event). A preview source for the Top-killers design tab (mirrors how MvpTab consumes
     event_mvp). See compute_top_killers. Gate = _broadcast_gate (AFC event admin OR org can_edit_events)."""
@@ -364,7 +364,7 @@ def event_top_killers(request, event_id):
 @api_view(["GET"])
 def event_player_board_graphic(request, event_id):
     """GET events/<event_id>/player-board-graphic/?kind=mvp|top_killers&design_id=&size=instagram|
-    youtube&group_ids=&stage_ids= — download the MVP (G) or Top-killers (H) board as a PNG rendered
+    youtube&group_ids=&stage_ids= - download the MVP (G) or Top-killers (H) board as a PNG rendered
     THROUGH a design, the same way the team leaderboard exports (owner 2026-07-05, complaints G+H #7).
 
     Reuses the org design library (_resolve_event_design), build_field_layout (design -> field_layout)
@@ -454,7 +454,7 @@ TIE_BREAKER_LABELS = {
 
 @api_view(["GET", "POST"])
 def event_tie_breakers(request, event_id):
-    """GET/POST events/<event_id>/tie-breakers/ — read/save the arranged tie-breaker criteria for
+    """GET/POST events/<event_id>/tie-breakers/ - read/save the arranged tie-breaker criteria for
     the whole event, one stage, or one group (like maps: apply to all, or per stage/group)."""
     from .round_robin import TIE_BREAKER_KEYS
     event, err = _broadcast_gate(request, event_id)

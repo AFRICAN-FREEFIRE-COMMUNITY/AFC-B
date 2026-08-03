@@ -6,12 +6,12 @@ even though results were inputted"). run_evaluation now rebuilds the season's qu
 from match results (recalc_season) before tiering, on REAL runs only, so the button is
 self-sufficient even when the async recalc pipeline never built the score rows.
 
-Verified here (no tournament match-stats fixture needed — these assert the new CONTRACT):
+Verified here (no tournament match-stats fixture needed - these assert the new CONTRACT):
   - real run sets recomputed=True; dry run sets recomputed=False (preview writes nothing).
   - an empty season returns a helpful `note` instead of a silent "0 tiered" success, and the
     note differs for a recomputed real run vs a non-recomputed dry run.
   - pre-seeded quarterly rows whose teams have NO match stats survive the recompute (recalc_season
-    only touches teams/players that actually played) and still get tiered — i.e. the recompute is
+    only touches teams/players that actually played) and still get tiered - i.e. the recompute is
     additive, never destructive to legitimately-present rows.
 """
 
@@ -56,7 +56,7 @@ class EvaluationRecomputeContractTests(TestCase):
 
     def test_seeded_rows_without_match_stats_survive_recompute_and_tier(self):
         # A quarterly row whose team has NO tournament match stats must NOT be wiped by the
-        # recompute (recalc_season only recomputes teams that actually played) — it still tiers.
+        # recompute (recalc_season only recomputes teams that actually played) - it still tiers.
         team = _make_team("Seeded Alpha", self.owner)
         TeamQuarterlyScore.objects.create(
             team=team, season=self.season, total_score=180,

@@ -12,7 +12,7 @@ recalc trigger).
 Participation floors:
   §5.2 team monthly: ≥1 tournament to appear (else row removed).
   §6 player monthly: ≥1 tournament to appear.
-  §7.4 / §9.2 quarterly floors are applied at tier evaluation (Phase 2), not here —
+  §7.4 / §9.2 quarterly floors are applied at tier evaluation (Phase 2), not here - 
   quarterly scores are computed read-only; tier_assigned stays null until eval.
 """
 import datetime
@@ -29,7 +29,7 @@ from .models import (
     Season, TeamMonthlyScore, TeamQuarterlyScore, PlayerMonthlyScore, PlayerQuarterlyScore,
 )
 
-# §11 bottom tier (Entry) — the fallback when an attached player's team has no assigned tier.
+# §11 bottom tier (Entry) - the fallback when an attached player's team has no assigned tier.
 TIER_ENTRY = 3
 
 
@@ -54,7 +54,7 @@ def recalc_team_monthly(team_id, month: datetime.date = None):
     month = (month or current_month()).replace(day=1)
     agg = aggregation.compute_team_monthly(team, month)
     if agg.tournaments_played == 0:
-        # §5.2 participation floor — no tournament activity → don't appear
+        # §5.2 participation floor - no tournament activity → don't appear
         TeamMonthlyScore.objects.filter(team=team, month=month).delete()
         rerank_team_month(month)
         return
@@ -91,7 +91,7 @@ def recalc_team_quarterly(team_id, season_id):
     r = agg.result
     meets = agg.tournaments_played >= 2  # §7.4
     # Respect an admin tier override (§5): a locked tier is not stomped by the projected one.
-    # Otherwise use the live (projected) tier from score — Entry if below the activity floor.
+    # Otherwise use the live (projected) tier from score - Entry if below the activity floor.
     # The official locked tier is (re)set when an admin runs the quarterly evaluation (Phase 2).
     if existing and existing.tier_overridden:
         tier = existing.tier_assigned
@@ -129,7 +129,7 @@ def rerank_team_month(month: datetime.date):
 
 def rerank_team_quarter(season):
     # Rank by the EFFECTIVE score (total minus any manual point deduction, §16) so a
-    # partial penalty actually moves a team down the table — not just the displayed score.
+    # partial penalty actually moves a team down the table - not just the displayed score.
     # A ban-zeroed team already has total_score 0, so it naturally sinks to the bottom.
     # Ghost teams are interleaved with real teams here too (no team__isnull=False filter). The name
     # tiebreak coalesces real + ghost names. Called by recalc_team_quarterly +
@@ -177,7 +177,7 @@ def recalc_player_quarterly(player_id, season_id):
         return
     # §2.15 sticky-ban guard: a zeroed (banned) player must NOT be silently un-banned by
     # an unrelated recalc. Freeze the row exactly as the ban left it; only keep its rank
-    # current. (PlayerQuarterlyScore has no tier override — players inherit, §2.11 — so
+    # current. (PlayerQuarterlyScore has no tier override - players inherit, §2.11 - so
     # the ban flag is the only sticky state here.) Un-banning is an explicit admin action.
     existing = PlayerQuarterlyScore.objects.filter(player=player, season=season).first()
     if existing and existing.is_zeroed:
@@ -295,12 +295,12 @@ def _player_team_at_eval(player, season):
 
 
 def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=True):
-    """Quarterly EVALUATION — lock every team/player tier for the season (§16).
+    """Quarterly EVALUATION - lock every team/player tier for the season (§16).
 
     Order matters: teams are tiered first (from their final score with the §7.4 activity
     floor), then players INHERIT their team's tier (§8.1) when attached at eval time, else
     take their individual tier (§9.2 floor). Already-zeroed (banned) and ``tier_overridden``
-    rows are LEFT UNTOUCHED — evaluation never silently un-bans or un-overrides. A successful
+    rows are LEFT UNTOUCHED - evaluation never silently un-bans or un-overrides. A successful
     run stamps ``Season.tier_eval_run/_at/_by`` + ``scores_frozen_at`` and each row's
     ``tier_assigned_at``.
 
@@ -313,7 +313,7 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=T
     evaluation produces NOTHING. Recomputing here makes "Run evaluation" self-sufficient: it
     derives the scores straight from the match stats in the season window first, THEN tiers
     them. This is a deliberate, explicit admin batch action (like ``manage.py recalc_rankings``)
-    — NOT the live-edit hot path the "recalc is never inline" rule guards, so running it
+    - NOT the live-edit hot path the "recalc is never inline" rule guards, so running it
     synchronously here is correct. It runs OUTSIDE the tier-lock transaction so the heavy
     recompute never holds the season row lock. dry_run skips it (a preview must write nothing);
     pass recompute=False to tier the existing rows as-is (tests / callers that pre-seed scores).
@@ -328,7 +328,7 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=T
 
     # re-run guard (skipped for a dry run, which writes nothing)
     if season.tier_eval_run and not force and not dry_run:
-        return {"ok": False, "error": "Season already evaluated — re-run with force=true to overwrite."}
+        return {"ok": False, "error": "Season already evaluated - re-run with force=true to overwrite."}
 
     # Refresh the season's quarterly SCORES from match results before tiering (real runs only).
     # See the docstring: this is what makes evaluation return tiers even if the async recalc
@@ -342,7 +342,7 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=T
     team_changes, player_changes = [], []
 
     def _evaluate():
-        # 1) Teams — tier from effective score (total minus deduction) + §7.4 floor.
+        # 1) Teams - tier from effective score (total minus deduction) + §7.4 floor.
         #    Zeroed / overridden rows keep their existing tier (preserved, not recomputed).
         #    GHOST teams are tiered here too (the team__isnull=False filter is gone): a ghost has no
         #    sticky-ban/override state, so it always hits the assign_tier branch. It is NEVER added to
@@ -372,7 +372,7 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=T
         if not dry_run and team_writes:
             TeamQuarterlyScore.objects.bulk_update(team_writes, ["tier_assigned", "tier_assigned_at"])
 
-        # 2) Players — inherit team tier (§8.1) when attached, else individual tier (§9.2).
+        # 2) Players - inherit team tier (§8.1) when attached, else individual tier (§9.2).
         #    Zeroed players are preserved. team_at_evaluation locks the inheritance source.
         #    GHOST players are tiered here too (the table has no entity filter). A ghost player has no
         #    roster, so _player_team_at_eval is NOT called for it (guarded by p.player_id) -> it is

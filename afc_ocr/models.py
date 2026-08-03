@@ -54,7 +54,7 @@ class OCRSession(models.Model):
     status     = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending_review")
     event_type = models.CharField(max_length=10, choices=EVENT_TYPE_CHOICES)
 
-    # Raw Gemini output — stored for debugging / re-processing
+    # Raw Gemini output - stored for debugging / re-processing
     raw_output = models.JSONField()
 
     # Matched & annotated rows ready for the review table
@@ -134,7 +134,7 @@ class OCRTeamNote(models.Model):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# OCR LEARNING LOOP — Phase 1: training-data capture
+# OCR LEARNING LOOP - Phase 1: training-data capture
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # Goal: every time an admin reviews a Gemini OCR result and commits it to the
@@ -362,7 +362,7 @@ class OCRCropLabel(models.Model):
 
     # Identity-truth (name rows only): the registered user this name resolves to.
     # Null for kill rows and for unresolved names. Kept SEPARATE from `text` on
-    # purpose (see header) — read the pixels, do not guess the roster.
+    # purpose (see header) - read the pixels, do not guess the roster.
     matched_user_id = models.IntegerField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

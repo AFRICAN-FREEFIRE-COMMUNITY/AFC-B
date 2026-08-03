@@ -652,7 +652,7 @@ def write_placement_stats(stage):
         # scores a player on kills + participated + team_won + finals_appearances + mvp, and forces
         # personal_placement_pts=0 (players never score on raw placement). So we write one PLAYED
         # TournamentPlayerMatchStats (kills 0) per ROSTERED member of each placed team, hung off that
-        # team's synthetic stat — exactly the row shape a BR match writes — so every CS player counts
+        # team's synthetic stat - exactly the row shape a BR match writes - so every CS player counts
         # as having played the event (participation), and the champion's roster gets the team-win
         # bonus. Idempotent: sync to the CURRENT roster, dropping stats for members no longer rostered
         # (a regenerated bracket / roster edit), and a team dropped from `placed` has its team_stat

@@ -13,7 +13,7 @@ per-stage scoring features (see WEBSITE/tasks/scoring-modes-design.md, sub-proje
 """
 
 # Canonical Free Fire battle-royale placement table. Was duplicated at
-# views.py:12140 and afc_ocr/services/commit.py:6 — this is now the only copy.
+# views.py:12140 and afc_ocr/services/commit.py:6 - this is now the only copy.
 DEFAULT_PLACEMENT = {1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1}
 
 
@@ -42,7 +42,7 @@ def compute_team_points(*, placement_points, kill_point, points_per_assist,
     played==True), so those terms fall away too. Bonus/penalty are NOT zeroed: the original
     manual/edit paths stored `total_points = bonus - penalty` for a not-played team that still
     carried a penalty/bonus, so the total reconciles with the bonus_points/penalty_points
-    columns. We must preserve that here (no early-return short-circuit) — this is a
+    columns. We must preserve that here (no early-return short-circuit) - this is a
     behavior-preserving refactor."""
     placement_pts = placement_points.get(placement, 0) if played else 0
     kill_pts = kills * kill_point
@@ -85,7 +85,7 @@ def champion_for_group(matches, threshold, carry_over=None):
 
     Champion = the first competitor to place 1st (Booyah) in a match where its running total
     BEFORE that match was already >= threshold. The booyah that first crosses the threshold
-    does not win — we snapshot `pre` (totals entering the match) before adding the match's
+    does not win - we snapshot `pre` (totals entering the match) before adding the match's
     points, so a team only wins on a booyah it earns while ALREADY at/over the threshold.
     """
     running = dict(carry_over or {})
@@ -106,7 +106,7 @@ def rewards_from_standings(ranked_ids, reward_table):
     """
     Point-Rush per-lobby reward. `ranked_ids` is one lobby's competitor ids in finishing
     order (index 0 = 1st). `reward_table` is {"1": pts, ...} placement->bonus. Returns
-    {id: bonus}. Placements with no team (fewer teams than reward rows) are skipped — the
+    {id: bonus}. Placements with no team (fewer teams than reward rows) are skipped - the
     (placement-1) index simply falls outside `ranked_ids`, so that reward row is dropped.
     """
     out = {}

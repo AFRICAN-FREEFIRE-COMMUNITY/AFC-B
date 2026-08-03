@@ -1,5 +1,5 @@
 """
-afc_leaderboard.urls — route table for the Standalone Leaderboards endpoints.
+afc_leaderboard.urls - route table for the Standalone Leaderboards endpoints.
 
 Mounted at `leaderboards/` in afc/urls.py, so every path below resolves under
 `leaderboards/standalone/…`. Order matters: the literal `standalone/matches/<mid>/…` routes are
@@ -51,7 +51,7 @@ urlpatterns = [
 
     # ── OCR assist (Phase 2, legacy single-shot) ── extract a screenshot, then apply the reviewed rows ──
     # Kept for backward compatibility; the FE now uses the async batch endpoints below (the single-shot
-    # extract is synchronous and could time out on prod). Declared BEFORE the batch jobs/ routes is fine —
+    # extract is synchronous and could time out on prod). Declared BEFORE the batch jobs/ routes is fine - 
     # "ocr/" and "ocr/apply/" are exact, they never collide with "ocr/jobs/…".
     path("standalone/<int:lb_id>/ocr/", views.ocr_extract, name="standalone_ocr_extract"),  # POST (multipart)
     path("standalone/<int:lb_id>/ocr/apply/", views.ocr_apply, name="standalone_ocr_apply"),  # POST

@@ -36,7 +36,7 @@ class RoundRobinSchemaTests(TestCase):
     """Schema-level test: base group ↔ teams and lobby ↔ source_groups wiring."""
 
     def setUp(self):
-        # Minimal admin/creator — Team/Event both need a user FK.
+        # Minimal admin/creator - Team/Event both need a user FK.
         self.admin = User.objects.create(
             username="rr_admin", email="rr_admin@afc.test", full_name="RR Admin", role="admin")
         D = datetime.date(2026, 6, 1)
@@ -54,7 +54,7 @@ class RoundRobinSchemaTests(TestCase):
             number_of_groups=1, stage_format="br - round robin",
             teams_qualifying_from_stage=4)
 
-        # One team entered in the tournament — goes into base group A.
+        # One team entered in the tournament - goes into base group A.
         team = Team.objects.create(
             team_name="RR Team A1", join_settings="open", team_creator=self.admin,
             team_owner=self.admin, team_captain=self.admin, country="Nigeria")
@@ -161,11 +161,11 @@ class RoundRobinStandingsTests(TestCase):
 
     Round-Robin standings come in three shapes, all read-time aggregates over the same
     `TournamentTeamMatchStats` rows (matches/stats are unchanged by the format):
-      • per-lobby   — handled by the existing leaderboard view (one StageGroups = a lobby),
-      • per-day     — `day_standings(stage, game_day)`: sum a single game day's lobbies,
-      • cumulative  — `cumulative_standings(stage)`: sum the WHOLE stage across every lobby.
+      • per-lobby   - handled by the existing leaderboard view (one StageGroups = a lobby),
+      • per-day     - `day_standings(stage, game_day)`: sum a single game day's lobbies,
+      • cumulative  - `cumulative_standings(stage)`: sum the WHOLE stage across every lobby.
     The crux the format introduces: a team can appear in MORE THAN ONE lobby across the
-    stage (one per game day it plays), so cumulative must SUM a team across lobbies — not
+    stage (one per game day it plays), so cumulative must SUM a team across lobbies - not
     treat each lobby in isolation the way the per-group leaderboard does.
 
     Fixture: 2 base groups (A, B), 2 lobbies on game_days 1 and 2, and one team that plays
@@ -279,7 +279,7 @@ class RoundRobinStandingsTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         body = resp.json()
 
-        # Cumulative is one row PER TEAM for the whole stage — the cross team appears once,
+        # Cumulative is one row PER TEAM for the whole stage - the cross team appears once,
         # with day1 + day2 summed: effective_total 10+5+8+3 = 26, kills 5+3 = 8,
         # booyah 1 (only day 1 was a placement==1), games_played 2 (one match each day).
         cumulative = body["cumulative"]
@@ -344,7 +344,7 @@ class RoundRobinCreateEventTests(TestCase):
       • create the `RoundRobinGroup` rows (A/B/C) and wire their `teams` M2M (resolving the
         sent team ids → this event's `TournamentTeam` rows, creating any that don't exist),
       • run the pure `round_robin_schedule` over those base-group ids and materialise EACH
-        spec into a game-day `StageGroups` LOBBY — carrying `game_day` + `source_groups`,
+        spec into a game-day `StageGroups` LOBBY - carrying `game_day` + `source_groups`,
         its own auto-created `Leaderboard`, the `match_count` `Match` rows, and
       • seed `StageGroupCompetitor` from the MERGED base groups' teams (so the lobby's
         roster is exactly the union of the two base groups it merges).
@@ -403,7 +403,7 @@ class RoundRobinCreateEventTests(TestCase):
                     "number_of_groups": 3,
                     "stage_format": "br - round robin",
                     "teams_qualifying_from_stage": 4,
-                    # Base groups (A/B/C) — each carries the Team ids that belong to it.
+                    # Base groups (A/B/C) - each carries the Team ids that belong to it.
                     "round_robin_groups": [
                         {"label": "A", "order": 0, "team_ids": [t.team_id for t in a]},
                         {"label": "B", "order": 1, "team_ids": [t.team_id for t in b]},
@@ -590,7 +590,7 @@ class RoundRobinEditEventTests(TestCase):
             **extra_event,
             "start_date": d, "end_date": d,
             "registration_open_date": d, "registration_end_date": d,
-            # The 4 times are compulsory on create (owner 2026-06-21) — see _payload above.
+            # The 4 times are compulsory on create (owner 2026-06-21) - see _payload above.
             "event_start_time": "18:00", "event_end_time": "20:00",
             "registration_start_time": "10:00", "registration_end_time": "17:00",
             "stages": [self._stage()],
@@ -634,7 +634,7 @@ class RoundRobinEditEventTests(TestCase):
             "unplayed lobbies should be replaced (old ids gone)")
         self.assertEqual(
             set(lobbies_after.values_list("game_day", flat=True)), {1, 2, 3})
-        # Still exactly C(3,2)=3 lobbies — no duplicate day 1 created alongside the kept one.
+        # Still exactly C(3,2)=3 lobbies - no duplicate day 1 created alongside the kept one.
         self.assertEqual(lobbies_after.count(), 3)
 
         # ── Base-group integrity (Task 4 bug regression) ──
@@ -687,14 +687,14 @@ class RoundRobinAdvanceTests(TestCase):
     """End-to-end test for advancing a finished round-robin stage into the next stage (Task 5).
 
     A round-robin stage decides who advances by its CUMULATIVE standings (every team summed
-    across every lobby it played), not by any single lobby — that's the whole point of the
+    across every lobby it played), not by any single lobby - that's the whole point of the
     format. `advance-round-robin` therefore:
       • computes `cumulative_standings(stage)` (the same authoritative table the standings
         endpoint returns), takes the top `stage.teams_qualifying_from_stage` teams overall,
         and seeds them as `StageCompetitor` rows in the NEXT stage via the SAME plumbing the
         existing `advance_group_competitors_to_next_stage` uses; or
       • with `mode="per_group"`, advances the top `qualify_per_group` teams of EACH base group
-        (RoundRobinGroup) instead of overall — for formats that guarantee per-group qualifiers.
+        (RoundRobinGroup) instead of overall - for formats that guarantee per-group qualifiers.
 
     Fixture: 2 base groups (A, B) of 2 teams each, a 1-game-day lobby merging A+B, and a single
     match whose entered stats give a clean cumulative order (A1 > B1 > A2 > B2). A SECOND stage
@@ -721,13 +721,13 @@ class RoundRobinAdvanceTests(TestCase):
             event_status="ongoing", registration_link="https://afc.test/reg",
             number_of_stages=2, creator=self.admin, is_draft=False)
 
-        # The round-robin SOURCE stage — qualify the top 2 overall. start_date drives the
+        # The round-robin SOURCE stage - qualify the top 2 overall. start_date drives the
         # "next stage" lookup the existing advance uses, so the next stage starts strictly later.
         self.stage = Stages.objects.create(
             event=self.event, stage_name="Round Robin Stage", start_date=D,
             end_date=D, number_of_groups=2, stage_format="br - round robin",
             teams_qualifying_from_stage=2)
-        # The destination stage (a plain BR final) — advancement seeds StageCompetitor here.
+        # The destination stage (a plain BR final) - advancement seeds StageCompetitor here.
         self.next_stage = Stages.objects.create(
             event=self.event, stage_name="Finals", start_date=D + datetime.timedelta(days=1),
             end_date=D + datetime.timedelta(days=1), number_of_groups=1,

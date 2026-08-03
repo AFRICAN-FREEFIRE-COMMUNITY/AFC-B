@@ -110,7 +110,7 @@ READ_TIMEOUT_STATUS = 30          # tiny JSON
 READ_TIMEOUT_EXPORT = 600         # the dataset ZIP can be large (crops/)
 READ_TIMEOUT_UPLOAD = 600         # the bundle upload
 
-# Process exit codes — meaningful so the Task Scheduler "last run result" is auditable.
+# Process exit codes - meaningful so the Task Scheduler "last run result" is auditable.
 EXIT_OK = 0                       # ran cleanly (trained+shipped, OR cleanly did nothing)
 EXIT_CONFIG = 2                   # bad / missing configuration (no token, no API base)
 EXIT_NETWORK = 3                  # a server call failed (down, 4xx/5xx, timeout)
@@ -121,7 +121,7 @@ EXIT_UPLOAD = 6                   # producing/uploading the bundle failed
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Logging — a rotating file under the work dir + a console echo. Set up once, at the
+# Logging - a rotating file under the work dir + a console echo. Set up once, at the
 # start of a run, so an unattended run leaves a durable, bounded trail on disk.
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -160,13 +160,13 @@ def _setup_logging(workdir: str, verbose: bool = True) -> str:
     logger.addHandler(console_h)
 
     # Do not propagate to the root logger (avoids double lines if the host app configured
-    # logging too — e.g. when this is invoked from within a Django process).
+    # logging too - e.g. when this is invoked from within a Django process).
     logger.propagate = False
     return log_path
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Config resolution — env first, CLI overrides. Surfaced loudly so a misconfigured
+# Config resolution - env first, CLI overrides. Surfaced loudly so a misconfigured
 # scheduled task fails with a clear message instead of a confusing 401 later.
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -235,7 +235,7 @@ def _require_server_config(cfg: Config) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# GPU sanity (--check-gpu) — guards the paddle import so a box without paddle gets a
+# GPU sanity (--check-gpu) - guards the paddle import so a box without paddle gets a
 # clear message, not an ImportError traceback.
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -688,7 +688,7 @@ def upload_bundle(cfg: Config, bundle_dir: str, run_dir: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# The orchestrator — wires (a)..(f) together with defensive handling at each step.
+# The orchestrator - wires (a)..(f) together with defensive handling at each step.
 # ──────────────────────────────────────────────────────────────────────────────
 
 def run_cycle(cfg: Config) -> int:
@@ -765,7 +765,7 @@ def run_cycle(cfg: Config) -> int:
         train_result = run_local_finetune(cfg, dataset_info, run_dir)
     except RuntimeError as exc:
         # Missing paddle, or the off-box skeleton not yet filled. Clear, actionable, no
-        # traceback to the scheduler — just a logged failure + EXIT_TRAIN.
+        # traceback to the scheduler - just a logged failure + EXIT_TRAIN.
         logger.error("Fine-tune step failed: %s", exc)
         _summary(started, trained=None, gate=None, uploaded=False, promoted=False,
                  outcome="train-failed")

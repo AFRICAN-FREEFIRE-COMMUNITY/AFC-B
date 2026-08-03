@@ -1,5 +1,5 @@
 """
-afc_leaderboard.admin — Django-admin registration for the standalone leaderboard models.
+afc_leaderboard.admin - Django-admin registration for the standalone leaderboard models.
 
 Light read-only-friendly registration so AFC staff can inspect standalone leaderboards, their
 participants, maps, and per-map results directly in /admin/. The authoritative create/edit surface

@@ -1,18 +1,18 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# reclassify_event_tiers — re-run the automatic tournament-tier classifier over EXISTING events.
+# reclassify_event_tiers - re-run the automatic tournament-tier classifier over EXISTING events.
 #
 # WHY: views.auto_classify_event only runs on event CREATE / EDIT, so an event's tournament_tier is
 # frozen at whatever the rules said the last time somebody saved it. Two things make a stored tier
 # go stale: an admin editing the EventTierRule set on the Tournament Tiers page, and the
 # currency-conversion fix (owner 2026-08-03) that now compares the prize pool in NAIRA instead of
 # in the event's own prize_currency. Before that fix a $400 event was compared as the bare number
-# 400 against the ₦100,000 Tier-1 threshold, matched nothing, and fell through to Tier 3 — which is
+# 400 against the ₦100,000 Tier-1 threshold, matched nothing, and fell through to Tier 3 - which is
 # how DYNASTY CUP GRAND FINALS SSA (event 172) ended up tier_3. Editing every event by hand to
 # refresh the tier is not realistic, hence this command.
 #
 # WHAT: recomputes the tier for every non-draft event via the SAME auto_classify_event the create /
 # edit path uses (one classifier, no second implementation to drift). Events pinned by a head/super
-# admin (tier_overridden=True) are NEVER touched — a manual decision outranks the rules, exactly as
+# admin (tier_overridden=True) are NEVER touched - a manual decision outranks the rules, exactly as
 # apply_event_tier treats it. Idempotent: re-running changes nothing once the tiers are current.
 #
 # The tier this writes is what afc_rankings.aggregation feeds the scoring engine as
@@ -51,7 +51,7 @@ class Command(BaseCommand):
 
         changed, pinned, unchanged = [], 0, 0
         for ev in qs:
-            # A head/super admin pinned this tier — the rules must not overwrite it (same contract
+            # A head/super admin pinned this tier - the rules must not overwrite it (same contract
             # apply_event_tier enforces on every edit).
             if ev.tier_overridden:
                 pinned += 1

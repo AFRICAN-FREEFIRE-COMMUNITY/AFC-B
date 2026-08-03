@@ -33,8 +33,8 @@ from .gemini import call_gemini, effective_model
 logger = logging.getLogger(__name__)
 
 # Serializes local-student inference across threads. The batch OCR worker
-# (afc_leaderboard.ocr.process_job) reads a map's several screenshots CONCURRENTLY —
-# the win is overlapping the Gemini HTTP calls — but the student is one shared
+# (afc_leaderboard.ocr.process_job) reads a map's several screenshots CONCURRENTLY - 
+# the win is overlapping the Gemini HTTP calls - but the student is one shared
 # process-wide engine (local_ocr._ENGINE, lazily built) doing CPU-bound ONNX work,
 # so concurrent .run() would race the lazy build and thrash the CPU for no speedup.
 # One lock here covers every caller; single-image callers never contend on it.
@@ -71,7 +71,7 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
     student_json, conf, decision = None, None, "gemini"
     if getattr(settings, "OCR_LOCAL_FIRST", True) and local_ocr.is_available():
         try:
-            # Lock: see _STUDENT_LOCK above — the student is a shared CPU-bound engine, so
+            # Lock: see _STUDENT_LOCK above - the student is a shared CPU-bound engine, so
             # concurrent batch threads take turns here while their Gemini calls overlap freely.
             with _STUDENT_LOCK:
                 student_json, conf = local_ocr.get_engine().run(image_bytes, mime_type, aliases, team_notes, event_type)
@@ -85,7 +85,7 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
 
     if gemini_enabled:
         # Label the engine with the ACTUAL model used (settings.GEMINI_MODEL, default flash), not a
-        # hardcoded "pro" — so the FE badge + the training corpus record the real teacher model.
+        # hardcoded "pro" - so the FE badge + the training corpus record the real teacher model.
         return call_gemini(image_bytes, mime_type, aliases, team_notes, prompt_kind=prompt_kind), effective_model()
 
     if student_json is not None:  # Gemini off/unavailable: best-effort local draft for review

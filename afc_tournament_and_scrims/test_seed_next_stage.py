@@ -1,5 +1,5 @@
 """
-afc_tournament_and_scrims.test_seed_next_stage — seed_next_stage_by_standings (owner 2026-07-06).
+afc_tournament_and_scrims.test_seed_next_stage - seed_next_stage_by_standings (owner 2026-07-06).
 
 Verifies the "seed the NEXT stage's groups by this round-robin stage's combined standings, snake"
 option: teams are ordered by cumulative_standings(rr_stage) and snaked across the next stage's groups,
