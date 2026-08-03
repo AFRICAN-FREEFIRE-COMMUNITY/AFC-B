@@ -26,6 +26,7 @@ User = get_user_model()
 
 APPS_URL = "/sso/admin/apps/"
 SCOPES_URL = "/sso/admin/scopes/"
+GUIDE_URL = "/sso/admin/integration-guide/"
 
 
 class SSOAdminApiTests(TestCase):
@@ -106,6 +107,7 @@ class SSOAdminApiTests(TestCase):
             ("post", f"{APPS_URL}{app.pk}/suspend/", {"suspend": True}),
             ("post", f"{APPS_URL}{app.pk}/rotate-secret/", {}),
             ("get", SCOPES_URL, None),
+            ("get", GUIDE_URL, None),
         ]
         for method, url, body in cases:
             call = getattr(self.client, method)
@@ -423,3 +425,35 @@ class SSOAdminApiTests(TestCase):
         for entry in toggles:
             self.assertTrue(entry["scope"])
             self.assertTrue(entry["description"], entry["field"])
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 7) The partner integration guide PDF
+    # ──────────────────────────────────────────────────────────────────────────
+    # This is the file an admin forwards to a partner org, so the two things worth
+    # asserting are that staff really get a PDF and that it is the built one rather than
+    # a placeholder. The 403 for a player is covered by the sweep above.
+    def test_integration_guide_downloads_as_a_pdf(self):
+        resp = self.client.get(GUIDE_URL, **self._auth())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "application/pdf")
+        self.assertIn("attachment", resp["Content-Disposition"])
+        self.assertIn(".pdf", resp["Content-Disposition"])
+
+        body = b"".join(resp.streaming_content)
+        # A real PDF, not an error page or an empty placeholder file. The length floor is
+        # deliberately loose: the guide is over a megabyte, so anything this small means
+        # the build output never made it into the deployment.
+        self.assertTrue(body.startswith(b"%PDF-"))
+        self.assertGreater(len(body), 100_000)
+
+    def test_integration_guide_ships_inside_the_app(self):
+        """The served copy has to live in afc_sso/docs/, because the backend deploys on its
+        own and cannot read the workspace docs/ folder that docs/build-sso-guide-pdf.mjs
+        writes to. If this fails, the build script's copy step did not run."""
+        import os
+
+        from afc_sso.admin_api import GUIDE_PATH
+
+        self.assertTrue(os.path.exists(GUIDE_PATH), GUIDE_PATH)
+        self.assertTrue(GUIDE_PATH.replace("\\", "/").endswith(
+            "afc_sso/docs/afc-sso-integration-guide.pdf"))

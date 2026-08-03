@@ -21,6 +21,7 @@ from .admin_api import (
     sso_application_detail,
     sso_application_logo,
     sso_applications,
+    sso_integration_guide,
     sso_scope_catalogue,
     suspend_sso_application,
 )
@@ -39,6 +40,10 @@ urlpatterns = [
     # The scope catalogue is declared before the <int:application_id> routes purely for
     # readability; the int converter could never swallow "scopes" anyway.
     path("admin/scopes/", sso_scope_catalogue, name="sso-admin-scopes"),
+    # The partner integration guide PDF, built from docs/afc-sso-integration-guide.md and
+    # shipped inside this app (afc_sso/docs/). Declared beside the scope catalogue because
+    # both are read-only reference downloads rather than per-application routes.
+    path("admin/integration-guide/", sso_integration_guide, name="sso-admin-guide"),
     # GET list + POST create share one path; GET detail + PATCH update share another
     # (each @api_view routes by verb, and DRF 405s anything else).
     path("admin/apps/", sso_applications, name="sso-admin-apps"),
