@@ -31,7 +31,8 @@ from afc_tournament_and_scrims.models import (
 from afc_team.models import Team
 from .scoring import engine
 from .scoring.engine import TournamentInput, ScrimInput, PlayerTournamentInput, PlayerScrimInput
-from .models import ScoringConfig, TeamSocialSnapshot
+from .scoring.tables import DEFAULT_TABLES, ScoringTables, tables_from_config
+from .models import ScoringConfig, Season, SeasonScoringConfig, TeamSocialSnapshot
 
 
 # ───────────────────────── date helpers ─────────────────────────
@@ -131,10 +132,12 @@ class PlayerAgg:
 
 
 # ───────────────────────── scrim cap helper (§12) ─────────────────────────
-def _apply_scrim_caps(scrim_match_rows, controls=None):
+def _apply_scrim_caps(scrim_match_rows, controls=None, tables: ScoringTables = DEFAULT_TABLES):
     """
-    scrim_match_rows: list of (day, placement, kills, event_id). Enforce 4/day + 60/month,
-    then return raw (scrim_placement_pts, scrim_kills, scrim_wins) for the kept rows.
+    scrim_match_rows: list of (day, placement, kills, event_id). Enforce the daily + monthly
+    scrim COUNT caps, then return raw (scrim_placement_pts, scrim_kills, scrim_wins) for the
+    kept rows. Both caps come from ``tables`` (default 4/day and 60/month, spec §12) so an
+    admin can change them from the scoring config without a deploy.
 
     ``controls``: {event_id: EventCountingControl} from ``_counting_controls``. A scrim event whose
     admin toggles are off contributes nothing for that component (owner 2026-08-03: "admin toggle so
@@ -151,9 +154,9 @@ def _apply_scrim_caps(scrim_match_rows, controls=None):
     wins = 0
     for day, placement, k, event_id in sorted(scrim_match_rows,
                                               key=lambda r: (r[0] or datetime.date.max)):
-        if total >= 60:
+        if total >= tables.scrim_monthly_cap:
             break
-        if day is not None and per_day[day] >= 4:
+        if day is not None and per_day[day] >= tables.scrim_daily_cap:
             continue
         per_day[day] += 1
         total += 1
@@ -161,7 +164,7 @@ def _apply_scrim_caps(scrim_match_rows, controls=None):
         # count_placement / count_kills / count_winner map onto the scrim components the same way
         # they do for a tournament: placement points, kill points, and the win bonus.
         if not ctrl or ctrl.count_placement:
-            placement_pts += engine.placement_points(placement)
+            placement_pts += engine.placement_points(placement, tables)
         if not ctrl or ctrl.count_kills:
             kills += k
         if placement == 1 and (not ctrl or ctrl.count_winner):
@@ -174,7 +177,8 @@ def _apply_scrim_caps(scrim_match_rows, controls=None):
 # Stages.is_finals_stage, TournamentTeam.is_tournament_winner /
 # TournamentTeam.finals_appearances, EventPrizePayout.amount. Changing those
 # models changes the scoring inputs the engine sees.
-def _collect_team(team: Team, start: datetime.date, end: datetime.date):
+def _collect_team(team: Team, start: datetime.date, end: datetime.date,
+                  tables: ScoringTables = DEFAULT_TABLES):
     """Returns (tournaments: list[TournamentInput], scrims: ScrimInput, win_count, kill_total).
 
     The scrim side is returned already day/month-capped AND already filtered by the admin counting
@@ -225,7 +229,7 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
         if event_id in excluded:
             continue  # this team's results in this event are opted out of counting
         ev = rows[0][0]
-        raw_placement = sum(engine.placement_points(s.placement) for _, s in rows)
+        raw_placement = sum(engine.placement_points(s.placement, tables) for _, s in rows)
         raw_kills = sum(s.kills for _, s in rows)
         tt = TournamentTeam.objects.filter(event_id=event_id, team=team).first()
         won = bool(tt and tt.is_tournament_winner)
@@ -252,11 +256,71 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date):
     # (afc_leaderboard.models imports afc_rankings.models). Fold the standalone kills into kill_total
     # too so the §5.4 total_kills tiebreaker stays honest.
     from . import standalone
-    sa_inputs = standalone.standalone_team_inputs(team, start, end)
+    sa_inputs = standalone.standalone_team_inputs(team, start, end, tables)
     tournaments += sa_inputs
     kill_total += sum(t.raw_kills for t in sa_inputs)
-    sp, sk, sw = _apply_scrim_caps(scrim_rows, controls)
+    sp, sk, sw = _apply_scrim_caps(scrim_rows, controls, tables)
     return tournaments, ScrimInput(sp, sk, sw), win_count, kill_total
+
+
+# ───────────────────────── scoring config resolution (which rules govern which period) ────────
+# THE DJANGO-AWARE HALF of the admin-editable scoring config. The scales themselves live in
+# scoring/tables.py, which is pure; deciding WHICH saved version applies to a given month or
+# season is a database question, so it belongs here, alongside scrim_flat_cap() below which
+# has followed the same pattern since the flat scrim allowance became configurable.
+#
+# The resolution order, and why:
+#   1. The season's own pin (SeasonScoringConfig). A season that has been scored keeps the
+#      rules it was scored under, which is what makes an edit non-retroactive. A pin whose
+#      config is NULL means "pinned to the shipped defaults", which is NOT the same as no pin.
+#   2. Otherwise the active config. A season nobody has pinned yet is being scored for the
+#      first time, so today's rules are the right ones.
+#   3. Otherwise the shipped constants.py defaults.
+#
+# Read at call time, never cached, so an admin edit takes effect on the next recalculation
+# without a restart - and so a save can never leave a stale config in a worker's memory. The
+# cost is one small indexed query per compute call, which is the same order as the existing
+# scrim_flat_cap() lookup this replaces.
+def config_for_season(season):
+    """The ScoringConfig row governing ``season``, or None meaning the shipped defaults."""
+    if season is None:
+        return ScoringConfig.objects.filter(is_active=True).order_by("-version").first()
+    binding = (SeasonScoringConfig.objects
+               .filter(season=season).select_related("config").first())
+    if binding is not None:
+        return binding.config       # may be None: explicitly pinned to the defaults
+    return ScoringConfig.objects.filter(is_active=True).order_by("-version").first()
+
+
+def season_for_month(month: datetime.date):
+    """The season whose date range contains this month, or None.
+
+    Monthly ladders are not seasons, but every month sits inside one, so a month inherits
+    the season's pinned rules. That is what stops a month inside a closed season being
+    re-scored under new rules while the quarter it belongs to stays frozen.
+    """
+    day = month.replace(day=1)
+    return Season.objects.filter(start_date__lte=day, end_date__gte=day).order_by(
+        "-year", "-quarter").first()
+
+
+def resolve_tables(*, season=None, month=None) -> ScoringTables:
+    """The ScoringTables that govern a period, ready to hand to the pure scoring engine.
+
+    Fail-soft on purpose: any problem reading or parsing the config falls back to the
+    shipped defaults rather than raising, because a scoring run must never die over
+    configuration. Validation at SAVE time (scoring/validation.py) is what keeps bad values
+    out; this is the last-resort guard for a row edited by hand in the database.
+    """
+    try:
+        if season is None and month is not None:
+            season = season_for_month(month)
+        cfg = config_for_season(season)
+        if cfg is None:
+            return DEFAULT_TABLES
+        return tables_from_config(cfg.config, version=cfg.version)
+    except Exception:
+        return DEFAULT_TABLES
 
 
 def scrim_flat_cap() -> float:
@@ -266,32 +330,27 @@ def scrim_flat_cap() -> float:
     Django-free and pure (see its docstring): it must never read the database. This is
     the Django-aware layer, so the lookup belongs here and the value is passed down.
 
-    Read at call time so an admin edit takes effect on the next recalculation instead of
-    needing a restart. Anything missing or unparseable falls back to the constant, because
-    a scoring run must never fail over configuration.
+    Kept as its own function because callers outside the compute path use it (and the
+    tests pin its fallback behaviour), but it is now a thin read off ``resolve_tables``:
+    the compute functions below take the whole ScoringTables, which already carries the
+    allowance, so they do not call this.
     """
-    try:
-        cfg = ScoringConfig.objects.filter(is_active=True).first()
-        if cfg and isinstance(cfg.config, dict):
-            value = cfg.config.get("scrim_flat_cap")
-            if value is not None:
-                return float(value)
-    except Exception:
-        pass
-    return float(engine.SCRIM_FLAT_CAP)
+    return resolve_tables().scrim_flat_cap
 
 
 def compute_team_monthly(team: Team, month: datetime.date) -> TeamAgg:
+    tables = resolve_tables(month=month)
     start, end = month_bounds(month)
-    tournaments, scrims, wins, kills = _collect_team(team, start, end)
-    result = engine.monthly_team_score(tournaments, scrims, scrim_flat_cap())
+    tournaments, scrims, wins, kills = _collect_team(team, start, end, tables)
+    result = engine.monthly_team_score(tournaments, scrims, None, tables)
     return TeamAgg(result=result, tournament_wins=wins, total_kills=kills,
                    tournaments_played=len(tournaments))
 
 
 def compute_team_quarterly(team: Team, season) -> TeamAgg:
+    tables = resolve_tables(season=season)
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
-    tournaments, scrims, wins, kills = _collect_team(team, start, end)
+    tournaments, scrims, wins, kills = _collect_team(team, start, end, tables)
 
     # prize money (§7.2) - sum payouts to this team's tournament-teams in the season window
     prize = (EventPrizePayout.objects
@@ -307,13 +366,15 @@ def compute_team_quarterly(team: Team, season) -> TeamAgg:
     result = engine.quarterly_team_score(
         tournaments, scrims,
         prize_money_naira=float(prize), combined_followers=followers,
+        tables=tables,
     )
     return TeamAgg(result=result, tournament_wins=wins, total_kills=kills,
                    tournaments_played=len(tournaments))
 
 
 # ───────────────────────── PLAYER ─────────────────────────
-def _collect_player(player, start: datetime.date, end: datetime.date):
+def _collect_player(player, start: datetime.date, end: datetime.date,
+                    tables: ScoringTables = DEFAULT_TABLES):
     """Build the per-tournament PlayerTournamentInput list + the player's scrim aggregate.
 
     Returns (tournaments, scrims: PlayerScrimInput, mvp_total, finals_total, kill_total). Like the
@@ -397,7 +458,7 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
     # placement - symmetric with the event player path above). Lazy import avoids the load-order
     # cycle; fold the standalone personal_kills into kill_total for the §6.4 tiebreaker.
     from . import standalone
-    sa_inputs = standalone.standalone_player_inputs(player, start, end)
+    sa_inputs = standalone.standalone_player_inputs(player, start, end, tables)
     tournaments += sa_inputs
     kill_total += sum(t.personal_kills for t in sa_inputs)
 
@@ -413,16 +474,18 @@ def _collect_player(player, start: datetime.date, end: datetime.date):
 
 
 def compute_player_monthly(player, month: datetime.date) -> PlayerAgg:
+    tables = resolve_tables(month=month)
     start, end = month_bounds(month)
-    tournaments, scrims, mvp, finals, kills = _collect_player(player, start, end)
-    result = engine.monthly_player_score(tournaments, scrims)
+    tournaments, scrims, mvp, finals, kills = _collect_player(player, start, end, tables)
+    result = engine.monthly_player_score(tournaments, scrims, tables)
     return PlayerAgg(result=result, total_kills=kills, mvp_count=mvp,
                      finals_appearances=finals, tournaments_played=len(tournaments))
 
 
 def compute_player_quarterly(player, season) -> PlayerAgg:
+    tables = resolve_tables(season=season)
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
-    tournaments, scrims, mvp, finals, kills = _collect_player(player, start, end)
+    tournaments, scrims, mvp, finals, kills = _collect_player(player, start, end, tables)
     # inherited prize money - payouts to any team the player was rostered on (Phase 1: via tournament_team membership)
     prize = (EventPrizePayout.objects
              .filter(tournament_team__members__user=player,
@@ -431,6 +494,7 @@ def compute_player_quarterly(player, season) -> PlayerAgg:
     result = engine.quarterly_player_score(
         tournaments, scrims,
         inherited_prize_money_naira=float(prize),
+        tables=tables,
     )
     return PlayerAgg(result=result, total_kills=kills, mvp_count=mvp,
                      finals_appearances=finals, tournaments_played=len(tournaments))

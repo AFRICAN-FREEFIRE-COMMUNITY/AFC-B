@@ -5,9 +5,18 @@
 
      Context comes from afc_sso/views.py AFCAuthorizationView.get_context_data:
      afc_org_name, afc_logo_url and afc_scope_lines (plain-language lines produced by
-     afc_sso.claims.describe_scopes, so the promise here matches what is released). -->
-{% load i18n %}<!doctype html>
-<html lang="en">
+     afc_sso.claims.describe_scopes, so the promise here matches what is released).
+
+     LANGUAGE: every sentence below goes through the i18n translation tags and is
+     translated in locale/<lang>/LC_MESSAGES/django.po (en is the source, so it has no
+     catalog). Do NOT write a literal translation tag in this comment: Django parses
+     template tags inside HTML comments too, so naming them here made the page fail to
+     render at all. The active language is set per request by afc_sso.middleware.
+     SSOLanguageMiddleware from the player's User.language, falling back to
+     Accept-Language. The scope lines are already localized before they reach the
+     template, by describe_scopes force-evaluating the lazy SCOPES strings. -->
+{% load i18n %}{% get_current_language as LANGUAGE_CODE %}<!doctype html>
+<html lang="{{ LANGUAGE_CODE }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">

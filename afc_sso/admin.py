@@ -1,11 +1,17 @@
-# Interim management surface for partner SSO apps until the styled screens land in the
-# Next.js (a) admin area. Deliberately shows the toggles as a plain checkbox list so an
-# AFC admin can see, at a glance, everything an org is permitted to receive.
+# Django-admin fallback for partner SSO apps. NO LONGER THE PLACE STAFF WORK.
 #
-# This is where an AFC staff member creates a partner: fill in the org's name and redirect
-# URI, tick only the data that org is approved for, save, then hand them the generated
-# client_id and client_secret. What they can then actually read is enforced in
-# afc_sso/claims.py, not here.
+# The real management surface is now the "Sign in with AFC" tab of the admin API Keys page
+# (frontend/app/(a)/a/partners), driven by afc_sso/admin_api.py. Use that: it shows each
+# toggle beside the exact sentence the player reads on the consent screen, and it is the
+# only surface that can show a client secret at all (see below).
+#
+# This screen is kept for superuser break-glass access and for inspecting rows during
+# debugging. One thing it CANNOT do, and never could: reveal a client secret.
+# django-oauth-toolkit hashes client_secret on save, so the plaintext only ever exists in
+# the moment it is generated - which is why issuing and rotating secrets lives in
+# admin_api.py, where it is returned to the admin exactly once.
+#
+# What a partner can actually read is enforced in afc_sso/claims.py, not here.
 from django.contrib import admin
 
 from .models import AFCSSOApplication, SSO_FIELD_TOGGLES

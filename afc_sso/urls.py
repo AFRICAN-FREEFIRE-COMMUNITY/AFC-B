@@ -7,8 +7,22 @@
 # The `me/` routes are not part of the OIDC surface at all: they are AFC's own player
 # API behind the Connected apps page in the profile area, and they authenticate with a
 # Bearer SessionToken rather than the /sso/ cookie bridge. See afc_sso/api.py.
+#
+# Neither are the `admin/` routes: they are the AFC-STAFF provisioning surface behind the
+# "Sign in with AFC" tab of the admin API Keys page, and they authenticate the same way
+# (Bearer SessionToken) with a head_admin / partner_admin gate on top. See
+# afc_sso/admin_api.py. They sit under /sso/ so everything about this product is reachable
+# from one prefix, and they are declared BEFORE the library include for the same reason
+# AFC's own authorize view is.
 from django.urls import include, path
 
+from .admin_api import (
+    rotate_sso_client_secret,
+    sso_application_detail,
+    sso_applications,
+    sso_scope_catalogue,
+    suspend_sso_application,
+)
 from .api import list_connected_apps, revoke_connected_app
 from .views import AFCAuthorizationView
 
@@ -19,6 +33,20 @@ urlpatterns = [
     path("me/connected-apps/", list_connected_apps, name="connected-apps"),
     path("me/connected-apps/<int:application_id>/", revoke_connected_app,
          name="revoke-connected-app"),
+
+    # ── AFC-staff: partner app administration (frontend /a/partners, SSO tab) ──
+    # The scope catalogue is declared before the <int:application_id> routes purely for
+    # readability; the int converter could never swallow "scopes" anyway.
+    path("admin/scopes/", sso_scope_catalogue, name="sso-admin-scopes"),
+    # GET list + POST create share one path; GET detail + PATCH update share another
+    # (each @api_view routes by verb, and DRF 405s anything else).
+    path("admin/apps/", sso_applications, name="sso-admin-apps"),
+    path("admin/apps/<int:application_id>/", sso_application_detail,
+         name="sso-admin-app-detail"),
+    path("admin/apps/<int:application_id>/suspend/", suspend_sso_application,
+         name="sso-admin-app-suspend"),
+    path("admin/apps/<int:application_id>/rotate-secret/", rotate_sso_client_secret,
+         name="sso-admin-app-rotate-secret"),
 
     path("", include("oauth2_provider.urls", namespace="oauth2_provider")),
 ]

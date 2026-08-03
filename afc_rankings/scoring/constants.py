@@ -148,6 +148,28 @@ TIER_THRESHOLDS: tuple[tuple[int, int], ...] = (
 )
 TIER_DEFAULT = 3  # Entry - score below 40
 
+# ---------------------------------------------------------------------------
+# How tiers are decided - owner request 2026-08-03
+# ---------------------------------------------------------------------------
+# "Can there be a new criteria we can set where tier 1 teams are the top N teams on the
+# tier at the end of the season?"
+#
+# THRESHOLD is everything above and everything that shipped: a team reaches Tier 1 by
+# clearing an absolute score (>= 150). How many teams end up in Tier 1 is whatever the
+# season produces - it can be nobody, it can be half the ladder.
+#
+# TOP_N is the alternative: Tier 1 is simply the top N teams on the season ladder, Tier 2
+# the next M, and so on. The tier sizes are fixed and the scores only decide the ORDER.
+#
+# The mode is per scoring config, so it is season-scoped like every other setting, and
+# THRESHOLD stays the default - nothing changes for anyone who does not opt in. The counts
+# live alongside the cutoffs on the same tier rows (see tables.ScoringTables.tier_counts),
+# so switching modes never discards the other mode's numbers.
+TIER_MODE_THRESHOLD = "threshold"
+TIER_MODE_TOP_N = "top_n"
+TIER_MODES = (TIER_MODE_THRESHOLD, TIER_MODE_TOP_N)
+TIER_MODE_DEFAULT = TIER_MODE_THRESHOLD
+
 # Human-readable labels, for callers that want them (not used in math).
 TIER_LABELS = MappingProxyType(
     {

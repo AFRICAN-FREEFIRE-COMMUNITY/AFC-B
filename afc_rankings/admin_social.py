@@ -188,7 +188,12 @@ def _recompute_social(snap):
     the follower counts and BEFORE ``snap.save()`` so the stored row is always consistent.
     """
     snap.combined_followers = snap.instagram_followers + snap.tiktok_followers
-    snap.social_media_pts = engine.social_media_points(snap.combined_followers)
+    # The follower bands are admin-editable, and a snapshot belongs to one season, so the
+    # points come from the config bound to THAT season - the same tables the quarterly recalc
+    # will use, so the stored row and the score can never disagree.
+    from .aggregation import resolve_tables
+    snap.social_media_pts = engine.social_media_points(
+        snap.combined_followers, resolve_tables(season=snap.season))
 
 
 def _enqueue_quarterly_recalc(team_id, season_id):

@@ -19,6 +19,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 from dotenv import load_dotenv
 import os
 
+# gettext_lazy, NOT gettext: settings are imported before Django's translation machinery is
+# ready, so any string translated here has to stay unresolved until it is actually rendered.
+# Used for the OAUTH2_PROVIDER["SCOPES"] descriptions, the one set of player-facing English
+# sentences that lives in this file. See locale/<lang>/LC_MESSAGES/django.po.
+from django.utils.translation import gettext_lazy as _
+
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 
@@ -133,20 +139,32 @@ OAUTH2_PROVIDER = {
     "OAUTH2_VALIDATOR_CLASS": "afc_sso.validators.AFCOAuth2Validator",
     # PKCE defaults to True in 3.4.0. Stated explicitly so nobody "simplifies" it away.
     "PKCE_REQUIRED": True,
+    # AFC issues a PAIRWISE sub: every partner sees a DIFFERENT opaque id for the same
+    # player (afc_sso/validators.py pairwise_sub), so two partners cannot join their
+    # databases on AFC identity. The library defaults this to ["public"], which told
+    # partners the exact opposite and would have been a reasonable thing for them to
+    # rely on. Discovery must describe what we actually do.
+    "OIDC_SUBJECT_TYPES_SUPPORTED": ["pairwise"],
+    # i18n (owner 2026-08-03): these are the only English strings in this file a PLAYER ever
+    # reads, so they are wrapped in gettext_lazy and translated in locale/<lang>/LC_MESSAGES/
+    # django.po alongside the consent template itself. Lazy, not eager: settings load long
+    # before the translation machinery is ready, so the string must not resolve until it is
+    # rendered. afc_sso.claims.describe_scopes force-evaluates them with str() at call time,
+    # under whatever language SSOLanguageMiddleware activated for that request.
     "SCOPES": {
-        "openid": "Confirm who you are on AFC",
-        "profile": "Your in-game name, avatar, country and language",
-        "email": "Your email address",
-        "afc.freefire": "Your Free Fire UID",
-        "afc.team": "Your current team and your role in it",
+        "openid": _("Confirm who you are on AFC"),
+        "profile": _("Your in-game name, avatar, country and language"),
+        "email": _("Your email address"),
+        "afc.freefire": _("Your Free Fire UID"),
+        "afc.team": _("Your current team and your role in it"),
         # These strings are the PROMISE shown to the player on the consent screen, so each one
         # has to match what afc_sso/claims.py actually releases. History carries event name and
         # slug only (no placement), and ranking carries points, rank and month (tier is a TEAM
         # attribute, team_tier, so it is not in a player claim). Change a resolver, change these.
-        "afc.history": "Tournaments you have played",
-        "afc.stats": "Your match statistics",
-        "afc.ranking": "Your AFC rank and ranking points",
-        "afc.standing": "Whether your AFC account is in good standing",
+        "afc.history": _("Tournaments you have played"),
+        "afc.stats": _("Your match statistics"),
+        "afc.ranking": _("Your AFC rank and ranking points"),
+        "afc.standing": _("Whether your AFC account is in good standing"),
     },
     "DEFAULT_SCOPES": ["openid"],
 }
@@ -180,6 +198,12 @@ MIDDLEWARE = [
     # Sits directly after AuthenticationMiddleware so it overrides the session-derived user
     # on those paths. See afc_sso/middleware.py.
     'afc_sso.middleware.SSOSessionTokenMiddleware',
+    # Activates the player's language for /sso/ requests ONLY, so the Django-rendered consent
+    # screen and the scope descriptions come out in the language they chose. Sits directly
+    # after the bridge above because it reads the request.user that bridge resolves, and its
+    # preference order is User.language first (the same signal the transactional emails use)
+    # then the Accept-Language locale LocaleMiddleware already parsed. See afc_sso/middleware.py.
+    'afc_sso.middleware.SSOLanguageMiddleware',
     # Sitewide automatic admin audit log. Sits AFTER AuthenticationMiddleware so the request
     # pipeline + URL resolution are in place; it resolves the acting User from the Bearer
     # SessionToken itself (AFC does not use Django sessions) and records every admin/staff
@@ -348,6 +372,17 @@ LANGUAGES = [
     ("pt", "Português"),
 ]
 
+# i18n (owner 2026-08-03): where Django's gettext catalogs live. ONE surface uses them, the
+# "Sign in with AFC" consent screen (afc_sso/templates/afc_sso/authorize.html) plus the scope
+# descriptions in OAUTH2_PROVIDER["SCOPES"] above and the refusal messages in afc_sso/views.py.
+# Everything else the player reads is either a Next.js page (frontend/messages/*) or an email
+# (afc_auth/email_i18n.py); this exists because a Django-rendered template can use neither.
+#
+# English is the source language and has NO catalog: an untranslated string renders as its own
+# msgid. locale/fr and locale/pt are HAND-WRITTEN .po files (DeepL is not in the loop here),
+# compiled to the committed .mo binaries with `manage.py compile_locales`.
+LOCALE_PATHS = [BASE_DIR / "locale"]
+
 TIME_ZONE = 'UTC'
 
 USE_I18N = True
@@ -442,6 +477,12 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_TOURNAMENT_DETTY_SOLOS_ROLE_ID = "1447745369403297955"
+
+# Public base for THIS api, used to turn a stored media path into an absolute URL for a
+# third party. The SSO claim builder has no Django request to call build_absolute_uri on
+# (oauthlib passes its own request object), and a partner site cannot resolve "/media/..."
+# against its own domain. Env-overridable so local dev can point at localhost.
+AFC_API_BASE_URL = os.getenv("AFC_API_BASE_URL", "https://api.africanfreefirecommunity.com")
 
 FRONTEND_URL = "https://africanfreefirecommunity.com"
 FRONTEND_URL_LOCAL = "http://localhost:3000"

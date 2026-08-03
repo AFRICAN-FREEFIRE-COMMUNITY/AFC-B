@@ -39,8 +39,9 @@ LOAD-ORDER NOTE
 import datetime
 
 from .scoring import engine
+from .scoring.tables import DEFAULT_TABLES, ScoringTables
 from .scoring.engine import TournamentInput, PlayerTournamentInput, ScrimInput, PlayerScrimInput
-from .aggregation import month_bounds, TeamAgg, PlayerAgg
+from .aggregation import month_bounds, resolve_tables, TeamAgg, PlayerAgg
 from .models import (
     Season, GhostTeam, GhostPlayer,
     TeamMonthlyScore, TeamQuarterlyScore, PlayerMonthlyScore, PlayerQuarterlyScore,
@@ -82,7 +83,7 @@ def _published_counting_solo_lbs(start, end):
 
 
 # ───────────────────────── input builders ─────────────────────────
-def _team_input_from_results(results, tier, won):
+def _team_input_from_results(results, tier, won, tables: ScoringTables = DEFAULT_TABLES):
     """Collapse one team participant's ParticipantMatchResult rows in ONE LB into one TournamentInput.
 
     raw_placement_pts uses the CANONICAL engine.placement_points table (NOT the LB's own
@@ -92,7 +93,7 @@ def _team_input_from_results(results, tier, won):
     """
     return TournamentInput(
         tier=tier,
-        raw_placement_pts=sum(engine.placement_points(r.placement) for r in results),
+        raw_placement_pts=sum(engine.placement_points(r.placement, tables) for r in results),
         raw_kills=sum(r.kills for r in results),
         won=won,
         finals_appearances=0,
@@ -112,7 +113,7 @@ def _standings_leader_participant_id(lb):
     return rows[0]["participant"]["id"]
 
 
-def standalone_team_inputs(team, start, end):
+def standalone_team_inputs(team, start, end, tables: ScoringTables = DEFAULT_TABLES):
     """One TournamentInput per published+counting TEAM-format LB in [start, end) this `team` played.
 
     Read by aggregation._collect_team (Task 3.4): the returned inputs are appended to the team's
@@ -127,11 +128,11 @@ def standalone_team_inputs(team, start, end):
             continue
         results = list(ParticipantMatchResult.objects.filter(participant=participant))
         won = _standings_leader_participant_id(lb) == participant.id
-        inputs.append(_team_input_from_results(results, lb.ranking_tier, won))
+        inputs.append(_team_input_from_results(results, lb.ranking_tier, won, tables))
     return inputs
 
 
-def standalone_ghost_team_inputs(ghost_team, start, end):
+def standalone_ghost_team_inputs(ghost_team, start, end, tables: ScoringTables = DEFAULT_TABLES):
     """Same as standalone_team_inputs but for a GHOST team participant (ghost_team=...).
 
     Read by compute_ghost_team_monthly / compute_ghost_team_quarterly below (ghost teams have no
@@ -146,11 +147,11 @@ def standalone_ghost_team_inputs(ghost_team, start, end):
             continue
         results = list(ParticipantMatchResult.objects.filter(participant=participant))
         won = _standings_leader_participant_id(lb) == participant.id
-        inputs.append(_team_input_from_results(results, lb.ranking_tier, won))
+        inputs.append(_team_input_from_results(results, lb.ranking_tier, won, tables))
     return inputs
 
 
-def standalone_player_inputs(user, start, end):
+def standalone_player_inputs(user, start, end, tables: ScoringTables = DEFAULT_TABLES):
     """One PlayerTournamentInput per published+counting SOLO-format LB in [start, end) this `user`
     played.
 
@@ -188,7 +189,7 @@ def _player_input_from_results(results, tier):
     )
 
 
-def standalone_ghost_player_inputs(ghost_player, start, end):
+def standalone_ghost_player_inputs(ghost_player, start, end, tables: ScoringTables = DEFAULT_TABLES):
     """One PlayerTournamentInput per published+counting SOLO-format LB in [start, end) this
     `ghost_player` participated in.
 
@@ -219,9 +220,10 @@ def compute_ghost_team_monthly(ghost_team, month: datetime.date) -> TeamAgg:
     Read by recalc_ghost_team_monthly below. Returns the same TeamAgg shape recalc_team_monthly
     consumes so the persistence code mirrors recalc.recalc_team_monthly field-for-field.
     """
+    tables = resolve_tables(month=month)
     start, end = month_bounds(month)
-    tours = standalone_ghost_team_inputs(ghost_team, start, end)
-    result = engine.monthly_team_score(tours, ScrimInput(0, 0, 0))
+    tours = standalone_ghost_team_inputs(ghost_team, start, end, tables)
+    result = engine.monthly_team_score(tours, ScrimInput(0, 0, 0), None, tables)
     return TeamAgg(
         result=result,
         tournament_wins=sum(1 for t in tours if t.won),
@@ -234,10 +236,11 @@ def compute_ghost_team_quarterly(ghost_team, season) -> TeamAgg:
     """TeamAgg for a ghost team's quarterly score from its standalone-LB inputs over the season
     window. No prize money / social media (a ghost team has neither - passed as 0). Read by
     recalc_ghost_team_quarterly below."""
+    tables = resolve_tables(season=season)
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
-    tours = standalone_ghost_team_inputs(ghost_team, start, end)
+    tours = standalone_ghost_team_inputs(ghost_team, start, end, tables)
     result = engine.quarterly_team_score(
-        tours, ScrimInput(0, 0, 0), prize_money_naira=0.0, combined_followers=0,
+        tours, ScrimInput(0, 0, 0), prize_money_naira=0.0, combined_followers=0, tables=tables,
     )
     return TeamAgg(
         result=result,
@@ -302,9 +305,13 @@ def recalc_ghost_team_quarterly(ghost_team_id, season_id):
         recalc.rerank_team_quarter(season)
         return
     r = agg.result
-    meets = agg.tournaments_played >= 2  # §7.4 activity floor
-    tier = engine.assign_tier(r.total, meets)
-    note = "" if meets else f"Insufficient activity ({agg.tournaments_played}/2 tournaments)"
+    # §7.4 activity floor + the tier cutoffs both come from the config bound to this season,
+    # so a ghost team is tiered under exactly the rules the real teams beside it are.
+    tables = resolve_tables(season=season)
+    floor = tables.team_quarterly_floor
+    meets = agg.tournaments_played >= floor
+    tier = engine.assign_tier(r.total, meets, tables)
+    note = "" if meets else f"Insufficient activity ({agg.tournaments_played}/{floor} tournaments)"
     TeamQuarterlyScore.objects.update_or_create(
         ghost_team=ghost, season=season,
         defaults=dict(
@@ -331,9 +338,10 @@ def compute_ghost_player_monthly(ghost_player, month: datetime.date) -> PlayerAg
     consumes so the persistence code mirrors recalc.recalc_player_monthly field-for-field. Scrims are
     PlayerScrimInput(0, 0) (a ghost player has no scrim activity).
     """
+    tables = resolve_tables(month=month)
     start, end = month_bounds(month)
-    tours = standalone_ghost_player_inputs(ghost_player, start, end)
-    result = engine.monthly_player_score(tours, PlayerScrimInput(scrim_kills=0, scrim_wins=0))
+    tours = standalone_ghost_player_inputs(ghost_player, start, end, tables)
+    result = engine.monthly_player_score(tours, PlayerScrimInput(scrim_kills=0, scrim_wins=0), tables)
     return PlayerAgg(
         result=result,
         total_kills=sum(t.personal_kills for t in tours),
@@ -347,10 +355,12 @@ def compute_ghost_player_quarterly(ghost_player, season) -> PlayerAgg:
     """PlayerAgg for a ghost player's quarterly score from its standalone solo-LB inputs over the
     season window. No inherited prize money (a ghost player rosters on no team, passed 0.0). Read by
     recalc_ghost_player_quarterly below."""
+    tables = resolve_tables(season=season)
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
-    tours = standalone_ghost_player_inputs(ghost_player, start, end)
+    tours = standalone_ghost_player_inputs(ghost_player, start, end, tables)
     result = engine.quarterly_player_score(
         tours, PlayerScrimInput(scrim_kills=0, scrim_wins=0), inherited_prize_money_naira=0.0,
+        tables=tables,
     )
     return PlayerAgg(
         result=result,
@@ -416,8 +426,10 @@ def recalc_ghost_player_quarterly(ghost_player_id, season_id):
         recalc.rerank_player_quarter(season)
         return
     r = agg.result
-    meets = agg.tournaments_played >= 1  # §9.2
-    tier = engine.assign_tier(r.total, meets)
+    # §9.2 floor + cutoffs from the season's bound config (see recalc_ghost_team_quarterly).
+    tables = resolve_tables(season=season)
+    meets = agg.tournaments_played >= tables.player_quarterly_floor
+    tier = engine.assign_tier(r.total, meets, tables)
     PlayerQuarterlyScore.objects.update_or_create(
         ghost_player=ghost, season=season,
         defaults=dict(

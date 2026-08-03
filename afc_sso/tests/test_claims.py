@@ -105,3 +105,21 @@ class ClaimGateTests(TestCase):
         claims = build_claims(self.user, self.app, ALL_SCOPES)
         for forbidden in ("password", "ip_country", "role", "status", "whatsapp_number"):
             self.assertNotIn(forbidden, claims)
+
+    def test_profile_releases_an_absolute_avatar_url(self):
+        """Owner enabled avatar sharing 2026-08-03. It MUST be absolute: claims are built
+        without a Django request, and a bare /media/ path would resolve against the
+        partner's own domain and 404 for every player."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        profile = UserProfile.objects.get(user=self.user)
+        profile.profile_pic = SimpleUploadedFile("a.jpg", b"x", content_type="image/jpeg")
+        profile.save()
+
+        picture = build_claims(self.user, self.app, ALL_SCOPES)["picture"]
+        self.assertTrue(picture.startswith("http"), picture)
+        self.assertIn("/media/", picture)
+
+    def test_a_player_with_no_avatar_omits_the_claim_entirely(self):
+        """Absent, not null: a partner must be able to treat every claim as optional."""
+        self.assertNotIn("picture", build_claims(self.user, self.app, ALL_SCOPES))

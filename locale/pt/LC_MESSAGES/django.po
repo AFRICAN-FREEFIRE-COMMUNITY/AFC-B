@@ -1,0 +1,69 @@
+# AFC translations for the Sign in with AFC screens.
+# Hand-authored: the GNU gettext tools are not installed on the build machine,
+# and the project's DeepL quota is exhausted.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: AFC\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: pt\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+msgid "Sign in with AFC"
+msgstr "Iniciar sessao com a AFC"
+
+msgid "%(afc_org_name)s wants to use your AFC account"
+msgstr "%(afc_org_name)s pretende usar a sua conta AFC"
+
+msgid "They will be able to see:"
+msgstr "Esta aplicacao vai poder ver:"
+
+msgid "Allow"
+msgstr "Permitir"
+
+msgid "Deny"
+msgstr "Recusar"
+
+msgid "You can remove this at any time from Connected apps in your AFC profile."
+msgstr "Pode remover esta autorizacao a qualquer momento em Aplicacoes ligadas no seu perfil AFC."
+
+msgid "Unknown application."
+msgstr "Aplicacao desconhecida."
+
+msgid "This application is suspended."
+msgstr "Esta aplicacao esta suspensa."
+
+msgid "Your AFC account cannot sign in to partner sites."
+msgstr "A sua conta AFC nao pode iniciar sessao em sites parceiros."
+
+msgid "This application requested data it is not approved for."
+msgstr "Esta aplicacao pediu dados para os quais nao esta aprovada."
+
+msgid "Confirm who you are on AFC"
+msgstr "Confirmar quem e na AFC"
+
+msgid "Your in-game name, avatar, country and language"
+msgstr "O seu nome no jogo, avatar, pais e idioma"
+
+msgid "Your email address"
+msgstr "O seu endereco de e-mail"
+
+msgid "Your Free Fire UID"
+msgstr "O seu UID do Free Fire"
+
+msgid "Your current team and your role in it"
+msgstr "A sua equipa atual e a sua funcao nela"
+
+msgid "Tournaments you have played"
+msgstr "Os torneios em que participou"
+
+msgid "Your match statistics"
+msgstr "As suas estatisticas de jogo"
+
+msgid "Your AFC rank and ranking points"
+msgstr "A sua classificacao AFC e pontos de classificacao"
+
+msgid "Whether your AFC account is in good standing"
+msgstr "Se a sua conta AFC esta em situacao regular"

@@ -18,6 +18,11 @@ from urllib.parse import quote
 from django.conf import settings
 from django.http import HttpResponseBadRequest, HttpResponseRedirect
 from django.utils import timezone
+# The refusal messages below are the only other English a player can be shown on this
+# screen, so they are translated with the consent template itself. gettext (not lazy):
+# each one is built inside a request, by which point SSOLanguageMiddleware has already
+# activated the player's language. Catalogs: locale/<lang>/LC_MESSAGES/django.po.
+from django.utils.translation import gettext as _
 from oauth2_provider.models import get_access_token_model, get_application_model
 from oauth2_provider.views import AuthorizationView
 
@@ -119,12 +124,12 @@ class AFCAuthorizationView(AuthorizationView):
             .first()
         )
         if application is None:
-            return HttpResponseBadRequest("Unknown application.")
+            return HttpResponseBadRequest(_("Unknown application."))
         if not application.is_active_partner():
-            return HttpResponseBadRequest("This application is suspended.")
+            return HttpResponseBadRequest(_("This application is suspended."))
         if getattr(request.user, "status", "active") != "active":
             return HttpResponseBadRequest(
-                "Your AFC account cannot sign in to partner sites."
+                _("Your AFC account cannot sign in to partner sites.")
             )
         requested = set((request.GET.get("scope") or "").split())
         if not requested <= set(application.allowed_scopes()):
@@ -132,7 +137,7 @@ class AFCAuthorizationView(AuthorizationView):
             # anyway, but letting the request through would show the player a consent
             # screen for data the org is not approved to receive.
             return HttpResponseBadRequest(
-                "This application requested data it is not approved for."
+                _("This application requested data it is not approved for.")
             )
         return None
 
