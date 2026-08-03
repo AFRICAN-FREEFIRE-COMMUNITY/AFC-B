@@ -171,6 +171,12 @@ MIDDLEWARE = [
     'afc_auth.locale_middleware.LocaleMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # "Sign in with AFC" auth bridge. AFC has no Django session, so the OIDC authorize view
+    # would never see a logged-in player. This resolves the existing auth_token cookie into
+    # request.user, and ONLY for /sso/ paths, so no other endpoint gains implicit cookie auth.
+    # Sits directly after AuthenticationMiddleware so it overrides the session-derived user
+    # on those paths. See afc_sso/middleware.py.
+    'afc_sso.middleware.SSOSessionTokenMiddleware',
     # Sitewide automatic admin audit log. Sits AFTER AuthenticationMiddleware so the request
     # pipeline + URL resolution are in place; it resolves the acting User from the Bearer
     # SessionToken itself (AFC does not use Django sessions) and records every admin/staff
