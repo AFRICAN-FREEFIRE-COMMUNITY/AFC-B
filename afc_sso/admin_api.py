@@ -64,6 +64,7 @@ from rest_framework.decorators import api_view, authentication_classes
 from rest_framework.response import Response
 
 from .models import SSO_FIELD_TOGGLES, TOGGLE_TO_SCOPE
+from .redirect_policy import RedirectURIPolicyError, validate_redirect_uris
 
 Application = get_application_model()  # AFCSSOApplication, via OAUTH2_PROVIDER_APPLICATION_MODEL
 
@@ -187,8 +188,8 @@ def _clean_url(value, field_label, require_https=True):
     return value, None
 
 
-def _clean_redirect_uris(value):
-    """Validate the space-separated redirect_uris list. Returns (cleaned, error_message).
+def _clean_redirect_uris(value, *, required=True, label="redirect URI"):
+    """Validate a redirect URI list against AFC policy. Returns (cleaned, error_message).
 
     django-oauth-toolkit stores redirect URIs as one whitespace-separated string and
     matches the incoming redirect_uri against that list exactly (afc_sso/views.py refuses
@@ -196,22 +197,17 @@ def _clean_redirect_uris(value):
     string from the client and normalise to the single space-separated string the library
     expects, so the admin UI can use a textarea with one URI per line.
 
-    At least one URI is required: an application with none can never complete a sign-in.
+    THE RULES LIVE IN afc_sso/redirect_policy.py, not here, because
+    AFCSSOApplication.clean() has to apply exactly the same ones: several URIs per
+    partner, https everywhere except loopback http, no wildcards, no fragments. Keeping
+    one copy is what stops the API and the Django admin drifting into disagreeing about
+    what a legal URI is. The error text names the offending URI, which matters when an
+    admin has pasted three of them into one textarea.
     """
-    if isinstance(value, (list, tuple)):
-        parts = [str(v).strip() for v in value]
-    else:
-        parts = str(value or "").split()
-    parts = [p for p in parts if p]
-
-    if not parts:
-        return None, "At least one redirect URI is required."
-
-    for uri in parts:
-        cleaned, err = _clean_url(uri, f"Redirect URI '{uri}'")
-        if err:
-            return None, err
-    return " ".join(parts), None
+    try:
+        return validate_redirect_uris(value, required=required, label=label), None
+    except RedirectURIPolicyError as err:
+        return None, str(err)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -403,6 +399,10 @@ def _serialize_detail(application, request=None):
     out["deletion_webhook_url"] = application.deletion_webhook_url
     # The library stores these space-separated; the admin UI edits them one per line.
     out["redirect_uris"] = application.redirect_uris
+    # Where a partner may send the player AFTER RP-initiated logout ends their AFC
+    # session (afc_sso/views.py AFCRPInitiatedLogoutView). Empty for a partner that does
+    # not use logout at all, which is most of them.
+    out["post_logout_redirect_uris"] = application.post_logout_redirect_uris
     for f in SSO_FIELD_TOGGLES:
         out[f] = getattr(application, f, False)
     out["scopes"] = sorted(application.allowed_scopes())
@@ -467,6 +467,7 @@ def sso_applications(request):
     ── POST (create) ──
     REQUEST: {"name": "Partner Org",                 # required, internal identifier
               "redirect_uris": "https://partner.test/cb",   # required, string or list
+              "post_logout_redirect_uris": "https://partner.test/",  # optional, same policy
               "display_name": "Partner Org",         # optional, shown to the player
               "logo_url": "...", "homepage_url": "...",     # optional, https
               "deletion_webhook_url": "..."}         # optional, https
@@ -525,6 +526,17 @@ def sso_applications(request):
     if err_msg:
         return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Optional at creation: a partner only needs these if it implements RP-initiated
+    # logout, and the same policy applies because it is the same "AFC sends a player to
+    # a partner URL" problem.
+    post_logout_uris, err_msg = _clean_redirect_uris(
+        request.data.get("post_logout_redirect_uris"),
+        required=False,
+        label="post-logout redirect URI",
+    )
+    if err_msg:
+        return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+
     # display_name is what the PLAYER reads on the consent screen, so it must never be
     # empty; fall back to the internal name rather than showing them a blank sentence.
     display_name = (request.data.get("display_name") or "").strip() or name
@@ -553,6 +565,7 @@ def sso_applications(request):
         homepage_url=homepage_url,
         deletion_webhook_url=webhook_url,
         redirect_uris=redirect_uris,
+        post_logout_redirect_uris=post_logout_uris,
         client_secret=secret,
         # ── Protocol shape, fixed by AFC and not admin-editable ──
         # CONFIDENTIAL + authorization-code + RS256 is the only combination AFC supports:
@@ -607,6 +620,7 @@ def sso_application_detail(request, application_id):
     ── PATCH ──
     REQUEST: any subset of
       identity  name, display_name, logo_url, homepage_url, redirect_uris,
+                post_logout_redirect_uris,
                 deletion_webhook_url
       toggles   share_profile, share_email, share_freefire_uid, share_team,
                 share_history, share_stats, share_ranking, share_standing
@@ -640,7 +654,7 @@ def sso_application_detail(request, application_id):
 
     IDENTITY_FIELDS = (
         "name", "display_name", "logo_url", "homepage_url",
-        "redirect_uris", "deletion_webhook_url",
+        "redirect_uris", "post_logout_redirect_uris", "deletion_webhook_url",
     )
     allowed_keys = set(IDENTITY_FIELDS) | set(SSO_FIELD_TOGGLES)
 
@@ -683,6 +697,18 @@ def sso_application_detail(request, application_id):
         if err_msg:
             return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
         application.redirect_uris = cleaned
+
+    # Same policy, and allowed to be emptied: a partner that drops RP-initiated logout
+    # should be able to withdraw the URLs rather than leave stale ones registered.
+    if "post_logout_redirect_uris" in request.data:
+        cleaned, err_msg = _clean_redirect_uris(
+            request.data.get("post_logout_redirect_uris"),
+            required=False,
+            label="post-logout redirect URI",
+        )
+        if err_msg:
+            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+        application.post_logout_redirect_uris = cleaned
 
     # ── the eight data toggles ──
     # bool() coerces whatever truthy/falsy value the client sent into a real boolean, so

@@ -17,3 +17,9 @@ from django.apps import AppConfig
 class AfcSsoConfig(AppConfig):
     default_auto_field = "django.db.models.AutoField"
     name = "afc_sso"
+
+    def ready(self):
+        # Registers the pre_delete receiver that tells every connected partner when an
+        # AFC account is deleted. Imported for its side effect only; see afc_sso/signals.py
+        # for why it is a signal rather than a call from a delete-account endpoint.
+        from . import signals  # noqa: F401
