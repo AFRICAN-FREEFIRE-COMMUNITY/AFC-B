@@ -132,11 +132,15 @@ def blacklist_lookup(request):
     every OrganizerBlacklist under which they have an OrganizerBlacklistPlayer snapshot row.
     The snapshot rows ARE the follows-the-player rule (a player is snapshotted onto the
     team-level row at blacklist time and stays bound to it even after leaving that team), and
-    every snapshot row points at exactly one team-level OrganizerBlacklist - so "snapshot rows
-    plus the team-level rows of teams they were snapshotted on" is ONE set of distinct
-    OrganizerBlacklist rows, which is what we count. A blacklist of a team the player was
-    NEVER snapshotted on (they joined after the blacklist was created) does not count against
-    the player - it never blocked them.
+    every snapshot row points at exactly one OrganizerBlacklist - so "snapshot rows plus the
+    rows of teams they were snapshotted on" is ONE set of distinct OrganizerBlacklist rows,
+    which is what we count. A blacklist of a team the player was NEVER snapshotted on (they
+    joined after the blacklist was created) does not count against the player - it never
+    blocked them.
+    PLAYER-TARGET rows (owner backlog item 1, 2026-08-03) need no special handling here: a
+    blacklist aimed straight at a person also writes one OrganizerBlacklistPlayer row for them,
+    so it is picked up by exactly the same query and counts like any other block. Its entry
+    simply carries target_type="player" and a null team.
 
     Auth:  Bearer. Caller must be an ACTIVE OrganizationMember of ANY org (an organizer) or a
            platform admin (is_platform_org_admin). Everyone else (plain players) gets 403 -
@@ -250,6 +254,10 @@ def blacklist_lookup(request):
             "id": bl.id,
             "organization_name": bl.organization.name if bl.organization else None,
             "organization_slug": bl.organization.slug if bl.organization else None,
+            # target_type lets the FE say WHY this row is on a player's record: "team" means they
+            # were snapshotted when their team was blacklisted, "player" means the organizer
+            # blacklisted them personally. team_id/team_name are null on the latter.
+            "target_type": bl.target_type,
             # team context rides along (essential on player lookups: WHICH team they were
             # snapshotted on; harmless redundancy on team lookups).
             "team_id": bl.team_id,
@@ -292,24 +300,30 @@ def admin_list_blacklists(request):
     reasons included, plus the aggregates the dashboard stat cards need.
 
     Auth:  Bearer; platform admins only (is_platform_org_admin - head_admin/organizer_admin).
-    Query: ?search=   - matches team name + org name, punctuation/leet-insensitively via the
-                        shared utils.search_utils fold (the same widening the typeaheads use)
+    Query: ?search=   - matches team name + org name + blocked player username, punctuation/
+                        leet-insensitively via the shared utils.search_utils fold (the same
+                        widening the typeaheads use). The username clause is what makes
+                        PLAYER-target rows (which have no team name) findable.
            &status=   - active | expired | lifted, judged by EFFECTIVE status: "active" means
                         blocking right now; "expired" includes lapsed rows a sweep has not
                         relabelled yet (mirrors enforcement, see _effective_status)
            &start= &end= - YYYY-MM-DD window on each row's start_date (both optional)
            &limit/&offset - standard paging (default 25, max 100).
     Response: 200 {
-        results: [{id, organization_name, organization_slug, team_name, team_id, reason,
-                   status: active|expired|lifted, start_date, end_date, created_at,
+        results: [{id, organization_name, organization_slug,
+                   target_type: "team"|"player",     # what the organizer aimed at
+                   target_username, target_user_id,  # set on player-target rows, null on team ones
+                   team_name, team_id,               # null on player-target rows
+                   reason, status: active|expired|lifted, start_date, end_date, created_at,
                    lifted_by_username, lifted_at,    # see note below
                    player_snapshot_count}],          # newest first (created_at)
         total_count, has_more,
         aggregates: {     # computed over the FILTERED set, so the stat cards answer
                           # "in this window / for this search" - not just all-time
             total, active,
-            by_organization:        top 10 [{organization_name, organization_slug, count}],
-            most_blacklisted_teams: top 10 [{team_name, team_id, count}] } }
+            by_organization:          top 10 [{organization_name, organization_slug, count}],
+            most_blacklisted_teams:   top 10 [{team_name, team_id, count}],  # team targets only
+            most_blacklisted_players: top 10 [{username, user_id, count}] } } # player targets only
 
     LIFTED-INFO NOTE: the model does not stamp who lifted a blacklist. When a lift came from
     an APPROVED team-scope BlacklistLiftRequest we surface its decided_by/decided_at as
@@ -335,21 +349,49 @@ def admin_list_blacklists(request):
     # cards reflect exactly what the table shows) ──
     qs = OrganizerBlacklist.objects.all()
 
-    # search: team name + org name, plain icontains OR'd with the punctuation/leet-insensitive
-    # fold from utils.search_utils (normalized_column on the columns, separator_stripped on the
-    # query) - the same only-ever-widens pattern afc_team.views.search_teams uses.
+    # search: team name + org name + the blocked PLAYER's username, plain icontains OR'd with the
+    # punctuation/leet-insensitive fold from utils.search_utils (normalized_column on the columns,
+    # separator_stripped on the query) - the same only-ever-widens pattern
+    # afc_team.views.search_teams uses. The username clause is what makes PLAYER-target rows
+    # findable at all: they have no team name to match on, so without it a search would hide them.
+    # It rides through the `players` relation, so it also finds team rows by a snapshotted member.
     search = (request.GET.get("search") or "").strip()
     if search:
         from utils.search_utils import normalized_column, separator_stripped
 
-        cond = Q(team__team_name__icontains=search) | Q(organization__name__icontains=search)
         norm_q = separator_stripped(search)
+
+        # The blocked PLAYER's username is matched through a SUBQUERY on OrganizerBlacklistPlayer,
+        # never a join on the main queryset. A join to `players` multiplies each blacklist row once
+        # per blocked player, and because the normalized annotation would then be part of the
+        # SELECT, .distinct() could not collapse them again - a 3-player team blacklist would
+        # appear (and be counted) three times. pk__in=<subquery> stays one row per blacklist and
+        # still runs entirely in SQL.
+        player_ids = OrganizerBlacklistPlayer.objects.filter(
+            user__username__icontains=search
+        ).values("blacklist_id")
+        cond = (
+            Q(team__team_name__icontains=search)
+            | Q(organization__name__icontains=search)
+            | Q(pk__in=player_ids)
+        )
+
         qs = qs.annotate(
             _norm_team=normalized_column("team__team_name"),
             _norm_org=normalized_column("organization__name"),
         )
         if norm_q:
-            cond |= Q(_norm_team__icontains=norm_q) | Q(_norm_org__icontains=norm_q)
+            norm_player_ids = (
+                OrganizerBlacklistPlayer.objects
+                .annotate(_norm_username=normalized_column("user__username"))
+                .filter(_norm_username__icontains=norm_q)
+                .values("blacklist_id")
+            )
+            cond |= (
+                Q(_norm_team__icontains=norm_q)
+                | Q(_norm_org__icontains=norm_q)
+                | Q(pk__in=norm_player_ids)
+            )
         qs = qs.filter(cond)
 
     # status filter by EFFECTIVE status (must mirror _effective_status so the pill the admin
@@ -399,13 +441,30 @@ def admin_list_blacklists(request):
             .annotate(count=Count("id"))
             .order_by("-count")[:10]
         ],
+        # PLAYER-target rows have team_id=NULL; excluding them keeps this card meaning
+        # "most-blacklisted TEAMS" instead of showing a nameless null bucket at the top.
         "most_blacklisted_teams": [
             {
                 "team_name": row["team__team_name"],
                 "team_id": row["team_id"],
                 "count": row["count"],
             }
-            for row in agg_base.values("team__team_name", "team_id")
+            for row in agg_base.filter(team_id__isnull=False)
+            .values("team__team_name", "team_id")
+            .annotate(count=Count("id"))
+            .order_by("-count")[:10]
+        ],
+        # Companion card for the new player-target rows: who has been blacklisted personally the
+        # most, across all orgs. Counts only target_type="player" rows (a snapshotted team member
+        # was not individually targeted, so counting them here would misrepresent the number).
+        "most_blacklisted_players": [
+            {
+                "username": row["players__user__username"],
+                "user_id": row["players__user_id"],
+                "count": row["count"],
+            }
+            for row in agg_base.filter(target_type="player")
+            .values("players__user__username", "players__user_id")
             .annotate(count=Count("id"))
             .order_by("-count")[:10]
         ],
@@ -415,6 +474,7 @@ def admin_list_blacklists(request):
     # Count("players", distinct=True) guards against join-multiplication from the search joins.
     page_qs = (
         qs.select_related("organization", "team")
+        .prefetch_related("players__user")   # feeds target_username without an N+1 per row
         .annotate(player_snapshot_count=Count("players", distinct=True))
         .order_by("-created_at")
     )
@@ -439,10 +499,23 @@ def admin_list_blacklists(request):
     results = []
     for bl in page:
         lift_req = lift_info.get(bl.id)
+        # On a PLAYER-target row the "who" is the single player row, not a team. Read it off the
+        # prefetched relation so the table can show one Target column for both shapes.
+        target_username = None
+        target_user_id = None
+        if bl.target_type == "player":
+            for p in bl.players.all():
+                if p.user:
+                    target_username = p.user.username
+                    target_user_id = p.user_id
+                    break
         results.append({
             "id": bl.id,
             "organization_name": bl.organization.name if bl.organization else None,
             "organization_slug": bl.organization.slug if bl.organization else None,
+            "target_type": bl.target_type,
+            "target_username": target_username,
+            "target_user_id": target_user_id,
             "team_name": bl.team.team_name if bl.team else None,
             "team_id": bl.team_id,
             "reason": bl.reason,  # admins see everything, including why (owner rule)
