@@ -25,6 +25,7 @@ from afc_team.models import Team
 from afc_auth.models import User
 from . import aggregation
 from .scoring import engine
+from .scoring.tables import ScoringTables  # noqa: F401  (type reference in docstrings/signatures)
 from .models import (
     Season, TeamMonthlyScore, TeamQuarterlyScore, PlayerMonthlyScore, PlayerQuarterlyScore,
 )
@@ -53,7 +54,10 @@ def recalc_team_monthly(team_id, month: datetime.date = None):
         return
     month = (month or current_month()).replace(day=1)
     agg = aggregation.compute_team_monthly(team, month)
-    if agg.tournaments_played == 0 and not agg.result.scrim_pts:
+    # The monthly floor is admin-editable too, resolved from the config bound to the season
+    # this month sits in (default 1 tournament, spec §5.2).
+    monthly_floor = aggregation.resolve_tables(month=month).team_monthly_floor
+    if agg.tournaments_played < monthly_floor and not agg.result.scrim_pts:
         # §5.2 participation floor - no activity at all → don't appear.
         #
         # AMENDED (owner 2026-08-03): scrim activity now satisfies this floor too. The floor
@@ -96,15 +100,24 @@ def recalc_team_quarterly(team_id, season_id):
         rerank_team_quarter(season)
         return
     r = agg.result
-    meets = agg.tournaments_played >= 2  # §7.4
+    # §7.4 activity floor and the tier cutoffs are admin-editable, and the config that applies
+    # is the one bound to THIS season - so a closed season keeps the floor it was scored under
+    # even after an admin changes it for the current one (aggregation.resolve_tables).
+    tables = aggregation.resolve_tables(season=season)
+    floor = tables.team_quarterly_floor
+    meets = agg.tournaments_played >= floor
     # Respect an admin tier override (§5): a locked tier is not stomped by the projected one.
     # Otherwise use the live (projected) tier from score - Entry if below the activity floor.
     # The official locked tier is (re)set when an admin runs the quarterly evaluation (Phase 2).
+    # Under TOP-N the value written here is a placeholder: a tier decided by position cannot
+    # be worked out from one team's score, so rerank_team_quarter (called at the end of this
+    # function, once this row exists and is in the ladder) overwrites it for the whole table.
+    # The placeholder is never observable - both writes happen inside this one call.
     if existing and existing.tier_overridden:
         tier = existing.tier_assigned
     else:
-        tier = engine.assign_tier(r.total, meets)
-    note = "" if meets else f"Insufficient activity ({agg.tournaments_played}/2 tournaments)"
+        tier = engine.assign_tier(r.total, meets, tables)
+    note = "" if meets else f"Insufficient activity ({agg.tournaments_played}/{floor} tournaments)"
     TeamQuarterlyScore.objects.update_or_create(
         team=team, season=season,
         defaults=dict(
@@ -134,23 +147,89 @@ def rerank_team_month(month: datetime.date):
         TeamMonthlyScore.objects.bulk_update(qs, ["rank"])
 
 
-def rerank_team_quarter(season):
-    # Rank by the EFFECTIVE score (total minus any manual point deduction, §16) so a
-    # partial penalty actually moves a team down the table - not just the displayed score.
-    # A ban-zeroed team already has total_score 0, so it naturally sinks to the bottom.
-    # Ghost teams are interleaved with real teams here too (no team__isnull=False filter). The name
-    # tiebreak coalesces real + ghost names. Called by recalc_team_quarterly +
-    # standalone.recalc_ghost_team_quarterly.
-    qs = list(
+def team_quarter_ladder(season):
+    """The season's team ladder as a queryset, in the ONE canonical order (§5.4 tiebreaks).
+
+    Ordered by the EFFECTIVE score (total minus any manual point deduction, §16) so a
+    partial penalty actually moves a team down the table - not just the displayed score.
+    A ban-zeroed team already has total_score 0, so it naturally sinks to the bottom.
+    Ghost teams are interleaved with real teams here (no team__isnull=False filter); the name
+    tiebreak coalesces real + ghost names so a ghost row sorts without a null crash.
+
+    Extracted so that the printed rank (``rerank_team_quarter``), the top-N tiers computed
+    from it, and ``run_evaluation``'s locked tiers are all reading the same order. If they
+    ever diverged, a team could be shown as rank 9 while another team was given the last
+    Tier 1 place, and there would be no way to explain it.
+    """
+    return (
         TeamQuarterlyScore.objects.filter(season=season)
         .annotate(effective=F("total_score") - F("points_deducted"),
                   _name=Coalesce("team__team_name", "ghost_team__team_name"))
         .order_by("-effective", "-tournament_wins", "-total_kills", "_name")
     )
+
+
+def top_n_team_tiers(rows, tables):
+    """{score_row_pk: tier} for a team ladder under top-N tiering. ``rows`` in ladder order.
+
+    Rows whose tier must not be recomputed are left out of the map entirely rather than
+    given a tier: a ban-zeroed team (§2.15) and an admin-overridden tier (§5) keep the
+    decision that was made about them, exactly as they do in threshold mode. They are still
+    excluded from the COUNT, because they are not competing for a place - a banned team
+    holding a Tier 1 slot open would be the same bug the participation floor avoids.
+
+    See ``engine.assign_tiers_top_n`` for the floor / tie / leftover rules.
+    """
+    entries = [
+        engine.LadderEntry(key=r.pk,
+                           score=r.total_score - r.points_deducted,
+                           meets_floor=r.meets_participation_floor)
+        for r in rows if not team_tier_is_locked(r)
+    ]
+    return engine.assign_tiers_top_n(entries, tables)
+
+
+def team_tier_is_locked(row):
+    """True when this team's tier is a standing decision that no recalculation may revisit.
+
+    A ban zeroes the row (§2.15) and an admin override pins it (§5); in both cases the tier
+    on the row is the answer and stays the answer. ONE predicate on purpose: it decides both
+    which rows top_n_team_tiers leaves out of the ladder and which rows run_evaluation skips.
+    If those two ever disagreed, a row could be skipped by one and expected by the other.
+    """
+    return bool(row.is_zeroed or row.tier_overridden)
+
+
+def rerank_team_quarter(season):
+    """Renumber the season's team ladder, and in top-N mode re-tier it in the same pass.
+
+    WHY THE TIER IS DECIDED HERE and not in recalc_team_quarterly: under top-N a team's tier
+    is a property of the whole ladder, not of its own score, so one team's new result can
+    move a different team out of Tier 1. There is no per-team answer to compute. This runs
+    on every write to the ladder (recalc_team_quarterly + standalone.recalc_ghost_team_
+    quarterly both call it), which is what keeps the displayed tiers honest between
+    evaluations. Threshold mode is untouched: the per-team ``engine.assign_tier`` call in
+    recalc_team_quarterly stands, and this function only writes ranks, exactly as before.
+
+    The tiers written here are PROVISIONAL, in the same sense the ladder itself is: they
+    follow the live standings and move as results land. The locked, end-of-season answer is
+    still whatever ``run_evaluation`` stamps (``Season.tier_eval_run``), which is the
+    existing contract for every mode.
+    """
+    qs = list(team_quarter_ladder(season))
     for i, s in enumerate(qs, 1):
         s.rank = i
+
+    fields = ["rank"]
     if qs:
-        TeamQuarterlyScore.objects.bulk_update(qs, ["rank"])
+        tables = aggregation.resolve_tables(season=season)
+        if tables.tier_mode == engine.TIER_MODE_TOP_N:
+            tiers = top_n_team_tiers(qs, tables)
+            for s in qs:
+                if s.pk in tiers:
+                    s.tier_assigned = tiers[s.pk]
+            fields.append("tier_assigned")
+        TeamQuarterlyScore.objects.bulk_update(qs, fields)
 
 
 # ───────────────────────── PLAYER ─────────────────────────
@@ -160,7 +239,8 @@ def recalc_player_monthly(player_id, month: datetime.date = None):
         return
     month = (month or current_month()).replace(day=1)
     agg = aggregation.compute_player_monthly(player, month)
-    if agg.tournaments_played == 0:
+    # Admin-editable monthly floor (default 1 tournament, spec §6), from this month's config.
+    if agg.tournaments_played < aggregation.resolve_tables(month=month).player_monthly_floor:
         PlayerMonthlyScore.objects.filter(player=player, month=month).delete()
         rerank_player_month(month)
         return
@@ -196,10 +276,14 @@ def recalc_player_quarterly(player_id, season_id):
         rerank_player_quarter(season)
         return
     r = agg.result
-    meets = agg.tournaments_played >= 1  # §9.2
+    # §9.2 floor + cutoffs from the config bound to this season (see recalc_team_quarterly).
+    tables = aggregation.resolve_tables(season=season)
+    meets = agg.tournaments_played >= tables.player_quarterly_floor
     # Phase 1: individual projected tier from personal score. Phase 2 eval applies the
     # team-tier inheritance (§8.1) and locks tier_source = "team" vs "individual".
-    tier = engine.assign_tier(r.total, meets)
+    # Under TOP-N this is a placeholder, overwritten for the whole ladder by
+    # rerank_player_quarter at the end of this call - see recalc_team_quarterly.
+    tier = engine.assign_tier(r.total, meets, tables)
     PlayerQuarterlyScore.objects.update_or_create(
         player=player, season=season,
         defaults=dict(
@@ -227,18 +311,63 @@ def rerank_player_month(month: datetime.date):
         PlayerMonthlyScore.objects.bulk_update(qs, ["rank"])
 
 
-def rerank_player_quarter(season):
-    # Ghost players interleaved with real players; name tiebreak coalesces real + ghost names. Called
-    # by recalc_player_quarterly + standalone.recalc_ghost_player_quarterly.
-    qs = list(
+def player_quarter_ladder(season):
+    """The season's player ladder as a queryset, in the one canonical order (§6.4 tiebreak).
+
+    Ghost players interleaved with real players; the name tiebreak coalesces real + ghost
+    names so a ghost row sorts without a null crash. Extracted for the same reason as
+    ``team_quarter_ladder``: rank, top-N tier and evaluation must read one order.
+    """
+    return (
         PlayerQuarterlyScore.objects.filter(season=season)
         .annotate(_name=Coalesce("player__username", "ghost_player__ign"))
         .order_by("-total_score", "_name")
     )
+
+
+def top_n_player_tiers(rows, tables):
+    """{score_row_pk: tier} for the INDIVIDUAL player ladder under top-N tiering.
+
+    Computed over every player row, which is exactly the population ``engine.assign_tier``
+    is applied to today - so this is the same question ("what tier does this player's own
+    season earn"), answered by position instead of by score. A player attached to a team at
+    evaluation still INHERITS the team's tier (§8.1) and never uses this; see
+    ``engine.player_tier``. Zeroed (banned) rows keep their decision and are left out.
+
+    WHY PLAYERS FOLLOW THE MODE TOO: Tier 1 is one scale shared by the team ladder and the
+    player ladder. If teams were tiered by position while players were tiered by score, the
+    same badge would mean two different things on the same site, and in a season where no
+    team cleared the old Tier 1 cutoff there would be Tier 1 players and no Tier 1 teams.
+    """
+    entries = [
+        engine.LadderEntry(key=r.pk, score=r.total_score,
+                           meets_floor=r.meets_participation_floor)
+        for r in rows if not r.is_zeroed
+    ]
+    return engine.assign_tiers_top_n(entries, tables)
+
+
+def rerank_player_quarter(season):
+    """Renumber the season's player ladder, and in top-N mode re-tier it in the same pass.
+
+    The mirror of ``rerank_team_quarter`` - see its docstring for why the tier is decided
+    here under top-N and why these tiers are provisional until evaluation. Called by
+    recalc_player_quarterly + standalone.recalc_ghost_player_quarterly.
+    """
+    qs = list(player_quarter_ladder(season))
     for i, s in enumerate(qs, 1):
         s.rank = i
+
+    fields = ["rank"]
     if qs:
-        PlayerQuarterlyScore.objects.bulk_update(qs, ["rank"])
+        tables = aggregation.resolve_tables(season=season)
+        if tables.tier_mode == engine.TIER_MODE_TOP_N:
+            tiers = top_n_player_tiers(qs, tables)
+            for s in qs:
+                if s.pk in tiers:
+                    s.tier_assigned = tiers[s.pk]
+            fields.append("tier_assigned")
+        PlayerQuarterlyScore.objects.bulk_update(qs, fields)
 
 
 # ───────────────────────── bulk (seeding / admin recalc) ─────────────────────────
@@ -347,6 +476,10 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=T
 
     now = timezone.now()
     team_changes, player_changes = [], []
+    # The cutoffs that decide every tier below come from the scoring config bound to THIS
+    # season, not from whatever is active today - re-evaluating a closed season must reproduce
+    # the tiers it was given, not re-tier it under newer rules.
+    tables = aggregation.resolve_tables(season=season)
 
     def _evaluate():
         # 1) Teams - tier from effective score (total minus deduction) + §7.4 floor.
@@ -355,17 +488,29 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=T
         #    sticky-ban/override state, so it always hits the assign_tier branch. It is NEVER added to
         #    team_tier_by_id (that map drives real-player inheritance, and a ghost team has no players
         #    inheriting from it), so ghost tiering cannot alter any real player's inherited tier.
-        team_rows = list(
-            TeamQuarterlyScore.objects.filter(season=season).select_related("team", "ghost_team")
-        )
+        # Read in LADDER order, not arbitrary order: under top-N the tier is decided by
+        # position, so evaluation has to see the same sequence the printed ranks came from.
+        # Threshold mode does not care about the order, so one query serves both.
+        team_rows = list(team_quarter_ladder(season).select_related("team", "ghost_team"))
+        # Under top-N the whole ladder is tiered in one pass up front (a team's tier depends
+        # on every other team), then each row reads its answer out of the map. Empty in
+        # threshold mode, where each row is still decided from its own score below.
+        top_n_teams = (top_n_team_tiers(team_rows, tables)
+                       if tables.tier_mode == engine.TIER_MODE_TOP_N else {})
         team_tier_by_id = {}     # team_id -> would-be tier (used for player inheritance, incl. dry run)
         team_writes = []
         for t in team_rows:
-            if t.is_zeroed or t.tier_overridden:
+            # Same predicate top_n_team_tiers uses to leave a row out of the ladder, so every
+            # row that reaches the lookup below is guaranteed to be in the map.
+            if team_tier_is_locked(t):
                 if t.team_id is not None:  # only real teams feed player inheritance
                     team_tier_by_id[t.team_id] = t.tier_assigned  # preserve the locked decision
                 continue
-            new_tier = engine.assign_tier(t.total_score - t.points_deducted, t.meets_participation_floor)
+            new_tier = (
+                top_n_teams[t.pk] if tables.tier_mode == engine.TIER_MODE_TOP_N
+                else engine.assign_tier(
+                    t.total_score - t.points_deducted, t.meets_participation_floor, tables)
+            )
             if t.team_id is not None:  # ghosts have no inheriting players -> stay out of the map
                 team_tier_by_id[t.team_id] = new_tier
             # change-record name: real team name, else the ghost team name (guarded so a ghost row
@@ -386,8 +531,13 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=T
         #    always unattached -> takes its individual tier (source "individual"), team_at_evaluation
         #    None. This cannot touch any real player's inheritance (each row is independent).
         player_rows = list(
-            PlayerQuarterlyScore.objects.filter(season=season).select_related("player", "ghost_player")
+            player_quarter_ladder(season).select_related("player", "ghost_player")
         )
+        # The individual-tier answer for every player, by position, when the season runs on
+        # top-N. Only reached for an UNATTACHED player - an attached one inherits its team's
+        # tier either way (§8.1), which engine.player_tier still decides.
+        top_n_players = (top_n_player_tiers(player_rows, tables)
+                         if tables.tier_mode == engine.TIER_MODE_TOP_N else {})
         player_writes = []
         for p in player_rows:
             if p.is_zeroed:
@@ -396,7 +546,9 @@ def run_evaluation(season, user=None, *, dry_run=False, force=False, recompute=T
             team = _player_team_at_eval(p.player, season) if p.player_id else None
             is_attached = team is not None
             team_tier = team_tier_by_id.get(team.team_id, TIER_ENTRY) if is_attached else None
-            new_tier, source = engine.player_tier(is_attached, team_tier, p.total_score, p.meets_participation_floor)
+            new_tier, source = engine.player_tier(
+                is_attached, team_tier, p.total_score, p.meets_participation_floor, tables,
+                individual_tier=top_n_players.get(p.pk))
             # change-record name: real username, else the ghost in-game name (guarded for nulls).
             name = p.player.username if p.player_id else p.ghost_player.ign
             player_changes.append({"player_id": p.player_id, "name": name,

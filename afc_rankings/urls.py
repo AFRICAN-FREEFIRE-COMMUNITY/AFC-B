@@ -137,11 +137,22 @@ urlpatterns = [
     path("ghost-players/<int:player_id>/reject-claim/", admin_ghost.ghost_player_reject_claim,
          name="rankings_ghost_player_reject_claim"),
 
-    # ───────────────────────── Phase 2 - Scoring Config (versioned) ─────────────────────────
-    # scoring-config/defaults/ is listed before the collection so it never shadows; literal
-    # paths don't collide with the collection anyway, but order keeps intent clear.
+    # ───────────────────────── Phase 2 - Scoring Config (versioned, season-scoped) ──────────
+    # Literal sub-paths are listed before the collection so intent stays clear (they cannot
+    # collide with it anyway). See admin_scoring_config.py for the full request/response
+    # shapes - the admin Scoring Config page is built against them.
     path("scoring-config/defaults/", admin_scoring_config.scoring_config_defaults,
          name="rankings_scoring_config_defaults"),
+    # Which seasons exist, what rules each is scored under, and whether changing one would
+    # rewrite published standings. Drives the save dialog's scope picker.
+    path("scoring-config/seasons/", admin_scoring_config.scoring_config_seasons,
+         name="rankings_scoring_config_seasons"),
+    # Dry run: validation errors, contradictions, and the affected-season list. Writes nothing.
+    path("scoring-config/validate/", admin_scoring_config.scoring_config_validate,
+         name="rankings_scoring_config_validate"),
+    # One historical version in full - the rules a past season was scored under.
+    path("scoring-config/versions/<int:version>/", admin_scoring_config.scoring_config_version,
+         name="rankings_scoring_config_version"),
     path("scoring-config/",
          _route(GET=admin_scoring_config.scoring_config, POST=admin_scoring_config.scoring_config_save),
          name="rankings_scoring_config"),
@@ -156,6 +167,10 @@ urlpatterns = [
     path("event-tier-rules/",
          _route(GET=admin_tournament_tiers.tier_rules_list, POST=admin_tournament_tiers.tier_rule_create),
          name="rankings_event_tier_rules"),
+    # DELETE here RETIRES the rule (it is never destroyed - events were classified by it);
+    # restore/ un-retires. See admin_tournament_tiers.tier_rule_delete for why.
+    path("event-tier-rules/<int:rule_id>/restore/", admin_tournament_tiers.tier_rule_restore,
+         name="rankings_event_tier_rule_restore"),
     path("event-tier-rules/<int:rule_id>/",
          _route(PATCH=admin_tournament_tiers.tier_rule_update, DELETE=admin_tournament_tiers.tier_rule_delete),
          name="rankings_event_tier_rule_detail"),
@@ -196,4 +211,9 @@ urlpatterns = [
     path("seasons/<int:season_id>/publish/", admin_publish.publish_state, name="rankings_publish_state"),
     path("admin/teams/quarterly/", admin_publish.admin_teams_quarterly, name="rankings_admin_teams_quarterly"),
     path("admin/players/quarterly/", admin_publish.admin_players_quarterly, name="rankings_admin_players_quarterly"),
+    # Monthly twins of the two draft-preview routes above. Literal "monthly" cannot be shadowed by
+    # the admin/teams/<int:team_id>/raw/ route (that converter only matches digits). Both feed the
+    # admin Ladders view, frontend app/(a)/a/rankings/ladders.
+    path("admin/teams/monthly/", admin_publish.admin_teams_monthly, name="rankings_admin_teams_monthly"),
+    path("admin/players/monthly/", admin_publish.admin_players_monthly, name="rankings_admin_players_monthly"),
 ]

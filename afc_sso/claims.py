@@ -58,8 +58,33 @@ def _is_adult(user):
 
 
 def _profile_claims(user):
+    """The `profile` scope. `picture` is the standard OIDC claim name for an avatar, so a
+    partner's off-the-shelf login library picks it up with no AFC-specific code.
+
+    Owner enabled avatar sharing on 2026-08-03. It is deliberately an ABSOLUTE url: these
+    claims are built without a Django request (oauthlib passes its own object, so
+    build_absolute_uri is unavailable), and a bare "/media/..." path would resolve against
+    the PARTNER's domain and 404. Base comes from settings.AFC_API_BASE_URL.
+
+    Omitted entirely when the player has no picture, rather than sent as null: build_claims
+    drops None, and a partner must treat every claim as optional anyway.
+    """
+    from django.conf import settings
+
+    from afc_auth.models import canonical_profile
+
+    picture = None
+    profile = canonical_profile(user)
+    if profile is not None and getattr(profile, "profile_pic", None):
+        try:
+            picture = f"{settings.AFC_API_BASE_URL.rstrip('/')}{profile.profile_pic.url}"
+        except ValueError:
+            # FileField.url raises when no file is actually associated.
+            picture = None
+
     return {
         "preferred_username": user.username,
+        "picture": picture,
         "country": user.country or None,
         "locale": user.language or None,
     }
@@ -139,7 +164,13 @@ def _resolvers():
     """
     return {
         "profile": _profile_claims,
-        "email": lambda u: {"email": u.email, "email_verified": True},
+        # email_verified was hardcoded True, which was a claim AFC could not actually back.
+        # It is now derived from is_active, which IS the verification signal here: signup
+        # creates the user with is_active=False and verify_code flips it True only once the
+        # emailed code is confirmed (afc_auth/views.py, and Google signups set it directly
+        # because Google already verified the address). A partner may gate account linking
+        # on this flag, so it has to be true or absent, never optimistic.
+        "email": lambda u: {"email": u.email, "email_verified": bool(u.is_active)},
         "afc.freefire": lambda u: {"ff_uid": u.uid or None},
         "afc.team": _team_claims,
         "afc.history": _history_claims,
@@ -151,11 +182,18 @@ def _resolvers():
 
 def describe_scopes(scopes):
     """Plain-language lines for the consent screen. Kept beside the resolvers so the
-    promise made to the player and the data actually released cannot drift."""
+    promise made to the player and the data actually released cannot drift.
+
+    The catalogue values are gettext_lazy strings (afc/settings.py), so str() resolves
+    each one HERE, against whichever language afc_sso.middleware.SSOLanguageMiddleware
+    activated for this request. Forcing them to real str rather than passing the lazy
+    proxies on is deliberate: these lines are also returned as JSON by the Connected apps
+    API (afc_sso/api.py), and a lazy proxy is not serializable by a plain json.dumps.
+    """
     from django.conf import settings
 
     catalogue = settings.OAUTH2_PROVIDER["SCOPES"]
-    return [catalogue[s] for s in sorted(scopes) if s in catalogue and s != "openid"]
+    return [str(catalogue[s]) for s in sorted(scopes) if s in catalogue and s != "openid"]
 
 
 def build_claims(user, application, granted_scopes):

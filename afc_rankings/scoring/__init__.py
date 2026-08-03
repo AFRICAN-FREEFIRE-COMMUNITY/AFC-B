@@ -41,10 +41,29 @@ from .constants import (
     SCRIM_WEIGHT,
     SCRIM_WIN_FLAT,
     SOCIAL_MEDIA_POINTS,
+    TIER_DEFAULT,
+    TIER_MODE_DEFAULT,
+    TIER_MODE_THRESHOLD,
+    TIER_MODE_TOP_N,
+    TIER_MODES,
     TIER_MULTIPLIER,
     TIER_THRESHOLDS,
     WIN_BONUS,
 )
+from .tables import (
+    # admin-editable scales: the same numbers as the constants above, as one object the
+    # engine can be handed. See tables.py for why the lookup itself is NOT done here.
+    DEFAULT_TABLES,
+    FIELD_META,
+    SCHEMA_VERSION,
+    ScoringTables,
+    TierDef,
+    config_from_tables,
+    defaults_config,
+    max_achievable_score,
+    tables_from_config,
+)
+from .validation import rule_contradictions, validate_config
 from .engine import (
     # input dataclasses
     PlayerScrimInput,
@@ -79,9 +98,11 @@ from .engine import (
     monthly_player_score,
     quarterly_player_score,
     # tiering
+    LadderEntry,
     score_to_tier,
     classify_tier,
     assign_tier,
+    assign_tiers_top_n,
     player_tier,
     # annual
     annual_score,
@@ -107,9 +128,26 @@ __all__ = [
     "SCRIM_WEIGHT",
     "SCRIM_WIN_FLAT",
     "SOCIAL_MEDIA_POINTS",
+    "TIER_DEFAULT",
+    "TIER_MODE_DEFAULT",
+    "TIER_MODE_THRESHOLD",
+    "TIER_MODE_TOP_N",
+    "TIER_MODES",
     "TIER_MULTIPLIER",
     "TIER_THRESHOLDS",
     "WIN_BONUS",
+    # admin-editable scales + their validation
+    "DEFAULT_TABLES",
+    "FIELD_META",
+    "SCHEMA_VERSION",
+    "ScoringTables",
+    "TierDef",
+    "config_from_tables",
+    "defaults_config",
+    "max_achievable_score",
+    "tables_from_config",
+    "rule_contradictions",
+    "validate_config",
     # inputs
     "PlayerScrimInput",
     "PlayerTournamentInput",
@@ -143,9 +181,11 @@ __all__ = [
     "monthly_player_score",
     "quarterly_player_score",
     # tiering
+    "LadderEntry",
     "score_to_tier",
     "classify_tier",
     "assign_tier",
+    "assign_tiers_top_n",
     "player_tier",
     # annual
     "annual_score",

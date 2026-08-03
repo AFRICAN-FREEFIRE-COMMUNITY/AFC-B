@@ -655,6 +655,62 @@ class ScoringConfig(models.Model):
         return f"ScoringConfig v{self.version}{' (active)' if self.is_active else ''}"
 
 
+# ──────────────────── SeasonScoringConfig (which rules governed which season) ────────────────────
+class SeasonScoringConfig(models.Model):
+    """Pins ONE season to the ``ScoringConfig`` version its scores are computed under.
+
+    WHY IT EXISTS (owner decision, 2026-08-03: "edits are not retroactive"):
+    activating a new scoring config must not silently re-score a season that already
+    finished. Without a per-season pin, any later recalculation - a nightly sweep, a single
+    result correction, an admin pressing Run evaluation - would rebuild an old season's
+    scores using today's rules, and a team's published placement would change months after
+    the fact. This row is what makes "frozen" true in the data rather than a promise.
+
+    HOW IT IS WRITTEN: ``admin_scoring_config.scoring_config_save`` does two things on every
+    save. First it pins every season that has no pin yet to the config that was active
+    BEFORE the save, so history keeps the rules it was scored under. Then it pins the
+    seasons the admin chose to apply the change to - always the current season, plus any
+    other season explicitly ticked - to the NEW config, and recalculates exactly those.
+
+    HOW IT IS READ: ``aggregation.config_for_season`` / ``aggregation.resolve_tables``, which
+    turn it into the ``ScoringTables`` handed to the pure scoring engine. A season with no
+    row falls back to the active config; a row with ``config`` NULL means the season is
+    pinned to the SHIPPED DEFAULTS (constants.py), which is different from having no row.
+
+    ``config`` is PROTECTed because a version a season was scored under must not be
+    removable - the same "retire, never delete" rule the rest of this surface follows.
+    """
+
+    season = models.OneToOneField(
+        Season, on_delete=models.CASCADE, related_name="scoring_config_binding",
+    )
+    # NULL = pinned to the shipped constants.py defaults (there was no saved config yet when
+    # this season was frozen). Distinct from "no row at all", which means "not yet pinned".
+    config = models.ForeignKey(
+        ScoringConfig, null=True, blank=True,
+        on_delete=models.PROTECT, related_name="season_bindings",
+    )
+    bound_at = models.DateTimeField(auto_now=True)
+    bound_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="season_scoring_bindings",
+    )
+    # "applied by the admin" vs "frozen automatically so a new config could not reach it".
+    # Kept so the audit trail and the admin UI can tell a deliberate rewrite from a freeze.
+    APPLIED = "applied"
+    FROZEN = "frozen"
+    ORIGIN_CHOICES = [(APPLIED, "Applied by an admin"), (FROZEN, "Frozen at the prior rules")]
+    origin = models.CharField(max_length=10, choices=ORIGIN_CHOICES, default=FROZEN)
+    note = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["config"])]
+
+    def __str__(self):
+        version = self.config.version if self.config_id else "defaults"
+        return f"SeasonScoringConfig(season={self.season_id} -> v{version})"
+
+
 # ──────────────────────── EventTierRule (tournament tier classification) ────────────────────────
 class EventTierRule(models.Model):
     """One rule in the ordered, first-match-wins list that classifies a tournament into a
@@ -676,14 +732,37 @@ class EventTierRule(models.Model):
     conditions = models.JSONField(default=list)
     tier = models.PositiveSmallIntegerField(choices=TIER_CHOICES, default=2)
     enabled = models.BooleanField(default=True)
+    # Free-text name so a rule can be RENAMED without touching what it does, and so audit
+    # entries and contradiction reports can say "'Major LAN events' can never fire" instead
+    # of quoting a database id at a non-technical admin. Blank falls back to "rule #<id>".
+    name = models.CharField(max_length=120, blank=True)
+    # ── retire, never delete (owner rule, 2026-08-03) ──
+    # Events are classified by these rules and the resulting tier is stored on the event, so
+    # a deleted rule would leave every event it classified with no explanation of why it sits
+    # in that tier. Retiring takes the rule out of classification for good while keeping the
+    # row readable. It is distinct from ``enabled``, which is a reversible on/off switch an
+    # admin uses while tuning: retirement is the permanent form, recorded with who and when.
+    # ``admin_tournament_tiers.tier_rule_delete`` retires instead of deleting; the classifier
+    # skips any rule with retired_at set.
+    retired_at = models.DateTimeField(null=True, blank=True)
+    retired_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="event_tier_rules_retired",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["priority", "created_at"]
+        indexes = [models.Index(fields=["retired_at"])]
+
+    @property
+    def is_retired(self) -> bool:
+        return self.retired_at is not None
 
     def __str__(self):
-        return f"Rule #{self.priority} → Tier {self.tier}"
+        label = self.name or f"Rule #{self.priority}"
+        return f"{label} → Tier {self.tier}{' (retired)' if self.is_retired else ''}"
 
 
 class EventTierConfig(models.Model):

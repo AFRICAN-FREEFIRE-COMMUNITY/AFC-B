@@ -55,10 +55,28 @@ from .constants import (
     SCRIM_WIN_FLAT,
     SOCIAL_MEDIA_POINTS,
     TIER_DEFAULT,
+    # re-exported so the Django layer can branch on the mode without importing constants
+    # directly (``engine.TIER_MODE_TOP_N`` in recalc.py)
+    TIER_MODE_THRESHOLD,
+    TIER_MODE_TOP_N,
     TIER_MULTIPLIER,
     TIER_THRESHOLDS,
     WIN_BONUS,
 )
+from .tables import DEFAULT_TABLES, ScoringTables
+
+# ── admin-editable scales (owner 2026-08-03) ──
+# Every function below takes ``tables``, a frozen ScoringTables carrying the numbers to use.
+# It defaults to DEFAULT_TABLES, which is exactly the constants.py values above, so every
+# existing call site keeps its behaviour and every test that calls the engine directly still
+# reads the shipped scales.
+#
+# The Django-aware layer (afc_rankings/aggregation.py) is what decides WHICH tables apply to
+# a given month or season - it looks up the admin-saved ScoringConfig bound to that period
+# and passes the result down. This module still never reads a database, which is the hard
+# requirement in the module docstring above: it is handed its numbers, it does not fetch them.
+# That is also what keeps a closed season on the rules it was scored under: the caller
+# resolves the season's own config and passes those tables in.
 
 TierStr = str  # "tier_1" | "tier_2" | "tier_3" (matches Event.tournament_tier)
 
@@ -199,7 +217,7 @@ def _bracket_lookup(
 # ===========================================================================
 # Compression / lookup scales
 # ===========================================================================
-def compress_kills(raw_kills: float) -> int:
+def compress_kills(raw_kills: float, tables: ScoringTables = DEFAULT_TABLES) -> int:
     """Compress a raw kill total to its bracket points. Spec §4.2.
 
     The bracket determines the value (not additive): 120 raw kills -> 12.
@@ -210,10 +228,11 @@ def compress_kills(raw_kills: float) -> int:
     """
     if raw_kills == 0:
         return 0
-    return _bracket_lookup(KILL_COMPRESSION, raw_kills)
+    return _bracket_lookup(tables.kill_compression, raw_kills)
 
 
-def compress_placement(raw_placement_pts: float) -> int:
+def compress_placement(raw_placement_pts: float,
+                       tables: ScoringTables = DEFAULT_TABLES) -> int:
     """Compress a raw placement-points total to its bracket points. Spec §4.3.
 
     Zero-stat floor (product decision): raw == 0 returns 0. Any raw > 0 uses the
@@ -221,88 +240,97 @@ def compress_placement(raw_placement_pts: float) -> int:
     """
     if raw_placement_pts == 0:
         return 0
-    return _bracket_lookup(PLACEMENT_COMPRESSION, raw_placement_pts)
+    return _bracket_lookup(tables.placement_compression, raw_placement_pts)
 
 
-def prize_money_points(total_naira: float) -> int:
-    """Points for total prize money won (₦) across the quarter. Spec §7.2."""
-    return _bracket_lookup(PRIZE_MONEY_POINTS, total_naira)
+def prize_money_points(total_naira: float,
+                       tables: ScoringTables = DEFAULT_TABLES) -> int:
+    """Points for total prize money won across the quarter. Spec §7.2.
+
+    The argument is in NAIRA, and so are the table's thresholds. Callers holding an amount
+    in another currency must convert first (afc_rankings.prize_sync._amount_ngn is the one
+    converter this system uses) - comparing a bare foreign amount against a naira threshold
+    is the exact mistake that mis-tiered a $400 event on 2026-08-03.
+    """
+    return _bracket_lookup(tables.prize_money_points, total_naira)
 
 
-def social_media_points(combined_followers: float) -> int:
-    """Points for combined IG+TikTok followers (capped at 10). Spec §7.3."""
-    return _bracket_lookup(SOCIAL_MEDIA_POINTS, combined_followers)
+def social_media_points(combined_followers: float,
+                        tables: ScoringTables = DEFAULT_TABLES) -> int:
+    """Points for combined IG+TikTok followers (capped by the top band). Spec §7.3."""
+    return _bracket_lookup(tables.social_media_points, combined_followers)
 
 
 # ===========================================================================
 # Building blocks
 # ===========================================================================
-def placement_points(finish: int) -> int:
+def placement_points(finish: int, tables: ScoringTables = DEFAULT_TABLES) -> float:
     """Raw placement points for a single match finish. Spec §4.1.
 
-    Finishes 11th+ award 0. This is the canonical mapping - callers must NOT
-    trust any legacy ``placement_points`` column on existing models.
+    Any finish not in the table awards 0 (by default 11th and below). This is the canonical
+    mapping - callers must NOT trust any legacy ``placement_points`` column on existing models.
     """
-    return PLACEMENT_POINTS.get(finish, 0)
+    return tables.placement_points.get(finish, 0)
 
 
-def tier_multiplier(tier: TierStr) -> float:
-    """Tournament tier multiplier. Spec §4. Raises ValueError on unknown tier."""
-    try:
-        return TIER_MULTIPLIER[tier]
-    except KeyError:
-        raise ValueError(f"unknown tournament tier: {tier!r}") from None
+def tier_multiplier(tier: TierStr, tables: ScoringTables = DEFAULT_TABLES) -> float:
+    """Tournament tier multiplier. Spec §4. Raises ValueError on an unknown tier.
+
+    A RETIRED tier still resolves here, deliberately: events already classified under it
+    must keep scoring. Retirement only removes a tier from the choices offered for new work
+    (``ScoringTables.active_tier_keys``).
+    """
+    return tables.tier(tier).multiplier
 
 
-def win_bonus(tier: TierStr) -> int:
+def win_bonus(tier: TierStr, tables: ScoringTables = DEFAULT_TABLES) -> float:
     """Flat win bonus for the tournament winner (not multiplied). Spec §4.4.
 
-    Raises ValueError on unknown tier.
+    Raises ValueError on an unknown tier; retired tiers resolve (see tier_multiplier).
     """
-    try:
-        return WIN_BONUS[tier]
-    except KeyError:
-        raise ValueError(f"unknown tournament tier: {tier!r}") from None
+    return tables.tier(tier).win_bonus
 
 
-def finals_bonus(tier: TierStr, appearances: int = 1) -> float:
-    """Finals appearance bonus = 5 * tier_multiplier * appearances. Spec §4.5."""
-    return FINALS_BASE * tier_multiplier(tier) * appearances
+def finals_bonus(tier: TierStr, appearances: int = 1,
+                 tables: ScoringTables = DEFAULT_TABLES) -> float:
+    """Finals appearance bonus = finals_base * tier_multiplier * appearances. Spec §4.5."""
+    return tables.finals_base * tier_multiplier(tier, tables) * appearances
 
 
 # ===========================================================================
 # Per-tournament team score - spec §5.1 Step 1
 # ===========================================================================
-def tournament_score(t: TournamentInput) -> float:
+def tournament_score(t: TournamentInput, tables: ScoringTables = DEFAULT_TABLES) -> float:
     """Score for ONE tournament for a team. Spec §5.1 Step 1.
 
         tournament_score = (compress_placement(raw_placement)
                             + compress_kills(raw_kills)) * tier_multiplier
                          + win_bonus           (if won)
-                         + 5 * tier_multiplier * finals_appearances
+                         + finals_base * tier_multiplier * finals_appearances
 
     The tier multiplier applies to placement, kills, and finals - NOT to the
     flat win bonus (spec §4).
     """
-    mult = tier_multiplier(t.tier)
-    base = (compress_placement(t.raw_placement_pts) + compress_kills(t.raw_kills)) * mult
-    bonus = win_bonus(t.tier) if t.won else 0
-    finals = finals_bonus(t.tier, t.finals_appearances)
+    mult = tier_multiplier(t.tier, tables)
+    base = (compress_placement(t.raw_placement_pts, tables)
+            + compress_kills(t.raw_kills, tables)) * mult
+    bonus = win_bonus(t.tier, tables) if t.won else 0
+    finals = finals_bonus(t.tier, t.finals_appearances, tables)
     return base + bonus + finals
 
 
 # ===========================================================================
 # Scrims - spec §5.1 Step 3 + §12
 # ===========================================================================
-def raw_scrim_points(s: ScrimInput) -> float:
+def raw_scrim_points(s: ScrimInput, tables: ScoringTables = DEFAULT_TABLES) -> float:
     """Raw (uncapped) scrim points for a team. Spec §5.1 Step 3 / §12.
 
-        raw = scrim_placement * 0.5 + scrim_kills * 0.5 + scrim_wins * 3
+        raw = scrim_placement * weight + scrim_kills * weight + scrim_wins * win_flat
     """
     return (
-        s.scrim_placement_pts * SCRIM_WEIGHT
-        + s.scrim_kills * SCRIM_WEIGHT
-        + s.scrim_wins * SCRIM_WIN_FLAT
+        s.scrim_placement_pts * tables.scrim_weight
+        + s.scrim_kills * tables.scrim_weight
+        + s.scrim_wins * tables.scrim_win_flat
     )
 
 
@@ -310,6 +338,7 @@ def capped_scrim_points(
     raw_scrim: float,
     total_tournament_pts: float,
     flat_cap: float | None = None,
+    tables: ScoringTables = DEFAULT_TABLES,
 ) -> float:
     """Cap a team's scrim contribution. Spec §5.1 Step 3, amended by the owner 2026-08-03.
 
@@ -329,13 +358,15 @@ def capped_scrim_points(
     scrim points by performing better in tournaments.
 
     `flat_cap` is INJECTED by the caller, which is how the admin-configured value reaches
-    this function. It defaults to the constant when omitted. This module is deliberately
-    Django-free (see the module docstring), so it never reads the database itself: the
-    aggregation layer resolves the configured value and passes it down.
+    this function. When omitted it comes from ``tables`` (the whole admin config), which in
+    turn defaults to the shipped constant. This module is deliberately Django-free (see the
+    module docstring), so it never reads the database itself: the aggregation layer resolves
+    the configured value and passes it down.
     """
     if flat_cap is None:
-        flat_cap = SCRIM_FLAT_CAP
-    return min(raw_scrim, max(float(flat_cap), total_tournament_pts * SCRIM_CAP_RATIO))
+        flat_cap = tables.scrim_flat_cap
+    return min(raw_scrim,
+               max(float(flat_cap), total_tournament_pts * tables.scrim_cap_ratio))
 
 
 # ===========================================================================
@@ -345,17 +376,19 @@ def monthly_team_score(
     tournaments: list[TournamentInput],
     scrims: ScrimInput | None = None,
     scrim_flat_cap: float | None = None,
+    tables: ScoringTables = DEFAULT_TABLES,
 ) -> TeamScoreResult:
     """Monthly team score. Spec §6.
 
     Sums per-tournament scores, then adds the capped scrim contribution. The scrim cap is
-    the higher of the flat allowance and 30% of the tournament total, see
+    the higher of the flat allowance and the configured share of the tournament total, see
     capped_scrim_points. `scrim_flat_cap` comes from the caller so an admin-configured
-    value can reach the pure engine without it touching the database.
+    value can reach the pure engine without it touching the database; when omitted it is
+    read from ``tables``, which carries the whole admin config.
     """
-    total_tournament_pts = sum(tournament_score(t) for t in tournaments)
-    raw = raw_scrim_points(scrims) if scrims is not None else 0.0
-    counted = capped_scrim_points(raw, total_tournament_pts, scrim_flat_cap)
+    total_tournament_pts = sum(tournament_score(t, tables) for t in tournaments)
+    raw = raw_scrim_points(scrims, tables) if scrims is not None else 0.0
+    counted = capped_scrim_points(raw, total_tournament_pts, scrim_flat_cap, tables)
     return TeamScoreResult(
         tournament_pts=total_tournament_pts,
         scrim_pts=counted,
@@ -363,14 +396,16 @@ def monthly_team_score(
     )
 
 
-def quarterly_team_prize_money_points(prize_money_naira: float) -> int:
-    """Prize-money points for the quarter. Spec §7.2 (thin alias of the scale)."""
-    return prize_money_points(prize_money_naira)
+def quarterly_team_prize_money_points(prize_money_naira: float,
+                                      tables: ScoringTables = DEFAULT_TABLES) -> int:
+    """Prize-money points for the quarter, in NAIRA. Spec §7.2 (thin alias of the scale)."""
+    return prize_money_points(prize_money_naira, tables)
 
 
-def quarterly_team_social_media_points(combined_followers: float) -> int:
-    """Social-media points for the quarter (max 10). Spec §7.3 (thin alias)."""
-    return social_media_points(combined_followers)
+def quarterly_team_social_media_points(combined_followers: float,
+                                       tables: ScoringTables = DEFAULT_TABLES) -> int:
+    """Social-media points for the quarter. Spec §7.3 (thin alias)."""
+    return social_media_points(combined_followers, tables)
 
 
 def quarterly_team_score(
@@ -378,17 +413,18 @@ def quarterly_team_score(
     scrims: ScrimInput | None = None,
     prize_money_naira: float = 0.0,
     combined_followers: float = 0,
+    tables: ScoringTables = DEFAULT_TABLES,
 ) -> TeamQuarterlyResult:
     """Quarterly team score. Spec §8.
 
     Uses the SAME per-tournament formula as monthly (§8.1) over the full
     3-month raw dataset (the ``tournaments`` list spans all 3 months), then adds
-    prize money (§7.2) and social media (§7.3). Tier assignment / participation
-    floor are NOT applied here - see ``assign_tier``.
+    prize money (§7.2, in naira) and social media (§7.3). Tier assignment /
+    participation floor are NOT applied here - see ``assign_tier``.
     """
-    base = monthly_team_score(tournaments, scrims)  # §8.1 "same formula as monthly"
-    prize = quarterly_team_prize_money_points(prize_money_naira)
-    social = quarterly_team_social_media_points(combined_followers)
+    base = monthly_team_score(tournaments, scrims, None, tables)  # §8.1 "same formula as monthly"
+    prize = quarterly_team_prize_money_points(prize_money_naira, tables)
+    social = quarterly_team_social_media_points(combined_followers, tables)
     return TeamQuarterlyResult(
         tournament_pts=base.tournament_pts,
         scrim_pts=base.scrim_pts,
@@ -404,26 +440,29 @@ def quarterly_team_score(
 def _player_components(
     tournaments: list[PlayerTournamentInput],
     scrims: PlayerScrimInput | None,
+    tables: ScoringTables = DEFAULT_TABLES,
 ) -> tuple[float, float, float, float, float, float, float, float]:
     """Shared component computation for monthly & quarterly player scoring.
 
     Per-tournament compression (kills AND placement) then summed - matches the
     locked team-path convention so the two stay symmetric. MVP/finals/team-win/
-    participation are flat per spec §7 (and §2: team win = 5, not 20).
+    participation are flat per spec §7 (and §2: team win = 5, not 20); every one of
+    those flat weights comes from ``tables`` so an admin can change them.
     """
-    kill_pts = sum(compress_kills(t.personal_kills) for t in tournaments)
+    kill_pts = sum(compress_kills(t.personal_kills, tables) for t in tournaments)
     placement_pts_total = sum(
-        compress_placement(t.personal_placement_pts) for t in tournaments
+        compress_placement(t.personal_placement_pts, tables) for t in tournaments
     )
-    mvp_pts = PLAYER_MVP_PTS * sum(t.mvp_count for t in tournaments)
-    finals_pts = PLAYER_FINALS_PTS * sum(t.finals_appearances for t in tournaments)
-    team_win_pts = PLAYER_TEAM_WIN_PTS * sum(1 for t in tournaments if t.team_won)
-    participation_pts = PLAYER_PARTICIPATION_PTS * sum(
+    mvp_pts = tables.player_mvp_pts * sum(t.mvp_count for t in tournaments)
+    finals_pts = tables.player_finals_pts * sum(t.finals_appearances for t in tournaments)
+    team_win_pts = tables.player_team_win_pts * sum(1 for t in tournaments if t.team_won)
+    participation_pts = tables.player_participation_pts * sum(
         1 for t in tournaments if t.participated
     )
     if scrims is not None:
-        scrim_kill_pts = PLAYER_SCRIM_KILL_WEIGHT * compress_kills(scrims.scrim_kills)
-        scrim_win_pts = PLAYER_SCRIM_WIN_PTS * scrims.scrim_wins
+        scrim_kill_pts = tables.player_scrim_kill_weight * compress_kills(
+            scrims.scrim_kills, tables)
+        scrim_win_pts = tables.player_scrim_win_pts * scrims.scrim_wins
     else:
         scrim_kill_pts = 0.0
         scrim_win_pts = 0.0
@@ -442,6 +481,7 @@ def _player_components(
 def monthly_player_score(
     tournaments: list[PlayerTournamentInput],
     scrims: PlayerScrimInput | None = None,
+    tables: ScoringTables = DEFAULT_TABLES,
 ) -> PlayerScoreResult:
     """Monthly player score. Spec §7.
 
@@ -460,7 +500,7 @@ def monthly_player_score(
         participation_pts,
         scrim_kill_pts,
         scrim_win_pts,
-    ) = _player_components(tournaments, scrims)
+    ) = _player_components(tournaments, scrims, tables)
     total = (
         kill_pts
         + placement_pts_total
@@ -488,6 +528,7 @@ def quarterly_player_score(
     tournaments: list[PlayerTournamentInput],
     scrims: PlayerScrimInput | None = None,
     inherited_prize_money_naira: float = 0.0,
+    tables: ScoringTables = DEFAULT_TABLES,
 ) -> PlayerQuarterlyResult:
     """Quarterly personal player score. Spec §9.
 
@@ -508,8 +549,8 @@ def quarterly_player_score(
         participation_pts,
         scrim_kill_pts,
         scrim_win_pts,
-    ) = _player_components(tournaments, scrims)
-    prize = prize_money_points(inherited_prize_money_naira)
+    ) = _player_components(tournaments, scrims, tables)
+    prize = prize_money_points(inherited_prize_money_naira, tables)
     total = (
         kill_pts
         + placement_pts_total
@@ -538,32 +579,139 @@ def quarterly_player_score(
 # ===========================================================================
 # Tier classification - spec §11 + §9.1
 # ===========================================================================
-def score_to_tier(score: float) -> int:
-    """Map a quarterly score to a tier int 0..3 by raw threshold. Spec §11.
+def score_to_tier(score: float, tables: ScoringTables = DEFAULT_TABLES) -> int:
+    """Map a quarterly score to a tier int by raw threshold. Spec §11.
 
-    Elite(0) >= 150, Competitive(1) 90-149, Rising(2) 40-89, Entry(3) < 40.
-    Uses strict ``>=`` on raw floats; no rounding (150.0 -> 0, 149.99 -> 1).
+    Defaults: Elite(0) >= 150, Competitive(1) 90-149, Rising(2) 40-89, Entry(3) < 40.
+    Cutoffs are read top down and the first one the score clears wins, so the table must
+    descend - an out-of-order cutoff is reported by ``scoring/validation.py`` as an
+    unreachable cutoff rather than silently reordered here. Uses strict ``>=`` on raw
+    floats; no rounding (150.0 -> 0, 149.99 -> 1).
     """
-    for min_score, tier in TIER_THRESHOLDS:
+    for min_score, tier in tables.tier_thresholds:
         if score >= min_score:
             return tier
-    return TIER_DEFAULT
+    return tables.tier_default
 
 
 # Public alias matching the orchestrator's requested name.
-def classify_tier(score: float) -> int:
-    """Alias of ``score_to_tier``. Spec §11. Returns 0..3."""
-    return score_to_tier(score)
+def classify_tier(score: float, tables: ScoringTables = DEFAULT_TABLES) -> int:
+    """Alias of ``score_to_tier``. Spec §11."""
+    return score_to_tier(score, tables)
 
 
-def assign_tier(score: float, meets_participation_floor: bool) -> int:
+def assign_tier(score: float, meets_participation_floor: bool,
+                tables: ScoringTables = DEFAULT_TABLES) -> int:
     """Assign a tier with the participation floor applied. Spec §7.4 / §9.2.
 
-    If the floor is not met, force Tier 3 (Entry) regardless of score.
+    If the floor is not met, force the default tier (Entry) regardless of score.
+
+    THRESHOLD MODE ONLY. A tier decided by top-N depends on the whole ladder, not on one
+    team's score, so it cannot be answered here - use ``assign_tiers_top_n`` for that. The
+    Django layer (``afc_rankings/recalc.py``) reads ``tables.tier_mode`` and picks.
     """
     if not meets_participation_floor:
-        return TIER_DEFAULT
-    return score_to_tier(score)
+        return tables.tier_default
+    return score_to_tier(score, tables)
+
+
+# ---------------------------------------------------------------------------
+# Top-N tiering - owner request 2026-08-03
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class LadderEntry:
+    """One competitor's place in the ladder being tiered.
+
+    ``key``   - whatever the caller wants back in the result map (a score-row primary key,
+                in practice). The engine never interprets it.
+    ``score`` - the number the ladder is ordered by. For teams that is the EFFECTIVE score
+                (total minus any manual deduction), which is what recalc already ranks on,
+                so the tiers can never disagree with the printed rank.
+    ``meets_floor`` - the participation floor, already evaluated by the caller.
+    """
+
+    key: object
+    score: float
+    meets_floor: bool
+
+
+# Two scores this close together are the same score. Quarterly scores are sums of floats,
+# so two teams that genuinely earned the same points can differ in the last bit or two;
+# a bare ``==`` would then split a real tie and hand one of them the better tier.
+_TIE_EPSILON = 1e-9
+
+
+def assign_tiers_top_n(entries, tables: ScoringTables = DEFAULT_TABLES) -> dict:
+    """Tier a whole ladder by POSITION: the best N are tier 1, the next M tier 2, and so on.
+
+    Returns ``{key: tier_int}`` covering every entry passed in. The three rules that decide
+    the awkward cases, all deliberate and all tested:
+
+    1. THE PARTICIPATION FLOOR IS APPLIED FIRST, BEFORE THE COUNT IS TAKEN.
+       A team that has not met the floor is not eligible for any tier and does not occupy a
+       place. Otherwise a floor-failing team sitting third would burn a Tier 1 slot and give
+       it to nobody, so "the top 10" would quietly become nine teams. "Top N" means the top N
+       teams that qualify to be ranked at all, which is also what threshold mode does - there
+       the floor sends a team to the default tier whatever it scored.
+
+    2. A TIE ON THE BOUNDARY GOES UP, FOR EVERY TIED TEAM.
+       If Tier 1 is the top 10 and the 10th and 11th teams have the same score, both are
+       Tier 1 (and the tier finishes with 11 teams). Two teams that scored exactly the same
+       cannot be given different tiers for a whole season on the strength of an alphabetical
+       tiebreak - that is the one outcome nobody can explain to the team that lost out.
+       Dropping both instead would punish each of them for the other's existence and leave
+       the tier short. So the count is a minimum size, not a maximum. Ties are only ever
+       absorbed upward, so a tie can never straddle two tiers.
+
+    3. WHAT THE COUNTS DO NOT COVER FALLS TO THE DEFAULT TIER.
+       If the counts add up to fewer teams than are ranked, everyone past the last count
+       gets ``tables.tier_default`` - the same fall-through threshold mode already uses for a
+       team below every cutoff. If they add up to more, the lower tiers simply run out of
+       teams and finish short; that is not an error.
+
+    ORDER: entries are ranked by score, descending, with a STABLE sort - so the order the
+    caller passes them in is the tiebreak. Callers pass rows already in ladder order (the
+    same ``-effective, -wins, -kills, name`` order that produced the printed rank), which is
+    what keeps a team's tier and its rank telling the same story.
+
+    A tier whose count is None (unset) or 0 is simply skipped and ends up empty. Validation
+    refuses to SAVE an unset count in top-N mode; this is the fail-soft path for a config
+    that reached the engine anyway.
+    """
+    entries = list(entries)
+    result = {}
+
+    # ── rule 1: the floor, before anything is counted ──
+    eligible = []
+    for entry in entries:
+        if entry.meets_floor:
+            eligible.append(entry)
+        else:
+            result[entry.key] = tables.tier_default
+
+    # Stable sort on score alone: equal scores keep the caller's ladder order.
+    ordered = sorted(eligible, key=lambda e: -e.score)
+
+    taken = 0
+    for count, tier in tables.tier_counts:
+        if taken >= len(ordered):
+            break
+        if not count or count <= 0:
+            continue  # an unset or zero size means "no team is placed in this tier"
+        cut = min(taken + count, len(ordered))
+        # ── rule 2: pull in everyone tied with the last team inside the cut ──
+        boundary = ordered[cut - 1].score
+        while cut < len(ordered) and abs(ordered[cut].score - boundary) <= _TIE_EPSILON:
+            cut += 1
+        for entry in ordered[taken:cut]:
+            result[entry.key] = tier
+        taken = cut
+
+    # ── rule 3: everyone the counts did not reach ──
+    for entry in ordered[taken:]:
+        result[entry.key] = tables.tier_default
+
+    return result
 
 
 def player_tier(
@@ -571,6 +719,8 @@ def player_tier(
     team_tier: int | None,
     individual_score: float,
     meets_floor: bool,
+    tables: ScoringTables = DEFAULT_TABLES,
+    individual_tier: int | None = None,
 ) -> tuple[int, str]:
     """Resolve a player's quarterly tier and its source. Spec §9.1 / §9.2.
 
@@ -580,13 +730,21 @@ def player_tier(
     Unattached: tier from the player's individual score via ``assign_tier``
     (the §9.2 floor of >=1 tournament applies), source = "individual".
 
+    ``individual_tier`` is the already-decided unattached answer, supplied when the tier
+    could not be worked out from one score on its own - top-N mode, where a player's tier
+    is their position on the player ladder (``assign_tiers_top_n``). It is ignored for an
+    attached player, who inherits either way. Left None (the default and every existing
+    caller), the score is used exactly as before.
+
     Returns ``(tier_int, source)`` where source ∈ {"team", "individual"}.
     """
     if is_attached:
         if team_tier is None:
             raise ValueError("attached player requires a team_tier")
         return team_tier, "team"
-    return assign_tier(individual_score, meets_floor), "individual"
+    if individual_tier is not None:
+        return individual_tier, "individual"
+    return assign_tier(individual_score, meets_floor, tables), "individual"
 
 
 # ===========================================================================
