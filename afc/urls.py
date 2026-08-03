@@ -54,6 +54,11 @@ urlpatterns = [
     # discovery, JWKS) plus, from later tasks, AFC's own consent screen. See afc_sso/urls.py
     # and WEBSITE/tasks/afc-sso-provider-design.md.
     path("sso/", include('afc_sso.urls')),
+    # AFC's own WhatsApp Cloud API integration. The ONE public route here is
+    # /whatsapp/webhook/, which Meta calls: a GET to verify the URL, then POSTs
+    # carrying delivery receipts for messages we sent and messages players send us.
+    # Every POST must be HMAC-signed with the Meta app secret. See afc_whatsapp/apps.py.
+    path("whatsapp/", include('afc_whatsapp.urls')),
 
 ]
 

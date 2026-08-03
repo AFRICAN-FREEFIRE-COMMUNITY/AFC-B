@@ -75,6 +75,9 @@ INSTALLED_APPS = [
     'afc_sponsors',
     'oauth2_provider',
     'afc_sso',
+    # AFC's own WhatsApp Cloud API integration (message log, template registry,
+    # webhook). Replaces the Kapso and Zernio middlemen; see afc_whatsapp/apps.py.
+    'afc_whatsapp',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -385,6 +388,13 @@ RANKINGS_RECALC_SYNC = os.getenv("RANKINGS_RECALC_SYNC", str(DEBUG)).strip().low
 # inline if the ocr_ml worker is not running.
 OCR_ML_SYNC = os.getenv("OCR_ML_SYNC", str(DEBUG)).strip().lower() == "true"
 
+# WhatsApp sends (afc_whatsapp/tasks.py): same inline-in-dev pattern as the two above.
+# When True (defaults to DEBUG) queue_template / queue_text run the send inline, so local dev
+# needs no worker. In production leave it False and run a dedicated worker for the whatsapp
+# queue: `celery -A afc worker -Q whatsapp`. Set WHATSAPP_SYNC=True in the prod .env only if
+# that worker is not running, otherwise queued messages would sit in the broker unsent.
+WHATSAPP_SYNC = os.getenv("WHATSAPP_SYNC", str(DEBUG)).strip().lower() == "true"
+
 # OCR inference routing (Phase 3). The upload path tries the self-hosted local student first
 # and only escalates to Gemini when the confidence gate is not satisfied (afc_ocr/services/
 # ocr_confidence). All env-overridable so the cost/accuracy trade can be tuned in prod.
@@ -529,6 +539,36 @@ KAPSO_TEMPLATE_LANG = os.getenv("KAPSO_TEMPLATE_LANG", "en_US")
 # accepts unsigned POSTs exactly as before, so this is backward compatible. Set it on prod
 # together with the matching secret on the Kapso/proxy side.
 KAPSO_WEBHOOK_SECRET = os.getenv("KAPSO_WEBHOOK_SECRET")
+
+# ── AFC's OWN WhatsApp Cloud API integration (afc_whatsapp) ────────────────────────────────
+# The replacement for the two middlemen above and beside (Kapso for marketplace vendor alerts,
+# Zernio for match room details): AFC talks to Meta directly. Consumed by afc_whatsapp/client.py
+# (sends), afc_whatsapp/webhooks.py (the inbound endpoint at /whatsapp/webhook/) and
+# afc_whatsapp/tasks.py (the Celery send task). Every value is env-driven: the gitignored .env
+# locally, real server env vars on prod. NOTHING here may ever be committed with a value.
+#
+#   WHATSAPP_PHONE_NUMBER_ID      -> the Meta phone-number ID we send FROM (the AFC business
+#                                    number). Found in Meta app dashboard > WhatsApp > API setup.
+#   WHATSAPP_ACCESS_TOKEN         -> the Bearer token for the Graph API. Use a SYSTEM USER token
+#                                    (permanent), not the 24-hour temporary token the dashboard
+#                                    shows first, or every send starts failing a day after setup.
+#   WHATSAPP_APP_SECRET           -> the Meta APP secret. Used to verify the X-Hub-Signature-256
+#                                    HMAC on every inbound webhook POST. Without it the webhook
+#                                    rejects everything (deliberate: this URL can rewrite delivery
+#                                    history and flip a user's notification consent).
+#   WHATSAPP_BUSINESS_ACCOUNT_ID  -> the WABA the number belongs to. Not needed to send; it is what
+#                                    `manage.py sync_whatsapp_templates` reads the approved
+#                                    template list from.
+#   WHATSAPP_API_VERSION          -> Graph API version, default v21.0. Bump deliberately.
+#   WHATSAPP_WEBHOOK_VERIFY_TOKEN -> a random string the OWNER invents and types into BOTH the Meta
+#                                    webhook config and this env var. Meta echoes it back once, on
+#                                    the GET handshake, to prove we own the URL.
+WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
+WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "")
+WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
+WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
+WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
 
 # Shop checkout currency. Both shop payment paths (Paystack + Stripe, see
 # afc_shop/stripe_checkout.py) charge in this currency, and Stripe Connect vendor
