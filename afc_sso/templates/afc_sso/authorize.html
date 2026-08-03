@@ -37,7 +37,16 @@
     </ul>
     <form method="post">
       {% csrf_token %}
-      {{ form.as_p }}
+      {% comment %}
+        Hidden fields ONLY (client_id, redirect_uri, scope, state, PKCE challenge, nonce).
+        Rendering the whole form would also draw the library's own "Allow" checkbox, which
+        looks like a stray unlabelled tickbox above the buttons and does nothing useful:
+        the Allow button already submits allow=Authorize, and its absence is what the view
+        reads as a denial.
+        Use {% comment %}, not the {# #} form, which is single line only and renders its
+        own text onto the page when it spans several lines.
+      {% endcomment %}
+      {% for field in form.hidden_fields %}{{ field }}{% endfor %}
       <button class="allow" type="submit" name="allow" value="Authorize">{% trans "Allow" %}</button>
       <button class="deny" type="submit">{% trans "Deny" %}</button>
     </form>
