@@ -19,6 +19,7 @@ from django.urls import include, path
 from .admin_api import (
     rotate_sso_client_secret,
     sso_application_detail,
+    sso_application_logo,
     sso_applications,
     sso_scope_catalogue,
     suspend_sso_application,
@@ -45,6 +46,11 @@ urlpatterns = [
          name="sso-admin-app-detail"),
     path("admin/apps/<int:application_id>/suspend/", suspend_sso_application,
          name="sso-admin-app-suspend"),
+    # The partner logo AFC hosts itself. Its own route because it is the one multipart
+    # upload here: POST replaces the file, DELETE removes it. The detail PATCH above is
+    # JSON and cannot carry a file.
+    path("admin/apps/<int:application_id>/logo/", sso_application_logo,
+         name="sso-admin-app-logo"),
     path("admin/apps/<int:application_id>/rotate-secret/", rotate_sso_client_secret,
          name="sso-admin-app-rotate-secret"),
 

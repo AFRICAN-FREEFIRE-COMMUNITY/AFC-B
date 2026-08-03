@@ -212,6 +212,116 @@ def _clean_redirect_uris(value):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Logo upload validation
+# ──────────────────────────────────────────────────────────────────────────────
+# DELIBERATELY STRICTER THAN EVERY OTHER UPLOAD GUARD IN THIS CODEBASE. The file
+# validated here is rendered on the CONSENT SCREEN - the page a player reads before
+# deciding to trust a partner with their data - and it is served from AFC's own media
+# origin. A file that is not really an image is therefore stored XSS on a security
+# page, not a broken picture.
+#
+# PRECEDENT FOLLOWED: afc_ocr/services/image_validate.py, the strictest existing guard
+# (explicit format allowlist + a per-file byte cap + one client-safe message per
+# failure). Two deliberate departures from it, both TIGHTER, because the risk here is
+# not the same:
+#   * it decides the format from the browser-supplied content_type. We decode the bytes
+#     with Pillow and believe only what Pillow says the file is - a .png filename and an
+#     image/png header cost an attacker nothing, so neither is evidence.
+#   * it fails OPEN on an unexpected error, which is right there (the extraction engine
+#     downstream degrades to a clean 503 anyway). Nothing downstream saves us here, so
+#     anything we cannot positively identify as one of three raster formats is REFUSED.
+ALLOWED_LOGO_FORMATS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp"}
+
+# 2 MB. Far below the 10-15 MB caps elsewhere in the app because the consent screen
+# renders this at 48x48: anything approaching the cap is already a mistake. The frontend
+# also downscales before sending (lib/imageCompress.ts), so a normal logo is nowhere near.
+MAX_LOGO_BYTES = 2 * 1024 * 1024
+
+# Decompression-bomb guard: a few-KB PNG can legally decode to a gigapixel canvas, which
+# would exhaust memory in the re-encode below. Size on disk alone does not catch that.
+MAX_LOGO_EDGE = 5000
+
+# Extensions we are willing to see on a stored file. "jpeg" is here only because it is a
+# legitimate alias a re-encode may produce; the canonical values are the ones above.
+_SAFE_LOGO_EXTS = frozenset(ALLOWED_LOGO_FORMATS.values()) | {"jpeg"}
+
+
+def _clean_logo_upload(uploaded):
+    """Validate one uploaded partner logo. Returns (file_to_store, error_message).
+
+    Same (cleaned, error) contract as _clean_url above, so the views read alike: exactly
+    one of the two is non-None.
+
+    CHECKS, IN ORDER:
+      1. SIZE, first because it costs nothing and an enormous file should never reach a
+         decoder at all.
+      2. IDENTITY, by decoding. Pillow must open the bytes, agree they are PNG / JPEG /
+         WEBP, and verify() the file. This is the check a filename and a Content-Type
+         header cannot fake, and it is the reason an SVG (which can carry <script>) or an
+         HTML page named logo.png is refused HERE rather than being served to players
+         from AFC's origin later.
+      3. DIMENSIONS, so a small file that decodes to a huge canvas cannot exhaust memory
+         during the re-encode.
+
+    ON SUCCESS the file goes through afc_auth.image_utils.normalize_image_upload - the
+    same downscale/recompress every other logo upload in the app uses (team logo, profile
+    picture) - and is then RENAMED. The rename is not cosmetic: the original filename is
+    the one part of the upload an attacker fully controls, and rebuilding it is what
+    guarantees no attacker-chosen extension (logo.html) can reach the media directory,
+    whatever normalize_image_upload did or did not manage to do with the bytes.
+    """
+    # ── 1. size, before any decode ──
+    size = getattr(uploaded, "size", 0) or 0
+    if size > MAX_LOGO_BYTES:
+        return None, f"The logo must be {MAX_LOGO_BYTES // (1024 * 1024)} MB or smaller."
+
+    # Local import, mirroring how every other view in this codebase reaches for Pillow:
+    # it keeps the module importable on a host where the image stack is unavailable.
+    from PIL import Image
+
+    # ── 2. identity: what the BYTES are, not what the request claims ──
+    try:
+        uploaded.seek(0)
+        probe = Image.open(uploaded)
+        # .format and .size come from the header, so they are readable before verify().
+        image_format = (probe.format or "").upper()
+        width, height = probe.size
+        # verify() reads the rest of the file and raises on corruption. It leaves `probe`
+        # unusable afterwards, which is fine - nothing below touches it again.
+        probe.verify()
+    except Exception:  # noqa: BLE001 - ANY decode failure is a refusal. Never a pass.
+        return None, "That file is not a readable image. Upload a PNG, JPG or WEBP."
+    finally:
+        # Rewind for whoever reads the file next, whether we passed or failed.
+        try:
+            uploaded.seek(0)
+        except Exception:  # noqa: BLE001 - an exotic file-like without seek is not fatal.
+            pass
+
+    if image_format not in ALLOWED_LOGO_FORMATS:
+        return None, "The logo must be a PNG, JPG or WEBP image."
+
+    # ── 3. dimensions ──
+    if width > MAX_LOGO_EDGE or height > MAX_LOGO_EDGE:
+        return None, f"The logo must be {MAX_LOGO_EDGE} pixels or smaller on each side."
+
+    from afc_auth.image_utils import normalize_image_upload
+
+    cleaned = normalize_image_upload(uploaded)
+
+    # Rebuild the stored name from scratch. normalize_image_upload re-encodes to .png or
+    # .jpg when it succeeds and returns the ORIGINAL upload, original name and all, when
+    # it does not - so trust ITS extension only when it is one of ours, and otherwise fall
+    # back to the format Pillow actually decoded above. Either way the name that reaches
+    # storage is ours, not the partner's.
+    ext = (getattr(cleaned, "name", "") or "").rsplit(".", 1)[-1].lower()
+    if ext not in _SAFE_LOGO_EXTS:
+        ext = ALLOWED_LOGO_FORMATS[image_format]
+    cleaned.name = f"partner-logo.{ext}"
+    return cleaned, None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Serialization helpers
 # ──────────────────────────────────────────────────────────────────────────────
 def _application_or_404(application_id):
@@ -244,7 +354,25 @@ def _serialize_summary(application):
     }
 
 
-def _serialize_detail(application):
+def _abs_media_url(request, value):
+    """Make a stored logo value absolute for the admin dashboard, or "" when there is none.
+
+    The Next.js admin runs on a DIFFERENT origin than this API (FE :3001 / api :8000 in
+    dev, separate domains in prod), so a relative "/media/..." path would not resolve in
+    an <img>. build_absolute_uri leaves an already-absolute value untouched, so this one
+    call handles BOTH halves of resolved_logo_url(): the uploaded file's relative media
+    path and a legacy third-party URL. Mirrors _abs_url in
+    afc_organizers/views_leaderboard_design.py. `request` may be None (a caller that has
+    no request gets the stored value back unchanged).
+    """
+    if not value:
+        return ""
+    if request is None:
+        return value
+    return request.build_absolute_uri(value)
+
+
+def _serialize_detail(application, request=None):
     """Full config for the edit form: the summary plus the identity URLs, the redirect
     URI list, and every share_* toggle as a boolean keyed by its field name.
 
@@ -253,9 +381,21 @@ def _serialize_detail(application):
     It is returned so the admin UI can show what the toggles actually amount to without
     reimplementing the mapping. client_secret is NOT here and cannot be - only its hash
     is stored.
+
+    THE THREE LOGO FIELDS, and why each exists (the admin UI needs to tell them apart):
+      logo_display_url  the ONE resolved value - the logo a player will actually be
+                        shown. Uploaded file if there is one, legacy URL otherwise, ""
+                        for neither. Render this; it is what the consent screen renders.
+      logo_image_url    set only when AFC HOSTS the file. The UI reads it to know whether
+                        there is anything to replace or remove.
+      logo_url          the raw legacy third-party URL, still stored on older rows. Its
+                        presence WITHOUT logo_image_url is what tells the UI to prompt
+                        staff to upload a file and stop depending on the partner's server.
     """
     out = _serialize_summary(application)
     out["logo_url"] = application.logo_url
+    out["logo_image_url"] = _abs_media_url(request, application.logo_file_url())
+    out["logo_display_url"] = _abs_media_url(request, application.resolved_logo_url())
     out["homepage_url"] = application.homepage_url
     out["deletion_webhook_url"] = application.deletion_webhook_url
     # The library stores these space-separated; the admin UI edits them one per line.
@@ -430,7 +570,7 @@ def sso_applications(request):
         {
             "message": "Sign-in partner created. Copy the client secret now, it will not be shown again.",
             "client_secret": secret,
-            "application": _serialize_detail(application),
+            "application": _serialize_detail(application, request),
         },
         status=status.HTTP_201_CREATED,
     )
@@ -487,7 +627,7 @@ def sso_application_detail(request, application_id):
         return err
 
     if request.method == "GET":
-        return Response({"application": _serialize_detail(application)},
+        return Response({"application": _serialize_detail(application, request)},
                         status=status.HTTP_200_OK)
 
     # ── PATCH: whitelist-validated partial update ──
@@ -553,7 +693,7 @@ def sso_application_detail(request, application_id):
     return Response(
         {
             "message": "Sign-in partner updated.",
-            "application": _serialize_detail(application),
+            "application": _serialize_detail(application, request),
         },
         status=status.HTTP_200_OK,
     )
@@ -656,7 +796,7 @@ def rotate_sso_client_secret(request, application_id):
         {
             "message": "Client secret rotated. Copy it now, it will not be shown again.",
             "client_secret": secret,
-            "application": _serialize_detail(application),
+            "application": _serialize_detail(application, request),
         },
         status=status.HTTP_200_OK,
     )
@@ -709,6 +849,106 @@ def sso_scope_catalogue(request):
                 }
                 for field in SSO_FIELD_TOGGLES
             ]
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8) sso_application_logo  (POST = upload/replace, DELETE = remove) at
+#    sso/admin/apps/<application_id>/logo/
+# ──────────────────────────────────────────────────────────────────────────────
+@api_view(["POST", "DELETE"])
+@authentication_classes([])
+def sso_application_logo(request, application_id):
+    """Upload, replace or remove the logo AFC shows players for one partner.
+
+    PURPOSE: backs the logo control in the Manage dialog on the "Sign in with AFC" tab
+    (frontend/app/(a)/a/partners/_components/SsoAppsPanel.tsx, via lib/sso.ts
+    `ssoApi.uploadLogo` / `ssoApi.removeLogo`).
+
+    WHY THIS ENDPOINT EXISTS AT ALL (owner 2026-08-03, "replace logo url with upload").
+    This image is rendered on the CONSENT SCREEN - afc_sso/templates/afc_sso/authorize.html,
+    the page where a player decides whether to trust a partner with their data. While the
+    logo was a URL, AFC embedded a third-party-controlled image on its own
+    security-critical page: the partner could swap it for anything at any time, and every
+    player load pinged their server. Storing the file on AFC's own media storage means what
+    staff approved is what players see, and the consent screen makes no outbound request.
+
+    AUTH: `Authorization: Bearer <SessionToken>`, caller must hold head_admin or
+    partner_admin - the SAME _require_sso_admin gate as every other route in this module.
+    @authentication_classes([]) for the same CSRF reason documented on sso_applications.
+
+    ── POST (upload or replace) ──
+    REQUEST: multipart/form-data, one file field `logo`.
+    RESPONSE 200: {"message": "...", "application": {...detail...}}
+    RESPONSE 400: {"message": "<why it was refused>"} - no file, too large, not a readable
+                  image, wrong format, or too many pixels. See _clean_logo_upload, which is
+                  deliberately the strictest upload guard in this codebase and identifies
+                  the file by DECODING it rather than by trusting its name or Content-Type.
+    Replacing deletes the previous file rather than orphaning it in media storage.
+
+    ── DELETE (remove) ──
+    REQUEST: no body.
+    RESPONSE 200: {"message": "...", "application": {...detail...}}
+    Clears BOTH `logo` and the legacy `logo_url`, because an admin sees ONE logo (the
+    resolved value) and expects removing it to remove it. Dropping only the file would let
+    a legacy third-party URL pop back onto the consent screen - the exact thing this
+    endpoint exists to prevent. This is also the only way to say "this partner has no
+    logo", since the URL text field it replaced is gone from the UI.
+
+    NOTE ON THE OTHER ROUTES: PATCH on the detail endpoint still accepts `logo_url` (it is
+    in IDENTITY_FIELDS) so an API client mid-migration is not broken, but the admin UI no
+    longer sends it. `logo` is a file and is NOT in the PATCH whitelist, so an attempt to
+    set it through JSON is refused there like any other unknown field.
+    """
+    user, err = _require_sso_admin(request)
+    if err:
+        return err
+
+    application, err = _application_or_404(application_id)
+    if err:
+        return err
+
+    if request.method == "DELETE":
+        # delete(save=False) removes the stored file without a write, then the single
+        # save() below persists both cleared columns at once.
+        if application.logo:
+            application.logo.delete(save=False)
+        application.logo = None
+        application.logo_url = ""
+        application.save()
+        return Response(
+            {
+                "message": "Partner logo removed.",
+                "application": _serialize_detail(application, request),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ── POST: upload or replace ──
+    uploaded = request.FILES.get("logo")
+    if not uploaded:
+        return Response(
+            {"message": "A logo image file is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    cleaned, err_msg = _clean_logo_upload(uploaded)
+    if err_msg:
+        return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Drop the file being replaced first, so repeated uploads do not accumulate dead
+    # files under MEDIA_ROOT. Nothing else references them.
+    if application.logo:
+        application.logo.delete(save=False)
+    application.logo = cleaned
+    application.save()
+
+    return Response(
+        {
+            "message": "Partner logo updated.",
+            "application": _serialize_detail(application, request),
         },
         status=status.HTTP_200_OK,
     )
