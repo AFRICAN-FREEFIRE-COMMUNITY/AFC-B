@@ -51,9 +51,12 @@
 # So this API grants a CEILING, never a release. Turning a toggle off lowers the
 # ceiling immediately for every future token.
 # ──────────────────────────────────────────────────────────────────────────────
+import os
+
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 from django.db.models import Q
+from django.http import FileResponse
 from oauth2_provider.generators import generate_client_secret
 from oauth2_provider.models import get_application_model
 from rest_framework import status
@@ -951,4 +954,69 @@ def sso_application_logo(request, application_id):
             "application": _serialize_detail(application, request),
         },
         status=status.HTTP_200_OK,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 9) sso_integration_guide  (GET sso/admin/integration-guide/)
+# ──────────────────────────────────────────────────────────────────────────────
+# WHERE THE FILE COMES FROM: docs/afc-sso-integration-guide.md in the WEBSITE workspace is
+# the source of truth; docs/build-sso-guide-pdf.mjs renders it to a PDF with headless
+# Chrome and drops a copy HERE, inside the backend app, because the backend deploys as its
+# own repository and cannot reach the workspace docs/ folder at runtime. Never edit the
+# copy: re-run `node docs/build-sso-guide-pdf.mjs` and it refreshes both.
+GUIDE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs")
+GUIDE_PATH = os.path.join(GUIDE_DIR, "afc-sso-integration-guide.pdf")
+# What the admin's browser saves it as. Named for the partner who receives it, not for the
+# repository path it came from.
+GUIDE_DOWNLOAD_NAME = "AFC-Sign-in-with-AFC-Integration-Guide.pdf"
+
+
+@api_view(["GET"])
+@authentication_classes([])
+def sso_integration_guide(request):
+    """Download the partner integration guide PDF.
+
+    PURPOSE: this is the document AFC sends a partner organisation when it is approved.
+    It is the whole contract in one file: the endpoints, the scope catalogue, the claims
+    each scope produces, the rules that decide what actually reaches the partner, the
+    error surface, and a complete worked Next.js integration. An admin downloads it here
+    and emails it on, so the version a partner receives is always the one built from
+    docs/afc-sso-integration-guide.md rather than a stale copy on somebody's laptop.
+
+    REQUEST: GET, no parameters, no body.
+    RESPONSE: 200 with the PDF bytes, `Content-Type: application/pdf` and a
+        `Content-Disposition: attachment` filename. 400/401/403 from the shared gate, and
+        404 with a message when the build output is missing from the deployment.
+    AUTH: Bearer SessionToken, head_admin or partner_admin, via _require_sso_admin. The
+        guide describes only the public protocol surface, so this gate is not protecting a
+        secret; it is here because every other route under sso/admin/ has it and one
+        surface with one auth rule is easier to reason about than an exception.
+    CONSUMED BY: the "Download the partner guide" button at the top of the "Sign in with
+        AFC" tab, frontend/app/(a)/a/partners/_components/SsoAppsPanel.tsx, through
+        ssoApi.integrationGuide() in frontend/lib/sso.ts. That caller reads the response as
+        a blob and saves it with a hidden anchor, the same idiom as the leaderboard
+        graphic export, because the Bearer header rules out a plain <a href> download.
+
+    FileResponse streams the file rather than reading 1.5 MB into memory, and Django
+    closes the handle when the response finishes. Returning a non-DRF response from an
+    @api_view is the same thing afc_leaderboard/views.py does for its PNG and ZIP exports.
+    """
+    user, error_response = _require_sso_admin(request)
+    if error_response:
+        return error_response
+
+    # A missing file means the deployment shipped without the build output, not that the
+    # caller did anything wrong. Say so plainly instead of raising a 500.
+    if not os.path.exists(GUIDE_PATH):
+        return Response(
+            {"message": "The integration guide is not available on this server."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    return FileResponse(
+        open(GUIDE_PATH, "rb"),
+        content_type="application/pdf",
+        as_attachment=True,
+        filename=GUIDE_DOWNLOAD_NAME,
     )
