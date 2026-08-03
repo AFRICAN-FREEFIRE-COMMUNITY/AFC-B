@@ -16,7 +16,7 @@
 from urllib.parse import quote
 
 from django.conf import settings
-from django.http import HttpResponseRedirect
+from django.http import HttpResponseBadRequest, HttpResponseRedirect
 from django.utils import timezone
 from oauth2_provider.models import get_access_token_model, get_application_model
 from oauth2_provider.views import AuthorizationView
@@ -74,14 +74,21 @@ class AFCAuthorizationView(AuthorizationView):
         return super().dispatch(request, *args, **kwargs)
 
     def get(self, request, *args, **kwargs):
-        """Force the consent screen whenever this request asks for MORE than the player
-        has already approved.
+        """Refuse outright, or force the consent screen when the request has widened.
 
-        The library would otherwise reuse a past approval whenever a live token covers the
-        requested scopes (views/base.py, the `require_approval == "auto"` branch). That is
-        the same rule as consent_is_current, but it is the library's rule, not ours: state
-        it here so a settings change or a library upgrade cannot quietly relax it.
+        Order matters: refusals are checked first so a suspended org or an over-broad
+        scope never reaches the point where a screen is rendered or a code is issued.
         """
+        refusal = self._refuse(request)
+        if refusal is not None:
+            return refusal
+
+        # Force the consent screen whenever this request asks for MORE than the player has
+        # already approved. The library would otherwise reuse a past approval whenever a
+        # live token covers the requested scopes (views/base.py, the
+        # `require_approval == "auto"` branch). That is the same rule as
+        # consent_is_current, but it is the LIBRARY's rule, not ours: state it here so a
+        # settings change or a library upgrade cannot quietly relax it.
         client_id = request.GET.get("client_id")
         if client_id:
             application = (
@@ -96,6 +103,38 @@ class AFCAuthorizationView(AuthorizationView):
                 request.GET = request.GET.copy()
                 request.GET["approval_prompt"] = "force"
         return super().get(request, *args, **kwargs)
+
+    def _refuse(self, request):
+        """Return an AFC-rendered refusal, or None to let the flow continue.
+
+        Deliberately RENDERS rather than redirects. Bouncing a refusal to the redirect_uri
+        in the query string would make AFC an open redirector: an attacker could send a
+        player a link that fails on purpose and lands them on a phishing page carrying an
+        africanfreefirecommunity.com referrer. Nothing here echoes attacker-controlled
+        input back into a Location header.
+        """
+        application = (
+            get_application_model()
+            .objects.filter(client_id=request.GET.get("client_id", ""))
+            .first()
+        )
+        if application is None:
+            return HttpResponseBadRequest("Unknown application.")
+        if not application.is_active_partner():
+            return HttpResponseBadRequest("This application is suspended.")
+        if getattr(request.user, "status", "active") != "active":
+            return HttpResponseBadRequest(
+                "Your AFC account cannot sign in to partner sites."
+            )
+        requested = set((request.GET.get("scope") or "").split())
+        if not requested <= set(application.allowed_scopes()):
+            # Gate 1 again, at the front door. build_claims would strip the extra scope
+            # anyway, but letting the request through would show the player a consent
+            # screen for data the org is not approved to receive.
+            return HttpResponseBadRequest(
+                "This application requested data it is not approved for."
+            )
+        return None
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
