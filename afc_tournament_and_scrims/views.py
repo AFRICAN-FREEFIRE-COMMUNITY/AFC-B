@@ -340,15 +340,37 @@ def update_event_and_stage_statuses():
 # EventDetailsWrapper), so this makes the badge reflect reality without waiting on the sweep. Audit /
 # admin-edit surfaces (snapshot_event, get_event_details_for_admin) keep the raw stored value on purpose.
 def effective_event_status(event):
+    from datetime import datetime as _dt, time as _time
     # A finished event stays finished - do not let a time comparison re-open it.
+    #
+    # EXCEPT when the event has not STARTED yet (owner 2026-08-03, backlog item 27: "duplicate an
+    # event, edit it, set a future start date, publish, and it still shows Event completed"). A stored
+    # "completed" is a snapshot of a moment that has passed; it is nonsense for an event whose start
+    # instant is still in the FUTURE, and until now it short-circuited here and stuck permanently.
+    #
+    # How an event gets into that state: clone_event copies the source's start_date/end_date (it only
+    # resets identity + lifecycle, so a fresh clone carries PAST dates), and update_event_and_stage_statuses
+    # stamps any published past-end event "completed". Its sibling rule - reset future-dated events to
+    # "upcoming" - explicitly excludes event_status="completed", so once stamped nothing ever cleared it,
+    # and edit_event moving the dates forward did not clear it either. The result was an event dated
+    # next month that displayed "completed" forever.
+    #
+    # Guarding on the START instant is the safe form of this: a genuinely finished event has a start
+    # date in the PAST, so it is untouched. Only an event that cannot possibly have run yet is rescued.
     if event.event_status == "completed":
+        if event.start_date:
+            _start_guard = timezone.make_aware(
+                _dt.combine(event.start_date, event.event_start_time or _time.min),
+                _event_zone(event),
+            )
+            if timezone.now() < _start_guard:
+                return "upcoming"
         return "completed"
     # A cancelled event stays cancelled: without this it fell through to the start/end time
     # comparison below and displayed as "ongoing"/"upcoming" on the list + detail badges, losing
     # its cancelled state (bug 2026-07-06). ("cancelled" is written by cancel_event.)
     if event.event_status == "cancelled":
         return "cancelled"
-    from datetime import datetime as _dt, time as _time
     _tz = _event_zone(event)  # interpret the event's naive times in ITS timezone, not the server's
     now = timezone.now()
     start_dt = timezone.make_aware(
@@ -373,6 +395,130 @@ def effective_event_status(event):
             return "completed"
     # Otherwise keep the existing upcoming -> ongoing convergence.
     return "ongoing" if now >= start_dt else "upcoming"
+
+
+# ── registration window as ABSOLUTE INSTANTS (owner 2026-08-03, backlog item 38) ──────────────
+# WHY: registration_open_date / registration_end_date are DateFields and registration_start_time /
+# registration_end_time are separate TimeFields, all NAIVE - they record the HOST's wall clock, the
+# same way event_start_time does. "Registration opens 03 Aug 18:00" is therefore ONE instant in time
+# (18:00 in the event's own tz), and every viewer on earth must flip open/closed at that same instant.
+#
+# Two real bugs came out of not doing that:
+#   1. The registration gate below compared date.today() (the SERVER's local date) against the two
+#      DATEs and IGNORED the two TIMEs entirely. An organizer who set "opens 18:00" had registration
+#      accepted from 00:00 that day, and one who set "closes 12:00" kept accepting until 23:59.
+#   2. The frontend rebuilt the window with `new Date("<date>T<time>")`, which JavaScript parses in
+#      the VIEWER's browser tz. A viewer EAST of the event tz (Ethiopia, UTC+3, vs Lagos UTC+1) hit
+#      the close boundary 2h early and saw "Registration Closed" while it was still open in Lagos; a
+#      viewer WEST of it saw the open boundary late. Same root cause, opposite directions.
+#
+# Displaying the window in the viewer's own timezone is correct and stays (LocalTime / LocalEventTime).
+# DECIDING open/closed must be an absolute comparison, which is what this helper provides.
+#
+# Missing times are treated as the widest sensible window in the event's tz: no start time => opens at
+# 00:00:00 on the open date, no end time => closes at 23:59:59.999999 on the end date (so a legacy
+# time-less event behaves exactly like the old date-only rule, just tz-correct).
+#
+# CONNECTS TO: register_for_event (the enforcement gate below) and get_event_details /
+# get_event_details_not_logged_in, which publish the two resolved instants as ISO-8601 UTC
+# (registration_opens_at / registration_closes_at) so the frontend can compare absolutely instead of
+# re-deriving the window from the naive date+time strings. The FE mirror of these exact semantics is
+# combineDateAndTime() in EventDetailsWrapper.tsx.
+def registration_window_instants(event):
+    """Return (open_instant, close_instant) as aware datetimes in the event's timezone."""
+    from datetime import datetime as _dt, time as _time
+    _tz = _event_zone(event)
+    open_dt = timezone.make_aware(
+        _dt.combine(event.registration_open_date, event.registration_start_time or _time.min),
+        _tz,
+    )
+    close_dt = timezone.make_aware(
+        _dt.combine(event.registration_end_date, event.registration_end_time or _time.max),
+        _tz,
+    )
+    return open_dt, close_dt
+
+
+def registration_is_open(event, now=None):
+    """True when NOW falls inside the event's registration window, as one global instant."""
+    if not event.registration_open_date or not event.registration_end_date:
+        return False
+    open_dt, close_dt = registration_window_instants(event)
+    now = now or timezone.now()
+    return open_dt <= now <= close_dt
+
+
+# ── manual result entry: placement validation (owner 2026-08-03, backlog item 19) ─────────────
+# The old messages stated a CONDITION ("Placements must be unique among played teams.") without
+# saying which rows broke it or how to fix it, so organizers read it as the form being buggy. These
+# helpers keep the same rules but name the offending placements and give the remedy.
+#
+# One REAL bug is fixed here too: the team path compared the RAW payload values with set(), so the
+# string "2" and the integer 2 counted as different placements and a genuine duplicate slipped
+# through, while two rows left BLANK in the admin grid both arrive as 0 (MatchResultsGrid coerces
+# with `parseInt(value) || 0`) and collide into a confusing "must be unique" rejection. Normalising
+# to int first makes the check type-proof and lets the blank case report itself accurately.
+#
+# CONNECTS TO: enter_team_match_result_manual + edit_match_result (team) and
+# enter_solo_match_result_manual (solo). The returned string is surfaced verbatim as a sonner toast
+# by ManualMatchResultStep.tsx / GroupResultsEditor.tsx, which pass the backend `message` through.
+def _placement_key(value):
+    """Normalise a placement for comparison: int when digit-like, else the raw value."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if text.lstrip("-").isdigit():
+        return int(text)
+    return text
+
+
+def validate_placements(placements, noun="team"):
+    """Validate one map's placements. Returns an explanatory error string, or None when valid.
+
+    `placements` is the list of placement values for the rows marked PLAYED, in row order.
+    `noun` is "team" or "player" so the copy matches the event's participant type.
+    """
+    plural = f"{noun}s"
+
+    # 1) every played row needs a placement at all.
+    if any(p is None or str(p).strip() == "" for p in placements):
+        return (
+            f"Every {noun} that played this map needs a finishing position. "
+            f"One or more {plural} were left blank: type each {noun}'s position "
+            f"(1 for the winner, then 2, 3, and so on) and save again."
+        )
+
+    keys = [_placement_key(p) for p in placements]
+
+    # 2) two rows cannot share a position - a map has one 1st, one 2nd, and so on.
+    seen, duplicates = set(), []
+    for key in keys:
+        if key in seen and key not in duplicates:
+            duplicates.append(key)
+        seen.add(key)
+    if duplicates:
+        listed = ", ".join(str(d) for d in duplicates)
+        blank_hint = (
+            " A position showing 0 usually means the box was left empty."
+            if 0 in duplicates
+            else ""
+        )
+        return (
+            f"Two or more {plural} are set to the same finishing position ({listed}). "
+            f"Each {noun} needs its own position, so give every {noun} a different "
+            f"number and save again.{blank_hint}"
+        )
+
+    # 3) somebody has to have won the map - booyah counts are Sum(placement == 1).
+    numeric = [k for k in keys if isinstance(k, int)]
+    if placements and 1 not in numeric:
+        return (
+            f"No {noun} is set to position 1, so this map has no winner recorded. "
+            f"Set the {noun} that won the map (the booyah) to 1 and save again."
+        )
+    return None
 
 
 # @api_view(["POST"])
@@ -4831,6 +4977,15 @@ def get_event_details(request):
         "registration_end_time": event.registration_end_time,
         "event_start_time": event.event_start_time,
         "event_end_time": event.event_end_time,
+        # The registration window RESOLVED to absolute instants, ISO-8601 UTC (owner 2026-08-03,
+        # item 38). The naive date+time fields above stay for display, but the frontend must decide
+        # open/closed from THESE, because parsing "<date>T<time>" in the browser silently applies the
+        # VIEWER's timezone and made registration flip early/late by the tz offset (Ethiopia saw
+        # "closed" while Lagos was still open). Computed by registration_window_instants().
+        "registration_opens_at": registration_window_instants(event)[0].isoformat(),
+        "registration_closes_at": registration_window_instants(event)[1].isoformat(),
+        # Server's own verdict on the window, so the UI and the enforcement gate can never disagree.
+        "registration_is_open": registration_is_open(event),
         # IANA tz the times above were entered in (owner 2026-06-21). EventDetailsWrapper
         # pairs it with the *_date + *_time fields to render BOTH the viewer's local time
         # and the host's time with a label. Null on legacy events -> UI shows raw time.
@@ -5720,6 +5875,15 @@ def get_event_details_not_logged_in(request):
         "registration_end_time": event.registration_end_time,
         "event_start_time": event.event_start_time,
         "event_end_time": event.event_end_time,
+        # The registration window RESOLVED to absolute instants, ISO-8601 UTC (owner 2026-08-03,
+        # item 38). The naive date+time fields above stay for display, but the frontend must decide
+        # open/closed from THESE, because parsing "<date>T<time>" in the browser silently applies the
+        # VIEWER's timezone and made registration flip early/late by the tz offset (Ethiopia saw
+        # "closed" while Lagos was still open). Computed by registration_window_instants().
+        "registration_opens_at": registration_window_instants(event)[0].isoformat(),
+        "registration_closes_at": registration_window_instants(event)[1].isoformat(),
+        # Server's own verdict on the window, so the UI and the enforcement gate can never disagree.
+        "registration_is_open": registration_is_open(event),
         # M: waitlist flags + capacity snapshot for the logged-out register CTA.
         "is_waitlist_enabled": event.is_waitlist_enabled,
         # Waitlist slot-assignment mode (owner 2026-06-17): shown on the public event page so a
@@ -6390,14 +6554,23 @@ def register_for_event(request):
     # reg window is technically still open), and without this it kept accepting new registrations into
     # a dead event. Only upcoming/ongoing events accept registrations.
     # -------------------------
-    if event.event_status in ("cancelled", "completed"):
+    # EFFECTIVE status, not the raw stored one (owner 2026-08-03, item 27). A duplicated event carries
+    # the source's past dates and gets stamped "completed" by the date sweep; once its dates are moved
+    # into the future it is genuinely upcoming again, and reading the stale raw field here rejected
+    # every registration on an event the page correctly showed as open. effective_event_status()
+    # resolves that, and still reports completed/cancelled for events that really are.
+    if effective_event_status(event) in ("cancelled", "completed"):
         return Response({"message": "This event is no longer open for registration."}, status=403)
 
     # -------------------------
     # REG WINDOW CHECK
     # -------------------------
-    today = date.today()
-    if not (event.registration_open_date <= today <= event.registration_end_date):
+    # Absolute-instant comparison (owner 2026-08-03, item 38). This used to be
+    # `date.today()` against the two DATE fields, which (a) ran on the SERVER's local date rather
+    # than the event's timezone and (b) ignored registration_start_time / registration_end_time
+    # entirely, so the gate disagreed with what the event page told the user. See
+    # registration_is_open() for the full write-up.
+    if not registration_is_open(event):
         return Response({"message": "Registration is closed."}, status=403)
 
     # -------------------------
@@ -6465,6 +6638,24 @@ def register_for_event(request):
         # Check If the player is banned
         if BannedPlayer.objects.filter(banned_player=user, is_active=True).exists():
             return Response({"message": "You are banned from registering for this event."}, status=403)
+
+        # ── organizer blacklist guard, SOLO path (afc_organizers.OrganizerBlacklist) ──
+        # An organizer can blacklist a PLAYER directly (owner backlog item 1, 2026-08-03), or the
+        # player may have been snapshotted when their team was blacklisted. Either way the block is
+        # stored per (organization, player), so a blocked player must not be able to slip into the
+        # same organizer's events through the SOLO door - which they could until now, because this
+        # guard only existed on the TEAM path below. Same helper, team=None (which skips the
+        # team-entity check; see afc_organizers/blacklist.py for why a NULL team must not be
+        # queried). Only relevant for events with an owning Organization (native AFC events have
+        # event.organization_id=None and are never blacklisted). Lazy import to avoid an
+        # afc_organizers <-> afc_tournament_and_scrims import cycle on this hot path.
+        if event.organization_id:
+            from afc_organizers.blacklist import organizer_blacklist_block
+            solo_blacklist_message = organizer_blacklist_block(
+                event.organization, None, [user.user_id]
+            )
+            if solo_blacklist_message:
+                return Response({"message": solo_blacklist_message}, status=403)
 
         # ── PER-PLAYER REGISTRATION REQUIREMENTS (F3, owner 2026-06-19) ──
         # esports image / profile image / Free Fire UID / WhatsApp number, each gated by its own event
@@ -6899,11 +7090,14 @@ def register_for_event(request):
                 status=403,
             )
 
-        # ── organizer blacklist guard (afc_organizers.OrganizerBlacklist) ──
+        # ── organizer blacklist guard, TEAM path (afc_organizers.OrganizerBlacklist) ──
         # An organizer can blacklist a team for a duration; while it is active the team AND the
         # players who were on it at blacklist time cannot register for THAT organizer's events,
         # even after a snapshotted player leaves the team and joins another (the blacklist
-        # follows the player). Only relevant for events that have an owning Organization (native
+        # follows the player). The same call also catches a roster member who was blacklisted
+        # INDIVIDUALLY (target_type="player", owner backlog item 1) - the helper checks the
+        # per-player rows either way. The SOLO path has its own copy of this guard above.
+        # Only relevant for events that have an owning Organization (native
         # AFC events have event.organization_id=None and are never blacklisted). We call the
         # single helper organizer_blacklist_block(org, team, roster_user_ids); it returns a 403
         # message (team-level OR any blacklisted player) or None. Lazy import to avoid an
@@ -16340,25 +16534,19 @@ def enter_team_match_result_manual(request):
 
     team_map = {tt.tournament_team_id: tt for tt in teams}
 
-    # ---------------- VALIDATE UNIQUE PLACEMENTS ----------------
+    # ---------------- VALIDATE PLACEMENTS ----------------
+    # Three rules, all enforced by the shared validate_placements() helper: every played team has a
+    # position, no two teams share one, and exactly one team is 1st. That last rule matters because
+    # booyah is counted as Sum(placement==1) in get_all_leaderboard_details_for_event / round_robin,
+    # so a map with no 1st place silently contributes 0 booyahs and only shows up later as a short
+    # total (bug 2026-07-06: "5 maps but only 3 booyahs").
+    # Runs BEFORE the destructive transaction below - see the data-loss note in the next block.
     played_rows = [t for t in results_payload if t.get("played", True)]
     placements = [t.get("placement") for t in played_rows]
 
-    if any(p is None for p in placements):
-        return Response({"message": "Each played team must have placement."}, status=400)
-
-    if len(set(placements)) != len(placements):
-        return Response({"message": "Placements must be unique among played teams."}, status=400)
-
-    # A played map MUST have a 1st-place team (the map winner = the booyah). Uniqueness above already
-    # bars two winners, so this makes it EXACTLY one. Without it an organizer could save placements
-    # that skip 1 (e.g. start at 2), leaving the map with no placement==1 row, so it silently
-    # contributes 0 booyahs to the standings (bug 2026-07-06: "5 maps but only 3 booyahs"). Booyah is
-    # counted as Sum(placement==1) in get_all_leaderboard_details_for_event / round_robin, so a missing
-    # winner is invisible until the total is short. Runs BEFORE the destructive transaction below.
-    if played_rows and 1 not in [int(p) for p in placements if str(p).lstrip("-").isdigit()]:
-        return Response({"message": "The map winner is missing: one played team must be placement 1 "
-                                    "(the team that won/booyah'd the map)."}, status=400)
+    _placement_error = validate_placements(placements, noun="team")
+    if _placement_error:
+        return Response({"message": _placement_error}, status=400)
 
     # ---------------- PLAYED-PLAYER VALIDATION (must run BEFORE the destructive write) ----------------
     # Squad rules cap a match at 4 PLAYED players per team. Validate here, ahead of the transaction:
@@ -16930,14 +17118,13 @@ def enter_solo_match_result_manual(request):
     # the saved results intact; a return inside the atomic block after the delete would wipe them).
     _played = [p for p in players_payload
                if bool(p.get("played", True)) and p.get("competitor_id") in comp_map]
-    _pl = [int(p.get("placement")) for p in _played if str(p.get("placement")).lstrip("-").isdigit()]
-    if _played and len(_pl) != len(_played):
-        return Response({"message": "Each played player must have a numeric placement."}, status=400)
-    if len(set(_pl)) != len(_pl):
-        return Response({"message": "Placements must be unique among played players."}, status=400)
-    if _played and 1 not in _pl:
-        return Response({"message": "The map winner is missing: one played player must be placement 1 "
-                                    "(the player who won/booyah'd the map)."}, status=400)
+    # Shared with the team paths (owner 2026-08-03, item 19) so all three surfaces explain the
+    # problem and the remedy in the same words instead of just restating the rule.
+    _placement_error = validate_placements(
+        [p.get("placement") for p in _played], noun="player"
+    )
+    if _placement_error:
+        return Response({"message": _placement_error}, status=400)
 
     rows = []
     with transaction.atomic():
@@ -17080,21 +17267,16 @@ def edit_match_result(request):
     team_map = {tt.tournament_team_id: tt for tt in teams}
 
     # ---------------- PLACEMENT VALIDATION ----------------
+    # Same three rules and the same explanatory copy as enter_team_match_result_manual, via the
+    # shared validate_placements() helper. Without the 1st-place rule an edited map could drop its
+    # placement==1 row and silently contribute 0 booyahs (bug 2026-07-06).
+    # Runs BEFORE the destructive transaction below (see the data-loss note in the next block).
     played_rows = [t for t in results_payload if t.get("played", True)]
     placements = [t.get("placement") for t in played_rows]
 
-    if any(p is None for p in placements):
-        return Response({"message": "Each played team must have placement."}, status=400)
-
-    if len(set(placements)) != len(placements):
-        return Response({"message": "Placements must be unique among played teams."}, status=400)
-
-    # A played map MUST have a 1st-place team (the map winner = the booyah); see the identical guard in
-    # enter_team_match_result_manual. Without it an edited map could drop its placement==1 row and
-    # silently contribute 0 booyahs (bug 2026-07-06). Runs BEFORE the destructive transaction below.
-    if played_rows and 1 not in [int(p) for p in placements if str(p).lstrip("-").isdigit()]:
-        return Response({"message": "The map winner is missing: one played team must be placement 1 "
-                                    "(the team that won/booyah'd the map)."}, status=400)
+    _placement_error = validate_placements(placements, noun="team")
+    if _placement_error:
+        return Response({"message": _placement_error}, status=400)
 
     # ---------------- PLAYED-PLAYER VALIDATION (must run BEFORE the destructive write) ----------------
     # Squad rules cap a match at 4 PLAYED players per team. This check MUST happen here, ahead of the
@@ -23925,13 +24107,27 @@ def complete_event_core(event, by_user, *, source="manual"):
         sync_event_prize_payouts(event)
     except Exception:
         pass
-    # Notify everyone registered that the tournament has concluded.
+    # Notify everyone registered that the competition has concluded.
+    #
+    # The wording follows competition_type (owner 2026-08-03, backlog item 32: "a finished scrim
+    # should say scrims completed, not tournament completed"). Scrims started auto-completing on
+    # 2026-07-06 (see the note in maybe_autocomplete_event below), so every scrims event had been
+    # telling its players their "tournament" was over ever since. Event.competition_type stores
+    # exactly "tournament" or "scrims" (models.py COMPETITION_TYPE_CHOICES).
+    #
+    # These stay plain English on purpose: in-app notification rows are stored in English and
+    # localized at READ time by get_notifications (afc_auth/views.py, translate-on-read via
+    # afc_auth.translation.localize_field), so correcting the English literal carries the fix into
+    # French and Portuguese with no catalog change.
+    _is_scrims = event.competition_type == "scrims"
+    _noun = "Scrims" if _is_scrims else "Tournament"
+    _noun_lower = "scrims" if _is_scrims else "tournament"
     try:
         _notify_all_registered(
             event,
-            title=f"Tournament Complete: {event.event_name}",
+            title=f"{_noun} Complete: {event.event_name}",
             message=(
-                f"The tournament '{event.event_name}' has officially concluded. "
+                f"The {_noun_lower} '{event.event_name}' has officially concluded. "
                 "Results are now locked. Thank you for participating!"
             ),
         )

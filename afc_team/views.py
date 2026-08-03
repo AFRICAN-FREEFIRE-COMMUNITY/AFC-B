@@ -509,7 +509,8 @@ def disband_team(request):
         active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
         if active_season and not active_season.is_transfer_window_open():
             return Response(
-                {"message": "The transfer window is currently closed. Teams cannot be disbanded until it reopens."},
+                {"message": "The transfer window is currently closed. Teams cannot be disbanded until it reopens."
+                            + _transfer_window_reopen_hint(active_season)},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -2098,7 +2099,8 @@ def exit_team(request):
         active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
         if active_season and not active_season.is_transfer_window_open():
             return Response(
-                {"message": "The transfer window is currently closed. You cannot leave your team until it reopens."},
+                {"message": "The transfer window is currently closed. You cannot leave your team until it reopens."
+                            + _transfer_window_reopen_hint(active_season)},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -2384,6 +2386,42 @@ def _transfer_window_open():
     return active.is_transfer_window_open()
 
 
+# ── transfer-window lock messages: always name the real dates (owner 2026-08-03, item 10) ──────
+# "Wherever the transfer-window notice appears, show the actual open/close date and time: when it
+# will open, or if open, when it closes."
+#
+# These 403 bodies are the notice a player hits at the exact moment they try to move: leaving a
+# team, being kicked, disbanding, or changing a position. They used to say only "until it reopens",
+# which left the player with no idea when to come back. This helper appends the concrete date.
+#
+# Season.transfer_window_open / _close are DateFields (calendar dates, no time), so the date is
+# rendered as an unambiguous readable English date. These strings are returned raw to a sonner
+# toast and are not run through the i18n catalog, matching the surrounding messages in this file.
+#
+# CONNECTS TO: afc_rankings.Season (read only) and the same window the public
+# TransferWindowBanner.tsx shows on /teams, /player-markets and /rankings, so the banner and the
+# rejection a player runs into always quote the same dates.
+def _transfer_window_reopen_hint(season=None):
+    """Return ' The window opens on <date>.' (or a closed-on hint), or '' when unknown."""
+    from datetime import date as _date
+    if season is None:
+        from afc_rankings.models import Season
+        season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+    if not season:
+        return ""
+    today = _date.today()
+    opens = getattr(season, "transfer_window_open", None)
+    closes = getattr(season, "transfer_window_close", None)
+    if opens and opens > today:
+        return f" The window opens on {opens.strftime('%d %B %Y')}."
+    if closes and closes < today:
+        return (
+            f" The window closed on {closes.strftime('%d %B %Y')} "
+            "and reopens next season."
+        )
+    return ""
+
+
 @api_view(["POST"])
 def manage_team_roster(request):
     try:
@@ -2454,7 +2492,8 @@ def manage_team_roster(request):
             active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
             if active_season and not active_season.is_transfer_window_open():
                 return Response(
-                    {"error": "Positions are locked until the transfer window reopens. You can change positions while the transfer window is open."},
+                    {"error": "Positions are locked until the transfer window reopens. You can change positions while the transfer window is open."
+                            + _transfer_window_reopen_hint(active_season)},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
@@ -2663,7 +2702,8 @@ def kick_team_member(request):
         active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
         if active_season and not active_season.is_transfer_window_open():
             return Response(
-                {"error": "The transfer window is currently closed. Members cannot be kicked until it reopens."},
+                {"error": "The transfer window is currently closed. Members cannot be kicked until it reopens."
+                            + _transfer_window_reopen_hint(active_season)},
                 status=status.HTTP_403_FORBIDDEN,
             )
 

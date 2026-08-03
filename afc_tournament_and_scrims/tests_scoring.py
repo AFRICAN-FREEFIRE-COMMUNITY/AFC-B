@@ -276,7 +276,11 @@ class MapWinnerRequiredDBTests(EnterTeamMatchResultManualDBTests):
     def test_map_without_first_place_is_rejected(self):
         resp = self._post(placement=2)  # no winner
         self.assertEqual(resp.status_code, 400, resp.content)
-        self.assertIn(b"winner is missing", resp.content)
+        # The rule is unchanged; only the wording is (owner 2026-08-03, item 19: the rejection now
+        # explains the problem and the remedy instead of restating the condition). Assert on the
+        # meaning rather than the exact sentence so copy edits do not break this regression test.
+        self.assertIn(b"no winner recorded", resp.content)
+        self.assertIn(b"position 1", resp.content)
         # And nothing was written (validation runs before the destructive transaction).
         self.assertFalse(
             TournamentTeamMatchStats.objects.filter(match=self.match, tournament_team=self.tt).exists()
