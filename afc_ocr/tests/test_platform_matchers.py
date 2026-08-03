@@ -86,10 +86,16 @@ class MatchTeamNameTests(TestCase):
         self.assertEqual(row["matched_team_id"], self.bravo.team_id)
 
     def test_no_match_returns_none(self):
+        # A nonsense read must never RESOLVE to a team. It may still LIST a weak candidate: since the
+        # matcher started comparing normalized strings, listing (CANDIDATE_CUTOFF) and asserting
+        # (MATCH_FLOOR) are two separate thresholds on purpose, so the reviewer keeps the near misses
+        # to pick from while nothing binds automatically. What this test guards is the assertion.
         row = matching.match_team_name("ZZZZZZ Nonexistent", self.teams)
         self.assertIsNone(row["matched_team_id"])
         self.assertIsNone(row["matched_team_name"])
-        self.assertEqual(row["top_candidates"], [])
+        self.assertEqual(row["confidence"], 0.0)
+        for candidate in row["top_candidates"]:
+            self.assertLess(candidate["confidence"] * 100, matching.MATCH_FLOOR)
 
     def test_row_has_raw_name_and_id(self):
         row = matching.match_team_name("Alpha Squad", self.teams)

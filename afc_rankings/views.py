@@ -83,7 +83,7 @@ def _season_of_month(request, month):
     gate used to read whichever season is ACTIVE today rather than the season the requested month
     belongs to. The public season picker (frontend app/(user)/rankings) only sends ``month`` on the
     monthly endpoints, so picking a PUBLISHED past season still got judged against the CURRENT
-    (unpublished) season and returned nothing — the whole ladder read as empty even though the
+    (unpublished) season and returned nothing: the whole ladder read as empty even though the
     scores were published. Gating on the month's own season makes the picker work.
 
     An explicit ``?season_id`` still wins (``_resolve_season`` honours it). Boundary handling lives
@@ -150,10 +150,10 @@ def _envelope(request, qs, serialize_fn, extra=None):
 
 # ───────────────────────── TEAM ─────────────────────────
 # Read-only: serializes the score tables that aggregation/recalc already wrote
-# (TeamMonthlyScore / TeamQuarterlyScore). This layer never computes — if a field is
+# (TeamMonthlyScore / TeamQuarterlyScore). This layer never computes: if a field is
 # missing here, add it in aggregation first.
 # Monthly standings are a LIVE snapshot, but (owner 2026-06-16) they must NOT be public until an
-# admin publishes the season's rankings — same gate the quarterly endpoints already enforce, so the
+# admin publishes the season's rankings, the same gate the quarterly endpoints already enforce, so the
 # public never sees unpublished/auto-computed numbers. There is no tier at the monthly level, so the
 # single rankings_published gate is all that applies (tiers_published only matters for quarterly).
 # Admins still see the ungated draft via the admin preview endpoints (admin_publish.py).
@@ -178,7 +178,7 @@ def _period_meta(shown_season):
 
 def _gated_monthly(request, qs, serialize_fn, month):
     # Gate on the season the REQUESTED MONTH belongs to, not on whatever season happens to be
-    # active today — see _season_of_month for the why.
+    # active today. See _season_of_month for the why.
     season = _season_of_month(request, month)
     if not (season and season.rankings_published):
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False},
@@ -205,12 +205,12 @@ def teams_monthly(request):
 
 # Publish gates live on Season (rankings_published / tiers_published), toggled by
 # admin_publish.publish_state. Admins bypass these via the draft-preview endpoints
-# admin_publish.admin_teams_quarterly / admin_players_quarterly — keep in sync if the
+# admin_publish.admin_teams_quarterly / admin_players_quarterly. Keep in sync if the
 # gate logic below changes.
 def _gated_quarterly(request, season, qs, serialize_fn):
     """Public quarterly response with the two independent publish gates applied:
     nothing until ``rankings_published``; tier fields nulled until ``tiers_published``.
-    Admins use the (ungated) admin preview endpoint instead — see admin_publish.py."""
+    Admins use the (ungated) admin preview endpoint instead, see admin_publish.py."""
     if not season.rankings_published:
         # rankings not published yet → public sees an empty, clearly-flagged result.
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False},
@@ -218,7 +218,7 @@ def _gated_quarterly(request, season, qs, serialize_fn):
     items, meta = S.paginate(request, qs)
     results = [serialize_fn(x) for x in items]
     if not season.tiers_published:
-        for r in results:           # tiers are a separate gate — hide them until published
+        for r in results:           # tiers are a separate gate, hide them until published
             r["tier"] = None
             r["tier_label"] = None
     return Response({"results": results, "pagination": meta, "season": S.season(season),

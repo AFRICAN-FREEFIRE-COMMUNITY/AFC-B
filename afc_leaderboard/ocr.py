@@ -1,5 +1,5 @@
 """
-afc_leaderboard.ocr — the OCR-engine layer for the standalone-leaderboard multi-image batch (Phase 2.6).
+afc_leaderboard.ocr - the OCR-engine layer for the standalone-leaderboard multi-image batch (Phase 2.6).
 
 WHY THIS MODULE
     The actual screenshot-reading work is kept here as plain functions (not in the Celery task or the
@@ -9,7 +9,7 @@ WHY THIS MODULE
 
 WHAT IT DOES
     process_job(job): read every LeaderboardOcrImage on a job via the SHARED extractor
-    (afc_ocr.services.extract.extract_rows — local student first, Gemini teacher fallback, exactly the
+    (afc_ocr.services.extract.extract_rows - local student first, Gemini teacher fallback, exactly the
     engine the event OCR flow uses), MERGE the placements read from a map's several screenshots into one
     ordered standings list, match the read names against the WHOLE platform (every Team / every User),
     and store the resulting review rows + engine on the job. It never raises into the worker: any failure
@@ -17,7 +17,7 @@ WHAT IT DOES
 
 HOW IT CONNECTS
     - Reads: afc_ocr.services.extract.extract_rows + afc_ocr.services.matching (all_platform_teams /
-      all_platform_players / match_team_name / match_name) — the un-gated, platform-wide matchers
+      all_platform_players / match_team_name / match_name) - the un-gated, platform-wide matchers
       (a standalone leaderboard has no event roster to scope to).
     - Writes: LeaderboardOcrJob.rows / .engine / .status and each LeaderboardOcrImage.raw_output.
     - Row builders (build_team_ocr_rows / build_solo_ocr_rows) are ALSO imported by
@@ -26,6 +26,7 @@ HOW IT CONNECTS
 import logging
 import re
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 from afc_ocr.services import extract
@@ -33,8 +34,102 @@ from afc_ocr.services.matching import (
     all_platform_players, all_platform_teams_with_ghosts, match_team_name, match_name,
     derive_team_tag,
 )
+from utils.search_utils import normalize_search_text
 
 logger = logging.getLogger(__name__)
+
+# A player match is only trusted as a TEAM signal at or above this score. Mirrors the frontend's
+# auto-pick gate (OcrReviewTable.tsx: `p.confidence >= 0.75 ? ... : null`) so the team we infer from
+# the players is inferred from exactly the players the reviewer sees pre-selected.
+PLAYER_TRUST = 0.75
+
+
+# ── team identity from the PLAYERS that were read ────────────────────────────────────────────────
+def team_from_players(players_detail):
+    """Infer a placement's team from the platform teams its READ PLAYERS belong to.
+
+    WHY: a Free Fire result screen frequently shows a logo, a 2-4 character clan tag, or nothing at
+    all where the team name belongs, so matching on the read team string alone is thin evidence. The
+    players, however, are named in full. If several of them resolve confidently to AFC users who are
+    all on the same platform team, that team is the placement - independently of what the team cell
+    said. Real clone data: a row whose team cell read "KN" name-matched "KNIGHTS X4" @0.90, while its
+    players ("DANTE", "SABATH24") are members of "KNIGHTS E-SPORTS". The players were right.
+
+    Only players matched at or above PLAYER_TRUST vote, and only when they have a platform team.
+    Returns (team_id, team_name, votes, voters) where `voters` is how many trusted players had ANY
+    team, so the caller can tell a 3-of-3 agreement from a 2-of-5 split. Returns (None, None, 0, 0)
+    when nothing votes.
+
+    Consumed by build_team_ocr_rows / build_rows_from_match_log below; the values only ever feed the
+    review row's suggestion + confidence, never a direct write.
+    """
+    votes = Counter()
+    names = {}
+    voters = 0
+    for p in players_detail or []:
+        if (p.get("confidence") or 0) < PLAYER_TRUST:
+            continue
+        team_id = p.get("matched_team_id")
+        if not team_id:
+            continue
+        voters += 1
+        votes[team_id] += 1
+        names[team_id] = p.get("matched_team_name")
+    if not votes:
+        return None, None, 0, 0
+    team_id, count = votes.most_common(1)[0]
+    return team_id, names.get(team_id), count, voters
+
+
+def _resolve_row_team(name_match, players_detail):
+    """Combine the team-NAME match with the team-FROM-PLAYERS signal into the row's final identity.
+
+    The two signals are independent, so we treat them as votes rather than letting the name match win
+    by default (it used to be the only input; `players_detail` was computed and then discarded):
+
+      agree            -> confidence lifted to >= 0.9. Two independent signals on the same team.
+      name weak/absent -> adopt the players' team at 0.8 when at least 2 trusted players agree AND
+                          they are a majority of the players that had a team. Above the review gate,
+                          because "two roster-confirmed teammates" is stronger evidence than a
+                          3-character tag fuzz, but never 1.0 - it is still an inference.
+      CONFLICT         -> both signals are confident and they DISAGREE. We do not pick. The name
+                          match stays as the suggestion but its confidence is dropped below the
+                          review gate and the players' team is inserted as the top alternative, so
+                          the row surfaces for a human instead of silently binding a wrong team to a
+                          tournament standing.
+
+    Returns (matched_team_id, matched_team_name, confidence, top_candidates).
+    """
+    p_team_id, p_team_name, votes, voters = team_from_players(players_detail)
+    name_id = name_match["matched_team_id"]
+    name_conf = name_match["confidence"]
+    candidates = list(name_match["top_candidates"])
+
+    # No player signal at all -> the name match is all we have, unchanged.
+    if not p_team_id or votes < 2:
+        return name_id, name_match["matched_team_name"], name_conf, candidates
+
+    players_majority = votes * 2 >= voters
+    player_cand = {"team_id": p_team_id, "team_name": p_team_name, "confidence": 0.8}
+
+    if name_id == p_team_id:
+        # Both signals point at the same team.
+        conf = max(name_conf, 0.9)
+        candidates = [dict(c, confidence=conf) if c.get("team_id") == p_team_id else c
+                      for c in candidates] or [dict(player_cand, confidence=conf)]
+        return name_id, name_match["matched_team_name"], conf, candidates
+
+    if name_conf < PLAYER_TRUST and players_majority:
+        # The team cell was unreadable or matched weakly; the players carry the row.
+        rest = [c for c in candidates if c.get("team_id") != p_team_id]
+        return p_team_id, p_team_name, 0.8, [player_cand] + rest
+
+    if name_conf >= PLAYER_TRUST and players_majority:
+        # CONFLICT: two confident, disagreeing signals. Surface both, auto-resolve neither.
+        rest = [c for c in candidates if c.get("team_id") != p_team_id]
+        return name_id, name_match["matched_team_name"], min(name_conf, 0.7), [player_cand] + rest
+
+    return name_id, name_match["matched_team_name"], name_conf, candidates
 
 
 # ── row builders (one review row per competitor) ─────────────────────────────────────────────────
@@ -82,7 +177,10 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
                     "matched_user_id": pm["matched_user_id"],
                     "matched_username": pm["matched_username"],
                     # The matched player's CURRENT platform team (owner 2026-06-12: show which
-                    # team each suggested player is in, not just the username).
+                    # team each suggested player is in, not just the username). The id rides along
+                    # so team_from_players can tally teams without re-querying (the FE only renders
+                    # the name).
+                    "matched_team_id": pm.get("matched_team_id"),
                     "matched_team_name": pm.get("matched_team_name"),
                     "confidence": pm["confidence"],
                     "top_candidates": pm["top_candidates"],
@@ -98,6 +196,10 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
         # when searching for teams through the tags on the players names".
         derived_tag = derive_team_tag(players_read) if not raw_name else ""
         m = match_team_name(raw_name or derived_tag, teams)
+        # Fold in the team the PLAYERS resolve to (see _resolve_row_team): agreement raises the
+        # confidence, an unreadable team cell is carried by the players, and a genuine disagreement
+        # drops below the review gate instead of silently binding the wrong team.
+        team_id, team_name, confidence, candidates = _resolve_row_team(m, players_detail)
         rows.append({
             "row_id": m["row_id"],
             # Display the team name when read, else the tag we inferred from the players (so the row is
@@ -107,11 +209,11 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
             "players_detail": players_detail,
             "placement": placement,
             "kills": kills,
-            "matched_team_id": m["matched_team_id"],
-            "matched_name": m["matched_team_name"],
-            "confidence": m["confidence"],
-            "top_candidates": m["top_candidates"],
-            "is_unmatched": m["matched_team_id"] is None,
+            "matched_team_id": team_id,
+            "matched_name": team_name,
+            "confidence": confidence,
+            "top_candidates": candidates,
+            "is_unmatched": team_id is None,
         })
     return rows
 
@@ -165,7 +267,7 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
     uid_to_user = {
         u["uid"]: u
         for u in User.objects.filter(uid__in=all_uids).values(
-            "uid", "user_id", "username", "teammembers__team__team_name",
+            "uid", "user_id", "username", "teammembers__team_id", "teammembers__team__team_name",
         )
     }
 
@@ -185,6 +287,7 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
                     "kills": int(p.get("kills", 0) or 0),
                     "matched_user_id": hit["user_id"],
                     "matched_username": hit["username"],
+                    "matched_team_id": hit["teammembers__team_id"],
                     "matched_team_name": hit["teammembers__team__team_name"],
                     "confidence": 1.0,
                     "top_candidates": [
@@ -204,6 +307,7 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
                 "kills": int(p.get("kills", 0) or 0),
                 "matched_user_id": pm["matched_user_id"],
                 "matched_username": pm["matched_username"],
+                "matched_team_id": pm.get("matched_team_id"),
                 "matched_team_name": pm.get("matched_team_name"),
                 "confidence": pm["confidence"],
                 "top_candidates": pm["top_candidates"],
@@ -213,6 +317,9 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
         raw_name = (entry.get("team_name") or "").strip()
         derived_tag = derive_team_tag(players_read) if not raw_name else ""
         m = match_team_name(raw_name or derived_tag, teams)
+        # Same player-plurality fold as the screenshot path. It matters MORE here: every UID hit is a
+        # certain identity, so the players' team is near-proof of which team the row is.
+        team_id, team_name, confidence, candidates = _resolve_row_team(m, players_detail)
         rows.append({
             "row_id": m["row_id"],
             "raw_name": raw_name or derived_tag,
@@ -222,19 +329,21 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
             # The file states the team's KillScore directly; fall back to the players' sum.
             "kills": int(entry.get("team_kills") or 0)
             or sum(int(p.get("kills", 0) or 0) for p in entry.get("players", [])),
-            "matched_team_id": m["matched_team_id"],
-            "matched_name": m["matched_team_name"],
-            "confidence": m["confidence"],
-            "top_candidates": m["top_candidates"],
-            "is_unmatched": m["matched_team_id"] is None,
+            "matched_team_id": team_id,
+            "matched_name": team_name,
+            "confidence": confidence,
+            "top_candidates": candidates,
+            "is_unmatched": team_id is None,
         })
     return rows
 
 
 # ── multi-image merge ─────────────────────────────────────────────────────────────────────────────
 def _norm(s):
-    """Loose key for dedupe: lowercased, alphanumerics only (so 'V-ENT' and 'vent' collide)."""
-    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    """Loose key for dedupe: the SHARED normalizer (so 'V-ENT' and 'vent' collide, and so do two
+    reads of the same name that differ only in decoration - 'NP.BLOOD彡' vs 'NP. BLOOD' - which the
+    old `[^a-z0-9]`-only version treated as different placements and duplicated into the merge)."""
+    return normalize_search_text(s)
 
 
 def merge_placements(placement_lists, is_team):
@@ -303,7 +412,7 @@ def process_job(job):
         # call) and a batch took the owner 5-10 minutes on prod. The extraction is I/O-bound
         # on Gemini, so we overlap the reads in threads; the shared local student stays
         # serialized behind extract._STUDENT_LOCK. The threads touch NO Django ORM (file
-        # read + HTTP only) — all DB writes happen back on this thread, in image order, so
+        # read + HTTP only) - all DB writes happen back on this thread, in image order, so
         # merge_placements sees the same ordering the sequential loop produced. One image
         # failing raises out of ex.map and fails the whole job, exactly as before.
         def _read_one(img):
@@ -351,7 +460,7 @@ def process_job(job):
         job.status = "done"
         job.error = ""
         job.save(update_fields=["rows", "engine", "status", "error", "updated_at"])
-    except Exception as e:  # noqa: BLE001 — a failed read must mark the job, never crash the worker
+    except Exception as e:  # noqa: BLE001 - a failed read must mark the job, never crash the worker
         logger.exception("afc_leaderboard.ocr.process_job failed for job %s", getattr(job, "id", "?"))
         job.status = "failed"
         job.error = str(e)[:2000]
