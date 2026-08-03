@@ -59,6 +59,18 @@ class AFCSSOApplication(AbstractApplication):
     class Meta(AbstractApplication.Meta):
         swappable = "OAUTH2_PROVIDER_APPLICATION_MODEL"
 
+    def save(self, *args, **kwargs):
+        """No partner org ever skips the player's consent screen.
+
+        django-oauth-toolkit honours a per-application `skip_authorization` flag and, when
+        it is set, issues a code without showing anyone anything (views/base.py). That is
+        meant for first-party in-house apps. Every application here is a THIRD PARTY, so the
+        flag is pinned off rather than left as something an admin can tick by accident. The
+        Django admin also hides it, see afc_sso/admin.py.
+        """
+        self.skip_authorization = False
+        return super().save(*args, **kwargs)
+
     def allowed_scopes(self):
         """The maximum scope set AFC permits this org, regardless of what it requests.
 

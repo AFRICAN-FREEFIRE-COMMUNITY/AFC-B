@@ -1,0 +1,49 @@
+<!-- backend/afc_sso/templates/afc_sso/authorize.html
+     AFC's consent screen. Deliberately plain HTML with inline styles: it is served by
+     Django, not the Next.js app, so it cannot use the site's component library. Keep
+     it readable on a phone, since most AFC users are on one.
+
+     Context comes from afc_sso/views.py AFCAuthorizationView.get_context_data:
+     afc_org_name, afc_logo_url and afc_scope_lines (plain-language lines produced by
+     afc_sso.claims.describe_scopes, so the promise here matches what is released). -->
+{% load i18n %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% trans "Sign in with AFC" %}</title>
+  <style>
+    body { background:#0d0f0e; color:#e8e8e8; font-family:system-ui, sans-serif;
+           margin:0; padding:24px; }
+    .card { max-width:420px; margin:0 auto; background:#151816; border:1px solid #2a2f2b;
+            border-radius:6px; padding:24px; }
+    .org-logo { width:48px; height:48px; border-radius:6px; object-fit:cover;
+                margin-bottom:12px; }
+    h1 { font-size:20px; color:#22c55e; margin:0 0 12px; }
+    ul { padding-left:20px; line-height:1.6; }
+    button { width:100%; padding:12px; border-radius:6px; border:0; font-size:16px;
+             margin-top:8px; cursor:pointer; }
+    .allow { background:#22c55e; color:#06210f; font-weight:600; }
+    .deny { background:#2a2f2b; color:#e8e8e8; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    {% if afc_logo_url %}<img class="org-logo" src="{{ afc_logo_url }}" alt="">{% endif %}
+    <h1>{% blocktrans %}{{ afc_org_name }} wants to use your AFC account{% endblocktrans %}</h1>
+    <p>{% trans "They will be able to see:" %}</p>
+    <ul>
+      {% for line in afc_scope_lines %}<li>{{ line }}</li>{% endfor %}
+    </ul>
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button class="allow" type="submit" name="allow" value="Authorize">{% trans "Allow" %}</button>
+      <button class="deny" type="submit">{% trans "Deny" %}</button>
+    </form>
+    <p style="font-size:12px; color:#9aa39c;">
+      {% trans "You can remove this at any time from Connected apps in your AFC profile." %}
+    </p>
+  </div>
+</body>
+</html>
