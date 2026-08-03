@@ -1,5 +1,5 @@
 """
-afc_auth.discord_roles — duplicate-safe queueing for DiscordRoleAssignment rows.
+afc_auth.discord_roles - duplicate-safe queueing for DiscordRoleAssignment rows.
 
 WHY THIS EXISTS (bug "failed to start", 2026-06-12)
     DiscordRoleAssignment has NO unique constraint on its natural key

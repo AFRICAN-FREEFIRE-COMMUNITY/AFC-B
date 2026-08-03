@@ -2,11 +2,11 @@
 afc_shop/test_delivery_wishlist.py
 ================================================================================
 Tests for the 2026-06-29 shop batch:
-  • Saved delivery profiles (afc_shop/delivery.py) — owner-scoped CRUD, default
+  • Saved delivery profiles (afc_shop/delivery.py) - owner-scoped CRUD, default
     uniqueness, per-user cap, the checkout save helpers, AND the SUPER-ADMIN-ONLY
     delivery-PII view (require_head_admin: head_admin/super_admin pass; shop_admin
     and players are 403; the list masks email/phone, the reveal does not).
-  • Wishlist (afc_shop/wishlist.py) — toggle add/remove, owner-scoped list + ids.
+  • Wishlist (afc_shop/wishlist.py) - toggle add/remove, owner-scoped list + ids.
 
 Drives the real HTTP endpoints with a Bearer SessionToken (like the frontend). No
 network is touched.
@@ -72,7 +72,7 @@ class _Base(TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Saved delivery profiles — owner CRUD
+# Saved delivery profiles - owner CRUD
 # ──────────────────────────────────────────────────────────────────────────────
 class DeliveryProfileCrudTests(_Base):
     def test_first_profile_becomes_default(self):

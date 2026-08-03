@@ -121,7 +121,7 @@ def _serialize(entry):
         "source": entry.source,
         "context": entry.context,
         "status": entry.status,
-        # Numeric id of who added the entry — the FE compares it to the current user's id to decide
+        # Numeric id of who added the entry - the FE compares it to the current user's id to decide
         # whether to show the Remove control (organizers can only remove their OWN entries; admins
         # remove any). Mirrors the server-side gate in watchlist_item. (owner 2026-06-27)
         "added_by_id": entry.added_by_id,
@@ -134,7 +134,7 @@ def _serialize(entry):
 
 def _find_subject_entry(subject_type, player=None, team=None):
     """The single logical entry for a subject (active or cleared), newest first, or None.
-    Used to dedup: one logical watch per subject — re-adding reactivates instead of duplicating."""
+    Used to dedup: one logical watch per subject - re-adding reactivates instead of duplicating."""
     qs = WatchlistEntry.objects.filter(subject_type=subject_type)
     if subject_type == "team":
         qs = qs.filter(team=team)
@@ -144,7 +144,7 @@ def _find_subject_entry(subject_type, player=None, team=None):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §1  GET/POST auth/watchlist/  — list + add
+# §1  GET/POST auth/watchlist/  - list + add
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET", "POST"])
 def watchlist_collection(request):
@@ -245,7 +245,7 @@ def watchlist_collection(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §2  PATCH auth/watchlist/<id>/  — clear or reactivate
+# §2  PATCH auth/watchlist/<id>/  - clear or reactivate
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["PATCH"])
 def watchlist_item(request, watch_id):
@@ -253,7 +253,7 @@ def watchlist_item(request, watch_id):
     Clearing is a soft-clear (status=cleared + cleared_by/at) so the audit trail survives.
 
     Gate (owner 2026-06-27): can_use_watchlist (any admin/organizer) to reach the endpoint, THEN an
-    OWNERSHIP check — an organizer may only clear/reactivate an entry THEY added (entry.added_by);
+    OWNERSHIP check - an organizer may only clear/reactivate an entry THEY added (entry.added_by);
     AFC admins (_is_watchlist_admin) may touch ANY entry. This stops one organizer from removing a
     flag another organizer raised. Response 200 {entry}; 403 when an organizer targets someone else's
     entry."""
@@ -292,7 +292,7 @@ def watchlist_item(request, watch_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §3  GET auth/watchlist/tags/  — bulk "which of these ids are currently watched"
+# §3  GET auth/watchlist/tags/  - bulk "which of these ids are currently watched"
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def watchlist_tags(request):

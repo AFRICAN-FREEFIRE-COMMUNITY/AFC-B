@@ -1,5 +1,5 @@
 """
-afc.api_utils — shared request helpers for the function-based DRF views across the project.
+afc.api_utils - shared request helpers for the function-based DRF views across the project.
 
 Cleanup 2026-06-14: the Bearer-token auth handshake was copy-pasted as a private `_authenticate`
 helper across several afc_organizers/afc_player_market view modules (and inlined hundreds of times

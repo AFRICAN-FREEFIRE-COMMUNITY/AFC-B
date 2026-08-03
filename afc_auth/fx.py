@@ -34,7 +34,7 @@ FX_TTL = timedelta(hours=12)
 # DISPLAY rate source. Default = the FREE, no-key exchangerate-api "open" endpoint (USD base;
 # payload.rates = units per USD; 99.99% uptime). Env-overridable so the owner can swap to a KEYED,
 # production-grade provider (Open Exchange Rates / Fixer / ExchangeRate-API Pro) for an SLA WITHOUT a
-# code change — just set FX_API_URL to a URL whose JSON also has {"result":"success","rates":{...}}
+# code change - just set FX_API_URL to a URL whose JSON also has {"result":"success","rates":{...}}
 # (USD base), e.g. ExchangeRate-API Pro: https://v6.exchangerate-api.com/v6/<KEY>/latest/USD.
 FX_API_URL = os.getenv("FX_API_URL", "https://open.er-api.com/v6/latest/USD")
 FX_API_TIMEOUT = 6  # seconds; fail-soft on timeout
@@ -158,7 +158,7 @@ def convert(amount, from_currency, to_currency):
 
 def from_usd_for_charge(amount_usd, to_currency):
     """USD -> the amount to CHARGE in `to_currency`, with the protective FX buffer applied (so the
-    gateway/settlement spread doesn't make us lose money). Use this — NOT from_usd — when computing
+    gateway/settlement spread doesn't make us lose money). Use this - NOT from_usd - when computing
     a real charge (e.g. the NGN amount sent to Paystack). USD charges have no buffer (no conversion)."""
     cur = (to_currency or "USD").upper()
     base = from_usd(amount_usd, cur)

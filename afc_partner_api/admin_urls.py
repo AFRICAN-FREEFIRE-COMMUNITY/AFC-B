@@ -2,7 +2,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # URL map for the AFC-staff partner-admin surface, mounted in afc/urls.py at
 #   path("partners/", include("afc_partner_api.admin_urls"))
-# so every route below lives under /partners/admin/… — the human provisioning
+# so every route below lives under /partners/admin/… - the human provisioning
 # surface, kept OFF the versioned /api/v1/partner/ tree (which is the partner-facing
 # read API). These views are USER-SESSION (Bearer) authenticated + partner-admin
 # gated, unlike the X-API-Key read endpoints.

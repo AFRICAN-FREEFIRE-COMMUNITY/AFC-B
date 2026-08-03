@@ -90,7 +90,7 @@ urlpatterns = [
 
     # ───────────────────────── Organization reports (Phase 4) ─────────────────────────
     # Any user reports an org; AFC triages + resolves (resolution can exclude the reported
-    # event from rankings — the integrity action).
+    # event from rankings - the integrity action).
     path("report-organization/<slug:slug>/", views_reports.report_organization, name="organizers_report"),
     path("admin/reports/", views_reports.admin_list_reports, name="organizers_admin_reports"),
     path("admin/reports/<int:report_id>/", views_reports.admin_update_report, name="organizers_admin_report_detail"),
@@ -99,7 +99,7 @@ urlpatterns = [
     # A per-org (or AFC-native) library of branded leaderboard backgrounds. Organizers/admins
     # upload designs; the leaderboard export picker renders standings onto the chosen one. See
     # views_leaderboard_design + afc_leaderboard.graphic. by-id route before the collection.
-    # Positioned-logo sub-routes (declared BEFORE the by-id design route's bare form is fine —
+    # Positioned-logo sub-routes (declared BEFORE the by-id design route's bare form is fine - 
     # they are more specific paths). A design carries 0..N logos at x_pct/y_pct + size.
     path("leaderboard-designs/by-id/<int:design_id>/logos/<int:logo_id>/",
          views_leaderboard_design.design_logo_item,
@@ -110,7 +110,7 @@ urlpatterns = [
     path("leaderboard-designs/by-id/<int:design_id>/logos/",
          views_leaderboard_design.design_logos,
          name="organizers_leaderboard_design_logos"),       # POST (add, multipart)
-    # Connected-column FIELDS (placed data columns) — owner 2026-06-14. by-id form, specific first.
+    # Connected-column FIELDS (placed data columns) - owner 2026-06-14. by-id form, specific first.
     path("leaderboard-designs/by-id/<int:design_id>/fields/<int:field_id>/",
          views_leaderboard_design.design_field_item,
          name="organizers_leaderboard_design_field_item"),  # PATCH (move/restyle) / DELETE
@@ -153,7 +153,7 @@ urlpatterns = [
     # The /file/ sub-route (CORS-enabled font bytes for the browser FontFace preview) is listed
     # BEFORE the bare by-id route so it is matched first. See font_file() for the CORS rationale.
     path("leaderboard-fonts/by-id/<int:font_id>/file/", views_leaderboard_design.font_file,
-         name="organizers_leaderboard_font_file"),         # GET (public, CORS) — font bytes for preview
+         name="organizers_leaderboard_font_file"),         # GET (public, CORS) - font bytes for preview
     path("leaderboard-fonts/by-id/<int:font_id>/", views_leaderboard_design.font_item,
          name="organizers_leaderboard_font_item"),         # DELETE
     path("leaderboard-fonts/", views_leaderboard_design.fonts_collection,
@@ -204,7 +204,7 @@ urlpatterns = [
     # ───────────────────────── Public org page (unauthenticated) ─────────────────────────
     path("get-organization-public/<slug:slug>/", views_public.get_organization_public,
          name="organizers_public"),
-    # Public organizer DIRECTORY — backs the new "Organizers" tab on the frontend
+    # Public organizer DIRECTORY - backs the new "Organizers" tab on the frontend
     # /tournaments page (app/(user)/tournaments/page.tsx). Lists active orgs that
     # have published events, with logo + derived event_count / verified / tier.
     path("get-organizations-public/", views_public.get_organizations_directory,

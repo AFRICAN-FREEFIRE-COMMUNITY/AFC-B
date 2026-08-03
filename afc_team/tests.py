@@ -1,7 +1,7 @@
 """
 Tests for afc_team views.
 
-search_teams (GET /team/search-teams/) — the team typeahead powering <TeamSearchSelect/> in the
+search_teams (GET /team/search-teams/) - the team typeahead powering <TeamSearchSelect/> in the
 Standalone Leaderboards wizard. Mirrors afc_auth.views.search_users: Bearer auth, q>=2, icontains,
 {results:[{team_id,team_name,team_tag,country}], total_count} shape.
 """
@@ -70,7 +70,7 @@ class SearchTeamsTests(TestCase):
     def test_punctuation_insensitive_match(self):
         # The reported bug: a team literally named "V-E" must surface for the query "ve" (and "v-e",
         # "v e"). Powered by utils.search_utils.normalized_column / separator_stripped. This is a pure
-        # WIDENING — the plain-icontains matches above still pass unchanged.
+        # WIDENING - the plain-icontains matches above still pass unchanged.
         ve = Team.objects.create(team_name="V-E", team_tag="VEX", country="NG",
                                  join_settings="open", team_owner=self.user, team_creator=self.user)
         for q in ("ve", "v-e", "v e"):
@@ -81,11 +81,11 @@ class SearchTeamsTests(TestCase):
 # ──────────────────────────────────────────────────────────────────────────
 # Roster-lock rules (afc_team.views)
 #
-# Rule B  — membership is FROZEN while the team has an ACTIVE tournament registration
+# Rule B  - membership is FROZEN while the team has an ACTIVE tournament registration
 #           (a non-removed TournamentTeam row for an upcoming/ongoing event). Guards both
 #           exit_team (POST /team/exit-team/) and kick_team_member (POST /team/kick-team-member/),
 #           in addition to the pre-existing transfer-window guard.
-# Rule C  — in-game POSITIONS (in_game_role) can be edited only while the active ranking
+# Rule C  - in-game POSITIONS (in_game_role) can be edited only while the active ranking
 #           season's transfer window is OPEN (manage_team_roster, POST /team/manage-team-roster/).
 #           Management-role changes keep their own rule and are not newly restricted by the window.
 #
@@ -305,7 +305,7 @@ class RuleC_PositionTransferWindowTests(TestCase):
     def test_management_role_change_not_blocked_by_closed_window(self):
         # Rule C must NOT add a window restriction to management-role-only changes. Promoting the
         # member to "manager" (a STAFF role) is a player<->staff CROSSING, which the pre-existing
-        # crossing rule already gates on the window — so it is expected to be blocked when closed,
+        # crossing rule already gates on the window - so it is expected to be blocked when closed,
         # but via the EXISTING per-member rule (200 + per-member failure), NOT via Rule C's
         # top-level 403. The key assertion: this is not a Rule C 403.
         _make_season(window_open=False)

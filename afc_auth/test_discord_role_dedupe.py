@@ -1,5 +1,5 @@
 """
-afc_auth/test_discord_role_dedupe.py — tests for the duplicate-row cleanup
+afc_auth/test_discord_role_dedupe.py - tests for the duplicate-row cleanup
 (dedupe_discord_role_assignments command) and the duplicate-safe queue helper
 (afc_auth.discord_roles.queue_discord_role_assignments).
 

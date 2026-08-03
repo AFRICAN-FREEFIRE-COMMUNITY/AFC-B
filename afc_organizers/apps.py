@@ -1,4 +1,4 @@
-# App config for afc_organizers — the Organizer/Organization feature (multi-tenant layer
+# App config for afc_organizers - the Organizer/Organization feature (multi-tenant layer
 # over the existing tournament engine). See WEBSITE/tasks/organizers-design.md.
 from django.apps import AppConfig
 

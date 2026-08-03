@@ -187,20 +187,20 @@ def _create_report(reporter, *, subject_type, reported_user=None, reported_team=
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §1  POST /auth/report-player/  — file a report against another player (any user)
+# §1  POST /auth/report-player/  - file a report against another player (any user)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def file_player_report(request):
     """File a report against another player. Open to ANY logged-in user.
 
     Request (JSON or multipart):
-      • reported_user_id  — the User being reported (by primary key), OR
-      • reported_username — the User being reported (by username). One of the two is
+      • reported_user_id  - the User being reported (by primary key), OR
+      • reported_username - the User being reported (by username). One of the two is
                             required; the PUBLIC player profile only has the username
                             (PublicPlayer has no id), so it sends reported_username.
-      • category          (optional) — one of UserReport.CATEGORY_CHOICES; default "other".
-      • details           (required) — free-text notes describing what happened.
-      • evidence          (optional) — proof image (screenshot). Encouraged, not required.
+      • category          (optional) - one of UserReport.CATEGORY_CHOICES; default "other".
+      • details           (required) - free-text notes describing what happened.
+      • evidence          (optional) - proof image (screenshot). Encouraged, not required.
 
     Rules: you cannot report yourself; the reported user must exist.
 
@@ -254,7 +254,7 @@ def file_player_report(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §1b  POST /auth/report-team/  — file a report against a whole TEAM (any user)
+# §1b  POST /auth/report-team/  - file a report against a whole TEAM (any user)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def file_team_report(request):
@@ -262,11 +262,11 @@ def file_team_report(request):
     "player and team reports"). Mirrors file_player_report but the subject is a Team.
 
     Request (JSON or multipart):
-      • reported_team_id   — the Team being reported (by primary key team_id), OR
-      • reported_team_name — the Team being reported (by exact team name).
-      • category           (optional) — one of UserReport.CATEGORY_CHOICES; default "other".
-      • details            (required) — free-text notes describing what happened.
-      • evidence           (optional) — proof image (screenshot).
+      • reported_team_id   - the Team being reported (by primary key team_id), OR
+      • reported_team_name - the Team being reported (by exact team name).
+      • category           (optional) - one of UserReport.CATEGORY_CHOICES; default "other".
+      • details            (required) - free-text notes describing what happened.
+      • evidence           (optional) - proof image (screenshot).
 
     Rules: the team must exist. (No self-team guard - a player CAN report their own team,
     e.g. for internal misconduct; admins triage.)
@@ -313,7 +313,7 @@ def file_team_report(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §2  GET /auth/my-player-reports/  — reports the CALLER filed (with admin answers)
+# §2  GET /auth/my-player-reports/  - reports the CALLER filed (with admin answers)
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def my_player_reports(request):
@@ -343,7 +343,7 @@ def my_player_reports(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §3  GET /auth/admin/player-reports/  — moderator triage queue of every report
+# §3  GET /auth/admin/player-reports/  - moderator triage queue of every report
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def admin_list_player_reports(request):
@@ -444,15 +444,15 @@ def admin_list_player_reports(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §4  PATCH /auth/admin/player-reports/<id>/  — moderator answers / triages a report
+# §4  PATCH /auth/admin/player-reports/<id>/  - moderator answers / triages a report
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["PATCH"])
 def admin_respond_player_report(request, report_id):
     """Answer / triage one player report. Gated by _is_report_moderator.
 
-    Body (PATCH semantics — only applies keys that are present):
-      • status         — one of UserReport.STATUS_CHOICES (400 if invalid).
-      • admin_response — the reporter-facing answer (send "" to clear).
+    Body (PATCH semantics - only applies keys that are present):
+      • status         - one of UserReport.STATUS_CHOICES (400 if invalid).
+      • admin_response - the reporter-facing answer (send "" to clear).
 
     Stamps reviewed_by = the acting moderator. When an answer is provided, notifies
     the reporter with a "Take me there" deep link to their My-reports view.
@@ -517,7 +517,7 @@ def admin_respond_player_report(request, report_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# §5  POST /auth/complete-onboarding/  — mark the first-login onboarding done/skipped
+# §5  POST /auth/complete-onboarding/  - mark the first-login onboarding done/skipped
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def complete_onboarding(request):

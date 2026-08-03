@@ -1,4 +1,4 @@
-# utils/match_log.py — shared parser for the in-game TEAM match-log text export.
+# utils/match_log.py - shared parser for the in-game TEAM match-log text export.
 #
 # WHY THIS EXISTS
 # The event flow has parsed this file format for a while (afc_tournament_and_scrims.views

@@ -60,7 +60,7 @@ def _serialize_wishlist_product(request, product):
 
 @api_view(["POST"])
 def toggle_wishlist(request):
-    """POST shop/wishlist/toggle/ — add the product to the caller's wishlist if not already
+    """POST shop/wishlist/toggle/ - add the product to the caller's wishlist if not already
     saved, or remove it if it is. Body: { product_id }. Returns { saved: bool } reflecting the
     NEW state, so the heart button can flip without a refetch. Idempotent per final state."""
     user, err = _auth_user(request)
@@ -85,7 +85,7 @@ def toggle_wishlist(request):
 
 @api_view(["GET"])
 def list_my_wishlist(request):
-    """GET shop/wishlist/ — the caller's saved products (newest first), each in storefront-card
+    """GET shop/wishlist/ - the caller's saved products (newest first), each in storefront-card
     shape. Consumed by the saved-items page."""
     user, err = _auth_user(request)
     if err:
@@ -103,7 +103,7 @@ def list_my_wishlist(request):
 
 @api_view(["GET"])
 def my_wishlist_ids(request):
-    """GET shop/wishlist/ids/ — just the product ids the caller has saved, so the shop grid can
+    """GET shop/wishlist/ids/ - just the product ids the caller has saved, so the shop grid can
     render each card's heart in the correct on/off state in one cheap call."""
     user, err = _auth_user(request)
     if err:

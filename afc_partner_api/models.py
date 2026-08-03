@@ -5,9 +5,9 @@
 #
 # A Partner is an AFC-provisioned external consumer of completed/published
 # tournament data. All of its access is described HERE (never in code branches):
-#   • scope  — which events it may read (explicit events, whole organizations,
+#   • scope  - which events it may read (explicit events, whole organizations,
 #              and/or every native AFC event), and
-#   • toggles — which resources (endpoints) respond and which fields appear,
+#   • toggles - which resources (endpoints) respond and which fields appear,
 #              every one defaulting OFF for least privilege.
 # PartnerApiKey rows are the rotatable credentials that inherit a partner's config;
 # only the sha256 hash of a key is stored, the plaintext is shown to the AFC admin
@@ -21,7 +21,7 @@ class Partner(models.Model):
     partner_id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=120)
     slug = models.SlugField(max_length=140, unique=True)
-    contact_email = models.EmailField(blank=True)          # INTERNAL ONLY — never serialized to partners
+    contact_email = models.EmailField(blank=True)          # INTERNAL ONLY - never serialized to partners
     status = models.CharField(max_length=20, default="active",
                               choices=[("active", "Active"), ("suspended", "Suspended")])
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)

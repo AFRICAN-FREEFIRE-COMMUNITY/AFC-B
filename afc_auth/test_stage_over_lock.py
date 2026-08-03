@@ -1,5 +1,5 @@
 """
-Qualification-aware identity / roster lock — STAGE-OVER release (owner 2026-06-30).
+Qualification-aware identity / roster lock - STAGE-OVER release (owner 2026-06-30).
 
 Owner rule, in two messages:
   1. "If a stage or group is over, even though the event is not over, it should count as completed for
@@ -13,7 +13,7 @@ started, not-completed event. Now they follow LIVE stage qualification: a compet
 it holds an ACTIVE StageCompetitor row in a NOT-completed stage (upcoming / ongoing / paused). An advancing
 team keeps such a row in the next stage (stays locked); an eliminated team has none (releases); a later
 recalc that flips qualification moves those rows, so a newly-qualified team locks again and the team it
-displaced reopens — no extra bookkeeping.
+displaced reopens - no extra bookkeeping.
 
 These TestCase rows all roll back, so nothing leaks into MySQL. The helpers are pure (no request), so we
 call them directly and assert their boolean.
@@ -37,7 +37,7 @@ from afc_tournament_and_scrims.models import (
 
 
 def _mk_event(name, **over):
-    """A STARTED, not-completed, registration-CLOSED event — so the base identity lock holds and the
+    """A STARTED, not-completed, registration-CLOSED event - so the base identity lock holds and the
     ONLY thing that decides locked/unlocked is the stage-over release under test."""
     today = datetime.date.today()
     defaults = dict(
@@ -183,7 +183,7 @@ class StageOverIdentityLockTests(TestCase):
 
 
 class StageOverLeaveTeamGateTests(TestCase):
-    """afc_team._member_in_active_event_roster — the leave-team / remove-member gate must release on
+    """afc_team._member_in_active_event_roster - the leave-team / remove-member gate must release on
     stage-over too (an eliminated team's player can no longer be fielded -> removable)."""
 
     def setUp(self):

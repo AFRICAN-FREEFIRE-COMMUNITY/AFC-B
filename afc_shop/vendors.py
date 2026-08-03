@@ -1,14 +1,14 @@
 """
 afc_shop/vendors.py
 ================================================================================
-MARKETPLACE Phase B1 — vendor management + product approval + vendor product CRUD
+MARKETPLACE Phase B1 - vendor management + product approval + vendor product CRUD
 (spec: WEBSITE/tasks/marketplace-design.md, Phase B1; INVITE-ONLY vendors).
 
 Kept in its own module (like afc_shop/fulfilment.py) so the large legacy views.py
 is not churned. This file owns THREE clusters of endpoints, all registered under
 shop/ in afc_shop/urls.py:
 
-  A) ADMIN vendor management (require_admin) — INVITE-ONLY: an AFC admin grants a
+  A) ADMIN vendor management (require_admin) - INVITE-ONLY: an AFC admin grants a
      partner vendor access by LINKING an existing User. There is NO public "Sell on
      AFC" application and NO pending state on the Vendor (owner decision 2026-06-09).
        - admin_create_vendor        : link a User -> a new active Vendor
@@ -17,7 +17,7 @@ shop/ in afc_shop/urls.py:
        - admin_assign_product_vendor: set Product.vendor (re-home a product to a vendor)
      Consumed by: the admin shop "Manage vendors" surface.
 
-  B) ADMIN product approval (require_admin) — AFC approves every SUBMITTED vendor
+  B) ADMIN product approval (require_admin) - AFC approves every SUBMITTED vendor
      product before it can reach buyers.
        - admin_list_pending_products: the approval queue (approval_status="submitted")
        - admin_approve_product      : submitted -> approved (+ approved_by)
@@ -25,7 +25,7 @@ shop/ in afc_shop/urls.py:
      Consumed by: the admin shop "Product approvals" surface.
 
   C) VENDOR product CRUD (gated to the CALLER's own ACTIVE Vendor, using the SAME
-     vendor/auth pattern as afc_shop/fulfilment.py) — a vendor manages only their
+     vendor/auth pattern as afc_shop/fulfilment.py) - a vendor manages only their
      own products and can NEVER approve their own product.
        - vendor_my_products   : the caller-vendor's own products (any approval state)
        - vendor_create_product: create a Product owned by the caller's vendor,
@@ -179,7 +179,7 @@ def _require_active_vendor(request):
     # X-Act-As-Vendor and acts AS that vendor for product CRUD. resolve_acting_vendor is
     # honored ONLY for a god-mode admin (inert for everyone else), so a normal caller can
     # never borrow another vendor's identity here. NOTE: the bank/payout gates live in
-    # connect.py / paystack_payout.py and deliberately do NOT do this — bank/payout is out
+    # connect.py / paystack_payout.py and deliberately do NOT do this - bank/payout is out
     # of god-mode scope (owner decision 2026-06-29).
     acting_vendor = resolve_acting_vendor(request, user)
     if acting_vendor:
@@ -213,7 +213,7 @@ def _parse_variants(raw):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# A) ADMIN VENDOR MANAGEMENT  (require_admin) — INVITE-ONLY
+# A) ADMIN VENDOR MANAGEMENT  (require_admin) - INVITE-ONLY
 # ═════════════════════════════════════════════════════════════════════════════
 @api_view(["POST"])
 def admin_create_vendor(request):
@@ -221,7 +221,7 @@ def admin_create_vendor(request):
     Grant vendor access to an existing User (INVITE-ONLY; admins create vendors).
 
     Purpose:  An AFC admin turns a partner's existing account into a marketplace
-              vendor. There is NO public application and NO pending state — this is
+              vendor. There is NO public application and NO pending state - this is
               the only way a Vendor comes into existence (owner decision 2026-06-09).
     Auth:     require_admin (Bearer session token, role == "admin").
     Request:  { user_id | email, display_name, contact_email?, whatsapp_number? }
@@ -242,7 +242,7 @@ def admin_create_vendor(request):
         return Response({"message": "display_name is required."}, status=400)
 
     # Locate the User to link by user_id (preferred) or email. We never CREATE a
-    # user here — invite-only means linking an existing login, like sponsors/organizers.
+    # user here - invite-only means linking an existing login, like sponsors/organizers.
     user_id = request.data.get("user_id")
     email = (request.data.get("email") or "").strip()
     target = None
@@ -349,7 +349,7 @@ def admin_assign_product_vendor(request):
               first-party AFC stock. This is the admin counterpart to a vendor
               creating their own product.
     Auth:     require_admin.
-    Request:  { product_id, vendor_id }  — vendor_id null/empty clears the vendor
+    Request:  { product_id, vendor_id }  - vendor_id null/empty clears the vendor
               (product becomes first-party AFC stock again).
     Response: 200 { message, product_id, vendor_id }  |  404 (product/vendor not found).
     Consumed by: the admin shop product editor / "Manage vendors" surface.
@@ -510,7 +510,7 @@ def admin_reject_product(request):
               "rejected" + stores the reason (shown back to the vendor, who may edit
               and re-submit: rejected -> submitted via vendor_submit_product).
     Auth:     require_admin.
-    Request:  { product_id, reason }  — reason is required (the vendor needs to know
+    Request:  { product_id, reason }  - reason is required (the vendor needs to know
               what to fix).
     Response: 200 { message, product_id, approval_status }  |  400 (no reason / not
               submitted) | 404 (not found).
@@ -559,7 +559,7 @@ def vendor_my_products(request):
     """
     The caller-vendor's OWN products (every approval state).
 
-    Purpose:  The vendor dashboard product list — shows draft, submitted, approved
+    Purpose:  The vendor dashboard product list - shows draft, submitted, approved
               and rejected products so the vendor can see status + any rejection
               reason in one place.
     Auth:     Bearer -> _require_active_vendor (the caller must own an active Vendor).
@@ -594,7 +594,7 @@ def vendor_create_product(request):
               approved by an admin, before it can sell. Created exactly like
               views.add_product (name + variants [+ optional primary image]), but the
               vendor is forced to the CALLER's vendor and approval_status to "draft"
-              — a vendor can never create a pre-approved or someone-else's product.
+              - a vendor can never create a pre-approved or someone-else's product.
     Auth:     Bearer -> _require_active_vendor.
     Request:  name (required), product_type (slug string, required), description?,
               is_limited_stock?, optional `image` (multipart), variants[] (non-empty:
@@ -676,7 +676,7 @@ def vendor_update_product(request):
               an approved/live product is not editable here in Phase B1). Editing a
               rejected product is how a vendor fixes it before re-submitting.
     Auth:     Bearer -> _require_active_vendor; the product.vendor must equal the
-              caller's vendor (else 403 — a vendor cannot edit another vendor's
+              caller's vendor (else 403 - a vendor cannot edit another vendor's
               product).
     Request:  product_id (required); any of name / description / product_type /
               status / is_limited_stock; optional `image` (multipart); optional
@@ -706,7 +706,7 @@ def vendor_update_product(request):
             status=400,
         )
 
-    # Plain text fields (skip is_limited_stock — coerced below). Mirrors edit_product.
+    # Plain text fields (skip is_limited_stock - coerced below). Mirrors edit_product.
     for field in ["name", "description", "product_type", "status"]:
         if field in request.data:
             setattr(product, field, request.data.get(field))
@@ -846,7 +846,7 @@ def vendor_submit_product(request):
     Purpose:  A vendor pushes a product into the admin approval queue. Transition:
               draft|rejected -> submitted (+ stamps submitted_at, clears any prior
               rejection_reason). The product now appears in admin_list_pending_products.
-              A vendor can NEVER move it to "approved" — only the admin endpoints do.
+              A vendor can NEVER move it to "approved" - only the admin endpoints do.
     Auth:     Bearer -> _require_active_vendor; product.vendor must equal the
               caller's vendor (else 403).
     Request:  { product_id }.

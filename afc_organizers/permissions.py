@@ -4,7 +4,7 @@
 #
 # Rules (in priority order):
 #   1. AFC platform admins (head_admin / organizer_admin) bypass EVERY org-scope gate.
-#      This is the oversight layer — AFC has full access to all org data by design.
+#      This is the oversight layer - AFC has full access to all org data by design.
 #   2. An org owner implicitly has every permission.
 #   3. A sub_organizer has only the granular toggles granted on their OrganizationMember row.
 #   4. A non-member has nothing.
@@ -58,12 +58,12 @@ def org_is_owner(user, organization) -> bool:
     Member + permission management is owner-only by design (owner, 2026-07-14): letting a
     sub_organizer add/remove members or toggle permission switches would let them escalate their
     OWN access (e.g. grant themselves can_upload_results, or add an all-permissions accomplice).
-    Only the account holder — or AFC staff for oversight — may touch the permission surface.
+    Only the account holder - or AFC staff for oversight - may touch the permission surface.
 
     Used by: add_organization_member / edit_organization_member / remove_organization_member in
     views_organizer.py, and mirrored on the frontend by OrganizerContext.isOwner gating the
     organizer members page. Rebrand (edit_organization_profile) is separately owner-only already."""
-    # 1) AFC oversight bypass — same central rule as org_can (permissions rule 1).
+    # 1) AFC oversight bypass - same central rule as org_can (permissions rule 1).
     if is_platform_org_admin(user):
         return True
     # 2) Must be the active OWNER member of THIS org. A sub_organizer never passes.
@@ -75,17 +75,17 @@ def org_is_owner(user, organization) -> bool:
 
 def org_can_event(user, perm, event) -> bool:
     """Event-scoped variant: resolves the event's owning org(s). Native AFC events (no
-    organization) are admin-only — organizers never touch events outside their own org.
+    organization) are admin-only - organizers never touch events outside their own org.
 
     Multi-org co-ownership (F6, owner 2026-06-19): the action is allowed if the user can do `perm`
     in the PRIMARY org (Event.organization) OR in any ACCEPTED CO-OWNING org whose scoped grant
     includes `perm`. The co-owner check runs ONLY when the primary check fails, and only queries
-    when an event actually has co-owners — so events with no co-owners (the overwhelming majority)
+    when an event actually has co-owners - so events with no co-owners (the overwhelming majority)
     keep the exact single-org behaviour + cost. This one change lets co-ownership flow through every
     endpoint that already gates on org_can_event (edit/results/registrations/broadcast/seeding/…)."""
     if event.organization_id is None:
         return is_platform_org_admin(user)
-    # 1) Primary org (creator) — unchanged fast path.
+    # 1) Primary org (creator) - unchanged fast path.
     if org_can(user, perm, event.organization):
         return True
     # 2) Accepted co-owners: the co-org's grant must include `perm` AND the user must be able to do

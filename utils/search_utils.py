@@ -1,4 +1,4 @@
-# utils/search_utils.py — shared, punctuation-insensitive text search for the server-side typeaheads.
+# utils/search_utils.py - shared, punctuation-insensitive text search for the server-side typeaheads.
 #
 # WHY THIS EXISTS
 # The typeahead endpoints (GET /team/search-teams/ and GET /auth/search-users/) matched with plain
@@ -84,7 +84,7 @@ def normalize_search_text(value):
     normalize_search_text("V-E Nigeria!") -> "venigeria"; normalize_search_text("ᴠᴇ") -> "ve". Mirrors
     frontend normalizeSearch(). Used in tests and anywhere a Python-side comparison is needed (the
     SQL/ORM typeahead path uses normalized_column, which folds separators + accents but NOT stylized
-    fonts — deep font folding is applied client-side, where the full list is already loaded).
+    fonts - deep font folding is applied client-side, where the full list is already loaded).
     """
     if not value:
         return ""

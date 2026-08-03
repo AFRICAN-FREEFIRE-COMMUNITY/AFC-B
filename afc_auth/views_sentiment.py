@@ -61,7 +61,7 @@ def _bearer_user(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# GET /auth/sentiment/?subject_type=&target_id=   — public counts + my stance
+# GET /auth/sentiment/?subject_type=&target_id=   - public counts + my stance
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def get_sentiment(request):
@@ -88,7 +88,7 @@ def get_sentiment(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# POST /auth/sentiment/set/   — set / switch / clear the caller's stance
+# POST /auth/sentiment/set/   - set / switch / clear the caller's stance
 # ──────────────────────────────────────────────────────────────────────────────
 @api_view(["POST"])
 def set_sentiment(request):

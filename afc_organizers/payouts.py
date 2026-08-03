@@ -1,16 +1,16 @@
 """
-afc_organizers/payouts.py — Organizer payout subsystem + co-owner auto-split (F6-P4, owner 2026-06-19).
+afc_organizers/payouts.py - Organizer payout subsystem + co-owner auto-split (F6-P4, owner 2026-06-19).
 
 Paid-event registration fees are charged via Stripe and HELD by AFC; an admin RELEASES a payment
 once the event has run (afc_tournament_and_scrims.event_payments.admin_release_payment). On each
 release we (re)SETTLE the event: compute the event's released revenue, deduct the AFC platform fee,
-and SPLIT the net among the owning orgs — the PRIMARY org (Event.organization) plus each ACCEPTED
-co-owner by its EventCoOrganizer.payout_percent — writing one OrganizationEarning ledger row per org
+and SPLIT the net among the owning orgs - the PRIMARY org (Event.organization) plus each ACCEPTED
+co-owner by its EventCoOrganizer.payout_percent - writing one OrganizationEarning ledger row per org
 (idempotent). An AFC admin then RELEASES each earning, which attempts the bank transfer on the org's
 rail (Paystack recipient / Stripe Connect) and marks it paid; if no rail/creds, it stays owed/released
 for a manual "mark paid" (mirrors the marketplace VendorPayout flow).
 
-AFC platform fee: the documented policy — an org's FIRST 10 paid tournaments are 0% fee, then 2%.
+AFC platform fee: the documented policy - an org's FIRST 10 paid tournaments are 0% fee, then 2%.
 
 Endpoints (organizers/ prefix):
   POST organizers/<slug>/payout-account/        save_payout_account     (org owner: bank details + recipient)
@@ -77,7 +77,7 @@ def _afc_fee_rate(org, earning, event):
 
 def settle_event_payouts(event):
     """Recompute the payout split for ONE event from its RELEASED registration revenue and upsert an
-    OrganizationEarning per owning org. Idempotent — safe to call on every payment release. Returns
+    OrganizationEarning per owning org. Idempotent - safe to call on every payment release. Returns
     the list of (organization_id, amount) settled. Never raises into the caller (best-effort)."""
     try:
         from afc_tournament_and_scrims.models import EventRegistrationPayment

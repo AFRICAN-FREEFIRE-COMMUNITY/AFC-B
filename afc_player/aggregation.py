@@ -13,7 +13,7 @@ booyahs). The public Team Stats + Player Profile pages need the SAME numbers plu
 a per-event and per-match breakdown. Rather than duplicate (and risk drift), the
 heavy lifting lives here once and both views call it.
 
-DATA SOURCES (all real tables — nothing is fabricated here):
+DATA SOURCES (all real tables - nothing is fabricated here):
   • TournamentPlayerMatchStats  → per-player per-match kills / damage  (the player line)
   • TournamentTeamMatchStats     → per-team   per-match placement / points (the team line
                                     the player's booyah / win is read from)
@@ -21,7 +21,7 @@ DATA SOURCES (all real tables — nothing is fabricated here):
   • Event (via match.leaderboard.event) → competition_type (tournament vs scrims),
                                     name, date, tier
 
-If a player has no recorded stats every number is simply 0 / every list empty —
+If a player has no recorded stats every number is simply 0 / every list empty - 
 that is the truthful empty state, not a stub.
 
 NOTE on competition_type: an Event row's competition_type is "tournament" or
@@ -281,8 +281,8 @@ def compute_registered_events(player):
     This is deliberately NOT part of the stats block in compute_player_stats: a player's
     registration schedule is PUBLIC information, not sensitive performance data. Its caller
     (afc_player.views.get_public_player_stats) therefore merges it into the response payload
-    OUTSIDE the stats_visible privacy gate, so every viewer — anonymous, other players,
-    teammates, admins — gets it. This mirrors the team side, where
+    OUTSIDE the stats_visible privacy gate, so every viewer - anonymous, other players,
+    teammates, admins - gets it. This mirrors the team side, where
     afc_team.views.get_team_details returns `registered_events` outside its own stats gate.
 
     Filtering (matches the team query): drop draft events and cancelled registrations
@@ -291,7 +291,7 @@ def compute_registered_events(player):
     upcoming/ongoing events (completed events show in per_event[] instead).
 
     Returns a list of dicts, deduped by event_id (squad WINS when a player somehow appears
-    both ways for one event — squad rows are written last so they overwrite), sorted by
+    both ways for one event - squad rows are written last so they overwrite), sorted by
     event start_date ascending (soonest first; null dates last):
       {event_id, event_slug, event_name, event_status, event_date, participant_type}
 
@@ -370,7 +370,7 @@ def basic_player_profile(player, request=None):
         url = media_field.url
         return request.build_absolute_uri(url) if request is not None else url
 
-    # current team (if any) — a player may be on no team; handle gracefully
+    # current team (if any) - a player may be on no team; handle gracefully
     membership = (
         TeamMembers.objects.select_related("team").filter(member=player).first()
     )
@@ -409,7 +409,7 @@ def basic_player_profile(player, request=None):
 def player_tier_history(player):
     """
     Per-season tier + rank history for a player, sourced from the real
-    afc_rankings.PlayerQuarterlyScore table — ONLY for seasons whose tiers have
+    afc_rankings.PlayerQuarterlyScore table - ONLY for seasons whose tiers have
     been published (Season.tiers_published). Rank is shown only when the season's
     rankings are published (Season.rankings_published). This mirrors the public
     rankings read API's two independent publish gates exactly.

@@ -141,7 +141,7 @@ def _require_active_vendor(request):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 1. ONBOARDING — vendor connects (or refreshes) their Stripe Connect account
+# 1. ONBOARDING - vendor connects (or refreshes) their Stripe Connect account
 # ═════════════════════════════════════════════════════════════════════════════
 @api_view(["POST"])
 def vendor_connect_onboard(request):
@@ -269,7 +269,7 @@ def vendor_connect_status(request):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 2. PAYOUT — settle a completed order's vendor share (called from fulfilment.py)
+# 2. PAYOUT - settle a completed order's vendor share (called from fulfilment.py)
 # ═════════════════════════════════════════════════════════════════════════════
 def settle_order_payout(order):
     """Create / record the VendorPayout for a JUST-COMPLETED marketplace order.
@@ -381,7 +381,7 @@ def _create_transfer(payout):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 3. ADMIN LEDGER — list payouts + release the owed ones
+# 3. ADMIN LEDGER - list payouts + release the owed ones
 # ═════════════════════════════════════════════════════════════════════════════
 @api_view(["GET"])
 def admin_list_vendor_payouts(request):

@@ -5,17 +5,17 @@
 # These are the views the platform team (head_admin / organizer_admin) uses to
 # stand up an organization for an external organizer, watch over every org, and
 # fix things when something goes wrong. They are the "oversight layer" referenced
-# in afc_organizers/permissions.py — AFC has full reach into every org by design.
+# in afc_organizers/permissions.py - AFC has full reach into every org by design.
 #
 # Convention note (why the code looks like this): this module deliberately mirrors
-# the original hand in afc_team/views.py and afc_tournament_and_scrims — NOT the
+# the original hand in afc_team/views.py and afc_tournament_and_scrims - NOT the
 # newer rankings app. So:
 #   * function-based @api_view views, one job each;
 #   * auth done inline by reading the Authorization header and calling
 #     validate_token (imported the same way afc_team/views.py imports it);
 #   * dict serialization written out inline in each view (no serializers.py);
 #   * Response({...}, status=status.HTTP_*) for every return.
-# The coordinator owns route mounting — this file ONLY defines view functions; it
+# The coordinator owns route mounting - this file ONLY defines view functions; it
 # does not touch urls.py. Full spec: WEBSITE/tasks/organizers-design.md.
 # ──────────────────────────────────────────────────────────────────────────────
 from django.utils.text import slugify
@@ -23,7 +23,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-# validate_token lives in afc_auth.views — import it the SAME way afc_team/views.py
+# validate_token lives in afc_auth.views - import it the SAME way afc_team/views.py
 # does (confirmed: `from afc_auth.views import validate_token`).
 from afc_auth.views import validate_token
 from afc_auth.models import User, Roles, UserRoles
@@ -47,14 +47,14 @@ def _require_platform_admin(request):
     session_token = request.headers.get("Authorization")
 
     # 400 when the header is missing entirely (it is a malformed request, not an
-    # auth failure yet) — matches afc_team/views.py wording/shape.
+    # auth failure yet) - matches afc_team/views.py wording/shape.
     if not session_token:
         return None, Response(
             {"message": "Authorization header is required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # 400 when the scheme is wrong — token format is the caller's mistake.
+    # 400 when the scheme is wrong - token format is the caller's mistake.
     if not session_token.startswith("Bearer "):
         return None, Response(
             {"message": "Invalid token format"},
@@ -110,7 +110,7 @@ def _serialize_org(org):
         "name": org.name,
         "status": org.status,
         "email": org.email,
-        # active members only — removed rows must not inflate the headcount.
+        # active members only - removed rows must not inflate the headcount.
         "member_count": org.members.filter(status="active").count(),
         # every event currently homed under this org (drafts included).
         "event_count": org.events.count(),
@@ -122,7 +122,7 @@ def _serialize_org(org):
 # ?offset, returning {"results", "total_count", "has_more"} so the frontend can
 # page without ever loading the full table into memory.
 def _paginate(request, queryset):
-    # Parse limit defensively — a junk value falls back to the default rather
+    # Parse limit defensively - a junk value falls back to the default rather
     # than 500-ing the request.
     try:
         limit = int(request.GET.get("limit", 25))
@@ -147,7 +147,7 @@ def _paginate(request, queryset):
 # 1) admin_create_organization  (POST)
 # ──────────────────────────────────────────────────────────────────────────────
 # Provision a brand-new organization for an external organizer. The organizer
-# already has a normal user account — we attach it as the org owner and grant the
+# already has a normal user account - we attach it as the org owner and grant the
 # 'organizer' role so they can reach the organizer dashboard. We do NOT create a
 # user here; owner_username must resolve to an existing account.
 @api_view(["POST"])
@@ -326,7 +326,7 @@ def admin_get_organization(request, slug):
         "organization": org_dict,
         "members": members,
         "events": events,
-        "reports": [],  # Phase 4 — kept present so the response shape is stable.
+        "reports": [],  # Phase 4 - kept present so the response shape is stable.
     }, status=status.HTTP_200_OK)
 
 
@@ -410,7 +410,7 @@ def admin_edit_organization(request, slug):
 # 5) admin_suspend_organization  (POST, <slug>)
 # ──────────────────────────────────────────────────────────────────────────────
 # Reversible freeze / unfreeze. body {suspend: bool}. We deliberately never touch
-# a "deleted" org here — un-suspending a soft-deleted org would silently resurrect
+# a "deleted" org here - un-suspending a soft-deleted org would silently resurrect
 # it, so suspension only moves between active <-> suspended.
 @api_view(["POST"])
 def admin_suspend_organization(request, slug):
@@ -424,7 +424,7 @@ def admin_suspend_organization(request, slug):
         return err
 
     suspend = request.data.get("suspend")
-    # Refuse on a soft-deleted org — see header comment.
+    # Refuse on a soft-deleted org - see header comment.
     if org.status == "deleted":
         return Response({"message": "Cannot change the status of a deleted organization."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -471,10 +471,10 @@ def admin_delete_organization(request, slug):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6b) admin_restore_organization  (POST, <slug>)  — reverse a soft-delete (F5)
+# 6b) admin_restore_organization  (POST, <slug>)  - reverse a soft-delete (F5)
 # ──────────────────────────────────────────────────────────────────────────────
 # Brings a soft-deleted org back to "active". Because the clean delete kept events + members
-# intact, restore simply flips the status + clears the delete stamps — the org, its events, and
+# intact, restore simply flips the status + clears the delete stamps - the org, its events, and
 # its team reappear everywhere. Admin-only. No-op-safe if the org isn't actually deleted.
 @api_view(["POST"])
 def admin_restore_organization(request, slug):
@@ -505,7 +505,7 @@ def admin_restore_organization(request, slug):
 # AFC-staff override for an org's roster. Three actions:
 #   * "add"       → attach (or reactivate) a member, set role + granted perms,
 #                   and grant the platform 'organizer' role;
-#   * "remove"    → mark a member "removed" (refused for the owner — an org must
+#   * "remove"    → mark a member "removed" (refused for the owner - an org must
 #                   always keep its owner; transfer first via set_owner);
 #   * "set_owner" → transfer ownership: demote the current owner to sub_organizer
 #                   and promote the target to owner.
@@ -529,7 +529,7 @@ def admin_manage_organization_member(request, slug):
     if not username:
         return Response({"message": "username is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Resolve the target user — every action operates on an existing account.
+    # Resolve the target user - every action operates on an existing account.
     target = User.objects.filter(username=username).first()
     if not target:
         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -552,7 +552,7 @@ def admin_manage_organization_member(request, slug):
         member.status = "active"
 
         # Apply only the permission keys that (a) were sent AND (b) are real
-        # columns in PERMISSION_FIELDS — never trust arbitrary keys from the body.
+        # columns in PERMISSION_FIELDS - never trust arbitrary keys from the body.
         permissions = request.data.get("permissions") or {}
         if isinstance(permissions, dict):
             for field in PERMISSION_FIELDS:
@@ -571,7 +571,7 @@ def admin_manage_organization_member(request, slug):
         member = OrganizationMember.objects.filter(organization=org, user=target).first()
         if not member:
             return Response({"message": "Member not found."}, status=status.HTTP_404_NOT_FOUND)
-        # The owner cannot be removed — transfer ownership first (set_owner).
+        # The owner cannot be removed - transfer ownership first (set_owner).
         if member.role == "owner":
             return Response({"message": "Cannot remove the organization owner. Transfer ownership first."}, status=status.HTTP_400_BAD_REQUEST)
         member.status = "removed"

@@ -82,7 +82,7 @@ class TeamSocialMediaLinks(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="social_links")
     platform = models.CharField(max_length=20)
     link = models.URLField(max_length=200)
-    # rankings §7.3 — verified follower count snapshot inputs.
+    # rankings §7.3 - verified follower count snapshot inputs.
     # Verified by admin via afc_rankings.admin_social; snapshotted per-season into
     # TeamSocialSnapshot by aggregation for the social_media_pts component of the team
     # quarterly score.

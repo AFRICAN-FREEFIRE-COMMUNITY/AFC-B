@@ -650,7 +650,7 @@ class SentBroadcast(models.Model):
     """Audit/history record of ONE broadcast send (owner 2026-06-17).
 
     The per-recipient `Notifications` rows can't answer "what was sent, when, by whom, to how many,
-    and to which group/stage/event" — there's no sender, no grouping key, no recipient snapshot. This
+    and to which group/stage/event" - there's no sender, no grouping key, no recipient snapshot. This
     model is that history: deliver_broadcast writes exactly ONE row per send (it is the single delivery
     chokepoint), so admins + organizers can review every announcement / room-details push.
 
@@ -825,8 +825,8 @@ class TranslationCache(models.Model):
 #  MarketReport.resolution_notes which is an internal triage note).
 #
 #  Consumed by (afc_auth/views_player_reports.py + afc_auth/urls.py):
-#    • POST  /auth/report-player/                 (file_player_report)   — any user
-#    • GET   /auth/my-player-reports/             (my_player_reports)    — reporter
+#    • POST  /auth/report-player/                 (file_player_report)   - any user
+#    • GET   /auth/my-player-reports/             (my_player_reports)    - reporter
 #    • GET   /auth/admin/player-reports/          (admin_list_player_reports)
 #    • PATCH /auth/admin/player-reports/<id>/     (admin_respond_player_report)
 #  Frontend: ReportPlayerDialog on app/(user)/players/[username] (file) + the
@@ -938,7 +938,7 @@ class UserReport(models.Model):
 #  it only raises a soft heads-up Notifications row to the event's organizer(s)+admins when a
 #  watched team/player registers (afc_tournament_and_scrims.register_for_event / add_teams_*).
 #
-#  One ACTIVE row per subject (a player OR a team) — re-flagging a cleared subject reactivates
+#  One ACTIVE row per subject (a player OR a team) - re-flagging a cleared subject reactivates
 #  the same logical entry. player/team are SET_NULL so a deleted account/team only nulls the link.
 #
 #  Consumed by (afc_auth/views_watchlist.py + afc_auth/urls.py, prefix auth/):
@@ -1030,8 +1030,8 @@ class WatchlistEntry(models.Model):
 #  get_or_create(voter, target_user|target_team).
 #
 #  Consumed by (afc_auth/views_sentiment.py + afc_auth/urls.py):
-#    • POST /auth/sentiment/set/   (set_sentiment)  — toggle/switch, returns counts
-#    • GET  /auth/sentiment/       (get_sentiment)  — public counts + my stance
+#    • POST /auth/sentiment/set/   (set_sentiment)  - toggle/switch, returns counts
+#    • GET  /auth/sentiment/       (get_sentiment)  - public counts + my stance
 #  Frontend: components/profile/FanHater.tsx on the player profile + team page.
 # ══════════════════════════════════════════════════════════════════════════════
 class ProfileSentiment(models.Model):
@@ -1094,7 +1094,7 @@ class ProfileSentiment(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FxRate — cached USD->currency exchange rates (multi-currency, owner 2026-06-30).
+# FxRate - cached USD->currency exchange rates (multi-currency, owner 2026-06-30).
 #
 # WHY: the platform stores money in USD and shows each user their local currency, so we need
 # live FX rates. One row per ISO-4217 currency, `rate` = units of that currency per 1 USD

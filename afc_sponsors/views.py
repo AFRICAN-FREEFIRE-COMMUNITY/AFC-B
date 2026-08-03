@@ -1,5 +1,5 @@
 """
-afc_sponsors.views — REST endpoints for the sponsor-system redesign P1.
+afc_sponsors.views - REST endpoints for the sponsor-system redesign P1.
 
 PURPOSE
     Admin CRUD for Sponsor entities + member assignment, and the MEMBER-SCOPED sponsor portal
@@ -21,7 +21,7 @@ HOW IT CONNECTS
     - Models: afc_sponsors.models (Sponsor / SponsorMember / EventSponsorship).
     - Legacy data: the P1 submissions read pulls the SAME per-competitor sponsor ids the old
       dashboard shows (RegisteredCompetitors.user_id_from_sponsor for solo,
-      TournamentTeamMember.user_id_from_sponsor for squads) — scoped per event + per sponsor.
+      TournamentTeamMember.user_id_from_sponsor for squads) - scoped per event + per sponsor.
     - Notifications: adding a member writes an afc_auth.Notifications row ("sponsor_access"),
       which also powers the FE one-time dashboard coachmark trigger.
     - Consumed by frontend lib/sponsors.ts -> app/(a)/a/sponsors (admin) and the sponsor portal
@@ -91,7 +91,7 @@ def _can_create_sponsor(user):
 
     Authorizes (owner 2026-06-30, "organizers should be able to create sponsors also; admins
     should not have to create sponsors before organizers can use them"):
-      - any sponsor-admin (the existing admin path — see _is_sponsor_admin), OR
+      - any sponsor-admin (the existing admin path - see _is_sponsor_admin), OR
       - any ACTIVE organizer who can create events: an AFC platform org-admin
         (is_platform_org_admin), an org OWNER (implicitly), or a sub_organizer whose
         OrganizationMember row grants can_create_events. This mirrors exactly how event-create
@@ -165,14 +165,14 @@ def _page_params(request):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# ADMIN — sponsor CRUD + members + event attachment (/a/sponsors)
+# ADMIN - sponsor CRUD + members + event attachment (/a/sponsors)
 # ═════════════════════════════════════════════════════════════════════════════
 @api_view(["POST"])
 def create_sponsor(request):
     """POST sponsors/create/  body: {name, description?, website?, socials?}
 
     Create a sponsor entity. Slug derives from the name (unique-suffixed on collision).
-    Auth: sponsor-admin OR an organizer who can create events (_can_create_sponsor) — so an
+    Auth: sponsor-admin OR an organizer who can create events (_can_create_sponsor) - so an
     organizer can self-serve a sponsor inline from the event-create picker without an admin
     pre-creating it. created_by + the model's default active status apply to BOTH paths (same
     code), so an organizer-created sponsor is identical to an admin-created one. Response 201:
@@ -209,9 +209,9 @@ def create_sponsor(request):
 
 @api_view(["GET"])
 def list_sponsors(request):
-    """GET sponsors/?q=&limit=&offset=  — paginated sponsor list for the admin table AND the
+    """GET sponsors/?q=&limit=&offset=  - paginated sponsor list for the admin table AND the
     event-create sponsor typeahead. Auth: sponsor-admin OR an organizer who can create events
-    (_can_create_sponsor) — organizers must be able to LIST to pick existing sponsors in the
+    (_can_create_sponsor) - organizers must be able to LIST to pick existing sponsors in the
     builder. Response: the house envelope of _serialize_sponsor rows."""
     user, err = _auth_user(request)
     if err:
@@ -236,7 +236,7 @@ def list_sponsors(request):
 
 @api_view(["GET"])
 def sponsor_detail(request, sponsor_id):
-    """GET sponsors/<id>/  — one sponsor incl. its active members.
+    """GET sponsors/<id>/  - one sponsor incl. its active members.
     Auth: sponsor-admin OR an active member of THIS sponsor."""
     user, err = _auth_user(request)
     if err:
@@ -344,7 +344,7 @@ def add_member(request, sponsor_id):
 
 @api_view(["DELETE"])
 def remove_member(request, sponsor_id, member_id):
-    """DELETE sponsors/<id>/members/<member_id>/  — soft-remove (status=removed, row kept for
+    """DELETE sponsors/<id>/members/<member_id>/  - soft-remove (status=removed, row kept for
     audit; re-adding reactivates). Auth: sponsor-admin."""
     user, err = _auth_user(request)
     if err:
@@ -364,7 +364,7 @@ def remove_member(request, sponsor_id, member_id):
 def attach_event(request, sponsor_id):
     """POST sponsors/<id>/events/attach/  body: {event_id}
 
-    Attach an event to this sponsor (multiple sponsors per event are allowed — unique only per
+    Attach an event to this sponsor (multiple sponsors per event are allowed - unique only per
     (event, sponsor) pair). P1 scoping only; the engagement builder configures the sponsorship
     in P3. Auth: sponsor-admin."""
     user, err = _auth_user(request)
@@ -389,7 +389,7 @@ def attach_event(request, sponsor_id):
 
 @api_view(["DELETE"])
 def detach_event(request, sponsor_id, event_id):
-    """DELETE sponsors/<id>/events/<event_id>/  — detach. Submissions data is untouched (it
+    """DELETE sponsors/<id>/events/<event_id>/  - detach. Submissions data is untouched (it
     lives on the registrations); only the dashboard scoping link is removed."""
     user, err = _auth_user(request)
     if err:
@@ -403,11 +403,11 @@ def detach_event(request, sponsor_id, event_id):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# PORTAL — the member-scoped sponsor dashboard reads
+# PORTAL - the member-scoped sponsor dashboard reads
 # ═════════════════════════════════════════════════════════════════════════════
 @api_view(["GET"])
 def my_sponsors(request):
-    """GET sponsors/mine/  — the ACTIVE sponsors the caller belongs to (drives the portal's
+    """GET sponsors/mine/  - the ACTIVE sponsors the caller belongs to (drives the portal's
     sponsor switcher; empty list = no sponsor dashboard access). Any authenticated user."""
     user, err = _auth_user(request)
     if err:
@@ -424,7 +424,7 @@ def my_sponsors(request):
 
 @api_view(["GET"])
 def sponsor_events(request, sponsor_id):
-    """GET sponsors/<id>/events/  — the events attached to this sponsor, newest first, with the
+    """GET sponsors/<id>/events/  - the events attached to this sponsor, newest first, with the
     registrant count the dashboard list shows. Auth: member of THIS sponsor or sponsor-admin."""
     user, err = _auth_user(request)
     if err:
@@ -458,7 +458,7 @@ def sponsor_events(request, sponsor_id):
 def _event_submission_rows(event):
     """The LEGACY per-competitor sponsor values for one event, privacy-stripped (usernames +
     submitted value + status; NEVER emails). Solo events read RegisteredCompetitors, squads
-    read TournamentTeamMember — the exact fields the old dashboard table renders, scoped to
+    read TournamentTeamMember - the exact fields the old dashboard table renders, scoped to
     one event. P3 swaps this source for SponsorEngagementSubmission without changing the FE."""
     rows = []
     if event.participant_type == "solo":

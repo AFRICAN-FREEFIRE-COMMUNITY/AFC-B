@@ -13,7 +13,7 @@ vendors Stripe can actually reach.
 
 This module is the Paystack MIRROR of afc_shop/connect.py. Same posture: AFC is the
 CUSTODIAN of marketplace money (like the event escrow in
-afc_tournament_and_scrims/event_payments.py) — the buyer pays AFC, the vendor fulfils,
+afc_tournament_and_scrims/event_payments.py) - the buyer pays AFC, the vendor fulfils,
 and THEN AFC TRANSFERS the vendor's share out, here via a Paystack Transfer to the
 vendor's LOCAL bank account. It owns four Paystack pieces:
 
@@ -42,18 +42,18 @@ vendor's LOCAL bank account. It owns four Paystack pieces:
   4. ADMIN RETRY   (admin_retry_owed_paystack_payouts)
      Re-attempt the Paystack Transfer for "owed" Paystack rows once the vendor has
      saved their bank (the Paystack twin of connect.admin_release_owed_payouts; the
-     admin LEDGER list itself is shared — connect.admin_list_vendor_payouts shows BOTH
+     admin LEDGER list itself is shared - connect.admin_list_vendor_payouts shows BOTH
      rails since they write the one VendorPayout table).
 
 STYLE: raw `requests` against the Paystack REST API (no SDK dep), Authorization:
-Bearer settings.PAYSTACK_SECRET_KEY — IDENTICAL to the shop's existing Paystack usage
+Bearer settings.PAYSTACK_SECRET_KEY - IDENTICAL to the shop's existing Paystack usage
 in afc_shop/views.py (buy_now POSTs to api.paystack.co/transaction/initialize;
 verify_paystack_payment GETs /transaction/verify). Keys are env-driven (TEST locally,
 LIVE on prod).
 
 HOW IT CONNECTS
   - MODELS (afc_shop/models.py): Vendor (payout_provider + bank_code / bank_name /
-    account_number / account_name / paystack_recipient_code — all added with this
+    account_number / account_name / paystack_recipient_code - all added with this
     rail), Order (total / fulfilment_state / vendor_payout reverse FK), VendorPayout
     (the SHARED ledger row, also written by connect.py for the Stripe rail).
   - CALLED BY:
@@ -65,7 +65,7 @@ HOW IT CONNECTS
   - AUTH: _require_active_vendor below (the SAME Vendor.user == caller gate used by
     afc_shop/vendors.py + afc_shop/connect.py) for the vendor endpoints; afc_auth
     require_admin for the admin retry.
-  - MIRRORS: afc_shop/connect.py (the Stripe rail — same VendorPayout ledger, same
+  - MIRRORS: afc_shop/connect.py (the Stripe rail - same VendorPayout ledger, same
     _platform_fee_for math, same idempotency + best-effort posture) and the shop's
     own Paystack calls in afc_shop/views.py (same raw-requests + Bearer-key idiom).
 """
@@ -193,7 +193,7 @@ def _require_active_vendor(request):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 1. BANK PICKER — list banks + resolve an account name
+# 1. BANK PICKER - list banks + resolve an account name
 # ═════════════════════════════════════════════════════════════════════════════
 @api_view(["GET"])
 def list_banks(request):
@@ -207,7 +207,7 @@ def list_banks(request):
               on Vendor.bank_code + later pass to /transferrecipient).
     Auth:     Bearer -> _require_active_vendor (only a vendor needs this; it is also
               cheap to gate so the bank list isn't a public scrape target).
-    Query:    currency (optional; defaults to SHOP_CURRENCY, i.e. NGN) — Paystack lists
+    Query:    currency (optional; defaults to SHOP_CURRENCY, i.e. NGN) - Paystack lists
               banks per country/currency.
     Response: 200 { banks: [ {name, code} ] }  |  502 (Paystack error / not configured).
     Consumed by: app/(vendor)/vendor/payouts/page.tsx (the bank dropdown), via
@@ -283,7 +283,7 @@ def resolve_account(request):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 2. SAVE BANK — store the bank, create a Paystack Transfer Recipient
+# 2. SAVE BANK - store the bank, create a Paystack Transfer Recipient
 # ═════════════════════════════════════════════════════════════════════════════
 @api_view(["POST"])
 def vendor_save_bank(request):
@@ -432,13 +432,13 @@ def vendor_payout_method(request):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 3. PAYOUT — settle a completed order's vendor share via a Paystack Transfer
+# 3. PAYOUT - settle a completed order's vendor share via a Paystack Transfer
 # ═════════════════════════════════════════════════════════════════════════════
 def settle_order_payout_paystack(order):
     """Create / record the VendorPayout for a JUST-COMPLETED order via PAYSTACK TRANSFERS.
 
     The Paystack twin of connect.settle_order_payout. CALLED BY: afc_shop/fulfilment.py
-    order_mark_completed, PROVIDER-AWARE — only when the order's vendor.payout_provider
+    order_mark_completed, PROVIDER-AWARE - only when the order's vendor.payout_provider
     == "paystack" (the default / African vendors). Best-effort + idempotent; NEVER raises
     (a payout hiccup must never 500 the completion or roll back the completed state).
 
@@ -527,7 +527,7 @@ def settle_order_payout_paystack(order):
 def _create_transfer(payout):
     """Create the Paystack Transfer that moves `payout.amount` to the vendor's recipient.
     Returns (ok, json) from _paystack. Shared by settle_order_payout_paystack (the
-    completion-time attempt) and admin_retry_owed_paystack_payouts (the retry) — the
+    completion-time attempt) and admin_retry_owed_paystack_payouts (the retry) - the
     Paystack twin of connect._create_transfer.
 
     The transfer is source="balance" (AFC's Paystack balance the buyer charges land in),
@@ -553,7 +553,7 @@ def _create_transfer(payout):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4. ADMIN RETRY — release the owed PAYSTACK payouts
+# 4. ADMIN RETRY - release the owed PAYSTACK payouts
 # ═════════════════════════════════════════════════════════════════════════════
 @api_view(["POST"])
 def admin_retry_owed_paystack_payouts(request):
@@ -562,7 +562,7 @@ def admin_retry_owed_paystack_payouts(request):
     RETRY owed PAYSTACK payouts by (re)attempting the Paystack Transfer now that the
     vendor has saved their bank (so they have a paystack_recipient_code). The Paystack
     twin of connect.admin_release_owed_payouts (which handles the Stripe rail). The admin
-    LEDGER list itself is shared — connect.admin_list_vendor_payouts shows BOTH rails'
+    LEDGER list itself is shared - connect.admin_list_vendor_payouts shows BOTH rails'
     rows since both write the one VendorPayout table.
 
     Auth:     require_admin.

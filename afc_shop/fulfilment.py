@@ -209,7 +209,7 @@ def _transition(order, target, *, set_fields=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# notify_vendor — the outbound WhatsApp + email alert to the order's vendor
+# notify_vendor - the outbound WhatsApp + email alert to the order's vendor
 # ─────────────────────────────────────────────────────────────────────────────
 def vendor_country(vendor):
     """The country to normalise this vendor's WhatsApp number against, or None.
@@ -331,7 +331,7 @@ def notify_vendor(order, event="received"):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# notify_order_paid — the lifecycle ENTRY POINT (called from both paid paths)
+# notify_order_paid - the lifecycle ENTRY POINT (called from both paid paths)
 # ─────────────────────────────────────────────────────────────────────────────
 def notify_order_paid(order):
     """Start the fulfilment lifecycle for a JUST-PAID order. Idempotent.
@@ -589,7 +589,7 @@ def order_mark_completed(request):
             settle_order_payout(order)
         else:
             # Default rail: Paystack Transfers (covers payout_provider="paystack" and any
-            # vendor without an explicit provider — the model defaults to "paystack").
+            # vendor without an explicit provider - the model defaults to "paystack").
             from .paystack_payout import settle_order_payout_paystack
             settle_order_payout_paystack(order)
     except Exception as e:  # payout must never block / 500 the completion

@@ -1,7 +1,7 @@
 # AFC Partner Data API
 
 A read-only, versioned REST API that gives AFC-approved partners access to
-**completed, published** tournament data — events, stages, matches, standings,
+**completed, published** tournament data - events, stages, matches, standings,
 teams, and players. Every partner is scoped to a specific set of events (or whole
 organizations / all native AFC events) and sees only the resources and fields AFC
 has explicitly turned on for them.
@@ -24,7 +24,7 @@ returns `405 Method Not Allowed`.
 
 ---
 
-## 2. Authentication — `X-API-Key`
+## 2. Authentication - `X-API-Key`
 
 Every request must carry your API key in the **`X-API-Key`** request header:
 
@@ -32,7 +32,7 @@ Every request must carry your API key in the **`X-API-Key`** request header:
 X-API-Key: afcp_3f9a_2b1c…  (the full key AFC issued you)
 ```
 
-A key looks like `afcp_<prefix>_<secret>`. AFC stores only a hash of your key —
+A key looks like `afcp_<prefix>_<secret>`. AFC stores only a hash of your key - 
 the plaintext is shown to the AFC admin **exactly once** at issue time, so keep it
 somewhere safe; it cannot be recovered, only revoked and re-issued.
 
@@ -57,7 +57,7 @@ client-side code or a public repository.
 ## 3. Endpoints
 
 There are **seven** endpoints. Events are always addressed by their human-readable
-**`slug`** (never a numeric id — the API never exposes internal database ids).
+**`slug`** (never a numeric id - the API never exposes internal database ids).
 
 | # | Method & path | Resource toggle required | Returns |
 |---|---|---|---|
@@ -70,14 +70,14 @@ There are **seven** endpoints. Events are always addressed by their human-readab
 | 7 | `GET /events/{slug}/players/` | `can_read_players` | Players who recorded stats, with per-event stats |
 
 Each endpoint is independently gated. If the matching resource toggle is **off**
-for your partner account, that endpoint returns `403` (see §6) — the rest keep
+for your partner account, that endpoint returns `403` (see §6) - the rest keep
 working.
 
 > **Field availability is also toggled.** Even on an endpoint you can read, stat and
 > detail fields (kills, damage, placements, prize, rosters, etc.) appear **only** when
 > AFC has enabled the corresponding field toggle for you. See §5.
 
-### 3.1 `GET /events/` — list events
+### 3.1 `GET /events/` - list events
 
 ```http
 GET /api/v1/partner/events/?limit=25&offset=0
@@ -108,9 +108,9 @@ X-API-Key: afcp_3f9a_…
 
 `prize_pool` appears only if your `include_prize` field toggle is on.
 `is_native_afc` is `true` for AFC-run events and `false` for partner-organization
-events — it never reveals the underlying organization id.
+events - it never reveals the underlying organization id.
 
-### 3.2 `GET /events/{slug}/` — event detail
+### 3.2 `GET /events/{slug}/` - event detail
 
 ```http
 GET /api/v1/partner/events/afc-open-2026/
@@ -133,7 +133,7 @@ GET /api/v1/partner/events/afc-open-2026/
 A single event object (not wrapped in a pagination envelope). Returns `404` if the
 event is out of your scope or not published (see §6).
 
-### 3.3 `GET /events/{slug}/stages/` — stages (groups nested)
+### 3.3 `GET /events/{slug}/stages/` - stages (groups nested)
 
 ```json
 {
@@ -163,7 +163,7 @@ event is out of your scope or not published (see §6).
 `order` is a stable 1-based sequence number within the event (never the internal
 stage id). Each group's `maps` array appears only if your `include_maps` toggle is on.
 
-### 3.4 `GET /events/{slug}/matches/` — matches
+### 3.4 `GET /events/{slug}/matches/` - matches
 
 ```json
 {
@@ -185,7 +185,7 @@ Room id / room password / room name and internal scoring settings are **never**
 returned. `map` is gated on `include_maps`; `mvp` (the in-game handle, or `null`) is
 gated on `include_mvp`.
 
-### 3.5 `GET /events/{slug}/standings/` — final standings
+### 3.5 `GET /events/{slug}/standings/` - final standings
 
 ```json
 {
@@ -211,7 +211,7 @@ fields are `placement` + `kills` only (gated by the `include_placements` / `incl
 toggles). Team-event standings additionally expose `damage` + `assists` (gated by
 `include_damage` / `include_assists`); solo events do not record those.
 
-### 3.6 `GET /events/{slug}/teams/` — teams
+### 3.6 `GET /events/{slug}/teams/` - teams
 
 ```json
 {
@@ -238,7 +238,7 @@ Stats are aggregated across the team's matches **in this event**. `placement` is
 team's best (lowest) finish. `roster` (public player handles only) appears only if
 `include_rosters` is on; each stat field is gated on its own field toggle.
 
-### 3.7 `GET /events/{slug}/players/` — players
+### 3.7 `GET /events/{slug}/players/` - players
 
 ```json
 {
@@ -259,7 +259,7 @@ team's best (lowest) finish. `roster` (public player handles only) appears only 
 
 Each player's stats are folded **for this event only** (not lifetime totals). Only
 the public in-game handle (`username`) and in-game id (`in_game_id`) are ever
-returned — never real name, email, or Discord id.
+returned - never real name, email, or Discord id.
 
 ---
 
@@ -273,7 +273,7 @@ paginated.
 | Query param | Meaning | Default | Max |
 |---|---|---|---|
 | `limit` | Page size (rows per response) | `25` | `100` |
-| `offset` | Number of rows to skip | `0` | — |
+| `offset` | Number of rows to skip | `0` | - |
 
 A `limit` above 100 is silently capped at 100; malformed values fall back to the
 defaults (the API never errors on a bad page parameter).
@@ -297,7 +297,7 @@ Every paginated response carries this metadata:
 Your access is described entirely by per-partner toggles, all defaulting **off**
 (least privilege). AFC turns on exactly what you are entitled to.
 
-### Resource toggles — which endpoints respond
+### Resource toggles - which endpoints respond
 
 | Toggle | Unlocks |
 |---|---|
@@ -310,7 +310,7 @@ Your access is described entirely by per-partner toggles, all defaulting **off**
 
 A request to an endpoint whose resource toggle is off returns `403` (see §6).
 
-### Field toggles — which fields appear
+### Field toggles - which fields appear
 
 Even on an endpoint you can read, stat/detail fields are emitted **only** when the
 matching field toggle is on. If a toggle is off, the field is simply **absent** from
@@ -383,7 +383,7 @@ appropriate HTTP status code:
 
 > **Why `404` and not `403` for out-of-scope events:** the API never confirms the
 > existence of an event you are not allowed to see. An event outside your scope, or
-> one AFC has not published to partners, is indistinguishable from a typo'd slug —
+> one AFC has not published to partners, is indistinguishable from a typo'd slug - 
 > both return `404`. This is deliberate, to avoid leaking the existence of private or
 > unpublished events.
 

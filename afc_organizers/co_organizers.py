@@ -1,5 +1,5 @@
 """
-afc_organizers/co_organizers.py — Multi-org event CO-OWNERSHIP (F6, owner 2026-06-19).
+afc_organizers/co_organizers.py - Multi-org event CO-OWNERSHIP (F6, owner 2026-06-19).
 
 Only the CREATOR (primary) org's OWNER may invite another org to co-own an event; the invited org's
 OWNER must accept (mutual consent). Accepted co-owners gain SCOPED access to the event via
@@ -58,7 +58,7 @@ def _is_event_primary_owner_or_admin(user, event):
 
 def _co_payload(co, full=True):
     """Co-organizer row. `full` adds the COMMERCIAL detail (payout_percent + the scoped permission
-    grant) — only privileged callers (the primary org owner / an involved org's member / AFC admin)
+    grant) - only privileged callers (the primary org owner / an involved org's member / AFC admin)
     get it. Non-privileged callers get the branding shape only, so the negotiated split + grants are
     not readable by every logged-in user (adversarial-review fix, owner 2026-06-19)."""
     base = {
@@ -119,7 +119,7 @@ def invite_co_organizer(request):
     )
     if not created:
         # Update the grant on an existing row. If it was ALREADY ACCEPTED, PRESERVE the accepted
-        # status (apply the grant/payout change live) — don't silently revoke a live co-ownership back
+        # status (apply the grant/payout change live) - don't silently revoke a live co-ownership back
         # to pending and force a re-accept just because the owner tweaked a permission. Only a
         # previously declined/pending row goes (back) to pending for a fresh consent. (Adversarial-
         # review fix, owner 2026-06-19.)

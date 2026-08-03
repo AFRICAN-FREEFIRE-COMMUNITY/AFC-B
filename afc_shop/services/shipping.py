@@ -31,7 +31,7 @@ HOW IT CONNECTS:
 
 DEFERRED (the "provider client", per owner: confirm provider + supply sandbox key):
   The concrete fetch_rates()/book() HTTP calls for the chosen vendor are intentionally
-  NOT written yet — they need the provider decision (Terminal/Shipbubble/GIGL) and a
+  NOT written yet - they need the provider decision (Terminal/Shipbubble/GIGL) and a
   sandbox API key. The plug-in point is marked `# >>> PROVIDER CLIENT GOES HERE` in
   get_provider(). Reference client shape: afc_shop.services.mintroute (HMAC) /
   stripe_checkout._stripe (Bearer, returns (ok, json), never raises into the caller).
@@ -82,11 +82,11 @@ class RateQuote:
         }
 
 
-# ── Provider interface — one subclass per courier API ────────────────────────────
+# ── Provider interface - one subclass per courier API ────────────────────────────
 class ShippingProvider:
     """Every courier adapter implements these two calls; nothing else in AFC needs to
     know which vendor is behind them. Implementations must NEVER raise into the caller
-    on a network/credential error — return a RateQuote(enabled=False, error=...) (quote)
+    on a network/credential error - return a RateQuote(enabled=False, error=...) (quote)
     or a {"status": False, "error": ...} dict (book), mirroring services.mintroute."""
 
     name = "base"
@@ -104,7 +104,7 @@ def get_provider():
     """Return the configured ShippingProvider, or None when shipping is DISABLED.
 
     Disabled (None) whenever SHIPPING_PROVIDER or SHIPPING_API_KEY is unset, OR the
-    named provider has no client wired yet — so an un-keyed / unknown config can never
+    named provider has no client wired yet - so an un-keyed / unknown config can never
     crash checkout; it simply means "no shipping options".
     """
     name = (getattr(settings, "SHIPPING_PROVIDER", "") or "").strip().lower()
@@ -124,7 +124,7 @@ def get_provider():
 def quote_rates(address, items):
     """Public entry: get courier options for a delivery address + cart items.
 
-    Always returns a RateQuote and NEVER raises — a provider hiccup degrades to
+    Always returns a RateQuote and NEVER raises - a provider hiccup degrades to
     enabled=False so the checkout page keeps working without shipping. Called by
     afc_shop.views_shipping.shipping_quote.
     """

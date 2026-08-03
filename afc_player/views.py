@@ -70,7 +70,7 @@ def _viewer_from_request(request):
     token = auth.split(" ", 1)[1].strip()
     if not token:
         return None
-    # validate_token returns None for unknown / expired tokens — exactly the
+    # validate_token returns None for unknown / expired tokens - exactly the
     # anonymous-viewer behaviour we want, so no extra guarding is needed.
     return validate_token(token)
 
@@ -81,24 +81,24 @@ def _can_view_player_stats(viewer, player):
 
     Owner rule (2026-06-24 lockdown + 2026-06-27 per-user opt-in): individual player statistics are
     PRIVATE BY DEFAULT. Visible to:
-      • the viewer themselves (own profile) — always, regardless of any preference, and
-      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role) —
+      • the viewer themselves (own profile) - always, regardless of any preference, and
+      • AFC admins (is_stats_admin: role admin/moderator/support or a granular platform-admin role) - 
         always, they override the user's choice, and
       • ANY other viewer (teammates, other players, organizers, sponsors, the public, anonymous) ONLY
         when the player has OPTED IN via their profile switch (player.stats_visible == True).
 
-    So the default (stats_visible False) reproduces the original lockdown exactly — only self + admins.
+    So the default (stats_visible False) reproduces the original lockdown exactly - only self + admins.
     Flipping the switch on opens the individual stats to everyone else. anonymous (viewer None) can see
     them too once opted in (a public profile), since the stats are then explicitly public.
 
-    Query cost: O(1) — own-id check, is_stats_admin (one indexed UserRoles existence check at most),
+    Query cost: O(1) - own-id check, is_stats_admin (one indexed UserRoles existence check at most),
     then a boolean field read.
     """
-    # Own profile — always full visibility, even if the user hides stats from others.
+    # Own profile - always full visibility, even if the user hides stats from others.
     if viewer is not None and viewer.user_id == player.user_id:
         return True
 
-    # AFC admins (NOT organizers/sponsors) always see full stats — they override the user's choice.
+    # AFC admins (NOT organizers/sponsors) always see full stats - they override the user's choice.
     # Single source of truth shared with the team-stats gate so both surfaces agree on who is an admin.
     if viewer is not None and is_stats_admin(viewer):
         return True
@@ -111,7 +111,7 @@ def _can_view_player_stats(viewer, player):
 # TOURNAMENT WINNINGS (per-player prize history)
 # ──────────────────────────────────────────────────────────────────────────────
 # These rows are PlayerWinning records written by afc_rankings.admin_prize.prize_create
-# (_distribute_payout) whenever an admin/organizer records a team/solo prize — the team
+# (_distribute_payout) whenever an admin/organizer records a team/solo prize - the team
 # payout is split equally among the active roster and one PlayerWinning is saved per player.
 # We read them back here so each player's lifetime prize total + per-event winnings show on
 # their public profile (frontend PlayerClient.tsx "Earnings share" / Tournament Winnings card).
@@ -243,7 +243,7 @@ def get_player_details(request):
     # ADMIN player profile (keyed by player_id). The heavy stat aggregation now lives in
     # afc_player.aggregation.compute_player_stats so the public player page can reuse the
     # EXACT same numbers (single source of truth, no drift). This response keeps every key
-    # it returned before — the shared helper produces the same scalar names — and additionally
+    # it returned before - the shared helper produces the same scalar names - and additionally
     # gains per_event[] / recent_matches[] breakdown lists (additive; old callers ignore them).
 
     # AUTH (2026-06-08): this endpoint returns PII (player.email) and is the ADMIN players
@@ -285,7 +285,7 @@ def get_player_details(request):
         "player_id": player.user_id,
         "name": player.username,
         "team": team_name,
-        "email": player.email,            # admin surface — PII allowed here (auth-gated)
+        "email": player.email,            # admin surface - PII allowed here (auth-gated)
         "uid": player.uid,
         "discord_username": player.discord_username,
         # Admin player detail: show the IP-derived location (owner 2026-06-29), profile country as
@@ -327,9 +327,9 @@ def get_public_player_stats(request):
     This is the public counterpart to the admin get_player_details above. It powers
     the public Player Profile page (PlayerClient.tsx) AND the owner's own profile
     Stats tab (ProfileContent.tsx). It returns:
-      • a NON-sensitive identity block (NO email / no PII)        — basic_player_profile()
-      • the player's published tier / rank history per season     — player_tier_history()
-      • the SAME aggregated stats as the admin endpoint           — compute_player_stats()
+      • a NON-sensitive identity block (NO email / no PII)        - basic_player_profile()
+      • the player's published tier / rank history per season     - player_tier_history()
+      • the SAME aggregated stats as the admin endpoint           - compute_player_stats()
         ONLY when the viewer is allowed to see them (see below).
 
     AUTH (optional): the endpoint stays public, but it now reads an OPTIONAL
@@ -351,7 +351,7 @@ def get_public_player_stats(request):
 
     Body: {"player_ign": "<username>"}.
     A player with no recorded matches simply returns zeroes and empty lists
-    (truthful empty state — nothing is fabricated). A player on no team returns
+    (truthful empty state - nothing is fabricated). A player on no team returns
     team: null. Consumers: PlayerClient.tsx, ProfileContent.tsx (both send the
     viewer's token when logged in).
     """
