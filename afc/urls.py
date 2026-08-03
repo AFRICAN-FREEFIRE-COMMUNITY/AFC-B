@@ -59,6 +59,11 @@ urlpatterns = [
     # carrying delivery receipts for messages we sent and messages players send us.
     # Every POST must be HMAC-signed with the Meta app secret. See afc_whatsapp/apps.py.
     path("whatsapp/", include('afc_whatsapp.urls')),
+    # Always-on, REUSABLE site feedback (owner backlog item 29). The two PUBLIC routes here are
+    # feedback/forms/<key>/ (the widget reads a form's schema) and feedback/forms/<key>/submit/,
+    # which accepts an UNAUTHENTICATED write and is therefore rate limited per sender. The
+    # feedback/admin/... routes are Bearer-gated to AFC admins. See afc_feedback/views.py.
+    path("feedback/", include('afc_feedback.urls')),
 
 ]
 

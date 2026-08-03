@@ -84,6 +84,10 @@ INSTALLED_APPS = [
     # AFC's own WhatsApp Cloud API integration (message log, template registry,
     # webhook). Replaces the Kapso and Zernio middlemen; see afc_whatsapp/apps.py.
     'afc_whatsapp',
+    # Always-on, REUSABLE site feedback (owner backlog item 29). A form is DATA (FeedbackForm +
+    # ordered FeedbackFields), so a second purpose is a row rather than a migration. See
+    # afc_feedback/models.py.
+    'afc_feedback',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")

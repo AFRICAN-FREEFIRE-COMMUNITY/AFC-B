@@ -60,14 +60,20 @@ _COUNTRY_CCY = {
     "senegal": "XOF", "sn": "XOF", "ivory coast": "XOF", "côte d'ivoire": "XOF", "ci": "XOF",
     "mali": "XOF", "ml": "XOF", "burkina faso": "XOF", "bf": "XOF", "benin": "XOF", "bj": "XOF",
     "togo": "XOF", "tg": "XOF", "niger": "XOF", "ne": "XOF", "guinea-bissau": "XOF",
-    "sierra leone": "SLL", "sl": "SLL", "liberia": "LRD", "lr": "LRD", "gambia": "GMD", "gm": "GMD",
+    "sierra leone": "SLE", "sl": "SLE", "liberia": "LRD", "lr": "LRD", "gambia": "GMD", "gm": "GMD",
     "cape verde": "CVE", "cabo verde": "CVE", "cv": "CVE", "guinea": "GNF", "gn": "GNF",
+    # Sierra Leone redenominated 1000:1 in 2022 (SLL -> SLE). Both codes still carry an FxRate row
+    # (SLL ~24,167/USD, SLE ~24.17/USD), so leaving this on SLL showed Sierra Leonean users every
+    # amount 1000x too large. Fixed with backlog item 28 (2026-08-03). SLL stays accepted on READ via
+    # afc_auth.currencies.LEGACY_CURRENCY_CODES so historical rows still convert.
     # East Africa
     "kenya": "KES", "ke": "KES", "tanzania": "TZS", "tz": "TZS", "uganda": "UGX", "ug": "UGX",
     "rwanda": "RWF", "rw": "RWF", "ethiopia": "ETB", "et": "ETB", "somalia": "SOS", "so": "SOS",
     "burundi": "BIF", "bi": "BIF",
     # Southern Africa
-    "south africa": "ZAR", "za": "ZAR", "zambia": "ZMW", "zm": "ZMW", "zimbabwe": "ZWL", "zw": "ZWL",
+    # Zimbabwe replaced the ZWL dollar with Zimbabwe Gold (ZWG) in April 2024; same fix + rationale as
+    # the SLL -> SLE note above.
+    "south africa": "ZAR", "za": "ZAR", "zambia": "ZMW", "zm": "ZMW", "zimbabwe": "ZWG", "zw": "ZWG",
     "mozambique": "MZN", "mz": "MZN", "madagascar": "MGA", "mg": "MGA", "malawi": "MWK", "mw": "MWK",
     "botswana": "BWP", "bw": "BWP", "namibia": "NAD", "na": "NAD", "angola": "AOA", "ao": "AOA",
     "mauritius": "MUR", "mu": "MUR",
