@@ -1,8 +1,8 @@
 """Demo seeder for the new scoring modes (sub-project A). Builds a 2-stage event:
-  Semifinals  — Point-Rush (reward {1:10, 2:7, 3:5}, carries into Finals)
-  Finals      — Champion-Point (threshold 20)
+  Semifinals  - Point-Rush (reward {1:10, 2:7, 3:5}, carries into Finals)
+  Finals      - Champion-Point (threshold 20)
 Designed so BRAVO becomes champion (booyahs in Finals match 2 while already on match
-point — helped by its +7 carry-over) EVEN THOUGH ALPHA ends with more raw points. This
+point - helped by its +7 carry-over) EVEN THOUGH ALPHA ends with more raw points. This
 shows the crown pinning the champion to #1 regardless of total, plus the +N carry-over
 badges and the "decided" banner.
 
@@ -33,13 +33,13 @@ ev = Event.objects.create(
     prizepool="$1000", event_rules="rules", event_status="completed",
     registration_link="https://afc.test/reg", number_of_stages=2, creator=admin, is_draft=False)
 
-# Stage 1 — Semifinals: Point-Rush reward carries the top 3 into the Finals.
+# Stage 1 - Semifinals: Point-Rush reward carries the top 3 into the Finals.
 semis = Stages.objects.create(
     event=ev, stage_name="Semifinals", start_date=D, end_date=D, number_of_groups=1,
     stage_format="br - normal", teams_qualifying_from_stage=3, stage_status="completed",
     point_rush_enabled=True, point_rush_reward={"1": 10, "2": 7, "3": 5})
 
-# Stage 2 — Finals: Champion-Point, low threshold so it triggers in the demo.
+# Stage 2 - Finals: Champion-Point, low threshold so it triggers in the demo.
 finals = Stages.objects.create(
     event=ev, stage_name="Finals", start_date=D, end_date=D, number_of_groups=1,
     stage_format="br - normal", teams_qualifying_from_stage=1, stage_status="completed",

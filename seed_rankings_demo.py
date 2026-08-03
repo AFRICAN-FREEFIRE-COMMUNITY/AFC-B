@@ -55,8 +55,8 @@ def team(name, owner_username, country):
 
 
 # two tier-1 events
-e2, m2 = make_event("AFC Elite Series — Leg 1")
-e3, m3 = make_event("AFC Elite Series — Leg 2")
+e2, m2 = make_event("AFC Elite Series - Leg 1")
+e3, m3 = make_event("AFC Elite Series - Leg 2")
 
 # Elite: Omega wins both, 300 kills each → ~84/event → ~168 → Elite (>=150)
 omega, ow = team("Team Omega", "NovaStrike", "Kenya")
