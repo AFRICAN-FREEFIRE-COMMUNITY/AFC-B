@@ -15,8 +15,48 @@ from .models import (
 )
 
 
-def _resolve_month(request):
-    """?month=YYYY-MM, else latest populated month, else current month (day=1)."""
+def _season_index():
+    """Every season, newest window first. One query, so a caller can attribute MANY months to
+    their seasons in memory instead of one query per month (see _resolve_month's scan)."""
+    return list(Season.objects.order_by("-start_date"))
+
+
+def _owning_season(month, seasons):
+    """The one season ``month`` belongs to, from a pre-fetched ``_season_index()`` list.
+
+    Season windows TOUCH at the boundary (Q2 ends 1 July, the day Q3 starts), so a boundary month
+    matches two rows. ``seasons`` is ordered ``-start_date``, so the LATER season is hit first and
+    claims the shared day, which is where a month on the cusp actually belongs (July 2026 is Q3,
+    not the tail of Q2). Returns None for a month outside every configured season.
+    """
+    for s in seasons:
+        if s.start_date <= month <= s.end_date:
+            return s
+    return None
+
+
+def _resolve_month(request, model=TeamMonthlyScore):
+    """?month=YYYY-MM, else the newest month whose season is PUBLISHED, else the newest populated
+    month, else this month.
+
+    ``model`` is the score table the CALLING endpoint reads, so the players ladder falls back to
+    the latest populated PLAYER month and the teams ladder to the latest populated TEAM month.
+    It used to always read TeamMonthlyScore, which meant a month with team results but no player
+    results (or vice versa) sent the other endpoint to an empty month and the ladder rendered
+    blank even though its own table had data (owner 2026-08-03: "public ranking page shows no
+    player rankings").
+
+    PUBLISHED-MONTH FALLBACK (owner 2026-08-03: "it should show the past one pending when a new one
+    is published"). Defaulting to the newest POPULATED month meant that the day a new quarter
+    started collecting results, every default read landed on that unpublished quarter and the
+    ladders went blank until an admin published it. The public surfaces (/home and the /rankings
+    monthly tab) now keep showing the last PUBLISHED period instead, and flag it as not current via
+    ``is_current_period`` on the envelope so nobody mistakes it for live standings.
+
+    If nothing has ever been published we fall back to the newest populated month anyway: the gate
+    in _gated_monthly then returns published=False for it, which is the genuine "no rankings yet"
+    empty state and lets the response still name a sensible month.
+    """
     raw = request.GET.get("month")
     if raw:
         try:
@@ -24,8 +64,46 @@ def _resolve_month(request):
             return datetime.date(int(y), int(m), 1)
         except (ValueError, AttributeError):
             pass
-    latest = TeamMonthlyScore.objects.order_by("-month").values_list("month", flat=True).first()
-    return latest or datetime.date.today().replace(day=1)
+    # Newest first. Bounded scan: one row per month that has ever been scored, a handful in practice.
+    months = list(model.objects.order_by("-month").values_list("month", flat=True).distinct())
+    if not months:
+        return datetime.date.today().replace(day=1)
+    seasons = _season_index()
+    for m in months:
+        owner = _owning_season(m, seasons)
+        if owner and owner.rankings_published:
+            return m
+    return months[0]
+
+
+def _season_of_month(request, month):
+    """The season whose date window contains ``month``, else the active season.
+
+    WHY (owner 2026-08-03): the monthly ladders are gated on ``Season.rankings_published``, but the
+    gate used to read whichever season is ACTIVE today rather than the season the requested month
+    belongs to. The public season picker (frontend app/(user)/rankings) only sends ``month`` on the
+    monthly endpoints, so picking a PUBLISHED past season still got judged against the CURRENT
+    (unpublished) season and returned nothing — the whole ladder read as empty even though the
+    scores were published. Gating on the month's own season makes the picker work.
+
+    An explicit ``?season_id`` still wins (``_resolve_season`` honours it). Boundary handling lives
+    in _owning_season; this wrapper only adds the request-level overrides.
+    """
+    if request.GET.get("season_id"):
+        return _resolve_season(request)
+    return _owning_season(month, _season_index()) or _resolve_season(request)
+
+
+def _active_season():
+    """The season that is live TODAY, independent of what any endpoint chose to display.
+
+    Split out of _resolve_season so the public reads can fall back to an older PUBLISHED period
+    while still telling the client which season is the current one (the envelope's
+    ``current_season``), which is what lets the UI say "SEASON 3 2026 is still pending".
+    """
+    from .models import auto_rollover_seasons
+    auto_rollover_seasons()  # calendar-driven activation (owner 2026-07-02)
+    return Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
 
 
 def _resolve_season(request):
@@ -34,9 +112,32 @@ def _resolve_season(request):
         s = Season.objects.filter(pk=sid).first()
         if s:
             return s
-    from .models import auto_rollover_seasons
-    auto_rollover_seasons()  # calendar-driven activation (owner 2026-07-02)
-    return Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
+    return _active_season()
+
+
+def _resolve_quarterly_season(request):
+    """Season for the PUBLIC quarterly ladders, with the same last-published fallback as months.
+
+    ``?season_id`` wins; otherwise the ACTIVE season if its rankings are published; otherwise the
+    most recently STARTED season that is published (owner 2026-08-03: keep showing the past
+    quarter while the new one is pending); otherwise the active season, so the genuine
+    "nothing published yet" empty state can still name it.
+
+    Deliberately SEPARATE from _resolve_season: the admin surfaces (admin_publish preview,
+    admin_evaluation, admin_audit) import _resolve_season and must keep resolving to the ACTIVE
+    season, since their whole job is previewing the unpublished draft.
+    """
+    sid = request.GET.get("season_id")
+    if sid:
+        s = Season.objects.filter(pk=sid).first()
+        if s:
+            return s
+    active = _active_season()
+    if active and active.rankings_published:
+        return active
+    published = (Season.objects.filter(rankings_published=True)
+                 .order_by("-start_date").first())
+    return published or active
 
 
 def _envelope(request, qs, serialize_fn, extra=None):
@@ -56,16 +157,38 @@ def _envelope(request, qs, serialize_fn, extra=None):
 # public never sees unpublished/auto-computed numbers. There is no tier at the monthly level, so the
 # single rankings_published gate is all that applies (tiers_published only matters for quarterly).
 # Admins still see the ungated draft via the admin preview endpoints (admin_publish.py).
+def _period_meta(shown_season):
+    """The two envelope keys that tell a client WHICH period it is looking at.
+
+    ``is_current_period``  False when we are serving an older PUBLISHED period because the live
+                           season's rankings are still pending (see _resolve_month). A client MUST
+                           label the numbers when this is False, otherwise a viewer reads last
+                           quarter's standings as today's.
+    ``current_season``     The season that is live today, so the UI can name what is still pending
+                           ("showing SEASON 2 2026, SEASON 3 2026 is not published yet").
+
+    Consumed by frontend app/(user)/_components/HomeRankingsTiers.tsx (the /home card) and
+    available to app/(user)/rankings/page.tsx on the same envelope.
+    """
+    active = _active_season()
+    is_current = bool(shown_season and active and shown_season.season_id == active.season_id)
+    return {"is_current_period": is_current,
+            "current_season": S.season(active) if active else None}
+
+
 def _gated_monthly(request, qs, serialize_fn, month):
-    season = _resolve_season(request)
+    # Gate on the season the REQUESTED MONTH belongs to, not on whatever season happens to be
+    # active today — see _season_of_month for the why.
+    season = _season_of_month(request, month)
     if not (season and season.rankings_published):
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False},
                          "month": month.isoformat(),
                          "season": S.season(season) if season else None,
-                         "published": False})
+                         "published": False, **_period_meta(season)})
     items, meta = S.paginate(request, qs)
     return Response({"results": [serialize_fn(x) for x in items], "pagination": meta,
-                     "month": month.isoformat(), "season": S.season(season), "published": True})
+                     "month": month.isoformat(), "season": S.season(season), "published": True,
+                     **_period_meta(season)})
 
 
 @api_view(["GET"])
@@ -91,19 +214,21 @@ def _gated_quarterly(request, season, qs, serialize_fn):
     if not season.rankings_published:
         # rankings not published yet → public sees an empty, clearly-flagged result.
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False},
-                         "season": S.season(season)})
+                         "season": S.season(season), **_period_meta(season)})
     items, meta = S.paginate(request, qs)
     results = [serialize_fn(x) for x in items]
     if not season.tiers_published:
         for r in results:           # tiers are a separate gate — hide them until published
             r["tier"] = None
             r["tier_label"] = None
-    return Response({"results": results, "pagination": meta, "season": S.season(season)})
+    return Response({"results": results, "pagination": meta, "season": S.season(season),
+                     **_period_meta(season)})
 
 
 @api_view(["GET"])
 def teams_quarterly(request):
-    season = _resolve_season(request)
+    # Falls back to the last PUBLISHED season while the live one is pending (owner 2026-08-03).
+    season = _resolve_quarterly_season(request)
     if not season:
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False}, "season": None})
     # Ghost teams are ranked + tiered alongside real teams now (see teams_monthly note). Drop the
@@ -123,7 +248,8 @@ def teams_annual(request):
 # ───────────────────────── PLAYER ─────────────────────────
 @api_view(["GET"])
 def players_monthly(request):
-    month = _resolve_month(request)
+    # Default month comes from the PLAYER table, not the team one (see _resolve_month).
+    month = _resolve_month(request, PlayerMonthlyScore)
     # Ghost players are ranked alongside real players now (rerank_player_month interleaves them).
     # select_related both sides so the serializer's _player_name reads player OR ghost_player without
     # an extra query; it emits is_ghost + a "[Ghost] <ign>" label for the FE badge.
@@ -134,7 +260,8 @@ def players_monthly(request):
 
 @api_view(["GET"])
 def players_quarterly(request):
-    season = _resolve_season(request)
+    # Falls back to the last PUBLISHED season while the live one is pending (owner 2026-08-03).
+    season = _resolve_quarterly_season(request)
     if not season:
         return Response({"results": [], "pagination": {"total_count": 0, "has_more": False}, "season": None})
     # Ghost players are ranked + tiered alongside real players now (see players_monthly note).
@@ -176,7 +303,9 @@ def team_score_detail(request, team_id):
 
 @api_view(["GET"])
 def player_score_detail(request, player_id):
-    month = _resolve_month(request)
+    # Default month comes from the PLAYER table (see _resolve_month). The quarterly half of this
+    # response is season-scoped, so the gate stays on the resolved season, unlike the ladders.
+    month = _resolve_month(request, PlayerMonthlyScore)
     season = _resolve_season(request)
     if not (season and season.rankings_published):
         return Response({"player_id": player_id, "monthly": None, "quarterly": None, "published": False})
