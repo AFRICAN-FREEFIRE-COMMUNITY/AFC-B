@@ -65,6 +65,10 @@ afc_ocr/training/logs/
 venv/
 eb-env/
 
+# Agent scratch: per-plan ledgers, task briefs and review packages written while a plan
+# is being executed. Working notes, not source. The git history is the durable record.
+.superpowers/
+
 # Local-only dev SQLite DB (prod runs MySQL) + committed test/match-result screenshots (~16MB).
 # Untracked 2026-06-14 - kept on disk so local ResultImage rows still resolve.
 db.sqlite3
