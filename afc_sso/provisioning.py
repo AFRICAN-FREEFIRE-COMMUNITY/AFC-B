@@ -27,6 +27,9 @@
 # caller applies its own. This module assumes it is only ever reached by a caller that
 # has already decided the request is legitimate.
 # ──────────────────────────────────────────────────────────────────────────────
+import ipaddress
+from urllib.parse import urlsplit
+
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 from oauth2_provider.generators import generate_client_secret
@@ -49,6 +52,51 @@ _url_validator = URLValidator(schemes=["http", "https"])
 # http:// is allowed ONLY for these hosts, so a partner can develop against their own
 # machine. Everything a real player is ever redirected to must be https.
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+
+
+def _clean_outbound_url(value, field_label):
+    """Validate a URL that AFC'S OWN SERVER will fetch, not one a browser is sent to.
+
+    The distinction matters and is the whole reason this exists beside _clean_url. A redirect
+    URI is followed by the PLAYER's browser, so pointing it at localhost reaches the player's
+    own machine and is a normal thing for a developer to want. A webhook URL is fetched by AFC,
+    from inside AFC's network, so the same value reaches AFC's own infrastructure. An
+    organisation applying to be a partner can put anything in that field, and it is a public
+    unauthenticated form.
+
+    So a webhook must be https and must resolve to a PUBLIC address. Refused here rather than
+    at send time because an admin should not be able to approve a partner whose webhook was
+    never deliverable, and because a refusal at the door explains itself while a silently
+    failing webhook does not.
+
+    This is one half of the defence. The other is that afc_sso/tasks.py does not follow
+    redirects: a host that is public today can answer with a 302 to a private address tomorrow,
+    and no amount of validation at registration time can see that coming.
+    """
+    cleaned, err = _clean_url(value, field_label, require_https=True)
+    if err or not cleaned:
+        return cleaned, err
+
+    host = urlsplit(cleaned).hostname or ""
+    if host.lower() in ("localhost",) or host.lower().endswith(".localhost"):
+        return None, f"{field_label} must be a public address, not localhost."
+
+    # A literal IP is checked directly. A NAME is deliberately NOT resolved here: DNS can
+    # answer differently later, so resolving now would buy a false sense of safety and add a
+    # network call to a form submission. The no-redirects rule in tasks.py is what covers the
+    # name case.
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return cleaned, None
+
+    if (address.is_private or address.is_loopback or address.is_link_local
+            or address.is_reserved or address.is_multicast or address.is_unspecified):
+        return None, (
+            f"{field_label} must be a public address. "
+            "Private, loopback and link-local addresses are not reachable from AFC."
+        )
+    return cleaned, None
 
 
 def _clean_url(value, field_label, require_https=True):
@@ -281,7 +329,9 @@ def provision_sso_application(
     cleaned_homepage_url, err = _clean_url(homepage_url, "Homepage URL")
     if err:
         return None, None, err
-    cleaned_webhook_url, err = _clean_url(deletion_webhook_url, "Deletion webhook URL")
+    # The webhook is the one URL AFC'S OWN SERVER fetches, so it goes through the stricter
+    # outbound check (public address only), not the browser-facing one the other two use.
+    cleaned_webhook_url, err = _clean_outbound_url(deletion_webhook_url, "Deletion webhook URL")
     if err:
         return None, None, err
 
