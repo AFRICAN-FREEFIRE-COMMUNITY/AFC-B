@@ -20653,17 +20653,22 @@ def upload_team_match_result(request):
         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
 
     # -------- SCORING --------
-    scoring = match.scoring_settings or {}
-
+    # THE SHARED WRITER (owner 2026-08-04, finishing what backlog item 6 started). This endpoint
+    # used to normalise the match's scoring settings itself and then build TournamentTeamMatchStats
+    # and TournamentPlayerMatchStats by hand, which made it a second copy of what manual entry does.
+    # Both the normalisation and the write now go through result_writes, so a map scores identically
+    # whether it arrived as a match-log file or was typed in by the organizer. Proven by
+    # tests_log_attribution.test_log_upload_matches_manual_entry, which scores one map both ways and
+    # compares every stored column. See result_writes.py for why one team per call is the unit.
+    #
+    # ctx also carries the match's assist and damage coefficients. This path has no assist or damage
+    # data (a match log lists kills only) so it passes 0 for both, and those two terms fall out of
+    # the formula exactly as they did when this code hardcoded points_per_assist=0.
     try:
-        placement_points = {
-            int(k): int(v)
-            for k, v in (scoring.get("placement_points") or {}).items()
-        }
-    except Exception:
-        return Response({"message": "Invalid scoring placement_points."}, status=400)
-
-    kill_point = float(scoring.get("kill_point", 1))
+        write_ctx = result_writes.scoring_context(match)
+    except ValueError as exc:
+        # Same 400 as before, now with the shared wording every result path returns.
+        return Response({"message": str(exc)}, status=400)
 
     # -------- PARSE FILE --------
     # Keep the RAW bytes (owner 2026-07-07 audit trail): the parser only needs the decoded text, but the
@@ -20764,8 +20769,12 @@ def upload_team_match_result(request):
             "uid": m.user.uid,
         })
 
-    team_stats_to_create = []
-    player_stats_to_create = []
+    # The rows the shared writer creates, collected as it goes: one TournamentTeamMatchStats per
+    # resolved block (used for the ts_map + the saved_teams count) and one entry per credited player
+    # (used for the saved_players count). Both used to be lists of unsaved model instances that this
+    # function bulk_created itself; the writer owns the insert now.
+    created_team_stats = []
+    credited_player_rows = []
     missing_teams = []
     # Teams whose NAME matches a registered team but whose uploaded players' UIDs are NOT on that
     # team's roster (owner 2026-06-21): the team EXISTS, the players don't match -> relabel from the
@@ -20961,6 +20970,15 @@ def upload_team_match_result(request):
         MatchKillFlag.objects.filter(match=match).delete()
         UnmatchedTeamBlock.objects.filter(match=match).delete()
 
+        # ROLE AT MATCH: one query for the whole event giving each player's FROZEN per-event in-game
+        # role, handed to every write below rather than re-read per team. This path used to take the
+        # role off the `member` row it already had in hand (uid_to_member), which is the same frozen
+        # TournamentTeamMember value from the same event, so the stamp is unchanged - it now just
+        # arrives through the one resolver every result path shares. Reading the frozen value and
+        # never the live club roster is what makes a re-upload of an old match reproduce its old
+        # roles, and this endpoint re-uploads constantly. See roster_roles.py.
+        match_roles = roster_roles.frozen_roles_for_match(match)
+
         # -------- CREATE TEAM STATS --------
         for team_data in parsed_teams:
 
@@ -21090,7 +21108,7 @@ def upload_team_match_result(request):
             # upload has no per-flag override yet, so flagged kills count iff the event default
             # Event.count_flagged_kills is on (True by default = unchanged legacy behavior).
             block_tt_id = team_obj.tournament_team_id
-            rostered_kills = 0
+            block_players = []    # {user_id, kills, played} for the shared writer, in file order
             block_flags = []      # ringers: {uid, name, kills, reason, registered_user_id, count_kills}
             seen_block = set()    # de-dupe a uid repeated within this block (count once)
             # ORDER-INDEPENDENT dedup (adversarial-review HIGH fix 2026-06-29): the full set of roster
@@ -21112,7 +21130,16 @@ def upload_team_match_result(request):
                     if uid in seen_block:
                         continue
                     seen_block.add(uid)
-                    rostered_kills += p["kills"]
+                    # One entry per credited player, handed to the shared writer below: it sums
+                    # them into the team's kills AND creates the per-player rows. The team's
+                    # rostered kills are no longer counted separately here, because two counts of
+                    # the same thing is how the stored team total and its player rows drift apart.
+                    # seen_block already collapsed a uid repeated inside this block, and a uid can
+                    # only ever be credited by the ONE block that claimed its team (per-match team
+                    # uniqueness), so this list is exactly the set the response loop below reports
+                    # as `attributed`.
+                    block_players.append(
+                        {"user_id": member.user_id, "kills": p["kills"], "played": True})
                 else:  # member is None (no UID match) OR on another team (belongs_to_other_team)
                     if uid in seen_block:
                         continue
@@ -21202,51 +21229,56 @@ def upload_team_match_result(request):
             # still follow the event default. Mirrors _recompute_team_kills_for_event so the upload total
             # is consistent.
             counted_flagged = sum(f["kills"] for f in block_flags if _will_count(f))
-            total_kills = rostered_kills + counted_flagged
 
-            # Shared team formula (placement + kills only on this log path; assists/damage/bonus/
-            # penalty are 0). total_kills now reflects rostered + counted-flagged so toggling
-            # count_flagged_kills (or a per-flag override) re-scores the team via the recompute.
-            pts = scoring_lib.compute_team_points(
-                placement_points=placement_points, kill_point=kill_point,
-                points_per_assist=0, points_per_1000_damage=0,
-                placement=placement, kills=total_kills, damage=0, assists=0,
-                bonus=0, penalty=0, played=True,
-            )
+            # THE WRITE, through the shared writer. Two things worth saying out loud:
+            #
+            #  * THE FLAGGED KILLS THAT CURRENTLY COUNT ARE HANDED OVER AS ONE ENTRY WITH NO
+            #    user_id. The writer counts every entry toward the team total but only creates a
+            #    per-player row for an entry that names somebody, which is exactly what a counted
+            #    flag is: part of the team's score with nobody on this roster to attribute it to.
+            #    (The manual form's unnamed slots ride the same mechanism, see normalise_players.)
+            #    A player row for a flagged kill would double count it in
+            #    _recompute_team_kills_for_event, which sums rostered player rows PLUS counting
+            #    flags. Pending (count_kills=False) flags contribute 0 here, matching the recompute.
+            #  * placement comes from the file and played is always True: a block exists in the log
+            #    because that team played the map. bonus/penalty are 0 because a match log carries
+            #    neither - an organizer adds those afterwards through the result editor.
+            created_team_stats.append(result_writes.write_team_result_row(
+                match=match,
+                tournament_team_id=team_obj.tournament_team_id,
+                row={
+                    "placement": placement,
+                    "played": True,
+                    "bonus_points": 0,
+                    "penalty_points": 0,
+                    "players": block_players + (
+                        [{"user_id": None, "kills": counted_flagged}] if counted_flagged else []
+                    ),
+                },
+                ctx=write_ctx,
+                frozen_roles=match_roles,
+            ))
+            credited_player_rows.extend(block_players)
 
-            team_stats_to_create.append(
-                TournamentTeamMatchStats(
-                    match=match,
-                    tournament_team=team_obj,
-                    placement=placement,
-                    kills=total_kills,
-                    damage=0,
-                    assists=0,
-                    placement_points=pts["placement_points"],
-                    kill_points=pts["kill_points"],
-                    total_points=pts["total_points"],
-                )
-            )
-
-        TournamentTeamMatchStats.objects.bulk_create(
-            team_stats_to_create,
-            batch_size=200
-        )
-
-        # Build the tournament_team_id -> team_stats_id map by RE-FETCHING from the DB.
-        # bulk_create does NOT populate AutoField PKs on MySQL, so the objects it returns have
-        # team_stats_id = None. Reading them back guarantees real PKs; without this every player
-        # stat fell through the `no_team_stats` guard and NOTHING was attributed (the core bug
-        # behind "kills not attributed to the appropriate person").
-        created_team_stats = list(
-            TournamentTeamMatchStats.objects.filter(match=match)
-        )
+        # tournament_team_id -> team_stats_id, built from the rows the writer just created. This
+        # used to need a re-fetch of the whole match because bulk_create leaves AutoField PKs null
+        # on MySQL, and forgetting that re-fetch was the original "kills not attributed to the
+        # appropriate person" bug: every player stat fell through the `no_team_stats` guard. The
+        # writer creates each row on its own, so the PK is already populated. The map is still
+        # consulted by the response loop below, so a team that somehow ends up without a row is
+        # REPORTED rather than silently dropped.
         ts_map = {
             ts.tournament_team_id: ts.team_stats_id
             for ts in created_team_stats
         }
 
-        # -------- CREATE PLAYER STATS (UID-exact attribution + flag unknowns) --------
+        # -------- REPORT THE ATTRIBUTION (per-player rows are already written) --------
+        # The shared writer created each credited player's row in the loop above. This second walk
+        # exists to build the RESPONSE the review panel renders: who was credited, and for everyone
+        # who was not, the reason (not on the roster, on another team, duplicated in the file, or a
+        # block whose team never resolved). It reads the classification the loop above stored on
+        # each block rather than re-deriving it, so what the panel shows and what was stored cannot
+        # disagree.
         for team_data in parsed_teams:
             team_obj = team_data.get("_team_obj")
             block_team_name = team_data["team_name"]
@@ -21357,22 +21389,9 @@ def upload_team_match_result(request):
                     continue
 
                 seen_uids.add(uid)
-                player_stats_to_create.append(
-                    TournamentPlayerMatchStats(
-                        team_stats_id=ts_id,
-                        player_id=member.user_id,
-                        kills=p["kills"],
-                        damage=0,
-                        assists=0,
-                        # ROLE AT MATCH: `member` IS the frozen event roster row (uid_to_member
-                        # above), so the role the player was rostered under comes free. This upload
-                        # is idempotent (it wipes and re-inserts the match's rows), and reading the
-                        # frozen value rather than the live club roster is exactly what makes a
-                        # re-upload months later reproduce the SAME historical role. None when the
-                        # roster row carries no role. See roster_roles.py.
-                        role_at_match=member.in_game_role,
-                    )
-                )
+                # The row itself was already written by the shared writer in the team loop above
+                # (block_players), stamped with the role frozen on this event's roster. This loop
+                # only reports it, so the admin sees exactly who was credited with what.
                 attributed.append({
                     "team_name": block_team_name,
                     "site_team_name": site_team_name,
@@ -21380,11 +21399,6 @@ def upload_team_match_result(request):
                     "uid": uid,
                     "kills": p["kills"],
                 })
-
-        TournamentPlayerMatchStats.objects.bulk_create(
-            player_stats_to_create,
-            batch_size=500
-        )
 
         # Persist the flagged ringers (owner 2026-06-16) so the admin/organizer panel can list
         # them and toggle whether each one's kills count. count_kills carries the per-flag override
@@ -21548,7 +21562,7 @@ def upload_team_match_result(request):
         "missing_winner": missing_winner,
         "parsed_teams": len(parsed_teams),
         "saved_teams": len(created_team_stats),        # on dry_run: teams that WOULD be saved
-        "saved_players": len(player_stats_to_create),  # on dry_run: players that WOULD be credited
+        "saved_players": len(credited_player_rows),    # on dry_run: players that WOULD be credited
         "missing_teams": missing_teams[:20],          # team blocks where NO player UID matched + name unknown
         # Every team registered for this event (id + name) so the FE missing-teams resolver can offer an
         # "attribute these points to..." dropdown (owner 2026-06-30). Re-uploading with the chosen ids in
@@ -21720,6 +21734,18 @@ def add_teams_to_event(request):
 
             # Add team members
             members = TeamMembers.objects.filter(team=team).select_related("member")
+
+            # ── the blacklist applies to an ADMIN-added team too ──
+            # This endpoint puts a whole team into an event without going through registration,
+            # so without this check it was a way to seat a blacklisted team or player that the
+            # organizer had explicitly barred. Reported rather than silently skipped: an admin
+            # adding teams in bulk needs to know WHICH team was refused, not find out later that
+            # one of them quietly never arrived. Shared gate, see roster_change_block.
+            from afc_organizers.blacklist import roster_change_block
+
+            block = roster_change_block(event, team, [m.member_id for m in members])
+            if block:
+                return Response({"message": block}, status=403)
 
             for member in members:
 
@@ -22985,6 +23011,19 @@ def edit_roster(request):
     added_ids = new_ids - existing_ids
     kept_ids = existing_ids & new_ids
 
+    # ── the blacklist follows the player onto a roster EDIT, not just a registration ──
+    # Registering a clean roster and then swapping the barred player back in used to work,
+    # because register_for_event was the only caller of the guard. Only the ADDED players are
+    # checked: re-checking kept players would let a blacklist created mid-event block an
+    # unrelated later edit and punish the wrong person. See afc_organizers/blacklist.py
+    # roster_change_block, which every roster door now shares.
+    if added_ids:
+        from afc_organizers.blacklist import roster_change_block
+
+        block = roster_change_block(event, tt.team, list(added_ids))
+        if block:
+            return Response({"message": block}, status=403)
+
     with transaction.atomic():
 
         # ---------------- REMOVE PLAYERS ----------------
@@ -23197,6 +23236,16 @@ def add_player_to_event_roster(request):
     # answer with a clean 409 instead of a 500.
     if TournamentTeamMember.objects.filter(tournament_team=tt, user=add_user).exists():
         return Response({"message": "This player is already on the event roster."}, status=409)
+
+    # ── site ban and organizer blacklist, the same gate registration applies ──
+    # This endpoint adds one player straight onto a roster, so without this it was the shortest
+    # way to walk a barred player into an organizer's event. Shared with edit_roster and
+    # add_teams_to_event; see afc_organizers/blacklist.py roster_change_block.
+    from afc_organizers.blacklist import roster_change_block
+
+    block = roster_change_block(event, team, [add_user_id])
+    if block:
+        return Response({"message": block}, status=403)
 
     # 6-player ceiling: do not exceed 6 TournamentTeamMember rows for this team in this event
     # (the same squad ceiling register_for_event / edit_roster enforce).
@@ -23750,6 +23799,23 @@ def upload_match_result_image(request):
                 kill_pts = pts["kill_points"]
                 total_pts = pts["total_points"]
 
+                # NOT ON THE SHARED WRITER, and this is deliberate (owner 2026-08-04, when manual
+                # entry, the match-log upload and the OCR commit were all moved onto
+                # result_writes.write_team_result_row). This legacy screenshot endpoint stores
+                # something the shared writer cannot express without CHANGING it: look at the
+                # player loop below, which attaches each player's row to
+                # ts_map[member.tournament_team_id] - the team the player is REGISTERED to, not the
+                # block they were read from. So when a screenshot block mixes in a player rostered
+                # elsewhere, that player's kills count toward THIS block's team total while their
+                # per-player row lands under their own team. The shared writer is per team and
+                # writes a team's row together with its own players, so moving this path would
+                # silently relocate those rows and re-score both teams. That is a real data change
+                # on a live endpoint, not a refactor, so it was left alone rather than bent to fit.
+                #
+                # The .log upload and the OCR commit solved the same situation properly, by
+                # recording the off-roster player as a MatchKillFlag instead of a player row. If
+                # this endpoint is ever revisited, do that here too and the write becomes a
+                # write_team_result_row call like the other three.
                 team_stats_to_create.append(
                     TournamentTeamMatchStats(
                         match=match,

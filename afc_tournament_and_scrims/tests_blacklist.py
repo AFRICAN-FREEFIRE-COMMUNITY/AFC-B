@@ -36,7 +36,9 @@ from afc_organizers.models import (
 )
 from afc_team.models import Team, TeamMembers
 
-from .models import Event, RegisteredCompetitors, Stages, TournamentTeam
+from .models import (
+    Event, RegisteredCompetitors, Stages, TournamentTeam, TournamentTeamMember,
+)
 
 
 class OrganizerBlacklistEnforcementTests(TestCase):
@@ -274,3 +276,130 @@ class OrganizerBlacklistEnforcementTests(TestCase):
             roster=[self.captain, self.alpha_player],
         )
         self.assertEqual(resp.status_code, 201, resp.content)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# THE ROSTER DOORS. Registration was the ONLY place the blacklist was ever checked, so a captain
+# could register a clean roster, pass every gate, and then swap the barred player straight back
+# in. Three endpoints created TournamentTeamMember rows and checked nothing: edit_roster,
+# add_player_to_event_roster and add_teams_to_event. These tests hold the shared guard
+# (afc_organizers.blacklist.roster_change_block) against all three, because a feature whose whole
+# promise is "the block follows the player" is worth nothing if the player can be added later.
+# ──────────────────────────────────────────────────────────────────────────────
+class RosterChangeBlacklistTests(TestCase):
+    def setUp(self):
+        self.country = "Nigeria"
+        self.org = Organization.objects.create(slug="roster-acme", name="Acme Esports")
+        self.captain = User.objects.create_user(
+            username="rc_captain", email="rc_cap@x.com", password="x", role="player",
+            status="active", country=self.country,
+        )
+        self.clean = User.objects.create_user(
+            username="rc_clean", email="rc_clean@x.com", password="x", role="player",
+            status="active", country=self.country,
+        )
+        self.barred = User.objects.create_user(
+            username="rc_barred", email="rc_barred@x.com", password="x", role="player",
+            status="active", country=self.country,
+        )
+        self.team = Team.objects.create(
+            team_name="Roster Team", join_settings="open",
+            team_creator=self.captain, team_owner=self.captain, country=self.country,
+        )
+        for u in (self.captain, self.clean, self.barred):
+            TeamMembers.objects.create(team=self.team, member=u, management_role="member")
+
+        self.event = Event.objects.create(
+            event_name="Roster Cup", slug="roster-cup", organization=self.org,
+            participant_type="duo", competition_type="tournament", event_type="virtual",
+            max_teams_or_players=16, is_public=True, is_draft=False, number_of_stages=1,
+            start_date=timezone.now().date(), end_date=timezone.now().date(),
+            registration_open_date=timezone.now().date(),
+            registration_end_date=timezone.now().date(),
+        )
+
+        # The organizer bars ONE player, not the team.
+        bl = OrganizerBlacklist.objects.create(
+            organization=self.org, team=None, target_type="player",
+            reason="Roster-door test", status="active",
+            start_date=timezone.now() - timedelta(days=1),
+            end_date=timezone.now() + timedelta(days=30),
+        )
+        OrganizerBlacklistPlayer.objects.create(blacklist=bl, user=self.barred)
+
+    def test_the_guard_refuses_a_barred_player_and_passes_a_clean_one(self):
+        """The shared gate itself, exercised directly. Every roster door calls this, so if it is
+        right and every door calls it, the hole cannot reopen in one endpoint at a time."""
+        from afc_organizers.blacklist import roster_change_block
+
+        self.assertIsNone(roster_change_block(self.event, self.team, [self.clean.user_id]))
+        message = roster_change_block(self.event, self.team, [self.barred.user_id])
+        self.assertIsNotNone(message)
+        self.assertIn("rc_barred", message)
+
+    def test_adding_a_barred_player_to_an_existing_roster_is_refused(self):
+        """The actual bypass: register clean, then add the barred player afterwards."""
+        from afc_organizers.blacklist import roster_change_block
+
+        tt = TournamentTeam.objects.create(event=self.event, team=self.team, status="active")
+        TournamentTeamMember.objects.create(
+            tournament_team=tt, user=self.captain, event=self.event, status="active")
+
+        # The edit adds the barred player. Only the ADDITION is checked, which is why the
+        # already-rostered captain does not matter here.
+        self.assertIsNotNone(
+            roster_change_block(self.event, self.team, [self.barred.user_id]))
+
+    def test_players_already_on_the_roster_are_not_re_checked(self):
+        """A blacklist created mid-event must not block an unrelated later edit. Callers pass
+        only the players being ADDED, so an existing roster member is never re-judged, and the
+        captain fixing a typo is not punished for somebody else's ban."""
+        from afc_organizers.blacklist import roster_change_block
+
+        self.assertIsNone(roster_change_block(self.event, self.team, []))
+        self.assertIsNone(roster_change_block(self.event, self.team, [self.clean.user_id]))
+
+    def test_an_event_with_no_organization_still_blocks_a_site_banned_player(self):
+        """Native AFC events have no owning Organization, so no organizer blacklist can apply,
+        but a site-wide ban must still stop the addition."""
+        from afc_auth.models import BannedPlayer
+        from afc_organizers.blacklist import roster_change_block
+
+        native = Event.objects.create(
+            event_name="Native Cup", slug="native-cup", organization=None,
+            participant_type="duo", competition_type="tournament", event_type="virtual",
+            max_teams_or_players=16, is_public=True, is_draft=False, number_of_stages=1,
+            start_date=timezone.now().date(), end_date=timezone.now().date(),
+            registration_open_date=timezone.now().date(),
+            registration_end_date=timezone.now().date(),
+        )
+        # No organizer blacklist reaches a native event.
+        self.assertIsNone(roster_change_block(native, self.team, [self.barred.user_id]))
+
+        BannedPlayer.objects.create(
+            banned_player=self.barred, ban_duration=30, is_active=True,
+            ban_end_date=timezone.now() + timedelta(days=30),
+        )
+        message = roster_change_block(native, self.team, [self.barred.user_id])
+        self.assertIsNotNone(message)
+        self.assertIn("banned from AFC", message)
+
+    def test_an_expired_site_ban_does_not_block(self):
+        """is_active alone is not enough: a ban row stays is_active True past its end date until
+        something sweeps it, so the window has to be checked or an expired ban blocks forever."""
+        from afc_auth.models import BannedPlayer
+        from afc_organizers.blacklist import roster_change_block
+
+        native = Event.objects.create(
+            event_name="Native Cup 2", slug="native-cup-2", organization=None,
+            participant_type="duo", competition_type="tournament", event_type="virtual",
+            max_teams_or_players=16, is_public=True, is_draft=False, number_of_stages=1,
+            start_date=timezone.now().date(), end_date=timezone.now().date(),
+            registration_open_date=timezone.now().date(),
+            registration_end_date=timezone.now().date(),
+        )
+        BannedPlayer.objects.create(
+            banned_player=self.clean, ban_duration=1, is_active=True,
+            ban_end_date=timezone.now() - timedelta(days=1),
+        )
+        self.assertIsNone(roster_change_block(native, self.team, [self.clean.user_id]))
