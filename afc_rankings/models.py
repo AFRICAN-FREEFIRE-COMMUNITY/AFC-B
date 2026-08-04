@@ -317,6 +317,20 @@ class TeamQuarterlyScore(models.Model):
         return f"TeamQuarterly({self.team_id or self.ghost_team_id} @ season {self.season_id}: {self.total_score})"
 
 
+# ── in-game role catalog for the PER-ROLE player ladders (owner 2026-08-04) ──────────────────────
+# A literal copy of afc_team.TeamMembers.IN_GAME_ROLE_CHOICES, which is the source of truth. It is
+# copied rather than imported because this module deliberately holds no cross-app imports (every FK
+# above is a "afc_team.Team" string ref), and afc_team -> afc_auth -> afc_tournament_and_scrims is
+# already an import cycle that a new top-level import would tighten. test_player_role_ladders asserts
+# the two lists stay identical, so a role added to the team model fails a test instead of drifting.
+PLAYER_ROLE_CHOICES = [
+    ("rusher", "Rusher"),
+    ("support", "Support"),
+    ("grenader", "Grenader"),
+    ("sniper", "Sniper"),
+]
+
+
 # ──────────────────────── §19.7 PlayerMonthlyScore ────────────────────────
 class PlayerMonthlyScore(models.Model):
     # player is now NULLABLE so a GHOST player can hold a monthly score row too. A ghost player
@@ -345,6 +359,43 @@ class PlayerMonthlyScore(models.Model):
     total_kills = models.IntegerField(default=0)
     mvp_count = models.IntegerField(default=0)
     finals_appearances = models.IntegerField(default=0)
+
+    # ── STORED in-game role for THIS PERIOD, and the per-role play it is derived from ─────────────
+    # (owner 2026-08-04: "role history is not stored, so a player who switched roles appears under
+    # their current one. fix the above so it records properly using data and is stored.")
+    #
+    # `role` is the PRIMARY role the player actually played this month: the role stamped on the most
+    # of the month's counting matches (TournamentPlayerMatchStats.role_at_match, itself a copy of the
+    # frozen per-event roster role). The per-role ladder filters on THIS column instead of joining
+    # afc_team.TeamMembers, which is what makes an old month keep its old roles: the value was
+    # computed from what the player was at the time and then written down, so a later transfer or
+    # role change cannot rewrite it.
+    #
+    # NULL is a real, deliberate answer and never a guess. It means the month holds no role-stamped
+    # match for this player, which is the truth for: staff roles (coach / manager / analyst have no
+    # in_game_role), players on no roster, GHOST players (an unclaimed historical name has no roster
+    # row at all), players whose whole month was solo / standalone play (no squad role applies), and
+    # anything played before the stamping existed. A NULL row shows on the unfiltered ladder and in
+    # no role table, exactly as those players do today.
+    #
+    # `role_breakdown` is the evidence behind `role` and the source of the role-scoped columns the
+    # ladder shows: {"sniper": {"matches": 8, "kills": 41}, "rusher": {"matches": 3, "kills": 9}}.
+    # It exists because a player CAN play several roles in one month, and the honest way to report
+    # that is to show what they did in each rather than to pretend the month had one role. The ladder
+    # still lists them once, under `role`, so the table stays a partition of the ladder and nobody is
+    # counted twice; the breakdown is what lets the UI mark the row as mixed-role and show
+    # "8 matches, 41 kills as sniper" instead of a month total that includes their rusher games.
+    # NULL / empty = no stamped match, in lockstep with `role` being NULL.
+    #
+    # Neither column re-scores anything. The score stays the one the main ladder shows (owner: "a
+    # role table is a filter, not separate scoring"), because nothing in the match pipeline records a
+    # role-specific statistic that could justify a role-specific weight.
+    #
+    # Written by: recalc.recalc_player_monthly, from aggregation._collect_player.
+    # Read by: player_roles.players_by_role (the filter, the tab counts and the coverage notice) and
+    # serializers.player_monthly (the role columns on every player row).
+    role = models.CharField(max_length=20, choices=PLAYER_ROLE_CHOICES, null=True, blank=True)
+    role_breakdown = models.JSONField(null=True, blank=True)
 
     finalized = models.BooleanField(default=False)
     is_zeroed = models.BooleanField(default=False)
@@ -399,6 +450,17 @@ class PlayerQuarterlyScore(models.Model):
     participated_in_tournaments = models.IntegerField(default=0)
     meets_participation_floor = models.BooleanField(default=False)
     rank = models.IntegerField(null=True, blank=True)
+
+    # Stored in-game role for THIS SEASON + the per-role play behind it. Same meaning, same NULL
+    # rules and same "filter, not separate scoring" contract as PlayerMonthlyScore.role /
+    # role_breakdown above - read that comment, it is the long form. The only difference is the
+    # window the stamps are counted over: a season instead of a month, so a player who changed role
+    # mid-season is primarily whichever role they played most of the season's counting matches in,
+    # with the split visible in role_breakdown.
+    # Written by: recalc.recalc_player_quarterly. Read by: player_roles.players_by_role (quarterly
+    # period) and serializers.player_quarterly.
+    role = models.CharField(max_length=20, choices=PLAYER_ROLE_CHOICES, null=True, blank=True)
+    role_breakdown = models.JSONField(null=True, blank=True)
 
     is_zeroed = models.BooleanField(default=False)
     zeroed_reason = models.CharField(max_length=255, blank=True)

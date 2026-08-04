@@ -44,6 +44,9 @@ from afc_organizers.permissions import org_can_event
 from afc_team.models import Team, TeamMembers
 
 from . import round_robin
+# Roster-role carry (owner 2026-08-04): a promoted / merged-in squad keeps the in-game roles it
+# qualified under, so the target event's frozen roster is right from creation. See roster_roles.py.
+from . import roster_roles
 from .models import (
     Event, EventLink, EventQualification, RegisteredCompetitors, SoloPlayerMatchStats,
     Stages, TournamentTeam, TournamentTeamMember,
@@ -242,14 +245,14 @@ def _promote(qual, actor, bypass_window=False):
             # Roster: copy the SOURCE event's finishing roster when it exists, else the team's
             # current members. roster_mode=captain_repick copies too, then tells the captain to
             # confirm/edit via the existing Edit Registration flow before roster lock.
-            src_member_ids = list(
-                TournamentTeamMember.objects.filter(
-                    tournament_team__event=link.source_event, tournament_team__team=qual.team,
-                ).values_list("user_id", flat=True)
-            ) or list(TeamMembers.objects.filter(team=qual.team).values_list("member_id", flat=True))
+            # The in-game role is carried with each player (roster_roles.carried_roster): a promoted
+            # squad keeps the roles it qualified under, so the target event's frozen roster is
+            # correct from the moment it is created rather than needing a later fix-up.
+            src_members = roster_roles.carried_roster(link.source_event, qual.team)
             TournamentTeamMember.objects.bulk_create([
-                TournamentTeamMember(tournament_team=tt, user_id=uid, event=target, status="active")
-                for uid in dict.fromkeys(src_member_ids)
+                TournamentTeamMember(tournament_team=tt, user_id=uid, event=target, status="active",
+                                     in_game_role=role)
+                for uid, role in src_members
             ], batch_size=200)
             qual.promoted_tournament_team = tt
 
@@ -838,14 +841,13 @@ def import_competitors(request, event_id):
                     event=target, team=team, status="active",
                     registered_by=user, country=team.country,
                 )
-                src_member_ids = list(
-                    TournamentTeamMember.objects.filter(
-                        tournament_team__event=src, tournament_team__team=team,
-                    ).values_list("user_id", flat=True)
-                ) or list(TeamMembers.objects.filter(team=team).values_list("member_id", flat=True))
+                # Same roster carry as _promote above, roles included: a merged-in team keeps the
+                # roles frozen on the source event's roster.
+                src_members = roster_roles.carried_roster(src, team)
                 TournamentTeamMember.objects.bulk_create([
-                    TournamentTeamMember(tournament_team=tt, user_id=uid, event=target, status="active")
-                    for uid in dict.fromkeys(src_member_ids)
+                    TournamentTeamMember(tournament_team=tt, user_id=uid, event=target,
+                                         status="active", in_game_role=role)
+                    for uid, role in src_members
                 ], batch_size=200)
                 captain = TeamMembers.objects.filter(
                     team=team, management_role="team_captain",

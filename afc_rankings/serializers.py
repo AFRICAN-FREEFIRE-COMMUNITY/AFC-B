@@ -67,6 +67,38 @@ def _ghost_player_claim(s):
     return None, None
 
 
+# ───────────────────────── stored in-game role, on every player row ─────────────────────────
+# (owner 2026-08-04: "role history is not stored ... fix the above so it records properly using data
+# and is stored.") PlayerMonthlyScore / PlayerQuarterlyScore now carry the role the player actually
+# held during that period, derived from the roles stamped on the matches that produced the score
+# (TournamentPlayerMatchStats.role_at_match), plus the per-role split behind it.
+#
+# These four keys ride on EVERY player row, not only inside a role table, so the main ladder can
+# show a role chip and the client renders one row component either way.
+#   role          the period's primary role, or null = no role recorded for the period (staff, a
+#                 ghost, solo-only play, or play from before the stamping existed). Null is a real
+#                 answer and must be rendered as "not recorded", never as a blank that implies none.
+#   role_matches  matches played IN THAT ROLE in the period. Role-scoped, so a mixed-role player's
+#                 number describes their sniper games rather than their whole month.
+#   role_kills    kills IN THAT ROLE, same scoping. Kills are the ONLY per-player statistic the
+#                 match pipeline actually records (damage / assists / deaths / headshots exist as
+#                 columns but every production write path leaves them 0), so this is the honest
+#                 limit of what a role column can report. No role-specific score is invented.
+#   role_is_mixed the player played 2+ roles in the period. The row is still filed under one role so
+#                 the tables stay a partition of the ladder; this flag is how the UI discloses that
+#                 the filing is a majority call rather than the whole story.
+# Consumed by: app/(user)/rankings/page.tsx (the player ladder + its role tabs) via lib/rankings.ts.
+def _role_columns(s):
+    breakdown = s.role_breakdown or {}
+    mine = breakdown.get(s.role) or {}
+    return {
+        "role": s.role,
+        "role_matches": mine.get("matches", 0),
+        "role_kills": mine.get("kills", 0),
+        "role_is_mixed": len(breakdown) > 1,
+    }
+
+
 def team_monthly(s):
     gid, gstatus = _ghost_team_claim(s)
     return {
@@ -152,6 +184,8 @@ def player_monthly(s):
         "kills": s.total_kills,
         "mvps": s.mvp_count,
         "month": s.month.isoformat(),
+        # stored in-game role for this month + the role-scoped counts (see _role_columns).
+        **_role_columns(s),
     }
 
 
@@ -171,6 +205,8 @@ def player_quarterly(s):
         "tier_label": TIER_LABELS.get(s.tier_assigned),
         "tier_source": s.tier_source,
         "season_id": s.season_id,
+        # stored in-game role for this season + the role-scoped counts (see _role_columns).
+        **_role_columns(s),
     }
 
 

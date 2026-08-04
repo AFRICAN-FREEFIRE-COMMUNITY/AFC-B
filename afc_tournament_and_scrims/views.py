@@ -23,6 +23,11 @@ from afc_team.views import STAFF_ROLES
 # use a LOCAL variable named `scoring` for `match.scoring_settings`, which would shadow
 # a bare module import and break `scoring.compute_*` inside those functions.
 from afc_tournament_and_scrims import scoring as scoring_lib
+# Role history (owner 2026-08-04): resolves the in-game role FROZEN on a player's event roster row so
+# every result path can stamp TournamentPlayerMatchStats.role_at_match. That stamp is what lets the
+# per-role ladders (afc_rankings/player_roles.py) report the role a player held WHEN the points were
+# earned instead of the role they hold today. See afc_tournament_and_scrims/roster_roles.py.
+from afc_tournament_and_scrims import roster_roles
 from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageAdvancementRule, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
 # set_audit -> supply a SPECIFIC human audit summary (entity name + before/after) that the
@@ -6980,10 +6985,18 @@ def register_for_event(request):
         if not (min_size <= len(roster_member_ids) <= max_size):
             return Response({"message": f"Roster must contain {min_size} to {max_size} players."}, status=400)
 
-        # Ensure all selected are members of this team
-        team_member_ids = set(
-            TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
+        # Ensure all selected are members of this team.
+        #
+        # The in-game role rides along on this SAME query (no extra round trip). It is copied onto
+        # every TournamentTeamMember created below so the event keeps the role each player held AT
+        # REGISTRATION rather than the role they happen to hold whenever a ladder is next read: the
+        # club roster row is a live value and a July sniper who is a rusher today used to read back
+        # as a rusher in July's table. See afc_tournament_and_scrims/roster_roles.py for the full
+        # why, and afc_rankings/player_roles.py for the ladder that consumes it.
+        club_roles_by_member_id = dict(
+            TeamMembers.objects.filter(team=team).values_list("member_id", "in_game_role")
         )
+        team_member_ids = set(club_roles_by_member_id)
         if not set(roster_member_ids).issubset(team_member_ids):
             return Response({"message": "One or more roster players are not members of this team."}, status=400)
 
@@ -7253,7 +7266,11 @@ def register_for_event(request):
                     TournamentTeamMember(
                         tournament_team=tt,
                         user=roster_users_by_id[uid],
-                        event=event
+                        event=event,
+                        # Freeze the club role onto the event roster (see club_roles_by_member_id
+                        # above). A waitlisted team can still be promoted and play, so its roster
+                        # needs the same frozen role the confirmed path writes.
+                        in_game_role=club_roles_by_member_id.get(uid),
                     )
                     for uid in roster_member_ids
                 ])
@@ -7361,7 +7378,11 @@ def register_for_event(request):
                         user=roster_users_by_id[uid],
                         event=event,
                         user_id_from_sponsor=sponsor_uid,
-                        status="pending" if event.is_sponsored else "active"
+                        status="pending" if event.is_sponsored else "active",
+                        # Freeze the club role onto the event roster - the main registration path.
+                        # This is the roster-lock anchor the per-role ladders ultimately read
+                        # (roster_roles.frozen_roles_for_event -> role_at_match -> the period role).
+                        in_game_role=club_roles_by_member_id.get(uid),
                     )
                 )
 
@@ -16430,6 +16451,11 @@ def create_leaderboard_manually(request):
                                     damage=0,
                                     assists=0,
                                     played=False,
+                                    # Role frozen on the EVENT roster row we are already looping over
+                                    # (no extra query). These are played=False placeholders that the
+                                    # ranking aggregation skips, but stamping them now means the role
+                                    # is already right if a result is later entered against the row.
+                                    role_at_match=member.in_game_role,
                                 )
                                 for member in team_members
                             ], batch_size=200, ignore_conflicts=True)
@@ -16657,6 +16683,14 @@ def enter_team_match_result_manual(request):
         # ---------------- CREATE PLAYER STATS ----------------
         player_rows = []
 
+        # ROLE AT MATCH (owner 2026-08-04): one query for the whole event, giving the in-game role
+        # FROZEN on each player's event roster row. Stamped onto every player-stats row below so the
+        # per-role ladders can say what a player was WHEN the points were earned instead of reading
+        # today's club roster. Reading the frozen per-event value (never the live TeamMembers row)
+        # is what makes a later re-entry of this same result reproduce the same historical role.
+        # See afc_tournament_and_scrims/roster_roles.py.
+        match_roles = roster_roles.frozen_roles_for_match(match)
+
         for team_item in results_payload:
             tid = team_item.get("tournament_team_id")
             ts_id = created_map.get(int(tid)) if tid else None
@@ -16686,6 +16720,9 @@ def enter_team_match_result_manual(request):
                         kills=int(p.get("kills") or 0) if played else 0,
                         damage=int(p.get("damage") or 0) if played else 0,
                         assists=int(p.get("assists") or 0) if played else 0,
+                        # None when the event roster has no role for them (staff, or a roster row
+                        # written before the field existed). Left None rather than guessed.
+                        role_at_match=match_roles.get(int(user_id)),
                     )
                 )
 
@@ -17380,6 +17417,13 @@ def edit_match_result(request):
         # ---------------- CREATE PLAYER STATS ----------------
         player_rows = []
 
+        # ROLE AT MATCH: the frozen per-event roster role, re-stamped on every EDIT. This endpoint
+        # deletes and re-creates the match's player rows, which is precisely the case that would
+        # corrupt role history if the role were read live: editing a July result in September would
+        # stamp September's role onto July. Reading the event's FROZEN roster reproduces the same
+        # historical value however many times the result is edited. See roster_roles.py.
+        edit_match_roles = roster_roles.frozen_roles_for_match(match)
+
         for team_item in results_payload:
 
             tid = team_item.get("tournament_team_id")
@@ -17407,6 +17451,7 @@ def edit_match_result(request):
                         kills=int(p.get("kills") or 0) if played else 0,
                         damage=int(p.get("damage") or 0) if played else 0,
                         assists=int(p.get("assists") or 0) if played else 0,
+                        role_at_match=edit_match_roles.get(int(user_id)),
                     )
                 )
 
@@ -21385,6 +21430,13 @@ def upload_team_match_result(request):
                         kills=p["kills"],
                         damage=0,
                         assists=0,
+                        # ROLE AT MATCH: `member` IS the frozen event roster row (uid_to_member
+                        # above), so the role the player was rostered under comes free. This upload
+                        # is idempotent (it wipes and re-inserts the match's rows), and reading the
+                        # frozen value rather than the live club roster is exactly what makes a
+                        # re-upload months later reproduce the SAME historical role. None when the
+                        # roster row carries no role. See roster_roles.py.
+                        role_at_match=member.in_game_role,
                     )
                 )
                 attributed.append({
@@ -21745,7 +21797,12 @@ def add_teams_to_event(request):
                     TournamentTeamMember.objects.create(
                         tournament_team=tt,
                         user=member.member,
-                        event=event
+                        event=event,
+                        # Freeze the club role onto the event roster. `member` is the TeamMembers
+                        # row already fetched above, so this costs nothing. Admin-added teams score
+                        # like any other, so their rosters need the same frozen role the captain's
+                        # own registration writes (roster_roles.py explains why it is frozen).
+                        in_game_role=member.in_game_role,
                     )
 
         if new_registrations:
@@ -22916,9 +22973,14 @@ def edit_roster(request):
         }, status=400)
 
     # ---------------- VALIDATE TEAM MEMBERS ----------------
-    team_member_ids = set(
-        TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
+    # The in-game role rides along on this SAME query (no extra round trip) and is frozen onto the
+    # rows added below. A roster edit is a legitimate moment to (re)freeze the role, because it is
+    # the moment the event's roster is being decided; what must never happen is the ladder reading
+    # the LIVE club role later. See afc_tournament_and_scrims/roster_roles.py.
+    club_roles_by_member_id = dict(
+        TeamMembers.objects.filter(team=team).values_list("member_id", "in_game_role")
     )
+    team_member_ids = set(club_roles_by_member_id)
 
     if not set(roster_member_ids).issubset(team_member_ids):
         return Response({"message": "Roster players must belong to team."}, status=400)
@@ -23048,7 +23110,12 @@ def edit_roster(request):
                     user=users_by_id[uid],
                     event=event,
                     user_id_from_sponsor=sponsor_uid,
-                    status="pending" if event.is_sponsored else "active"
+                    status="pending" if event.is_sponsored else "active",
+                    # Freeze the club role onto the event roster for a newly ADDED player. Players
+                    # KEPT by this edit are not touched: their row already carries the role frozen
+                    # when they were first rostered, and rewriting it here would quietly re-date a
+                    # role change onto matches that were already played under the old one.
+                    in_game_role=club_roles_by_member_id.get(uid),
                 )
             )
 
@@ -23215,6 +23282,10 @@ def add_player_to_event_roster(request):
             user=add_user,
             event=event,
             status="pending" if event.is_sponsored else "active",
+            # Freeze the club role onto the event roster. `membership` is the TeamMembers row
+            # already fetched for the staff check above, so no extra query. Same anchor as
+            # register_for_event; see roster_roles.py.
+            in_game_role=membership.in_game_role,
         )
         # Reopens the team for sponsor re-review if the add left any member non-active;
         # otherwise an idempotent refresh (see check_and_activate_team docstring).
@@ -23788,6 +23859,11 @@ def upload_match_result_image(request):
                             kills=int(p.get("kills") or 0),
                             damage=0,
                             assists=0,
+                            # ROLE AT MATCH: `member` is the frozen event roster row from
+                            # name_to_member above, so the role costs no extra query. Same rule as
+                            # every other result path - frozen per-event value, never the live club
+                            # roster. See roster_roles.py.
+                            role_at_match=member.in_game_role,
                         )
                     )
 

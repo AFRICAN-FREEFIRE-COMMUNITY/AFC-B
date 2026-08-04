@@ -32,7 +32,7 @@ from afc_team.models import Team
 from .scoring import engine
 from .scoring.engine import TournamentInput, ScrimInput, PlayerTournamentInput, PlayerScrimInput
 from .scoring.tables import DEFAULT_TABLES, ScoringTables, tables_from_config
-from .models import ScoringConfig, Season, SeasonScoringConfig, TeamSocialSnapshot
+from .models import PLAYER_ROLE_CHOICES, ScoringConfig, Season, SeasonScoringConfig, TeamSocialSnapshot
 
 
 # ───────────────────────── date helpers ─────────────────────────
@@ -129,6 +129,14 @@ class PlayerAgg:
     mvp_count: int
     finals_appearances: int
     tournaments_played: int
+    # {role: {"matches": n, "kills": n}} for the period, built from the roles STAMPED on the
+    # matches that produced this score (TournamentPlayerMatchStats.role_at_match). Empty when the
+    # period holds no role-stamped match, which is the honest answer for staff, ghosts, solo-only
+    # play and anything played before the stamping existed. Persisted verbatim by recalc as
+    # PlayerMonthlyScore.role_breakdown / PlayerQuarterlyScore.role_breakdown; `primary_role` of it
+    # becomes the stored `role` the per-role ladders filter on. Defaulted so the two other
+    # constructors of this dataclass (if any appear) do not have to care.
+    role_breakdown: dict = None
 
 
 # ───────────────────────── scrim cap helper (§12) ─────────────────────────
@@ -377,9 +385,29 @@ def _collect_player(player, start: datetime.date, end: datetime.date,
                     tables: ScoringTables = DEFAULT_TABLES):
     """Build the per-tournament PlayerTournamentInput list + the player's scrim aggregate.
 
-    Returns (tournaments, scrims: PlayerScrimInput, mvp_total, finals_total, kill_total). Like the
-    team path, the scrim side comes back already filtered by the admin counting controls /
-    exclusions, since only this function knows which event each scrim row belongs to.
+    Returns (tournaments, scrims: PlayerScrimInput, mvp_total, finals_total, kill_total,
+    role_breakdown). Like the team path, the scrim side comes back already filtered by the admin
+    counting controls / exclusions, since only this function knows which event each scrim row
+    belongs to.
+
+    ROLE HISTORY (owner 2026-08-04). Alongside the score, this walks the ``role_at_match`` stamped
+    on each of the player's match rows and returns
+    ``{role: {"matches": n, "kills": n}}`` for the window. That is the ONLY honest way to say what a
+    player was during a past period: the stamp was written from the frozen event roster when the
+    result was recorded, so it describes the player as they were then, and no later transfer or role
+    change can rewrite it. recalc persists the breakdown and its primary role onto the period score
+    row, and ``player_roles.players_by_role`` filters the public role ladders on that stored value
+    instead of joining today's ``afc_team.TeamMembers``.
+
+    The breakdown honours exactly the same exclusions as the score it accompanies: a match in an
+    excluded / opted-out event contributes no role, and an event whose kills are switched off
+    contributes its matches but no kills. That keeps the role-scoped columns consistent with the
+    number they sit next to, rather than describing play the score does not reflect.
+
+    Standalone SOLO leaderboards (the ``standalone`` block further down) contribute to the score but
+    NOT to the breakdown, and deliberately so: they have no team, so no squad role applies to them.
+    A player whose whole period was solo play ends with an empty breakdown and no stored role, which
+    is the truth.
     """
     pstats = (
         TournamentPlayerMatchStats.objects
@@ -392,11 +420,19 @@ def _collect_player(player, start: datetime.date, end: datetime.date,
     tour = defaultdict(lambda: {"kills": 0, "ev": None, "finals": 0, "team_won": False, "mvp": 0})
     scrim_rows = []   # (day, kills, is_win, event_id)
     scrim_event_ids = set()
+    # One entry per role-stamped match played in the window, tournaments AND scrims alike: a scrim is
+    # still a match played in a role. Folded into the breakdown below, once the exclusions are known.
+    # (event_id, role, kills)
+    role_rows = []
     for ps in pstats:
         match = ps.team_stats.match
         ev = _event_of_match(match)
         if ev is None:
             continue
+        # Unstamped rows are skipped rather than defaulted: no role was recorded for that match and
+        # inventing one from the current roster is the bug this whole feature removes.
+        if ps.role_at_match:
+            role_rows.append((ev.event_id, ps.role_at_match, ps.kills))
         if ev.competition_type == "scrims":
             # event_id carried so the counting controls / exclusions below reach scrims too.
             scrim_rows.append((_match_day(match), ps.kills,
@@ -427,6 +463,21 @@ def _collect_player(player, start: datetime.date, end: datetime.date,
     excluded = _excluded_event_ids(event_ids, player=player)
     excluded |= _unverified_org_event_ids(list(tour.keys()))  # unverified org events don't count
     scrim_rows = [r for r in scrim_rows if r[3] not in excluded]
+
+    # ── role breakdown: what the player actually played, per role, in this window ──────────────────
+    # Built here rather than in the loop above because only now are the exclusions and the per-event
+    # counting controls known, and the breakdown must agree with the score it will sit beside:
+    #   * an excluded / opted-out event contributes nothing at all (the score ignores it too);
+    #   * an event with count_kills switched off still contributes its MATCHES (they were played in
+    #     that role) but no kills, mirroring the kills=0 the tournament loop below applies.
+    role_breakdown = {}
+    for event_id, role, kills in role_rows:
+        if event_id in excluded:
+            continue
+        ctrl = controls.get(event_id)
+        bucket = role_breakdown.setdefault(role, {"matches": 0, "kills": 0})
+        bucket["matches"] += 1
+        bucket["kills"] += 0 if (ctrl and not ctrl.count_kills) else kills
 
     tournaments = []
     mvp_total = finals_total = kill_total = 0
@@ -470,22 +521,52 @@ def _collect_player(player, start: datetime.date, end: datetime.date,
     s_wins = sum(1 for _, _, win, evid in scrim_rows
                  if win and (not (c := controls.get(evid)) or c.count_winner))
     return (tournaments, PlayerScrimInput(scrim_kills=s_kills, scrim_wins=s_wins),
-            mvp_total, finals_total, kill_total)
+            mvp_total, finals_total, kill_total, role_breakdown)
+
+
+def primary_role(role_breakdown):
+    """The one role a period is filed under, from a ``{role: {"matches", "kills"}}`` breakdown.
+
+    A player can genuinely play several roles inside one month or season. The role ladder still has
+    to list them exactly once, or the tables stop being a partition of the ladder and a mixed-role
+    player is counted twice in two different tab counts. So the period is filed under the role the
+    player played MOST of it in, and the full split stays in ``role_breakdown`` so the UI can mark
+    the row as mixed and show the role-scoped matches/kills rather than pretending the month was
+    single-role.
+
+    Ordering, most significant first: matches played in the role, then kills in it, then the role's
+    position in the model's own choice order. The last key is only a determinism tiebreak (an exact
+    tie on both counts must not depend on dict iteration order), never a judgement about which role
+    is "better".
+
+    Returns None for an empty / missing breakdown, which is what "no role recorded for this period"
+    is written as. Shared with the backfill command so the stored role is computed one way only.
+    """
+    if not role_breakdown:
+        return None
+    order = {key: index for index, (key, _label) in enumerate(PLAYER_ROLE_CHOICES)}
+    return max(
+        role_breakdown,
+        key=lambda role: (role_breakdown[role].get("matches", 0),
+                          role_breakdown[role].get("kills", 0),
+                          -order.get(role, len(order))),
+    )
 
 
 def compute_player_monthly(player, month: datetime.date) -> PlayerAgg:
     tables = resolve_tables(month=month)
     start, end = month_bounds(month)
-    tournaments, scrims, mvp, finals, kills = _collect_player(player, start, end, tables)
+    tournaments, scrims, mvp, finals, kills, roles = _collect_player(player, start, end, tables)
     result = engine.monthly_player_score(tournaments, scrims, tables)
     return PlayerAgg(result=result, total_kills=kills, mvp_count=mvp,
-                     finals_appearances=finals, tournaments_played=len(tournaments))
+                     finals_appearances=finals, tournaments_played=len(tournaments),
+                     role_breakdown=roles)
 
 
 def compute_player_quarterly(player, season) -> PlayerAgg:
     tables = resolve_tables(season=season)
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
-    tournaments, scrims, mvp, finals, kills = _collect_player(player, start, end, tables)
+    tournaments, scrims, mvp, finals, kills, roles = _collect_player(player, start, end, tables)
     # inherited prize money - payouts to any team the player was rostered on (Phase 1: via tournament_team membership)
     prize = (EventPrizePayout.objects
              .filter(tournament_team__members__user=player,
@@ -497,4 +578,5 @@ def compute_player_quarterly(player, season) -> PlayerAgg:
         tables=tables,
     )
     return PlayerAgg(result=result, total_kills=kills, mvp_count=mvp,
-                     finals_appearances=finals, tournaments_played=len(tournaments))
+                     finals_appearances=finals, tournaments_played=len(tournaments),
+                     role_breakdown=roles)

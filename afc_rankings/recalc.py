@@ -252,6 +252,13 @@ def recalc_player_monthly(player_id, month: datetime.date = None):
             finals_pts=r.finals_pts, team_win_pts=r.team_win_pts, participation_pts=r.participation_pts,
             scrim_kill_pts=r.scrim_kill_pts, scrim_win_pts=r.scrim_win_pts, total_score=r.total,
             total_kills=agg.total_kills, mvp_count=agg.mvp_count, finals_appearances=agg.finals_appearances,
+            # ROLE HISTORY (owner 2026-08-04): the role the player actually held for THIS month,
+            # derived from the roles stamped on the month's matches, then written down. The per-role
+            # ladder filters on this stored column instead of joining today's roster, so a month
+            # keeps the roles it was played under. None + None when the month has no stamped match
+            # (staff, ghost, solo-only, or pre-stamping play) - never guessed from the live roster.
+            role=aggregation.primary_role(agg.role_breakdown),
+            role_breakdown=agg.role_breakdown or None,
         ),
     )
     rerank_player_month(month)
@@ -290,6 +297,10 @@ def recalc_player_quarterly(player_id, season_id):
             total_score=r.total, prize_money_pts=r.prize_money_pts,
             participated_in_tournaments=agg.tournaments_played, meets_participation_floor=meets,
             tier_assigned=tier, tier_source="individual",
+            # Same role history as the monthly row, over the season window. See
+            # recalc_player_monthly above for the full note.
+            role=aggregation.primary_role(agg.role_breakdown),
+            role_breakdown=agg.role_breakdown or None,
         ),
     )
     rerank_player_quarter(season)
