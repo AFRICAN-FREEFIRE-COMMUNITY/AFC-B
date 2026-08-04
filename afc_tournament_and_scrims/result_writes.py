@@ -23,6 +23,19 @@ WHY THIS MODULE EXISTS
     .test_approved_result_matches_manual_entry, tests_log_attribution
     .test_log_upload_matches_manual_entry, and afc_ocr.tests.test_commit_matches_manual.
 
+    ONE HONEST EXCEPTION, so the paragraph above is not read as more than it claims. The
+    four doors agree on the WRITE; they do not all build `ctx` the same way. Three of them
+    call scoring_context(match), which reads the match and nothing else. The OCR commit
+    builds its own, because it has always carried two fallbacks the others never had: a
+    match with no scoring_settings of its own falls back to the LEADERBOARD's placement
+    table and kill point, and an empty table falls back to the Free Fire default. On a match
+    that HAS its own scoring_settings, which is every match any of these tests exercises and
+    the ordinary case in production, all four score identically. On a match without one, OCR
+    scores it the way OCR always has and the other three score it at zero placement points.
+    Making them agree there is a decision about scoring, not about writing, so it does not
+    belong in this module. See afc_ocr/services/commit.py and its
+    test_the_leaderboard_fallbacks_survive_the_shared_writer.
+
     WHAT EACH DOOR STILL OWNS is everything ABOVE the write, because that part genuinely
     differs: the log upload decides which in-game block is which registered team and which
     UIDs are ringers, the OCR commit decides the same from names, and manual entry is simply

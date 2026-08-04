@@ -212,6 +212,41 @@ class OcrCommitMatchesManualEntryTests(TestCase):
 
         self.assertEqual(from_ocr, self._snapshot())
 
+    def test_the_leaderboard_fallbacks_survive_the_shared_writer(self):
+        """THE REGRESSION GUARD for the one thing this refactor deliberately did NOT hand over.
+
+        commit.py builds its own scoring context instead of calling result_writes.scoring_context,
+        because this path has always had two fallbacks the other doors never had: a match with no
+        scoring_settings of its own falls back to the LEADERBOARD's placement table and kill point,
+        and an empty table falls back to the Free Fire default. scoring_context reads the match and
+        nothing else, so routing this through it would score those maps at ZERO placement points.
+
+        Every other test in this file hands the match its own scoring_settings, so all of them
+        would keep passing if somebody "simplified" those lines away, and real historical events
+        would quietly re-score on their next commit. This test is the only thing standing between
+        that edit and the standings, which is why it clears scoring_settings on purpose.
+        """
+        # An EMPTY dict, not None: the column is NOT NULL, and empty is what a match that was
+        # never given its own scoring actually holds.
+        self.match.scoring_settings = {}
+        self.match.save(update_fields=["scoring_settings"])
+
+        alpha_0, alpha_1 = self.alpha_players
+        commit_team_result(self.match, [
+            {"placement": 1, "matched_team_id": self.alpha.tournament_team_id,
+             "matched_user_id": alpha_0.pk, "kills": 5, "raw_name": alpha_0.full_name},
+            {"placement": 1, "matched_team_id": self.alpha.tournament_team_id,
+             "matched_user_id": alpha_1.pk, "kills": 4, "raw_name": alpha_1.full_name},
+        ])
+
+        stats = TournamentTeamMatchStats.objects.get(
+            match=self.match, tournament_team_id=self.alpha.pk)
+        # The LEADERBOARD's table (first place = 12) and its kill_point of 1.0, neither of which
+        # the match itself carries any more. A zero here is the failure this exists to catch.
+        self.assertEqual(stats.placement_points, 12, "the leaderboard's placement table was lost")
+        self.assertEqual(stats.kill_points, 9)
+        self.assertEqual(stats.total_points, 21)
+
     def test_two_placement_groups_on_one_team_are_refused(self):
         """A reviewer who credits two blocks to the same team must not be able to make one of them
         disappear. The unique (match, team) constraint used to catch this on the second insert;
