@@ -126,6 +126,55 @@ class PartnerApplyTestCase(TestCase):
 # 1) Submitting
 # ──────────────────────────────────────────────────────────────────────────────────────────────
 class SubmitApplicationTests(PartnerApplyTestCase):
+    # ── the WhatsApp number (owner 2026-08-04: "someone could get messaged on it") ──
+    def test_a_whatsapp_number_is_stored_in_e164_not_as_typed(self):
+        """The whole reason this field is normalised on the way IN rather than at send time.
+
+        The two phone fields already in this codebase store what was typed and normalise when a
+        message goes out, which is how 34 of 133 stored player numbers ended up in a local form
+        nobody can resolve. A local number here is anchored on the country the applicant typed on
+        the same form and stored dialable, or it is refused.
+        """
+        resp = self._submit(country="Nigeria", contact_whatsapp="0805 123 4567")
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        application = PartnerApplication.objects.get(reference=resp.json()["reference"])
+        self.assertEqual(application.contact_whatsapp, "+2348051234567")
+
+    def test_an_international_number_ignores_the_country_field(self):
+        """A number that already carries its own dial code is not re-anchored, so an applicant
+        based in one country giving a number in another is stored as they meant it."""
+        resp = self._submit(country="Ghana", contact_whatsapp="+234 805 123 4567")
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        application = PartnerApplication.objects.get(reference=resp.json()["reference"])
+        self.assertEqual(application.contact_whatsapp, "+2348051234567")
+
+    def test_a_number_that_cannot_be_resolved_is_refused_with_a_fixable_message(self):
+        """Refused at the door, in front of the person who can correct it, rather than discovered
+        at the moment AFC needed to reach them. The message has to say what to do about it."""
+        resp = self._submit(contact_whatsapp="ring me")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("country code", resp.json()["message"])
+        self.assertEqual(PartnerApplication.objects.count(), 0)
+
+    def test_a_local_number_with_no_country_to_anchor_it_is_refused(self):
+        """to_e164 returns None rather than guessing, because "08051234567" belongs to a dozen
+        numbering plans and messaging the wrong subscriber is worse than not messaging."""
+        resp = self._submit(country="", contact_whatsapp="08051234567")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertEqual(PartnerApplication.objects.count(), 0)
+
+    def test_leaving_the_whatsapp_number_blank_is_accepted(self):
+        """Optional on purpose: an applicant who would rather only be emailed is not blocked."""
+        resp = self._submit(contact_whatsapp="")
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        application = PartnerApplication.objects.get(reference=resp.json()["reference"])
+        self.assertEqual(application.contact_whatsapp, "")
+
     def test_a_webhook_pointing_inside_afcs_own_network_is_refused_at_the_door(self):
         """This form is PUBLIC and unauthenticated, and the webhook is the one field on it that
         AFC's own server later fetches from inside AFC's network. Left unchecked, anybody could
@@ -400,6 +449,39 @@ class ApplicationStatusTests(PartnerApplyTestCase):
 
         self.assertEqual(resp.status_code, 400)
         self.assertIn("fragment", resp.json()["message"])
+
+    def test_an_edit_normalises_the_whatsapp_number_the_same_way_submission_did(self):
+        """Same reasoning as the webhook test below: a rule applied at submission and not on the
+        edit beside it is one PATCH away from not existing. An applicant asked for changes could
+        otherwise replace a dialable number with an unusable one."""
+        self.application.status = PartnerApplication.CHANGES_REQUESTED
+        self.application.country = "Nigeria"
+        self.application.save()
+        token = self.application.issue_access_token()
+
+        good = self.client.patch(
+            f"/partner-apply/applications/{self.reference}/?token={token}",
+            data=json.dumps({"contact_whatsapp": "0805 123 4567"}),
+            content_type="application/json")
+        self.assertEqual(good.status_code, 200, good.content)
+        self.application.refresh_from_db()
+        self.assertEqual(self.application.contact_whatsapp, "+2348051234567")
+
+        # A successful edit resubmits the application, so it stops being editable. Put it back in
+        # the editable state to test the refusal, rather than reading the 409 that would otherwise
+        # come back and mistaking it for the number being rejected.
+        self.application.status = PartnerApplication.CHANGES_REQUESTED
+        self.application.save(update_fields=["status"])
+
+        bad = self.client.patch(
+            f"/partner-apply/applications/{self.reference}/?token={token}",
+            data=json.dumps({"contact_whatsapp": "ring me"}),
+            content_type="application/json")
+        self.assertEqual(bad.status_code, 400, bad.content)
+        self.application.refresh_from_db()
+        self.assertEqual(
+            self.application.contact_whatsapp, "+2348051234567",
+            "the refused PATCH must not have wiped the good number")
 
     def test_an_edit_cannot_reach_an_address_the_submission_refused(self):
         """The webhook is the one field on this form that AFC'S OWN SERVER later fetches, so it

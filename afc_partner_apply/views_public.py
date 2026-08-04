@@ -180,6 +180,40 @@ def _clean_email(raw):
     return text, None
 
 
+def _clean_whatsapp(raw, country=None):
+    """Normalise the applicant's WhatsApp number to E.164, or say why it could not be.
+
+    OPTIONAL FIELD: blank is a legitimate answer and returns ("", None). An applicant who would
+    rather only be emailed is not blocked.
+
+    WHY IT IS NORMALISED HERE RATHER THAN AT SEND TIME. The owner's requirement is that somebody
+    can actually be messaged on this number, so a value that cannot be dialled is not worth
+    storing. The two phone fields already in this codebase, UserProfile.whatsapp_number and
+    Vendor.whatsapp_number, both keep whatever was typed and normalise when a message goes out,
+    and the result is 34 of 133 stored player numbers sitting in a local form that cannot be
+    resolved without knowing the country (see afc_whatsapp/phone.py's own header). Repeating that
+    here would mean discovering a bad number at the moment AFC needed it. Refusing at the door
+    also puts the error in front of the person who can fix it, while they are still on the form.
+
+    `country` is the country the applicant typed on the same form, used only to anchor a number
+    written in local form ("08051234567"). to_e164 returns None rather than guessing when it has
+    no country to anchor to, which is why the message below asks for the international form.
+    """
+    from afc_whatsapp.phone import to_e164
+
+    text = str(raw or "").strip()
+    if not text:
+        return "", None
+
+    e164 = to_e164(text, country_code=country or None)
+    if not e164:
+        return None, (
+            "That WhatsApp number could not be read. Please give it in international form, "
+            "starting with your country code, for example +234 805 123 4567."
+        )
+    return e164, None
+
+
 def _bool(raw):
     """Multipart sends booleans as the strings "true"/"false"; JSON sends real booleans. One
     reader for both so the endpoint behaves identically whether or not a logo is attached."""
@@ -206,6 +240,9 @@ def _serialize_for_applicant(application):
         "contact_name": application.contact_name,
         "contact_email": application.contact_email,
         "contact_role": application.contact_role,
+        # Echoed back NORMALISED, so an applicant who typed a local number sees the E.164 AFC
+        # actually stored and can tell it resolved to the country they meant.
+        "contact_whatsapp": application.contact_whatsapp,
         "wants_sso": application.wants_sso,
         "wants_data_api": application.wants_data_api,
         "redirect_uris": application.redirect_uris,
@@ -276,6 +313,7 @@ def submit_application(request):
         contact_name       required
         contact_email      required, and where every decision email goes
         contact_role       optional
+        contact_whatsapp   optional, stored in E.164, refused if it cannot be normalised
         display_name       optional, what a player would see on the consent screen
         country            optional
         wants_sso          bool, wants_data_api bool. AT LEAST ONE must be true.
@@ -323,6 +361,13 @@ def submit_application(request):
                         status=status.HTTP_400_BAD_REQUEST)
 
     contact_email, err = _clean_email(request.data.get("contact_email"))
+    if err:
+        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Anchored on the country typed on this same form, which is the only country AFC knows about
+    # an applicant. A number already in international form ignores it.
+    contact_whatsapp, err = _clean_whatsapp(
+        request.data.get("contact_whatsapp"), str(request.data.get("country") or "").strip())
     if err:
         return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -412,6 +457,8 @@ def submit_application(request):
         contact_name=contact_name[:120],
         contact_email=contact_email,
         contact_role=str(request.data.get("contact_role") or "").strip()[:120],
+        # Already E.164 or already empty; _clean_whatsapp refused anything else above.
+        contact_whatsapp=contact_whatsapp,
         wants_sso=wants_sso,
         wants_data_api=wants_data_api,
         redirect_uris=redirect_uris,
@@ -512,6 +559,20 @@ def application_status(request, reference):
         if field in data:
             setattr(application, field, str(data.get(field) or "").strip()[:cap])
             updated.append(field)
+
+    # NOT in the loop above, because this one is normalised rather than merely trimmed. It runs
+    # the same cleaner the create path uses, for the same reason the webhook URL does: a rule
+    # applied at submission and not on the edit beside it is one PATCH away from not existing.
+    # The country is read from the edit if it is being changed in the same request, so an
+    # applicant correcting both at once is anchored on the country they are moving TO.
+    if "contact_whatsapp" in data:
+        cleaned, err_msg = _clean_whatsapp(
+            data.get("contact_whatsapp"),
+            str(data.get("country", application.country) or "").strip())
+        if err_msg:
+            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+        application.contact_whatsapp = cleaned
+        updated.append("contact_whatsapp")
 
     # contact_email is deliberately NOT editable here. It is the address the access token was
     # mailed to, so letting a token holder change it would let them redirect every future decision

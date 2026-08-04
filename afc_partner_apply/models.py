@@ -132,6 +132,18 @@ class PartnerApplication(models.Model):
     # by. Indexed for exactly that lookup.
     contact_email = models.EmailField(db_index=True)
     contact_role = models.CharField(max_length=120, blank=True, default="")
+    # A WhatsApp number AFC can actually message (owner 2026-08-04: "someone could get messaged on
+    # it"), so it is stored in E.164 and nothing else. That is a DELIBERATE break from the two
+    # phone fields already in this codebase: UserProfile.whatsapp_number (afc_auth/models.py) and
+    # Vendor.whatsapp_number (afc_shop/models.py) both store whatever was typed and normalise at
+    # send time, and the result is that 34 of 133 stored player numbers are in a local form that
+    # cannot be resolved without a country. Copying that pattern here would reproduce the same
+    # unreachable rows. The applicant's own browser already hands us E.164 (the form uses the
+    # existing PhoneNumberInput, which emits it), and views_public runs afc_whatsapp.phone.to_e164
+    # on the way in and refuses what it cannot resolve, so a number stored here is one that can be
+    # dialled. Optional: an applicant who would rather only be emailed leaves it blank.
+    # 32 rather than E.164's real 16-character ceiling, matching Vendor's headroom.
+    contact_whatsapp = models.CharField(max_length=32, blank=True, default="")
 
     # ── Which product, or both ──
     # NOT a trust decision, just routing: it decides which fields the form asks for next and which
