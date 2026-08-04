@@ -781,7 +781,32 @@ class TournamentTeamMember(models.Model):
     status = models.CharField(max_length=20, choices=TEAM_MEMBER_STATUS, default="active")
     user_id_from_sponsor = models.CharField(max_length=100, null=True, blank=True) # For sponsored events, to link user to sponsor's system
     reason = models.CharField(max_length=2000, null=True, blank=True)
-        
+
+    # ── FROZEN in-game role for THIS event (owner 2026-08-04: "role history is not stored") ──────
+    # A copy of afc_team.TeamMembers.in_game_role taken at the moment the player was put on THIS
+    # event's roster, and never touched again afterwards. It exists because the club roster row is a
+    # LIVE value: a player who was a sniper in July and is a rusher today reads back as a rusher, so
+    # July's sniper ladder listed them under the wrong role. This row is already the thing AFC
+    # freezes per event (the roster snapshot), so the role belongs on it.
+    #
+    # Why the frozen copy rather than reading TeamMembers at scoring time: the match-result upload
+    # DELETES and re-creates every TournamentPlayerMatchStats row for a match on each (idempotent)
+    # re-upload. If the role were re-read live, re-uploading a July match in September would stamp
+    # the September role onto July, which is exactly the bug being fixed. Reading a frozen per-event
+    # value makes a re-upload reproduce the same historical role every time.
+    #
+    # NULL means "no role recorded", which is the honest answer for three real cases and must NOT be
+    # guessed at: staff roles (coach / manager / analyst have no in_game_role), players registered
+    # before this field existed, and roster rows copied from a source event that itself has none.
+    #
+    # Written by: register_for_event, add_teams_to_event, edit_roster, add_player_to_event_roster
+    # (views.py) and event_links._promote / import_competitors (roster carried from the source event).
+    # Read by: roster_roles.frozen_roles_for_event, which stamps TournamentPlayerMatchStats
+    # .role_at_match when a match result is recorded. Backfilled (upcoming events only) by the
+    # afc_rankings backfill_player_roles management command.
+    in_game_role = models.CharField(
+        max_length=20, choices=TeamMembers.IN_GAME_ROLE_CHOICES, null=True, blank=True,
+    )
 
     class Meta:
         unique_together = ("tournament_team", "user")
@@ -850,6 +875,31 @@ class TournamentPlayerMatchStats(models.Model):
     revives_received = models.PositiveIntegerField(default=0)
     survival_seconds = models.PositiveIntegerField(default=0)
     rich_stats_filled = models.BooleanField(default=False)
+
+    # ── the in-game role this player held WHEN THIS MATCH WAS PLAYED (owner 2026-08-04) ──────────
+    # The precise anchor for role history: the per-match stats row is written at the moment a result
+    # is recorded, so it is the finest grain at which "the role the points were earned under" can be
+    # attached to anything. The per-role ladders aggregate these stamps per period, which is how a
+    # player who was a sniper in July stays a sniper in July's table after switching to rusher.
+    #
+    # SOURCE, and the one rule that keeps this honest: it is copied from the FROZEN per-event roster
+    # row (TournamentTeamMember.in_game_role), never from the live afc_team.TeamMembers row. Every
+    # write path here deletes and re-inserts a match's rows on re-upload, so reading a live value
+    # would let a September re-upload rewrite July's role. Reading the frozen per-event value makes
+    # the stamp reproducible: re-uploading an old match reproduces the old role.
+    #
+    # NULL = no role recorded for this match, and it is left NULL rather than guessed. That covers
+    # staff (no in_game_role), players whose event roster row predates the frozen field, and rows
+    # written for matches whose roster row could not be resolved.
+    #
+    # Written by: every match-result write path (upload_team_match_result, the manual entry and edit
+    # endpoints in views.py, and afc_ocr.services.commit) through
+    # afc_tournament_and_scrims.roster_roles.frozen_roles_for_event.
+    # Read by: afc_rankings.aggregation._collect_player, which turns the period's stamps into
+    # PlayerMonthlyScore.role / role_breakdown (and the quarterly equivalents) for the role ladders.
+    role_at_match = models.CharField(
+        max_length=20, choices=TeamMembers.IN_GAME_ROLE_CHOICES, null=True, blank=True,
+    )
 
 
 class MatchKillFlag(models.Model):

@@ -53,9 +53,17 @@ def commit_team_result(match, final_rows: list):
     from afc_tournament_and_scrims.models import (
         TournamentTeamMatchStats, TournamentPlayerMatchStats, UnmatchedTeamBlock, MatchKillFlag,
     )
+    from afc_tournament_and_scrims import roster_roles
 
     lb = _get_lb_for_match(match)
     event = _get_event_for_match(match)
+    # ROLE AT MATCH (owner 2026-08-04): {user_id: in_game_role} FROZEN on this event's roster rows,
+    # one query for the whole event. Stamped on every rostered player's stats row below so the
+    # per-role player ladders (afc_rankings/player_roles.py) can report the role a player held WHEN
+    # this result was recorded. Read from the frozen per-event roster and never from the live club
+    # roster, so a re-commit of the same match reproduces the same historical role rather than
+    # rewriting it with whatever the player is today. See afc_tournament_and_scrims/roster_roles.py.
+    match_roles = roster_roles.frozen_roles_for_event(event.event_id) if event else {}
     # Event-wide "count flagged kills" default (True unless an admin turned it off). New ringer flags
     # are created count_kills=None, so they follow this until overridden in the FlaggedKillsPanel; the
     # stored team total below is computed to match what _recompute_team_kills_for_event would produce.
@@ -174,7 +182,12 @@ def commit_team_result(match, final_rows: list):
                 penalty_points=penalty_pts,
             )
 
-            # Rostered players get a per-player stat row (as before).
+            # Rostered players get a per-player stat row (as before), stamped with the in-game role
+            # FROZEN on their event roster row (`match_roles`, one query for the whole event, built
+            # above). That stamp is what the per-role player ladders aggregate, so an OCR-committed
+            # result carries the same role history a .log upload or manual entry does. A ringer never
+            # gets a stats row, so it never gets a role either, which is correct: it is not on this
+            # event's roster. See afc_tournament_and_scrims/roster_roles.py.
             for row in rostered_rows:
                 user_id = row.get("matched_user_id")
                 if not user_id:
@@ -186,6 +199,7 @@ def commit_team_result(match, final_rows: list):
                     damage=int(row.get("damage", 0)),
                     assists=int(row.get("assists", 0)),
                     played=True,
+                    role_at_match=match_roles.get(int(user_id)),
                 )
 
             # Ringers become MatchKillFlag rows (NOT player-stats) so they show in the flagged-players
