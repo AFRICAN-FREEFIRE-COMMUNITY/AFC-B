@@ -35,6 +35,16 @@ def commit_team_result(match, final_rows: list):
     Write team match stats from OCR final_rows.
     Groups rows by placement: each placement group = one team.
 
+    THE SHARED WRITER (owner 2026-08-04). The two stats tables used to be built by hand here, by
+    the manual entry endpoint and by the match-log upload, three copies of the same write agreeing
+    only by habit. Each placement group is now handed to
+    afc_tournament_and_scrims.result_writes.write_team_result_row, which is the only code that
+    writes those tables for a team-event map, so an OCR-committed map stores exactly what the
+    organizer typing the same numbers would store. Proved by
+    afc_ocr.tests.test_commit_matches_manual, which scores one map both ways and compares every
+    column. What this function still owns is everything ABOVE that write: reading OCR rows,
+    deciding which of them are ringers, and recording the flags and unmatched blocks.
+
     RINGER FLAGGING (owner 2026-07-13): OCR screenshots credit a player to a team by NAME only
     (no UID). When an OCR'd player's OWN registered team differs from the team their placement block
     is credited to, they are a "ringer" (played for a team they are not rostered on), the SAME
@@ -51,9 +61,12 @@ def commit_team_result(match, final_rows: list):
     snapshot/restore), so an admin's approval survives a re-upload.
     """
     from afc_tournament_and_scrims.models import (
-        TournamentTeamMatchStats, TournamentPlayerMatchStats, UnmatchedTeamBlock, MatchKillFlag,
+        TournamentTeamMatchStats, UnmatchedTeamBlock, MatchKillFlag,
     )
     from afc_tournament_and_scrims import roster_roles
+    # Deferred like every other cross-app import in this module, so the service layer never forms
+    # a top-level import cycle with the views that import it lazily themselves.
+    from afc_tournament_and_scrims.result_writes import write_team_result_row
 
     lb = _get_lb_for_match(match)
     event = _get_event_for_match(match)
@@ -86,6 +99,21 @@ def commit_team_result(match, final_rows: list):
     points_per_assist  = float(scoring_cfg.get("points_per_assist", 0))
     points_per_damage  = float(scoring_cfg.get("points_per_1000_damage", 0))
 
+    # The four normalised settings the shared writer scores with. Deliberately NOT built through
+    # result_writes.scoring_context, which reads the match and nothing else: this path has always
+    # had two fallbacks the others do not, and both are visible in the four lines above. A match
+    # with no scoring_settings of its own falls back to the LEADERBOARD's table and kill point, and
+    # an empty table falls back to the canonical Free Fire default (normalize_placement_points).
+    # Routing this through scoring_context would score those maps at zero placement points, which
+    # is a silent re-scoring of real events, so the fallbacks stay here and only the finished
+    # values are handed over.
+    write_ctx = {
+        "placement_points": placement_points,
+        "kill_point": kill_point,
+        "points_per_assist": points_per_assist,
+        "points_per_1000_damage": points_per_damage,
+    }
+
     # Group rows by placement
     groups: dict = defaultdict(list)
     for row in final_rows:
@@ -106,6 +134,8 @@ def commit_team_result(match, final_rows: list):
         }
         MatchKillFlag.objects.filter(match=match).delete()
         flag_rows = []
+        # Teams already written by THIS commit, guarding the check just below.
+        written_team_ids = set()
 
         for placement, rows in sorted(groups.items()):
             t_team_id = rows[0].get("matched_team_id")
@@ -120,6 +150,22 @@ def commit_team_result(match, final_rows: list):
                 )
                 unmatched_blocks.append({"team_name": _blk_name, "placement": placement, "kills": _blk_kills})
                 continue
+
+            # TWO PLACEMENT GROUPS CREDITED TO THE SAME TEAM is a malformed review: the reviewer
+            # picked the wrong team on one of the blocks. Refuse the whole commit rather than let
+            # the second one quietly win. This used to be enforced for free by the unique
+            # (match, tournament_team) constraint, which raised on the second insert; the shared
+            # writer clears a team's row before writing it, so without this check the first block's
+            # kills would vanish and the map would just be short - the silent-loss failure this
+            # codebase keeps having to fix. Raising keeps the old outcome exactly: the surrounding
+            # atomic block rolls everything back and the caller (afc_ocr.views.commit_ocr_session)
+            # turns it into its generic "could not commit the results" response.
+            if t_team_id in written_team_ids:
+                raise ValueError(
+                    f"Two placement groups are credited to the same team (id {t_team_id}). "
+                    "Correct the team on one of them and commit again."
+                )
+            written_team_ids.add(t_team_id)
 
             # Split the block into ROSTERED players and RINGERS. A ringer = a resolved player whose
             # OWN registered team (matched_team_id) differs from the team this block is credited to
@@ -151,56 +197,54 @@ def commit_team_result(match, final_rows: list):
             # Team totals mirror the .log path: rostered players contribute kills + damage + assists;
             # a ringer contributes ONLY (flagged) kills, and only while its flag currently counts.
             counted_ringer_kills = sum(int(r.get("kills", 0)) for (r, _u, _i, _d, eff) in ringers if eff)
-            team_kills   = sum(int(r.get("kills", 0))   for r in rostered_rows) + counted_ringer_kills
-            team_damage  = sum(int(r.get("damage", 0))  for r in rostered_rows)
-            team_assists = sum(int(r.get("assists", 0)) for r in rostered_rows)
-            bonus_pts    = int(rows[0].get("bonus_points", 0))
-            penalty_pts  = int(rows[0].get("penalty_points", 0))
 
-            # Shared team formula (same one manual entry uses). NOTE: the old code stored
-            # int(round(total)); scoring uses int(total). Identical for integer point settings;
-            # this keeps OCR in lockstep with the canonical formula (see report).
-            pts = scoring.compute_team_points(
-                placement_points=placement_points, kill_point=kill_point,
-                points_per_assist=points_per_assist, points_per_1000_damage=points_per_damage,
-                placement=placement, kills=team_kills, damage=team_damage, assists=team_assists,
-                bonus=bonus_pts, penalty=penalty_pts, played=True,
-            )
+            # WHAT THE SHARED WRITER IS HANDED, and why each part has that shape:
+            #
+            #  * A ROSTERED ROW THAT NAMES A PLAYER becomes a per-player row carrying its kills,
+            #    damage and assists, stamped with the in-game role FROZEN on that player's event
+            #    roster row (`match_roles`, one query for the whole event, built above). That stamp
+            #    is what the per-role player ladders aggregate, so an OCR-committed result carries
+            #    the same role history a .log upload or manual entry does.
+            #  * A ROSTERED ROW THAT NAMES NOBODY (no matched_user_id) still counts toward the team.
+            #    An OCR line the reviewer could not tie to an account is still part of what the team
+            #    scored, so it goes in with user_id None: the writer counts EVERY entry toward the
+            #    team total and creates rows only for entries that name somebody. That is the same
+            #    rule that carries the manual form's unnamed slots, and it preserves exactly what
+            #    this function did before, which was to add such a row to the totals and skip it
+            #    when writing player rows.
+            #  * RINGERS COLLAPSE INTO ONE UNNAMED ENTRY carrying only the kills that currently
+            #    count. A ringer must never get a player row: it would then be counted twice by
+            #    _recompute_team_kills_for_event, which adds rostered player rows to counting flags.
+            #    Its damage and assists are dropped, as before - a flag records kills only - and it
+            #    is not on this roster, so it correctly has no role either.
+            writer_players = [
+                {
+                    "user_id": r.get("matched_user_id"),
+                    "kills": int(r.get("kills", 0) or 0),
+                    "damage": int(r.get("damage", 0) or 0),
+                    "assists": int(r.get("assists", 0) or 0),
+                    "played": True,
+                }
+                for r in rostered_rows
+            ]
+            if counted_ringer_kills:
+                writer_players.append({"user_id": None, "kills": counted_ringer_kills})
 
-            team_stat = TournamentTeamMatchStats.objects.create(
+            # played=True: a placement group exists because that team played the map. bonus and
+            # penalty come off the block's first row, which is where the review step puts them.
+            write_team_result_row(
                 match=match,
                 tournament_team_id=t_team_id,
-                placement=placement,
-                kills=team_kills,
-                damage=team_damage,
-                assists=team_assists,
-                placement_points=pts["placement_points"],
-                kill_points=pts["kill_points"],
-                total_points=pts["total_points"],
-                played=True,
-                bonus_points=bonus_pts,
-                penalty_points=penalty_pts,
+                row={
+                    "placement": placement,
+                    "played": True,
+                    "bonus_points": int(rows[0].get("bonus_points", 0) or 0),
+                    "penalty_points": int(rows[0].get("penalty_points", 0) or 0),
+                    "players": writer_players,
+                },
+                ctx=write_ctx,
+                frozen_roles=match_roles,
             )
-
-            # Rostered players get a per-player stat row (as before), stamped with the in-game role
-            # FROZEN on their event roster row (`match_roles`, one query for the whole event, built
-            # above). That stamp is what the per-role player ladders aggregate, so an OCR-committed
-            # result carries the same role history a .log upload or manual entry does. A ringer never
-            # gets a stats row, so it never gets a role either, which is correct: it is not on this
-            # event's roster. See afc_tournament_and_scrims/roster_roles.py.
-            for row in rostered_rows:
-                user_id = row.get("matched_user_id")
-                if not user_id:
-                    continue
-                TournamentPlayerMatchStats.objects.create(
-                    team_stats=team_stat,
-                    player_id=user_id,
-                    kills=int(row.get("kills", 0)),
-                    damage=int(row.get("damage", 0)),
-                    assists=int(row.get("assists", 0)),
-                    played=True,
-                    role_at_match=match_roles.get(int(user_id)),
-                )
 
             # Ringers become MatchKillFlag rows (NOT player-stats) so they show in the flagged-players
             # panel + feed the recompute. uid = "ocr:<user_id>" is a stable synthetic id (OCR has no

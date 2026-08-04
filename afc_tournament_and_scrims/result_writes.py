@@ -16,9 +16,18 @@ WHY THIS MODULE EXISTS
     approved submission has to produce exactly the rows an organizer's own entry produces,
     or the same map scores differently depending on who typed it.
 
-    So the manual endpoint and the submission-approval endpoint both call
-    write_team_result_row below, and it is the only code that writes those two tables for a
-    team-event map.
+    Four doors, one write. Nothing about a bonus, a penalty, a zero-kill row or an unnamed
+    player slot is decided in four places any more, so the standings cannot come to depend
+    on which door a result arrived through. Each door proves it with a test that scores the
+    same map twice and compares every stored column: tests_team_submissions
+    .test_approved_result_matches_manual_entry, tests_log_attribution
+    .test_log_upload_matches_manual_entry, and afc_ocr.tests.test_commit_matches_manual.
+
+    WHAT EACH DOOR STILL OWNS is everything ABOVE the write, because that part genuinely
+    differs: the log upload decides which in-game block is which registered team and which
+    UIDs are ringers, the OCR commit decides the same from names, and manual entry is simply
+    told. They hand this function a team, a placement and a list of players, and it decides
+    the rest.
 
 WHY THE UNIT IS ONE TEAM AND NOT ONE MAP
     Manual entry knows the whole lobby at once and clears the match before rewriting it.
@@ -38,6 +47,16 @@ CALLERS
     * views.enter_team_match_result_manual  - organizer or admin types the whole lobby.
     * views_team_submissions.approve_team_map_submission - organizer approves one team's
       own submission of its own row.
+    * views.upload_team_match_result - a match-log file, one call per resolved team block.
+      The flagged kills that currently count arrive as an entry with no user_id, because a
+      flagged kill is part of the team's score with nobody on this roster to attribute it to.
+    * afc_ocr.services.commit.commit_team_result - a committed screenshot review, one call
+      per placement group, with its ringers folded into the same unnamed entry.
+
+    NOT A CALLER, on purpose: views.upload_match_result_image, the legacy screenshot endpoint.
+    It attaches a player's row to the team the player is REGISTERED to rather than the block
+    they were read from, which a per-team writer cannot reproduce. The full reason is written
+    at its write site.
 """
 from . import scoring as scoring_lib
 from .models import TournamentPlayerMatchStats, TournamentTeamMatchStats
