@@ -48,7 +48,9 @@ from rest_framework.decorators import api_view, authentication_classes, parser_c
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
-from afc_sso.provisioning import _clean_logo_upload, _clean_redirect_uris, _clean_url
+from afc_sso.provisioning import (
+    _clean_logo_upload, _clean_outbound_url, _clean_redirect_uris, _clean_url,
+)
 
 from . import emails
 from .models import PartnerApplication, generate_reference, hash_token
@@ -378,7 +380,10 @@ def submit_application(request):
         if err:
             return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
 
-    deletion_webhook_url, err = _clean_url(
+    # _clean_outbound_url, NOT _clean_url. This form is public and unauthenticated, and this is
+    # the one field on it that AFC's own server later fetches from inside AFC's network, so it
+    # must resolve to a public address. Every other URL here is followed by a browser.
+    deletion_webhook_url, err = _clean_outbound_url(
         request.data.get("deletion_webhook_url"), "Disconnection webhook URL")
     if err:
         return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
@@ -542,7 +547,9 @@ def application_status(request, reference):
         updated.append("post_logout_redirect_uris")
 
     if "deletion_webhook_url" in data:
-        cleaned, err_msg = _clean_url(
+        # Same stricter cleaner the create path uses, for the same reason: an applicant editing
+        # their draft must not be able to reach an address the create path refused.
+        cleaned, err_msg = _clean_outbound_url(
             data.get("deletion_webhook_url"), "Disconnection webhook URL")
         if err_msg:
             return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)

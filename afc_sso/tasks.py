@@ -71,8 +71,12 @@ def deliver_disconnect_signal(self, application_id, url, token):
 
     Args (all JSON-serialisable, because Celery carries them through the broker):
         application_id: the AFCSSOApplication this is about, for the log only.
-        url:            the partner's deletion_webhook_url, already validated as a URL
-                        when it was saved (afc_sso/admin_api.py _clean_url).
+        url:            the partner's deletion_webhook_url, already validated when it was
+                        saved by provisioning._clean_outbound_url: https, and a host that
+                        is not localhost and not a literal private, loopback or link-local
+                        address. Every writer of that field goes through it (the public
+                        application form, the draft edit, provisioning, and the admin
+                        PATCH), so this task can assume it rather than re-check it.
         token:          the compact JWS from webhooks.build_signal. Signed once and
                         reused unchanged on every retry.
 
@@ -85,6 +89,16 @@ def deliver_disconnect_signal(self, application_id, url, token):
             data=token.encode("utf-8"),
             headers={"Content-Type": CONTENT_TYPE},
             timeout=_TIMEOUT_SECONDS,
+            # ── do not follow redirects ──
+            # This URL arrives from an organisation applying to be a partner, and AFC's server
+            # makes the request from inside its own network. requests follows redirects by
+            # default, so a partner host that looks perfectly ordinary at review time could
+            # answer with a 302 to 169.254.169.254 or a private address and have AFC fetch it,
+            # carrying the signed token along. Staff can inspect the URL they approve; nobody
+            # can inspect where it will redirect on the day. A partner endpoint that cannot
+            # receive a POST at the address it registered is misconfigured, so refusing to
+            # chase redirects costs a legitimate partner nothing.
+            allow_redirects=False,
         )
         status_code = response.status_code
         # Any 2xx is acceptance. The spec asks for 202; AFC does not insist, because a

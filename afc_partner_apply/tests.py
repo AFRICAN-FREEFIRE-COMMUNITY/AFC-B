@@ -126,6 +126,26 @@ class PartnerApplyTestCase(TestCase):
 # 1) Submitting
 # ──────────────────────────────────────────────────────────────────────────────────────────────
 class SubmitApplicationTests(PartnerApplyTestCase):
+    def test_a_webhook_pointing_inside_afcs_own_network_is_refused_at_the_door(self):
+        """This form is PUBLIC and unauthenticated, and the webhook is the one field on it that
+        AFC's own server later fetches from inside AFC's network. Left unchecked, anybody could
+        type AFC's cloud metadata address into a web form and have AFC fetch it. The rule and its
+        full reasoning live in afc_sso.tests.test_webhook_url_policy; this asserts the public door
+        applies it, since that is the door a stranger can reach.
+        """
+        resp = self._submit(deletion_webhook_url="https://169.254.169.254/latest/meta-data/")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertEqual(PartnerApplication.objects.count(), 0)
+
+    def test_a_public_webhook_is_accepted(self):
+        """The counterpart, so the rule above cannot be satisfied by refusing every webhook."""
+        resp = self._submit(deletion_webhook_url="https://kite.example/afc/disconnected")
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        application = PartnerApplication.objects.get(reference=resp.json()["reference"])
+        self.assertEqual(application.deletion_webhook_url, "https://kite.example/afc/disconnected")
+
     def test_a_complete_application_is_accepted_and_gets_a_reference(self):
         resp = self._submit()
 
@@ -380,6 +400,26 @@ class ApplicationStatusTests(PartnerApplyTestCase):
 
         self.assertEqual(resp.status_code, 400)
         self.assertIn("fragment", resp.json()["message"])
+
+    def test_an_edit_cannot_reach_an_address_the_submission_refused(self):
+        """The webhook is the one field on this form that AFC'S OWN SERVER later fetches, so it
+        goes through the stricter public-address rule (afc_sso.tests.test_webhook_url_policy has
+        the rule itself and the reasoning). Applied at submit and NOT on the edit beside it, the
+        applicant would simply submit a clean address, wait for a change request and then point it
+        wherever they liked.
+        """
+        self.application.status = PartnerApplication.CHANGES_REQUESTED
+        self.application.save()
+        token = self.application.issue_access_token()
+
+        resp = self.client.patch(
+            f"/partner-apply/applications/{self.reference}/?token={token}",
+            data=json.dumps({"deletion_webhook_url": "https://169.254.169.254/latest/meta-data/"}),
+            content_type="application/json")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.application.refresh_from_db()
+        self.assertEqual(self.application.deletion_webhook_url, "")
 
     def test_the_contact_email_cannot_be_changed(self):
         """It is the address the token was mailed to, so changing it would let a token holder

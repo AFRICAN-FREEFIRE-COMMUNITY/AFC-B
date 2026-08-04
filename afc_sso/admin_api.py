@@ -71,6 +71,7 @@ from .provisioning import (  # noqa: F401 - _clean_url is used by the PATCH view
     MAX_LOGO_BYTES,
     MAX_LOGO_EDGE,
     _clean_logo_upload,
+    _clean_outbound_url,
     _clean_redirect_uris,
     _clean_url,
     provision_sso_application,
@@ -488,14 +489,20 @@ def sso_application_detail(request, application_id):
         )
 
     # ── identity: URL fields, each validated ──
+    # The cleaner differs by WHO fetches the URL. logo and homepage are followed by the
+    # player's browser, so _clean_url is right for them. The deletion webhook is fetched by
+    # AFC's own server from inside AFC's network, so it takes _clean_outbound_url, which
+    # additionally refuses private, loopback and link-local addresses. Editing an approved
+    # partner must apply the same rule creation did, or the check is one PATCH away from
+    # being bypassed.
     url_fields = (
-        ("logo_url", "Logo URL"),
-        ("homepage_url", "Homepage URL"),
-        ("deletion_webhook_url", "Deletion webhook URL"),
+        ("logo_url", "Logo URL", _clean_url),
+        ("homepage_url", "Homepage URL", _clean_url),
+        ("deletion_webhook_url", "Deletion webhook URL", _clean_outbound_url),
     )
-    for field, label in url_fields:
+    for field, label, cleaner in url_fields:
         if field in request.data:
-            cleaned, err_msg = _clean_url(request.data.get(field), label)
+            cleaned, err_msg = cleaner(request.data.get(field), label)
             if err_msg:
                 return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
             setattr(application, field, cleaned)
