@@ -295,11 +295,17 @@ def update_event_and_stage_statuses():
     # also force it immediately via checkin_relegate_now.
     from datetime import timedelta as _td
     try:
-        from .views_checkin import relegate_unchecked_competitors
+        from .views_checkin import promote_checked_in_waitlist, relegate_unchecked_competitors
         _now2 = timezone.now()
         for _ev in Event.objects.filter(checkin_enabled=True, checkin_end__lt=_now2,
                                         checkin_end__gte=_now2 - _td(days=1)):
-            relegate_unchecked_competitors(_ev)
+            _freed = relegate_unchecked_competitors(_ev)
+            # A relegated competitor leaves a seat empty, and the rule the owner asked for is that
+            # they are REPLACED. Promoting here (not only from the admin button) is what makes the
+            # automatic sweep complete the rule rather than just shrink the event. Bounded by the
+            # number actually freed, and both halves are idempotent, so a repeat sweep is a no-op.
+            if _freed:
+                promote_checked_in_waitlist(_ev, _freed)
     except Exception:
         pass
 
@@ -18207,6 +18213,30 @@ def get_drafted_events(request):
                 status=403,
             )
         qs = qs.filter(organization=org)
+    else:
+        # ── UNSCOPED CALL: you see YOUR OWN drafts, not everyone's ──────────────────────────
+        # Owner 2026-08-04: "all admins and organizers should be able to see their own drafts."
+        #
+        # This branch had NO gate at all. Any authenticated account, including an ordinary
+        # player, could call this and receive every unpublished event on the platform: names,
+        # slugs and ids of tournaments AFC and every organizer were still preparing. The
+        # organization_id branch above was carefully permission-checked, which is what made the
+        # hole easy to miss: the guarded path looked like the whole story.
+        #
+        # Now: an AFC event admin still sees everything, because triaging any draft is their job.
+        # Everyone else sees the drafts they CREATED plus the drafts of any organization they can
+        # create or edit events for, which is what "their own" means for an organizer working as
+        # part of an org rather than alone. A player with neither sees an empty list rather than
+        # a 403, because having no drafts is not an error.
+        if not _is_event_admin(user):
+            member_org_ids = [
+                org.organization_id
+                for org in Organization.objects.filter(
+                    members__user=user, members__status="active"
+                ).distinct()
+                if org_can(user, "can_create_events", org) or org_can(user, "can_edit_events", org)
+            ]
+            qs = qs.filter(Q(creator=user) | Q(organization_id__in=member_org_ids))
 
     events = qs.order_by("-created_at")
     event_list = []
