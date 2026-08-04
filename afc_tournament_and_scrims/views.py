@@ -4974,6 +4974,10 @@ def get_event_details(request):
         # wizards rehydrate the toggle, EventRequirementsCard lists it under "Requirements to
         # register", and the register flow's roster panel can badge who still has no number.
         "require_whatsapp": event.require_whatsapp,
+        # Teams filing their own map results (item 6). Emitted so the edit form can
+        # rehydrate the switch: without it the form reads undefined, falls back to false,
+        # and shows the feature as OFF on an event where it is on.
+        "allow_team_result_submissions": event.allow_team_result_submissions,
         # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars a team/player must have
         # available to register (0 = off). Read by Step1EventDetails (admin/org toggle, rehydrated
         # through the admin edit page which merges this get_event_details echo) AND the public
@@ -5912,6 +5916,10 @@ def get_event_details_not_logged_in(request):
         # WhatsApp number requirement (owner 2026-08-03): logged-out twin of the get_event_details
         # echo, so an anonymous viewer sees the same "Requirements to register" list.
         "require_whatsapp": event.require_whatsapp,
+        # Teams filing their own map results (item 6). Emitted so the edit form can
+        # rehydrate the switch: without it the form reads undefined, falls back to false,
+        # and shows the feature as OFF on an event where it is on.
+        "allow_team_result_submissions": event.allow_team_result_submissions,
         "waitlist_capacity": event.waitlist_capacity,
         "registered_count": active_registered,
         "is_full": active_registered >= event.max_teams_or_players,
@@ -10384,6 +10392,10 @@ def get_event_details_for_admin(request):
         # WhatsApp number requirement (owner 2026-08-03): admin-detail twin, read by the admin +
         # organizer event EDIT pages to rehydrate the Basic Info requirement toggle.
         "require_whatsapp": event.require_whatsapp,
+        # Teams filing their own map results (item 6). Emitted so the edit form can
+        # rehydrate the switch: without it the form reads undefined, falls back to false,
+        # and shows the feature as OFF on an event where it is on.
+        "allow_team_result_submissions": event.allow_team_result_submissions,
             "waitlist_capacity": event.waitlist_capacity,
             "waitlist_discord_role_id": event.waitlist_discord_role_id,
             # Waitlist slot-assignment mode (owner 2026-06-17): rehydrates the edit form's mode picker.
