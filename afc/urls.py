@@ -64,6 +64,13 @@ urlpatterns = [
     # which accepts an UNAUTHENTICATED write and is therefore rate limited per sender. The
     # feedback/admin/... routes are Bearer-gated to AFC admins. See afc_feedback/views.py.
     path("feedback/", include('afc_feedback.urls')),
+    # Organisations applying to become AFC partners (owner 2026-08-04). The PUBLIC routes here
+    # are partner-apply/applications/ (an UNAUTHENTICATED write that can carry a logo, so it is
+    # rate limited per sender), the applicant's own status/edit route, and the single-use
+    # credentials claim. The partner-apply/admin/... routes are Bearer-gated to head_admin /
+    # partner_admin, the same staff who run both partner products. See
+    # afc_partner_apply/views_public.py and views_admin.py.
+    path("partner-apply/", include('afc_partner_apply.urls')),
 
 ]
 
