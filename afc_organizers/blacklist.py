@@ -37,6 +37,60 @@ from django.utils import timezone
 from .models import OrganizerBlacklist, OrganizerBlacklistPlayer
 
 
+def roster_change_block(event, team, user_ids):
+    """Return a 403 message if these players may not join THIS event's roster, else None.
+
+    WHY THIS EXISTS, and it is the more important half of the story:
+    ``organizer_blacklist_block`` was called from ``register_for_event`` and nowhere else, so the
+    blacklist only ever looked at the roster as it stood at the moment of registration. Three other
+    endpoints create ``TournamentTeamMember`` rows and checked nothing:
+
+        edit_roster, add_player_to_event_roster, add_teams_to_event
+
+    A captain could therefore register a clean roster, pass every gate, and then swap the
+    blacklisted player straight back in. The player competed in the organizer's event and the
+    feature's entire promise, that a block follows the player, was decorative. The site-wide
+    BannedPlayer check had the same hole for the same reason.
+
+    So the rule lives HERE, once, and every door that can put a player on a roster calls it. A new
+    roster path that forgets to call it is the bug this function is shaped to prevent; there is no
+    second copy of the logic to drift from.
+
+    Args:
+        event:    the Event being rostered into. Events with no owning Organization (native AFC
+                  events, organization_id None) cannot be organizer-blacklisted, so only the
+                  site-wide ban applies to them.
+        team:     the Team whose roster is changing, or None.
+        user_ids: the users being ADDED. Callers pass only the additions, never the whole roster:
+                  re-checking players who are already on the roster would let a blacklist created
+                  mid-event block an unrelated later edit, which punishes the wrong person.
+    """
+    user_ids = [uid for uid in (user_ids or []) if uid]
+    if not user_ids:
+        return None
+
+    # Site-wide ban first: it outranks any single organizer's decision, and its message says so.
+    from afc_auth.models import BannedPlayer
+
+    # is_active alone is not enough: a ban row keeps is_active True past its end date until
+    # something sweeps it, so an expired ban would keep blocking. Check the window as well.
+    banned = (
+        BannedPlayer.objects.filter(
+            banned_player_id__in=user_ids, is_active=True, ban_end_date__gt=timezone.now()
+        )
+        .select_related("banned_player")
+        .first()
+    )
+    if banned:
+        name = getattr(banned.banned_player, "username", "A player")
+        return f"{name} is banned from AFC and cannot be added to an event roster."
+
+    if not getattr(event, "organization_id", None):
+        return None
+
+    return organizer_blacklist_block(event.organization, team, user_ids)
+
+
 def organizer_blacklist_block(organization, team, user_ids):
     """Return a 403 message if this (organization, team, roster) registration must be blocked
     by an organizer blacklist, else None.
