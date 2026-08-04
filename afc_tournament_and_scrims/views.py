@@ -5258,6 +5258,10 @@ def get_event_details(request):
                     "room_id": match.room_id if _room_ok else None,
                     "room_name": match.room_name if _room_ok else None,
                     "room_password": match.room_password if _room_ok else None,
+                    # Whether this map is a 3D custom room (owner 2026-08-04). NOT gated behind
+                    # _room_ok: it describes the KIND of room, not a credential, so the page can
+                    # say "this one is a 3D room" before the organizer posts the id and password.
+                    "room_is_3d": match.room_is_3d,
                     "room_details_released": (match.room_details_released_at is not None) and _has_room,
                     "stats": list(stats),
                 })
@@ -6068,6 +6072,9 @@ def get_event_details_not_logged_in(request):
                     "room_id": None,
                     "room_name": None,
                     "room_password": None,
+                    # Same field as the signed-in payload above, and safe here for the same
+                    # reason: it is not a credential.
+                    "room_is_3d": match.room_is_3d,
                     "room_details_released": (match.room_details_released_at is not None) and _has_room,
                     "stats": list(stats),
                 })
@@ -10264,7 +10271,9 @@ def get_event_details_for_admin(request):
             group_matches = list(
                 group.matches.order_by("match_number").values(
                     "match_id", "match_number", "match_map",
-                    "room_id", "room_name", "room_password",
+                    # room_is_3d rides with the credentials it belongs to, so the organizer's own
+                    # match editor can show the switch in the state it was saved in.
+                    "room_id", "room_name", "room_password", "room_is_3d",
                     "result_inputted", "match_date",
                 )
             )
@@ -14030,6 +14039,7 @@ def get_all_leaderboard_details_for_event(request):
                     "room_id": match.room_id,
                     "room_name": match.room_name,
                     "room_password": match.room_password,
+                    "room_is_3d": match.room_is_3d,
                     "stats": list(match_stats),
                     "scoring_settings": match.scoring_settings or {},
                 })
@@ -16149,6 +16159,11 @@ def edit_match_details(request):
     room_name = request.data.get("room_name")
     room_id = request.data.get("room_id")
     room_password = request.data.get("room_password")
+    # Whether this map's room is a 3D custom room (owner 2026-08-04). Set beside the credentials
+    # because it is a property of the same room, and read by the player-facing surfaces to decide
+    # whether to print the joining steps under the room id and password. Absent from the body means
+    # "not being changed", the same contract the three fields above already use.
+    room_is_3d = request.data.get("room_is_3d")
 
     if not match_id:
         return Response({"message": "match_id is required."}, status=400)
@@ -16173,6 +16188,12 @@ def edit_match_details(request):
     if room_password is not None:
         match.room_password = room_password
         updated_fields.append("room_password")
+    if room_is_3d is not None:
+        # _as_bool, not bool(): this endpoint is posted as JSON by EditMatchModal but the same
+        # shape reaches it from form-encoded callers, where a switch arrives as the STRING
+        # "false", and bool("false") is True.
+        match.room_is_3d = _as_bool(room_is_3d)
+        updated_fields.append("room_is_3d")
     if updated_fields:
         match.save(update_fields=updated_fields)
 
@@ -25146,7 +25167,10 @@ def _group_room_details_text(event, group):
         f"Stage: {group.stage.stage_name}\n"
         f"Group: {group.group_name}\n"
     )
-    return header + "\n" + "\n\n".join(blocks)
+    # The 3D joining steps ride along with the credentials they belong to, once for the whole
+    # message rather than once per map. See room_join_help.append_3d_help.
+    from .room_join_help import append_3d_help
+    return append_3d_help(header + "\n" + "\n\n".join(blocks), matches)
 
 
 @api_view(["POST"])
@@ -25193,6 +25217,10 @@ def broadcast_match_room_details(request):
         f"  Room Name: {match.room_name or '-'}\n"
         f"  Password: {match.room_password or '-'}"
     )
+    # Same steps the group send appends, so a player who received one map's details is told how to
+    # join it just as a player who received the whole group's was.
+    from .room_join_help import append_3d_help
+    message = append_3d_help(message, [match])
 
     delivery = (request.data.get("delivery") or "both").strip().lower()
     if delivery not in ("push", "email", "both"):

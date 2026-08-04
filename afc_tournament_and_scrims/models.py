@@ -669,6 +669,17 @@ class Match(models.Model):
     # room creds to the group's registered competitors AFTER this is set, so the room appears on the
     # user-facing event page exactly when (and only when) the organizer posts it.
     room_details_released_at = models.DateTimeField(null=True, blank=True)
+    # Is this map's room a 3D CUSTOM ROOM (owner 2026-08-04)? Off by default, set per map beside the
+    # room id and password. When on, the joining steps are shown to players underneath the room
+    # credentials, because a 3D room is not joined the way an ordinary custom room is: the squad has
+    # to be a complete group first, and the leader goes in through Customs and League.
+    #
+    # NAMED room_is_3d, NOT is_3d_room, ON PURPOSE. "3D" already means something else in this
+    # codebase: the Free Fire 3D observer client whose debugger-*.log files feed the rich per-player
+    # stats (see debugger_ingest.py and views_mvp.py). That is a RESULTS pipeline; this is a
+    # property of the ROOM players join. Leading with `room_` keeps the two from being read as the
+    # same switch by somebody grepping for "3d".
+    room_is_3d = models.BooleanField(default=False)
     result_inputted = models.BooleanField(default=False)
     upload_method = models.CharField(max_length=30, null=True, blank=True)
     scoring_settings = models.JSONField(default=default_scoring_settings, blank=True)
