@@ -23,6 +23,9 @@ from afc_team.views import STAFF_ROLES
 # use a LOCAL variable named `scoring` for `match.scoring_settings`, which would shadow
 # a bare module import and break `scoring.compute_*` inside those functions.
 from afc_tournament_and_scrims import scoring as scoring_lib
+# The ONE place a team's per-map result becomes stats rows, shared with the team
+# submission approval endpoint so both produce identical rows. See result_writes.py.
+from afc_tournament_and_scrims import result_writes
 # Role history (owner 2026-08-04): resolves the in-game role FROZEN on a player's event roster row so
 # every result path can stamp TournamentPlayerMatchStats.role_at_match. That stamp is what lets the
 # per-role ladders (afc_rankings/player_roles.py) report the role a player held WHEN the points were
@@ -3517,6 +3520,13 @@ def edit_event(request):
     # changing it only affects FUTURE registrations. Clamped 0-26 by the shared parser.
     if "min_letter_avatars" in request.data:
         event.min_letter_avatars = _parse_min_letter_avatars(request.data.get("min_letter_avatars"))
+    # Teams submitting their own per-map results (owner 2026-08-04, backlog item 6). Off by
+    # default, and switching it off later only stops NEW submissions: results already approved
+    # are ordinary results and stay exactly as they are. Enforced on every submit in
+    # views_team_submissions.submit_team_map_result, never cached, so the change is immediate.
+    if "allow_team_result_submissions" in request.data:
+        event.allow_team_result_submissions = _as_bool(
+            request.data.get("allow_team_result_submissions"))
 
     if "waitlist_capacity" in request.data:
         try:
@@ -16597,139 +16607,51 @@ def enter_team_match_result_manual(request):
 
         # Safe re-entry
         TournamentPlayerMatchStats.objects.filter(team_stats__match=match).delete()
+        # THE SHARED WRITER (owner 2026-08-04, backlog item 6). This endpoint used to build
+        # the stats rows inline, and so did the OCR commit and the match-log upload, so letting
+        # teams submit their own results would have added a FOURTH copy. A fourth copy is how
+        # standings start disagreeing with themselves. Both this endpoint and the approval of a
+        # team submission now write through result_writes.write_team_result_row, so the same map
+        # scores identically whoever entered it.
+        #
+        # The delete below still clears the WHOLE match first, because manual entry posts the
+        # entire lobby at once and a team dropped from the payload must lose its row. The shared
+        # writer then owns each remaining team's row (it clears that team's row before writing,
+        # which is what makes a single-team approval safe for the teams around it).
         TournamentTeamMatchStats.objects.filter(match=match).delete()
 
-        team_stats_to_create = []
+        try:
+            write_ctx = result_writes.scoring_context(match)
+        except ValueError as exc:
+            return Response({"message": str(exc)}, status=400)
 
-        # ---------------- CREATE TEAM STATS ----------------
+        # ROLE AT MATCH: one query for the whole event giving each player's FROZEN per-event
+        # in-game role, passed into every write below rather than re-read per team. Reading the
+        # frozen value and never the live club roster is what makes a re-entry of an old match
+        # reproduce its old roles. See afc_tournament_and_scrims/roster_roles.py.
+        match_roles = roster_roles.frozen_roles_for_match(match)
+
+        created_stats_qs = []
+        player_rows = []
         for team_item in results_payload:
             tid = team_item.get("tournament_team_id")
             tt = team_map.get(int(tid)) if tid else None
             if not tt:
                 continue
-
-            team_played = bool(team_item.get("played", True))
-            placement = int(team_item.get("placement") or 0) if team_played else 0
-
-            players = team_item.get("players") or []
-            if not isinstance(players, list):
-                players = []
-
-            if not team_played:
-                for p in players:
-                    p["played"] = False
-
-            # Max-4-played already validated above (before the delete), so no early return here.
-            played_players = [p for p in players if p.get("played", True)]
-
-            total_kills = sum(int(p.get("kills") or 0) for p in played_players)
-            total_damage = sum(int(p.get("damage") or 0) for p in played_players)
-            total_assists = sum(int(p.get("assists") or 0) for p in played_players)
-
-            bonus = int(team_item.get("bonus_points") or 0)
-            penalty = int(team_item.get("penalty_points") or 0)
-
-            # Shared team formula - the three point columns now come from scoring (no inline copy).
-            pts = scoring_lib.compute_team_points(
-                placement_points=placement_points, kill_point=kill_point,
-                points_per_assist=points_per_assist, points_per_1000_damage=points_per_1000_damage,
-                placement=placement, kills=total_kills, damage=total_damage, assists=total_assists,
-                bonus=bonus, penalty=penalty, played=team_played,
-            )
-
-            team_stats_to_create.append(
-                TournamentTeamMatchStats(
-                    match=match,
-                    tournament_team_id=tt.tournament_team_id,
-                    placement=placement,
-                    kills=total_kills,
-                    damage=total_damage,
-                    assists=total_assists,
-                    placement_points=pts["placement_points"],
-                    kill_points=pts["kill_points"],
-                    bonus_points=bonus,
-                    penalty_points=penalty,
-                    total_points=pts["total_points"],
-                )
-            )
-
-        # created_team_stats = TournamentTeamMatchStats.objects.bulk_create(
-        #     team_stats_to_create,
-        #     batch_size=200
-        # )
-
-        # # 🔥 IMPORTANT: use *_id fields only
-        # created_map = {
-        #     ts.tournament_team_id: ts.team_stats_id
-        #     for ts in created_team_stats
-        # }
-
-        TournamentTeamMatchStats.objects.bulk_create(
-            team_stats_to_create,
-            batch_size=200
-        )
-
-        # 🔥 Re-fetch from DB to guarantee IDs
-        created_stats_qs = TournamentTeamMatchStats.objects.filter(
-            match=match,
-            tournament_team_id__in=team_ids
-        )
-
-        created_map = {
-            ts.tournament_team.tournament_team_id: ts.team_stats_id
-            for ts in created_stats_qs
-        }
-
-        # ---------------- CREATE PLAYER STATS ----------------
-        player_rows = []
-
-        # ROLE AT MATCH (owner 2026-08-04): one query for the whole event, giving the in-game role
-        # FROZEN on each player's event roster row. Stamped onto every player-stats row below so the
-        # per-role ladders can say what a player was WHEN the points were earned instead of reading
-        # today's club roster. Reading the frozen per-event value (never the live TeamMembers row)
-        # is what makes a later re-entry of this same result reproduce the same historical role.
-        # See afc_tournament_and_scrims/roster_roles.py.
-        match_roles = roster_roles.frozen_roles_for_match(match)
-
-        for team_item in results_payload:
-            tid = team_item.get("tournament_team_id")
-            ts_id = created_map.get(int(tid)) if tid else None
-            if not ts_id:
-                continue
-
-            team_played = bool(team_item.get("played", True))
-            players = team_item.get("players") or []
-
-            for p in players:
-                user_id = p.get("user_id")
-                if not user_id:
-                    continue
-
-                played = bool(p.get("played", True)) and team_played
-                # user = User.objects.filter(user_id=int(user_id)).first()
-                # if not user:
-                #     return Response(
-                #         {"message": f"User with user_id {user_id} not found."},
-                #         status=400
-                #     )
-
-                player_rows.append(
-                    TournamentPlayerMatchStats(
-                        team_stats_id=ts_id,  # ✅ FK safe
-                        player_id=user_id,  # ✅ your PK
-                        kills=int(p.get("kills") or 0) if played else 0,
-                        damage=int(p.get("damage") or 0) if played else 0,
-                        assists=int(p.get("assists") or 0) if played else 0,
-                        # None when the event roster has no role for them (staff, or a roster row
-                        # written before the field existed). Left None rather than guessed.
-                        role_at_match=match_roles.get(int(user_id)),
-                    )
-                )
-
-        TournamentPlayerMatchStats.objects.bulk_create(
-            player_rows,
-            batch_size=500
-        )
+            created_stats_qs.append(result_writes.write_team_result_row(
+                match=match,
+                tournament_team_id=tt.tournament_team_id,
+                row=team_item,
+                ctx=write_ctx,
+                frozen_roles=match_roles,
+            ))
+            # Counted for the response only; the writer has already stored these rows. Only
+            # entries naming a player become rows, so only those are counted.
+            player_rows.extend([
+                p for p in result_writes.normalise_players(
+                    team_item.get("players"), bool(team_item.get("played", True)))
+                if p["user_id"] is not None
+            ])
 
         match.result_inputted = True
         if not match.leaderboard_id:

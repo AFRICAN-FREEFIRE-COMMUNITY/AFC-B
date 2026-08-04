@@ -6,6 +6,17 @@ from .views_room_release import release_room_details_to_waitlist
 # targets ONLY the failures. Consumed by EditMatchModal. See views_room_delivery.py.
 from .views_room_delivery import match_room_delivery, resend_room_details
 from .views_autoseed import auto_seed_now
+# Teams submit their own per-map results, organizers approve them (owner 2026-08-04,
+# backlog item 6). Approval writes through the SAME function manual entry uses
+# (result_writes.write_team_result_row), so an approved submission produces exactly the
+# rows an organizer typing it by hand would produce. See views_team_submissions.py.
+from .views_team_submissions import (
+    approve_team_map_submission,
+    my_team_map_results,
+    reject_team_map_submission,
+    submit_team_map_result,
+    team_map_result_queue,
+)
 # Paid-event registration payments (feature "paid-events", Phase 1): Stripe Checkout init/verify,
 # the webhook backstop, and the admin escrow (list/release/refund). Kept in its own module so the
 # money-handling code is isolated from the big views.py.
@@ -467,4 +478,16 @@ urlpatterns = [
     # POST {user_ids:[...]} -> [{user_id, discord_connected, in_server, ...}].
     # Any authenticated user. Full URL: events/roster-discord-status/.
     path("roster-discord-status/", roster_discord_status, name="roster_discord_status"),
+
+    # ── Team result submissions (owner 2026-08-04, backlog item 6) ────────────────────────
+    # Full URLs are events/team-map-results/... The first two are the TEAM's side (a player on
+    # a registered team proposes and reviews their own team's row); the last three are the
+    # ORGANIZER's side, gated by the same permission manual result entry uses.
+    path("team-map-results/submit/", submit_team_map_result, name="submit_team_map_result"),
+    path("team-map-results/mine/", my_team_map_results, name="my_team_map_results"),
+    path("team-map-results/queue/", team_map_result_queue, name="team_map_result_queue"),
+    path("team-map-results/<int:submission_id>/approve/", approve_team_map_submission,
+         name="approve_team_map_submission"),
+    path("team-map-results/<int:submission_id>/reject/", reject_team_map_submission,
+         name="reject_team_map_submission"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
