@@ -31,7 +31,7 @@ from afc_auth.models import User, SessionToken
 from afc_team.models import Team
 from afc_tournament_and_scrims.models import (
     Event, Stages, StageGroups, Match, TournamentTeam, TournamentTeamMember,
-    TournamentTeamMatchStats, Leaderboard,
+    TournamentPlayerMatchStats, TournamentTeamMatchStats, Leaderboard,
 )
 
 
@@ -112,6 +112,28 @@ class LogDuplicateAttributionTests(TestCase):
             HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
 
+    def _uid_user(self, uid):
+        """The rostered User behind an in-game UID, so a manual-entry payload can name the same
+        people the log file did."""
+        return User.objects.get(uid=uid)
+
+    def _snapshot(self):
+        """Every stored column of this match's team rows, plus every player row, keyed by team.
+        Compared between the two write paths, so anything either one stores differently shows up."""
+        out = {}
+        for stats in TournamentTeamMatchStats.objects.filter(match=self.match):
+            out[stats.tournament_team_id] = {
+                "columns": {
+                    field: getattr(stats, field) for field in (
+                        "placement", "kills", "damage", "assists", "placement_points",
+                        "kill_points", "bonus_points", "penalty_points", "total_points", "played")
+                },
+                "players": sorted(
+                    (p.player_id, p.kills, p.damage, p.assists, p.played, p.role_at_match)
+                    for p in TournamentPlayerMatchStats.objects.filter(team_stats=stats)),
+            }
+        return out
+
     def test_team_scored_once_when_its_player_is_in_a_foreign_block(self):
         # The exact reported shape: TRG's real block (3 rostered players, majority) AND a foreign
         # "VOLTA E-SPORT" block whose lineup happens to include TRG's COBRA (uid 1099).
@@ -146,6 +168,83 @@ class LogDuplicateAttributionTests(TestCase):
         self.assertLessEqual(
             TournamentTeamMatchStats.objects.filter(match=self.match).count(), 2,
         )
+
+    def test_log_upload_matches_manual_entry(self):
+        """Score ONE map twice, once from a match-log file and once by the organizer typing it in,
+        then compare every stored column and every player row. Both doors now go through
+        result_writes.write_team_result_row (owner 2026-08-04); if either one is ever re-inlined,
+        the two stop agreeing and this fails.
+
+        The file is deliberately clean: every UID in a block is on that block's team roster, and
+        each block's KillScore equals the kills it lists. That is the only shape the two doors CAN
+        agree on, because a match log carries things a manual entry cannot express - an off-roster
+        ringer, or kills the game did not list against anybody - which become MatchKillFlag rows
+        with tests of their own. What this proves is that everything both doors DO describe is
+        stored identically, including the frozen role stamped on each player row.
+        """
+        # Real in-game roles on the FROZEN event roster, so the comparison covers role_at_match
+        # rather than comparing None with None. Both paths must read this value and not the live
+        # club roster; the shared writer is the only thing that now decides how.
+        role_cycle = ["rusher", "sniper", "support", "grenader"]
+        for i, member in enumerate(
+                TournamentTeamMember.objects.filter(tournament_team__event=self.event)
+                .order_by("id")):
+            member.in_game_role = role_cycle[i % len(role_cycle)]
+            member.save(update_fields=["in_game_role"])
+
+        log = (
+            "TeamName: TRG ESPORT  Rank: 1  KillScore: 7  RankScore: 12  TotalScore: 19\n"
+            "NAME: TRG-MOUSSA  ID: 1001  KILL: 4\n"
+            "NAME: TRG-NARUTO  ID: 1002  KILL: 2\n"
+            "NAME: TRG-PAPA  ID: 1003  KILL: 1\n"
+            "TeamName: KOCC  Rank: 2  KillScore: 3  RankScore: 9  TotalScore: 12\n"
+            "NAME: KOCC-0  ID: 300  KILL: 2\n"
+            "NAME: KOCC-1  ID: 301  KILL: 1\n"
+        )
+        self.assertEqual(self._upload(log).status_code, 200)
+
+        from_log = self._snapshot()
+        # Sanity before comparing: the upload really did score the map, and every player row
+        # really does carry a role. Without these, two empty snapshots (or two columns of None)
+        # would compare equal and the test would pass while proving nothing.
+        self.assertEqual(from_log[self.tt_trg.pk]["columns"]["kills"], 7)
+        self.assertEqual(len(from_log[self.tt_trg.pk]["players"]), 3)
+        self.assertTrue(all(player[5] for player in from_log[self.tt_trg.pk]["players"]))
+
+        # The same map, typed by the organizer. The manual endpoint clears the whole match first,
+        # so this replaces the uploaded rows rather than adding to them.
+        resp = self.client.post(
+            "/events/enter-team-match-result-manual/",
+            data=json.dumps({
+                "match_id": self.match.match_id,
+                "results": [
+                    {
+                        "tournament_team_id": self.tt_trg.pk,
+                        "placement": 1,
+                        "played": True,
+                        "players": [
+                            {"user_id": self._uid_user("1001").pk, "kills": 4},
+                            {"user_id": self._uid_user("1002").pk, "kills": 2},
+                            {"user_id": self._uid_user("1003").pk, "kills": 1},
+                        ],
+                    },
+                    {
+                        "tournament_team_id": self.tt_other.pk,
+                        "placement": 2,
+                        "played": True,
+                        "players": [
+                            {"user_id": self._uid_user("300").pk, "kills": 2},
+                            {"user_id": self._uid_user("301").pk, "kills": 1},
+                        ],
+                    },
+                ],
+            }),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+        self.assertEqual(from_log, self._snapshot())
 
     def test_normal_two_real_teams_still_score_independently(self):
         # Sanity: when two registered teams each field their OWN roster, both score once (no regression).
