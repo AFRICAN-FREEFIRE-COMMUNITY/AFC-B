@@ -88,6 +88,11 @@ INSTALLED_APPS = [
     # ordered FeedbackFields), so a second purpose is a row rather than a migration. See
     # afc_feedback/models.py.
     'afc_feedback',
+    # Organisations apply to become AFC partners themselves, instead of emailing their
+    # details for an admin to retype (owner 2026-08-04). Approval provisions through
+    # afc_sso/provisioning.py and afc_partner_api, so there is no second way to create a
+    # partner. See afc_partner_apply/models.py.
+    'afc_partner_apply',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")

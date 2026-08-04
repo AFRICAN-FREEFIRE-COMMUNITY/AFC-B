@@ -222,6 +222,32 @@ SUBJECTS = {
         "fr": "{player} a accepté votre invitation à un essai !",
         "pt": "{player} aceitou o seu convite para teste!",
     },
+
+    # ── afc_partner_apply: an organisation applying to become an AFC partner ──
+    # The recipient here is an ORGANISATION, not a player, so the register is a shade more formal
+    # than the rest of this catalog and never uses an in-game name. {reference} is the application
+    # handle (AFC-P-XXXXXX) and appears in the subject on purpose: these four emails arrive days
+    # apart and the reference is what threads them together in a shared inbox.
+    "partner_apply_received": {
+        "en": "We have your AFC partner application ({reference})",
+        "fr": "Nous avons bien reçu votre demande de partenariat AFC ({reference})",
+        "pt": "Recebemos a sua candidatura a parceiro AFC ({reference})",
+    },
+    "partner_apply_changes": {
+        "en": "Action needed on your AFC partner application ({reference})",
+        "fr": "Action requise sur votre demande de partenariat AFC ({reference})",
+        "pt": "Ação necessária na sua candidatura a parceiro AFC ({reference})",
+    },
+    "partner_apply_approved": {
+        "en": "Your AFC partner application is approved ({reference})",
+        "fr": "Votre demande de partenariat AFC est approuvée ({reference})",
+        "pt": "A sua candidatura a parceiro AFC foi aprovada ({reference})",
+    },
+    "partner_apply_rejected": {
+        "en": "About your AFC partner application ({reference})",
+        "fr": "Au sujet de votre demande de partenariat AFC ({reference})",
+        "pt": "Sobre a sua candidatura a parceiro AFC ({reference})",
+    },
 }
 
 
@@ -921,6 +947,103 @@ COPY = {
             "cta": "Abrir chat de teste",
             "footer_staff": "Recebeu esta mensagem porque é membro do staff de {team}.",
             "rights": "© 2026 African Free Fire Community. Todos os direitos reservados.",
+        },
+    },
+
+    # ─────────────────────────────────────────────────────────────────────────────────────────
+    # afc_partner_apply: the four transitions of a partner application (owner 2026-08-04)
+    # ─────────────────────────────────────────────────────────────────────────────────────────
+    # Rendered by afc_partner_apply/emails.py, which lays the listed keys out as one heading plus
+    # one paragraph each. {link} and {claim_link} arrive as finished HTML anchors, so the sentence
+    # reads naturally around them rather than around a bare URL.
+    #
+    # The recipient is an ORGANISATION, not a player, so the register is a shade more formal than
+    # the rest of this catalog and never uses an in-game name.
+    #
+    # NOTE WHAT THE APPROVAL COPY DOES NOT SAY: it never contains a client secret or an API key.
+    # It points at a single-use link that expires, because an inbox does not. See the module
+    # header of afc_partner_apply/emails.py.
+    "partner_apply_received": {
+        "en": {
+            "heading": "Your application is with us",
+            "intro": "Thanks for applying to become an AFC partner. We have your application for {organisation}, and its reference is {reference}.",
+            "next_steps": "An AFC admin will read it and decide. We will email you either way, and if anything needs correcting we will tell you exactly what.",
+            "keep_link": "You can check the status at any time here: {link}. Keep this email, the link is how you reach your application.",
+        },
+        "fr": {
+            "heading": "Nous avons votre demande",
+            "intro": "Merci d'avoir demandé à devenir partenaire AFC. Nous avons bien reçu la demande de {organisation}, dont la référence est {reference}.",
+            "next_steps": "Un administrateur AFC va la lire et se prononcer. Nous vous écrirons dans les deux cas, et si quelque chose doit être corrigé, nous vous dirons précisément quoi.",
+            "keep_link": "Vous pouvez suivre l'état de votre demande à tout moment ici : {link}. Conservez cet e-mail, ce lien est votre accès à votre demande.",
+        },
+        "pt": {
+            "heading": "Temos a sua candidatura",
+            "intro": "Obrigado por se candidatar a parceiro da AFC. Recebemos a candidatura de {organisation} e a respetiva referência é {reference}.",
+            "next_steps": "Um administrador da AFC vai lê-la e decidir. Enviaremos um e-mail em qualquer dos casos e, se algo precisar de ser corrigido, diremos exatamente o quê.",
+            "keep_link": "Pode consultar o estado a qualquer momento aqui: {link}. Guarde este e-mail, esta ligação é a sua forma de aceder à candidatura.",
+        },
+    },
+    "partner_apply_changes": {
+        "en": {
+            "heading": "One thing to fix",
+            "intro": "We have read the application for {organisation} ({reference}) and we need something changed before we can decide.",
+            "note": "Here is what AFC asked for: {note}",
+            "how_to_fix": "Open your application here to make the change: {link}. Once you send it back it returns to our queue automatically, so there is nothing else to do.",
+        },
+        "fr": {
+            "heading": "Un point à corriger",
+            "intro": "Nous avons lu la demande de {organisation} ({reference}) et un point doit être modifié avant que nous puissions décider.",
+            "note": "Voici ce que l'AFC demande : {note}",
+            "how_to_fix": "Ouvrez votre demande ici pour la modifier : {link}. Dès que vous la renvoyez, elle revient automatiquement dans notre file, vous n'avez rien d'autre à faire.",
+        },
+        "pt": {
+            "heading": "Um ponto a corrigir",
+            "intro": "Lemos a candidatura de {organisation} ({reference}) e é preciso alterar um ponto antes de podermos decidir.",
+            "note": "Eis o que a AFC pediu: {note}",
+            "how_to_fix": "Abra a sua candidatura aqui para fazer a alteração: {link}. Assim que a reenviar, volta automaticamente para a nossa fila, não tem mais nada a fazer.",
+        },
+    },
+    "partner_apply_approved": {
+        "en": {
+            "heading": "You are an AFC partner",
+            "intro": "The application for {organisation} ({reference}) is approved and everything on the AFC side is set up.",
+            "credentials": "Collect your credentials here: {claim_link}. We deliberately do not send them by email. The link works once, and your client secret is shown a single time on that page, so have somewhere safe to paste it before you open it.",
+            "expiry": "The link stops working after {hours} hours. If you miss it, or you lose the secret afterwards, ask us and we will send a new link.",
+            "guide": "Your application page stays available here: {link}. AFC will also send you the partner integration guide, which covers every endpoint, what each scope releases, and a full worked integration.",
+        },
+        "fr": {
+            "heading": "Vous êtes partenaire AFC",
+            "intro": "La demande de {organisation} ({reference}) est approuvée et tout est en place du côté de l'AFC.",
+            "credentials": "Récupérez vos identifiants ici : {claim_link}. Nous ne les envoyons volontairement pas par e-mail. Le lien ne fonctionne qu'une fois et votre secret client n'est affiché qu'une seule fois sur cette page, alors prévoyez un endroit sûr où le coller avant de l'ouvrir.",
+            "expiry": "Le lien cesse de fonctionner au bout de {hours} heures. Si vous le manquez, ou si vous perdez le secret ensuite, demandez-nous et nous vous en enverrons un nouveau.",
+            "guide": "La page de votre demande reste accessible ici : {link}. L'AFC vous transmettra également le guide d'intégration partenaire, qui couvre chaque endpoint, ce que chaque scope communique et une intégration complète commentée.",
+        },
+        "pt": {
+            "heading": "É agora parceiro da AFC",
+            "intro": "A candidatura de {organisation} ({reference}) foi aprovada e está tudo preparado do lado da AFC.",
+            "credentials": "Recolha as suas credenciais aqui: {claim_link}. Não as enviamos por e-mail, e isso é intencional. A ligação funciona uma única vez e o seu segredo de cliente é mostrado uma só vez nessa página, por isso tenha um local seguro para o colar antes de a abrir.",
+            "expiry": "A ligação deixa de funcionar ao fim de {hours} horas. Se a perder, ou se perder o segredo depois, peça-nos e enviamos uma nova.",
+            "guide": "A página da sua candidatura continua disponível aqui: {link}. A AFC enviará também o guia de integração para parceiros, que cobre todos os endpoints, o que cada scope disponibiliza e uma integração completa comentada.",
+        },
+    },
+    "partner_apply_rejected": {
+        "en": {
+            "heading": "About your application",
+            "intro": "We have read the application for {organisation} ({reference}), and we are not able to approve it.",
+            "note": "Here is why: {note}",
+            "reapply": "This is not permanent. If what we raised changes, you are welcome to apply again, and you can reply to this email if anything is unclear.",
+        },
+        "fr": {
+            "heading": "Au sujet de votre demande",
+            "intro": "Nous avons lu la demande de {organisation} ({reference}) et nous ne sommes pas en mesure de l'approuver.",
+            "note": "En voici la raison : {note}",
+            "reapply": "Ce n'est pas définitif. Si le point soulevé évolue, vous pouvez tout à fait déposer une nouvelle demande, et vous pouvez répondre à cet e-mail si quelque chose n'est pas clair.",
+        },
+        "pt": {
+            "heading": "Sobre a sua candidatura",
+            "intro": "Lemos a candidatura de {organisation} ({reference}) e não nos é possível aprová-la.",
+            "note": "O motivo é o seguinte: {note}",
+            "reapply": "Isto não é definitivo. Se o ponto que levantámos mudar, pode voltar a candidatar-se, e pode responder a este e-mail se algo não estiver claro.",
         },
     },
 }

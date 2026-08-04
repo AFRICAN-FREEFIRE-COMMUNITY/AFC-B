@@ -53,8 +53,6 @@
 # ──────────────────────────────────────────────────────────────────────────────
 import os
 
-from django.core.exceptions import ValidationError
-from django.core.validators import URLValidator
 from django.db.models import Q
 from django.http import FileResponse
 from oauth2_provider.generators import generate_client_secret
@@ -64,7 +62,19 @@ from rest_framework.decorators import api_view, authentication_classes
 from rest_framework.response import Response
 
 from .models import SSO_FIELD_TOGGLES, TOGGLE_TO_SCOPE
-from .redirect_policy import RedirectURIPolicyError, validate_redirect_uris
+# The value cleaners and the row write now live in afc_sso/provisioning.py, because the
+# approval queue (afc_partner_apply) provisions partners too and the two paths must
+# produce identical rows. Imported under the same private names they had when they lived
+# here, so every call site below is unchanged. See that module's header.
+from .provisioning import (  # noqa: F401 - _clean_url is used by the PATCH view below
+    ALLOWED_LOGO_FORMATS,
+    MAX_LOGO_BYTES,
+    MAX_LOGO_EDGE,
+    _clean_logo_upload,
+    _clean_redirect_uris,
+    _clean_url,
+    provision_sso_application,
+)
 
 Application = get_application_model()  # AFCSSOApplication, via OAUTH2_PROVIDER_APPLICATION_MODEL
 
@@ -140,18 +150,8 @@ def _require_sso_admin(request):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Validation helpers
+# Request-shape guard (the value cleaners moved to afc_sso/provisioning.py)
 # ──────────────────────────────────────────────────────────────────────────────
-# Everything a partner tells us that ends up in a browser redirect or an outbound
-# request is validated here rather than trusted. A redirect URI in particular is the
-# field that turns a mistake into a phishing tool, so it is the strictest.
-_url_validator = URLValidator(schemes=["http", "https"])
-
-# http:// is allowed ONLY for these hosts, so a partner can develop against their own
-# machine. Everything a real player is ever redirected to must be https.
-_LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
-
-
 def _require_object_body(request):
     """Returns an error Response when the body is not a JSON object, else None.
 
@@ -159,6 +159,10 @@ def _require_object_body(request):
     straight through, so a body that parsed as a list or a bare string would raise an
     AttributeError deep inside the view and surface as a 500. One check up front turns
     that into the 400 it actually is.
+
+    Stayed here rather than moving to provisioning.py with the cleaners: this is about the
+    shape of an HTTP request, which is a property of a view, not of what it means to
+    provision a partner.
     """
     if not hasattr(request.data, "get") or not hasattr(request.data, "keys"):
         return Response(
@@ -166,158 +170,6 @@ def _require_object_body(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
     return None
-
-
-def _clean_url(value, field_label, require_https=True):
-    """Validate one optional absolute URL. Returns (cleaned, error_message).
-
-    An empty value is legal for every optional URL field on the model (they are all
-    blank=True), and comes back as "" so the caller can store it as-is.
-    """
-    value = (value or "").strip()
-    if not value:
-        return "", None
-    try:
-        _url_validator(value)
-    except ValidationError:
-        return None, f"{field_label} must be a valid URL."
-    if require_https and not value.lower().startswith("https://"):
-        host = value.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0]
-        if host not in _LOCAL_HOSTS:
-            return None, f"{field_label} must use https."
-    return value, None
-
-
-def _clean_redirect_uris(value, *, required=True, label="redirect URI"):
-    """Validate a redirect URI list against AFC policy. Returns (cleaned, error_message).
-
-    django-oauth-toolkit stores redirect URIs as one whitespace-separated string and
-    matches the incoming redirect_uri against that list exactly (afc_sso/views.py refuses
-    anything that does not match, without redirecting). We accept either a list or a
-    string from the client and normalise to the single space-separated string the library
-    expects, so the admin UI can use a textarea with one URI per line.
-
-    THE RULES LIVE IN afc_sso/redirect_policy.py, not here, because
-    AFCSSOApplication.clean() has to apply exactly the same ones: several URIs per
-    partner, https everywhere except loopback http, no wildcards, no fragments. Keeping
-    one copy is what stops the API and the Django admin drifting into disagreeing about
-    what a legal URI is. The error text names the offending URI, which matters when an
-    admin has pasted three of them into one textarea.
-    """
-    try:
-        return validate_redirect_uris(value, required=required, label=label), None
-    except RedirectURIPolicyError as err:
-        return None, str(err)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Logo upload validation
-# ──────────────────────────────────────────────────────────────────────────────
-# DELIBERATELY STRICTER THAN EVERY OTHER UPLOAD GUARD IN THIS CODEBASE. The file
-# validated here is rendered on the CONSENT SCREEN - the page a player reads before
-# deciding to trust a partner with their data - and it is served from AFC's own media
-# origin. A file that is not really an image is therefore stored XSS on a security
-# page, not a broken picture.
-#
-# PRECEDENT FOLLOWED: afc_ocr/services/image_validate.py, the strictest existing guard
-# (explicit format allowlist + a per-file byte cap + one client-safe message per
-# failure). Two deliberate departures from it, both TIGHTER, because the risk here is
-# not the same:
-#   * it decides the format from the browser-supplied content_type. We decode the bytes
-#     with Pillow and believe only what Pillow says the file is - a .png filename and an
-#     image/png header cost an attacker nothing, so neither is evidence.
-#   * it fails OPEN on an unexpected error, which is right there (the extraction engine
-#     downstream degrades to a clean 503 anyway). Nothing downstream saves us here, so
-#     anything we cannot positively identify as one of three raster formats is REFUSED.
-ALLOWED_LOGO_FORMATS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp"}
-
-# 2 MB. Far below the 10-15 MB caps elsewhere in the app because the consent screen
-# renders this at 48x48: anything approaching the cap is already a mistake. The frontend
-# also downscales before sending (lib/imageCompress.ts), so a normal logo is nowhere near.
-MAX_LOGO_BYTES = 2 * 1024 * 1024
-
-# Decompression-bomb guard: a few-KB PNG can legally decode to a gigapixel canvas, which
-# would exhaust memory in the re-encode below. Size on disk alone does not catch that.
-MAX_LOGO_EDGE = 5000
-
-# Extensions we are willing to see on a stored file. "jpeg" is here only because it is a
-# legitimate alias a re-encode may produce; the canonical values are the ones above.
-_SAFE_LOGO_EXTS = frozenset(ALLOWED_LOGO_FORMATS.values()) | {"jpeg"}
-
-
-def _clean_logo_upload(uploaded):
-    """Validate one uploaded partner logo. Returns (file_to_store, error_message).
-
-    Same (cleaned, error) contract as _clean_url above, so the views read alike: exactly
-    one of the two is non-None.
-
-    CHECKS, IN ORDER:
-      1. SIZE, first because it costs nothing and an enormous file should never reach a
-         decoder at all.
-      2. IDENTITY, by decoding. Pillow must open the bytes, agree they are PNG / JPEG /
-         WEBP, and verify() the file. This is the check a filename and a Content-Type
-         header cannot fake, and it is the reason an SVG (which can carry <script>) or an
-         HTML page named logo.png is refused HERE rather than being served to players
-         from AFC's origin later.
-      3. DIMENSIONS, so a small file that decodes to a huge canvas cannot exhaust memory
-         during the re-encode.
-
-    ON SUCCESS the file goes through afc_auth.image_utils.normalize_image_upload - the
-    same downscale/recompress every other logo upload in the app uses (team logo, profile
-    picture) - and is then RENAMED. The rename is not cosmetic: the original filename is
-    the one part of the upload an attacker fully controls, and rebuilding it is what
-    guarantees no attacker-chosen extension (logo.html) can reach the media directory,
-    whatever normalize_image_upload did or did not manage to do with the bytes.
-    """
-    # ── 1. size, before any decode ──
-    size = getattr(uploaded, "size", 0) or 0
-    if size > MAX_LOGO_BYTES:
-        return None, f"The logo must be {MAX_LOGO_BYTES // (1024 * 1024)} MB or smaller."
-
-    # Local import, mirroring how every other view in this codebase reaches for Pillow:
-    # it keeps the module importable on a host where the image stack is unavailable.
-    from PIL import Image
-
-    # ── 2. identity: what the BYTES are, not what the request claims ──
-    try:
-        uploaded.seek(0)
-        probe = Image.open(uploaded)
-        # .format and .size come from the header, so they are readable before verify().
-        image_format = (probe.format or "").upper()
-        width, height = probe.size
-        # verify() reads the rest of the file and raises on corruption. It leaves `probe`
-        # unusable afterwards, which is fine - nothing below touches it again.
-        probe.verify()
-    except Exception:  # noqa: BLE001 - ANY decode failure is a refusal. Never a pass.
-        return None, "That file is not a readable image. Upload a PNG, JPG or WEBP."
-    finally:
-        # Rewind for whoever reads the file next, whether we passed or failed.
-        try:
-            uploaded.seek(0)
-        except Exception:  # noqa: BLE001 - an exotic file-like without seek is not fatal.
-            pass
-
-    if image_format not in ALLOWED_LOGO_FORMATS:
-        return None, "The logo must be a PNG, JPG or WEBP image."
-
-    # ── 3. dimensions ──
-    if width > MAX_LOGO_EDGE or height > MAX_LOGO_EDGE:
-        return None, f"The logo must be {MAX_LOGO_EDGE} pixels or smaller on each side."
-
-    from afc_auth.image_utils import normalize_image_upload
-
-    cleaned = normalize_image_upload(uploaded)
-
-    # Rebuild the stored name from scratch. normalize_image_upload re-encodes to .png or
-    # .jpg when it succeeds and returns the ORIGINAL upload, original name and all, when
-    # it does not - so trust ITS extension only when it is one of ours, and otherwise fall
-    # back to the format Pillow actually decoded above. Either way the name that reaches
-    # storage is ours, not the partner's.
-    ext = (getattr(cleaned, "name", "") or "").rsplit(".", 1)[-1].lower()
-    if ext not in _SAFE_LOGO_EXTS:
-        ext = ALLOWED_LOGO_FORMATS[image_format]
-    cleaned.name = f"partner-logo.{ext}"
-    return cleaned, None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -517,70 +369,26 @@ def sso_applications(request):
     if err:
         return err
 
-    name = (request.data.get("name") or "").strip()
-    if not name:
-        return Response({"message": "Partner name is required."},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    redirect_uris, err_msg = _clean_redirect_uris(request.data.get("redirect_uris"))
-    if err_msg:
-        return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Optional at creation: a partner only needs these if it implements RP-initiated
-    # logout, and the same policy applies because it is the same "AFC sends a player to
-    # a partner URL" problem.
-    post_logout_uris, err_msg = _clean_redirect_uris(
-        request.data.get("post_logout_redirect_uris"),
-        required=False,
-        label="post-logout redirect URI",
+    # ONE provisioning path, shared with the approval queue. Everything this used to do
+    # inline (validate the name, the two URI lists and the three URLs, generate a secret,
+    # write the row with AFC's fixed protocol shape) now lives in
+    # afc_sso/provisioning.py provision_sso_application, so an application the owner
+    # approves in afc_partner_apply and one a staff member types in here cannot end up
+    # with different rules applied. No `toggles` is passed: created here means created
+    # with every share_* field OFF, and granting data stays a separate, auditable action
+    # on the edit form below.
+    application, secret, err_msg = provision_sso_application(
+        name=request.data.get("name"),
+        redirect_uris=request.data.get("redirect_uris"),
+        post_logout_redirect_uris=request.data.get("post_logout_redirect_uris"),
+        display_name=request.data.get("display_name"),
+        logo_url=request.data.get("logo_url"),
+        homepage_url=request.data.get("homepage_url"),
+        deletion_webhook_url=request.data.get("deletion_webhook_url"),
+        created_by=user,
     )
     if err_msg:
         return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
-
-    # display_name is what the PLAYER reads on the consent screen, so it must never be
-    # empty; fall back to the internal name rather than showing them a blank sentence.
-    display_name = (request.data.get("display_name") or "").strip() or name
-
-    logo_url, err_msg = _clean_url(request.data.get("logo_url"), "Logo URL")
-    if err_msg:
-        return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
-    homepage_url, err_msg = _clean_url(request.data.get("homepage_url"), "Homepage URL")
-    if err_msg:
-        return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
-    webhook_url, err_msg = _clean_url(
-        request.data.get("deletion_webhook_url"), "Deletion webhook URL")
-    if err_msg:
-        return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Generate the secret OURSELVES rather than letting the model default fire, because
-    # the default is generated inside save() and hashed on the way to the column - by the
-    # time create() returns, the plaintext is gone. Holding it here is the only way to
-    # show it to the admin once.
-    secret = generate_client_secret()
-
-    application = Application.objects.create(
-        name=name,
-        display_name=display_name,
-        logo_url=logo_url,
-        homepage_url=homepage_url,
-        deletion_webhook_url=webhook_url,
-        redirect_uris=redirect_uris,
-        post_logout_redirect_uris=post_logout_uris,
-        client_secret=secret,
-        # ── Protocol shape, fixed by AFC and not admin-editable ──
-        # CONFIDENTIAL + authorization-code + RS256 is the only combination AFC supports:
-        # a server-side partner exchanging a code (with PKCE, see settings PKCE_REQUIRED)
-        # for an RS256-signed ID token. Implicit and password grants are not offered.
-        client_type=Application.CLIENT_CONFIDENTIAL,
-        authorization_grant_type=Application.GRANT_AUTHORIZATION_CODE,
-        algorithm=Application.RS256_ALGORITHM,
-        # Audit trail: which AFC staff member provisioned this partner. `user` on the
-        # library's Application model is a plain nullable FK with no other meaning here.
-        user=user,
-        # status defaults to "active" and every share_* toggle defaults to False, so a
-        # brand-new partner can sign a player in and learn nothing about them but that
-        # the sign-in succeeded.
-    )
 
     return Response(
         {
