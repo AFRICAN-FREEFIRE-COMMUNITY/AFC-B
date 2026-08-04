@@ -55,6 +55,29 @@ PRIVATE_URLS = (
     "http://localhost/hook",                       # loopback by name
     "https://localhost:8000/hook",                 # ...and on a port, with https
     "https://api.localhost/hook",                  # a .localhost subdomain still resolves local
+    # RFC 6598 shared address space. Python sets NONE of is_private, is_reserved or
+    # is_link_local on this block, so it passed every named check while AWS uses it for EKS pod
+    # networking and VPC secondary CIDRs, which is to say it is reachable from inside AFC.
+    "https://100.64.1.1/hook",
+    "https://100.127.255.254/hook",
+    # Deprecated IPv6 site-local. Reports is_global TRUE and is_private FALSE, so it is invisible
+    # to both of the other rules.
+    "https://[fec0::1]/hook",
+    # Multicast, which is the reason the named flags stay: it reports is_global TRUE.
+    "https://224.0.0.1/hook",
+)
+
+# The counterweight. Every one of these is an ordinary public host and MUST stay accepted, or the
+# rule above has been tightened into "refuse everything", which passes its own tests and breaks
+# every real partner.
+PUBLIC_URLS = (
+    "https://partner.example/afc/disconnected",
+    "https://93.184.216.34/hook",                  # a bare public IPv4
+    "https://[2606:4700::1111]/hook",              # a bare public IPv6
+    "https://[::ffff:8.8.8.8]/hook",               # IPv4-mapped IPv6, still a public address
+    "https://100.63.255.255/hook",                 # one below the RFC 6598 block, still public
+    "https://100.128.0.0/hook",                    # one above it
+    "https://172.15.0.1/hook",                     # one below the private 172.16.0.0/12 block
 )
 
 
@@ -66,12 +89,18 @@ class OutboundUrlRuleTests(TestCase):
         self.assertIsNone(err)
         self.assertEqual(cleaned, "https://partner.example/afc/disconnected")
 
-    def test_a_public_ip_literal_is_accepted(self):
-        """The rule refuses addresses that are unreachable from AFC, not IP literals as such. A
-        partner running on a bare public IP is unusual and not wrong."""
-        cleaned, err = _clean_outbound_url("https://93.184.216.34/hook", "Webhook")
-        self.assertIsNone(err)
-        self.assertEqual(cleaned, "https://93.184.216.34/hook")
+    def test_every_ordinary_public_address_is_still_accepted(self):
+        """The counterweight to the refusal list, and the test that stops this rule being
+        tightened into "refuse everything". The rule refuses addresses that are unreachable from
+        AFC, not IP literals as such: a partner on a bare public IP is unusual and not wrong. The
+        addresses one step outside each refused block are here on purpose, because an off-by-one
+        in a range check looks exactly like a working rule until a real partner is turned away.
+        """
+        for url in PUBLIC_URLS:
+            with self.subTest(url=url):
+                cleaned, err = _clean_outbound_url(url, "Webhook")
+                self.assertIsNone(err, f"{url} was refused")
+                self.assertEqual(cleaned, url)
 
     def test_every_private_loopback_and_link_local_address_is_refused(self):
         for url in PRIVATE_URLS:

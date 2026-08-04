@@ -90,8 +90,27 @@ def _clean_outbound_url(value, field_label):
     except ValueError:
         return cleaned, None
 
+    # THE TEST IS "is it globally routable", not a list of ranges anybody can finish naming.
+    #
+    # The named flags below are kept because they say WHAT is being refused, and because one of
+    # them is not covered by is_global: a multicast address reports is_global True in Python's
+    # ipaddress, so dropping the explicit check would let 224.0.0.1 through.
+    #
+    # `not address.is_global` is what catches the ranges an explicit list keeps missing. The one
+    # that matters here is RFC 6598 shared address space, 100.64.0.0/10: Python sets NONE of
+    # is_private, is_reserved or is_link_local on it, so 100.64.1.1 passed every named check, and
+    # AWS uses that block for EKS pod networking and VPC secondary CIDRs. On the boxes AFC runs
+    # on it is emphatically reachable from inside.
+    #
+    # `is_site_local` is the IPv6 counterpart of the same problem in reverse: deprecated site-local
+    # fec0::/10 reports is_global TRUE and is_private FALSE, so neither of the other two clauses
+    # sees it.
+    #
+    # Verified against this repo's Python (3.12.10), because these properties have moved between
+    # versions: 93.184.216.34, 8.8.8.8, 2606:4700::1111 and ::ffff:8.8.8.8 stay accepted.
     if (address.is_private or address.is_loopback or address.is_link_local
-            or address.is_reserved or address.is_multicast or address.is_unspecified):
+            or address.is_reserved or address.is_multicast or address.is_unspecified
+            or not address.is_global or getattr(address, "is_site_local", False)):
         return None, (
             f"{field_label} must be a public address. "
             "Private, loopback and link-local addresses are not reachable from AFC."
