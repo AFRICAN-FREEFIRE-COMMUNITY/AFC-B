@@ -52,12 +52,65 @@ def _aware(dt):
     return dt
 
 
+def _local_label(event, dt):
+    """An instant written in the EVENT's own timezone, for an error message an organizer reads.
+
+    The organizer typed a wall-clock time in the host's timezone, so telling them the boundary in
+    UTC would be answering a question they did not ask. The zone is named so there is no doubt.
+    """
+    from .views import _event_zone
+
+    zone = _event_zone(event)
+    local = dt.astimezone(zone)
+    label = getattr(zone, "key", None) or str(zone)
+    return f"{local.strftime('%d %b %Y, %H:%M')} ({label})"
+
+
 def _registration_end_dt(event):
-    return _aware(_dt.combine(event.registration_end_date, event.registration_end_time or _time.max))
+    """When registration actually closes, as one absolute instant.
+
+    BUG (owner reported 2026-08-04, screenshot): an organizer set registration to end at 6:59pm
+    and check-in to open at 7:15pm, and was refused with "Check-in can only begin after
+    registration ends."
+
+    Two faults, both here, and both the same root cause: this function had its own idea of when
+    registration ends, different from the one the rest of the codebase uses.
+
+      1. IT IGNORED THE EVENT'S TIMEZONE. An event's registration_end_time is the HOST's wall
+         clock (Event.timezone), but this combined it in the SERVER timezone, which is UTC in
+         production. For a Lagos event closing at 18:59 local, the true instant is 17:59 UTC and
+         this computed 18:59 UTC, an hour late. The admin's typed 19:15 Lagos arrives as 18:15
+         UTC, which is "before" that wrong 18:59, so a perfectly valid window was refused. This
+         is the same class of bug as the Ethiopia registration one, in a second copy of the
+         logic that was never updated.
+
+      2. THE FALLBACK WAS END OF DAY. With no registration_end_time set, _time.max made
+         registration close at 23:59:59, so check-in could never be scheduled on the same day at
+         all, whatever the organizer typed.
+
+    Both go away by calling the ONE function that already answers this question in the event's
+    own timezone. Imported lazily because views.py imports this module's siblings and a
+    top-level import would close the cycle.
+    """
+    if not event.registration_end_date:
+        return None
+    from .views import registration_window_instants
+
+    return registration_window_instants(event)[1]
 
 
 def _event_start_dt(event):
-    return _aware(_dt.combine(event.start_date, event.event_start_time or _time.min))
+    """When the event starts, in the EVENT's timezone rather than the server's, for the same
+    reason as above: a Lagos event starting at 20:00 starts at 19:00 UTC, and comparing a
+    check-in close time against 20:00 UTC would let it run an hour into the event."""
+    if not event.start_date:
+        return None
+    from .views import _event_zone
+
+    return timezone.make_aware(
+        _dt.combine(event.start_date, event.event_start_time or _time.min),
+        _event_zone(event),
+    )
 
 
 def _window_open(event, now=None):
@@ -70,8 +123,15 @@ def _window_open(event, now=None):
 
 # ── eligibility resolution ────────────────────────────────────────────────────────
 def _user_squad(event, user):
-    """The active (non-waitlisted) TournamentTeam this user is a registered roster member of for the
-    event, or None. Squad events register per-team; membership lives in TournamentTeamMember."""
+    """The TournamentTeam this user is a rostered member of for the event, or None.
+
+    WAITLISTED TEAMS ARE INCLUDED, deliberately, and the docstring used to claim the opposite
+    while the query never filtered on it. The behaviour was right and the description was wrong,
+    which is worse than either: a reader trusting it would have "fixed" the query and broken the
+    feature. A waitlisted competitor MUST be able to check in, because promotion into a freed
+    slot only goes to competitors who did (promote_checked_in_waitlist). A waitlist that cannot
+    check in can never be promoted, which would make the whole replacement rule dead code.
+    """
     m = (TournamentTeamMember.objects
          .filter(user=user, tournament_team__event=event)
          .exclude(status="rejected")
@@ -111,10 +171,23 @@ def set_event_checkin(request):
             return Response({"message": "Check-in end time must be after its start time."}, status=400)
         reg_end = _registration_end_dt(event)
         ev_start = _event_start_dt(event)
+        # The refusals NAME the boundary they are refusing against, in the event's own timezone.
+        # "Check-in can only begin after registration ends" on its own sent an organizer hunting
+        # for a mistake they had not made: the real reason was usually that registration has no
+        # end TIME and therefore runs to 23:59 that day, which nothing on the screen said.
         if reg_end and start < reg_end:
-            return Response({"message": "Check-in can only begin after registration ends."}, status=400)
+            return Response({"message": (
+                "Check-in can only begin after registration ends. Registration for this event "
+                f"closes at {_local_label(event, reg_end)}"
+                + ("." if event.registration_end_time else
+                   ", because no registration end time is set, so it runs to the end of that day. "
+                   "Set a registration end time first, or open check-in after that.")
+            )}, status=400)
         if ev_start and end > ev_start:
-            return Response({"message": "Check-in must close before the event starts."}, status=400)
+            return Response({"message": (
+                "Check-in must close before the event starts. This event starts at "
+                f"{_local_label(event, ev_start)}."
+            )}, status=400)
         event.checkin_start = start
         event.checkin_end = end
     event.checkin_enabled = enabled
@@ -162,9 +235,15 @@ def player_checkin(request):
 def get_event_checkin_status(request):
     """Check-in status for ?event_id=. For a normal user: their own checked-in flag + (for a squad)
     how many of their roster have checked in. For an admin/organizer: the full per-competitor list."""
+    # THE SCHEDULE IS PUBLIC, the personal status is not (owner 2026-08-04: "if check-in is
+    # enabled for an event let it show on the event page"). Requiring a token for the whole
+    # response hid the check-in requirement from exactly the people who most need to see it: a
+    # visitor deciding whether to enter, and a registrant who is signed out on their phone. Those
+    # are the competitors who register without noticing and lose their slot for missing it.
+    #
+    # So an anonymous caller gets whether check-in is on and when the window runs, and nothing
+    # else: no roster, no per-competitor list, no other player's state.
     user = _auth_user(request)
-    if not user:
-        return Response({"message": "Invalid or missing session token."}, status=401)
     event = get_object_or_404(Event, event_id=request.query_params.get("event_id"))
 
     base = {
@@ -173,6 +252,12 @@ def get_event_checkin_status(request):
         "checkin_end": event.checkin_end.isoformat() if event.checkin_end else None,
         "window_open": _window_open(event),
     }
+
+    if not user:
+        # `me` is absent rather than a fabricated "not registered": the caller genuinely does not
+        # know who this is, and saying "you are not registered" to a signed-out registrant would
+        # be a lie the UI would then act on.
+        return Response(base)
 
     checked_user_ids = set(EventCheckIn.objects.filter(event=event).values_list("user_id", flat=True))
 
@@ -246,6 +331,65 @@ def relegate_unchecked_competitors(event):
     return moved
 
 
+def promote_checked_in_waitlist(event, freed):
+    """Fill the slots that relegation just freed, from the waitlist (owner 2026-08-04).
+
+    THIS IS THE OTHER HALF OF THE RULE, and it was missing. The owner's words were that a team
+    which does not complete check-in "gets replaced by a waitlist". Relegation on its own only
+    does the first half: it empties the seat. Without this, an event that started with 16 teams
+    and lost 3 to a missed check-in simply ran with 13, while teams who DID check in sat on the
+    waitlist waiting for a promotion that never came. Both halves have to happen or the check-in
+    requirement quietly shrinks the event instead of enforcing it.
+
+    WHO GETS PROMOTED, and why only them: a waitlisted competitor is promoted ONLY if they are
+    themselves fully checked in. Promoting somebody who did not check in either would seat a team
+    that has shown no sign of turning up, which is the exact thing check-in exists to detect. This
+    is why waitlisted competitors are allowed to check in during the window in the first place.
+
+    ORDER is the event's own waitlist_mode, defaulting to earliest-registered, matching
+    views.promote_next_waitlist so a promotion here and a manual promotion there cannot disagree
+    about who is next.
+
+    `freed` caps how many are promoted, so this can never seat more teams than check-in removed
+    and can never take an event over the size the organizer set.
+    """
+    if freed <= 0:
+        return 0
+
+    checked = set(EventCheckIn.objects.filter(event=event).values_list("user_id", flat=True))
+    promoted = 0
+
+    if (event.participant_type or "").lower() == "solo":
+        candidates = RegisteredCompetitors.objects.filter(
+            event=event, is_waitlisted=True, user__isnull=False).order_by("registration_date")
+        for r in candidates:
+            if promoted >= freed:
+                break
+            if r.user_id in checked:
+                r.is_waitlisted = False
+                r.save(update_fields=["is_waitlisted"])
+                promoted += 1
+        return promoted
+
+    for tt in TournamentTeam.objects.filter(
+            event=event, is_waitlisted=True).order_by("registration_date"):
+        if promoted >= freed:
+            break
+        roster = list(
+            TournamentTeamMember.objects.filter(tournament_team=tt)
+            .exclude(status="rejected").values_list("user_id", flat=True))
+        # Same completeness rule relegation uses: a squad counts as checked in only when EVERY
+        # rostered player did. An empty roster is not a team that can play, so it is skipped.
+        if not roster or not all(uid in checked for uid in roster):
+            continue
+        tt.is_waitlisted = False
+        tt.save(update_fields=["is_waitlisted"])
+        RegisteredCompetitors.objects.filter(
+            event=event, team=tt.team, is_waitlisted=True).update(is_waitlisted=False)
+        promoted += 1
+    return promoted
+
+
 @api_view(["POST"])
 def checkin_relegate_now(request):
     """Admin/organizer force the relegation sweep NOW (also runs automatically once the window closes).
@@ -261,4 +405,16 @@ def checkin_relegate_now(request):
     if not event.checkin_end or timezone.now() < event.checkin_end:
         return Response({"message": "Check-in is still open; relegation runs after it closes."}, status=400)
     moved = relegate_unchecked_competitors(event)
-    return Response({"message": f"{moved} competitor(s) moved to the waitlist.", "relegated": moved})
+    # Relegating empties a seat; this fills it. Both halves run together so an organizer pressing
+    # the button once gets the whole rule, not the half that removes people.
+    promoted = promote_checked_in_waitlist(event, moved)
+    parts = [f"{moved} competitor(s) moved to the waitlist."]
+    if promoted:
+        parts.append(f"{promoted} checked-in waitlist entr{'y' if promoted == 1 else 'ies'} promoted into the freed slots.")
+    elif moved:
+        parts.append("No checked-in waitlist entry was available to take the freed slots.")
+    return Response({
+        "message": " ".join(parts),
+        "relegated": moved,
+        "promoted": promoted,
+    })
