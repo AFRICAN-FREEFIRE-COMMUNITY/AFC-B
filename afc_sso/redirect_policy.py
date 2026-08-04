@@ -27,6 +27,16 @@
 #   5. NO fragments. The fragment is where an implicit-flow response would put tokens,
 #      and RFC 6749 section 3.1.2 requires the endpoint URI to have none. A registered
 #      fragment is either a mistake or an attempt to smuggle one.
+#   6. NO credentials in the address. "https://user:secret@partner.example/cb" is a
+#      legal URI, and that is the problem: RFC 3986 section 3.2.1 deprecates the
+#      userinfo component precisely because it puts a password somewhere it will be
+#      logged, copied into a support ticket and pasted into a browser bar. AFC would be
+#      storing that secret and sending players through it on every sign-in.
+#
+# A PATH IS DELIBERATELY NOT REQUIRED. "https://partner.example" is a perfectly good
+# redirect target and refusing it would be strictness with no security behind it. Said
+# out loud here because an earlier commit message claimed AFC refused a bare host; it
+# never did, and it should not.
 #
 # WHY NOT ENFORCE IN save(): Model.save() does not call full_clean(), and adding it
 # would mean any row already in the database with a now-illegal URI could never be
@@ -109,6 +119,16 @@ def validate_one(uri):
     if parts.fragment or uri.endswith("#"):
         raise RedirectURIPolicyError(
             f"Redirect URI '{uri}' must not contain a '#' fragment."
+        )
+
+    # urlsplit exposes the userinfo component as .username / .password. Checked after the
+    # netloc test so a partner who typed something that is not an address at all hears
+    # that first, which is the more likely mistake.
+    if parts.username or parts.password:
+        raise RedirectURIPolicyError(
+            f"Redirect URI '{uri}' contains a username or password before the host. "
+            "Remove everything up to the '@': AFC would have to store that credential "
+            "and send every player through it."
         )
 
     if parts.scheme.lower() == "http" and _host_of(parts) not in LOOPBACK_HOSTS:
