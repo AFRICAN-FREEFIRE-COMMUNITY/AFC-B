@@ -359,6 +359,20 @@ class Event(models.Model):
     # recomputes the stored team totals on upload AND whenever the toggle/override changes.
     count_flagged_kills = models.BooleanField(default=True)
 
+    # ── Teams submit their own per-map results (owner 2026-08-04, backlog item 6) ──────────
+    # OFF by default, and that default is the whole point: on a normal event the organizer
+    # enters results and nothing changes for them. On a large event with many groups, typing
+    # every map is the bottleneck, and the organizer is usually transcribing screenshots the
+    # teams sent them anyway. Turning this on lets each team submit ITS OWN row for a map,
+    # which the organizer then approves before it counts for anything.
+    #
+    # Nothing a team submits reaches the standings on its own: a submission is a proposal
+    # (TeamMapResultSubmission) until an organizer approves it, and approval writes through
+    # the same code an organizer's own entry uses (result_writes.write_team_result_row).
+    # Read by views_team_submissions on every submit, so switching it off stops new
+    # submissions immediately while leaving already-approved results alone.
+    allow_team_result_submissions = models.BooleanField(default=False)
+
 
     def save(self, *args, **kwargs):
         if not self.slug:
@@ -1796,3 +1810,105 @@ class MediaFlag(models.Model):
                                    null=True, related_name="media_flags_raised")
     resolved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class TeamMapResultSubmission(models.Model):
+    """A team's own proposal for its row on one map, waiting for an organizer to approve it.
+
+    WHY IT EXISTS (owner 2026-08-04, backlog item 6): only an organizer or admin can enter
+    results today. On a large event that is a bottleneck, and the organizer is usually
+    transcribing screenshots the teams already sent them. This moves the typing to the people
+    who hold the data while leaving the organizer in control of what is true.
+
+    A SUBMISSION IS NOT A RESULT. Nothing here is read by the standings. Approving one is what
+    writes TournamentTeamMatchStats and TournamentPlayerMatchStats, through the same function
+    an organizer's own entry uses (result_writes.write_team_result_row), so an approved
+    submission produces byte-for-byte the rows the organizer would have produced by hand.
+
+    WHY A TEAM SUBMITS ONLY ITS OWN ROW, never the whole lobby:
+      * a team has first-hand knowledge of its own placement and its own players' kills, and
+        second-hand knowledge of everyone else's;
+      * a lobby-wide submission would invite a team to report its rivals down a place, and
+        would make the organizer arbitrate between two full and differing lobbies;
+      * scoping it to the submitter's own team makes the permission question total and
+        simple: are you on this team, and is this team in this match.
+    The organizer assembles a map from N one-team submissions, approving each as it lands,
+    which is exactly the transcription work being removed.
+
+    STATE MACHINE
+        pending ──approve──> approved      the row is written to the stats tables
+                └─reject───> rejected      with a reason the team can read
+        approved ──(a later approval for the same team and match)──> superseded
+
+    WHAT STAYS AUDITABLE: who submitted and when, who reviewed and when, the reason for a
+    rejection, the payload as SUBMITTED and, separately, the payload as APPROVED. Keeping both
+    payloads is what lets anyone see that the organizer corrected a placement before approving
+    rather than having to trust that they did not.
+
+    Written and read by afc_tournament_and_scrims/views_team_submissions.py. Consumed by the
+    team-side submit form and the organizer's review queue on the event results page.
+    """
+
+    STATUS_CHOICES = [
+        ("pending", "Pending review"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+        ("superseded", "Superseded by a later approval"),
+    ]
+
+    submission_id = models.AutoField(primary_key=True)
+    match = models.ForeignKey(
+        Match, on_delete=models.CASCADE, related_name="team_result_submissions")
+    tournament_team = models.ForeignKey(
+        TournamentTeam, on_delete=models.CASCADE, related_name="result_submissions")
+
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="team_result_submissions")
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    # The team's proposal, in the same per-team shape the manual entry form posts:
+    # {placement, played, bonus_points, penalty_points, players: [{user_id, kills, damage,
+    # assists, played}]}. Stored as sent, and never edited afterwards, so the record of what
+    # the team actually claimed survives whatever the organizer does next.
+    submitted_payload = models.JSONField()
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="team_result_reviews")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    # What was ACTUALLY written, which differs from submitted_payload whenever the organizer
+    # corrected something before approving. Null until approved. The pair is the audit: same
+    # means approved as sent, different shows exactly what the organizer changed.
+    approved_payload = models.JSONField(null=True, blank=True)
+
+    # Required on a rejection and shown to the team. A team told only "rejected" resubmits the
+    # same numbers, which wastes the organizer's time twice.
+    review_note = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-submitted_at"]
+        indexes = [
+            # The organizer's queue is "everything still pending on this match", and the team's
+            # own view is "my submissions for this match", so both filter on match first.
+            models.Index(fields=["match", "status"], name="idx_tmrs_match_status"),
+            models.Index(fields=["tournament_team", "status"], name="idx_tmrs_team_status"),
+        ]
+        # NO DATABASE CONSTRAINT for "one pending submission per team per map", and that is a
+        # deliberate choice rather than an oversight. The natural expression of it is a partial
+        # unique index (unique on (match, tournament_team) WHERE status='pending'), and MySQL
+        # does not support conditional constraints: Django raises models.W036 and silently
+        # creates nothing. A constraint that exists in the model and not in the database is
+        # worse than none, because it reads as a guarantee nobody is enforcing.
+        #
+        # The invariant is therefore held where it is actually true: views_team_submissions.
+        # submit_team_map_result deletes the team's existing pending row and creates the new one
+        # inside one transaction, so a team correcting itself REPLACES its pending answer rather
+        # than queueing a second one, and the organizer always sees one current answer per team.
+
+    def __str__(self):
+        return (f"Submission {self.submission_id} | match {self.match_id} "
+                f"| team {self.tournament_team_id} | {self.status}")
