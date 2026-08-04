@@ -154,6 +154,10 @@ def _serialize_detail(application, request=None):
         "homepage_url": application.homepage_url,
         "contact_name": application.contact_name,
         "contact_role": application.contact_role,
+        # E.164, or blank when the applicant did not give one. Shown on the review screen because
+        # the owner asked for a number somebody could actually be messaged on, and a number nobody
+        # reviewing the application can see is not that.
+        "contact_whatsapp": application.contact_whatsapp,
         "redirect_uris": application.redirect_uris,
         "post_logout_redirect_uris": application.post_logout_redirect_uris,
         "deletion_webhook_url": application.deletion_webhook_url,
