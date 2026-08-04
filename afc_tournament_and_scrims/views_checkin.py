@@ -276,10 +276,19 @@ def get_event_checkin_status(request):
 
     # ── admin/organizer full breakdown ──
     if _is_checkin_manager(user, event):
+        # WHEN each player checked in, not merely whether. An organizer chasing a squad that is
+        # one player short needs the NAME of the player who has not checked in (owner
+        # 2026-08-04: "admins or organizers should also be able to see who has checked in for
+        # each team and who hasn't"). A count of 3 of 4 tells them a problem exists and nothing
+        # about who to message.
+        checkin_times = dict(
+            EventCheckIn.objects.filter(event=event).values_list("user_id", "checked_in_at"))
         teams = []
         for tt in TournamentTeam.objects.filter(event=event).select_related("team"):
-            roster = list(TournamentTeamMember.objects.filter(tournament_team=tt).exclude(status="rejected")
-                          .values_list("user_id", flat=True))
+            members = list(
+                TournamentTeamMember.objects.filter(tournament_team=tt)
+                .exclude(status="rejected").select_related("user"))
+            roster = [m.user_id for m in members]
             done = sum(1 for uid in roster if uid in checked_user_ids)
             teams.append({
                 "tournament_team_id": tt.tournament_team_id,
@@ -288,6 +297,20 @@ def get_event_checkin_status(request):
                 "roster_total": len(roster),
                 "roster_checked_in": done,
                 "eligible": (len(roster) > 0 and done == len(roster)),
+                # Named, per player, with the missing ones listed as plainly as the present
+                # ones. checked_in_at is ISO UTC and the UI renders it in the viewer's own
+                # timezone; it is null for anyone who has not checked in.
+                "players": [
+                    {
+                        "user_id": m.user_id,
+                        "username": getattr(m.user, "username", "?"),
+                        "checked_in": m.user_id in checked_user_ids,
+                        "checked_in_at": (
+                            checkin_times[m.user_id].isoformat()
+                            if m.user_id in checkin_times else None),
+                    }
+                    for m in members
+                ],
             })
         solos = []
         for r in RegisteredCompetitors.objects.filter(event=event, user__isnull=False).select_related("user"):
@@ -296,6 +319,9 @@ def get_event_checkin_status(request):
                 "username": r.user.username if r.user else "?",
                 "is_waitlisted": r.is_waitlisted,
                 "checked_in": r.user_id in checked_user_ids,
+                "checked_in_at": (
+                    checkin_times[r.user_id].isoformat()
+                    if r.user_id in checkin_times else None),
             })
         base["teams"] = teams
         base["solos"] = solos
@@ -346,9 +372,21 @@ def promote_checked_in_waitlist(event, freed):
     that has shown no sign of turning up, which is the exact thing check-in exists to detect. This
     is why waitlisted competitors are allowed to check in during the window in the first place.
 
-    ORDER is the event's own waitlist_mode, defaulting to earliest-registered, matching
-    views.promote_next_waitlist so a promotion here and a manual promotion there cannot disagree
-    about who is next.
+    ORDER IS THE ORGANIZER'S CHOICE, not a constant (owner 2026-08-04). Event.waitlist_mode has
+    three settings and this honours all of them, because an organizer who chose one and silently
+    got another would be worse served than one with no setting at all:
+
+      first_registered  earliest registration first. The default, and the only one this used to
+                        do regardless of what the organizer had picked.
+      fcfs_room         first to join the room. There is no room to join at this point in the
+                        flow, and the closest honest reading of "first come" here is who checked
+                        in first, so it orders by check-in time. Stated plainly rather than
+                        quietly falling back to registration order, which would have looked
+                        identical on screen while ignoring the setting.
+      manual_admin      the organizer picks. So this promotes NOBODY automatically and leaves the
+                        freed seats for them to fill from the waitlist page. Auto-filling a seat
+                        on an event whose organizer explicitly asked to choose would be the
+                        rudest possible reading of the setting.
 
     `freed` caps how many are promoted, so this can never seat more teams than check-in removed
     and can never take an event over the size the organizer set.
@@ -356,12 +394,33 @@ def promote_checked_in_waitlist(event, freed):
     if freed <= 0:
         return 0
 
-    checked = set(EventCheckIn.objects.filter(event=event).values_list("user_id", flat=True))
+    mode = (getattr(event, "waitlist_mode", None) or "first_registered").strip().lower()
+    if mode == "manual_admin":
+        # The organizer asked to decide. Leaving the seats empty IS the correct behaviour here.
+        return 0
+
+    checkins = dict(
+        EventCheckIn.objects.filter(event=event).values_list("user_id", "checked_in_at"))
+    checked = set(checkins)
     promoted = 0
 
+    def _checked_in_order(user_ids):
+        """When the LAST of these players checked in, for fcfs_room ordering.
+
+        The last rather than the first, because a squad is only ready once everybody is in, so
+        that instant is when the team actually became available for the slot.
+        """
+        stamps = [checkins[uid] for uid in user_ids if uid in checkins]
+        return max(stamps) if stamps else None
+
     if (event.participant_type or "").lower() == "solo":
-        candidates = RegisteredCompetitors.objects.filter(
-            event=event, is_waitlisted=True, user__isnull=False).order_by("registration_date")
+        candidates = list(RegisteredCompetitors.objects.filter(
+            event=event, is_waitlisted=True, user__isnull=False).order_by("registration_date"))
+        if mode == "fcfs_room":
+            # Solo: the competitor's own check-in time. Anyone who did not check in sorts last
+            # and is skipped by the eligibility test below anyway.
+            candidates.sort(key=lambda r: (checkins.get(r.user_id) is None,
+                                           checkins.get(r.user_id) or timezone.now()))
         for r in candidates:
             if promoted >= freed:
                 break
@@ -371,13 +430,25 @@ def promote_checked_in_waitlist(event, freed):
                 promoted += 1
         return promoted
 
-    for tt in TournamentTeam.objects.filter(
-            event=event, is_waitlisted=True).order_by("registration_date"):
-        if promoted >= freed:
-            break
-        roster = list(
+    squads = list(TournamentTeam.objects.filter(
+        event=event, is_waitlisted=True).order_by("registration_date"))
+    rosters = {
+        tt.tournament_team_id: list(
             TournamentTeamMember.objects.filter(tournament_team=tt)
             .exclude(status="rejected").values_list("user_id", flat=True))
+        for tt in squads
+    }
+    if mode == "fcfs_room":
+        # Ordered by when each squad BECAME ready, which is its last player's check-in.
+        squads.sort(key=lambda tt: (
+            _checked_in_order(rosters[tt.tournament_team_id]) is None,
+            _checked_in_order(rosters[tt.tournament_team_id]) or timezone.now(),
+        ))
+
+    for tt in squads:
+        if promoted >= freed:
+            break
+        roster = rosters[tt.tournament_team_id]
         # Same completeness rule relegation uses: a squad counts as checked in only when EVERY
         # rostered player did. An empty roster is not a team that can play, so it is skipped.
         if not roster or not all(uid in checked for uid in roster):

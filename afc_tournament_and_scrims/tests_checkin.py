@@ -77,6 +77,18 @@ class CheckinTests(TestCase):
         RegisteredCompetitors.objects.create(event=self.event, team=team, is_waitlisted=False)
         return tt, members
 
+    def _check_in_at(self, user, when):
+        """Check `user` in with an EXPLICIT timestamp.
+
+        EventCheckIn.checked_in_at is auto_now_add, so a value passed to objects.create() is
+        silently discarded and every row lands on the same instant. A test that ordered by such
+        a column would be comparing ties and would pass whatever the ordering code did. .update()
+        is the one write that bypasses auto_now_add, so it is used here on purpose.
+        """
+        row = EventCheckIn.objects.create(event=self.event, user=user)
+        EventCheckIn.objects.filter(pk=row.pk).update(checked_in_at=when)
+        return row
+
     def setUp(self):
         self.admin = self._user("checkin_admin", role="admin")
         # A LAGOS event: registration closes 18:59 local, the event starts 21:00 local. The
@@ -273,6 +285,90 @@ class CheckinTests(TestCase):
         self.assertEqual(freed, 1)
         self.assertEqual(promoted, 1, "one seat freed, one team promoted, not all three")
 
+    def test_the_organizers_own_waitlist_setting_decides_who_is_promoted(self):
+        """Event.waitlist_mode has three settings and promotion honours all three (owner
+        2026-08-04). It used to promote in registration order no matter which one the organizer
+        had picked, which is worse than having no setting at all: the screen said one thing and
+        the event did another.
+
+        Under `fcfs_room` the ordering is by CHECK-IN time, and for a squad that means its LAST
+        player, because a squad is only available for the slot once everybody is in. So the test
+        registers Early first and still expects Late to be promoted, which is the opposite of
+        what the default would do and is the only way to tell the two settings apart.
+        """
+        short, short_players = self._squad("Short")
+        early, early_players = self._squad("Early")     # registered first
+        late, late_players = self._squad("Late")        # registered second
+        for tt in (early, late):
+            tt.is_waitlisted = True
+            tt.save(update_fields=["is_waitlisted"])
+
+        for u in short_players[:-1]:
+            EventCheckIn.objects.create(event=self.event, user=u)
+        # Late's squad completes check-in BEFORE Early's does. Stamps are written explicitly
+        # rather than relying on insert order, so the ordering under test is the real column.
+        base = timezone.now() - datetime.timedelta(hours=3)
+        for i, u in enumerate(late_players):
+            self._check_in_at(u, base + datetime.timedelta(minutes=i))
+        for i, u in enumerate(early_players):
+            self._check_in_at(u, base + datetime.timedelta(minutes=30 + i))
+
+        self.event.checkin_enabled = True
+        self.event.checkin_start = timezone.now() - datetime.timedelta(hours=2)
+        self.event.checkin_end = timezone.now() - datetime.timedelta(minutes=1)
+        self.event.save()
+
+        freed = relegate_unchecked_competitors(self.event)
+        self.assertEqual(freed, 1)
+
+        # ── manual_admin: the organizer asked to choose, so NOBODY is promoted ──
+        self.event.waitlist_mode = "manual_admin"
+        self.event.save(update_fields=["waitlist_mode"])
+        self.assertEqual(promote_checked_in_waitlist(self.event, freed), 0)
+        early.refresh_from_db(); late.refresh_from_db()
+        self.assertTrue(early.is_waitlisted)
+        self.assertTrue(late.is_waitlisted, "the seat is left for the organizer to fill")
+
+        # ── fcfs_room: the squad that finished checking in first, not the one that registered
+        #    first. Early registered before Late and must still lose. ──
+        self.event.waitlist_mode = "fcfs_room"
+        self.event.save(update_fields=["waitlist_mode"])
+        self.assertEqual(promote_checked_in_waitlist(self.event, freed), 1)
+        early.refresh_from_db(); late.refresh_from_db()
+        self.assertFalse(late.is_waitlisted, "Late checked in first, so Late takes the slot")
+        self.assertTrue(early.is_waitlisted)
+
+    def test_the_default_waitlist_setting_still_promotes_the_earliest_registered(self):
+        """The counterpart to the test above, and the reason it proves anything: with the default
+        setting the SAME check-in times produce the OTHER team. Without this, ordering by
+        check-in time and ordering by registration could both be passing by coincidence."""
+        short, short_players = self._squad("Short")
+        early, early_players = self._squad("Early")
+        late, late_players = self._squad("Late")
+        for tt in (early, late):
+            tt.is_waitlisted = True
+            tt.save(update_fields=["is_waitlisted"])
+
+        for u in short_players[:-1]:
+            EventCheckIn.objects.create(event=self.event, user=u)
+        base = timezone.now() - datetime.timedelta(hours=3)
+        for i, u in enumerate(late_players):     # Late checks in FIRST, as above
+            self._check_in_at(u, base + datetime.timedelta(minutes=i))
+        for i, u in enumerate(early_players):
+            self._check_in_at(u, base + datetime.timedelta(minutes=30 + i))
+
+        self.event.checkin_enabled = True
+        self.event.checkin_start = timezone.now() - datetime.timedelta(hours=2)
+        self.event.checkin_end = timezone.now() - datetime.timedelta(minutes=1)
+        self.event.save()
+        self.assertEqual(self.event.waitlist_mode, "first_registered")
+
+        freed = relegate_unchecked_competitors(self.event)
+        self.assertEqual(promote_checked_in_waitlist(self.event, freed), 1)
+        early.refresh_from_db(); late.refresh_from_db()
+        self.assertFalse(early.is_waitlisted, "registered first wins under the default setting")
+        self.assertTrue(late.is_waitlisted)
+
     def test_relegation_does_not_run_while_the_window_is_still_open(self):
         short, short_players = self._squad("Short")
         for u in short_players[:-1]:
@@ -313,6 +409,50 @@ class CheckinTests(TestCase):
         self.assertFalse(me["checked_in"])
         self.assertTrue(me["is_squad"])
         self.assertEqual(me["roster_total"], 4)
+
+    def test_an_organizer_sees_which_players_have_checked_in_by_name(self):
+        """Owner 2026-08-04: "admins or organizers should also be able to see who has checked in
+        for each team and who hasn't". A squad reading 3 of 4 says a problem exists and nothing
+        about who to message, which leaves the organizer to work out the missing name from a
+        roster page in another tab while the window is running out.
+
+        The absent players are listed as plainly as the present ones, with checked_in false and
+        no timestamp, rather than being left as a subtraction the reader performs.
+        """
+        tt, members = self._squad("Alpha")
+        self._open_window_now()
+        when = timezone.now() - datetime.timedelta(minutes=5)
+        for u in members[:3]:
+            self._check_in_at(u, when)
+
+        body = self.client.get(
+            f"{STATUS_URL}?event_id={self.event.event_id}", **self._auth(self.admin)).json()
+        squad = next(t for t in body["teams"] if t["tournament_team_id"] == tt.pk)
+        self.assertEqual(squad["roster_checked_in"], 3)
+        self.assertEqual(squad["roster_total"], 4)
+
+        players = {p["username"]: p for p in squad["players"]}
+        self.assertEqual(len(players), 4, "every rostered player is listed, present or not")
+        for u in members[:3]:
+            self.assertTrue(players[u.username]["checked_in"])
+            self.assertIsNotNone(players[u.username]["checked_in_at"])
+        missing = players[members[3].username]
+        self.assertFalse(missing["checked_in"])
+        self.assertIsNone(missing["checked_in_at"], "nobody gets a time they did not earn")
+
+    def test_a_player_cannot_see_who_else_checked_in(self):
+        """The named list is an organizer tool. It is also a roster of who is present, so it stays
+        behind the same manager gate the rest of the breakdown is behind: adding names to that
+        payload must not quietly widen who can read it."""
+        tt, members = self._squad("Alpha")
+        self._open_window_now()
+        self._check_in_at(members[0], timezone.now())
+
+        body = self.client.get(
+            f"{STATUS_URL}?event_id={self.event.event_id}", **self._auth(members[1])).json()
+        self.assertNotIn("teams", body)
+        self.assertNotIn("solos", body)
+        self.assertFalse(body.get("is_manager", False))
 
     def test_an_organizer_sees_every_competitor_but_a_player_does_not(self):
         tt, members = self._squad("Alpha")
