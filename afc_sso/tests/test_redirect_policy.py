@@ -35,6 +35,27 @@ class RedirectPolicyUnitTests(TestCase):
             "https://partner.example/auth/afc/callback",
         )
 
+    def test_credentials_in_the_address_are_refused(self):
+        """RFC 3986 deprecates the userinfo component because it puts a password where it
+        gets logged and pasted. AFC would be storing that credential and sending every
+        player through it, so it is refused on the way in."""
+        for uri in (
+            "https://user:secret@partner.example/cb",
+            "https://user@partner.example/cb",
+        ):
+            with self.assertRaises(RedirectURIPolicyError) as caught:
+                validate_redirect_uris(uri)
+            self.assertIn("username or password", str(caught.exception))
+
+    def test_a_bare_host_with_no_path_is_accepted(self):
+        """Deliberate: https://partner.example is a perfectly good redirect target, and
+        refusing it would be strictness with nothing behind it. Asserted so nobody adds
+        the rule later on the strength of a commit message that once claimed it existed."""
+        self.assertEqual(
+            validate_redirect_uris("https://partner.example"),
+            "https://partner.example",
+        )
+
     def test_several_uris_are_accepted_and_normalised_to_one_string(self):
         """A partner needs production, staging and local development. All three at once,
         given as separate lines, come back as the single space-separated string
