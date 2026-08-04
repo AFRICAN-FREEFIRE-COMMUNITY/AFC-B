@@ -169,8 +169,53 @@ class BroadcastAudienceTests(TestCase):
 
     def test_country_filter(self):
         # Nigeria: admin, ng_tier1_a, ng_tier1_b, ng_teamless (suspended/deactivated excluded).
+        # Both the canonical key and the raw spelling resolve, so a spec saved before
+        # country folding existed still selects the same people.
+        self.assertEqual(self._count(countries=["nigeria"]), 4)
         self.assertEqual(self._count(countries=["Nigeria"]), 4)
         self.assertEqual(self._count(countries=["Ghana"]), 1)
+
+    def test_country_filter_covers_every_spelling_of_the_same_country(self):
+        """The live table holds 'Nigeria' AND 'NG' for the same country (2,892 and 1,817
+        accounts at the time this was written). Before country folding, picking one chip
+        silently missed everyone recorded under the other spelling, on a screen whose
+        whole job is showing the admin exactly who a broadcast reaches."""
+        User.objects.create_user(
+            username="ng_iso", email="ng_iso@afc.test", password="x",
+            role="player", country="NG", language="en", status="active", is_active=True,
+        )
+        # 4 spelled "Nigeria" + 1 spelled "NG", from either chip.
+        self.assertEqual(self._count(countries=["nigeria"]), 5)
+        self.assertEqual(self._count(countries=["NG"]), 5)
+        self.assertEqual(self._count(countries=["Nigeria"]), 5)
+
+    def test_country_options_offer_one_chip_per_country(self):
+        """The chip list must not show 'Nigeria' and 'NG' as two separate countries, each
+        looking like the whole country."""
+        User.objects.create_user(
+            username="ng_iso2", email="ng_iso2@afc.test", password="x",
+            role="player", country="NG", language="en", status="active", is_active=True,
+        )
+        res = self.client.get(
+            reverse("broadcast_audience_options"), **self._auth(self.admin)
+        )
+        self.assertEqual(res.status_code, 200)
+        countries = res.json()["countries"]
+        keys = [c["value"] for c in countries]
+        self.assertEqual(len(keys), len(set(keys)), "a country must appear exactly once")
+        nigeria = [c for c in countries if c["value"] == "nigeria"]
+        self.assertEqual(len(nigeria), 1)
+        self.assertEqual(nigeria[0]["count"], 5, "both spellings counted together")
+        self.assertEqual(nigeria[0]["label"], "Nigeria", "the readable spelling wins")
+
+    def test_an_unresolvable_country_value_is_still_targetable(self):
+        """16 live accounts are recorded as 'Unknown', which is not a country. Folding must
+        keep them reachable rather than dropping the rows."""
+        User.objects.create_user(
+            username="mystery", email="mystery@afc.test", password="x",
+            role="player", country="Unknown", language="en", status="active", is_active=True,
+        )
+        self.assertEqual(self._count(countries=["Unknown"]), 1)
 
     def test_role_filter(self):
         self.assertEqual(self._count(roles=["admin"]), 1)
@@ -427,9 +472,11 @@ class BroadcastAudienceTests(TestCase):
         body = resp.json()
         self.assertEqual(body["total_users"], 5)
 
+        # Keyed by the CANONICAL country key, since the same country can be stored under
+        # several spellings and the options endpoint folds them into one entry.
         countries = {row["value"]: row["count"] for row in body["countries"]}
-        self.assertEqual(countries["Nigeria"], 4)
-        self.assertEqual(countries["Ghana"], 1)
+        self.assertEqual(countries["nigeria"], 4)
+        self.assertEqual(countries["ghana"], 1)
 
         tiers = {row["value"]: row["count"] for row in body["tiers"]}
         self.assertEqual(tiers["1"], 2)          # both Alpha members

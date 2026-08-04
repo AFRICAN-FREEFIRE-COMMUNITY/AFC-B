@@ -69,6 +69,7 @@ from django.db.models import Q
 
 from afc_team.models import Team, TeamMembers
 
+from .country_grouping import expand_country_keys
 from .models import User
 
 
@@ -255,9 +256,22 @@ def _category_q(spec):
         clauses.append(Q(user_id__in=tier_member_ids) | Q(user_id__in=tier_owner_ids))
 
     if spec["countries"]:
-        clauses.append(
-            Q(country__in=spec["countries"]) | Q(ip_country__in=spec["countries"])
+        # The picked values are CANONICAL country keys, not raw column values, because
+        # the same country is stored under several spellings ('Nigeria' and 'NG', and
+        # so on). Expanding the key back to every spelling present in the data is what
+        # makes "Nigeria" mean all 4,709 Nigerians rather than only the 2,892 who
+        # happen to be recorded with the full name. See afc_auth/country_grouping.py.
+        #
+        # The distinct list is two cheap index reads over a low-cardinality column (a
+        # couple of hundred rows), not a scan, and it has to be read rather than
+        # hardcoded because a new spelling can appear at any signup.
+        raw_present = set(
+            User.objects.exclude(country="").values_list("country", flat=True).distinct()
+        ) | set(
+            User.objects.exclude(ip_country="").values_list("ip_country", flat=True).distinct()
         )
+        matching = expand_country_keys(spec["countries"], raw_present)
+        clauses.append(Q(country__in=matching) | Q(ip_country__in=matching))
 
     if spec["roles"]:
         clauses.append(Q(role__in=spec["roles"]))

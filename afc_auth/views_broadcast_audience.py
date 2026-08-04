@@ -74,6 +74,9 @@ from .audience import (
     spec_is_empty,
 )
 from .audit import set_audit
+# One country can sit in the table under several spellings, so the chip list is built
+# from folded groups rather than raw strings. See country_grouping.py.
+from .country_grouping import group_country_counts
 from .models import AdminHistory, User
 
 
@@ -185,10 +188,14 @@ def broadcast_audience_options(request):
         .values("ip_country").annotate(count=Count("user_id"))
     ):
         country_counts[row["ip_country"]] = country_counts.get(row["ip_country"], 0) + row["count"]
-    countries = sorted(
-        ({"value": name, "count": count} for name, count in country_counts.items()),
-        key=lambda entry: (-entry["count"], entry["value"]),
-    )
+    # ── one country, one chip ──
+    # The raw column holds the same country under several spellings ('Nigeria' and
+    # 'NG', 'South Africa' and 'ZA', and so on), so grouping by the raw string offered
+    # the admin two chips per country and made each look like the whole country.
+    # group_country_counts folds them together; see afc_auth/country_grouping.py for
+    # the live numbers that exposed this. `value` is the canonical key the filter
+    # sends back, `label` is the spelling the admin reads.
+    countries = group_country_counts(country_counts)
     # Page the merged list with the same limit/offset contract the queryset lists use.
     try:
         limit = max(1, min(int(request.GET.get("limit", 100)), 100))
@@ -515,7 +522,9 @@ def _describe_spec(spec):
     if spec["tiers"]:
         parts.append("tier " + ", ".join(spec["tiers"]))
     if spec["countries"]:
-        parts.append("country " + ", ".join(spec["countries"]))
+        # Countries arrive as canonical lowercase keys ("nigeria"), so title-case them:
+        # the audit line is read by a person months later, not parsed by anything.
+        parts.append("country " + ", ".join(c.title() for c in spec["countries"]))
     if spec["roles"]:
         parts.append("role " + ", ".join(spec["roles"]))
     if spec["languages"]:
