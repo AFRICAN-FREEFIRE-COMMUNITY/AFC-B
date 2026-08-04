@@ -132,7 +132,20 @@ def _teams_in_match(match, event):
         TournamentTeam.objects.filter(event=event).values_list("tournament_team_id", flat=True))
 
 
-def _clean_payload(raw):
+# How many players may be marked as having played ONE map, by event format. AFC runs duo events
+# as well as squad ones, and a hardcoded four made every duo event impossible to submit for.
+# Anything unrecognised falls back to the squad size: that is what almost every event is, and a
+# wrong-but-generous cap is refused by the organizer, while a wrong-but-strict one blocks a whole
+# event with no way around it. Mirrored on the team's form so it can say so before sending.
+PLAYERS_PER_MAP = {"solo": 1, "duo": 2, "squad": 4}
+SQUAD_PLAYERS_PER_MAP = 4
+
+
+def players_per_map(participant_type):
+    return PLAYERS_PER_MAP.get((participant_type or "").strip().lower(), SQUAD_PLAYERS_PER_MAP)
+
+
+def _clean_payload(raw, tournament_team=None, event=None):
     """Validate a team's proposed row. Returns (payload, error_message).
 
     Deliberately narrow: placement, played, bonus/penalty and a player list. A team cannot send
@@ -175,10 +188,42 @@ def _clean_payload(raw):
     if not players:
         return None, "players must include at least one player with a user_id."
 
-    # A squad map is four players. More than four played is a data error the organizer should
-    # never have to catch by eye, so it is refused at the door.
-    if len([p for p in players if p["played"]]) > 4:
-        return None, "At most four players can be marked as having played a map."
+    # ── the players must be ON the submitting team's roster for THIS event ──
+    # Without this, the endpoint validated only that the SUBMITTER was on the team and then
+    # trusted the entire player list, so a captain could put any user_id in the payload and,
+    # once approved, those kills landed in that stranger's ranking. The human approval could
+    # not catch it either: the organizer's queue showed the placement and the TOTAL kills, and
+    # never named a player. A review step that cannot show the reviewer the thing being
+    # reviewed is not a safeguard.
+    #
+    # The roster is the FROZEN per-event one (TournamentTeamMember), not the club roster, for
+    # the same reason the role stamp reads it: it is what this team actually fielded here.
+    # A nonexistent id is refused by the same check, which also removes the FK IntegrityError
+    # that used to surface as a 500 for the ORGANIZER at approve time, on a payload somebody
+    # else had sent.
+    if tournament_team is not None:
+        rostered = set(
+            TournamentTeamMember.objects.filter(tournament_team=tournament_team)
+            .values_list("user_id", flat=True)
+        )
+        strangers = [p["user_id"] for p in players if p["user_id"] not in rostered]
+        if strangers:
+            return None, (
+                "Every player must be on your roster for this event. "
+                f"Not on it: {', '.join(str(s) for s in strangers)}."
+            )
+
+    # How many can play a map depends on the EVENT, not on a constant: AFC runs duo events as
+    # well as squad ones. Hardcoding four made every duo event impossible to submit for, since
+    # the form and this check disagreed with the format the organizer had actually chosen.
+    # Unknown or missing participant_type falls back to the squad size, which is what the
+    # overwhelming majority of events are.
+    max_played = players_per_map(getattr(event, "participant_type", None))
+    if len([p for p in players if p["played"]]) > max_played:
+        return None, (
+            f"At most {max_played} players can be marked as having played a map "
+            f"in this event."
+        )
 
     return {
         "placement": placement if played else 0,
@@ -190,6 +235,28 @@ def _clean_payload(raw):
         "penalty_points": 0,
         "players": players,
     }, None
+
+
+def _player_names_for(submission):
+    """``{user_id: username}`` for every player named in this submission's payloads.
+
+    Both payloads are read, not just the submitted one, so a row the organizer corrected still
+    shows a name for anyone they added. Missing ids simply do not appear, and the frontend falls
+    back to the id: a deleted account should not blank the whole row.
+    """
+    from afc_auth.models import User
+
+    ids = set()
+    for payload in (submission.submitted_payload, submission.approved_payload):
+        for entry in (payload or {}).get("players", []) or []:
+            if isinstance(entry, dict) and entry.get("user_id"):
+                ids.add(entry["user_id"])
+    if not ids:
+        return {}
+    return {
+        str(uid): name
+        for uid, name in User.objects.filter(user_id__in=ids).values_list("user_id", "username")
+    }
 
 
 def _serialize(submission, *, include_payload=True):
@@ -206,6 +273,11 @@ def _serialize(submission, *, include_payload=True):
         # their own timezone; nothing here is pre-formatted.
         "submitted_at": submission.submitted_at.isoformat() if submission.submitted_at else None,
         "reviewed_by_username": getattr(submission.reviewed_by, "username", "") or "",
+        # Who the payload's user_ids actually ARE. The queue has to name them: an organizer
+        # approving "12 kills" cannot tell whose ranking those kills land in from a total, and
+        # approval is the only safeguard between a submission and the standings. Resolved here
+        # rather than in the frontend so the queue cannot render a bare id when a lookup fails.
+        "player_names": _player_names_for(submission),
         "reviewed_at": submission.reviewed_at.isoformat() if submission.reviewed_at else None,
         "review_note": submission.review_note or "",
     }
@@ -262,7 +334,8 @@ def submit_team_map_result(request):
     if not team:
         return Response({"message": reason}, status=http.HTTP_403_FORBIDDEN)
 
-    payload, err_msg = _clean_payload(request.data.get("results"))
+    payload, err_msg = _clean_payload(
+        request.data.get("results"), tournament_team=team, event=event)
     if err_msg:
         return Response({"message": err_msg}, status=http.HTTP_400_BAD_REQUEST)
 
@@ -455,7 +528,9 @@ def approve_team_map_submission(request, submission_id):
     # The organizer's corrections, when they sent any, otherwise the team's own row.
     payload = dict(submission.submitted_payload or {})
     if request.data.get("results") is not None:
-        corrected, err_msg = _clean_payload(request.data.get("results"))
+        corrected, err_msg = _clean_payload(
+            request.data.get("results"), tournament_team=submission.tournament_team,
+            event=event)
         if err_msg:
             return Response({"message": err_msg}, status=http.HTTP_400_BAD_REQUEST)
         payload = corrected

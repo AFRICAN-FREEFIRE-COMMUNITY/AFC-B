@@ -208,6 +208,42 @@ class BroadcastAudienceTests(TestCase):
         self.assertEqual(nigeria[0]["count"], 5, "both spellings counted together")
         self.assertEqual(nigeria[0]["label"], "Nigeria", "the readable spelling wins")
 
+    def test_the_country_count_and_the_send_agree_on_ip_derived_users(self):
+        """The chip is a promise about who a broadcast reaches, so the send must not reach anyone
+        the count did not include.
+
+        The options endpoint counts ip_country ONLY for accounts with no profile country, but the
+        filter used to match ip_country unconditionally. On the live table 27 accounts have a
+        profile country that disagrees with their IP (Nigeria/GB, South Africa/FR, South Sudan/ZA),
+        so picking Nigeria showed 4,247 and delivered to 4,249. A person's own stated country
+        outranks wherever they happened to log in from.
+        """
+        # Stated Ghana, logged in from Nigeria: belongs to Ghana and to nobody else.
+        User.objects.create_user(
+            username="stated_gh", email="stated_gh@afc.test", password="x",
+            role="player", country="Ghana", ip_country="NG", language="en",
+            status="active", is_active=True,
+        )
+        # No stated country, logged in from Nigeria: Nigeria is all we know, so Nigeria it is.
+        User.objects.create_user(
+            username="ip_only_ng", email="ip_only_ng@afc.test", password="x",
+            role="player", country="", ip_country="NG", language="en",
+            status="active", is_active=True,
+        )
+
+        res = self.client.get(
+            reverse("broadcast_audience_options"), **self._auth(self.admin)
+        )
+        counts = {row["value"]: row["count"] for row in res.json()["countries"]}
+
+        # 4 originally + the ip-only account. The stated-Ghana account must NOT be here.
+        self.assertEqual(counts["nigeria"], 5)
+        self.assertEqual(self._count(countries=["nigeria"]), counts["nigeria"])
+
+        # And Ghana gains the account that says it is Ghanaian, count and send agreeing again.
+        self.assertEqual(counts["ghana"], 2)
+        self.assertEqual(self._count(countries=["ghana"]), counts["ghana"])
+
     def test_an_unresolvable_country_value_is_still_targetable(self):
         """16 live accounts are recorded as 'Unknown', which is not a country. Folding must
         keep them reachable rather than dropping the rows."""

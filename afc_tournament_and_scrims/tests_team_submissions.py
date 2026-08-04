@@ -375,7 +375,88 @@ class TeamMapSubmissionTests(TestCase):
         resp = self.client.post(SUBMIT_URL, data=json.dumps(body),
                                 content_type="application/json", **self._auth("captain"))
         self.assertEqual(resp.status_code, 400)
-        self.assertIn("four players", resp.json()["message"])
+        # Assert the NUMBER, not the English. The cap used to be the hardcoded word "four";
+        # it now comes from the event's format, so pinning the sentence would break every time
+        # the copy is reworded while saying nothing about the rule.
+        self.assertIn("4 players", resp.json()["message"])
+
+    def test_the_played_cap_follows_the_EVENT_FORMAT_not_a_constant(self):
+        """AFC runs duo events as well as squad ones, and the cap was hardcoded to four.
+
+        On a duo event the form demanded exactly four ticks while the backend refused more than
+        two, so every submission failed and there was no combination the team could send. The
+        cap is now read from the event, and the message says which number applies.
+        """
+        self.event.participant_type = "duo"
+        self.event.save(update_fields=["participant_type"])
+
+        body = {
+            "match_id": self.match.match_id,
+            "results": {
+                "placement": 1, "played": True,
+                "players": [{"user_id": u.pk, "kills": 1}
+                            for u in (self.captain, self.team_mate)],
+            },
+        }
+        resp = self.client.post(SUBMIT_URL, data=json.dumps(body),
+                                content_type="application/json", **self._auth("captain"))
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+        # A third player on a DUO map is refused, where on a squad map it would be fine.
+        third = self._user("duo_extra")
+        TournamentTeamMember.objects.create(
+            tournament_team=self.team, user=third, event=self.event, status="active")
+        body["results"]["players"].append({"user_id": third.pk, "kills": 1})
+        resp = self.client.post(SUBMIT_URL, data=json.dumps(body),
+                                content_type="application/json", **self._auth("captain"))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("2 players", resp.json()["message"])
+
+    def test_a_player_who_is_not_on_the_roster_is_refused(self):
+        """The endpoint validated the SUBMITTER's team membership and then trusted the whole
+        player list, so a captain could put any user_id in the payload and, once approved, those
+        kills landed in a stranger's ranking. The organizer could not catch it either: the queue
+        showed the placement and the TOTAL kills and never named a player."""
+        stranger = self._user("not_on_this_team")
+        body = {
+            "match_id": self.match.match_id,
+            "results": {
+                "placement": 1, "played": True,
+                "players": [{"user_id": self.captain.pk, "kills": 1},
+                            {"user_id": stranger.pk, "kills": 9}],
+            },
+        }
+        resp = self.client.post(SUBMIT_URL, data=json.dumps(body),
+                                content_type="application/json", **self._auth("captain"))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("on your roster", resp.json()["message"])
+        self.assertIn(str(stranger.pk), resp.json()["message"])
+
+    def test_a_nonexistent_user_id_is_refused_at_submit_not_at_approve(self):
+        """Same guard, second benefit: an unknown id used to pass submit (the payload is only
+        stored) and blow up as an FK IntegrityError inside the approve transaction, so the
+        ORGANIZER got a 500 for a payload somebody else had sent."""
+        body = {
+            "match_id": self.match.match_id,
+            "results": {
+                "placement": 1, "played": True,
+                "players": [{"user_id": 99999999, "kills": 1}],
+            },
+        }
+        resp = self.client.post(SUBMIT_URL, data=json.dumps(body),
+                                content_type="application/json", **self._auth("captain"))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("on your roster", resp.json()["message"])
+
+    def test_the_queue_names_the_players_whose_kills_are_being_approved(self):
+        """Approval is the only safeguard between a submission and the standings, so the queue
+        has to show WHOSE ranking the kills land in. A total is not reviewable."""
+        self._submit()
+        resp = self.client.get(f"{QUEUE_URL}?match_id={self.match.match_id}",
+                               **self._auth("organizer"))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        names = resp.json()["submissions"][0]["player_names"]
+        self.assertEqual(names[str(self.captain.pk)], self.captain.username)
 
     # ──────────────────────────────────────────────────────────────────────────
     # 4) Who may review

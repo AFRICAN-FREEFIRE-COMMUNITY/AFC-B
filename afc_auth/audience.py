@@ -271,7 +271,17 @@ def _category_q(spec):
             User.objects.exclude(ip_country="").values_list("ip_country", flat=True).distinct()
         )
         matching = expand_country_keys(spec["countries"], raw_present)
-        clauses.append(Q(country__in=matching) | Q(ip_country__in=matching))
+        # The IP-derived country counts ONLY for accounts with no profile country, which is
+        # exactly the rule the options endpoint counts by. Matching ip_country unconditionally
+        # made the send reach people the chip never counted: 27 live accounts have a profile
+        # country that disagrees with their IP (Nigeria/GB, South Africa/FR, South Sudan/ZA),
+        # so picking Nigeria showed 4,247 and delivered to 4,249. On the one screen whose job
+        # is showing exactly who a broadcast reaches, the number has to be the promise, and a
+        # person's own stated country has to outrank where they happened to log in from.
+        clauses.append(
+            Q(country__in=matching)
+            | (Q(country="") & Q(ip_country__in=matching))
+        )
 
     if spec["roles"]:
         clauses.append(Q(role__in=spec["roles"]))

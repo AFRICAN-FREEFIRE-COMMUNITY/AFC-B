@@ -657,15 +657,25 @@ def write_placement_stats(stage):
         # bonus. Idempotent: sync to the CURRENT roster, dropping stats for members no longer rostered
         # (a regenerated bracket / roster edit), and a team dropped from `placed` has its team_stat
         # deleted below, which CASCADE-deletes its player rows.
-        roster_user_ids = list(
+        # The frozen per-event role comes back with the roster in the SAME query, so stamping it
+        # costs nothing extra. Without this, Clash Squad and bracket play wrote player rows with
+        # role_at_match NULL: the play still scored, but afc_rankings.aggregation skips unstamped
+        # rows, so a player whose counted period was all CS got role = NULL and vanished from
+        # every role table. Worse, this path REWRITES its rows on each bracket regeneration, so
+        # backfill_player_roles would fix the history and then lose it again.
+        roster_rows = list(
             TournamentTeamMember.objects
             .filter(tournament_team_id=r["tournament_team_id"], status__in=("active", "approved"))
-            .values_list("user_id", flat=True)
+            .values_list("user_id", "in_game_role")
         )
-        for uid in roster_user_ids:
+        roster_user_ids = [uid for uid, _role in roster_rows]
+        for uid, role in roster_rows:
             TournamentPlayerMatchStats.objects.update_or_create(
                 team_stats=team_stat, player_id=uid,
-                defaults={"kills": 0, "damage": 0, "assists": 0, "played": True},
+                defaults={
+                    "kills": 0, "damage": 0, "assists": 0, "played": True,
+                    "role_at_match": role or None,
+                },
             )
         TournamentPlayerMatchStats.objects.filter(team_stats=team_stat).exclude(
             player_id__in=roster_user_ids).delete()
