@@ -66,10 +66,12 @@ from .models import SSO_FIELD_TOGGLES, TOGGLE_TO_SCOPE
 # approval queue (afc_partner_apply) provisions partners too and the two paths must
 # produce identical rows. Imported under the same private names they had when they lived
 # here, so every call site below is unchanged. See that module's header.
-from .provisioning import (  # noqa: F401 - _clean_url is used by the PATCH view below
-    ALLOWED_LOGO_FORMATS,
-    MAX_LOGO_BYTES,
-    MAX_LOGO_EDGE,
+# The `# noqa: F401` that used to sit here claimed _clean_url was unused, which was never true:
+# it is the browser-facing cleaner in the PATCH view's per-field table below. What WAS unused is
+# now gone. ALLOWED_LOGO_FORMATS, MAX_LOGO_BYTES and MAX_LOGO_EDGE were left behind as
+# re-exports when the logo guard moved to provisioning, and nothing anywhere imported them from
+# this module; import them from afc_sso.provisioning if they are ever wanted again.
+from .provisioning import (
     _clean_logo_upload,
     _clean_outbound_url,
     _clean_redirect_uris,
