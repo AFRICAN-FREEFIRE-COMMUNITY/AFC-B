@@ -1024,7 +1024,7 @@ def sso_integration_guide(request):
         a blob and saves it with a hidden anchor, the same idiom as the leaderboard
         graphic export, because the Bearer header rules out a plain <a href> download.
 
-    FileResponse streams the file rather than reading 1.5 MB into memory, and Django
+    FileResponse streams the file rather than reading close to 2 MB into memory, and Django
     closes the handle when the response finishes. Returning a non-DRF response from an
     @api_view is the same thing afc_leaderboard/views.py does for its PNG and ZIP exports.
     """
