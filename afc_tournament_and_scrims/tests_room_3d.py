@@ -273,3 +273,83 @@ class Room3dWhatsAppFollowUpTests(TestCase):
 
         self.assertEqual(queue.call_count, 1)
         self.assertEqual((queued, skipped), (0, 1))
+
+
+class RoomDetailsTemplateParamsTests(TestCase):
+    """The six variables the room-details template is sent, and their order.
+
+    The order is a CONTRACT with a template Meta approved: the template body says which variable
+    goes where, and nothing at send time can detect a mismatch. Getting it wrong delivers a message
+    that looks fine and tells the player the wrong room. So it is asserted.
+    """
+
+    def setUp(self):
+        today = datetime.date.today()
+        self.admin = User.objects.create(
+            username="params_admin", email="params_admin@x.com", full_name="Params Admin",
+            role="admin", password="x")
+        self.player = User.objects.create(
+            username="params_player", email="params_player@x.com", full_name="Params Player",
+            role="player", password="x")
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=16, event_name="Params Cup", event_mode="virtual",
+            start_date=today, end_date=today, registration_open_date=today,
+            registration_end_date=today, prizepool="0", event_rules="r", event_status="ongoing",
+            registration_link="https://x.com/r", number_of_stages=1, creator=self.admin,
+            slug="params-cup")
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="Quals", start_date=today, end_date=today,
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=2,
+            stage_order=1)
+        self.group = StageGroups.objects.create(
+            stage=self.stage, group_name="Group A", playing_date=today,
+            playing_time=datetime.time(18, 0), teams_qualifying=2, match_count=1)
+        self.leaderboard = Leaderboard.objects.create(
+            leaderboard_name="LB", event=self.event, stage=self.stage, group=self.group,
+            creator=self.admin, kill_point=1.0, leaderboard_method="manual")
+        self.match = Match.objects.create(
+            leaderboard=self.leaderboard, group=self.group, match_number=1, match_map="bermuda",
+            room_id="RID1", room_name="AFC LOBBY 1", room_password="284915")
+
+        from afc_auth.models import UserProfile
+        profile = UserProfile.objects.filter(user=self.player).first() or \
+            UserProfile.objects.create(user=self.player)
+        profile.whatsapp_number = "+2348051234567"
+        profile.save()
+
+    def _params(self):
+        from afc_tournament_and_scrims import whatsapp_room_details
+
+        with override_settings(WHATSAPP_ROOM_TEMPLATE="room_details",
+                               WHATSAPP_ROOM_TEMPLATE_LANG="en_US",
+                               WHATSAPP_ROOM_3D_TEMPLATE=""):
+            with patch.object(whatsapp_room_details, "queue_template") as queue:
+                queue.return_value = "wamid.x"
+                whatsapp_room_details.send_room_details([self.player], self.event, self.match)
+        return queue.call_args.kwargs["body_params"]
+
+    def test_the_six_variables_are_sent_in_the_approved_order(self):
+        self.assertEqual(
+            self._params(),
+            ["params_player", "Params Cup", "bermuda", "AFC LOBBY 1", "RID1", "284915"])
+
+    def test_a_blank_room_name_does_not_cost_the_group_its_room_id(self):
+        """Room name is optional on a Match and is routinely blank. Meta rejects a send whose
+        parameter is an empty string, and it rejects the WHOLE message, so an unguarded blank here
+        would stop the room ID reaching anybody."""
+        self.match.room_name = ""
+        self.match.save(update_fields=["room_name"])
+
+        params = self._params()
+
+        self.assertEqual(params[3], "-")
+        self.assertEqual(params[4], "RID1", "the room id must still go out")
+
+    def test_a_newline_in_a_room_name_is_flattened(self):
+        """Meta refuses a parameter containing a newline, and an organizer pasting a room name out
+        of the game client can easily bring one along."""
+        self.match.room_name = "AFC\nLOBBY  1"
+        self.match.save(update_fields=["room_name"])
+
+        self.assertEqual(self._params()[3], "AFC LOBBY 1")

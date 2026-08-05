@@ -19,7 +19,19 @@
 # language come from settings so the owner can point them at whatever Meta approved,
 # and `en` and `en_US` are DIFFERENT templates to Meta, so the language is explicit.
 # Variables, in order:
-#   {{1}} player name   {{2}} event name   {{3}} room id   {{4}} room password   {{5}} map
+#   {{1}} player name  {{2}} event name  {{3}} map  {{4}} room name  {{5}} room id
+#   {{6}} room key (the room password; the template calls it a key, see below)
+#
+# THE ORDER IS THE ORDER THE BODY READS, ascending, because Meta shows the variables in the
+# template editor in numeric order and a reviewer comparing them to the body should not have to
+# jump around. Renumbered on 2026-08-05 when room name was added: nothing was approved under the
+# old five-variable order, so this cost nothing. If a template is EVER approved with a different
+# order, this list is the thing that has to change with it, not the body of the message.
+#
+# THE TEMPLATE SAYS "ROOM KEY", NOT "PASSWORD", and that is not cosmetic. Meta's classifier read
+# "Password:" next to a short value as a one-time login code and moved the whole template to the
+# AUTHENTICATION category, which has a locked format that permits neither six variables nor a URL
+# button. See docs/whatsapp-templates-to-submit.md.
 #
 # THE 3D ROOM STEPS ARE A SECOND TEMPLATE, NOT A SIXTH VARIABLE (owner 2026-08-05). A
 # template's wording is frozen when Meta approves it, so the joining steps that appear
@@ -36,6 +48,21 @@ from afc_auth.models import canonical_profile
 from afc_whatsapp.tasks import queue_template
 
 logger = logging.getLogger(__name__)
+
+
+def _param(value):
+    """One template variable, never empty.
+
+    Meta REJECTS a template send whose parameter is an empty string, and it rejects the WHOLE
+    message rather than the one variable. Room name is optional on a Match and is routinely blank,
+    so without this a map with no room name would fail to send its room ID to anybody. A dash is
+    the smallest thing that reads as "not set" in a chat message.
+
+    It also collapses newlines: Meta refuses a parameter containing one, and an organizer pasting
+    a room name out of the game client can easily bring one along.
+    """
+    text = " ".join(str(value or "").split())
+    return text or "-"
 
 
 def send_room_details(users, event, match):
@@ -84,11 +111,12 @@ def send_room_details(users, event, match):
                 template,
                 language,
                 body_params=[
-                    getattr(user, "username", "") or "",
-                    event.event_name or "",
-                    match.room_id or "",
-                    match.room_password or "",
-                    getattr(match, "match_map", "") or "",
+                    _param(getattr(user, "username", "")),
+                    _param(event.event_name),
+                    _param(getattr(match, "match_map", "")),
+                    _param(match.room_name),
+                    _param(match.room_id),
+                    _param(match.room_password),
                 ],
                 # The "Visit website" button's dynamic tail. The approved template holds the
                 # base URL, frozen at approval, and Meta appends only this: the event's slug
@@ -122,8 +150,8 @@ def send_room_details(users, event, match):
                         help_template,
                         help_language,
                         body_params=[
-                            getattr(user, "username", "") or "",
-                            event.event_name or "",
+                            _param(getattr(user, "username", "")),
+                            _param(event.event_name),
                         ],
                         user=user,
                         event=event,
