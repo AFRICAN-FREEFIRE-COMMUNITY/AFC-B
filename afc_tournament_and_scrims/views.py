@@ -13186,7 +13186,12 @@ def upload_solo_match_result(request):
     kill_point_value = float(getattr(leaderboard, "kill_point", 1.0) or 1.0)
 
     # ---------------- PARSE FILE ----------------
-    text = uploaded_file.read().decode("utf-8", errors="ignore")
+    # Read the BYTES once and decode from them, rather than decoding straight off the stream. The
+    # audit copy stored below has to be the file the organizer actually uploaded; re-encoding the
+    # decoded text would silently rewrite whatever the "ignore" here dropped, and that difference
+    # is exactly what somebody re-checking a disputed result needs to be able to see.
+    _raw_bytes = uploaded_file.read()
+    text = _raw_bytes.decode("utf-8", errors="ignore")
 
     parsed = []
     for m in SOLO_BLOCK_RE.finditer(text):
@@ -13260,6 +13265,28 @@ def upload_solo_match_result(request):
         # response stays accurate without persisting anything.
         if dry_run:
             transaction.set_rollback(True)
+
+    # AUDIT TRAIL (owner backlog item 16). The TEAM upload has kept the uploaded .log since
+    # 2026-07-07; this path never did, so a SOLO event, which is what a 3D room setup is, stored
+    # nothing at all. The report was "bulk result upload in 3d-room setups does not list all match
+    # files under stored files", and the honest answer was that it listed none of them, because
+    # none were ever written. Same shape as the team path so the evidence viewer needs no change.
+    #
+    # Best-effort and OUTSIDE the atomic block: a storage hiccup must not fail an upload that has
+    # already scored correctly, but the failure is logged rather than swallowed.
+    if not dry_run:
+        try:
+            from django.core.files.base import ContentFile
+            from .models import MatchResultLog
+            _log_name = getattr(uploaded_file, "name", "") or f"match_{match.match_id}.log"
+            MatchResultLog.objects.create(
+                match=match, file=ContentFile(_raw_bytes, name=_log_name),
+                file_name=_log_name, uploaded_by=admin,
+            )
+        except Exception:
+            import logging
+            logging.getLogger("afc_tournament_and_scrims").exception(
+                "MatchResultLog store failed for solo match %s", match.match_id)
 
     # Auto-complete the event if this upload finished its final stage (owner 2026-06-16). Best-effort.
     # Skipped on a dry-run preview: nothing was saved, so the event state must not change.
