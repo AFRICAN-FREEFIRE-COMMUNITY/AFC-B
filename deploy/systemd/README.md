@@ -83,7 +83,7 @@ Measured on production, 2026-08-05:
 | `whatsapp` | 170 | `celery-worker` |
 | `sso_webhooks` | 0 | `celery-worker` |
 | `rankings_recalc` | 346,520 | `celery-rankings` |
-| `ocr_ml` | 126 | `celery-ocr-ml` (enabled 2026-08-05 on the owner's call) |
+| `ocr_ml` | 126 | `celery-ocr-ml` (**DISABLED 2026-08-05** - see below) |
 
 The `whatsapp` figure is the one that mattered most: every WhatsApp message the platform
 believed it had handed off was sitting in Redis unread.
@@ -141,3 +141,47 @@ decision rather than a big one:
 To watch a run without waiting for 02:30, execute it inline with a small cap:
 
     python manage.py shell -c "from afc_ocr.tasks import autolabel_backlog; print(autolabel_backlog(cap=3))"
+
+### Why celery-ocr-ml is disabled (2026-08-05)
+
+Enabled on the owner's instruction, then switched off the same evening once measured. Two
+independent reasons, either sufficient on its own. Do not re-enable without addressing both.
+
+**1. It produces ZERO usable training data.** `_reads_agree` requires the WHOLE screenshot to
+match between the two Gemini reads: every placement, every player name (case- and
+glyph-sensitive), every kill count. Measured over 10 real AFC screenshots:
+
+    IMAGES 8 | whole-image agreement 0/8 | ROW-LEVEL agreement 278/338 = 82.2%
+
+At ~42 rows per image, needing every row to match is 0.822^42, i.e. effectively never. 0/8 is
+arithmetic, not bad luck.
+
+The interesting part is WHAT disagrees. Most differences are the SAME player in different
+Unicode decoration, and Free Fire players use fancy fonts heavily:
+
+    ᶜ ✟ 𝓩𝓨𝓡𝓞 ✟   vs   ᶜ ✟ ℤ𝕐ℝ𝕆 ✟
+    BKS.MAF1A     vs   BKS.MÄF1Ä
+    PHX.Lm10MVP   vs   PHX.Lm10MvP
+    BN xlt SALTOX vs   BNₓlt SALTOX
+
+This repo ALREADY solved that: the powerful-search layer folds fancy fonts, accents and
+punctuation for comparison. The fix is to reuse that folding FOR THE AGREEMENT TEST ONLY
+(still storing the raw read as the label), and to accept agreement per ROW rather than per
+IMAGE - flagging only the rows that actually differ. That should convert ~0% yield into most
+of the 82%. Not attempted yet: it changes how training data is judged, and getting it wrong
+quietly poisons the corpus.
+
+**2. On the free Gemini tier it takes LIVE OCR down with it.** The loop and the OCR organizers
+actually use share one GEMINI_API_KEY. Real usage is tiny - 13 screenshots in three weeks, 2-5
+Gemini calls on an active day - and sits comfortably inside the free tier. The loop wants up to
+100 calls a night (OCR_AUTOLABEL_CAP=50 x 2 reads). About 22 test calls exhausted a whole day's
+quota on 2026-08-05 and live OCR returned HTTP 429 until the daily reset. So the loop would not
+merely fail; it would break result-entry for organizers every night.
+
+Re-enabling therefore needs BOTH: the consensus fix above, AND billing enabled on the Gemini
+API (verify current pricing before committing - the volume is small but the figure was not
+confirmed).
+
+NOTE: beat still schedules the two ocr_ml jobs, so the queue slowly refills with nothing
+consuming it. That is deliberate and harmless - purge with `redis-cli -n 0 del ocr_ml` if it
+ever matters.
