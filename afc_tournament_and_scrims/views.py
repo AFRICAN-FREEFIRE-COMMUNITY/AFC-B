@@ -12146,6 +12146,16 @@ def disqualify_registered_competitor(request):
     if not competitor_id or not event_id:
         return Response({"message": "competitor_id, event_id, and stage_id are required."}, status=400)
 
+    # REQUIRED, not optional (owner backlog item 35). A disqualification is the harshest thing an
+    # organizer can do to a competitor, and one with no stated reason is what turns into a dispute
+    # in the Discord. Refused here rather than only in the form, because the form is not the only
+    # caller and "no reason provided" was appearing in real notifications.
+    reason = (request.data.get("reason") or "").strip()
+    if not reason:
+        return Response(
+            {"message": "A reason is required. The competitor is shown it, so say why."},
+            status=400)
+
     user = get_object_or_404(User, user_id=competitor_id)
 
     event = get_object_or_404(Event, event_id=event_id)
@@ -12170,8 +12180,15 @@ def disqualify_registered_competitor(request):
     competitor.status = "disqualified"
     competitor.save()
 
-    # Notify user of disqualification
-    message = f"You have been disqualified from the event '{competitor.event.event_name}'. Please contact the event organizers for more information."
+    # Notify user of disqualification, WITH THE REASON (owner backlog item 35: "disqualifying a
+    # team requires a reason, shown to the disqualified team or player"). This message used to say
+    # "please contact the event organizers for more information", which is the exact experience the
+    # owner objected to: the player is told they are out and then told to go and ask why.
+    from .event_wording import event_noun
+    message = (
+        f"You have been disqualified from the {event_noun(competitor.event, capitalized=False)} "
+        f"'{competitor.event.event_name}'. Reason: {reason}"
+    )
     Notifications.objects.create(user=user, message=message)
 
     return Response({
@@ -18004,6 +18021,12 @@ def disqualify_player(request):
     rc_id = request.data.get("registered_competitor_id")
     user_id = request.data.get("user_id")
     reason = (request.data.get("reason") or "").strip()
+    # REQUIRED (owner backlog item 35). It was read and then allowed to be blank, so the
+    # notification below could say "No reason provided", which is the complaint itself.
+    if not reason:
+        return Response(
+            {"message": "A reason is required. The competitor is shown it, so say why."},
+            status=400)
 
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
@@ -18056,7 +18079,7 @@ def disqualify_player(request):
     Notifications.objects.create(
         user=rc.user,
         title=f"Disqualified from {_noun}",
-        message=f"You have been disqualified from the {_noun_lower} '{event.event_name}'. Reason: {reason or 'No reason provided.'}",
+        message=f"You have been disqualified from the {_noun_lower} '{event.event_name}'. Reason: {reason}",
         notification_type="tournament_disqualification",
         related_event=event,
     )
@@ -18096,6 +18119,12 @@ def disqualify_team(request):
     tournament_team_id = request.data.get("tournament_team_id")
     team_id = request.data.get("team_id")
     reason = (request.data.get("reason") or "").strip()
+    # REQUIRED (owner backlog item 35). It was read and then allowed to be blank, so the
+    # notification below could say "No reason provided", which is the complaint itself.
+    if not reason:
+        return Response(
+            {"message": "A reason is required. The competitor is shown it, so say why."},
+            status=400)
 
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
@@ -18147,7 +18176,7 @@ def disqualify_team(request):
         Notifications.objects.create(
             user=user,
             title=f"Team Disqualified from {_noun}",
-            message=f"Your team '{tt.team.team_name}' has been disqualified from the {_noun_lower} '{event.event_name}'. Reason: {reason or 'No reason provided.'}",
+            message=f"Your team '{tt.team.team_name}' has been disqualified from the {_noun_lower} '{event.event_name}'. Reason: {reason}",
             notification_type="tournament_disqualification",
             related_event=event,
         )
