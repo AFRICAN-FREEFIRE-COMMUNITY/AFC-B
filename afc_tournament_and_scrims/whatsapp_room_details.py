@@ -20,6 +20,13 @@
 # and `en` and `en_US` are DIFFERENT templates to Meta, so the language is explicit.
 # Variables, in order:
 #   {{1}} player name   {{2}} event name   {{3}} room id   {{4}} room password   {{5}} map
+#
+# THE 3D ROOM STEPS ARE A SECOND TEMPLATE, NOT A SIXTH VARIABLE (owner 2026-08-05). A
+# template's wording is frozen when Meta approves it, so the joining steps that appear
+# under the room details on the event page cannot simply be appended here. The owner
+# chose a separate message, sent only when Match.room_is_3d, over widening this one:
+# this message is scanned for a room id under time pressure, and burying that in a
+# paragraph of instructions is how a player misses it. See WHATSAPP_ROOM_3D_TEMPLATE.
 # ──────────────────────────────────────────────────────────────────────────────
 import logging
 
@@ -44,6 +51,15 @@ def send_room_details(users, event, match):
     """
     template = getattr(settings, "WHATSAPP_ROOM_TEMPLATE", "room_details")
     language = getattr(settings, "WHATSAPP_ROOM_TEMPLATE_LANG", "en_US")
+
+    # The follow-up, sent ONLY for a 3D room and only to players who just received the
+    # room details above. Blank until the owner has an approved template, and a blank
+    # name means the follow-up is skipped entirely rather than failing every send with a
+    # template-not-found: the room id is what matters, and it must go out either way.
+    help_template = getattr(settings, "WHATSAPP_ROOM_3D_TEMPLATE", "")
+    help_language = getattr(
+        settings, "WHATSAPP_ROOM_3D_TEMPLATE_LANG", language)
+    send_3d_help = bool(help_template) and bool(getattr(match, "room_is_3d", False))
 
     queued = 0
     skipped = 0
@@ -85,6 +101,26 @@ def send_room_details(users, event, match):
                 skipped += 1
             else:
                 queued += 1
+                # Only after the room details actually went out. A player who was opted
+                # out or unreachable above must not receive joining instructions for a
+                # room whose id they never got, and the counters deliberately do NOT
+                # move for this: `queued` answers "how many players were told their room
+                # details", and counting the same player twice would make that number a
+                # lie on exactly the screen an organizer uses to chase people.
+                if send_3d_help:
+                    queue_template(
+                        number,
+                        help_template,
+                        help_language,
+                        body_params=[
+                            getattr(user, "username", "") or "",
+                            event.event_name or "",
+                        ],
+                        user=user,
+                        event=event,
+                        match=match,
+                        context="room_3d_help",
+                    )
         except Exception:
             # Best effort per recipient: one bad row must not cost the rest of the group
             # their room password.

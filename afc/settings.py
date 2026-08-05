@@ -616,6 +616,28 @@ WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
 
+# ── The two room templates ────────────────────────────────────────────────────────────────────
+# WHATSAPP_ROOM_TEMPLATE       -> the room id and password message. Five variables, in order:
+#                                 player name, event name, room id, room password, map.
+# WHATSAPP_ROOM_3D_TEMPLATE    -> the 3D room joining steps, sent as a SECOND message and only
+#                                 when the map is marked a 3D room (owner 2026-08-05). Two
+#                                 variables: player name, event name.
+#
+# The 3D one DEFAULTS TO EMPTY on purpose, and empty means "do not send it". A template name that
+# Meta has not approved fails at send time, and the failure would land on the message carrying the
+# room password, which is the one message on AFC that a player cannot play without. So until the
+# owner has an approved name to put here, 3D rooms simply send the room details alone, exactly as
+# they did before. Set it once Meta approves `afc_room_3d_help`.
+#
+# BOTH LANGUAGES ARE EXPLICIT because `en` and `en_US` are DIFFERENT templates to Meta and sending
+# with the wrong one fails. The 3D language falls back to the room-details language, since the two
+# are approved together in practice.
+WHATSAPP_ROOM_TEMPLATE = os.getenv("WHATSAPP_ROOM_TEMPLATE", "room_details")
+WHATSAPP_ROOM_TEMPLATE_LANG = os.getenv("WHATSAPP_ROOM_TEMPLATE_LANG", "en_US")
+WHATSAPP_ROOM_3D_TEMPLATE = os.getenv("WHATSAPP_ROOM_3D_TEMPLATE", "")
+WHATSAPP_ROOM_3D_TEMPLATE_LANG = os.getenv(
+    "WHATSAPP_ROOM_3D_TEMPLATE_LANG", WHATSAPP_ROOM_TEMPLATE_LANG)
+
 # Shop checkout currency. Both shop payment paths (Paystack + Stripe, see
 # afc_shop/stripe_checkout.py) charge in this currency, and Stripe Connect vendor
 # payouts (afc_shop/connect.py) transfer in it too. Defaults to NGN to match the
