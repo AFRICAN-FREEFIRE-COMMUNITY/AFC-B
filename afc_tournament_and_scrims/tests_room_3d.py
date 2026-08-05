@@ -16,7 +16,9 @@ Run: .venv\\Scripts\\python.exe manage.py test afc_tournament_and_scrims.tests_r
 import datetime
 import json
 
-from django.test import Client, TestCase
+from unittest.mock import patch
+
+from django.test import Client, TestCase, override_settings
 
 from afc_auth.models import SessionToken, User
 from afc_tournament_and_scrims.models import (
@@ -166,3 +168,108 @@ class _FakeMatch:
 
     def __init__(self, room_is_3d):
         self.room_is_3d = room_is_3d
+
+
+class Room3dWhatsAppFollowUpTests(TestCase):
+    """The 3D joining steps as a SECOND WhatsApp template (owner 2026-08-05).
+
+    A template's wording is frozen when Meta approves it, so the steps cannot be appended to the
+    room-details message. They go as their own send, and the rules that matter are: only for a 3D
+    room, only to a player who actually received the room details, and never at the cost of the
+    room details themselves.
+    """
+
+    def setUp(self):
+        today = datetime.date.today()
+        self.admin = User.objects.create(
+            username="wa3d_admin", email="wa3d_admin@x.com", full_name="WA 3D Admin",
+            role="admin", password="x")
+        self.player = User.objects.create(
+            username="wa3d_player", email="wa3d_player@x.com", full_name="WA 3D Player",
+            role="player", password="x")
+
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=16, event_name="WA 3D Cup", event_mode="virtual",
+            start_date=today, end_date=today, registration_open_date=today,
+            registration_end_date=today, prizepool="0", event_rules="r", event_status="ongoing",
+            registration_link="https://x.com/r", number_of_stages=1, creator=self.admin)
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="Quals", start_date=today, end_date=today,
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=2,
+            stage_order=1)
+        self.group = StageGroups.objects.create(
+            stage=self.stage, group_name="Group A", playing_date=today,
+            playing_time=datetime.time(18, 0), teams_qualifying=2, match_count=1)
+        self.leaderboard = Leaderboard.objects.create(
+            leaderboard_name="GA LB", event=self.event, stage=self.stage, group=self.group,
+            creator=self.admin, kill_point=1.0, leaderboard_method="manual")
+        self.match = Match.objects.create(
+            leaderboard=self.leaderboard, group=self.group, match_number=1, match_map="bermuda",
+            room_id="RID", room_password="PW", room_is_3d=True)
+
+        profile = self.player.userprofile_set.first() if hasattr(
+            self.player, "userprofile_set") else None
+        if profile is None:
+            from afc_auth.models import UserProfile
+            profile = UserProfile.objects.create(user=self.player)
+        profile.whatsapp_number = "+2348051234567"
+        profile.save()
+
+    def _send(self, **settings_kwargs):
+        from afc_tournament_and_scrims import whatsapp_room_details
+
+        base = {"WHATSAPP_ROOM_TEMPLATE": "room_details",
+                "WHATSAPP_ROOM_TEMPLATE_LANG": "en_US"}
+        base.update(settings_kwargs)
+        with override_settings(**base):
+            with patch.object(whatsapp_room_details, "queue_template") as queue:
+                queue.return_value = "wamid.test"
+                whatsapp_room_details.send_room_details(
+                    [self.player], self.event, self.match)
+        return queue
+
+    def test_the_steps_go_as_their_own_message_after_the_room_details(self):
+        queue = self._send(WHATSAPP_ROOM_3D_TEMPLATE="afc_room_3d_help")
+
+        self.assertEqual(queue.call_count, 2, "expected the room details AND the follow-up")
+        first, second = queue.call_args_list
+        self.assertEqual(first.args[1], "room_details")
+        self.assertEqual(second.args[1], "afc_room_3d_help")
+        self.assertEqual(
+            second.kwargs["context"], "room_3d_help",
+            "the log row has to say which of the two messages this was")
+
+    def test_nothing_extra_is_sent_for_an_ordinary_room(self):
+        self.match.room_is_3d = False
+        self.match.save(update_fields=["room_is_3d"])
+
+        queue = self._send(WHATSAPP_ROOM_3D_TEMPLATE="afc_room_3d_help")
+
+        self.assertEqual(queue.call_count, 1)
+        self.assertEqual(queue.call_args_list[0].args[1], "room_details")
+
+    def test_an_unapproved_template_name_does_not_cost_anybody_their_room_password(self):
+        """THE REASON THE SETTING DEFAULTS TO EMPTY. Meta fails a send to a template it has not
+        approved, and until the owner has a name to put here, an eager follow-up would put that
+        failure next to the one message a player cannot play without."""
+        queue = self._send(WHATSAPP_ROOM_3D_TEMPLATE="")
+
+        self.assertEqual(queue.call_count, 1)
+        self.assertEqual(queue.call_args_list[0].args[1], "room_details")
+
+    def test_a_player_who_did_not_get_the_room_details_gets_no_instructions(self):
+        """An opted-out player returns None from queue_template. Sending them joining steps for a
+        room whose id they never received would be noise about a room they cannot enter."""
+        from afc_tournament_and_scrims import whatsapp_room_details
+
+        with override_settings(WHATSAPP_ROOM_TEMPLATE="room_details",
+                               WHATSAPP_ROOM_TEMPLATE_LANG="en_US",
+                               WHATSAPP_ROOM_3D_TEMPLATE="afc_room_3d_help"):
+            with patch.object(whatsapp_room_details, "queue_template") as queue:
+                queue.return_value = None  # opted out
+                queued, skipped = whatsapp_room_details.send_room_details(
+                    [self.player], self.event, self.match)
+
+        self.assertEqual(queue.call_count, 1)
+        self.assertEqual((queued, skipped), (0, 1))
