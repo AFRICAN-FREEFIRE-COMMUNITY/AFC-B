@@ -15,7 +15,7 @@
 # so the process reads .env without systemd's help. Pointing EnvironmentFile at that same
 # .env is the usual way these units fail to start, because systemd's parser rejects the
 # quoting and `export` lines that a shell-oriented .env is allowed to contain.
-Description=AFC Celery worker (default queue)
+Description=AFC Celery worker (default + whatsapp + sso_webhooks)
 After=network.target redis-server.service
 
 # Deliberately After= and NOT Requires=: if the redis unit is named something else on this
@@ -27,7 +27,26 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/AFC-B
-ExecStart=/home/ubuntu/AFC-B/venv/bin/celery -A afc worker --loglevel=info
+# -Q IS NOT OPTIONAL HERE (found 2026-08-05, the reason this file changed).
+#
+# A worker started as plain `celery -A afc worker` consumes ONLY the default queue. This
+# codebase routes work onto four dedicated queues via @shared_task(queue=...): "whatsapp",
+# "sso_webhooks", "rankings_recalc" and "ocr_ml". None of them had a consumer, and the
+# fallback that would have run them inline is gated on *_SYNC settings which default to DEBUG
+# and are not set in the production .env. So those tasks were queued and simply never ran.
+#
+# Measured on production that day: default queue 0 (healthy), whatsapp 170, ocr_ml 126,
+# rankings_recalc 346,520. The whatsapp number is the one that matters most - every WhatsApp
+# message the platform believed it had sent was sitting in Redis unread.
+#
+# whatsapp and sso_webhooks live here rather than in their own units because both are small,
+# latency-sensitive and low-volume. rankings_recalc gets its own unit (celery-rankings) so a
+# long recalculation sweep cannot delay a player's room details, and ocr_ml gets its own
+# (celery-ocr-ml, optional) because it is slow and costs Gemini calls.
+ExecStart=/home/ubuntu/AFC-B/venv/bin/celery -A afc worker \
+    --loglevel=info \
+    -Q celery,whatsapp,sso_webhooks \
+    -n default@%%h
 
 # SIGTERM lets Celery finish the task in flight instead of dropping it. TimeoutStopSec is
 # generous because a leaderboard render or a bulk email batch can legitimately take a while,
