@@ -51,29 +51,116 @@ def _available_teams(event):
     return out
 
 
+def auto_seed_due_at(event):
+    """The instant this event's automatic draw becomes due, or None when it cannot be worked out.
+
+    Reads Event.auto_seed_trigger (owner 2026-08-05). None means "not due, and never will be from
+    the data we have", so the caller skips the event rather than seeding it early. Returning the
+    event start as a silent fallback for a missing date would be worse: an organizer who picked
+    "when registration closes" would get a draw at a moment they did not ask for.
+
+    THE EVENT'S OWN TIMEZONE, not the server's. The date and time columns store the HOST's wall
+    clock, so combining them against `timezone.get_current_timezone()` gives the right answer only
+    when the server happens to sit in the host's zone. That mistake has already cost this codebase
+    twice: backlog item 38, where players in Ethiopia were told a live event was closed, and the
+    transfer-window hint fixed earlier today.
+    """
+    from datetime import datetime as _dt, time as _time
+
+    from .views import _event_zone
+
+    zone = _event_zone(event)
+    trigger = (getattr(event, "auto_seed_trigger", "") or "event_start").strip()
+
+    def _combine(day, clock):
+        if not day:
+            return None
+        try:
+            return timezone.make_aware(_dt.combine(day, clock or _time.min), zone)
+        except Exception:
+            return None
+
+    if trigger == "registration_close":
+        return _combine(event.registration_end_date, getattr(event, "registration_end_time", None))
+
+    if trigger == "checkin_close":
+        # Only meaningful while check-in is switched ON. When it is not, fall through to the event
+        # start rather than returning None: the organizer asked for an automatic draw, and a
+        # trigger that can never fire would quietly mean "never seed at all".
+        if getattr(event, "checkin_enabled", False) and getattr(event, "checkin_end", None):
+            return event.checkin_end
+
+    return _combine(event.start_date, getattr(event, "event_start_time", None))
+
+
+def stages_to_seed(event):
+    """The stages this event's automatic draw applies to, in play order.
+
+    The stages an organizer has TICKED, and when they have ticked none, the entry stage on its own.
+    That fallback is what keeps every event created before Stages.auto_seed existed behaving
+    exactly as it did: auto-seed used to mean "the entry stage", full stop, so an empty selection
+    has to keep meaning that rather than meaning "nothing".
+    """
+    chosen = list(
+        Stages.objects.filter(event=event, auto_seed=True)
+        .order_by("stage_order", "start_date", "stage_id"))
+    if chosen:
+        return chosen
+    entry = _entry_stage(event)
+    return [entry] if entry is not None else []
+
+
 def run_auto_seed(event):
-    """Seed available teams into the entry stage's groups. Returns a dict describing what happened.
-    Idempotent + safe: no-ops (and still stamps auto_seeded_at) when there is nothing to do or the
-    stage is already seeded, so the sweep can call it repeatedly without harm."""
+    """Seed available teams into every stage this event's draw covers.
+
+    Returns a dict describing what happened, with a per-stage breakdown under "stages". Idempotent
+    and safe: a stage that is already seeded is skipped rather than clobbered, so the sweep can
+    call this repeatedly without harm.
+    """
+    stages = stages_to_seed(event)
+    if not stages:
+        _stamp(event)
+        return {"seeded": 0, "groups": 0, "stage_id": None, "skipped": "no_stage", "stages": []}
+
+    # The event-level numbers stay the FIRST stage's, because every existing caller and test reads
+    # them and an event with one seeded stage is still the ordinary case.
+    overall = None
+    per_stage = []
+    for stage in stages:
+        outcome = _seed_one_stage(event, stage)
+        per_stage.append(outcome)
+        if overall is None:
+            overall = dict(outcome)
+    _stamp(event)
+    overall["stages"] = per_stage
+    return overall
+
+
+def _seed_one_stage(event, stage):
+    """Seed one stage. Everything this function does used to be the body of run_auto_seed."""
     result = {"seeded": 0, "groups": 0, "stage_id": None, "skipped": None}
-    stage = _entry_stage(event)
     if stage is None:
         result["skipped"] = "no_stage"
         return result
-    groups = list(StageGroups.objects.filter(stage=stage).order_by("group_id"))
+    result["stage_id"] = stage.stage_id
+    # auto_seed_include: an organizer can hold a group back to fill by hand, for example a
+    # bracket-only or invitational group. Excluding every group is treated as "no groups" rather
+    # than as an error, which is the same no-op the stage would get with none at all.
+    groups = list(StageGroups.objects.filter(stage=stage, auto_seed_include=True)
+                  .order_by("group_id"))
     if not groups:
         result["skipped"] = "no_groups"
         return result
     # NEVER clobber an existing seed (manual or a previous auto run).
     if StageGroupCompetitor.objects.filter(stage_group__stage=stage).exists():
         result["skipped"] = "already_seeded"
-        _stamp(event)
+        _stamp_stage(stage)
         return result
 
     teams = _available_teams(event)
     if not teams:
         result["skipped"] = "no_available_teams"
-        _stamp(event)
+        _stamp_stage(stage)
         return result
 
     with transaction.atomic():
@@ -96,8 +183,16 @@ def run_auto_seed(event):
         result["seeded"] = len(entries)
         result["groups"] = gcount
         result["stage_id"] = stage.stage_id
-        _stamp(event)
+        _stamp_stage(stage)
     return result
+
+
+def _stamp_stage(stage):
+    """Mark THIS stage as having had its automatic draw. Per stage, so seeding one never stops
+    another from being seeded later, which is the whole point of the selection being per stage."""
+    if not stage.auto_seeded_at:
+        stage.auto_seeded_at = timezone.now()
+        stage.save(update_fields=["auto_seeded_at"])
 
 
 def _stamp(event):

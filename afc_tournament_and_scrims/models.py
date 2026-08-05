@@ -257,6 +257,27 @@ class Event(models.Model):
     auto_seed_on_start = models.BooleanField(default=False)
     auto_seeded_at = models.DateTimeField(null=True, blank=True)
 
+    # WHAT SETS IT OFF (owner 2026-08-05). The switch above used to imply "when the event starts",
+    # which is one organizer's answer, not everybody's. A qualifier that wants its groups drawn the
+    # moment registration shuts should not have to wait for the start whistle, and an event running
+    # check-in wants the draw AFTER the no-shows have been swept out, or it seeds teams that never
+    # turned up.
+    #
+    #   event_start        when the event's start instant passes. The default, and what every
+    #                      existing event already does, so nothing changes underneath anybody.
+    #   registration_close when registration closes. Earlier, and it gives the organizer time to
+    #                      look at the draw before the event begins.
+    #   checkin_close      when the check-in window closes. Only meaningful when check-in is ON;
+    #                      falls back to the event start when it is not, because a trigger that
+    #                      never fires would silently mean "never seed".
+    AUTO_SEED_TRIGGER_CHOICES = [
+        ("event_start", "When the event starts"),
+        ("registration_close", "When registration closes"),
+        ("checkin_close", "When check-in closes"),
+    ]
+    auto_seed_trigger = models.CharField(
+        max_length=24, choices=AUTO_SEED_TRIGGER_CHOICES, default="event_start")
+
     # IANA timezone of the person who created/last set the event's times (e.g.
     # "Africa/Lagos"), captured from the browser on create/edit (owner 2026-06-21).
     # The date/time fields above are stored as the HOST's wall-clock; pairing them
@@ -498,6 +519,24 @@ class Stages(models.Model):
     # the reorder-stages endpoint. Consumed by get_event_details + the standings builder.
     stage_order = models.PositiveIntegerField(default=0)
 
+    # WHICH STAGES the auto-seed applies to (owner 2026-08-05: "build it that admins/organizers
+    # can select what they want, if it should apply to specific stages or groups").
+    #
+    # DEFAULT FALSE, AND THAT IS NOT THE SAME AS "OFF". When an event has auto-seed on and NO stage
+    # marked, run_auto_seed falls back to the entry stage, which is exactly what it did before this
+    # field existed. So every event already in the database keeps behaving the way its organizer
+    # set it up, and marking a stage is an explicit widening rather than a migration that changes
+    # what people's events do overnight.
+    #
+    # The owner scoped execution to the first stage FOR NOW. The field is per-stage anyway, because
+    # the constraint they asked for is that the CHOICE exists; carrying qualified teams into a
+    # later stage is a separate piece of work about when a stage is finished, not about where the
+    # switch lives.
+    auto_seed = models.BooleanField(default=False)
+    # Per-stage stamp, so seeding one stage never blocks another. Event.auto_seeded_at remains the
+    # event-level "the automatic pass has run at least once" marker the status sweep reads.
+    auto_seeded_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["stage_order", "start_date", "stage_id"]
 
@@ -528,6 +567,12 @@ class StageGroups(models.Model):
     # equal orders fall back to playing_date, playing_time, then group_id. A manual reorder sets
     # distinct orders that override the chronological sort. Set by create_event/edit_event and the
     # reorder-groups endpoint; consumed by get_event_details + the standings builder.
+    # Does the automatic draw put teams in THIS group (owner 2026-08-05)? Default TRUE, because a
+    # group exists to be played in, and a stage where somebody had excluded every group by accident
+    # would seed nobody and look broken. Unticking one is how an organizer reserves a group, for
+    # example a bracket-only or invitational group they intend to fill by hand.
+    auto_seed_include = models.BooleanField(default=True)
+
     group_order = models.PositiveIntegerField(default=0)
 
     class Meta:
