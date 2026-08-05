@@ -90,6 +90,15 @@ def send_room_details(users, event, match):
                     match.room_password or "",
                     getattr(match, "match_map", "") or "",
                 ],
+                # The "Visit website" button's dynamic tail. The approved template holds the
+                # base URL, frozen at approval, and Meta appends only this: the event's slug
+                # onto https://africanfreefirecommunity.com/tournaments/. Meta allows a variable
+                # only at the END of a URL, which is exactly what stops an approved template
+                # being repointed at another domain later.
+                #
+                # Harmless when the template has no URL button: Meta ignores a button component
+                # the template does not declare, so this needs no second setting to guard it.
+                url_button_suffix=getattr(event, "slug", "") or "",
                 user=user,
                 event=event,
                 match=match,
