@@ -202,6 +202,13 @@ def _serialize_design(d, request=None):
         "accent_color": d.accent_color,
         "show_title": d.show_title,
         "show_subtitle": d.show_subtitle,
+        # Board CHROME (owner 2026-08-05, backlog #2): column header row / grid rules / event-name
+        # header. All default False so an existing design is unchanged; the AFC default generators
+        # switch them on. Read by DesignFieldsEditor.tsx (the toggles + its preview canvas) and
+        # DesignBoard.tsx (the live overlay), and baked into the render by build_field_layout below.
+        "show_column_headers": getattr(d, "show_column_headers", False),
+        "show_grid": getattr(d, "show_grid", False),
+        "show_board_header": getattr(d, "show_board_header", False),
         "max_rows": d.max_rows,
         "is_default": d.is_default,
         # Row tiling for each column group (the field-layout path). [] => legacy auto-table.
@@ -219,6 +226,45 @@ def _serialize_design(d, request=None):
         "fields": [_serialize_field(f, request) for f in d.fields.all()],
         "texts": [_serialize_text(t, request) for t in d.texts.all()],
         "created_at": d.created_at.isoformat() if d.created_at else None,
+    }
+
+
+def _style_with_font(style, design):
+    """Resolve a design's title_style / subtitle_style JSON into the shape the renderer's board header
+    reads: the stored {x_pct, y_pct, font_size_pct, color, align} plus `font_path`, the filesystem path
+    of the referenced uploaded font (font_id -> OrgLeaderboardDesignFont.file.path).
+
+    WHY: the renderer only ever opens fonts by PATH (it has no ORM access at draw time), exactly like
+    the per-field / per-text font resolution above. Returns {} for an unset style, which makes
+    afc_leaderboard.graphic._render_board_header fall back to its centred AFC defaults."""
+    style = dict(style or {})
+    if not style:
+        return {}
+    fid = style.pop("font_id", None)
+    if fid:
+        f = OrgLeaderboardDesignFont.objects.filter(
+            id=fid, organization_id=design.organization_id).first()
+        try:
+            style["font_path"] = f.file.path if (f and f.file) else None
+        except Exception:
+            style["font_path"] = None
+    return style
+
+
+def _design_chrome(design):
+    """The design's OPT-IN board-chrome switches + header styling, as the keys
+    afc_leaderboard.graphic reads off `field_layout` (owner 2026-08-05, backlog #2).
+
+    Kept in ONE helper because build_field_layout AND build_pages_for_export both have to bake the
+    same thing into every layout they produce - a multi-page export must not lose the headers/grid the
+    single-PNG export shows. See OrgLeaderboardDesign.show_column_headers / show_grid /
+    show_board_header for what each one draws and why they default off."""
+    return {
+        "show_column_headers": bool(getattr(design, "show_column_headers", False)),
+        "show_grid": bool(getattr(design, "show_grid", False)),
+        "show_board_header": bool(getattr(design, "show_board_header", False)),
+        "title_style": _style_with_font(getattr(design, "title_style", None), design),
+        "subtitle_style": _style_with_font(getattr(design, "subtitle_style", None), design),
     }
 
 
@@ -297,6 +343,8 @@ def build_field_layout(design, size="instagram", page_number=None):
 
     return {
         "column_groups": groups,
+        # Board chrome (owner 2026-08-05, backlog #2) - see _design_chrome.
+        **_design_chrome(design),
         "fields": [{
             "field_type": f.field_type,
             "column_group": f.column_group,
@@ -374,6 +422,9 @@ def build_pages_for_export(design, size="instagram"):
             return None
         return {
             "column_groups": _groups(source_obj),
+            # Board chrome is a DESIGN-level setting, so every page of a multi-page export carries
+            # the same headers/grid/header-text the single-PNG export shows (owner 2026-08-05).
+            **_design_chrome(design),
             "fields": [{"field_type": f.field_type, "column_group": f.column_group,
                          "x_pct": _fx(f), "align": f.align, "font_path": _font_path(f),
                          "font_size_pct": f.font_size_pct, "color": f.color} for f in fields],
@@ -433,7 +484,10 @@ def _apply_fields(d, data):
     # Booleans arrive as "true"/"false" strings over multipart. transparent_background (owner
     # 2026-07-01) rides the same coercion so the editor's "Transparent background (for live overlay)"
     # toggle persists - without it here the flag could never be set off its False default.
-    for flag in ("show_title", "show_subtitle", "transparent_background"):
+    # show_column_headers / show_grid / show_board_header (owner 2026-08-05, backlog #2) ride the same
+    # coercion so the editor's three board-chrome switches persist over multipart.
+    for flag in ("show_title", "show_subtitle", "transparent_background",
+                 "show_column_headers", "show_grid", "show_board_header"):
         if flag in data:
             v = data.get(flag)
             d.__setattr__(flag, str(v).lower() in ("true", "1", "yes", "on", "true"))
@@ -1424,6 +1478,56 @@ def _afc_default_background_bytes(size):
         return fh.read()
 
 
+# ── Player PORTRAIT placeholder (owner 2026-08-05, backlog #3) ──────────────────────────────────
+# The MVP graphic leads with each player's esport photo, but most players have never uploaded one, so
+# without a stand-in the board would print a column of empty slots. This generates ONE neutral
+# silhouette card, cached in assets/ like the backgrounds, and hands its PATH to the renderer through
+# field_layout["image_placeholders"]["esports_image"] (see graphic._render_fields). The colours + the
+# 100:130 portrait aspect are copied from the design editor's SAMPLE_PHOTO_SVG
+# (frontend DesignFieldsEditor.tsx), so the placeholder in the download looks like the sample the
+# operator positions against in the editor.
+_PLAYER_PLACEHOLDER_ASSET = "afc_player_placeholder.png"
+# LIGHTENED 2026-08-05 after looking at a rendered board. The first values were taken from the
+# editor's sample card, which sits on a light UI panel; the exported MVP board is nearly black, and
+# a #2a2f3a card carrying a #5b6472 figure on it was invisible. Every player without a photo simply
+# had an empty slot, which is the exact thing the placeholder exists to prevent.
+#
+# The card now reads as a deliberate frame rather than a hole, and the figure is light enough to be
+# unmistakably a person at row height (76px tall in the default layout). Still muted: a placeholder
+# that competes with the players who DID upload a photo would be worse than none.
+_PH_CARD_RGB = (58, 65, 79)       # #3a414f - the frame, a step above the board background
+_PH_FIGURE_RGB = (150, 160, 175)  # #96a0af - the silhouette, readable at row height
+_PH_RING_RGB = (94, 214, 143)     # AFC green, a thin edge so the slot reads as intentional
+
+
+def _generate_player_placeholder(w=300, h=390):
+    """Build the neutral player-portrait placeholder as a PIL Image (RGB, w x h): a dark card with a
+    centred head-and-shoulders silhouette. Called once by _afc_player_placeholder_path."""
+    img = Image.new("RGB", (w, h), _PH_CARD_RGB)
+    d = ImageDraw.Draw(img)
+    # Head: a circle at ~37% height, radius ~23% of the width (matches the SVG's cx/cy/r ratios).
+    cx, cy, r = w * 0.5, h * 0.37, w * 0.23
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=_PH_FIGURE_RGB)
+    # Shoulders: a wide rounded slab from ~63% height to the bottom edge.
+    d.rounded_rectangle([w * 0.12, h * 0.63, w * 0.88, h * 1.15],
+                        radius=int(w * 0.30), fill=_PH_FIGURE_RGB)
+    # A thin AFC-green edge, drawn LAST so the shoulders cannot paint over it. Without it the card
+    # blends into a dark board and reads as a rendering fault rather than "no photo yet".
+    edge = max(2, int(min(w, h) * 0.012))
+    d.rectangle([0, 0, w - 1, h - 1], outline=_PH_RING_RGB, width=edge)
+    return img
+
+
+def _afc_player_placeholder_path():
+    """Filesystem PATH to the cached player-portrait placeholder, generating it once if missing.
+    Same idempotent generate-once-into-assets/ pattern as _afc_default_background_path."""
+    path = os.path.join(_ASSETS_DIR, _PLAYER_PLACEHOLDER_ASSET)
+    if not os.path.exists(path):
+        os.makedirs(_ASSETS_DIR, exist_ok=True)
+        _generate_player_placeholder().save(path, format="PNG")
+    return path
+
+
 def _afc_logo_bytes():
     """Return the bundled AFC logo PNG bytes (afc_organizers/assets/afc-logo.png), or None if the
     asset is somehow missing. Copied into a top-left OrgLeaderboardDesignLogo by create_default_design
@@ -1439,15 +1543,27 @@ def _afc_logo_bytes():
 # OrgLeaderboardDesignField.FIELD_CHOICES. team_name is left-aligned (it starts at its x and reads
 # rightwards); numeric columns are centred; team_logo is an image cell drawn centred.
 #
+# COLUMN SET (owner 2026-08-05, backlog #2 + #17). The stat columns are exactly the ones the owner
+# named as needing headers - MATCHES (drawn "MP", maps played), BOOYAH, KILL POINTS, PLACEMENT POINTS,
+# TOTAL POINTS - plus POS / team logo / TEAM. Two deliberate changes from the original set:
+#   • `matches` ADDED (backlog #17: a leaderboard must show maps played). The number already existed
+#     in the standings the export reads (games_played from round_robin's aggregator / played_count on
+#     a standalone leaderboard); nothing new is computed, it was simply never placed by default.
+#   • `kills` (raw) SWAPPED for `kill_points`, the scored value that actually sums into TOTAL POINTS
+#     and the one the owner named. Same slot, same geometry, so the board keeps its shape; raw kills
+#     is still in the palette for anyone who wants it back.
 # _SC_COLUMNS = the SINGLE-COLUMN layout across the full canvas width (presets 12 + 15).
 _SC_COLUMNS = [
     ("pos", 5.0, "center"),
     ("team_logo", 10.0, "center"),
     ("team_name", 14.5, "left"),
-    ("kills", 57.0, "center"),
-    ("placement_points", 68.0, "center"),
-    ("booyah", 79.0, "center"),
-    ("total_points", 91.0, "center"),
+    # Evenly spaced numeric columns (10% apart) so every cell - and therefore every column header
+    # above it - gets the same width and the header row reads at one consistent size.
+    ("matches", 50.0, "center"),
+    ("booyah", 60.0, "center"),
+    ("kill_points", 70.0, "center"),
+    ("placement_points", 80.0, "center"),
+    ("total_points", 90.0, "center"),
 ]
 # _LEFT_COLUMNS / _RIGHT_COLUMNS = the TWO-COLUMN layout (preset 24): the same columns compressed
 # into the left half (0..50%), then mirrored into the right half (+50%). Group 0 uses the left set,
@@ -1456,9 +1572,10 @@ _LEFT_COLUMNS = [
     ("pos", 3.0, "center"),
     ("team_logo", 6.5, "center"),
     ("team_name", 9.5, "left"),
-    ("kills", 30.0, "center"),
-    ("placement_points", 36.0, "center"),
-    ("booyah", 42.0, "center"),
+    ("matches", 27.5, "center"),
+    ("booyah", 32.5, "center"),
+    ("kill_points", 37.5, "center"),
+    ("placement_points", 42.5, "center"),
     ("total_points", 47.5, "center"),
 ]
 _RIGHT_COLUMNS = [(ft, x + 50.0, al) for (ft, x, al) in _LEFT_COLUMNS]
@@ -1566,6 +1683,13 @@ def create_default_design(request):
         column_groups=spec["column_groups"],
         is_default=is_first,
         created_by=user,
+        # Board chrome ON for the AFC default (owner 2026-08-05, backlog #2): a column-header row, row
+        # + column grid rules, and the event name / stage name drawn as header + sub-header. These
+        # default OFF on the model so hand-built org designs (which bake headers into their artwork)
+        # are untouched; the generated AFC default is precisely the graphic that was missing them.
+        show_column_headers=True,
+        show_grid=True,
+        show_board_header=True,
     )
 
     # ── Branded background (owner 2026-07-04): SET the AFC background PNG on BOTH sizes so the design
@@ -1687,9 +1811,10 @@ class _EphemeralAfcDefault:
         self.max_rows = max_rows
         self.text_color = AFC_DEFAULT_TEXT_COLOR
         self.accent_color = AFC_DEFAULT_ACCENT_COLOR
-        # The branded default places its own columns (field-layout path), which does NOT draw the
-        # built-in title/subtitle - identical to create_default_design (it adds no title text). These
-        # flags are passed through only for signature parity; they do not change the field-layout look.
+        # The branded default now DOES draw the header: each page's field_layout carries
+        # show_board_header (owner 2026-08-05, backlog #2), so the renderer prints the caller's
+        # `title` (the event name) as the header and `subtitle` (the stage name) as the sub-header.
+        # These two flags stay the per-line gates the renderer honours, matching create_default_design.
         self.show_title = True
         self.show_subtitle = True
         self.transparent_background = False
@@ -1699,6 +1824,18 @@ class _EphemeralAfcDefault:
         return len(self.pages_spec)
 
 
+# The board chrome every AFC-generated default renders with (owner 2026-08-05, backlog #2). Mirrors
+# what create_default_design persists on a saved default, so the EPHEMERAL fallback and the SAVED
+# default produce the same graphic. Spread into each page's field_layout below.
+_EPHEMERAL_CHROME = {
+    "show_column_headers": True,
+    "show_grid": True,
+    "show_board_header": True,
+    "title_style": {},      # {} => the renderer's centred AFC defaults (BOARD_TITLE_DEFAULTS)
+    "subtitle_style": {},
+}
+
+
 def _fields_from_columns(columns_by_group):
     """Turn the _afc_default_spec column tuples (field_type, x_pct, align) into the field dicts the
     renderer's field_layout expects. font_path / font_size_pct / color are left unset so the renderer
@@ -1706,12 +1843,96 @@ def _fields_from_columns(columns_by_group):
     default, whose OrgLeaderboardDesignField rows also carry no custom font/size/colour."""
     out = []
     for gi, columns in enumerate(columns_by_group):
-        for (field_type, x_pct, align) in columns:
+        for column in columns:
+            # 3-tuple (field_type, x_pct, align) = renderer-default size. A 4-tuple adds an explicit
+            # font_size_pct, which the PLAYER board needs: its photo cell must be far larger than a
+            # text row (owner 2026-08-05, backlog #3) and its text a little larger to sit beside it.
+            field_type, x_pct, align = column[0], column[1], column[2]
+            size_pct = column[3] if len(column) > 3 else None
             out.append({
                 "field_type": field_type, "column_group": gi, "x_pct": x_pct,
-                "align": align, "font_path": None, "font_size_pct": None, "color": None,
+                "align": align, "font_path": None, "font_size_pct": size_pct, "color": None,
             })
     return out
+
+
+# ═══════════ Ephemeral branded-default for the PLAYER boards - MVP + Top killers ═════════════════
+#
+# WHY (owner 2026-08-05, backlog #3 "a downloadable MVP graphic, which does not exist yet"): the
+# download ROUTE has existed since 2026-07-05
+# (afc_tournament_and_scrims.views_mvp.event_player_board_graphic, GET
+# events/<id>/player-board-graphic/?kind=mvp), but it only ever rendered through a SAVED design. No
+# design in the library places PLAYER columns, so the button produced a background with nothing on it -
+# which is why the graphic reads as "does not exist". This is the player twin of
+# build_ephemeral_afc_default: the same AFC background + AFC/organizer logos + board chrome, but with
+# the PLAYER column set the owner asked for - the player's PHOTO (with a placeholder when they have
+# none), KILLS and MP (matches played) - plus POS and the player name so the board is readable.
+# Persists NOTHING; returns an _EphemeralAfcDefault the existing renderer consumes unchanged.
+#
+# PLAYER COLUMN LAYOUT. A portrait needs far more room than a number, so the photo cell carries an
+# explicit font_size_pct (the renderer sizes an image cell at font_size_pct% of canvas height x 1.35)
+# and the rows are tall enough to hold it. 10 players per page, paginated for a longer list.
+_PLAYER_COLUMNS = [
+    ("pos", 6.0, "center", 2.6),
+    ("esports_image", 14.5, "center", 4.2),   # box = 4.2% x 1.35 = ~5.7% of canvas height
+    ("player_name", 23.0, "left", 2.6),
+    ("kills", 72.0, "center", 2.6),
+    ("matches", 88.0, "center", 2.6),
+]
+_PLAYER_ROWS_PER_PAGE = 10
+_PLAYER_COLUMN_GROUP = {
+    "row_start_pct": 30.0, "row_height_pct": 6.4, "row_count": _PLAYER_ROWS_PER_PAGE,
+    "start_rank": 1,
+}
+
+
+def build_ephemeral_afc_player_default(n, *, org=None):
+    """Build an in-memory AFC-branded default for a PLAYER board (MVP / Top killers) sized to `n`
+    players. Persists NOTHING. Returns an _EphemeralAfcDefault, exactly like its team twin.
+
+    `n`   the ACTUAL number of ranked players being exported (len(rows)); clamped to >= 1. Pages hold
+          _PLAYER_ROWS_PER_PAGE players each, so 10 players = 1 page and 23 players = 3 pages, with
+          each page's start_rank offset so page 2 shows ranks 11..20.
+    `org` the event's organization (or None). Its logo goes top-right opposite the AFC logo, mirroring
+          the team default, so an organizer-hosted event's MVP graphic carries the organizer's brand.
+
+    Each page's field_layout carries image_placeholders, which is what makes a player with NO uploaded
+    esport photo render the neutral portrait card instead of an empty slot (graphic._render_fields).
+    CONSUMED BY: afc_tournament_and_scrims.views_mvp.event_player_board_graphic, in the branch where
+    the chosen design places no fields."""
+    n = max(1, int(n or 0))
+    bg_ig = _EphemeralBackground(_afc_default_background_path("instagram"))
+    bg_yt = _EphemeralBackground(_afc_default_background_path("youtube"))
+
+    logos = []
+    if os.path.exists(_AFC_LOGO_ASSET):
+        logos.append({"path": _AFC_LOGO_ASSET, "x_pct": 8.0, "y_pct": 8.0, "size": "medium"})
+    if org is not None and getattr(org, "logo", None):
+        try:
+            logos.append({"path": org.logo.path, "x_pct": 90.0, "y_pct": 8.0, "size": "medium"})
+        except Exception:
+            pass
+
+    placeholders = {"esports_image": _afc_player_placeholder_path()}
+    fields = _fields_from_columns([_PLAYER_COLUMNS])
+    page_count = (n + _PLAYER_ROWS_PER_PAGE - 1) // _PLAYER_ROWS_PER_PAGE  # ceil, no math import
+    pages_spec = []
+    for p in range(page_count):
+        group = dict(_PLAYER_COLUMN_GROUP)          # copy so the shared spec is never mutated
+        group["start_rank"] = 1 + p * _PLAYER_ROWS_PER_PAGE
+        pages_spec.append({
+            "page_number": p + 1,
+            "background_instagram": bg_ig,
+            "background_youtube": bg_yt,
+            "field_layout": {
+                "column_groups": [group],
+                "fields": fields,
+                "texts": [],
+                "image_placeholders": placeholders,
+                **_EPHEMERAL_CHROME,
+            },
+        })
+    return _EphemeralAfcDefault(pages_spec, logos, _PLAYER_ROWS_PER_PAGE)
 
 
 def build_ephemeral_afc_default(n, *, org=None):
@@ -1756,6 +1977,7 @@ def build_ephemeral_afc_default(n, *, org=None):
                 "column_groups": spec["column_groups"],
                 "fields": _fields_from_columns(spec["columns_by_group"]),
                 "texts": [],
+                **_EPHEMERAL_CHROME,
             },
         })
         max_rows = spec["max_rows"]
@@ -1783,6 +2005,7 @@ def build_ephemeral_afc_default(n, *, org=None):
                     "column_groups": groups,
                     "fields": _fields_from_columns(base_spec["columns_by_group"]),
                     "texts": [],
+                    **_EPHEMERAL_CHROME,
                 },
             })
         max_rows = per_page

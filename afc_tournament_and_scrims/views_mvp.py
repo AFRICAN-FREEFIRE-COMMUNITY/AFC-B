@@ -361,6 +361,43 @@ def event_top_killers(request, event_id):
     return Response(result, status=200)
 
 
+# The row keys that only a PLAYER board produces (see _player_design_row). A layout that places
+# none of them is a TEAM layout, whatever else it contains, and rendering player rows through it
+# produces a board of team names with empty columns.
+_PLAYER_FIELD_KEYS = frozenset({
+    "player_name", "esports_image", "kills", "damage", "assists", "mvp_count", "matches",
+})
+
+
+def _places_no_player_columns(field_layout):
+    """True when this layout has nothing on it that a player row could fill.
+
+    WHY IT IS NOT `field_layout is None` (owner backlog item 3). The MVP download resolves the
+    EVENT's design, and an event that has a leaderboard design has a TEAM one: POS, TEAM NAME,
+    BOOYAH, points. Player rows carry player_name, kills, matches and a photo, none of which that
+    layout asks for, so the render fell through to whatever the team layout happened to place and
+    produced a board of team names with blank columns. A None layout is the obvious case; a
+    team layout is the common one, and both must take the branded player default.
+
+    Reads the layout defensively because build_field_layout's shape has grown over time (fields,
+    texts, per-page column groups) and this only needs to answer one question about it.
+    """
+    if not field_layout:
+        return True
+
+    def _keys(blob):
+        if isinstance(blob, dict):
+            for key, value in blob.items():
+                if key in ("field", "field_type", "key", "type") and isinstance(value, str):
+                    yield value
+                yield from _keys(value)
+        elif isinstance(blob, (list, tuple)):
+            for item in blob:
+                yield from _keys(item)
+
+    return not (_PLAYER_FIELD_KEYS & set(_keys(field_layout)))
+
+
 @api_view(["GET"])
 def event_player_board_graphic(request, event_id):
     """GET events/<event_id>/player-board-graphic/?kind=mvp|top_killers&design_id=&size=instagram|
@@ -369,16 +406,29 @@ def event_player_board_graphic(request, event_id):
 
     Reuses the org design library (_resolve_event_design), build_field_layout (design -> field_layout)
     and render_leaderboard_graphic; the player rows carry the FIELD_CHOICES player keys and esports_image
-    renders as an IMAGE (graphic.py resolves the URL to a local media file). A design with no fields
-    placed falls back to render_leaderboard_graphic's built-in path with the title only. Gate =
-    _broadcast_gate. Consumed by the FE MVP/Top-killers design tab's "Download" action."""
+    renders as an IMAGE (graphic.py resolves the URL to a local media file). Gate = _broadcast_gate.
+    Consumed by the FE MVP/Top-killers design tab's "Download" action (PlayerBoardControls.tsx via
+    lib/overlay.downloadPlayerBoardGraphic).
+
+    BRANDED DEFAULT (owner 2026-08-05, backlog #3 "a downloadable MVP graphic ... does not exist yet"):
+    when the chosen design places NO fields - which is the normal case, because no design in a library
+    places PLAYER columns - this used to render the background with nothing on it. It now falls back to
+    the ephemeral AFC player default (build_ephemeral_afc_player_default): AFC background + logos, the
+    board chrome, and the POS / PHOTO / PLAYER / KILLS / MP columns, with a neutral portrait placeholder
+    for a player who has never uploaded an esport photo. Nothing is written to the design library.
+    ?page=<N> renders that page (10 players per page), ?page=all zips every page; no ?page = page 1
+    (the top 10), which is what the FE's single Download button asks for."""
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
+    import io
+    import zipfile
+
     from django.http import HttpResponse
-    from afc_organizers.views_leaderboard_design import build_field_layout
+    from afc_organizers.views_leaderboard_design import (
+        build_field_layout, build_ephemeral_afc_player_default)
     from .views_event_graphic import _resolve_event_design
-    from afc_leaderboard.graphic import render_leaderboard_graphic
+    from afc_leaderboard.graphic import render_leaderboard_graphic, render_design_all_pages
 
     kind = (request.query_params.get("kind") or "mvp").strip().lower()
     size = "youtube" if (request.query_params.get("size") or "").strip().lower() == "youtube" \
@@ -388,16 +438,54 @@ def event_player_board_graphic(request, event_id):
 
     if kind == "top_killers":
         players = compute_top_killers(event, request, group_ids=scope_group_ids)["players"]
-        title = "Top killers"
+        board_label = "Top killers"
     else:
         players = compute_event_mvp(event, request, group_ids=scope_group_ids)["players"]
-        title = "MVP"
+        board_label = "MVP"
     rows = build_player_design_rows(players)
+    title = board_label
 
     # Design lookup + look, mirroring event_stage_graphic's bg/logo resolution exactly (filesystem
     # PATHS for the local Pillow render).
     design = _resolve_event_design(event, request.query_params.get("design_id"))
     field_layout = build_field_layout(design, size=size) if design else None
+
+    # ── Branded AFC player default (owner 2026-08-05, backlog #3) ── taken whenever the design places
+    # no PLAYER columns, so the download is a finished board instead of an empty background. The header
+    # reads EVENT NAME / "MVP" (or "Top killers"), matching the team export's event-name-as-header rule.
+    # `field_layout is None` is NOT the right question, and asking it shipped an MVP board that
+    # rendered TEAM names in near-invisible dark-on-dark text with no photos and no numbers.
+    # _resolve_event_design returns the event's saved TEAM design, so a layout almost always
+    # exists; it simply places team columns, which carry none of the player keys these rows have.
+    # The question is whether the resolved layout places any PLAYER column at all.
+    if _places_no_player_columns(field_layout) and rows:
+        eph = build_ephemeral_afc_player_default(
+            len(rows), org=(event.organization if event.organization_id else None))
+        page_param = (request.query_params.get("page") or "").strip().lower()
+        safe_name = f"{event.event_name}-{kind}".replace(" ", "_")
+        render_kwargs = dict(
+            size=size, logos=eph.logos, title=event.event_name, subtitle=board_label,
+            text_color=eph.text_color, accent_color=eph.accent_color, max_rows=eph.max_rows,
+            show_title=eph.show_title, show_subtitle=eph.show_subtitle,
+            transparent_background=eph.transparent_background,
+        )
+        if page_param == "all" and eph.page_count > 1:
+            pngs = render_design_all_pages(rows, eph.pages_spec, **render_kwargs)
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for i, png in enumerate(pngs, start=1):
+                    zf.writestr(f"{safe_name}-{size}-page{i}.png", png)
+            zip_buf.seek(0)
+            resp = HttpResponse(zip_buf.read(), content_type="application/zip")
+            resp["Content-Disposition"] = f'attachment; filename="{safe_name}-{size}-all-pages.zip"'
+            return resp
+        idx = int(page_param) - 1 if (page_param.isdigit()
+                                      and 1 <= int(page_param) <= eph.page_count) else 0
+        pngs = render_design_all_pages(rows, [eph.pages_spec[idx]], **render_kwargs)
+        resp = HttpResponse(pngs[0], content_type="image/png")
+        suffix = f"-page{idx + 1}" if eph.page_count > 1 else ""
+        resp["Content-Disposition"] = f'attachment; filename="{safe_name}-{size}{suffix}.png"'
+        return resp
     bg, logos = None, []
     text_color, accent_color, transparent_bg = "#FFFFFF", "#34d27b", False
     if design:
