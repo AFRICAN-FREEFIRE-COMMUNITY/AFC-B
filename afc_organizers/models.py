@@ -235,6 +235,26 @@ class OrgLeaderboardDesign(models.Model):
     accent_color = models.CharField(max_length=9, default="#34d27b")
     show_title = models.BooleanField(default=True)
     show_subtitle = models.BooleanField(default=True)
+    # ── Board CHROME: column headers / grid lines / event-name header (owner 2026-08-05, backlog #2) ──
+    # The exported graphic was missing three things a reader needs to make sense of the numbers:
+    #   show_column_headers - a label row above the first standings row (MP / BOOYAH / KILL POINTS /
+    #                         PLACEMENT POINTS / TOTAL POINTS ...), one per PLACED column, drawn at
+    #                         that column's own x so it can never drift away from its numbers.
+    #   show_grid           - hairline separators BETWEEN rows and BETWEEN columns, so a wide row
+    #                         reads across without the eye jumping a line.
+    #   show_board_header   - the EVENT NAME as the header and the STAGE NAME as the sub-header
+    #                         (the `title` / `subtitle` the export endpoints already pass in). Uses
+    #                         the existing title_style / subtitle_style when the design sets them.
+    # All three default FALSE on purpose: an org's hand-built design usually bakes its own headers
+    # and rules into the background art, so turning these on for every existing design would double
+    # them up. The AFC-generated defaults switch them ON (create_default_design +
+    # build_ephemeral_afc_default in views_leaderboard_design.py), which is exactly the graphic the
+    # owner reported as missing them. Rendered by afc_leaderboard.graphic (_render_column_headers /
+    # _render_grid / _render_board_header) and mirrored by the FE editor canvas
+    # (DesignFieldsEditor.tsx) + the live overlay (DesignBoard.tsx) so the download is WYSIWYG.
+    show_column_headers = models.BooleanField(default=False)
+    show_grid = models.BooleanField(default=False)
+    show_board_header = models.BooleanField(default=False)
     max_rows = models.PositiveSmallIntegerField(default=16)
     # ── Positionable-field layout (owner 2026-06-14) ──
     # When a design places its OWN data fields (OrgLeaderboardDesignField below) the renderer

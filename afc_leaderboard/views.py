@@ -652,14 +652,23 @@ def leaderboard_graphic(request, lb_id):
 
     # Standings for both render paths: the legacy auto-table reads the standalone_standings list;
     # the field-layout path (when the design places its own columns) reads per-row dicts keyed by
-    # field_type. A standalone leaderboard only tracks rank/name/total/kills, so booyah/PP/KP/rush
-    # columns (if placed) render empty here - those stats only exist on EVENT stage standings.
+    # field_type. A standalone leaderboard stores rank/name/total/kills/booyahs/played_count, so a
+    # placed PP / KP / rush column still renders empty here - those splits only exist on EVENT stage
+    # standings.
+    #   • matches (owner 2026-08-05, backlog #17 "leaderboards must show MP"): maps played comes
+    #     straight from standings.played_count, which standalone_standings already computes as the
+    #     number of ParticipantMatchResult rows flagged played. Nothing new is computed here, and it
+    #     is the SAME definition the leaderboard page shows - the export just never carried it.
+    #   • booyah: standalone_standings counts placement==1 as `booyahs`; it was simply never mapped
+    #     onto the design's booyah column, so that column drew blank even though the number existed.
     std = standalone_standings(lb)
     rows = [{
         "pos": i + 1,
         "team_name": (r.get("participant", {}) or {}).get("name") or "-",
         "total_points": r.get("total_points", 0),
         "kills": r.get("kills", 0),
+        "booyah": r.get("booyahs", 0),
+        "matches": r.get("played_count", 0),
     } for i, r in enumerate(std)]
     from afc_organizers.views_leaderboard_design import (
         build_field_layout, build_pages_for_export, build_ephemeral_afc_default)

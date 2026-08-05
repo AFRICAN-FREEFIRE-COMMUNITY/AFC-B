@@ -263,18 +263,22 @@ def _clip_text(draw, text, font, max_w):
     return (s + "…") if s else text
 
 
-def _fit_font(draw, text, base_size, max_w):
+def _fit_font(draw, text, base_size, max_w, font_path=None):
     """A font for `text` that fits within max_w: shrink from base_size down to a floor (45% of base).
     The caller still clips with _clip_text if even the floor overflows, so a very long title both
-    shrinks AND ellipsis-truncates instead of overrunning the canvas."""
+    shrinks AND ellipsis-truncates instead of overrunning the canvas.
+
+    `font_path` (owner 2026-08-05) picks the design's UPLOADED font instead of the built-in one, so a
+    column header / board header shrinks in the SAME typeface its column or design uses. None keeps
+    the original built-in-font behaviour, which is what every pre-existing caller passes."""
     floor = max(14, int(base_size * 0.45))
     size = base_size
     while size > floor:
-        f = _font(size)
+        f = _load_font(font_path, size)
         if _text_w(draw, text, f) <= max_w:
             return f
         size -= 2
-    return _font(floor)
+    return _load_font(font_path, floor)
 
 
 def _anchor_x(align):
@@ -369,6 +373,324 @@ def _paste_row_logo(base, path, cx, cy, edge_px):
     base.paste(limg, (cx - limg.width // 2, cy - limg.height // 2), limg)
 
 
+# ══ BOARD CHROME: column headers, grid lines, event/stage header (owner 2026-08-05, backlog #2) ═══
+#
+# WHAT THIS IS: three OPT-IN layers drawn around the placed columns of the field-layout path. Until
+# now the exported PNG showed bare numbers in bare rows - no label saying which column was kill points
+# and which was placement points, no rules to follow a row across, and no event/stage name unless the
+# designer happened to type one as a freeform text. These three layers fill that in WITHOUT moving a
+# single placed column, so an existing graphic keeps its shape and only gains the missing information.
+#
+# HOW THEY ARE TURNED ON: purely from `field_layout` (built by
+# afc_organizers.views_leaderboard_design.build_field_layout / build_pages_for_export /
+# build_ephemeral_afc_default from the design's show_column_headers / show_grid / show_board_header
+# booleans). A layout without those keys renders EXACTLY as before, so every caller that has not been
+# updated is unaffected.
+#
+# WHY THE GEOMETRY IS DERIVED, NEVER STORED: headers and grid lines are computed from the fields'
+# OWN x positions and the column group's OWN row tiling. Drag a column in the design editor and its
+# header + its grid line move with it - they can never drift out of alignment with the numbers.
+#
+# MIRRORED BY (so the download is WYSIWYG with what the operator sees):
+#   • the design editor canvas - frontend DesignFieldsEditor.tsx (header row + grid + board header)
+#   • the live OBS overlay      - frontend app/overlay/leaderboard/_components/DesignBoard.tsx
+
+# field_type -> the header label printed above that column. Uppercase because the AFC boards are
+# uppercase throughout. An IMAGE column (team logo / flag / player photo) maps to "" so no label is
+# stamped over the artwork; the TEAM/PLAYER label rides on the adjacent name column instead.
+# `matches` is labelled MP: the owner asks for maps played to be shown as MP (backlog #17), and it is
+# the same number the "Matches played" column has always carried (games_played from the standings).
+COLUMN_HEADER_LABELS = {
+    "pos": "POS",
+    "team_name": "TEAM",
+    "player_name": "PLAYER",
+    "team_logo": "", "team_flag": "", "esports_image": "",
+    "matches": "MP",
+    "booyah": "BOOYAH",
+    "kill_points": "KILL POINTS",
+    "placement_points": "PLACEMENT POINTS",
+    "total_points": "TOTAL POINTS",
+    "kills": "KILLS",
+    "rush_points": "RUSH POINTS",
+    "base_total": "BASE TOTAL",
+    "bonus": "BONUS",
+    "penalty": "PENALTY",
+    "damage": "DAMAGE",
+    "assists": "ASSISTS",
+    "mvp_count": "MVPS",
+    # LIVE-only stats (a design may place them; they get a label too rather than an unlabelled column).
+    "deaths": "DEATHS", "knockdowns": "KNOCKS", "headshots": "HEADSHOTS",
+    "most_used_weapon": "WEAPON", "survival_time": "SURVIVAL",
+    "revives_received": "REVIVES", "gloowall_used": "GLOO", "medkit_used": "MEDKITS",
+}
+
+# A header is drawn ONE row-height above the group's first row, at 85% of the row font size, so it
+# reads as a label rather than as another data row.
+HEADER_ROW_GAP = 1.15       # in row-heights, above row 1 of the group (clears the grid's top rule)
+HEADER_SIZE_SCALE = 0.85    # of the column's own font size
+# Grid hairlines: alpha over whatever is behind them (background art or transparency) and a width
+# that scales with the canvas, so the rules stay hairlines at 1080 AND at 1920.
+GRID_ALPHA = 70
+GRID_WIDTH_FRAC = 0.0015    # of canvas HEIGHT
+# Default board-header placement when the design supplies no title_style / subtitle_style: centred
+# near the top, clear of the AFC/organizer logos the default design parks at 8% / 90% x.
+#
+# max_w_pct IS THE PART THAT MATTERS, added 2026-08-05 after looking at a real export. "Clear of
+# the logos" was only true for a SHORT title: the text was fitted to the full canvas width, so
+# "DYNASTY CUP GRAND FINALS SSA" grew wide enough to run underneath the AFC logo and the board
+# read "...NASTY CUP GRAND FINALS SSA". Capping the width makes a long title SHRINK instead of
+# sliding under the artwork, which is the behaviour anybody would expect from a centred heading.
+#
+# 66% leaves the outer sixth of the canvas on each side to the logos. The subtitle gets 80%
+# because it sits BELOW them and only needs to stay inside the padding.
+BOARD_TITLE_DEFAULTS = {"x_pct": 50.0, "y_pct": 6.5, "font_size_pct": 4.5, "align": "center",
+                        "max_w_pct": 66.0}
+BOARD_SUBTITLE_DEFAULTS = {"x_pct": 50.0, "y_pct": 12.0, "font_size_pct": 2.6, "align": "center",
+                           "max_w_pct": 80.0}
+
+
+def _layout_groups(field_layout, rows_len):
+    """The column groups of a field_layout, with the same default the field renderer uses. Shared by
+    _render_fields, _render_column_headers and _render_grid so all three tile on identical geometry."""
+    return field_layout.get("column_groups") or [
+        {"row_start_pct": 33.0, "row_height_pct": 7.0, "row_count": rows_len, "start_rank": 1}
+    ]
+
+
+def _group_fields(field_layout, gi):
+    """Every placed field belonging to column group `gi` (the same filter _render_fields applies)."""
+    return [f for f in (field_layout.get("fields") or [])
+            if int(f.get("column_group", 0) or 0) == gi]
+
+
+LEFT_ALIGN_EDGE_PAD = 1.0   # percent of width kept in front of a LEFT-aligned column's anchor
+
+
+def _column_edges(fields):
+    """Turn a column group's placed fields into TABLE EDGES (percent of width): the boundary in front
+    of each column, plus the closing edge after the last one. Returns [] for an empty group. Used for
+    BOTH the vertical grid rules and to bound how wide a header label may grow.
+
+    WHY NOT JUST THE MIDPOINT between neighbouring columns: a leaderboard's TEAM name is left-aligned
+    and its text runs a long way to the right, into a wide gap before the first numeric column. A
+    midpoint rule lands in the middle of that gap - straight through the team names. So a column's
+    boundary is derived from its OWN alignment and its own cell width instead:
+      • a LEFT-aligned column anchors its text at x and runs rightwards, so its boundary sits just in
+        FRONT of x and its cell extends to wherever the next column's boundary falls (the name column
+        gets the whole gap, which is exactly what it needs).
+      • a CENTRE-aligned column's text spreads both ways, so its boundary sits half a cell in front,
+        where the cell is the SMALLER of its two neighbouring gaps (never the huge name gap).
+      • a RIGHT-aligned column's text runs leftwards, so it takes a full cell in front.
+    Edges are then clamped to stay in order, so an odd hand-built layout can never produce a
+    backwards rectangle."""
+    if not fields:
+        return []
+    cols = sorted(
+        ((float(f.get("x_pct", 10.0)), (f.get("align") or "center")) for f in fields),
+        key=lambda c: c[0],
+    )
+    xs = [c[0] for c in cols]
+    if len(cols) == 1:
+        return [xs[0] - 6.0, xs[0] + 6.0]
+    gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+
+    def _cell(i):
+        """The width this column may claim in front of its anchor (percent of canvas width)."""
+        before = gaps[i - 1] if i > 0 else gaps[0]
+        after = gaps[i] if i < len(gaps) else gaps[-1]
+        return min(before, after)
+
+    edges = []
+    for i, (x, align) in enumerate(cols):
+        if align == "left":
+            edges.append(x - LEFT_ALIGN_EDGE_PAD)
+        elif align == "right":
+            edges.append(x - _cell(i))
+        else:
+            edges.append(x - _cell(i) / 2.0)
+    # Closing edge after the last column, mirroring how much room it claimed in front of itself.
+    last_x, last_align = cols[-1]
+    tail = LEFT_ALIGN_EDGE_PAD if last_align == "right" else (
+        _cell(len(cols) - 1) if last_align == "left" else _cell(len(cols) - 1) / 2.0)
+    edges.append(last_x + tail)
+    # Monotonic guard: keep every edge at or after the one before it.
+    for i in range(1, len(edges)):
+        edges[i] = max(edges[i], edges[i - 1])
+    return edges
+
+
+def _render_grid(base, field_layout, W, H, rgb):
+    """Draw the row + column hairlines of every column group and return the (composited) image.
+
+    Rows: one rule between each pair of rows plus one above the first and below the last, so each
+    standings row sits in its own band. Columns: one rule on every edge from _column_edges, so the
+    numbers line up in visible columns. Both are drawn on an RGBA layer at GRID_ALPHA and composited,
+    which keeps them subtle over busy background art and keeps a TRANSPARENT overlay design
+    transparent (a solid line would punch an opaque box into the OBS overlay).
+
+    RETURNS the image to keep drawing on: alpha_composite produces a NEW image, so the caller must
+    reassign (`base = _render_grid(base, ...)`). Called only from render_leaderboard_graphic, BEFORE
+    the fields, so the data always sits on top of its own rules."""
+    groups = _layout_groups(field_layout, 0)
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    line_rgba = tuple(rgb) + (GRID_ALPHA,)
+    width = max(1, int(H * GRID_WIDTH_FRAC))
+    drew = False
+
+    for gi, cg in enumerate(groups):
+        edges = _column_edges(_group_fields(field_layout, gi))
+        if not edges:
+            continue
+        rs = float(cg.get("row_start_pct", 33.0))
+        rh = float(cg.get("row_height_pct", 7.0))
+        rc = int(cg.get("row_count", 0) or 0)
+        if rc <= 0:
+            continue
+        # Row band edges: half a row above row 1, then one per row boundary, to half a row below
+        # the last row. A row's text is vertically centred on its y, so the half-row offset puts the
+        # rule exactly between two rows.
+        y_top = rs - rh / 2.0
+        y_bottom = rs + (rc - 0.5) * rh
+        x_left = edges[0] / 100.0 * W
+        x_right = edges[-1] / 100.0 * W
+        for i in range(rc + 1):
+            y = int((y_top + i * rh) / 100.0 * H)
+            ld.line([(x_left, y), (x_right, y)], fill=line_rgba, width=width)
+        for e in edges:
+            x = int(e / 100.0 * W)
+            ld.line([(x, int(y_top / 100.0 * H)), (x, int(y_bottom / 100.0 * H))],
+                    fill=line_rgba, width=width)
+        drew = True
+
+    if not drew:
+        return base
+    out = Image.alpha_composite(base.convert("RGBA"), layer)
+    # Give an OPAQUE board back its RGB mode: alpha_composite always returns RGBA, and saving an
+    # otherwise-opaque export with a redundant alpha channel just makes the PNG bigger. A transparent
+    # overlay design stays RGBA, which is the whole point of it.
+    return out if base.mode == "RGBA" else out.convert("RGB")
+
+
+def _wrap_header(draw, label, base_size, max_w, font_path):
+    """Fit a column-header label into max_w, returning (font, [line, ...]) with AT MOST two lines.
+
+    A two-word label over a narrow numeric column ("PLACEMENT POINTS" above a ~10%-wide column) cannot
+    shrink onto one line without becoming unreadable, so it stacks instead - the same thing a designer
+    would do by hand, and the reason the owner's wording is kept verbatim rather than abbreviated.
+    Single-word labels (POS, MP, BOOYAH) always come back as one line. The caller still ellipsis-clips
+    each line, so even a pathological label can never overrun its column.
+
+    WRAP BEFORE SHRINK: we try the full size on one line, then the full size on TWO lines, and only
+    shrink after that. Shrinking first made "KILL POINTS" render at half the size of "BOOYAH" beside
+    it, which reads as a mistake; wrapping first keeps every header in the row at the same size."""
+    font = _load_font(font_path, base_size)
+    if _text_w(draw, label, font) <= max_w:
+        return font, [label]
+    if " " not in label:
+        return _fit_font(draw, label, base_size, max_w, font_path=font_path), [label]
+    # Pick the space that gives the most balanced two-line split (smallest widest line).
+    words = label.split(" ")
+    best = min(
+        (
+            (max(_text_w(draw, " ".join(words[:i]), font),
+                 _text_w(draw, " ".join(words[i:]), font)), i)
+            for i in range(1, len(words))
+        ),
+        key=lambda pair: pair[0],
+    )[1]
+    top, bottom = " ".join(words[:best]), " ".join(words[best:])
+    # Re-fit on the WIDER of the two lines so both share one size (a mixed-size header reads broken).
+    wider = top if _text_w(draw, top, font) >= _text_w(draw, bottom, font) else bottom
+    return _fit_font(draw, wider, base_size, max_w, font_path=font_path), [top, bottom]
+
+
+def _render_column_headers(base, field_layout, W, H, default_rgb):
+    """Draw one label above each placed column of each column group.
+
+    The label comes from COLUMN_HEADER_LABELS; a column with no label (an image cell) is skipped. The
+    label is drawn at the column's OWN x with the column's OWN alignment + font, so it stays welded to
+    its numbers however the operator drags the column. Size = the column's own size x
+    HEADER_SIZE_SCALE, shrunk further (and finally ellipsis-clipped) to fit the gap to the neighbouring
+    column, so "PLACEMENT POINTS" over a narrow column shrinks instead of overrunning "TOTAL POINTS".
+    Colour = the design's accent (AFC green) unless the column sets its own, matching the site rule
+    that a heading is primary-coloured. Called from render_leaderboard_graphic after the rows."""
+    draw = ImageDraw.Draw(base)
+    for gi, cg in enumerate(_layout_groups(field_layout, 0)):
+        fields = _group_fields(field_layout, gi)
+        if not fields:
+            continue
+        rs = float(cg.get("row_start_pct", 33.0))
+        rh = float(cg.get("row_height_pct", 7.0))
+        # One row-height above row 1, clamped so a group tiled very high on the canvas still shows
+        # its header instead of drawing it off the top edge.
+        y = int(max(rh * 0.6, rs - rh * HEADER_ROW_GAP) / 100.0 * H)
+        edges = _column_edges(fields)
+        for f in fields:
+            label = COLUMN_HEADER_LABELS.get(f.get("field_type"), "")
+            if not label:
+                continue
+            x_pct = float(f.get("x_pct", 10.0))
+            # Widest this label may be: the distance to the column edges on either side of it (the
+            # cell it owns), minus a small breathing gap.
+            lo = max([e for e in edges if e <= x_pct], default=x_pct - 6.0)
+            hi = min([e for e in edges if e >= x_pct], default=x_pct + 6.0)
+            max_w = max(24, int((hi - lo) / 100.0 * W) - int(W * 0.008))
+            base_size = int(_elem_size_px(f, H, FIELD_SIZE_FRAC) * HEADER_SIZE_SCALE)
+            font, lines = _wrap_header(draw, label, base_size, max_w, f.get("font_path"))
+            # Stack the (at most two) lines centred on the header baseline so a one-line and a
+            # two-line header in the same row still read as one header row.
+            line_h = int(getattr(font, "size", base_size) * 1.05)
+            y0 = y - (line_h * (len(lines) - 1)) // 2
+            for li, line in enumerate(lines):
+                draw.text((int(x_pct / 100.0 * W), y0 + li * line_h),
+                          _clip_text(draw, line, font, max_w),
+                          font=font, fill=_elem_color(f, default_rgb),
+                          anchor=_anchor_x(f.get("align", "center")) + "m")
+
+
+def _render_board_header(base, field_layout, title, subtitle, W, H, text_rgb, accent_rgb,
+                         show_title=True, show_subtitle=True):
+    """Draw the board's TITLE (the event name) and SUB-TITLE (the stage name) on a field-layout board.
+
+    The two strings are the `title` / `subtitle` the export endpoints already pass - event_stage_graphic
+    sends event.event_name + stage.stage_name, leaderboard_graphic sends the leaderboard name + the
+    typed subtitle - so nothing new has to be plumbed; the field-layout path simply never drew them
+    before (only the legacy auto-table did). Position/size/colour/alignment come from the design's
+    title_style / subtitle_style (OrgLeaderboardDesign, owner 2026-07-02, previously unused by any
+    renderer), falling back to BOARD_TITLE_DEFAULTS / BOARD_SUBTITLE_DEFAULTS: centred at the top,
+    title in the accent (AFC green, per the site's primary-coloured page titles) and sub-header in the
+    text colour. Both shrink-to-fit then ellipsis-clip so a long event name cannot overrun the canvas."""
+    draw = ImageDraw.Draw(base)
+    pad = int(W * 0.06)
+    max_w = W - 2 * pad
+
+    def _draw(style, defaults, content, colour):
+        style = style or {}
+        x = int(float(style.get("x_pct", defaults["x_pct"])) / 100.0 * W)
+        y = int(float(style.get("y_pct", defaults["y_pct"])) / 100.0 * H)
+        base_size = max(8, int(float(style.get("font_size_pct", defaults["font_size_pct"]))
+                               / 100.0 * H))
+        path = style.get("font_path")
+        # The width this line may occupy. A DESIGN that positions its own title keeps the old
+        # full-width behaviour, because the person who placed it decided where it goes; only the
+        # defaults constrain themselves, and only so a long event name shrinks rather than sliding
+        # under a logo.
+        limit = max_w
+        if "max_w_pct" in defaults and not style.get("x_pct"):
+            limit = min(limit, int(float(defaults["max_w_pct"]) / 100.0 * W))
+        font = _fit_font(draw, content, base_size, limit, font_path=path)
+        raw = (style.get("color") or "").strip()
+        draw.text((x, y), _clip_text(draw, content, font, limit), font=font,
+                  fill=(_hex(raw, "#FFFFFF") if raw else colour),
+                  anchor=_anchor_x(style.get("align", defaults["align"])) + "m")
+
+    if show_title and title:
+        _draw(field_layout.get("title_style"), BOARD_TITLE_DEFAULTS, str(title), accent_rgb)
+    if show_subtitle and subtitle:
+        _draw(field_layout.get("subtitle_style"), BOARD_SUBTITLE_DEFAULTS, str(subtitle), text_rgb)
+
+
 def _render_fields(base, field_layout, rows, W, H, default_rgb):
     """FIELD-LAYOUT path: tile the standings `rows` down per column group and draw each placed
     field at its x_pct. `rows` is a list of dicts keyed by field_type. For a TEAM leaderboard board:
@@ -380,10 +702,13 @@ def _render_fields(base, field_layout, rows, W, H, default_rgb):
     board doesn't carry is simply skipped (blank cell), so team + player boards share this one path.
     Y for row i of group g comes from the group's row_start_pct + i*row_height_pct."""
     draw = ImageDraw.Draw(base)
-    groups = field_layout.get("column_groups") or [
-        {"row_start_pct": 33.0, "row_height_pct": 7.0, "row_count": len(rows), "start_rank": 1}
-    ]
+    groups = _layout_groups(field_layout, len(rows))
     fields = field_layout.get("fields") or []
+    # Fallback artwork per IMAGE field_type (owner 2026-08-05, backlog #3: the MVP graphic must still
+    # show a portrait for a player who has never uploaded one). {} => a missing image just leaves the
+    # cell blank, exactly as before. Supplied by the ephemeral player default
+    # (afc_organizers.views_leaderboard_design.build_ephemeral_afc_player_default).
+    placeholders = field_layout.get("image_placeholders") or {}
     for gi, cg in enumerate(groups):
         rs = float(cg.get("row_start_pct", 33.0))
         rh = float(cg.get("row_height_pct", 7.0))
@@ -417,9 +742,20 @@ def _render_fields(base, field_layout, rows, W, H, default_rgb):
                     # like team_logo / team_flag - previously it fell through to the TEXT path and drew
                     # the raw URL. Same box math (_row_image_box_px) so a player photo is sized WYSIWYG
                     # with the editor. The value may be a URL (overlay payload rows) OR a local path
-                    # (export rows); _paste_row_logo -> _local_media_path resolves either. Blank when the
-                    # player has no photo (None), and absent (blank) on TEAM leaderboard rows.
-                    _paste_row_logo(base, r.get("esports_image"), x, y, _row_image_box_px(f, H))
+                    # (export rows); _paste_row_logo -> _local_media_path resolves either. A player with
+                    # NO photo falls back to the layout's placeholder art when one is supplied (owner
+                    # 2026-08-05: the MVP graphic must never show an empty portrait slot), else the cell
+                    # stays blank - which is also what a TEAM leaderboard row does (it has no such key).
+                    # RESOLVE FIRST, then fall back. `row_value or placeholder` was not enough: a
+                    # player row usually carries a photo URL, and a URL that does not map onto a
+                    # file under MEDIA_ROOT is still TRUTHY, so the placeholder was skipped and
+                    # _paste_row_logo bailed out silently. Every slot on the MVP board came out
+                    # empty even though the placeholder art was generated, wired and correct.
+                    # That is the common case, not an edge one: production media is not on the
+                    # machine rendering a local export.
+                    photo = _local_media_path(r.get("esports_image"))
+                    _paste_row_logo(base, photo or placeholders.get("esports_image"),
+                                    x, y, _row_image_box_px(f, H))
                     continue
                 val = r.get(ft)
                 if val is None or val == "":
@@ -486,6 +822,16 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
                       unconfigured design still carries branding); or None.
     title           : the tournament / leaderboard name (drawn when show_title).
     subtitle        : stage / group played, typed at export (drawn when show_subtitle).
+    field_layout    : the placed-column layout (build_field_layout / build_pages_for_export /
+                      build_ephemeral_afc_default). Beyond column_groups / fields / texts it may
+                      carry the OPT-IN board chrome added 2026-08-05 (backlog #2), each ignored when
+                      absent so an older layout renders unchanged:
+                        show_column_headers  -> a label row above each column group
+                        show_grid            -> hairline rules between rows AND columns
+                        show_board_header    -> draw `title` as the header + `subtitle` as the
+                                                sub-header (styled by title_style/subtitle_style)
+                        image_placeholders   -> {field_type: path} fallback art for an empty image
+                                                cell (the MVP board's missing player photo)
     """
     canvas_size = CANVAS.get(size, CANVAS["instagram"])
     W, H = canvas_size
@@ -515,7 +861,18 @@ def render_leaderboard_graphic(standings, *, size="instagram", background_path=N
     # positioned logos, then return. The legacy auto-table path runs only when no fields are placed.
     use_field_layout = bool(field_layout and field_layout.get("fields"))
     if use_field_layout:
+        # ── Board CHROME (owner 2026-08-05, backlog #2) ── all three layers are OPT-IN per design, so a
+        # layout without these keys renders byte-for-byte as it did before. Order matters: the GRID goes
+        # down first (rules under the data), then the rows, then the column headers + the event/stage
+        # header on top of them. _render_grid composites onto a NEW image, hence the reassignment.
+        if field_layout.get("show_grid"):
+            base = _render_grid(base, field_layout, W, H, text_rgb)
         _render_fields(base, field_layout, rows or [], W, H, text_rgb)
+        if field_layout.get("show_column_headers"):
+            _render_column_headers(base, field_layout, W, H, accent_rgb)
+        if field_layout.get("show_board_header"):
+            _render_board_header(base, field_layout, title, subtitle, W, H, text_rgb, accent_rgb,
+                                 show_title=show_title, show_subtitle=show_subtitle)
         _paste_logos(base, logos, W, H)            # positioned logos on top of the data
         _render_texts(base, field_layout.get("texts") or [], W, H, text_rgb)  # freeform on very top
         buf = io.BytesIO()
