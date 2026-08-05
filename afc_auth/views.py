@@ -386,33 +386,106 @@ SITE_URL = "https://africanfreefirecommunity.com"
 from afc_auth.email_i18n import subject_for
 
 
+# ── The look of every AFC email (owner 2026-08-05) ───────────────────────────────────────────
+# "i want more simple themes and looks with no edges or boxes, more gradients".
+#
+# What changed, and why each thing went:
+#   * The 600px CARD is gone. It was a bordered, rounded panel floating on a darker page, so every
+#     email read as a box sitting on a background. The message now IS the surface: one gradient
+#     runs the full height and the content sits directly on it.
+#   * Every DIVIDER RULE is gone (header border-bottom, footer border-top, the 1px outline on the
+#     card). Sections are separated by space and by where the gradient shifts, not by lines.
+#   * Every CHIP is gone. Codes used to sit in a bordered rounded box; they are now large,
+#     wide-tracked type on a soft wash that fades out at its edges, so there is nothing to see an
+#     edge OF.
+#
+# GRADIENTS AND OUTLOOK. Outlook on Windows renders through Word, which ignores
+# background-image:linear-gradient entirely. Every gradient here is therefore paired with a solid
+# `bgcolor` chosen to be the gradient's midpoint, so Outlook shows a flat dark surface that still
+# looks deliberate rather than a white rectangle. Nothing depends on the gradient rendering.
+_GRADIENTS = {
+    # (page gradient, solid fallback, accent, accent gradient for washes/buttons)
+    "green": ("linear-gradient(180deg,#0b1a12 0%,#080d0a 45%,#050706 100%)", "#080d0a",
+              "#34d27b", "linear-gradient(135deg,#1b3d2a 0%,#0c1b13 100%)"),
+    "gold":  ("linear-gradient(180deg,#1b1508 0%,#0d0b06 45%,#050706 100%)", "#0d0b06",
+              "#f5c518", "linear-gradient(135deg,#3d3113 0%,#1b1508 100%)"),
+}
+
+
+def _email_code(code, accent="green"):
+    """A one-time code, shown as type rather than as a chip.
+
+    Previously a bordered rounded box. The owner asked for no edges, so the code is now large
+    wide-tracked type on a gradient wash whose colour is close to the page's own - it reads as a
+    lit area rather than a container, and in Outlook (no gradient support) it degrades to a slightly
+    lighter block, still without a border.
+
+    Shared by the verification, password-reset and email-change builders so the three cannot drift
+    apart, which they had already started to do (two different border colours for the same idea).
+    """
+    _pg, _ps, a, wash = _GRADIENTS.get(accent, _GRADIENTS["green"])
+    solid = "#0f1c14" if accent == "green" else "#1c1709"
+    return f"""
+    <table role="presentation" cellpadding="0" cellspacing="0" align="center"><tr>
+      <td bgcolor="{solid}" style="background-color:{solid};background-image:{wash};border-radius:18px;padding:22px 38px;">
+        <span style="font-size:36px;font-weight:800;letter-spacing:11px;color:{a};font-family:Consolas,Menlo,monospace;">{code}</span>
+      </td>
+    </tr></table>"""
+
+
+def _email_tick(accent="green"):
+    """The confirmation tick used by the password-changed / email-changed emails. Was a bordered
+    circle; now a filled gradient disc, so the shape carries the meaning instead of an outline."""
+    _pg, _ps, a, wash = _GRADIENTS.get(accent, _GRADIENTS["green"])
+    solid = "#0f1c14" if accent == "green" else "#1c1709"
+    return (f'<table role="presentation" cellpadding="0" cellspacing="0" align="center"><tr>'
+            f'<td width="66" height="66" align="center" valign="middle" bgcolor="{solid}" '
+            f'style="width:66px;height:66px;background-color:{solid};background-image:{wash};'
+            f'border-radius:33px;font-size:30px;color:{a};text-align:center;">&#10003;</td>'
+            f'</tr></table>')
+
+
+def _email_note(text, accent="gold"):
+    """A quiet aside (the "if this wasn't you" line). Was a bordered panel; now a wash with no
+    edge, leaning on colour and indent instead of an outline."""
+    _pg, _ps, a, wash = _GRADIENTS.get(accent, _GRADIENTS["gold"])
+    solid = "#1c1709" if accent == "gold" else "#0f1c14"
+    tint = "#d8c98f" if accent == "gold" else "#a9c9b6"
+    return (f'<div bgcolor="{solid}" style="background-color:{solid};background-image:{wash};'
+            f'border-radius:14px;padding:16px 20px;font-size:13px;line-height:1.65;color:{tint};">'
+            f'{text}</div>')
+
+
 def _email_shell(body_inner_html, accent="green"):
-    """Wrap an email's inner table rows in the shared AFC branded shell. `body_inner_html` is the
-    <tr>...</tr> content between the header and footer; `accent` is 'green' (default) or 'gold'."""
-    a = "#34d27b" if accent == "green" else "#f5c518"
-    grad = "linear-gradient(135deg,#0c1f15 0%,#0f1411 60%)" if accent == "green" \
-        else "linear-gradient(135deg,#1f1608 0%,#0f1411 60%)"
-    hb = "#1d2a22" if accent == "green" else "#2a2113"
+    """Wrap an email's inner table rows in the shared AFC surface. `body_inner_html` is the
+    <tr>...</tr> content; `accent` is 'green' (default) or 'gold'.
+
+    Deliberately edge-free: no card, no borders, no rules. See the note above _GRADIENTS."""
+    page_grad, page_solid, a, _wash = _GRADIENTS.get(accent, _GRADIENTS["green"])
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:24px 0;background:#070a08;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
-<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#0f1411;border:1px solid #1d2a22;border-radius:16px;overflow:hidden;">
-  <tr><td style="background:{grad};padding:28px 0 22px;text-align:center;border-bottom:1px solid {hb};">
-    <!-- Actual AFC logo (owner request 2026-06-09) on a white badge. The logo art has dark
-         outlines + black tagline text, so a white badge keeps it readable on the dark header
-         regardless of the PNG's own background. Hosted at the site root: Next public/logo.png
-         -> https://africanfreefirecommunity.com/logo.png. An absolute hosted URL is required
-         because mail clients cannot load local/inline files. This shell wraps EVERY AFC email
-         (verification, welcome, reset, password-changed, and the shop/vendor order emails), so
-         the logo now appears in all of them. -->
-    <table role="presentation" cellpadding="0" cellspacing="0" align="center"><tr><td style="background:#ffffff;border-radius:14px;padding:9px 14px;">
-      <img src="{SITE_URL}/logo.png" alt="African Free Fire Community" width="92" height="92" style="display:block;border:0;outline:none;width:92px;height:auto;">
-    </td></tr></table>
+<body style="margin:0;padding:0;background-color:{page_solid};font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="{page_solid}" style="background-color:{page_solid};background-image:{page_grad};">
+<tr><td align="center" style="padding:0;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
+  <tr><td style="padding:44px 0 30px;text-align:center;">
+    <!-- The AFC logo (owner request 2026-06-09) on a round white mark. The art has dark outlines
+         and black tagline text, so it is illegible straight onto a dark surface and needs a light
+         ground of some kind. A CIRCLE reads as a logo mark rather than as one of the boxes the
+         owner asked to remove, which is the compromise between "no boxes" and "you can see it".
+         Hosted absolutely (Next public/logo.png) because mail clients cannot load local files.
+         This shell wraps EVERY AFC email, so the mark appears in all of them. -->
+    <table role="presentation" cellpadding="0" cellspacing="0" align="center"><tr>
+      <td width="86" height="86" align="center" valign="middle"
+          style="width:86px;height:86px;background-color:#ffffff;border-radius:43px;text-align:center;">
+        <img src="{SITE_URL}/logo.png" alt="African Free Fire Community" width="68" height="68" style="display:block;border:0;outline:none;width:68px;height:auto;margin:0 auto;">
+      </td>
+    </tr></table>
   </td></tr>
   {body_inner_html}
-  <tr><td style="padding:18px 44px 30px;border-top:1px solid #1d2a22;">
-    <div style="font-size:12px;color:#55635a;">African Free Fire Community &nbsp;&bull;&nbsp; <a href="{SITE_URL}" style="color:{a};text-decoration:none;">africanfreefirecommunity.com</a></div>
+  <tr><td style="padding:34px 44px 46px;text-align:center;">
+    <div style="font-size:12px;line-height:1.7;color:#5a6961;">African Free Fire Community<br>
+      <a href="{SITE_URL}" style="color:{a};text-decoration:none;">africanfreefirecommunity.com</a></div>
   </td></tr>
 </table></td></tr></table></body></html>"""
 
@@ -435,9 +508,7 @@ def email_verification_code(username, code, lang="en"):
     <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"].format(username=username_html, site=site_html)}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 8px;" align="center">
-    <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#0a120d;border:1px solid #2c7a4d;border-radius:12px;padding:18px 34px;">
-      <span style="font-size:38px;font-weight:800;letter-spacing:12px;color:#34d27b;font-family:Consolas,Menlo,monospace;">{code}</span>
-    </td></tr></table>
+    {_email_code(code, "green")}
   </td></tr>
   <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">{c["expires"]}</div></td></tr>
   <tr><td style="padding:0 44px 8px;">
@@ -490,9 +561,7 @@ def email_reset_token(token, lang="en"):
     <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"]}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 8px;" align="center">
-    <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#16120a;border:1px solid #7a611f;border-radius:12px;padding:18px 34px;">
-      <span style="font-size:34px;font-weight:800;letter-spacing:10px;color:#f5c518;font-family:Consolas,Menlo,monospace;">{token}</span>
-    </td></tr></table>
+    {_email_code(token, "gold")}
   </td></tr>
   <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">{c["expires"]}</div></td></tr>
   <tr><td style="padding:0 44px 8px;">
@@ -513,14 +582,12 @@ def email_password_changed(username, when_text, lang="en"):
     support_html = f'<a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">{c["support_label"]}</a>'
     inner = f"""
   <tr><td style="padding:40px 44px 6px;text-align:center;">
-    <div style="width:64px;height:64px;line-height:64px;border-radius:50%;background:#0a120d;border:1px solid #2c7a4d;margin:0 auto;font-size:30px;color:#34d27b;">&#10003;</div>
+    {_email_tick("green")}
     <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">{c["heading"]}</div>
     <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"].format(username=username_html, when=when_text)}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 30px;">
-    <div style="background:#16120a;border:1px solid #4a3a14;border-radius:10px;padding:14px 18px;font-size:13px;line-height:1.6;color:#d8c98f;">
-      {c["warning"].format(support=support_html)}
-    </div>
+    {_email_note(c["warning"].format(support=support_html), "gold")}
   </td></tr>"""
     return _email_shell(inner, "green")
 
@@ -540,9 +607,7 @@ def email_change_code(code, lang="en"):
     <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"]}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 8px;" align="center">
-    <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#16120a;border:1px solid #7a611f;border-radius:12px;padding:18px 34px;">
-      <span style="font-size:34px;font-weight:800;letter-spacing:10px;color:#f5c518;font-family:Consolas,Menlo,monospace;">{code}</span>
-    </td></tr></table>
+    {_email_code(code, "gold")}
   </td></tr>
   <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">{c["expires"]}</div></td></tr>
   <tr><td style="padding:0 44px 8px;">
@@ -566,14 +631,12 @@ def email_email_changed(username, new_email, when_text, lang="en"):
     support_html = f'<a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">{c["support_label"]}</a>'
     inner = f"""
   <tr><td style="padding:40px 44px 6px;text-align:center;">
-    <div style="width:64px;height:64px;line-height:64px;border-radius:50%;background:#0a120d;border:1px solid #2c7a4d;margin:0 auto;font-size:30px;color:#34d27b;">&#10003;</div>
+    {_email_tick("green")}
     <div style="font-size:21px;font-weight:700;color:#ffffff;margin-top:18px;">{c["heading"]}</div>
     <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"].format(username=username_html, new_email=new_email_html, when=when_text)}</div>
   </td></tr>
   <tr><td style="padding:24px 44px 30px;">
-    <div style="background:#16120a;border:1px solid #4a3a14;border-radius:10px;padding:14px 18px;font-size:13px;line-height:1.6;color:#d8c98f;">
-      {c["warning"].format(support=support_html)}
-    </div>
+    {_email_note(c["warning"].format(support=support_html), "gold")}
   </td></tr>"""
     return _email_shell(inner, "green")
 
