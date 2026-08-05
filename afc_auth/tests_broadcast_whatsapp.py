@@ -38,7 +38,15 @@ from .broadcast_whatsapp import (
     whatsapp_max_recipients,
     whatsapp_volume_assessment,
 )
-from .models import Notifications, SentBroadcast, SessionToken, User, UserProfile
+from .models import (
+    Notifications,
+    Roles,
+    SentBroadcast,
+    SessionToken,
+    User,
+    UserProfile,
+    UserRoles,
+)
 from .views import deliver_broadcast
 
 
@@ -90,6 +98,12 @@ class BroadcastWhatsAppTests(TestCase):
             username="admin_user", email="admin@afc.test", password="x",
             role="admin", country="Nigeria", language="en",
         )
+        # head_admin, because the WhatsApp channel became head-admin-only on 2026-08-05: it is
+        # billed per message, so sending on it is a spending decision (see
+        # tests_whatsapp_head_admin.py). This suite is about DELIVERY, not permission, so it gives
+        # its admin the role the feature now needs rather than asserting the old, open behaviour.
+        _head_role, _ = Roles.objects.get_or_create(role_name="head_admin")
+        UserRoles.objects.create(user=self.admin, role=_head_role)
         self.player_a = User.objects.create_user(
             username="player_a", email="a@afc.test", password="x",
             role="player", country="Nigeria", language="en",
