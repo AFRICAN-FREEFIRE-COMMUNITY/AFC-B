@@ -109,6 +109,23 @@ def _is_broadcast_audience_admin(user):
     return user.userroles.filter(role__role_name__in=BROADCAST_AUDIENCE_ROLES).exists()
 
 
+def _is_head_admin(user):
+    """True only for head_admin / super_admin / a Django superuser.
+
+    DELIBERATELY STRICTER than _is_broadcast_audience_admin above, which also lets a plain
+    role=="admin" through. It gates the WhatsApp channel, where every message is billed - see the
+    reasoning at the check itself in broadcast_audience_send. Mirrors afc_auth.views
+    .require_head_admin, which cannot be reused here because that one re-reads the Authorization
+    header and this endpoint has already resolved the user.
+    """
+    if not user:
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    return user.userroles.filter(
+        role__role_name__in=("head_admin", "super_admin")).exists()
+
+
 def _forbidden():
     """The one 403 body this module returns, so every endpoint refuses a non-admin identically."""
     return Response(
@@ -331,6 +348,11 @@ def broadcast_audience_preview(request):
             **counts,
             "email_volume": volume,
             "whatsapp_volume": wa_volume,
+            # Whether THIS admin may use the WhatsApp channel at all (owner 2026-08-05:
+            # head-admin only, because those messages are billed per message). Reported by the
+            # PREVIEW so the composer can grey the option out with a reason, rather than letting
+            # somebody write a broadcast, pick WhatsApp and only find out at the send.
+            "whatsapp_allowed": _is_head_admin(user),
             "recommended_delivery": recommended_delivery(counts["recipient_count"]),
             "sample": [_serialize_recipient(u) for u in page],
             "sample_total_count": sample_total,
@@ -404,6 +426,28 @@ def broadcast_audience_send(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
     delivery = delivery_token(channels)
+
+    # ── WhatsApp on THIS surface is head-admin only (owner 2026-08-05) ────────────────────────
+    # This is a SPENDING control, not an ordinary permission, which is why it is stricter than the
+    # gate on the endpoint itself.
+    #
+    # A general broadcast goes out on the `broadcast` template, which Meta categorises as
+    # MARKETING. On Meta's rate card effective 2026-04-01, Nigeria - about 69% of AFC - is
+    # $0.0516 per marketing message against $0.0067 for utility. So one broadcast to 500 people
+    # costs roughly $26, and a daily habit of 1,000 messages is about $1,548 a month. Every other
+    # admin role can still send in-app and email, which cost nothing.
+    #
+    # Room details are deliberately NOT affected. They go out on `room_details`, a UTILITY
+    # template at an eighth of the price, from the event surfaces, and organizers need to send
+    # them without asking anybody. This gate is only on the general-broadcast composer.
+    if WHATSAPP in channels and not _is_head_admin(user):
+        return Response(
+            {"message": "Only a head admin can send a broadcast on WhatsApp. WhatsApp messages "
+                        "are charged per message, so this channel is restricted. You can still "
+                        "send this as an in-app notification or email.",
+             "code": "whatsapp_requires_head_admin"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     # ── audience ──
     spec = parse_audience_spec(request.data)
