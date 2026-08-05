@@ -148,6 +148,83 @@ def _roster_capacity_error(team, incoming_role="member"):
     return None
 
 
+# Staff seats in the order somebody is offered one when the playing side is full. Coach first
+# because it is the seat a team is most likely to actually want filled; analyst last because it is
+# the most specialised. The order only decides which FREE seat an auto-assigned joiner lands in -
+# a captain can move anybody afterwards on Manage Roster.
+_AUTO_STAFF_ORDER = ("coach", "manager", "analyst")
+
+
+def _resolve_join_role(team, preferred_role="member"):
+    """Work out which role somebody joining `team` should actually get, or why they cannot join.
+
+    Returns (role, None) when there is a seat, or (None, error_string) when the team is genuinely
+    full. The caller stores `role` on the TeamMembers row it creates.
+
+    WHY THIS EXISTS (owner 2026-08-05, reported live: "when 6 players are in, literally no other
+    person can join again").
+
+    Item 33 gave a team 9 seats: 6 playing, plus one coach, one manager and one analyst. But every
+    join path asked _roster_capacity_error for the role "member", so the moment the 6 PLAYING seats
+    filled, the gate refused - and the three staff seats, which were the entire point of raising
+    the cap to 9, could never be reached by anybody joining. The refusal even told people to "join
+    as staff", while offering no way to do so: a join request and an open-team link both hardcode
+    "member". Measured on the production clone the day it was reported: 127 of 608 teams were at
+    the playing cap and therefore closed to everybody.
+
+    So instead of refusing, fall through to the next FREE staff seat. A team is only closed when
+    all nine seats are taken. The joiner is told which seat they got, because "you joined as coach"
+    when they expected to play is a surprise worth naming rather than hiding.
+
+    A caller that has an EXPLICIT role from the user (an invite naming "manager", a captain adding
+    a coach) must keep using _roster_capacity_error directly - this helper is for the paths where
+    nobody chose a role and the system has to pick one.
+
+    CONNECTS TO: join_team (open-team link), send_join_request + review_join_request (the
+    request/approve pair). _roster_capacity_error still owns the explicit-role paths:
+    invite_member, generate_invite_link, respond_invite, review_invitation.
+    """
+    if TeamMembers.objects.filter(team=team).count() >= MAX_MEMBERS:
+        return None, (
+            f"This team is full. A team can hold at most {MAX_MEMBERS} people: "
+            f"{MAX_PLAYERS} players plus one coach, one manager and one analyst."
+        )
+
+    # The ordinary case: a playing seat is free and that is what they asked for.
+    if preferred_role in PLAYER_ROLES and _playing_member_count(team) < MAX_PLAYERS:
+        return preferred_role, None
+
+    # An explicit staff preference, still free.
+    if preferred_role in STAFF_ROLES and not TeamMembers.objects.filter(
+        team=team, management_role=preferred_role
+    ).exists():
+        return preferred_role, None
+
+    # Playing side full (or their preferred staff seat taken): take the first free staff seat
+    # rather than turning somebody away from a team that still has room.
+    taken = set(
+        TeamMembers.objects.filter(team=team, management_role__in=STAFF_ROLES)
+        .values_list("management_role", flat=True)
+    )
+    for role in _AUTO_STAFF_ORDER:
+        if role not in taken:
+            return role, None
+
+    # Nine seats, all occupied. Unreachable given the headcount check above unless a legacy team
+    # is over-full, which is exactly when this message is the right answer anyway.
+    return None, (
+        f"This team is full. All {MAX_PLAYERS} playing places and every staff place "
+        "(coach, manager, analyst) are taken."
+    )
+
+
+def _role_label(role):
+    """How a role is named to a player. 'member' is stored but shown as Player everywhere
+    (TeamMembers.MANAGEMENT_ROLE_CHOICES), so it must not leak into a message as "member"."""
+    return {"member": "player", "team_captain": "team captain",
+            "vice_captain": "vice captain"}.get(role, role)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Team country auto-derivation (owner 2026-06-20)
 #
@@ -804,11 +881,12 @@ def send_join_request(request):
         if JoinRequest.objects.filter(requester=requester, team=team, status_of_request="unattended_to").exists():
             return Response({"message": "You already have a pending join request for this team."}, status=status.HTTP_400_BAD_REQUEST)
         
-        # A join request always asks for a PLAYING seat (approving one creates a 'member'), so the
-        # gate is run with that role. Checked here so the requester is told the team is full
-        # up-front instead of waiting on a request that can never be approved; review_join_request
-        # checks again at approval time because the roster moves in between.
-        capacity_error = _roster_capacity_error(team, "member")
+        # A join request asks for a seat, not specifically a PLAYING one: if the six playing places
+        # are taken, approval seats the requester as staff rather than refusing them (owner
+        # 2026-08-05). Checked here so somebody is told the team is genuinely full up-front instead
+        # of waiting on a request that can never be approved; review_join_request resolves the role
+        # again at approval time, because the roster moves in between.
+        _seat, capacity_error = _resolve_join_role(team, "member")
         if capacity_error:
             return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -874,20 +952,27 @@ def review_join_request(request):
         if join_request.status_of_request == "attended_to":
             return Response({"message": "This request has already been reviewed."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Set before the branch: a REJECTED request never seats anybody, and the notification
+        # below reads this either way. Leaving it undefined there would raise NameError inside the
+        # blanket `except` and turn every rejection into "An error occurred."
+        join_role = None
+
         if decision == "approved":
             # Ensure the requester is not already in a team
             if TeamMembers.objects.filter(member=join_request.requester).exists():
                 return Response({"message": "User is already a member of a team."}, status=status.HTTP_400_BAD_REQUEST)
             
-            # Approving a join request seats the requester as a PLAYER, so both caps apply.
-            # Previously only the hard-coded `>= 8` total was checked here, so an approval could
-            # push a team past 6 players.
-            capacity_error = _roster_capacity_error(team, "member")
+            # Seat the requester: a playing place while one is free, otherwise the next free staff
+            # place (owner 2026-08-05). Resolved HERE and not at request time because the roster
+            # can change between somebody asking and a captain approving, so the seat they end up
+            # in has to be decided against the roster as it is now.
+            join_role, capacity_error = _resolve_join_role(team, "member")
             if capacity_error:
                 return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
             # Add the user to the team
-            TeamMembers.objects.create(team=team, member=join_request.requester, management_role='member')
+            TeamMembers.objects.create(
+                team=team, member=join_request.requester, management_role=join_role)
 
 
         # Update join request status
@@ -903,8 +988,16 @@ def review_join_request(request):
             description=f"Join request {decision} by {join_request.requester.username}."
         )
 
-        # Notify the requester
+        # Notify the requester. When they were seated as STAFF because the playing places were
+        # full, say so: somebody who asked to play and quietly became the coach will otherwise
+        # find out by looking at the roster, and ask why.
         notification_message = f"Your request to join the team '{team.team_name}' has been {decision}."
+        if decision == "approved" and join_role in STAFF_ROLES:
+            notification_message = (
+                f"You have joined '{team.team_name}' as {_role_label(join_role)}. All "
+                f"{MAX_PLAYERS} playing places were taken, so you were given a staff place. "
+                f"The team captain can change your role."
+            )
         Notifications.objects.create(
             user=join_request.requester,
             message=notification_message,
@@ -2942,29 +3035,43 @@ def join_team(request):
     # Capacity gate. This open-join door had NO cap of any kind (owner 2026-08-04, item 33): an
     # "open" team could be walked into indefinitely, past both the total headcount and the 6-player
     # limit that every other join path enforced. Joiners always land as a PLAYER here.
-    capacity_error = _roster_capacity_error(team, "member")
+    # Playing seat if one is free, otherwise the next free STAFF seat rather than a refusal
+    # (owner 2026-08-05: "it should allow them join but auto assign one of the admin roles").
+    # _resolve_join_role only turns somebody away when all nine seats are genuinely taken.
+    join_role, capacity_error = _resolve_join_role(team, "member")
     if capacity_error:
         return Response({"message": capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
     # Add user to team
-    TeamMembers.objects.create(team=team, member=user, management_role='member')
+    TeamMembers.objects.create(team=team, member=user, management_role=join_role)
 
     # Log the action in the Report table
     Report.objects.create(
         team=team,
         user=user,
         action="player_joined",
-        description=f"{user.username} joined the team {team.team_name}."
+        description=f"{user.username} joined the team {team.team_name} as {_role_label(join_role)}."
     )
 
     # Notify the team owner
     Notifications.objects.create(
         user=team.team_owner,
-        message=f"{user.username} has joined your team {team.team_name}.",
+        message=f"{user.username} has joined your team {team.team_name} as {_role_label(join_role)}.",
         notification_type="team_join"
     )
 
-    return Response({"message": f"You have successfully joined the team {team.team_name}."}, status=status.HTTP_200_OK)
+    # Name the seat when it is NOT the playing one they were expecting. Landing as coach without
+    # being told is the kind of surprise that becomes a support message.
+    if join_role in STAFF_ROLES:
+        return Response(
+            {"message": f"You have joined {team.team_name} as {_role_label(join_role)}. "
+                        f"All {MAX_PLAYERS} playing places were taken, so you were given a staff "
+                        f"place instead. The team captain can change your role.",
+             "assigned_role": join_role},
+            status=status.HTTP_200_OK)
+
+    return Response({"message": f"You have successfully joined the team {team.team_name}.",
+                     "assigned_role": join_role}, status=status.HTTP_200_OK)
 
 
 
