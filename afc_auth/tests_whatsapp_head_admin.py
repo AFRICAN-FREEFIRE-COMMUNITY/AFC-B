@@ -17,7 +17,7 @@ Run: .venv\Scripts\python.exe manage.py test afc_auth.tests_whatsapp_head_admin
 """
 import datetime
 
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 
 from afc_auth.models import Roles, SessionToken, User, UserRoles
 
@@ -25,6 +25,12 @@ SEND = "/auth/admin/broadcast-audience/send/"
 PREVIEW = "/auth/admin/broadcast-audience/preview/"
 
 
+# The permission tests below assume the channel is SWITCHED ON. WHATSAPP_BROADCAST_TEMPLATE is
+# empty by default (so a deploy can never message players before somebody chooses to), and the
+# "not configured" refusal runs BEFORE the head-admin one - so without this override every test
+# here would pass for the wrong reason, having been refused for being switched off rather than
+# for who was asking. Caught by these tests failing the moment that check was added.
+@override_settings(WHATSAPP_BROADCAST_TEMPLATE="broadcast")
 class WhatsappBroadcastIsHeadAdminOnlyTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -107,3 +113,61 @@ class WhatsappBroadcastIsHeadAdminOnlyTests(TestCase):
 
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertIs(resp.json()["whatsapp_allowed"], True)
+
+
+@override_settings(WHATSAPP_BROADCAST_TEMPLATE="")
+class WhatsappNotConfiguredTests(TestCase):
+    """The channel is off until the server sets WHATSAPP_BROADCAST_TEMPLATE.
+
+    Owner 2026-08-05: "add a disclaimer that the whatsapp is not available yet, but will be in due
+    time soon". The disclaimer is DERIVED from this setting rather than hardcoded, so it clears
+    itself the moment the env value lands and nobody has to remember a follow-up change.
+
+    Refusing at the endpoint matters as much as the notice: send_broadcast_whatsapp skips every
+    recipient and returns quietly when the template is missing, which is right mid-send and a
+    terrible answer to somebody who deliberately ticked the box.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        role, _ = Roles.objects.get_or_create(role_name="head_admin")
+        self.head = User.objects.create(
+            username="wa_off_head", email="wa_off_head@x.com", full_name="Head",
+            role="admin", password="x")
+        UserRoles.objects.create(user=self.head, role=role)
+        SessionToken.objects.create(
+            user=self.head, token="tok-wa_off_head",
+            expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1))
+        User.objects.create(
+            username="wa_off_target", email="wa_off_target@x.com", full_name="T",
+            role="player", password="x")
+
+    def test_even_a_head_admin_is_refused_while_it_is_switched_off(self):
+        resp = self.client.post(
+            SEND,
+            data={"everyone": True, "message": "hi", "delivery": "whatsapp",
+                  "confirmed_count": User.objects.filter(is_active=True).count()},
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer tok-wa_off_head")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertEqual(resp.json().get("code"), "whatsapp_not_configured")
+
+    def test_the_preview_reports_it_as_not_configured(self):
+        resp = self.client.post(
+            PREVIEW, data={"everyone": True}, content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer tok-wa_off_head")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIs(resp.json()["whatsapp_configured"], False)
+
+    def test_the_free_channels_are_unaffected(self):
+        """Being switched off must not stop anybody sending in-app or email."""
+        resp = self.client.post(
+            SEND,
+            data={"everyone": True, "message": "hi", "delivery": "push",
+                  "confirmed_count": User.objects.filter(is_active=True).count()},
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer tok-wa_off_head")
+
+        self.assertNotIn(resp.status_code, (400, 403), resp.content)
