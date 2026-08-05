@@ -17965,10 +17965,16 @@ def disqualify_player(request):
 
 
     # Notify Player
+    # The KIND of event, not a hardcoded "tournament": backlog item 32 was reported against the
+    # completion notice, and these two disqualification notices had exactly the same bug. See
+    # afc_tournament_and_scrims/event_wording.py.
+    from .event_wording import event_noun
+    _noun = event_noun(event)
+    _noun_lower = event_noun(event, capitalized=False)
     Notifications.objects.create(
         user=rc.user,
-        title="Disqualified from Tournament",
-        message=f"You have been disqualified from the tournament '{event.event_name}'. Reason: {reason or 'No reason provided.'}",
+        title=f"Disqualified from {_noun}",
+        message=f"You have been disqualified from the {_noun_lower} '{event.event_name}'. Reason: {reason or 'No reason provided.'}",
         notification_type="tournament_disqualification",
         related_event=event,
     )
@@ -18051,12 +18057,15 @@ def disqualify_team(request):
 
     
     # Notify Team Members
+    from .event_wording import event_noun
+    _noun = event_noun(event)
+    _noun_lower = event_noun(event, capitalized=False)
     member_users = [m.user for m in tt.members.all() if m.user]
     for user in member_users:
         Notifications.objects.create(
             user=user,
-            title="Team Disqualified from Tournament",
-            message=f"Your team '{tt.team.team_name}' has been disqualified from the tournament '{event.event_name}'. Reason: {reason or 'No reason provided.'}",
+            title=f"Team Disqualified from {_noun}",
+            message=f"Your team '{tt.team.team_name}' has been disqualified from the {_noun_lower} '{event.event_name}'. Reason: {reason or 'No reason provided.'}",
             notification_type="tournament_disqualification",
             related_event=event,
         )
@@ -24246,9 +24255,9 @@ def complete_event_core(event, by_user, *, source="manual"):
     # localized at READ time by get_notifications (afc_auth/views.py, translate-on-read via
     # afc_auth.translation.localize_field), so correcting the English literal carries the fix into
     # French and Portuguese with no catalog change.
-    _is_scrims = event.competition_type == "scrims"
-    _noun = "Scrims" if _is_scrims else "Tournament"
-    _noun_lower = "scrims" if _is_scrims else "tournament"
+    from .event_wording import event_noun
+    _noun = event_noun(event)
+    _noun_lower = event_noun(event, capitalized=False)
     try:
         _notify_all_registered(
             event,
