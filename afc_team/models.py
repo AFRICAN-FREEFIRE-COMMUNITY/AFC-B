@@ -96,10 +96,28 @@ class TeamSocialMediaLinks(models.Model):
 
 
 class TeamMembers(models.Model):
+    # A member's role on the team. The choices MIX two families with very different rules:
+    # PLAYING roles (team_captain / vice_captain / member) can be fielded and count toward the
+    # 6-player cap; STAFF roles (coach / manager / analyst) are support-only, never play, and are
+    # limited to one of each. The canonical split lives in afc_team/views.py as PLAYER_ROLES /
+    # STAFF_ROLES, and the two caps live there as MAX_PLAYERS (6) / MAX_MEMBERS (9 = 6 + 1 + 1 + 1).
+    #
+    # DISPLAY RENAME, owner 2026-08-04 (backlog item 33: "Rename the management role 'member' to
+    # 'player'"). Only the human LABEL changed, 'Member' -> 'Player'. The STORED value is still
+    # 'member' on purpose:
+    #   - This repo gitignores migrations and generates them on the server, so a data migration
+    #     that rewrites every live TeamMembers row (and every pending Invite's
+    #     role_to_be_given_upon_acceptance) cannot ship safely.
+    #   - The literal 'member' is the join/invite DEFAULT and is hard-coded in the backend role
+    #     sets (PLAYER_ROLES, ALLOWED_IG_ROLES, _INVITABLE_ROLES) and mirrored in the frontend
+    #     (teams/[id]/roster, tournaments/[slug] EventDetailsWrapper's registration picker). A
+    #     value rename would have to land in all of them at the same instant as the data change.
+    # Changing only the label is a schema no-op for a CharField, and every user-facing surface now
+    # says "Player" (frontend messages/*/teamsplayers.json -> roster.member / teamDetail.role*).
     MANAGEMENT_ROLE_CHOICES = [
         ('team_captain', 'Team Captain'),
         ('vice_captain', 'Vice Captain'),
-        ('member', 'Member'),
+        ('member', 'Player'),          # stored value stays 'member'; displayed as "Player"
         ('coach', 'Coach'),
         ('manager', 'Manager'),
         ('analyst', 'Analyst'),

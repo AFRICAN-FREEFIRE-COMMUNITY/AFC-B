@@ -72,6 +72,19 @@ PLAYER_ROLES = {"team_captain", "vice_captain", "member"}   # PLAYING - count to
 STAFF_ROLES = {"coach", "manager", "analyst"}               # MANAGEMENT - never play / never rostered
 MAX_PLAYERS = 6
 
+# TOTAL headcount cap for a team (owner 2026-08-04, backlog item 33: "Teams may hold 9 members but
+# only 6 players"). 9 is not an arbitrary number - it is exactly what the two existing rules add up
+# to: MAX_PLAYERS (6) playing seats, plus ONE coach + ONE manager + ONE analyst (the one-staff-each
+# rule enforced in manage_team_roster and, since item 33, on every join path too). Replaces a
+# hard-coded `>= 8` that had been copy-pasted into four separate add paths.
+MAX_MEMBERS = 9
+
+# Roles somebody can be invited/joined INTO. 'team_captain' and 'vice_captain' are deliberately
+# absent: those are promotions granted on the Manage Roster page once a person is already on the
+# team, never something an invite hands out. Mirrors (and now feeds) the whitelist that
+# generate_invite_link used to declare inline.
+_INVITABLE_ROLES = {"member", "coach", "manager", "analyst"}
+
 
 def _playing_member_count(team):
     """Count of PLAYING-role members on a team (the basis for the 6-player cap).
@@ -83,6 +96,56 @@ def _playing_member_count(team):
     return TeamMembers.objects.filter(
         team=team, management_role__in=PLAYER_ROLES
     ).count()
+
+
+def _roster_capacity_error(team, incoming_role="member"):
+    """The single gate every "add somebody to this team" path runs before creating a TeamMembers
+    row. Returns a user-facing refusal STRING when `team` has no room for one more person in
+    `incoming_role`, or None when there is room.
+
+    WHY THIS EXISTS (owner 2026-08-04, backlog item 33 - the "caps at 7" bug):
+    the three rules below were previously scattered and inconsistent. The total cap was a literal
+    `>= 8` duplicated in four views; the 6-player cap was enforced on ONE of the four join paths;
+    join_team enforced nothing at all; and the one-staff-each rule only ran on role CHANGES, never
+    on a join. Folding all three into one helper means a team's shape can no longer depend on
+    WHICH door somebody walked through.
+
+    The three rules, in the order a joiner hits them:
+      1. TOTAL cap    - at most MAX_MEMBERS (9) people on a team.
+      2. PLAYER cap   - at most MAX_PLAYERS (6) in a PLAYING role. Staff joins are exempt, which is
+                        what lets seats 7-9 be filled without demoting anyone.
+      3. ONE-STAFF-EACH - at most one coach, one manager, one analyst (same rule
+                        manage_team_roster applies to a role change).
+
+    This is an ADD-time gate only. It never inspects a team to eject anyone, so a legacy team that
+    is already over a cap (e.g. an 8-player roster from before the caps were consistent, or a team
+    an admin grew past the limit with override_limit) keeps every member it has - it simply cannot
+    take on anyone new until it is back under the cap.
+
+    CONNECTS TO: invite_member + generate_invite_link (checked when the invite is CREATED, so the
+    captain learns immediately instead of the invitee being bounced days later), review_invitation,
+    respond_invite, send_join_request, review_join_request and join_team (checked again at the
+    moment the row is created, because the roster can change between invite and acceptance).
+    admin_add_member keeps its own check so admins retain the override_limit escape hatch.
+    """
+    if TeamMembers.objects.filter(team=team).count() >= MAX_MEMBERS:
+        return (
+            f"This team is full. A team can hold at most {MAX_MEMBERS} people: "
+            f"{MAX_PLAYERS} players plus one coach, one manager and one analyst."
+        )
+
+    if incoming_role in PLAYER_ROLES and _playing_member_count(team) >= MAX_PLAYERS:
+        return (
+            f"This team already has the maximum of {MAX_PLAYERS} players. Anyone else must "
+            "join as staff (coach, manager, or analyst), which does not take a player slot."
+        )
+
+    if incoming_role in STAFF_ROLES and TeamMembers.objects.filter(
+        team=team, management_role=incoming_role
+    ).exists():
+        return f"This team already has a {incoming_role.replace('_', ' ')}."
+
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -341,6 +404,24 @@ def invite_member(request):
     invitee_email_or_ign = request.data.get("invitee_email_or_ign")
     team_id = request.data.get("team_id")
 
+    # The seat the invitee takes when they accept (owner 2026-08-04, backlog item 33).
+    #
+    # THIS PARAMETER IS THE FIX FOR THE "caps at 7" BUG. This endpoint used to accept NO role, so
+    # every Invite it created fell back to the model default 'member' - a PLAYING role. Once a team
+    # held 6 players, the next invitee was refused by the player cap on acceptance, and the
+    # captain's only way forward was to open Manage Roster and demote somebody already on the team
+    # to free a player slot. That is the "caps at N until a role is changed" the owner reported, and
+    # it repeated for every seat after the 6th. Letting the captain name a STAFF role here means
+    # seats 7, 8 and 9 can be filled directly, without touching anybody's existing role.
+    #
+    # Default stays 'member' so existing callers that send no role behave exactly as before.
+    # Whitelist is the shared _INVITABLE_ROLES (captain/vice-captain are promotions, not invites).
+    role_to_be_given_upon_acceptance = request.data.get("role", "member")
+    if role_to_be_given_upon_acceptance not in _INVITABLE_ROLES:
+        return Response(
+            {'message': f"Invalid role. Must be one of: {', '.join(sorted(_INVITABLE_ROLES))}."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     if not invitee_email_or_ign or not team_id:
         return Response({'message': 'Invitee and team ID are required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -358,9 +439,20 @@ def invite_member(request):
         # Validate the team and check if the inviter is the owner or captain
         team = Team.objects.get(team_id=team_id, team_owner=inviter)
         
-        # Validate invitee by checking both email and in-game name
-        invitee = User.objects.filter(email=invitee_email_or_ign).first() or \
-                  User.objects.filter(in_game_name=invitee_email_or_ign).first()
+        # Validate invitee by email or IN-GAME NAME.
+        #
+        # The in-game name IS User.username: afc_auth.models.User has no `in_game_name` column
+        # (it is commented out at models.py:44 - "USERNAME_FIELD = 'username' # Set in_game_name as
+        # username"), and registration writes the submitted in_game_name straight into `username`.
+        # This lookup previously read `in_game_name=`, which Django rejects with a FieldError. Since
+        # Python evaluates `A or B` lazily, the error only surfaced when the EMAIL branch missed -
+        # i.e. on every invite sent from the team page, whose UserSearchSelect yields a USERNAME.
+        # The blanket `except Exception` turned it into "An error occurred." So the third of three
+        # defects that made this endpoint unable to complete a normal invite (see the notification
+        # block below for the other two). Found while verifying backlog item 33 in the browser.
+        invitee = User.objects.filter(
+            Q(email=invitee_email_or_ign) | Q(username=invitee_email_or_ign)
+        ).first()
 
         if not invitee:
             return Response({'message': 'Invitee not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -373,16 +465,36 @@ def invite_member(request):
         if Invite.objects.filter(invitee=invitee, team=team, status_of_invite='unattended_to').exists():
             return Response({'message': 'An invitation to this user is already pending.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create invitation
-        Invite.objects.create(inviter=inviter, invitee=invitee, team=team, status_of_invite='unattended_to')
+        # Refuse at INVITE time when the team has no seat for this role, so the captain finds out
+        # now (and can pick a staff role instead) rather than the invitee being bounced on accept.
+        # respond_invite re-checks on acceptance because the roster can change in between.
+        capacity_error = _roster_capacity_error(team, role_to_be_given_upon_acceptance)
+        if capacity_error:
+            return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Notify the invitee (optional)
+        # Create invitation
+        invite = Invite.objects.create(
+            inviter=inviter, invitee=invitee, team=team, status_of_invite='unattended_to',
+            role_to_be_given_upon_acceptance=role_to_be_given_upon_acceptance,
+        )
+
+        # Notify the invitee. TWO pre-existing defects were fixed here (owner 2026-08-04, found
+        # while testing item 33), both on the SUCCESS path, and both swallowed by the blanket
+        # `except Exception` below into a generic 500:
+        #   1. The invite was re-queried as `Invite.objects.latest('created_at', invitee=...,
+        #      team=...)`. latest() accepts field NAMES only, never filter kwargs, so it raised.
+        #      We now pass the object created one line above (also one query cheaper).
+        #   2. The FK was passed as `invite=`, but the field on afc_auth.Notifications is called
+        #      `related_invite`, so the create() raised even once (1) was corrected.
+        # Net effect before this fix: every successful invite returned 500 and the captain saw an
+        # error toast, even though the Invite row had already been written. The invitee still got
+        # no notification, so nothing pointed them at the invite.
         notification_message = f"You have been invited to join the team: {team.team_name}."
         Notifications.objects.create(
             user=invitee,
             message=notification_message,
             notification_type="team_invitation",
-            invite=Invite.objects.latest('created_at', invitee=invitee, team=team)
+            related_invite=invite,
         )
 
         return Response({'message': 'Invitation sent successfully.'}, status=status.HTTP_201_CREATED)
@@ -436,17 +548,20 @@ def review_invitation(request):
             if TeamMembers.objects.filter(member=user).exists():
                 return Response({'message': 'You are already a member of a team.'}, status=status.HTTP_400_BAD_REQUEST)
 
-            
-            # Ensure the team is not up to 8 players yet
-            if TeamMembers.objects.filter(team=invite.team).count() >= 8:
-                return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
+            # Total cap + 6-player cap + one-staff-each, all via the shared gate (owner 2026-08-04,
+            # item 33). This path previously checked only a hard-coded `>= 8` total, so it was the
+            # one door through which a team could end up with 7 or 8 PLAYERS.
+            incoming_role = invite.role_to_be_given_upon_acceptance or 'member'
+            capacity_error = _roster_capacity_error(invite.team, incoming_role)
+            if capacity_error:
+                return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
-
-            # Ensure there are not more than 6 players with member management role
-            
-
-            # Add the user to the team
-            TeamMembers.objects.create(team=invite.team, member=user, management_role='member', in_game_role='rusher')
+            # Add the user to the team in the role the INVITE named. This used to hard-code
+            # 'member' (+ a 'rusher' in-game role), which silently discarded a staff invite and
+            # turned every accepted invitee into a player. An in-game role is no longer assigned
+            # here: staff must not hold one at all, and a player's position is chosen deliberately
+            # on the Manage Roster page rather than defaulted to rusher.
+            TeamMembers.objects.create(team=invite.team, member=user, management_role=incoming_role)
             invite.decision = 'accepted'
         else:
             invite.decision = 'declined'
@@ -689,9 +804,13 @@ def send_join_request(request):
         if JoinRequest.objects.filter(requester=requester, team=team, status_of_request="unattended_to").exists():
             return Response({"message": "You already have a pending join request for this team."}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Ensure the team is not up to 8 players yet
-        if TeamMembers.objects.filter(team=team).count() >= 8:
-            return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
+        # A join request always asks for a PLAYING seat (approving one creates a 'member'), so the
+        # gate is run with that role. Checked here so the requester is told the team is full
+        # up-front instead of waiting on a request that can never be approved; review_join_request
+        # checks again at approval time because the roster moves in between.
+        capacity_error = _roster_capacity_error(team, "member")
+        if capacity_error:
+            return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create a join request
         JoinRequest.objects.create(requester=requester, team=team, message=message)
@@ -760,9 +879,12 @@ def review_join_request(request):
             if TeamMembers.objects.filter(member=join_request.requester).exists():
                 return Response({"message": "User is already a member of a team."}, status=status.HTTP_400_BAD_REQUEST)
             
-            # Ensure the team is not up to 8 players yet
-            if TeamMembers.objects.filter(team=team).count() >= 8:
-                return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
+            # Approving a join request seats the requester as a PLAYER, so both caps apply.
+            # Previously only the hard-coded `>= 8` total was checked here, so an approval could
+            # push a team past 6 players.
+            capacity_error = _roster_capacity_error(team, "member")
+            if capacity_error:
+                return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
             # Add the user to the team
             TeamMembers.objects.create(team=team, member=join_request.requester, management_role='member')
@@ -2158,13 +2280,21 @@ def generate_invite_link(request):
         )
     
     
+    # Seat the link hands out. Whitelist promoted to the shared _INVITABLE_ROLES constant (it was
+    # an inline list here whose error text named a 'captain' role the list never allowed).
     role_to_be_given_upon_acceptance = request.data.get("role", "member")  # Default role is "member"
-    # ensure role is valid
-    if role_to_be_given_upon_acceptance not in ["member", "coach", "analyst", "manager"]:
-        return Response({"message": "Invalid role specified. Must be 'member' or 'captain'."}, status=400)
+    if role_to_be_given_upon_acceptance not in _INVITABLE_ROLES:
+        return Response(
+            {"message": f"Invalid role specified. Must be one of: {', '.join(sorted(_INVITABLE_ROLES))}."},
+            status=400,
+        )
 
     try:
         team = Team.objects.get(team_owner=user)
+        # Same capacity gate as invite_member: don't mint a link into a seat that does not exist.
+        capacity_error = _roster_capacity_error(team, role_to_be_given_upon_acceptance)
+        if capacity_error:
+            return Response({"message": capacity_error}, status=400)
         invite = Invite.objects.create(
             inviter=user,
             team=team,
@@ -2212,12 +2342,14 @@ def respond_invite(request, invite_id):
     if action not in ["accept", "decline"]:
         return Response({"message": "Invalid action."}, status=400)
 
-    invite.invitee = user
-    invite.status_of_invite = 'attended_to'
-    invite.decision = 'accepted' if action == "accept" else 'declined'
-    invite.save()
-
     if action == "accept":
+        # ── Guards run BEFORE the invite is consumed (owner 2026-08-04, item 33) ──────────────
+        # The invite used to be stamped 'attended_to' and saved here, ABOVE these checks, so an
+        # invitee who was bounced by a cap ALSO lost the invite: retrying returned "Invite already
+        # used" and the captain had to issue a brand-new one. Nothing below writes anything until
+        # every guard has passed, so a refusal now leaves the invite live and re-usable once the
+        # team makes room.
+
         # Check if user is already in any team
         existing_membership = TeamMembers.objects.filter(member=user).select_related("team").first()
         if existing_membership:
@@ -2226,39 +2358,41 @@ def respond_invite(request, invite_id):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Ensure the team is not up to 8 players yet
-        if TeamMembers.objects.filter(team=invite.team).count() >= 8:
-            return Response({'message': 'The team has reached the maximum number of members.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Ensure the team is not already at the 6 PLAYING-member cap before adding another
-        # player. Two bugs were fixed here (roster-rules, 2026-06-15):
-        #   1. Off-by-one: the old guard used `> 6`, which let a 7th player slip in (the
-        #      check should reject when the team is ALREADY at the cap, i.e. `>= MAX_PLAYERS`,
-        #      because this request is about to add one more).
-        #   2. Wrong basis: the old count was `management_role='member'` only, so captains and
-        #      vice-captains did not count toward the 6. The cap is over ALL playing roles, so
-        #      we now use the shared _playing_member_count (management_role__in=PLAYER_ROLES).
-        # The cap applies ONLY when the incoming member is joining as a PLAYING role; a staff
-        # join (coach / manager / analyst) never takes a player slot, so it is exempt. The
-        # message explains the fix so the inviter/joiner knows to use a staff role instead.
+        # Capacity gate: total headcount (MAX_MEMBERS), the 6-player cap, and one-staff-each, all
+        # from the shared _roster_capacity_error. The player cap applies ONLY when the invitee is
+        # arriving in a PLAYING role; a staff invite never takes a player slot, so it is exempt -
+        # that exemption is what lets a full-strength team still fill seats 7 to 9.
+        #
+        # Re-checked HERE as well as in invite_member because an invite can sit unaccepted for up
+        # to 7 days, during which the team may have filled the seat with somebody else.
+        #
+        # History: an earlier version of this guard used `> 6` (off-by-one, let a 7th player in)
+        # and counted `management_role='member'` only (so captains and vice-captains did not
+        # count toward the 6). Both are fixed by _playing_member_count / PLAYER_ROLES.
         incoming_role = invite.role_to_be_given_upon_acceptance
-        if incoming_role in PLAYER_ROLES and _playing_member_count(invite.team) >= MAX_PLAYERS:
-            return Response({
-                'message': (
-                    f'This team already has the maximum of {MAX_PLAYERS} players. Anyone else must '
-                    'join as staff (coach, manager, or analyst), which does not take a '
-                    'player slot.'
-                )
-            }, status=status.HTTP_400_BAD_REQUEST)
+        capacity_error = _roster_capacity_error(invite.team, incoming_role)
+        if capacity_error:
+            return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Every guard passed: consume the invite and seat the member.
+        invite.invitee = user
+        invite.status_of_invite = 'attended_to'
+        invite.decision = 'accepted'
+        invite.save()
 
         TeamMembers.objects.create(
             team=invite.team,
             member=user,
-            management_role=invite.role_to_be_given_upon_acceptance
+            management_role=incoming_role
         )
         return Response({"message": f"You have joined {invite.team.team_name} successfully."})
 
     else:
+        # Declining always consumes the invite - there is nothing to guard against.
+        invite.invitee = user
+        invite.status_of_invite = 'attended_to'
+        invite.decision = 'declined'
+        invite.save()
         return Response({"message": "You declined the invite."})
 
 
@@ -2614,7 +2748,7 @@ def manage_team_roster(request):
                 elif new_i_role not in valid_i_roles:
                     failures.append("Invalid in_game_role")
                 elif tm.management_role not in ALLOWED_IG_ROLES:
-                    failures.append("Only players (captain, vice captain, member) can have in-game roles")
+                    failures.append("Only players (captain, vice captain, player) can have in-game roles")
                 elif not tm.in_game_role and existing_in_game_count >= MAX_IN_GAME:
                     failures.append(
                         "A team can field at most 6 players. To add more people, give them a "
@@ -2804,6 +2938,13 @@ def join_team(request):
     # Check join settings
     if team.join_settings == "by_request":
         return Response({"message": "This team requires a join request. Please send a join request instead."}, status=status.HTTP_403_FORBIDDEN)
+
+    # Capacity gate. This open-join door had NO cap of any kind (owner 2026-08-04, item 33): an
+    # "open" team could be walked into indefinitely, past both the total headcount and the 6-player
+    # limit that every other join path enforced. Joiners always land as a PLAYER here.
+    capacity_error = _roster_capacity_error(team, "member")
+    if capacity_error:
+        return Response({"message": capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
     # Add user to team
     TeamMembers.objects.create(team=team, member=user, management_role='member')
@@ -3082,10 +3223,15 @@ def admin_add_member(request):
         )
         existing.delete()
 
+    # Admins keep their OWN check rather than the shared _roster_capacity_error, because this is the
+    # one path with a deliberate escape hatch: override_limit lets an admin seat somebody on a team
+    # that is already full (the admin UI sets it once the team is at the cap and asks first). Only
+    # the number moved, 8 -> MAX_MEMBERS; the error_code / current_count response shape the admin
+    # team page reads is unchanged.
     current_count = TeamMembers.objects.filter(team=team).count()
-    if current_count >= 8 and not override_limit:
+    if current_count >= MAX_MEMBERS and not override_limit:
         return Response({
-            "message": f"Team already has {current_count} members (above the 8-member limit).",
+            "message": f"Team already has {current_count} members (the limit is {MAX_MEMBERS}).",
             "error_code": "team_full",
             "current_count": current_count,
         }, status=status.HTTP_400_BAD_REQUEST)
