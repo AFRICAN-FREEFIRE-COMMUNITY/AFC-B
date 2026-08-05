@@ -492,3 +492,265 @@ class EditTeamTagTests(TestCase):
         self.assertEqual(res.status_code, 400)
         self.team.refresh_from_db()
         self.assertEqual(self.team.team_tag, "OLD")  # unchanged on 400
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Roster capacity: 9 members, 6 players (owner 2026-08-04, backlog item 33)
+#
+# "Teams may hold 9 members but only 6 players. Currently caps at 7 until a role is changed."
+#
+# THE BUG THESE TESTS PIN DOWN: every ordinary join path handed out the PLAYING role 'member',
+# and invite_member took no role at all. So once a team held 6 players the next person was
+# refused by the 6-player cap, and the captain's only way forward was to open Manage Roster and
+# demote somebody already on the team - "caps at N until a role is changed". Meanwhile the TOTAL
+# cap was a hard-coded `>= 8` copy-pasted into four views, join_team had no cap whatsoever, and
+# the one-staff-each rule only ran on role CHANGES. All of it now goes through the single
+# afc_team.views._roster_capacity_error gate.
+#
+# The shape of a full team is 9 = 6 players + one coach + one manager + one analyst.
+# ──────────────────────────────────────────────────────────────────────────
+from afc_team.models import Invite
+from afc_team.views import MAX_MEMBERS, MAX_PLAYERS, PLAYER_ROLES, STAFF_ROLES
+
+
+class RosterCapacityTests(TestCase):
+    """Total cap (9), player cap (6), staff exemption, and the legacy over-cap team."""
+
+    def setUp(self):
+        self.client = Client()
+        self.owner, self.owner_tok = _make_user("cap_owner")
+        self.team = Team.objects.create(
+            team_name="Cap FC", team_tag="CAP", country="NG", join_settings="open",
+            team_owner=self.owner, team_creator=self.owner,
+        )
+        # The owner occupies the first PLAYING seat, exactly as create_team seats them.
+        TeamMembers.objects.create(team=self.team, member=self.owner, management_role="team_captain")
+
+    # ── fixtures ──────────────────────────────────────────────────────────
+    def _seat(self, username, role):
+        """Put somebody straight onto the roster, bypassing the views. Used to build a
+        starting state (and, in the legacy test, a state the views would now refuse)."""
+        user, tok = _make_user(username)
+        TeamMembers.objects.create(team=self.team, member=user, management_role=role)
+        return user, tok
+
+    def _fill_players(self):
+        """Bring the team up to the full 6 PLAYING members (owner + 5)."""
+        for i in range(MAX_PLAYERS - 1):
+            self._seat(f"cap_player{i}", "member")
+        self.assertEqual(self._playing(), MAX_PLAYERS)
+
+    def _playing(self):
+        return TeamMembers.objects.filter(team=self.team, management_role__in=PLAYER_ROLES).count()
+
+    def _total(self):
+        return TeamMembers.objects.filter(team=self.team).count()
+
+    # ── requests ──────────────────────────────────────────────────────────
+    def _invite(self, username, role=None):
+        """POST /team/invite-member/ as the team owner. `username` is a NEW user; invite_member
+        resolves an invitee by email, and _make_user sets <username>@x.com."""
+        invitee, invitee_tok = _make_user(username)
+        body = {"team_id": self.team.team_id, "invitee_email_or_ign": invitee.email}
+        if role is not None:
+            body["role"] = role
+        res = self.client.post("/team/invite-member/", body, content_type="application/json",
+                               HTTP_AUTHORIZATION=f"Bearer {self.owner_tok}")
+        return res, invitee, invitee_tok
+
+    def _accept(self, tok, invitee):
+        """POST /team/respond-invite/<id>/ - the endpoint the team page actually calls."""
+        invite = Invite.objects.filter(team=self.team, invitee=invitee).latest("created_at")
+        return self.client.post(f"/team/respond-invite/{invite.invite_id}/", {"action": "accept"},
+                                content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {tok}")
+
+    def _join(self, tok):
+        return self.client.post("/team/join-team/", {"team_id": self.team.team_id},
+                                content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {tok}")
+
+    # ── the player cap ────────────────────────────────────────────────────
+    def test_seventh_player_is_refused(self):
+        # 6 players on the roster -> a 7th PLAYING seat does not exist.
+        self._fill_players()
+        res, _, _ = self._invite("cap_seventh", role="member")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn(f"maximum of {MAX_PLAYERS} players", res.json()["message"])
+        self.assertEqual(self._playing(), MAX_PLAYERS)
+
+    def test_player_cap_counts_captain_and_vice_captain(self):
+        # The cap is over ALL playing roles, not just the 'member' role: a captain + a vice
+        # captain + 4 members is already 6 players.
+        self._seat("cap_vice", "vice_captain")
+        for i in range(4):
+            self._seat(f"cap_p{i}", "member")
+        self.assertEqual(self._playing(), MAX_PLAYERS)
+        res, _, _ = self._invite("cap_extra", role="member")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn(f"maximum of {MAX_PLAYERS} players", res.json()["message"])
+
+    # ── the regression: seats 7, 8 and 9 without touching anyone's role ────
+    def test_staff_can_join_when_players_are_full(self):
+        """THE 'caps at 7' REGRESSION TEST. With 6 players seated, a staff invite must go
+        straight through, with no existing member having to be demoted first."""
+        self._fill_players()
+        res, invitee, tok = self._invite("cap_coach", role="coach")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(self._accept(tok, invitee).status_code, 200)
+        self.assertEqual(
+            TeamMembers.objects.get(team=self.team, member=invitee).management_role, "coach"
+        )
+        # Nobody already on the roster changed role to make room.
+        self.assertEqual(self._playing(), MAX_PLAYERS)
+        self.assertEqual(self._total(), MAX_PLAYERS + 1)
+
+    def test_team_fills_to_nine_without_any_role_change(self):
+        """The owner's ask end to end: 6 players + coach + manager + analyst = 9 seats, all
+        reachable through the normal invite flow."""
+        self._fill_players()
+        for role in ("coach", "manager", "analyst"):
+            res, invitee, tok = self._invite(f"cap_{role}", role=role)
+            self.assertEqual(res.status_code, 201, f"invite as {role} was refused")
+            self.assertEqual(self._accept(tok, invitee).status_code, 200, f"accept as {role} failed")
+        self.assertEqual(self._total(), MAX_MEMBERS)
+        self.assertEqual(self._playing(), MAX_PLAYERS)
+
+    # ── the total cap ─────────────────────────────────────────────────────
+    def test_tenth_member_is_refused(self):
+        self._fill_players()
+        for role in ("coach", "manager", "analyst"):
+            self._seat(f"cap_staff_{role}", role)
+        self.assertEqual(self._total(), MAX_MEMBERS)
+        res, _, _ = self._invite("cap_tenth", role="member")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn(f"at most {MAX_MEMBERS} people", res.json()["message"])
+        self.assertEqual(self._total(), MAX_MEMBERS)
+
+    def test_staff_do_not_count_toward_the_player_cap(self):
+        # 3 staff on the roster must leave all 6 playing seats free.
+        for role in ("coach", "manager", "analyst"):
+            self._seat(f"cap_only_{role}", role)
+        self.assertEqual(self._total(), 4)     # owner + 3 staff
+        self.assertEqual(self._playing(), 1)   # only the owner
+        res, invitee, tok = self._invite("cap_newplayer", role="member")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(self._accept(tok, invitee).status_code, 200)
+        self.assertEqual(self._playing(), 2)
+
+    def test_second_coach_is_refused(self):
+        # One-staff-each used to be enforced only on a role CHANGE, never on a join.
+        self._seat("cap_coach1", "coach")
+        res, _, _ = self._invite("cap_coach2", role="coach")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("already has a coach", res.json()["message"])
+
+    # ── the door that had no lock at all ──────────────────────────────────
+    def test_open_join_is_capped(self):
+        """join_team (open teams) previously enforced NOTHING, neither cap."""
+        self._fill_players()
+        _, joiner_tok = _make_user("cap_walkin")
+        res = self._join(joiner_tok)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn(f"maximum of {MAX_PLAYERS} players", res.json()["message"])
+        self.assertEqual(self._playing(), MAX_PLAYERS)
+
+    # ── existing teams must not break ─────────────────────────────────────
+    def test_legacy_over_cap_team_keeps_every_member(self):
+        """A team that grew past the caps while they were inconsistent (8 PLAYERS here) must
+        keep all 8 people. The gate is ADD-time only: it never ejects anybody, it only refuses
+        the next person."""
+        self._fill_players()                       # 6 players
+        self._seat("cap_legacy7", "member")        # 7th player, as prod data allowed
+        self._seat("cap_legacy8", "member")        # 8th player
+        self.assertEqual(self._total(), 8)
+        self.assertEqual(self._playing(), 8)
+
+        # Nobody is removed, and the team still reads back in full.
+        res = self.client.post("/team/get-team-details/", {"team_name": self.team.team_name},
+                               content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.json()["team"]["members"]), 8)
+        self.assertEqual(TeamMembers.objects.filter(team=self.team).count(), 8)
+
+        # Only a NEW arrival is turned away.
+        refused, _, _ = self._invite("cap_legacy9", role="member")
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(self._playing(), 8)
+
+    # ── the registration picker ───────────────────────────────────────────
+    def test_registration_picker_offers_only_players(self):
+        """The event registration picker (frontend tournaments/[slug] EventDetailsWrapper) filters
+        team.members from the team-details payload on management_role, and the backend rejects
+        staff again at register_for_event / add_player_to_event_roster (both import STAFF_ROLES
+        from afc_team.views). This asserts the data contract the picker relies on: every member
+        carries a management_role, and splitting on it yields exactly the players."""
+        self._fill_players()
+        for role in ("coach", "manager", "analyst"):
+            self._seat(f"cap_pick_{role}", role)
+
+        res = self.client.post("/team/get-team-details/", {"team_name": self.team.team_name},
+                               content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        members = res.json()["team"]["members"]
+        self.assertEqual(len(members), MAX_MEMBERS)
+
+        selectable = [m for m in members if m["management_role"] in PLAYER_ROLES]
+        excluded = [m for m in members if m["management_role"] in STAFF_ROLES]
+        self.assertEqual(len(selectable), MAX_PLAYERS)
+        self.assertEqual(len(excluded), 3)
+        # A picker can never offer more people than an event roster can hold.
+        self.assertLessEqual(len(selectable), MAX_PLAYERS)
+
+    # ── invite_member's own plumbing ──────────────────────────────────────
+    def test_invite_by_username_works(self):
+        """The team page's player picker yields a USERNAME, not an email. invite_member looked the
+        invitee up with `in_game_name=`, a column afc_auth.User does not have, so every invite sent
+        from that form died in a FieldError and surfaced as "An error occurred." (The email branch
+        of the `or` short-circuited first, which is why it went unnoticed.) The in-game name IS
+        User.username. Found by walking the page in Chrome, not by the suite."""
+        invitee, tok = _make_user("cap_by_username")
+        res = self.client.post(
+            "/team/invite-member/",
+            {"team_id": self.team.team_id, "invitee_email_or_ign": invitee.username, "role": "coach"},
+            content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {self.owner_tok}",
+        )
+        self.assertEqual(res.status_code, 201, res.content)
+        invite = Invite.objects.get(team=self.team, invitee=invitee)
+        self.assertEqual(invite.role_to_be_given_upon_acceptance, "coach")
+        # The notification is what points the invitee at the invite; it used to raise twice over
+        # (bad latest() kwargs, then an `invite=` kwarg for a field named `related_invite`).
+        from afc_auth.models import Notifications
+        note = Notifications.objects.get(user=invitee, notification_type="team_invitation")
+        self.assertEqual(note.related_invite_id, invite.invite_id)
+
+    def test_invite_with_unknown_role_is_rejected(self):
+        res = self.client.post(
+            "/team/invite-member/",
+            {"team_id": self.team.team_id, "invitee_email_or_ign": "x@y.z", "role": "team_captain"},
+            content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {self.owner_tok}",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Invalid role", res.json()["message"])
+
+    def test_refused_accept_does_not_burn_the_invite(self):
+        """A capacity refusal used to still stamp the invite 'attended_to', so the invitee could
+        never retry and the captain had to issue a fresh one."""
+        res, invitee, tok = self._invite("cap_retry", role="member")
+        self.assertEqual(res.status_code, 201)
+        # Fill every player slot AFTER the invite was sent, so acceptance is refused.
+        self._fill_players()
+        refused = self._accept(tok, invitee)
+        self.assertEqual(refused.status_code, 400)
+        invite = Invite.objects.get(team=self.team, invitee=invitee)
+        self.assertEqual(invite.status_of_invite, "unattended_to")  # still live
+        self.assertIsNone(invite.decision)
+
+    # ── the display rename ────────────────────────────────────────────────
+    def test_member_role_displays_as_player_but_is_stored_as_member(self):
+        """Backlog item 33 renames the role for READERS only. The stored value stays 'member'
+        (this repo generates migrations on the server, so a data migration rewriting every live
+        row cannot ship), while the human label is now 'Player'."""
+        user, _ = self._seat("cap_label", "member")
+        tm = TeamMembers.objects.get(team=self.team, member=user)
+        self.assertEqual(tm.management_role, "member")                 # stored value unchanged
+        self.assertEqual(tm.get_management_role_display(), "Player")   # what a reader sees
+        self.assertIn("member", PLAYER_ROLES)                          # still a PLAYING role
