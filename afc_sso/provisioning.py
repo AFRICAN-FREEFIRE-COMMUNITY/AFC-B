@@ -190,10 +190,19 @@ def _clean_redirect_uris(value, *, required=True, label="redirect URI"):
 # than a relaxed copy. Rate limiting bounds how often it can be attempted.
 ALLOWED_LOGO_FORMATS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp"}
 
-# 2 MB. Far below the 10-15 MB caps elsewhere in the app because the consent screen
-# renders this at 48x48: anything approaching the cap is already a mistake. The frontend
-# also downscales before sending (lib/imageCompress.ts), so a normal logo is nowhere near.
-MAX_LOGO_BYTES = 2 * 1024 * 1024
+# 10 MB (owner 2026-08-05, raised from 2 MB). The consent screen still renders this at 48x48,
+# so a file anywhere near the cap is still larger than the job needs, and the frontend still
+# downscales before sending (lib/imageCompress.ts). What the old 2 MB was actually costing was
+# real applicants: an untouched export from a design tool routinely lands between 2 and 8 MB, and
+# refusing it asked an organisation to go and compress an image before it could apply. 10 MB
+# matches the caps already used elsewhere in this app.
+#
+# Raising this does NOT widen the security surface, which is the reason the number could move at
+# all. Nothing here trusts the file: the format allow-list below, the decompression-bomb guard on
+# pixel dimensions, and the full re-encode in _clean_logo_upload are what make an upload safe, and
+# none of them depends on the byte ceiling. MAX_LOGO_EDGE is what bounds the memory a decode can
+# take, not this.
+MAX_LOGO_BYTES = 10 * 1024 * 1024
 
 # Decompression-bomb guard: a few-KB PNG can legally decode to a gigapixel canvas, which
 # would exhaust memory in the re-encode below. Size on disk alone does not catch that.

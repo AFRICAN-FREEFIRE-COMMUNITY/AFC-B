@@ -90,7 +90,13 @@ ALLOWED_EMAIL_DOMAINS = {
     "live.com",
     "msn.com",
     "me.com",
-    "inbox.com"
+    "inbox.com",
+    # AFC'S OWN DOMAIN (2026-08-05). This set was written to stop junk signups from throwaway
+    # providers, but send_email runs every OUTGOING recipient through it too, which meant AFC
+    # could not email itself: the new partner-application notice to info@africanfreefirecommunity
+    # .com was refused here and returned False without sending, silently. Staff addresses on AFC's
+    # own domain are exactly the addresses this list should never have been blocking.
+    "africanfreefirecommunity.com",
 }
 
 

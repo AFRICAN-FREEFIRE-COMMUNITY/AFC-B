@@ -86,9 +86,17 @@ class PartnerApplyTestCase(TestCase):
         SessionToken.objects.create(user=self.player, token="tok-apply-player")
 
         # Patched for the whole suite. Individual tests that care re-patch with a spy.
-        self._email_patch = patch("afc_partner_apply.emails._send")
-        self._email_patch.start()
-        self.addCleanup(self._email_patch.stop)
+        #
+        # TWO patches, not one. _send covers the four APPLICANT emails, which all compose through
+        # it. The internal notice to AFC does not: it builds its own body and calls send_email
+        # directly, because it is English-only and not in the localized catalog. Left unpatched it
+        # opened a real Office365 socket on a daemon thread for every submission in this file, and
+        # the suite sat waiting on the connect timeout.
+        for target in ("afc_partner_apply.emails._send",
+                       "afc_partner_apply.emails.send_internal_new_application"):
+            patcher = patch(target)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _auth(self):
         return {"HTTP_AUTHORIZATION": "Bearer tok-apply-admin"}
@@ -99,6 +107,9 @@ class PartnerApplyTestCase(TestCase):
             "homepage_url": "https://kite.example",
             "contact_name": "Ama Mensah",
             "contact_email": "ama@kite.example",
+            # Required since 2026-08-05, so it belongs in the shared body rather than in the one
+            # test that happens to check it: without it EVERY submit test 400s on the country gate.
+            "country": "Ghana",
             "wants_sso": True,
             "wants_data_api": False,
             "redirect_uris": "https://kite.example/auth/afc/callback",
@@ -132,18 +143,41 @@ class SubmitApplicationTests(PartnerApplyTestCase):
 
         The two phone fields already in this codebase store what was typed and normalise when a
         message goes out, which is how 34 of 133 stored player numbers ended up in a local form
-        nobody can resolve. A local number here is anchored on the country the applicant typed on
-        the same form and stored dialable, or it is refused.
+        nobody can resolve. Spacing and punctuation are cleaned off here and the stored value is
+        dialable, or the submission is refused.
         """
-        resp = self._submit(country="Nigeria", contact_whatsapp="0805 123 4567")
+        resp = self._submit(contact_whatsapp="+234 805 123 4567")
 
         self.assertEqual(resp.status_code, 201, resp.content)
         application = PartnerApplication.objects.get(reference=resp.json()["reference"])
         self.assertEqual(application.contact_whatsapp, "+2348051234567")
 
-    def test_an_international_number_ignores_the_country_field(self):
-        """A number that already carries its own dial code is not re-anchored, so an applicant
-        based in one country giving a number in another is stored as they meant it."""
+    def test_the_00_dial_out_prefix_is_accepted_as_a_country_code(self):
+        """"00" is how much of the world writes the leading plus, so refusing it would reject a
+        number that does carry its country code."""
+        resp = self._submit(contact_whatsapp="002348051234567")
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        application = PartnerApplication.objects.get(reference=resp.json()["reference"])
+        self.assertEqual(application.contact_whatsapp, "+2348051234567")
+
+    def test_a_local_number_is_refused_even_when_the_country_is_known(self):
+        """THE RULE THE OWNER ASKED FOR (2026-08-05): the country code is compulsory.
+
+        This used to be ACCEPTED. The number was anchored to whatever country the applicant had
+        typed elsewhere on the form, which made the stored value depend on a second field they
+        might have got wrong, and a plausible wrong number is worse than an obvious one: it
+        messages a real stranger. Ghana plus a Nigerian local number is exactly that mistake.
+        """
+        resp = self._submit(country="Ghana", contact_whatsapp="0805 123 4567")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("country code", resp.json()["message"])
+        self.assertEqual(PartnerApplication.objects.count(), 0)
+
+    def test_the_country_field_does_not_change_how_a_number_is_read(self):
+        """The counterpart to the test above. An international number carries its own code, so an
+        applicant based in one country giving a number in another is stored as they meant it."""
         resp = self._submit(country="Ghana", contact_whatsapp="+234 805 123 4567")
 
         self.assertEqual(resp.status_code, 201, resp.content)
@@ -241,17 +275,51 @@ class SubmitApplicationTests(PartnerApplyTestCase):
         resp = self._submit(redirect_uris="http://localhost:3000/cb")
         self.assertEqual(resp.status_code, 201, resp.content)
 
-    def test_at_least_one_product_must_be_chosen(self):
-        resp = self._submit(wants_sso=False, wants_data_api=False)
-
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("at least one product", resp.json()["message"].lower())
-
-    def test_a_data_api_only_application_needs_no_redirect_uris(self):
-        resp = self._submit(wants_sso=False, wants_data_api=True, redirect_uris="")
+    def test_every_application_is_a_sign_in_with_afc_application(self):
+        """The Data API option was removed from the form (owner 2026-08-05), so there is nothing
+        left to choose and the row is stamped accordingly rather than read from the body."""
+        resp = self._submit()
 
         self.assertEqual(resp.status_code, 201, resp.content)
-        self.assertEqual(PartnerApplication.objects.get().redirect_uris, "")
+        application = PartnerApplication.objects.get()
+        self.assertTrue(application.wants_sso)
+        self.assertFalse(application.wants_data_api)
+
+    def test_a_caller_cannot_post_its_way_out_of_the_redirect_uri_rules(self):
+        """THE REASON wants_sso IS NOT READ FROM THE BODY. It used to be, and the redirect URI
+        policy ran only `if wants_sso`. This endpoint is public and unauthenticated, so a caller
+        posting wants_sso=false with no redirect URIs would have created a row that skipped the
+        single most important validation in this app. Both flags are now server-decided.
+        """
+        resp = self._submit(wants_sso=False, wants_data_api=True, redirect_uris="")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("redirect uri", resp.json()["message"].lower())
+        self.assertFalse(PartnerApplication.objects.exists())
+
+    def test_the_country_is_required(self):
+        """Optional free text until 2026-08-05. It is how User.country ended up holding the same
+        country under several spellings, so the form now posts a picked value and an empty one is
+        refused rather than stored blank."""
+        resp = self._submit(country="")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("country", resp.json()["message"].lower())
+        self.assertFalse(PartnerApplication.objects.exists())
+
+    def test_afc_is_told_when_an_application_arrives(self):
+        """Owner 2026-08-05. The review queue is a page somebody has to remember to open, so an
+        organisation could wait a week because nobody looked. Asserted at the emails module rather
+        than at SMTP, which is where the applicant's own confirmation is asserted too.
+        """
+        with patch("afc_partner_apply.emails.send_internal_new_application") as notify:
+            resp = self._submit()
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        notify.assert_called_once()
+        self.assertEqual(
+            notify.call_args.args[0].reference, resp.json()["reference"],
+            "the notice must be about the application that was just created")
 
     def test_a_one_word_answer_is_refused(self):
         """The two prose answers are what the grant decision is made from. 'data' is not an
@@ -461,7 +529,7 @@ class ApplicationStatusTests(PartnerApplyTestCase):
 
         good = self.client.patch(
             f"/partner-apply/applications/{self.reference}/?token={token}",
-            data=json.dumps({"contact_whatsapp": "0805 123 4567"}),
+            data=json.dumps({"contact_whatsapp": "+234 805 123 4567"}),
             content_type="application/json")
         self.assertEqual(good.status_code, 200, good.content)
         self.application.refresh_from_db()
