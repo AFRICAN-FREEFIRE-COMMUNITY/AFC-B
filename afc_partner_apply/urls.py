@@ -31,4 +31,11 @@ urlpatterns = [
          name="partner_apply_status"),                                                # GET, PATCH
     path("applications/<str:reference>/claim/", views_public.claim_credentials,
          name="partner_apply_claim"),                                                 # POST
+
+    # The integration guide, ungated (owner 2026-08-05). Declared AFTER the literal routes above
+    # for the same ordering reason as the admin block: "integration-guide" is not shaped like a
+    # reference, but keeping every literal path together is what stops the next one being
+    # swallowed by applications/<reference>/.
+    path("integration-guide/", views_public.integration_guide,
+         name="partner_apply_guide"),                                                 # GET
 ]

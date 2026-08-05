@@ -131,20 +131,42 @@ def _link(url, label):
 
 # ── the four transitions ──────────────────────────────────────────────────────────────────────
 
+def guide_url():
+    """The public integration guide download (owner 2026-08-05).
+
+    Points at the BACKEND, not the frontend: the PDF is served by
+    afc_partner_apply/views_public.py integration_guide, which is the ungated twin of the admin
+    route. An applicant clicking this in their inbox is not signed in to anything, which is why
+    that route has no auth on it.
+    """
+    api = (getattr(settings, "AFC_API_BASE_URL", "") or "").rstrip("/")
+    return f"{api}/partner-apply/integration-guide/"
+
+
 def send_received(application, access_token):
-    """Submitted. Confirms AFC has it, and hands over the status link.
+    """Submitted. Confirms AFC has it, explains what they applied for, and links the guide.
 
     CALLED BY afc_partner_apply/views_public.py submit_application, once, at creation. This is the
     email that carries the access token, so it is the one an applicant must keep.
+
+    WHY IT SAYS MORE THAN "WE GOT IT" (owner 2026-08-05). An organisation that has just applied is
+    at the exact moment it wants to know what it signed up for and how long it will wait. Telling
+    them here, with the guide attached as a link, is what turns the waiting period into time they
+    can spend building rather than time they spend emailing to ask.
+
+    THE GUIDE IS LINKED, NOT ATTACHED. It is close to 2 MB, and a 2 MB attachment on a
+    transactional email is what gets a sender's domain treated as spam, or gets stripped by a
+    corporate mail gateway before it arrives. A link also always serves the CURRENT build.
     """
     _send(
         application,
         template="partner_apply_received",
         subject_key="partner_apply_received",
-        body_keys=("intro", "next_steps", "keep_link"),
+        body_keys=("intro", "next_steps", "what_it_is", "guide", "keep_link"),
         organisation=application.organisation_name,
         reference=application.reference,
         link=_link(status_url(application, access_token), application.reference),
+        guide=_link(guide_url(), "Sign in with AFC integration guide (PDF)"),
     )
 
 
@@ -202,3 +224,77 @@ def send_rejected(application):
         reference=application.reference,
         note=application.decision_note,
     )
+
+
+# ── the internal notification ─────────────────────────────────────────────────────────────────
+# Where AFC's own copy goes. Read from settings so a deployment can point it somewhere else
+# without a code change, defaulting to the address the rest of the site already publishes as its
+# contact (afc_auth/views.py send_email's from_address).
+AFC_NOTIFY_ADDRESS = getattr(
+    settings, "PARTNER_APPLY_NOTIFY_EMAIL", "info@africanfreefirecommunity.com")
+
+
+def send_internal_new_application(application):
+    """Tell AFC that an application arrived (owner 2026-08-05).
+
+    CALLED BY afc_partner_apply/views_public.py submit_application, once, immediately after
+    send_received, so the applicant's own confirmation is never delayed by this one.
+
+    WHY IT EXISTS. The review queue is a page somebody has to remember to open. Until now the only
+    signal that an organisation was waiting was the queue's own unread count, which nobody sees
+    unless they are already in the admin. An organisation that waits a week because nobody looked
+    is an organisation that goes and builds on something else.
+
+    ENGLISH, DELIBERATELY, and NOT through the localized catalog the four applicant emails use.
+    This goes to AFC staff at one fixed address, not to a person with a language preference on
+    their account, so translating it would be work with no reader. It is also written to be
+    scanned rather than read: the facts first, the link last.
+
+    NEVER LOCALIZED, NEVER BLOCKING, and it carries NO credential: there is nothing to leak here
+    that the review screen does not already show, and the daemon-thread pattern is the same one
+    the module header describes for every other send.
+    """
+    from afc_auth.views import _email_shell, send_email
+
+    subject = f"New AFC partner application: {application.organisation_name} ({application.reference})"
+
+    admin_link = f"{_frontend_origin()}/a/partners?tab=applications"
+    rows = [
+        ("Organisation", application.organisation_name),
+        ("Country", application.country or "not given"),
+        ("Contact", f"{application.contact_name} ({application.contact_email})"),
+        ("WhatsApp", application.contact_whatsapp or "not given"),
+        ("Website", application.homepage_url),
+        ("Reference", application.reference),
+    ]
+    facts = "".join(
+        f'<tr><td style="padding:0 44px 6px;font-size:14px;line-height:1.6;color:#aab5ae;">'
+        f'<span style="color:#7d8a83;">{label}:</span> {value}</td></tr>'
+        for label, value in rows
+    )
+    inner = (
+        f'<tr><td style="padding:38px 44px 14px;">'
+        f'<div style="font-size:21px;font-weight:700;color:#ffffff;">'
+        f"An organisation has applied to be an AFC partner</div></td></tr>"
+        f"{facts}"
+        f'<tr><td style="padding:16px 44px 14px;font-size:15px;line-height:1.6;color:#aab5ae;">'
+        f"They applied for Sign in with AFC. What they are building and what they need is on the "
+        f"review screen: {_link(admin_link, 'open the application queue')}.</td></tr>"
+    )
+
+    def _deliver():
+        try:
+            send_email(
+                AFC_NOTIFY_ADDRESS,
+                subject,
+                _email_shell(inner, "green"),
+                language="en",
+                prelocalized=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - see the module header: never blocks a submission
+            logger.warning(
+                "partner apply: could not notify %s about %s: %s",
+                AFC_NOTIFY_ADDRESS, application.reference, exc,
+            )
+
+    threading.Thread(target=_deliver, daemon=True).start()

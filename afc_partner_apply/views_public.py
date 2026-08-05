@@ -180,11 +180,23 @@ def _clean_email(raw):
     return text, None
 
 
-def _clean_whatsapp(raw, country=None):
+def _clean_whatsapp(raw):
     """Normalise the applicant's WhatsApp number to E.164, or say why it could not be.
 
     OPTIONAL FIELD: blank is a legitimate answer and returns ("", None). An applicant who would
     rather only be emailed is not blocked.
+
+    THE COUNTRY CODE IS COMPULSORY WHEN A NUMBER IS GIVEN (owner 2026-08-05). This function
+    used to accept a locally written number ("08051234567") and anchor it to whatever country the
+    applicant had typed elsewhere on the form. It no longer does: the number must arrive already
+    international, either with a leading "+" or with the "00" dial-out prefix, and anything else
+    is refused with a message saying so.
+
+    WHY THAT IS STRICTER THAN IT LOOKS, AND WHY IT IS RIGHT. Anchoring to the country field meant
+    the number AFC stored depended on a second field the applicant might have got wrong, and a
+    plausible wrong number is worse than an obvious one: it sends a message to a real stranger.
+    The form's own control emits the international form already, so an honest applicant never
+    meets this error; the ones who do are pasting a local number into an API client.
 
     WHY IT IS NORMALISED HERE RATHER THAN AT SEND TIME. The owner's requirement is that somebody
     can actually be messaged on this number, so a value that cannot be dialled is not worth
@@ -194,10 +206,6 @@ def _clean_whatsapp(raw, country=None):
     resolved without knowing the country (see afc_whatsapp/phone.py's own header). Repeating that
     here would mean discovering a bad number at the moment AFC needed it. Refusing at the door
     also puts the error in front of the person who can fix it, while they are still on the form.
-
-    `country` is the country the applicant typed on the same form, used only to anchor a number
-    written in local form ("08051234567"). to_e164 returns None rather than guessing when it has
-    no country to anchor to, which is why the message below asks for the international form.
     """
     from afc_whatsapp.phone import to_e164
 
@@ -205,12 +213,24 @@ def _clean_whatsapp(raw, country=None):
     if not text:
         return "", None
 
-    e164 = to_e164(text, country_code=country or None)
+    needs_code = (
+        "That WhatsApp number needs your country code. Give it in international form, "
+        "starting with a plus and your country code, for example +234 805 123 4567."
+    )
+
+    # The country-code gate runs BEFORE to_e164, because to_e164 is deliberately forgiving: with a
+    # country argument it would happily resolve a local number, which is exactly what is no longer
+    # wanted here. Passing no country makes it refuse a local number too, but checking the shape
+    # first is what lets the message name the actual problem instead of saying "unreadable".
+    digits_only = "".join(ch for ch in text if ch.isdigit())
+    if not (text.startswith("+") or digits_only.startswith("00")):
+        return None, needs_code
+
+    # country_code is not passed at all: an international number carries its own, and refusing to
+    # supply a fallback is what stops a local number sneaking through this second gate.
+    e164 = to_e164(text)
     if not e164:
-        return None, (
-            "That WhatsApp number could not be read. Please give it in international form, "
-            "starting with your country code, for example +234 805 123 4567."
-        )
+        return None, needs_code
     return e164, None
 
 
@@ -364,10 +384,15 @@ def submit_application(request):
     if err:
         return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Anchored on the country typed on this same form, which is the only country AFC knows about
-    # an applicant. A number already in international form ignores it.
-    contact_whatsapp, err = _clean_whatsapp(
-        request.data.get("contact_whatsapp"), str(request.data.get("country") or "").strip())
+    # REQUIRED as of 2026-08-05 (owner). It was optional free text, which is how User.country
+    # ended up holding the same country under several spellings; the form now posts a value
+    # picked from the shared list, and an empty one is refused rather than stored blank.
+    country = str(request.data.get("country") or "").strip()
+    if not country:
+        return Response({"message": "Your country is required."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    contact_whatsapp, err = _clean_whatsapp(request.data.get("contact_whatsapp"))
     if err:
         return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -400,30 +425,34 @@ def submit_application(request):
         return Response({"message": "Your website address is required."},
                         status=status.HTTP_400_BAD_REQUEST)
 
-    wants_sso = _bool(request.data.get("wants_sso"))
-    wants_data_api = _bool(request.data.get("wants_data_api"))
-    if not (wants_sso or wants_data_api):
-        return Response(
-            {"message": "Choose at least one product: Sign in with AFC, the Data API, or both."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    # ── The product, which is no longer a question (owner 2026-08-05) ──
+    # The form used to ask "Sign in with AFC, the Data API, or both". The Data API option was
+    # removed, so every application that arrives here is a Sign in with AFC application and
+    # wants_sso is forced true rather than read from the body. wants_data_api stays on the model
+    # and stays FALSE here: existing rows still carry it, and an admin can still grant Data API
+    # access at approval time on the review screen, which is now the only way it is granted.
+    #
+    # Not read from request.data at all, deliberately. Trusting the body would let a caller post
+    # wants_sso=false and skip the redirect URI rules below, which are the whole reason this app
+    # validates at submission rather than at approval.
+    wants_sso = True
+    wants_data_api = False
 
     # ── The redirect URIs, validated NOW against the real policy ──
     # This is the single biggest reason this app exists. Under the old flow a wildcard or a query
     # string in a redirect URI was discovered by the owner days later, or worse, at the partner's
     # first failed sign-in. afc_sso/redirect_policy.py runs here, with the applicant still on the
     # page, and its message already names the offending URI and the rule it broke.
-    redirect_uris = ""
-    post_logout_redirect_uris = ""
-    if wants_sso:
-        redirect_uris, err = _clean_redirect_uris(request.data.get("redirect_uris"))
-        if err:
-            return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
-        post_logout_redirect_uris, err = _clean_redirect_uris(
-            request.data.get("post_logout_redirect_uris"),
-            required=False, label="post-logout redirect URI")
-        if err:
-            return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+    # Unconditional now that every application is a Sign in with AFC application. It used to sit
+    # behind `if wants_sso`, which was correct while the Data API was an option on the form.
+    redirect_uris, err = _clean_redirect_uris(request.data.get("redirect_uris"))
+    if err:
+        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+    post_logout_redirect_uris, err = _clean_redirect_uris(
+        request.data.get("post_logout_redirect_uris"),
+        required=False, label="post-logout redirect URI")
+    if err:
+        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
 
     # _clean_outbound_url, NOT _clean_url. This form is public and unauthenticated, and this is
     # the one field on it that AFC's own server later fetches from inside AFC's network, so it
@@ -453,7 +482,7 @@ def submit_application(request):
         organisation_name=organisation_name[:160],
         display_name=str(request.data.get("display_name") or "").strip()[:120],
         homepage_url=homepage_url,
-        country=str(request.data.get("country") or "").strip()[:80],
+        country=country[:80],
         contact_name=contact_name[:120],
         contact_email=contact_email,
         contact_role=str(request.data.get("contact_role") or "").strip()[:120],
@@ -479,6 +508,10 @@ def submit_application(request):
     # The plaintext token exists only here, for exactly as long as it takes to put it in an email.
     access_token = application.issue_access_token()
     emails.send_received(application, access_token)
+    # AFC's own copy, SECOND (owner 2026-08-05). Both sends are best-effort daemon threads, so the
+    # order is not about blocking; it is that the applicant's confirmation is the one that must not
+    # be lost to an exception raised while composing the other.
+    emails.send_internal_new_application(application)
 
     return Response(
         {
@@ -552,23 +585,29 @@ def application_status(request, reference):
     updated = []
 
     # Identity fields: trimmed and length-capped, same as at submission.
+    # country is NOT in this loop any more: it became required at submission (owner 2026-08-05),
+    # so letting an edit blank it would leave a row the create path would have refused.
     for field, cap in (
-        ("organisation_name", 160), ("display_name", 120), ("country", 80),
+        ("organisation_name", 160), ("display_name", 120),
         ("contact_name", 120), ("contact_role", 120),
     ):
         if field in data:
             setattr(application, field, str(data.get(field) or "").strip()[:cap])
             updated.append(field)
 
+    if "country" in data:
+        country = str(data.get("country") or "").strip()[:80]
+        if not country:
+            return Response({"message": "Your country is required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        application.country = country
+        updated.append("country")
+
     # NOT in the loop above, because this one is normalised rather than merely trimmed. It runs
     # the same cleaner the create path uses, for the same reason the webhook URL does: a rule
     # applied at submission and not on the edit beside it is one PATCH away from not existing.
-    # The country is read from the edit if it is being changed in the same request, so an
-    # applicant correcting both at once is anchored on the country they are moving TO.
     if "contact_whatsapp" in data:
-        cleaned, err_msg = _clean_whatsapp(
-            data.get("contact_whatsapp"),
-            str(data.get("country", application.country) or "").strip())
+        cleaned, err_msg = _clean_whatsapp(data.get("contact_whatsapp"))
         if err_msg:
             return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
         application.contact_whatsapp = cleaned
@@ -763,3 +802,49 @@ def claim_credentials(request, reference):
     application.save(update_fields=["claimed_at", "updated_at"])
 
     return Response(payload, status=status.HTTP_200_OK)
+
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# integration_guide  (GET partner-apply/integration-guide/)
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+@api_view(["GET"])
+@authentication_classes([])
+def integration_guide(request):
+    """Download the Sign in with AFC integration guide, with no account and no approval.
+
+    PURPOSE (owner 2026-08-05): an organisation should be able to read what integrating actually
+    involves BEFORE it applies, and again while it waits. The same PDF already exists behind
+    sso/admin/integration-guide/ for AFC staff; this is the same file with no gate, because the
+    guide documents only the PUBLIC protocol surface: endpoints, scopes, claims, error responses
+    and a worked example. There is no secret in it, and a document nobody can read until they are
+    approved cannot help anybody decide whether to apply.
+
+    REQUEST: GET, no parameters, no body, no authentication.
+    RESPONSE: 200 with the PDF bytes and a Content-Disposition attachment filename. 404 with a
+        message when the deployment shipped without the build output.
+    CONSUMED BY: the "Read the integration guide" link on frontend/app/(root)/partners/apply,
+        and the same link in the confirmation email an applicant receives
+        (afc_partner_apply/emails.py send_received). Both point here rather than at the admin
+        route, which is Bearer gated.
+
+    The file path and the download name are imported from afc_sso.admin_api rather than repeated,
+    so a rebuild that changes either cannot leave these two routes serving different things.
+    """
+    import os
+
+    from django.http import FileResponse
+
+    from afc_sso.admin_api import GUIDE_DOWNLOAD_NAME, GUIDE_PATH
+
+    if not os.path.exists(GUIDE_PATH):
+        return Response(
+            {"message": "The integration guide is not available on this server."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    return FileResponse(
+        open(GUIDE_PATH, "rb"),
+        content_type="application/pdf",
+        as_attachment=True,
+        filename=GUIDE_DOWNLOAD_NAME,
+    )

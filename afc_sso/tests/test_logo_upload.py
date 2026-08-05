@@ -199,15 +199,25 @@ class SSOApplicationLogoTests(TestCase):
         self.assertFalse(self.app.logo)
 
     def test_an_oversized_file_is_rejected(self):
-        """Over the 2 MB cap. The size check runs FIRST, before any decode, so the bytes
-        need not be a valid image to exercise it - and the message says size, not format,
-        which is what proves the ordering."""
+        """Over the cap (10 MB since 2026-08-05, raised from 2 MB). The size check runs FIRST,
+        before any decode, so the bytes need not be a valid image to exercise it, and the message
+        says SIZE rather than format, which is what proves the ordering.
+
+        The cap is read from MAX_LOGO_BYTES rather than hardcoded here. When it moved from 2 MB to
+        10 MB this test kept passing for the wrong reason: a 2 MB blob of "x" sailed past the new
+        size gate and was refused by the DECODE gate instead, so the assertion on the message was
+        the only thing that caught it. Deriving the fixture from the constant means the next change
+        to the cap cannot quietly stop testing the size path.
+        """
+        from afc_sso.provisioning import MAX_LOGO_BYTES
+
         big = SimpleUploadedFile(
-            "big.png", b"x" * (2 * 1024 * 1024 + 1), content_type="image/png"
+            "big.png", b"x" * (MAX_LOGO_BYTES + 1), content_type="image/png"
         )
         resp = self._upload(big)
         self.assertEqual(resp.status_code, 400)
-        self.assertIn("2 MB or smaller", resp.json()["message"])
+        self.assertIn(
+            f"{MAX_LOGO_BYTES // (1024 * 1024)} MB or smaller", resp.json()["message"])
         self.app.refresh_from_db()
         self.assertFalse(self.app.logo)
 
