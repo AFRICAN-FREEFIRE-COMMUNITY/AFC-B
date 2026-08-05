@@ -2403,13 +2403,17 @@ def _transfer_window_open():
 # rejection a player runs into always quote the same dates.
 def _transfer_window_reopen_hint(season=None):
     """Return ' The window opens on <date>.' (or a closed-on hint), or '' when unknown."""
-    from datetime import date as _date
     if season is None:
         from afc_rankings.models import Season
         season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
     if not season:
         return ""
-    today = _date.today()
+    # timezone.localdate(), NOT date.today(). date.today() reads the SERVER's operating system
+    # clock, which is not necessarily the zone Django is configured for, so on a boundary day this
+    # could pick the wrong sentence and tell somebody a window opens on a date that has passed.
+    # Same class of mistake as backlog item 38, where a registration time was resolved against the
+    # wrong clock and players in Ethiopia were told a live event was closed.
+    today = timezone.localdate()
     opens = getattr(season, "transfer_window_open", None)
     closes = getattr(season, "transfer_window_close", None)
     if opens and opens > today:
