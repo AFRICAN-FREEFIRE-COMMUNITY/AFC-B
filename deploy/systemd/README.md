@@ -83,7 +83,7 @@ Measured on production, 2026-08-05:
 | `whatsapp` | 170 | `celery-worker` |
 | `sso_webhooks` | 0 | `celery-worker` |
 | `rankings_recalc` | 346,520 | `celery-rankings` |
-| `ocr_ml` | 126 | `celery-ocr-ml` (optional, off) |
+| `ocr_ml` | 126 | `celery-ocr-ml` (enabled 2026-08-05 on the owner's call) |
 
 The `whatsapp` figure is the one that mattered most: every WhatsApp message the platform
 believed it had handed off was sitting in Redis unread.
@@ -118,9 +118,26 @@ Do NOT point a worker at these backlogs and let it rip.
     sudo cp deploy/systemd/celery-worker.service   /etc/systemd/system/
     sudo cp deploy/systemd/celery-beat.service     /etc/systemd/system/
     sudo cp deploy/systemd/celery-rankings.service /etc/systemd/system/
+    sudo cp deploy/systemd/celery-ocr-ml.service   /etc/systemd/system/
     sudo systemctl daemon-reload
-    sudo systemctl enable --now celery-worker celery-beat celery-rankings
+    sudo systemctl enable --now celery-worker celery-beat celery-rankings celery-ocr-ml
 
 ### Deploy step (updated)
 
-    sudo systemctl restart django_app celery-worker celery-beat celery-rankings
+    sudo systemctl restart django_app celery-worker celery-beat celery-rankings celery-ocr-ml
+
+### OCR learning loop cost, for the record
+
+Enabled 2026-08-05 on the owner's instruction. It is bounded, which is why it was a small
+decision rather than a big one:
+
+* `autolabel_backlog` runs nightly at 02:30 and processes at most `OCR_AUTOLABEL_CAP` images
+  (default **50**), at two Gemini reads each - a ceiling of **100 calls per night**. Raise or
+  lower it with `OCR_AUTOLABEL_CAP` in the `.env`.
+* `check_retrain_trigger` runs Mondays 03:00 and costs nothing: it does NOT train on the box,
+  it only writes a `retrain_requested` marker when enough admin-confirmed pairs have built up.
+* Both no-op safely if `GEMINI_API_KEY` is unset, so a missing key degrades rather than errors.
+
+To watch a run without waiting for 02:30, execute it inline with a small cap:
+
+    python manage.py shell -c "from afc_ocr.tasks import autolabel_backlog; print(autolabel_backlog(cap=3))"
