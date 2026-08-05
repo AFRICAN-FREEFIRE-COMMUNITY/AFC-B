@@ -185,6 +185,49 @@ class Invite(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()  # When the invite expires
 
+    # ── One link, several people (owner 2026-08-05) ──────────────────────────────────────────
+    # "we need a way for teams to be able to generate links that multiple team members can use to
+    # join the team and not just separate links option."
+    #
+    # An invite was strictly single-use: the first person to accept flipped status_of_invite to
+    # 'attended_to' and everybody after them got "Invite already used", so a captain filling four
+    # seats had to mint and distribute four links.
+    #
+    # max_uses is NULL on every invite that already exists and on every DIRECT invite (one named
+    # invitee), and NULL keeps meaning exactly what it did: one use. Only a link explicitly minted
+    # as reusable carries a number, so nothing about existing behaviour shifts underneath anyone.
+    #
+    # Uses are counted rather than the row being duplicated, so ONE link is one auditable object:
+    # who created it, for which seat, how many of its uses are gone. accepted_by records which
+    # accounts walked through it, which is what a captain wants when a link leaks.
+    max_uses = models.PositiveIntegerField(null=True, blank=True)
+    use_count = models.PositiveIntegerField(default=0)
+
+    # Who walked through this link, as a plain list of user ids.
+    #
+    # A ManyToManyField would be the obvious modelling choice and it CANNOT be used here: Invite's
+    # primary key is a UUIDField, and MySQL refuses the join table's foreign key outright -
+    # "Referencing column 'invite_id' and referenced column 'invite_id' ... are incompatible"
+    # (error 3780, a collation mismatch on the char(32) the UUID is stored as). A JSON list needs
+    # no join table, so it sidesteps the problem entirely, and this list is only ever read for one
+    # invite at a time - it is never queried across rows, which is the case a real relation would
+    # have been worth the fight for.
+    accepted_user_ids = models.JSONField(default=list, blank=True)
+
+    def is_multi_use(self):
+        """True when this link was minted to be shared. NULL max_uses = the original single-use
+        invite, which is every row created before this field existed."""
+        return self.max_uses is not None and self.max_uses > 1
+
+    def uses_left(self):
+        """Remaining uses. A single-use invite has one left until it is attended_to."""
+        if self.max_uses is None:
+            return 0 if self.status_of_invite == "attended_to" else 1
+        return max(0, self.max_uses - self.use_count)
+
+    def is_exhausted(self):
+        return self.uses_left() <= 0
+
     def save(self, *args, **kwargs):
         # Default expiration: 7 days from creation
         if not self.expires_at:

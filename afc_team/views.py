@@ -2382,6 +2382,24 @@ def generate_invite_link(request):
             status=400,
         )
 
+    # ── How many people this one link may seat (owner 2026-08-05) ────────────────────────────
+    # "a way for teams to generate links that multiple team members can use ... not just separate
+    # links". Absent or 1 mints the original single-use invite, so every existing caller keeps the
+    # behaviour it has today and nothing changes for a captain who does not ask for this.
+    #
+    # Bounded by the seats a team actually has (MAX_MEMBERS): a link for 50 people is either a
+    # mistake or a link somebody is about to regret sharing, and a team can never seat that many.
+    raw_uses = request.data.get("max_uses")
+    max_uses = None
+    if raw_uses not in (None, "", "1", 1):
+        try:
+            max_uses = int(raw_uses)
+        except (TypeError, ValueError):
+            return Response({"message": "max_uses must be a whole number."}, status=400)
+        if max_uses < 1 or max_uses > MAX_MEMBERS:
+            return Response(
+                {"message": f"A link can be used between 1 and {MAX_MEMBERS} times."}, status=400)
+
     try:
         team = Team.objects.get(team_owner=user)
         # Same capacity gate as invite_member: don't mint a link into a seat that does not exist.
@@ -2391,10 +2409,18 @@ def generate_invite_link(request):
         invite = Invite.objects.create(
             inviter=user,
             team=team,
-            role_to_be_given_upon_acceptance=role_to_be_given_upon_acceptance
+            role_to_be_given_upon_acceptance=role_to_be_given_upon_acceptance,
+            max_uses=max_uses,
         )
         invite_link = f"https://africanfreefirecommunity.com/invite/{invite.invite_id}"
-        return Response({"invite_link": invite_link, "invite_id": str(invite.invite_id)}, status=200)
+        return Response({
+            "invite_link": invite_link,
+            "invite_id": str(invite.invite_id),
+            # Echoed so the UI can say "this link can be used 4 times" beside the copy button
+            # rather than the captain having to remember what they asked for.
+            "max_uses": invite.max_uses,
+            "uses_left": invite.uses_left(),
+        }, status=200)
     except Team.DoesNotExist:
         return Response({"message": "You do not own any team."}, status=403)
 
@@ -2428,8 +2454,21 @@ def respond_invite(request, invite_id):
     if invite.is_expired():
         return Response({"message": "Invite has expired."}, status=400)
 
-    if invite.status_of_invite == 'attended_to':
+    # A shared link is spent when its last use is gone, not when the first person walks through
+    # it, so ask the invite rather than reading status_of_invite directly (owner 2026-08-05).
+    if invite.is_exhausted() or invite.status_of_invite == 'attended_to':
+        if invite.is_multi_use():
+            return Response(
+                {"message": f"This invite link has been used {invite.use_count} times and has no "
+                            f"uses left. Ask the team for a new one."},
+                status=400)
         return Response({"message": "Invite already used."}, status=400)
+
+    # The same account must not spend two uses of one link. Being already on a team is caught
+    # below with a clearer message; this catches the person who joined through this very link,
+    # left, and came back to it.
+    if invite.is_multi_use() and user.pk in (invite.accepted_user_ids or []):
+        return Response({"message": "You have already used this invite link."}, status=400)
 
     action = request.data.get("action")
     if action not in ["accept", "decline"]:
@@ -2467,21 +2506,42 @@ def respond_invite(request, invite_id):
         if capacity_error:
             return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Every guard passed: consume the invite and seat the member.
-        invite.invitee = user
-        invite.status_of_invite = 'attended_to'
+        # Every guard passed: consume ONE use and seat the member.
+        #
+        # A MULTI-USE link (owner 2026-08-05) burns one of its uses and stays live for the next
+        # person; a single-use invite closes exactly as it always did. invitee is only stamped on
+        # a single-use invite: on a shared link it would record whichever of several people
+        # happened to accept last and read as though the link had been addressed to them, so the
+        # roll is kept in accepted_user_ids instead.
+        invite.use_count += 1
+        invite.accepted_user_ids = list(invite.accepted_user_ids or []) + [user.pk]
         invite.decision = 'accepted'
-        invite.save()
+        if invite.is_multi_use():
+            # Closed only once the last use is spent.
+            if invite.is_exhausted():
+                invite.status_of_invite = 'attended_to'
+            invite.save(update_fields=["use_count", "accepted_user_ids", "decision", "status_of_invite"])
+        else:
+            invite.invitee = user
+            invite.status_of_invite = 'attended_to'
+            invite.save(update_fields=["invitee", "use_count", "accepted_user_ids", "decision", "status_of_invite"])
 
         TeamMembers.objects.create(
             team=invite.team,
             member=user,
             management_role=incoming_role
         )
-        return Response({"message": f"You have joined {invite.team.team_name} successfully."})
+        body = {"message": f"You have joined {invite.team.team_name} successfully."}
+        if invite.is_multi_use():
+            body["uses_left"] = invite.uses_left()
+        return Response(body)
 
     else:
-        # Declining always consumes the invite - there is nothing to guard against.
+        # Declining consumes a SINGLE-USE invite - there is nothing to guard against. A shared
+        # link must survive it: one person saying no is not a reason to shut a door the captain
+        # opened for several, and the decliner simply does not join.
+        if invite.is_multi_use():
+            return Response({"message": "You declined the invite."})
         invite.invitee = user
         invite.status_of_invite = 'attended_to'
         invite.decision = 'declined'
