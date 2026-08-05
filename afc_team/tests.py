@@ -644,13 +644,22 @@ class RosterCapacityTests(TestCase):
         self.assertIn("already has a coach", res.json()["message"])
 
     # ── the door that had no lock at all ──────────────────────────────────
-    def test_open_join_is_capped(self):
-        """join_team (open teams) previously enforced NOTHING, neither cap."""
+    def test_open_join_does_not_exceed_the_player_cap(self):
+        """join_team (open teams) previously enforced NOTHING, neither cap.
+
+        UPDATED 2026-08-05. This used to assert a flat 400 once the six playing seats were taken.
+        That WAS the behaviour, and it was the bug the owner reported live: "when 6 players are in,
+        literally no other person can join again". A team has nine seats, and refusing everybody at
+        six made the three staff seats unreachable from every join path.
+
+        What must still hold is the part this test was really protecting: the PLAYING side never
+        goes past MAX_PLAYERS. The joiner now lands in a staff seat instead of being turned away.
+        """
         self._fill_players()
         _, joiner_tok = _make_user("cap_walkin")
         res = self._join(joiner_tok)
-        self.assertEqual(res.status_code, 400)
-        self.assertIn(f"maximum of {MAX_PLAYERS} players", res.json()["message"])
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertIn(res.json()["assigned_role"], {"coach", "manager", "analyst"})
         self.assertEqual(self._playing(), MAX_PLAYERS)
 
     # ── existing teams must not break ─────────────────────────────────────
