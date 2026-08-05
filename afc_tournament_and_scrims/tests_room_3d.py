@@ -353,3 +353,79 @@ class RoomDetailsTemplateParamsTests(TestCase):
         self.match.save(update_fields=["room_name"])
 
         self.assertEqual(self._params()[3], "AFC LOBBY 1")
+
+
+@override_settings(WHATSAPP_SYNC=False)
+class RoomDetailsAsyncDispatchTests(TestCase):
+    """PRODUCTION dispatch, where the send goes to a Celery worker rather than running inline.
+
+    THE BUG THIS EXISTS FOR. queue_template returned None for a successful async hand-off, which is
+    the same thing it returns when a recipient has opted out. This sender read that None as "player
+    skipped", so on production it reported 0 messages queued for an entire group, and the 3D
+    joining follow-up, which only goes to players whose room details actually went out, never sent
+    at all. Every other test in this file runs inline (WHATSAPP_SYNC defaults to DEBUG), which is
+    exactly why none of them caught it.
+    """
+
+    def setUp(self):
+        today = datetime.date.today()
+        self.admin = User.objects.create(
+            username="async_admin", email="async_admin@x.com", full_name="Async Admin",
+            role="admin", password="x")
+        self.player = User.objects.create(
+            username="async_player", email="async_player@x.com", full_name="Async Player",
+            role="player", password="x")
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=16, event_name="Async Cup", event_mode="virtual",
+            start_date=today, end_date=today, registration_open_date=today,
+            registration_end_date=today, prizepool="0", event_rules="r", event_status="ongoing",
+            registration_link="https://x.com/r", number_of_stages=1, creator=self.admin,
+            slug="async-cup")
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="Quals", start_date=today, end_date=today,
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=2,
+            stage_order=1)
+        self.group = StageGroups.objects.create(
+            stage=self.stage, group_name="Group A", playing_date=today,
+            playing_time=datetime.time(18, 0), teams_qualifying=2, match_count=1)
+        self.leaderboard = Leaderboard.objects.create(
+            leaderboard_name="LB", event=self.event, stage=self.stage, group=self.group,
+            creator=self.admin, kill_point=1.0, leaderboard_method="manual")
+        self.match = Match.objects.create(
+            leaderboard=self.leaderboard, group=self.group, match_number=1, match_map="bermuda",
+            room_id="RID", room_name="LOBBY", room_password="284915", room_is_3d=True)
+
+        from afc_auth.models import UserProfile
+        profile = UserProfile.objects.filter(user=self.player).first() or \
+            UserProfile.objects.create(user=self.player)
+        profile.whatsapp_number = "+2348051234567"
+        profile.save()
+
+    def test_a_queued_send_counts_as_queued_not_skipped(self):
+        from afc_tournament_and_scrims import whatsapp_room_details
+
+        with override_settings(WHATSAPP_ROOM_TEMPLATE="room_details",
+                               WHATSAPP_ROOM_TEMPLATE_LANG="en",
+                               WHATSAPP_ROOM_3D_TEMPLATE=""):
+            with patch("afc_whatsapp.tasks.send_whatsapp_message") as task:
+                queued, skipped = whatsapp_room_details.send_room_details(
+                    [self.player], self.event, self.match)
+
+        self.assertTrue(task.delay.called, "the send must have gone to a worker")
+        self.assertEqual((queued, skipped), (1, 0))
+
+    def test_the_3d_follow_up_still_sends_when_the_worker_takes_the_first_message(self):
+        """The half that actually cost players something: the follow-up is gated on the room
+        details having gone out, so a mis-read of the dispatch result silenced it entirely."""
+        from afc_tournament_and_scrims import whatsapp_room_details
+
+        with override_settings(WHATSAPP_ROOM_TEMPLATE="room_details",
+                               WHATSAPP_ROOM_TEMPLATE_LANG="en",
+                               WHATSAPP_ROOM_3D_TEMPLATE="room_3d_help"):
+            with patch("afc_whatsapp.tasks.send_whatsapp_message") as task:
+                whatsapp_room_details.send_room_details(
+                    [self.player], self.event, self.match)
+
+        templates = [c.kwargs.get("template_name") for c in task.delay.call_args_list]
+        self.assertEqual(templates, ["room_details", "room_3d_help"])
