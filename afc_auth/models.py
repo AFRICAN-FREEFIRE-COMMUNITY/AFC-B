@@ -669,7 +669,19 @@ class SentBroadcast(models.Model):
         ("room_details", "Room details"),  # room id/name/password push to a group
         ("direct", "Direct message"),      # a single player or team
     ]
-    DELIVERY_CHOICES = [("push", "App only"), ("email", "Email only"), ("both", "App + Email")]
+    # The CHANNELS one send went out on, as the canonical token afc_auth.audience.delivery_token
+    # produces (comma-joined, "both" still meaning app + email because it was named before there
+    # was a third channel). The three original values are untouched, so every row written before
+    # WhatsApp existed reads exactly as it always did.
+    DELIVERY_CHOICES = [
+        ("push", "App only"),
+        ("email", "Email only"),
+        ("both", "App + Email"),
+        ("whatsapp", "WhatsApp only"),
+        ("push,whatsapp", "App + WhatsApp"),
+        ("email,whatsapp", "Email + WhatsApp"),
+        ("both,whatsapp", "App + Email + WhatsApp"),
+    ]
 
     id = models.AutoField(primary_key=True)
     # Who sent it. SET_NULL + a username snapshot so the history survives a deleted admin account.
@@ -678,7 +690,10 @@ class SentBroadcast(models.Model):
     scope = models.CharField(max_length=20, choices=SCOPE_CHOICES, default="general")
     title = models.CharField(max_length=255, null=True, blank=True)
     message = models.TextField(blank=True, default="")
-    delivery = models.CharField(max_length=10, choices=DELIVERY_CHOICES, default="both")
+    # 20, not 10: the longest token is now "email,whatsapp". Too short and MySQL rejects the row
+    # under strict mode, which would silently cost the send its history entry (the write is
+    # best-effort so a logging failure cannot break a delivery that already happened).
+    delivery = models.CharField(max_length=20, choices=DELIVERY_CHOICES, default="both")
     recipient_count = models.PositiveIntegerField(default=0)  # how many users this reached
 
     # Where it went (nullable; only the relevant ones are set per scope). event is a real FK so the

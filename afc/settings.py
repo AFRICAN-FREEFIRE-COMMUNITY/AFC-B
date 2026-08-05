@@ -638,6 +638,66 @@ WHATSAPP_ROOM_3D_TEMPLATE = os.getenv("WHATSAPP_ROOM_3D_TEMPLATE", "")
 WHATSAPP_ROOM_3D_TEMPLATE_LANG = os.getenv(
     "WHATSAPP_ROOM_3D_TEMPLATE_LANG", WHATSAPP_ROOM_TEMPLATE_LANG)
 
+# ── The broadcast template ────────────────────────────────────────────────────────────────────
+# WHATSAPP_BROADCAST_TEMPLATE       -> the admin/organizer broadcast, WhatsApp being the third
+#                                      channel alongside the in-app notification and the email
+#                                      (afc_auth/broadcast_whatsapp.py). Two variables, in order:
+#                                      recipient name, message body. Category MARKETING.
+# WHATSAPP_BROADCAST_TEMPLATE_LANG  -> `en`, NOT `en_US`. The room templates were approved under
+#                                      en_US and Meta treats the two as different templates, so a
+#                                      broadcast sent with the room language simply fails.
+# WHATSAPP_BROADCAST_MAX_RECIPIENTS -> the HARD CAP on how many WhatsApp messages ONE broadcast may
+#                                      send. See afc_auth/broadcast_whatsapp.py for the full
+#                                      reasoning; the short version is that this is the SAME phone
+#                                      number that carries room IDs, a marketing blast people mute
+#                                      or report drags its quality rating down, and a downgraded
+#                                      number throttles the message a player cannot play without.
+#                                      An audience above the cap is REFUSED, never truncated.
+#
+# BLANK MEANS DO NOT SEND, exactly like WHATSAPP_ROOM_3D_TEMPLATE above: a deployment that has not
+# had this template approved stays silent instead of failing a send per recipient. The default is
+# the approved name so the feature works out of the box, matching WHATSAPP_ROOM_TEMPLATE; set it to
+# an empty string in the environment to switch the channel off everywhere.
+# Defaults to EMPTY, meaning do not send, like every other template name here. Broadcast is
+# the one of these that is MARKETING and goes to hundreds of people at once, so it is the
+# last one that should start sending because a deploy happened. Set it in the server .env.
+WHATSAPP_BROADCAST_TEMPLATE = os.getenv("WHATSAPP_BROADCAST_TEMPLATE", "")
+WHATSAPP_BROADCAST_TEMPLATE_LANG = os.getenv("WHATSAPP_BROADCAST_TEMPLATE_LANG", "en")
+WHATSAPP_BROADCAST_MAX_RECIPIENTS = int(
+    os.getenv("WHATSAPP_BROADCAST_MAX_RECIPIENTS", "500"))
+
+# ── The three BUYER order templates ───────────────────────────────────────────────────────────
+# What the person who PAID hears about their shop order, sent by afc_shop/buyer_whatsapp.py
+# notify_buyer as afc_shop/fulfilment.py drives the order through its state machine. The vendor
+# side is a different template entirely (VENDOR_ORDER_TEMPLATE_NAME, in fulfilment.py).
+#
+# WHATSAPP_ORDER_RECEIVED_TEMPLATE   -> "we have your order". FOUR variables, in order: buyer
+#                                       name, order reference, what they ordered, order total
+#                                       with its currency. Sent when the vendor ACKNOWLEDGES.
+# WHATSAPP_ORDER_SHIPPED_TEMPLATE    -> "it is on its way". THREE variables, in order: buyer
+#                                       name, order reference, what happens next (worded
+#                                       differently for a digital order, which has no courier).
+# WHATSAPP_ORDER_DELIVERED_TEMPLATE  -> "did it arrive?". TWO variables: buyer name, order
+#                                       reference, plus TWO quick-reply buttons whose taps come
+#                                       back to afc_shop/buyer_whatsapp.py handle_inbound_message.
+#
+# A BLANK NAME MEANS "DO NOT SEND IT", the same off switch WHATSAPP_ROOM_3D_TEMPLATE uses: a
+# template Meta has not approved fails at send time, so a deployment that has not registered
+# these yet stays silent and keeps the order emails it already sends, instead of leaving a failed
+# message row behind on every single order.
+#
+# ONE SHARED LANGUAGE because all three were approved together under `en`. Note `en`, NOT `en_US`:
+# they are DIFFERENT templates to Meta and sending with the wrong one fails with error 132001.
+# All three default to EMPTY, which means "do not send", the same rule
+# WHATSAPP_ROOM_3D_TEMPLATE follows. Defaulting to the live template names would have started
+# messaging real buyers the moment this code was deployed, before anybody chose to turn it on,
+# and a WhatsApp message is not a thing that can be taken back. Set the names in the server .env
+# when you want it live.
+WHATSAPP_ORDER_RECEIVED_TEMPLATE = os.getenv("WHATSAPP_ORDER_RECEIVED_TEMPLATE", "")
+WHATSAPP_ORDER_SHIPPED_TEMPLATE = os.getenv("WHATSAPP_ORDER_SHIPPED_TEMPLATE", "")
+WHATSAPP_ORDER_DELIVERED_TEMPLATE = os.getenv("WHATSAPP_ORDER_DELIVERED_TEMPLATE", "")
+WHATSAPP_ORDER_TEMPLATE_LANG = os.getenv("WHATSAPP_ORDER_TEMPLATE_LANG", "en")
+
 # Shop checkout currency. Both shop payment paths (Paystack + Stripe, see
 # afc_shop/stripe_checkout.py) charge in this currency, and Stripe Connect vendor
 # payouts (afc_shop/connect.py) transfer in it too. Defaults to NGN to match the

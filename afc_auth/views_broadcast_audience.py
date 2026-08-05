@@ -31,6 +31,12 @@
 #    and it REFUSES the email channel outright above the daily cap (400, not a silent queue). The
 #    recommended default channel for a big audience is in-app push, which delivers instantly.
 #
+# 3. WHATSAPP VOLUME IS REAL IN A DIFFERENT WAY (owner 2026-08-05). WhatsApp is the third channel
+#    and the only one that costs money per message. Above the cap it is REFUSED outright, never
+#    truncated, because that is the same phone number AFC sends room IDs from and a marketing
+#    blast that people mute or report drags its quality rating down. Same mechanism as the email
+#    cap, same shape of response; the reasoning is in afc_auth/broadcast_whatsapp.py.
+#
 # Convention note: mirrors the sibling afc_auth view modules (views_watchlist.py,
 # views_player_reports.py) - function-based @api_view views, the shared Bearer handshake via
 # afc.api_utils.authenticate, inline dict serialization (no serializers.py), Response({...},
@@ -65,14 +71,19 @@ from afc.api_utils import authenticate as _authenticate
 from afc_team.models import Team, TeamMembers
 
 from .audience import (
+    EMAIL,
+    WHATSAPP,
     audience_counts,
+    delivery_token,
     eligible_users,
     email_volume_assessment,
     parse_audience_spec,
+    parse_delivery,
     recommended_delivery,
     resolve_audience,
     spec_is_empty,
 )
+from .broadcast_whatsapp import whatsapp_max_recipients, whatsapp_volume_assessment
 from .audit import set_audit
 # One country can sit in the table under several spellings, so the chip list is built
 # from folded groups rather than raw strings. See country_grouping.py.
@@ -251,6 +262,9 @@ def broadcast_audience_options(request):
                 "daily_cap": volume["daily_cap"],
                 "comfortable_max": volume["comfortable_max"],
             },
+            # The WhatsApp ceiling, so the composer can state the limit next to the channel
+            # instead of only discovering it when a send is refused.
+            "whatsapp_limits": {"max_recipients": whatsapp_max_recipients()},
         },
         status=status.HTTP_200_OK,
     )
@@ -280,8 +294,10 @@ def broadcast_audience_preview(request):
         recipient_count,            # in-app reach - THE number the admin confirms
         email_recipient_count,      # of those, how many have an email address
         push_recipient_count,
+        whatsapp_recipient_count,   # of those, how many have a WhatsApp number and consented
         email_volume: {level: ok|slow|blocked, estimated_minutes, per_minute, daily_cap,
                        requires_confirmation, blocked, message},
+        whatsapp_volume: {level: ok|blocked, max_recipients, blocked, message},
         recommended_delivery: "push"|"both",
         sample: [{user_id, username, has_email, country, role, language}],   # paged
         sample_total_count, has_more }
@@ -303,6 +319,7 @@ def broadcast_audience_preview(request):
 
     counts = audience_counts(spec)
     volume = email_volume_assessment(counts["email_recipient_count"])
+    wa_volume = whatsapp_volume_assessment(counts["whatsapp_recipient_count"])
 
     # The sample is ordered so repeat previews of the same spec show the same faces (an unordered
     # slice is not stable across queries and would look like the audience is churning).
@@ -313,6 +330,7 @@ def broadcast_audience_preview(request):
         {
             **counts,
             "email_volume": volume,
+            "whatsapp_volume": wa_volume,
             "recommended_delivery": recommended_delivery(counts["recipient_count"]),
             "sample": [_serialize_recipient(u) for u in page],
             "sample_total_count": sample_total,
@@ -329,7 +347,7 @@ def broadcast_audience_preview(request):
 def broadcast_audience_send(request):
     """Send a notification and/or email to the audience a spec resolves to.
 
-    THE TWO GUARDS (see the module header for why they exist):
+    THE THREE GUARDS (see the module header for why they exist):
       • confirmed_count is REQUIRED and must equal the audience size RIGHT NOW. A mismatch is a
         409 carrying the new number: the admin re-reads it and re-confirms. This is what makes it
         impossible to send without having seen the count.
@@ -337,20 +355,26 @@ def broadcast_audience_send(request):
         confirm_large_email=true (400 with the warning otherwise); above the provider's daily cap
         the email channel is REFUSED entirely (400) and the admin is told to use in-app instead -
         we do not queue mail that cannot deliver.
+      • The WhatsApp channel is capped. Above WHATSAPP_BROADCAST_MAX_RECIPIENTS reachable people
+        the send is REFUSED (400) with the limit named. There is no "confirm anyway": this is the
+        number that carries room IDs.
 
     Request (JSON):
       {audience: {...spec...} | ...spec at top level,
        title?, message,                       # message is required
-       delivery?: "push"|"email"|"both",      # default "push" - the channel that always delivers
+       delivery?: "push"|"email"|"both"|"whatsapp", singly or comma-joined ("both,whatsapp").
+                                              # default "push" - the channel that always delivers
        confirmed_count,                       # REQUIRED: the number the preview showed
        confirm_large_email?: bool,            # required for a "slow" email blast
        target_type?/target_id?/targets?}      # optional "Take me there" deep link(s)
     Auth: Bearer; admins only. 403 otherwise.
     Responses:
-      200 {message, recipient_count, pushed, emailed, delivery, email_volume}
+      200 {message, recipient_count, pushed, emailed, whatsapp_queued, whatsapp_skipped,
+           delivery, email_volume, whatsapp_volume}
       400 empty audience / missing message / missing confirmed_count / unconfirmed or
-          over-cap email blast (each with a plain-English message and, for the email cases,
-          the full email_volume payload so the FE can render the warning verbatim)
+          over-cap email blast / over-cap WhatsApp blast (each with a plain-English message and,
+          for the volume cases, the full email_volume / whatsapp_volume payload so the FE can
+          render the warning verbatim)
       409 {message, recipient_count, confirmed_count, email_volume} - the audience changed size
       429 broadcast rate limit (admins are exempt, so this is effectively unreachable today)
     FE consumer: AudienceBuilder.tsx "Send" button, behind a confirm dialog that repeats the
@@ -368,12 +392,18 @@ def broadcast_audience_send(request):
         return Response({"message": "A message is required."}, status=status.HTTP_400_BAD_REQUEST)
     title = (request.data.get("title") or "").strip() or None
 
-    delivery = (request.data.get("delivery") or "push").strip().lower()
-    if delivery not in ("push", "email", "both"):
+    # Channels, not a single channel: "both,whatsapp" is three of them. parse_delivery owns the
+    # vocabulary (afc_auth/audience.py) and drops anything it does not recognise, so an empty set
+    # means the composer sent junk. delivery_token puts it back into the one canonical spelling
+    # that is echoed to the composer, stored on SentBroadcast and written to the audit line.
+    channels = parse_delivery(request.data.get("delivery") or "push")
+    if not channels:
         return Response(
-            {"message": "delivery must be 'push', 'email', or 'both'."},
+            {"message": "delivery must be 'push', 'email', 'whatsapp', or a comma separated "
+                        "combination such as 'both,whatsapp'."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    delivery = delivery_token(channels)
 
     # ── audience ──
     spec = parse_audience_spec(request.data)
@@ -386,6 +416,7 @@ def broadcast_audience_send(request):
     counts = audience_counts(spec)
     recipient_count = counts["recipient_count"]
     volume = email_volume_assessment(counts["email_recipient_count"])
+    wa_volume = whatsapp_volume_assessment(counts["whatsapp_recipient_count"])
 
     if recipient_count == 0:
         return Response(
@@ -425,7 +456,7 @@ def broadcast_audience_send(request):
     # ── GUARD 2: email volume ──
     # Only applies when email is actually one of the chosen channels; a push-only send to the
     # whole site is fine and is exactly what we steer large audiences towards.
-    if delivery in ("email", "both"):
+    if EMAIL in channels:
         if volume["blocked"]:
             return Response(
                 {
@@ -447,6 +478,24 @@ def broadcast_audience_send(request):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+    # ── GUARD 3: WhatsApp volume (owner 2026-08-05) ──
+    # Same mechanism as the email cap above, for a different reason: email above the cap CANNOT
+    # deliver, WhatsApp above the cap can deliver and that is the problem. Every message is paid
+    # for, Meta throttles a business that sends too much too fast, and a marketing blast people
+    # mute or report damages the quality rating of the ONE number AFC also sends room IDs from.
+    # Refused, never truncated: a broadcast that reached the first 500 of 3,000 people cannot be
+    # reasoned about afterwards. See afc_auth/broadcast_whatsapp.py.
+    if WHATSAPP in channels and wa_volume["blocked"]:
+        return Response(
+            {
+                "message": wa_volume["message"],
+                "whatsapp_volume": wa_volume,
+                "recipient_count": recipient_count,
+                "recommended_delivery": "push",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     # ── rate limit (admins are exempt in broadcast_ratelimit, so this is a no-op for them; kept
     # so the gate lives in ONE place if this surface is ever opened up to organizers) ──
@@ -472,7 +521,7 @@ def broadcast_audience_send(request):
     from .views import deliver_broadcast, _parse_notification_targets
 
     recipients = resolve_audience(spec)
-    pushed, emailed = deliver_broadcast(
+    result = deliver_broadcast(
         recipients,
         title,
         message,
@@ -482,6 +531,12 @@ def broadcast_audience_send(request):
         sender=user,
         scope="general",            # lands in the existing admin Settings "Sent broadcasts" list
     )
+    # The result IS the (pushed, emailed) pair it has always been; the WhatsApp numbers ride on it
+    # as attributes (afc_auth.views.BroadcastResult), read with a default so anything handing back
+    # a plain pair still works.
+    pushed, emailed = result
+    whatsapp_queued = getattr(result, "whatsapp_queued", 0)
+    whatsapp_skipped = getattr(result, "whatsapp_skipped", 0)
     record_broadcast_send(user)
 
     # ── audit trail: a site-wide message is exactly the kind of action that must be traceable ──
@@ -501,8 +556,14 @@ def broadcast_audience_send(request):
             "recipient_count": recipient_count,
             "pushed": pushed,
             "emailed": emailed,
+            # Both numbers, because WhatsApp reaches a fraction of the audience the other two do
+            # and "we messaged 1,200 of your 3,000 players" is the sentence an admin needs. skipped
+            # counts everyone with no number on file or an opt-out.
+            "whatsapp_queued": whatsapp_queued,
+            "whatsapp_skipped": whatsapp_skipped,
             "delivery": delivery,
             "email_volume": volume,
+            "whatsapp_volume": wa_volume,
         },
         status=status.HTTP_200_OK,
     )
