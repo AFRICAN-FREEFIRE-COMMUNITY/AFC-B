@@ -1,0 +1,43 @@
+[Unit]
+# AFC Celery beat - the SCHEDULER. Exactly one of these may ever run.
+#
+# WHY THAT MATTERS (2026-08-05). Two `celery -A afc beat` processes were found running side by
+# side, both started 2026-06-12 from separate `screen` sessions. Beat does not coordinate with
+# other beats: each one independently enqueues the whole schedule, so for eight weeks EVERY
+# periodic job was queued twice - the five-minute event-status sweep, the per-minute scheduled
+# news publish, the nightly payout pass. Duplicate notifications and emails are the visible
+# symptom of that.
+#
+# systemd is the fix, not just tidier packaging: it refuses to start a second copy of a unit,
+# which is a guarantee "remember to only run one" never gave anybody. Do NOT reintroduce a
+# hand-started beat in screen alongside this.
+Description=AFC Celery beat scheduler (must be a single instance)
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/AFC-B
+
+# --schedule is given an EXPLICIT path. Beat otherwise writes celerybeat-schedule into the
+# current working directory, which is fine until something runs it from elsewhere and it
+# quietly starts from an empty schedule state.
+# --pidfile= is deliberately EMPTY: systemd tracks the process, and a stale pidfile left by an
+# unclean shutdown makes beat refuse to start with "another instance is already running".
+ExecStart=/home/ubuntu/AFC-B/venv/bin/celery -A afc beat \
+    --loglevel=info \
+    --schedule=/home/ubuntu/AFC-B/celerybeat-schedule \
+    --pidfile=
+
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celery-beat
+
+[Install]
+WantedBy=multi-user.target

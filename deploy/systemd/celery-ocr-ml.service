@@ -1,0 +1,53 @@
+[Unit]
+# AFC Celery worker - the ocr_ml queue ONLY. OPTIONAL, and off by default.
+#
+# WHAT IT IS FOR. afc_ocr/tasks.py declares two tasks with @shared_task(queue="ocr_ml"), and
+# afc/celery_config.py schedules them: a nightly autolabel at 02:30 and a weekly retrain
+# trigger on Mondays at 03:00. A plain `celery -A afc worker` consumes the DEFAULT queue and
+# will not touch ocr_ml, which is the intended design - the OCR machine-learning work is slow
+# and must not compete with the web app's own background jobs.
+#
+# THE CONSEQUENCE, FOUND 2026-08-05: no ocr_ml worker had ever been started, so beat enqueued
+# those two jobs on schedule and nothing ever consumed them. They have been accumulating in
+# Redis (doubled, because beat itself was running twice). Purge the backlog BEFORE enabling
+# this, or the first start will run every night's job that was ever queued, back to back:
+#
+#     cd /home/ubuntu/AFC-B && source venv/bin/activate
+#     celery -A afc inspect reserved
+#     celery -A afc purge -Q ocr_ml            # asks for confirmation
+#
+# COST WARNING: the nightly autolabel calls Gemini twice per un-labelled screenshot (two-read
+# consensus). Enabling this unit turns a real, recurring API spend back on. It no-ops without
+# GEMINI_API_KEY set, so it fails safe, but do not enable it casually - decide you want the
+# OCR learning loop running first.
+#
+# ENABLE (only once the above is understood):
+#     sudo systemctl enable --now celery-ocr-ml
+Description=AFC Celery worker (ocr_ml queue - OPTIONAL, incurs Gemini API cost)
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/AFC-B
+
+# -Q ocr_ml pins this worker to that queue alone, and --concurrency=1 keeps the ML work to a
+# single job at a time so it cannot starve the box of CPU or run several Gemini batches at once.
+ExecStart=/home/ubuntu/AFC-B/venv/bin/celery -A afc worker \
+    --loglevel=info \
+    -Q ocr_ml \
+    --concurrency=1 \
+    -n ocr-ml@%%h
+
+KillSignal=SIGTERM
+TimeoutStopSec=600
+Restart=always
+RestartSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celery-ocr-ml
+
+[Install]
+WantedBy=multi-user.target

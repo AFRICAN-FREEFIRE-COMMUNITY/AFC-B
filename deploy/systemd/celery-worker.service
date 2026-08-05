@@ -1,0 +1,45 @@
+[Unit]
+# AFC Celery worker - the DEFAULT queue.
+#
+# WHY THIS EXISTS (2026-08-05). Celery was started by hand inside `screen` on 2026-06-12 and
+# never restarted again, so for eight weeks every background job ran two-month-old code while
+# gunicorn was being redeployed around it. A `screen` session also dies with its terminal and
+# does not come back after a reboot. systemd fixes both: it restarts on failure, starts on
+# boot, and `systemctl restart celery-worker` becomes part of a deploy the same way
+# django_app already is.
+#
+# Modelled on the existing /etc/systemd/system/django_app.service (same user, same venv,
+# same working directory) so there is one shape to learn on this box.
+#
+# NO EnvironmentFile ON PURPOSE: afc/settings.py calls load_dotenv(BASE_DIR/".env") itself,
+# so the process reads .env without systemd's help. Pointing EnvironmentFile at that same
+# .env is the usual way these units fail to start, because systemd's parser rejects the
+# quoting and `export` lines that a shell-oriented .env is allowed to contain.
+Description=AFC Celery worker (default queue)
+After=network.target redis-server.service
+
+# Deliberately After= and NOT Requires=: if the redis unit is named something else on this
+# host, Requires= would make this service fail outright, while After= only affects ordering.
+# Restart=always below covers a broker that is slow to come up.
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/AFC-B
+ExecStart=/home/ubuntu/AFC-B/venv/bin/celery -A afc worker --loglevel=info
+
+# SIGTERM lets Celery finish the task in flight instead of dropping it. TimeoutStopSec is
+# generous because a leaderboard render or a bulk email batch can legitimately take a while,
+# and killing one halfway is how a half-sent broadcast happens.
+KillSignal=SIGTERM
+TimeoutStopSec=300
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celery-worker
+
+[Install]
+WantedBy=multi-user.target
