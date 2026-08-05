@@ -49,6 +49,13 @@ class Command(BaseCommand):
 
         now = timezone.now()
         created = updated = 0
+        # Collected so the command can PRINT what it found, not just how many. The exact language
+        # code is the thing an owner cannot read reliably anywhere else: WhatsApp Manager shows a
+        # friendly name ("English (US)"), while a send needs the literal code ("en_US"), and the
+        # two are different templates to Meta. The variable count is here for the same reason: a
+        # template approved with five variables and a sender passing six fails at send time, and
+        # this is the only place the two are visible side by side.
+        rows = []
         for template in result.get("templates") or []:
             name = template.get("name")
             language = template.get("language")
@@ -69,6 +76,31 @@ class Command(BaseCommand):
             )
             created += 1 if was_created else 0
             updated += 0 if was_created else 1
+            rows.append((
+                name,
+                language,
+                (template.get("status") or "").upper(),
+                _body_variable_count(template.get("components")),
+            ))
+
+        if rows:
+            self.stdout.write("")
+            self.stdout.write(f"{'NAME':<34} {'LANGUAGE':<10} {'STATUS':<10} VARIABLES")
+            self.stdout.write("-" * 70)
+            for name, language, status, variables in sorted(rows):
+                line = f"{name:<34} {language:<10} {status:<10} {variables}"
+                # Only APPROVED can be sent, so anything else is called out rather than listed
+                # quietly among rows that look identical at a glance.
+                self.stdout.write(
+                    self.style.SUCCESS(line) if status == "APPROVED"
+                    else self.style.WARNING(line))
+            self.stdout.write("")
+            self.stdout.write(
+                "Put the LANGUAGE column into the settings, never the friendly name shown in "
+                "WhatsApp Manager: WHATSAPP_ROOM_TEMPLATE_LANG and its siblings are compared "
+                "literally by Meta."
+            )
+            self.stdout.write("")
 
         self.stdout.write(self.style.SUCCESS(
             f"WhatsApp templates synced: {created} added, {updated} updated, "
