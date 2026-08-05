@@ -309,21 +309,23 @@ def update_event_and_stage_statuses():
     except Exception:
         pass
 
-    # ── Fully-automatic events (owner 2026-07-04) ──────────────────────────────────────────────
-    # Once an auto-seed event's START instant passes, seed its available teams into the entry stage's
-    # groups (once - guarded by auto_seeded_at). run_auto_seed is idempotent + never clobbers an
-    # existing seed, so a stray double-run is safe.
+    # ── Fully-automatic events (owner 2026-07-04, made configurable 2026-08-05) ────────────────
+    # Once an auto-seed event's chosen TRIGGER instant passes, seed its available teams into the
+    # stages the organizer selected (once per event, guarded by auto_seeded_at; once per stage,
+    # guarded by Stages.auto_seeded_at). run_auto_seed is idempotent and never clobbers an existing
+    # seed, so a stray double-run is safe.
     try:
-        from .views_autoseed import run_auto_seed
-        from datetime import datetime as _dt2, time as _time2
-        _tz2 = timezone.get_current_timezone()
+        from .views_autoseed import run_auto_seed, auto_seed_due_at
         _now3 = timezone.now()
-        for _ev in Event.objects.filter(is_draft=False, auto_seed_on_start=True, auto_seeded_at__isnull=True):
-            try:
-                _start = timezone.make_aware(_dt2.combine(_ev.start_date, _ev.event_start_time or _time2.min), _tz2)
-            except Exception:
+        for _ev in Event.objects.filter(is_draft=False, auto_seed_on_start=True,
+                                        auto_seeded_at__isnull=True):
+            # WHEN is the organizer's choice now (owner 2026-08-05), not always the start whistle.
+            # auto_seed_due_at reads Event.auto_seed_trigger and returns the instant, or None when
+            # this event does not have the dates that trigger needs.
+            _due = auto_seed_due_at(_ev)
+            if _due is None:
                 continue
-            if _now3 >= _start:
+            if _now3 >= _due:
                 run_auto_seed(_ev)
     except Exception:
         pass
@@ -861,6 +863,18 @@ def _maybe_json(val, default=None):
 def _as_list(val):
     v = _maybe_json(val, default=[])
     return v if isinstance(v, list) else []
+
+
+def _clean_auto_seed_trigger(value):
+    """One of Event.AUTO_SEED_TRIGGER_CHOICES, defaulting to "event_start".
+
+    Whitelisted rather than stored as given: this arrives from a public form field, and an
+    unrecognised value would be written straight into the column and then silently fail to match
+    any branch of auto_seed_due_at, which reads as "the automatic draw just never ran".
+    """
+    allowed = {choice for choice, _label in Event.AUTO_SEED_TRIGGER_CHOICES}
+    text = str(value or "").strip()
+    return text if text in allowed else "event_start"
 
 
 def _as_bool(val):
@@ -2087,6 +2101,10 @@ def create_event(request):
         with transaction.atomic():
             event = Event.objects.create(
                 auto_seed_on_start=_as_bool(request.data.get("auto_seed_on_start")),
+                # Defaults to "event_start", which is what the switch alone used to mean, so a
+                # caller that does not send it gets exactly the old behaviour.
+                auto_seed_trigger=_clean_auto_seed_trigger(
+                    request.data.get("auto_seed_trigger")),
                 is_waitlist_enabled=_wl_enabled,
                 waitlist_capacity=_wl_capacity,
                 waitlist_discord_role_id=request.data.get("waitlist_discord_role_id") or None,
@@ -3564,6 +3582,9 @@ def edit_event(request):
     # enforcement lives in register_for_event so changing them only affects FUTURE registrations.
     if "auto_seed_on_start" in request.data:
         event.auto_seed_on_start = _as_bool(request.data.get("auto_seed_on_start"))
+    if "auto_seed_trigger" in request.data:
+        event.auto_seed_trigger = _clean_auto_seed_trigger(
+            request.data.get("auto_seed_trigger"))
     if "require_team_logo" in request.data:
         event.require_team_logo = _as_bool(request.data.get("require_team_logo"))
     if "require_esport_images" in request.data:
@@ -5027,6 +5048,7 @@ def get_event_details(request):
         "is_waitlist_enabled": event.is_waitlist_enabled,
         # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
         "auto_seed_on_start": event.auto_seed_on_start,
+        "auto_seed_trigger": event.auto_seed_trigger,
         "require_team_logo": event.require_team_logo,
         "require_esport_images": event.require_esport_images,
         "require_player_uid": event.require_player_uid,
