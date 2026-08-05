@@ -293,7 +293,14 @@ def _dispatch(kwargs):
         if _sync():
             return send_whatsapp_message(**kwargs)
         send_whatsapp_message.delay(**kwargs)
-        return None
+        # True, NOT None. This used to return None here, which made a successful async hand-off
+        # indistinguishable from "not sent", and async is the PRODUCTION path (_sync is DEBUG).
+        # The room-details sender read that None as "this player was skipped", so on production it
+        # reported 0 messages queued out of a whole group and, worse, never sent the 3D joining
+        # follow-up, which it only sends to players whose room details actually went out. There is
+        # no message id to return yet because the worker has not created the row, so the contract
+        # is: an id when it ran inline, True when a worker took it, None when nothing was sent.
+        return True
     except Exception as exc:
         logger.warning("whatsapp: could not dispatch send (%s): %s", kwargs.get("context"), exc)
         return None
@@ -328,7 +335,12 @@ def queue_template(to, template_name, language, *, body_params=None, button_payl
         event/match:     the Event/Match (or ids) this is about, for the log.
         context:         short trigger label, e.g. "room_details".
 
-    Returns the WhatsAppMessage id when the send ran inline, else None. Never raises.
+    Returns the WhatsAppMessage id when the send ran INLINE, True when a worker took it, and
+    None when nothing was sent (the recipient opted out, or the dispatch itself failed). Callers
+    that count deliveries must test `is None` for "not sent" rather than assuming a truthy id;
+    on production there is no id yet, because the worker has not created the row.
+
+    Never raises.
     """
     if _opted_out(user):
         logger.info("whatsapp: skipping '%s' send, recipient has opted out.", context)
