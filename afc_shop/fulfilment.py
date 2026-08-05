@@ -60,6 +60,12 @@ from afc_auth.act_as import resolve_acting_vendor
 from afc_whatsapp.tasks import queue_template
 from .models import FulfillmentEvidence, Order, Vendor
 from . import emails
+# The BUYER's half of the same WhatsApp channel (afc_shop/buyer_whatsapp.py). notify_vendor
+# below tells the VENDOR there is work to do; notify_buyer tells the person who PAID what is
+# happening with their order, at three of the transitions in this file. Best effort and it
+# NEVER raises, so it is called after each transition has already committed and cannot undo
+# one. Its three templates are configured in afc/settings.py (WHATSAPP_ORDER_*_TEMPLATE).
+from .buyer_whatsapp import notify_buyer
 
 # Module logger. notify_vendor logs here (alongside the WhatsAppMessage row every send
 # writes); transition errors also log here for ops visibility.
@@ -402,8 +408,18 @@ def _get_order_or_404(order_id):
 # front door drove it (the DB is the single source of truth; logic is never duplicated).
 def apply_acknowledge(order):
     """received -> acknowledged (+ acknowledged_at). Returns (ok, err_response).
-    No buyer email at this step (the buyer was already told "received")."""
-    return _transition(order, "acknowledged", set_fields={"acknowledged_at": timezone.now()})
+
+    No buyer EMAIL at this step (the buyer was already emailed "received" on payment),
+    but the buyer's WhatsApp "we have your order" DOES go here rather than on payment:
+    the gateway already confirms the money on screen and by mail, and the update worth
+    a phone notification is the one that says a human has seen the order and is packing
+    it. Sent only AFTER the transition has committed, and notify_buyer never raises, so
+    a WhatsApp problem cannot fail or undo the acknowledgement."""
+    ok, err = _transition(order, "acknowledged", set_fields={"acknowledged_at": timezone.now()})
+    if not ok:
+        return ok, err
+    notify_buyer(order, "received")
+    return True, None
 
 
 def apply_set_ship_date(order, ship_date):
@@ -423,6 +439,9 @@ def apply_mark_shipped(order):
         emails.send_order_shipped(order)
     except Exception as e:  # best-effort; never block the transition on a mail failure
         logger.warning("order-shipped email failed for order #%s: %s", order.id, e)
+    # The same news on WhatsApp, worded for what this order actually is (a parcel with
+    # a courier, or diamonds with nothing to track). After the commit, never raises.
+    notify_buyer(order, "shipped")
     return True, None
 
 
@@ -566,6 +585,12 @@ def order_mark_completed(request):
         emails.send_order_completed(order)
     except Exception as e:
         logger.warning("order-completed email failed for order #%s: %s", order.id, e)
+
+    # Ask the BUYER whether it really arrived, on WhatsApp, with two tappable answers.
+    # "completed" is whoever-marked-it's claim; the tap is the buyer's own word, and it
+    # lands on Order.buyer_confirmed_at (afc_shop/buyer_whatsapp.py handle_inbound_message).
+    # After the commit, and it never raises, so the completion above always stands.
+    notify_buyer(order, "delivered_check")
 
     # ── PROVIDER-AWARE vendor payout hook (Phase B3) ───────────────────────────
     # The order is now completed -> AFC owes the vendor their share. AFC pays out on the

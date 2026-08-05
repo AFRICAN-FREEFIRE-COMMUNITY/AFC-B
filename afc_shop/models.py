@@ -563,6 +563,17 @@ class Order(models.Model):
     shipped_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
+    # ── The BUYER's own confirmation that the order arrived ─────────────────────
+    # completed_at is the VENDOR's claim ("I delivered it"); this is the buyer
+    # agreeing. Set only when the buyer taps "Yes, received" on the WhatsApp delivery
+    # check AFC sends at completion (afc_shop/buyer_whatsapp.py: notify_buyer sends
+    # the "order_delivered_check" template, handle_inbound_message records the tap).
+    # A "No, not yet" tap deliberately leaves this NULL and logs a warning instead, so
+    # the two answers stay distinguishable and a dispute never looks like a delivery.
+    # Stays NULL for every order placed before this existed, and for every buyer who
+    # simply never replies, so it means "confirmed" and never "not delivered".
+    buyer_confirmed_at = models.DateTimeField(null=True, blank=True)
+
 
     def __str__(self):
         return f"Order #{self.id} - {self.user.username} - {self.status}"

@@ -99,12 +99,20 @@ KNOWN_STATUSES = {"sent", "delivered", "read", "failed"}
 #       marketplace vendor quick-reply taps ("ack:<order_id>", "shipdate:<order_id>",
 #       "shipped:<order_id>") and inbound shipment-evidence photos. Replaces the old
 #       Kapso-era /shop/whatsapp/webhook/ endpoint (deleted 2026-08-03).
+#   afc_shop.buyer_whatsapp.handle_inbound_message
+#       the BUYER's answer to the delivery check AFC sends when an order is completed
+#       ("gotit:<order_id>", "notyet:<order_id>"). Separate action prefixes from the
+#       vendor's, so each handler ignores the other's taps rather than fighting over
+#       them, and separate module because the two sides message different people.
 #
 # A handler is handed Meta's RAW message entry, decides for itself whether the message
 # is any of its business, and must not raise. It is imported LAZILY (on the first
 # inbound message, not at startup) so the dependency stays one-way: apps import
 # afc_whatsapp, never the reverse, and no import cycle can form.
-INBOUND_HANDLERS = ["afc_shop.vendor_whatsapp.handle_inbound_message"]
+INBOUND_HANDLERS = [
+    "afc_shop.vendor_whatsapp.handle_inbound_message",
+    "afc_shop.buyer_whatsapp.handle_inbound_message",
+]
 
 
 def _dispatch_to_app_handlers(message_entry):
