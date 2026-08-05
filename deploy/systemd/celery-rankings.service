@@ -1,0 +1,52 @@
+[Unit]
+# AFC Celery worker - the rankings_recalc queue.
+#
+# WHY ITS OWN UNIT. afc_rankings routes eight tasks onto "rankings_recalc", and they are
+# enqueued per ENTITY per MONTH: tasks.enqueue_team / enqueue_player fire on every result
+# save, every admin override and every ghost-entity edit. That is a high-volume, bursty,
+# CPU-and-database-heavy stream. Sharing a worker with "whatsapp" would mean a player waits
+# for their room details behind a recalculation sweep, which is the wrong trade - so this
+# queue gets its own process and the latency-sensitive queues get theirs.
+#
+# WHY --concurrency=1. The recalc functions take a lock per entity (tasks._with_lock) and hit
+# the same score tables repeatedly. Running several at once buys little and multiplies the
+# database load on a box that also serves the site.
+#
+# BEFORE ENABLING THIS THE FIRST TIME - PURGE THE BACKLOG.
+# On 2026-08-05 this queue held 346,520 tasks, accumulated since nothing had ever consumed it.
+# Starting a worker against that backlog would hammer MySQL for a very long time to compute a
+# result that is already superseded: these recalcs are idempotent and per-entity, so the same
+# team appears in that queue hundreds of times and only the last run matters. Purge it, then
+# rebuild the ladders once, in bulk, with the management command that exists for exactly this:
+#
+#     cd /home/ubuntu/AFC-B && source venv/bin/activate
+#     redis-cli -n 0 del rankings_recalc
+#     python manage.py recalc_rankings --all-months
+#
+# recalc_rankings calls the SAME recalc functions the save path uses, so the result is
+# identical to draining the queue, minus several hundred thousand redundant passes.
+Description=AFC Celery worker (rankings_recalc queue)
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/AFC-B
+ExecStart=/home/ubuntu/AFC-B/venv/bin/celery -A afc worker \
+    --loglevel=info \
+    -Q rankings_recalc \
+    --concurrency=1 \
+    -n rankings@%%h
+
+KillSignal=SIGTERM
+TimeoutStopSec=300
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celery-rankings
+
+[Install]
+WantedBy=multi-user.target

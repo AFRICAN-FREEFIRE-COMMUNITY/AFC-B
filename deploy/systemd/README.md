@@ -66,3 +66,61 @@ stale while everything looked deployed.
   `Requires=` would make the service fail outright; `After=` only orders startup, and
   `Restart=always` covers a broker that is slow to come up.
 * **Logs:** `journalctl -u celery-worker -f` (or `-u celery-beat`).
+
+## The queues (added 2026-08-05, after the units above were first written)
+
+A worker started as plain `celery -A afc worker` consumes **only the default queue**. This
+codebase routes work onto four dedicated queues via `@shared_task(queue=...)`, and none of
+them had a consumer. The inline fallback that would have covered it is gated on `*_SYNC`
+settings that default to `DEBUG` and are **not set in the production `.env`**, so those tasks
+were queued and never ran, silently.
+
+Measured on production, 2026-08-05:
+
+| queue | backlog | consumer now |
+|---|---|---|
+| `celery` (default) | 0 | `celery-worker` |
+| `whatsapp` | 170 | `celery-worker` |
+| `sso_webhooks` | 0 | `celery-worker` |
+| `rankings_recalc` | 346,520 | `celery-rankings` |
+| `ocr_ml` | 126 | `celery-ocr-ml` (optional, off) |
+
+The `whatsapp` figure is the one that mattered most: every WhatsApp message the platform
+believed it had handed off was sitting in Redis unread.
+
+### Purge before first start
+
+Do NOT point a worker at these backlogs and let it rip.
+
+* **`rankings_recalc`** - the tasks are idempotent and per-entity, so the same team appears
+  hundreds of times and only the last pass matters. Draining it would hammer MySQL for a very
+  long time to reach a state one bulk command reaches in minutes:
+
+      redis-cli -n 0 del rankings_recalc
+      python manage.py recalc_rankings --all-months
+
+* **`whatsapp`** - draining it fires every queued message at once: room details for events
+  that already finished, order updates days late. Worse, a sudden burst of template messages
+  from a recently-approved business number is what gets a number quality-flagged or restricted
+  by Meta, which is hard to undo. Inspect what is in there first (prints task contexts and
+  counts, no phone numbers):
+
+      redis-cli -n 0 lrange whatsapp 0 -1 | grep -o '"context": *"[^"]*"' | sort | uniq -c | sort -rn
+
+  then `redis-cli -n 0 del whatsapp` unless something in that list is worth delivering late.
+
+* **`ocr_ml`** - stale nightly autolabel jobs. `redis-cli -n 0 del ocr_ml` before enabling
+  that unit, or the first start runs every night's job that was ever queued, back to back,
+  each one spending Gemini calls.
+
+### Install
+
+    sudo cp deploy/systemd/celery-worker.service   /etc/systemd/system/
+    sudo cp deploy/systemd/celery-beat.service     /etc/systemd/system/
+    sudo cp deploy/systemd/celery-rankings.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now celery-worker celery-beat celery-rankings
+
+### Deploy step (updated)
+
+    sudo systemctl restart django_app celery-worker celery-beat celery-rankings
