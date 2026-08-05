@@ -602,6 +602,24 @@ def broadcast_message_email_html(title, message):
     return _email_shell(inner, "green")
 
 
+class BroadcastResult(tuple):
+    """What one broadcast actually did, per channel.
+
+    It IS the (pushed, emailed) pair every existing caller already unpacks, so nothing changes for
+    them, with the WhatsApp numbers carried as attributes for the callers that offer that channel.
+    Returning a plain 3-tuple instead would have broken every `pushed, emailed =
+    deliver_broadcast(...)` on the site (afc_auth, afc_organizers and afc_tournament_and_scrims,
+    eight call sites) for the sake of one new channel."""
+
+    def __new__(cls, pushed, emailed, whatsapp_queued=0, whatsapp_skipped=0):
+        result = super().__new__(cls, (pushed, emailed))
+        result.pushed = pushed
+        result.emailed = emailed
+        result.whatsapp_queued = whatsapp_queued      # handed to the WhatsApp sender
+        result.whatsapp_skipped = whatsapp_skipped    # no number on file, or opted out
+        return result
+
+
 def deliver_broadcast(recipients, title, message, *, delivery="both",
                       notification_type="admin_message", related_event=None,
                       target_type="", target_id="", targets=None,
@@ -609,11 +627,18 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
                       group_id=None, group_name="", log=True):
     """Send a broadcast to `recipients` (an iterable of Users) over the chosen channel(s).
 
-    delivery: "push" | "email" | "both". Returns (pushed, emailed) counts.
-      - push  -> one in-app Notifications row per recipient (bulk).
-      - email -> the FIXED branded broadcast email (broadcast_message_email_html), sent on a
+    delivery: "push" | "email" | "both" | "whatsapp", or a comma-joined combination such as
+      "both,whatsapp" (afc_auth.audience.parse_delivery owns the vocabulary and says why it is a
+      comma-joined string rather than a list). The three original values behave exactly as they
+      always have. Returns a BroadcastResult, which unpacks as (pushed, emailed).
+      - push     -> one in-app Notifications row per recipient (bulk).
+      - email    -> the FIXED branded broadcast email (broadcast_message_email_html), sent on a
         DAEMON THREAD: SMTP is slow and a large broadcast (hundreds of players) would otherwise
         hold the HTTP request open for minutes. Best-effort per address.
+      - whatsapp -> the approved `broadcast` template, via afc_auth.broadcast_whatsapp. Capped:
+        a WhatsApp-reachable audience above WHATSAPP_BROADCAST_MAX_RECIPIENTS sends NOTHING rather
+        than a truncated blast, because that number is the one AFC sends room IDs from. The send
+        endpoints refuse an over-cap audience up front with a message naming the limit.
 
     DEEP-LINKING (owner 2026-06-15): target_type/target_id stamp every pushed Notifications row so
     the recipient's "Take me there" button can open the right page (see
@@ -631,8 +656,15 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
 
     Used by afc_auth.admin_send_message / send_notification* and afc_tournament_and_scrims broadcast endpoints."""
     recipients = [r for r in recipients if r]
-    want_push = delivery in ("push", "both")
-    want_email = delivery in ("email", "both")
+    # One vocabulary for every channel, so "both" keeps meaning push + email and "both,whatsapp"
+    # can mean all three. An unrecognised value resolves to no channels and therefore sends
+    # nothing, which is exactly what it did before.
+    from .audience import EMAIL, PUSH, WHATSAPP, delivery_token, parse_delivery
+
+    channels = parse_delivery(delivery)
+    want_push = PUSH in channels
+    want_email = EMAIL in channels
+    want_whatsapp = WHATSAPP in channels
 
     # Auto-link existing event broadcasts: no explicit target + a related_event -> point at the event.
     # Falls back to the numeric id if the event has no slug yet (build_notification_link handles either).
@@ -709,6 +741,18 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
             import threading
             threading.Thread(target=_send, daemon=True).start()
 
+    # ── WhatsApp (owner 2026-08-05): the third channel ──
+    # Runs inline rather than on a thread like email, because it is bounded: the cap in
+    # broadcast_whatsapp is what makes a synchronous fan-out safe, and the counts have to be real
+    # by the time the endpoint answers ("we messaged 1,200 of your 3,000 players" is the whole
+    # point of returning them). Never raises, so it cannot cost the notification and the email
+    # that have already gone out.
+    whatsapp_queued = 0
+    whatsapp_skipped = 0
+    if want_whatsapp:
+        from .broadcast_whatsapp import send_broadcast_whatsapp
+        whatsapp_queued, whatsapp_skipped = send_broadcast_whatsapp(recipients, title, message)
+
     # ── History log (owner 2026-06-17): one SentBroadcast row per send ──
     # Best-effort: a logging failure must never break a delivery that already happened. Records who
     # sent it, the scope + event/stage/group context, how many it reached, and the deep-link targets,
@@ -721,7 +765,10 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
                 scope=scope,
                 title=title or None,
                 message=message or "",
-                delivery=delivery if delivery in ("push", "email", "both") else "both",
+                # The canonical token for the channels that actually ran, so the history row says
+                # "both,whatsapp" when WhatsApp was one of them. The `or "both"` preserves the old
+                # fallback for a delivery value nothing recognised.
+                delivery=delivery_token(channels) or "both",
                 recipient_count=len(recipients),
                 event=related_event,
                 stage_id=stage_id,
@@ -733,7 +780,7 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
         except Exception:
             pass
 
-    return pushed, emailed
+    return BroadcastResult(pushed, emailed, whatsapp_queued, whatsapp_skipped)
 
 
 # def send_email(to_address, subject, html_body):

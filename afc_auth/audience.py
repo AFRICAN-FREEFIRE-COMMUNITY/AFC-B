@@ -147,6 +147,77 @@ def recommended_delivery(recipient_count):
     return "push" if recipient_count > EMAIL_COMFORTABLE_MAX else "both"
 
 
+# ── Delivery channels ─────────────────────────────────────────────────────────────────────────
+# A broadcast picks CHANNELS: the in-app notification, the email, and (owner 2026-08-05) WhatsApp.
+# The wire value stayed a plain STRING and gained a comma, rather than becoming a list or growing
+# a token per combination:
+#   • the three values that existed before ("push", "email", "both") still mean exactly what they
+#     always did, so every existing caller, every stored SentBroadcast row and every frontend
+#     select is untouched;
+#   • every endpoint already normalises the value with `(request.data.get("delivery") or
+#     "both").strip().lower()`. A list would have made that line raise AttributeError in about
+#     eight places across three apps; a comma costs those places nothing;
+#   • one token per combination ("pushemail", "pushwhatsapp", ...) doubles with every future
+#     channel, and "both" already shows how badly that ages as a name.
+# So the accepted values are the three legacy ones plus "whatsapp", singly or comma-joined:
+# "whatsapp", "push,whatsapp", "email,whatsapp", "both,whatsapp". A list is accepted too, purely
+# so a future frontend that sends an array is not a backend change.
+#
+# CONSUMED BY: afc_auth.views.deliver_broadcast (which channels to actually send on) and
+# afc_auth.views_broadcast_audience.broadcast_audience_send (validating what the composer sent).
+PUSH = "push"
+EMAIL = "email"
+WHATSAPP = "whatsapp"
+
+# Every accepted token, and the channels it stands for. "both" is a historical alias for the two
+# channels that existed when it was named, NOT for "all of them" - widening it would have turned
+# every broadcast already in flight into a WhatsApp blast.
+_DELIVERY_ALIASES = {
+    PUSH: (PUSH,),
+    EMAIL: (EMAIL,),
+    "both": (PUSH, EMAIL),
+    WHATSAPP: (WHATSAPP,),
+}
+
+
+def parse_delivery(value):
+    """Turn a delivery value into the SET of channels it selects.
+
+    Accepts "push" / "email" / "both" / "whatsapp", any comma-joined combination of them, or a
+    list of them. Unknown tokens are dropped, so an empty set means "nothing recognised" - the
+    endpoints turn that into a 400, and deliver_broadcast sends nothing, which is what a junk
+    value already did before this existed."""
+    if isinstance(value, (list, tuple, set, frozenset)):
+        parts = [str(item or "") for item in value]
+    else:
+        parts = str(value or "").split(",")
+
+    channels = set()
+    for part in parts:
+        channels.update(_DELIVERY_ALIASES.get(part.strip().lower(), ()))
+    return frozenset(channels)
+
+
+def delivery_token(channels):
+    """The canonical string for a channel set: the value stored on SentBroadcast.delivery and
+    echoed back to the composer. Returns "" for an empty set.
+
+    Round-trips (parse_delivery(delivery_token(x)) == x), and a set that does not include WhatsApp
+    produces exactly the token it always did, so history rows written before this change and after
+    it read identically."""
+    channels = set(channels or ())
+    parts = []
+    if PUSH in channels and EMAIL in channels:
+        parts.append("both")
+    elif PUSH in channels:
+        parts.append(PUSH)
+    elif EMAIL in channels:
+        parts.append(EMAIL)
+    if WHATSAPP in channels:
+        parts.append(WHATSAPP)
+    return ",".join(parts)
+
+
 # ── Spec parsing ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -343,19 +414,29 @@ def resolve_audience(spec):
 def audience_counts(spec):
     """The numbers the admin must see BEFORE sending, computed with SQL counts only.
 
-    Returns {recipient_count, email_recipient_count, push_recipient_count}:
-      - recipient_count       - everyone the send would reach in-app.
-      - email_recipient_count - of those, how many have an email address on file. This is the
-                                number the volume warning is judged on, because it is the number
-                                of messages the mail provider would actually be asked to send.
-      - push_recipient_count  - same as recipient_count (every account can receive an in-app
-                                notification); returned explicitly so the composer can show the
-                                two channels side by side without doing arithmetic."""
+    Returns {recipient_count, email_recipient_count, push_recipient_count,
+             whatsapp_recipient_count}:
+      - recipient_count          - everyone the send would reach in-app.
+      - email_recipient_count    - of those, how many have an email address on file. This is the
+                                   number the volume warning is judged on, because it is the number
+                                   of messages the mail provider would actually be asked to send.
+      - push_recipient_count     - same as recipient_count (every account can receive an in-app
+                                   notification); returned explicitly so the composer can show the
+                                   channels side by side without doing arithmetic.
+      - whatsapp_recipient_count - of those, how many have a WhatsApp number AND have not opted
+                                   out. Far smaller than the other two, and it is the number the
+                                   WhatsApp cap is judged on, for the same reason the email cap is
+                                   judged on addresses: it is how many messages get paid for."""
     qs = resolve_audience(spec)
     recipient_count = qs.count()
     email_recipient_count = qs.exclude(email="").exclude(email__isnull=True).count()
+    # Imported here, not at module scope: afc_auth.broadcast_whatsapp reaches into afc_whatsapp
+    # (and through it Celery), and this module is imported by the audience endpoints on every
+    # keystroke of the composer.
+    from .broadcast_whatsapp import whatsapp_recipient_count
     return {
         "recipient_count": recipient_count,
         "email_recipient_count": email_recipient_count,
         "push_recipient_count": recipient_count,
+        "whatsapp_recipient_count": whatsapp_recipient_count(qs),
     }
