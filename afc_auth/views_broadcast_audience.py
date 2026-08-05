@@ -83,7 +83,11 @@ from .audience import (
     resolve_audience,
     spec_is_empty,
 )
-from .broadcast_whatsapp import whatsapp_max_recipients, whatsapp_volume_assessment
+from .broadcast_whatsapp import (
+    whatsapp_broadcast_configured,
+    whatsapp_max_recipients,
+    whatsapp_volume_assessment,
+)
 from .audit import set_audit
 # One country can sit in the table under several spellings, so the chip list is built
 # from folded groups rather than raw strings. See country_grouping.py.
@@ -353,6 +357,12 @@ def broadcast_audience_preview(request):
             # PREVIEW so the composer can grey the option out with a reason, rather than letting
             # somebody write a broadcast, pick WhatsApp and only find out at the send.
             "whatsapp_allowed": _is_head_admin(user),
+            # Whether the channel is switched on at all on this deployment. False until
+            # WHATSAPP_BROADCAST_TEMPLATE is set, which is deliberately empty by default so a
+            # deploy could never start messaging players before somebody chose to. The composer
+            # shows a "not available yet" notice on false, and that notice disappears by itself
+            # once the env value lands - no follow-up change to remember.
+            "whatsapp_configured": whatsapp_broadcast_configured(),
             "recommended_delivery": recommended_delivery(counts["recipient_count"]),
             "sample": [_serialize_recipient(u) for u in page],
             "sample_total_count": sample_total,
@@ -440,6 +450,20 @@ def broadcast_audience_send(request):
     # Room details are deliberately NOT affected. They go out on `room_details`, a UTILITY
     # template at an eighth of the price, from the event surfaces, and organizers need to send
     # them without asking anybody. This gate is only on the general-broadcast composer.
+    # ── The channel is not switched on yet (owner 2026-08-05) ────────────────────────────────
+    # WHATSAPP_BROADCAST_TEMPLATE is empty by default so that deploying the WhatsApp work could
+    # never start messaging real players before somebody chose to. Until it is set,
+    # send_broadcast_whatsapp skips every recipient and returns quietly - which is the right thing
+    # to do mid-send, but a terrible answer to somebody who deliberately ticked the box. Refuse
+    # here instead, so "I ticked WhatsApp and nothing happened" is impossible.
+    if WHATSAPP in channels and not whatsapp_broadcast_configured():
+        return Response(
+            {"message": "WhatsApp broadcasts are not switched on yet. They are coming soon. "
+                        "Send this as an in-app notification or email for now.",
+             "code": "whatsapp_not_configured"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     if WHATSAPP in channels and not _is_head_admin(user):
         return Response(
             {"message": "Only a head admin can send a broadcast on WhatsApp. WhatsApp messages "

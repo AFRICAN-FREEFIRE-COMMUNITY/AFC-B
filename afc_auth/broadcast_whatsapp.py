@@ -65,6 +65,27 @@ MAX_BODY_CHARS = 900
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Is the channel switched on at all?
+# ──────────────────────────────────────────────────────────────────────────────
+def whatsapp_broadcast_configured():
+    """True when this deployment can actually send a WhatsApp broadcast.
+
+    WHY THIS IS ASKED OUT LOUD (owner 2026-08-05: "add a disclaimer that the whatsapp is not
+    available yet, but will be in due time soon"). WHATSAPP_BROADCAST_TEMPLATE defaults to EMPTY,
+    deliberately, so that deploying the WhatsApp work could never start messaging real players
+    before somebody chose to. Until it is set, send_broadcast_whatsapp skips every recipient and
+    returns quietly - correct behaviour, but from the composer it looks identical to a channel
+    that worked.
+
+    So the composer asks, and shows a "not switched on yet" notice instead of a channel that does
+    nothing. Deriving it from the setting rather than hardcoding a disclaimer means the notice
+    disappears by itself the moment the env value is set on the server - there is no second commit
+    to remember, and no chance of the UI claiming "coming soon" about something already live.
+    """
+    return bool(getattr(settings, "WHATSAPP_BROADCAST_TEMPLATE", ""))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # The cap
 # ──────────────────────────────────────────────────────────────────────────────
 def whatsapp_max_recipients():
@@ -232,6 +253,9 @@ def send_broadcast_whatsapp(recipients, title, message):
     """
     template = getattr(settings, "WHATSAPP_BROADCAST_TEMPLATE", "")
     language = getattr(settings, "WHATSAPP_BROADCAST_TEMPLATE_LANG", "en")
+
+    # Exposed so the composer can say so up front rather than letting somebody tick a channel that
+    # will quietly do nothing. See whatsapp_broadcast_configured() below.
 
     recipients = [r for r in recipients if r is not None]
     if not template:
