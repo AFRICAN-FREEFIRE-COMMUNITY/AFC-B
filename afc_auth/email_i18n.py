@@ -1,6 +1,6 @@
 # afc_auth/email_i18n.py
 #
-# HAND-AUTHORED transactional-email copy catalog (owner 2026-07-13).
+# HAND-AUTHORED transactional-email copy catalog (owner 2026-07-13, rewritten 2026-08-05).
 #
 # WHAT THIS IS
 #   The single source of truth for the FIXED transactional emails' text in the three site
@@ -37,14 +37,36 @@
 #                                   (confirm_player / reject_player / check_and_activate_team).
 #   - afc_player_market/views.py  : application received / rejected + trial started / invited /
 #                                   accepted emails.
+#   - afc_partner_apply/emails.py : the four transitions of a partner application.
 #
 # COPY RULES
 #   - NO em/en dashes anywhere (AFC hard rule). Use commas, colons, parentheses, or a spaced hyphen.
-#   - English copy is kept identical to what shipped before this catalog (the ONLY exception being
-#     a few legacy em dashes in player-market copy, which are replaced with a comma to satisfy the
-#     hard rule above).
 #   - Every value is a str.format() template: only {placeholder} tokens are substituted, so the
 #     natural sentence stays intact and the dynamic value is dropped in.
+#   - A {placeholder} may ONLY appear in a sentence if the builder that renders that key actually
+#     passes it. Most builders call .format() inside an f-string with no try/except, so an unknown
+#     placeholder raises and the email never goes out; a placeholder the builder does not pass
+#     would ship the literal "{team_name}" to a real person. tests_email_copy.py asserts the
+#     placeholder sets match across en/fr/pt for every key, which is the failure that would
+#     otherwise reach an inbox in one language only.
+#
+# HOW THIS COPY IS WRITTEN (owner backlog #18, 2026-08-05: "read natural, not generic AI slop")
+#   Say what happened, say what it means for the reader, say what they do next. In that order.
+#   Then stop. Concretely, the rules the rewrite applied to every sentence below:
+#     - No sentence that describes the email instead of saying the thing. "We are writing to inform
+#       you that your application was reviewed" is one sentence of packaging around zero facts;
+#       "{team} has read your application and decided not to take it further" is the fact.
+#     - No empty intensifiers, no "we are pleased/thrilled/delighted", no "after careful
+#       consideration", no "we regret to inform you", no "don't let talent slip away".
+#     - One sentence does one sentence's work. Three sentences that all mean "your order shipped"
+#       become one.
+#     - The tone matches the news. Warm on an approval, plain and respectful on a rejection,
+#       specific and urgent on anything with a deadline or a security consequence. A rejection
+#       email never ends on a cheery sign-off.
+#     - Name something real: the event, the team, the order number, the address below, the
+#       dashboard the details actually arrive in. Copy that would fit any website is the failure.
+#     - Say only what is true of THIS system. Where a claim could not be verified in the code it
+#       was cut rather than softened into a hedge.
 
 
 def _norm(lang):
@@ -81,6 +103,10 @@ def copy_for(template, lang):
 # SUBJECTS: one entry per subject line. Some templates reuse a builder under two subjects (e.g. the
 # verification-code email is sent both at signup and on resend), which is exactly why subjects are
 # catalogued by their own key rather than tied 1:1 to a builder.
+#
+# A subject is read in a list of forty other subjects, so it says the thing and stops. No "AFC
+# Registration Update:" prefix in front of the actual news, no Title Case On Every Word, and no
+# placeholder the call site does not pass (see the COPY RULES above).
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 SUBJECTS = {
     # ── afc_auth ──
@@ -95,9 +121,9 @@ SUBJECTS = {
         "pt": "O seu novo código de verificação AFC",
     },
     "welcome": {
-        "en": "Welcome to African Free Fire Community",
-        "fr": "Bienvenue dans African Free Fire Community",
-        "pt": "Bem-vindo à African Free Fire Community",
+        "en": "Your AFC account is ready",
+        "fr": "Votre compte AFC est prêt",
+        "pt": "A sua conta AFC está pronta",
     },
     "reset_password": {
         "en": "Reset your AFC password",
@@ -165,62 +191,66 @@ SUBJECTS = {
     },
 
     # ── afc_tournament_and_scrims ──
+    # These four used to open with "AFC Registration Update:" and then Title Case the news. The
+    # prefix is the part a player skips, so the news is now the whole subject.
     "team_registered": {
-        "en": "AFC Registration Update: Your Team {team_name} is now Fully Registered for {event_name}",
-        "fr": "Mise à jour d'inscription AFC : votre équipe {team_name} est désormais entièrement inscrite à {event_name}",
-        "pt": "Atualização de inscrição AFC: a sua equipa {team_name} está agora totalmente inscrita em {event_name}",
+        "en": "{team_name} is registered for {event_name}",
+        "fr": "{team_name} est inscrite à {event_name}",
+        "pt": "{team_name} está inscrita em {event_name}",
     },
     "player_accepted": {
-        "en": "AFC Registration Update: Your Application for {event_name} Has Been Accepted",
-        "fr": "Mise à jour d'inscription AFC : votre candidature pour {event_name} a été acceptée",
-        "pt": "Atualização de inscrição AFC: a sua candidatura para {event_name} foi aceite",
+        "en": "You're in: {event_name}",
+        "fr": "Vous êtes inscrit : {event_name}",
+        "pt": "Está inscrito: {event_name}",
     },
     "player_accepted_owner": {
-        "en": "AFC Registration Update: Player {player} Accepted for {event_name}",
-        "fr": "Mise à jour d'inscription AFC : joueur {player} accepté pour {event_name}",
-        "pt": "Atualização de inscrição AFC: jogador {player} aceite para {event_name}",
+        "en": "{player} is cleared for {event_name}",
+        "fr": "{player} est validé pour {event_name}",
+        "pt": "{player} está validado para {event_name}",
     },
     "player_rejected": {
-        "en": "AFC Registration Update: Your Application for {event_name} Has Been Rejected",
-        "fr": "Mise à jour d'inscription AFC : votre candidature pour {event_name} a été refusée",
-        "pt": "Atualização de inscrição AFC: a sua candidatura para {event_name} foi recusada",
+        "en": "About your registration for {event_name}",
+        "fr": "Au sujet de votre inscription à {event_name}",
+        "pt": "Sobre a sua inscrição em {event_name}",
     },
     "player_rejected_owner": {
-        "en": "AFC Registration Update: Player {player} Rejected for {event_name}",
-        "fr": "Mise à jour d'inscription AFC : joueur {player} refusé pour {event_name}",
-        "pt": "Atualização de inscrição AFC: jogador {player} recusado para {event_name}",
+        "en": "{player} was not accepted for {event_name}",
+        "fr": "{player} n'a pas été accepté pour {event_name}",
+        "pt": "{player} não foi aceite para {event_name}",
     },
 
     # ── afc_player_market ──
+    # NOTE: pm_application_received is sent with NO format kwargs (afc_player_market/views.py calls
+    # subject_for("pm_application_received", lang) bare), so this subject must stay placeholder-free.
     "pm_application_received": {
-        "en": "Your Player Market post is getting attention!",
-        "fr": "Votre annonce sur le Player Market attire l'attention !",
-        "pt": "A sua publicação no Player Market está a chamar a atenção!",
+        "en": "New applications on your Player Market post",
+        "fr": "Nouvelles candidatures sur votre annonce Player Market",
+        "pt": "Novas candidaturas na sua publicação do Player Market",
     },
     "pm_application_rejected": {
-        "en": "Application Update from {team_name}",
-        "fr": "Mise à jour de votre candidature de la part de {team_name}",
-        "pt": "Atualização da candidatura de {team_name}",
+        "en": "About your application to {team_name}",
+        "fr": "Au sujet de votre candidature à {team_name}",
+        "pt": "Sobre a sua candidatura a {team_name}",
     },
     "pm_trial_started_player": {
-        "en": "You've Been Added to a Trial with {team_name}!",
-        "fr": "Vous avez été ajouté à un essai avec {team_name} !",
-        "pt": "Foi adicionado a um teste com {team_name}!",
+        "en": "{team_name} has started your trial",
+        "fr": "{team_name} a lancé votre essai",
+        "pt": "{team_name} iniciou o seu teste",
     },
     "pm_trial_started_team": {
-        "en": "Trial Started: {player} has been added!",
-        "fr": "Essai lancé : {player} a été ajouté !",
-        "pt": "Teste iniciado: {player} foi adicionado!",
+        "en": "{player} is on trial with your team",
+        "fr": "{player} est à l'essai avec votre équipe",
+        "pt": "{player} está em teste com a sua equipa",
     },
     "pm_trial_invite": {
-        "en": "Trial Invite from {team_name}",
-        "fr": "Invitation à un essai de la part de {team_name}",
+        "en": "Trial invite from {team_name}",
+        "fr": "Invitation à un essai de {team_name}",
         "pt": "Convite para teste de {team_name}",
     },
     "pm_trial_accepted_team": {
-        "en": "{player} accepted your trial invite!",
-        "fr": "{player} a accepté votre invitation à un essai !",
-        "pt": "{player} aceitou o seu convite para teste!",
+        "en": "{player} accepted your trial invite",
+        "fr": "{player} a accepté votre invitation à l'essai",
+        "pt": "{player} aceitou o seu convite para teste",
     },
 
     # ── afc_partner_apply: an organisation applying to become an AFC partner ──
@@ -257,49 +287,55 @@ SUBJECTS = {
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 COPY = {
     # ── afc_auth: verification code (signup + resend) ──
+    # Rendered by afc_auth/views.py email_verification_code. The six-digit code sits in its own
+    # green box BETWEEN "intro" and "expires", which is why the intro can just say where to type it
+    # and stop; repeating the code in prose would be a second sentence doing the first one's job.
     "verification_code": {
         "en": {
             "heading": "Verify your account",
-            "intro": "Hi {username}, welcome to the arena. Enter this code on {site} to finish creating your account.",
-            "expires": "This code expires in 10 minutes.",
-            "disclaimer": "If you did not create an AFC account, you can safely ignore this email. Never share this code with anyone, AFC staff will never ask for it.",
+            "intro": "Hi {username}. One step left: enter this code on {site} and your AFC account is live.",
+            "expires": "The code is good for 10 minutes.",
+            "disclaimer": "Did not sign up for AFC? Ignore this email and nothing happens. AFC staff will never ask you for this code, so do not share it with anyone.",
         },
         "fr": {
             "heading": "Vérifiez votre compte",
-            "intro": "Bonjour {username}, bienvenue dans l'arène. Saisissez ce code sur {site} pour finaliser la création de votre compte.",
-            "expires": "Ce code expire dans 10 minutes.",
-            "disclaimer": "Si vous n'avez pas créé de compte AFC, vous pouvez ignorer cet e-mail en toute sécurité. Ne partagez jamais ce code avec qui que ce soit, l'équipe AFC ne vous le demandera jamais.",
+            "intro": "Bonjour {username}. Il ne reste qu'une étape : saisissez ce code sur {site} et votre compte AFC est actif.",
+            "expires": "Le code est valable 10 minutes.",
+            "disclaimer": "Vous n'avez pas créé de compte AFC ? Ignorez cet e-mail, rien ne se passera. L'équipe AFC ne vous demandera jamais ce code, ne le partagez avec personne.",
         },
         "pt": {
             "heading": "Verifique a sua conta",
-            "intro": "Olá {username}, bem-vindo à arena. Introduza este código em {site} para concluir a criação da sua conta.",
-            "expires": "Este código expira em 10 minutos.",
-            "disclaimer": "Se não criou uma conta AFC, pode ignorar este e-mail com segurança. Nunca partilhe este código com ninguém, a equipa da AFC nunca o irá pedir.",
+            "intro": "Olá {username}. Falta um passo: introduza este código em {site} e a sua conta AFC fica ativa.",
+            "expires": "O código é válido durante 10 minutos.",
+            "disclaimer": "Não criou uma conta AFC? Ignore este e-mail e nada acontece. A equipa da AFC nunca lhe vai pedir este código, não o partilhe com ninguém.",
         },
     },
 
     # ── afc_auth: welcome ──
+    # The three feat* labels are icon captions under the button, so the intro must NOT re-list
+    # "tournaments, rankings, teams" or the reader gets the same three nouns twice in one screen.
+    # It gives a first move instead.
     "welcome": {
         "en": {
             "heading": "You're in, {username}",
-            "intro": "Your account is verified and ready. Join tournaments, climb the rankings, build your team, and rep your country across Africa.",
-            "cta": "Enter the Community",
+            "intro": "Your account is verified. Most players start by joining a tournament that is taking entries, or by creating a team and inviting their squad.",
+            "cta": "Open AFC",
             "feat1": "Compete in tournaments",
             "feat2": "Climb the rankings",
             "feat3": "Find your team",
         },
         "fr": {
             "heading": "Vous y êtes, {username}",
-            "intro": "Votre compte est vérifié et prêt. Participez à des tournois, grimpez au classement, montez votre équipe et représentez votre pays à travers l'Afrique.",
-            "cta": "Entrer dans la communauté",
+            "intro": "Votre compte est vérifié. La plupart des joueurs commencent par s'inscrire à un tournoi dont les inscriptions sont ouvertes, ou par créer une équipe et y inviter leurs coéquipiers.",
+            "cta": "Ouvrir AFC",
             "feat1": "Participez à des tournois",
             "feat2": "Grimpez au classement",
             "feat3": "Trouvez votre équipe",
         },
         "pt": {
             "heading": "Está dentro, {username}",
-            "intro": "A sua conta está verificada e pronta. Participe em torneios, suba na classificação, construa a sua equipa e represente o seu país por toda a África.",
-            "cta": "Entrar na comunidade",
+            "intro": "A sua conta está verificada. A maioria dos jogadores começa por se inscrever num torneio com inscrições abertas, ou por criar uma equipa e convidar os seus colegas.",
+            "cta": "Abrir a AFC",
             "feat1": "Compita em torneios",
             "feat2": "Suba na classificação",
             "feat3": "Encontre a sua equipa",
@@ -307,45 +343,51 @@ COPY = {
     },
 
     # ── afc_auth: password reset token ──
+    # "token" is deliberate in English: the frontend reset screen (messages/en/auth.json,
+    # "Enter the token sent to") calls it a token, and an email that renames it would send the
+    # reader looking for a field that does not exist.
     "reset_token": {
         "en": {
             "heading": "Reset your password",
-            "intro": "We received a request to reset your password. Use the token below to set a new one.",
-            "expires": "This token expires in 10 minutes.",
-            "disclaimer": "If you did not request a password reset, ignore this email, your password stays unchanged. Never share this token.",
+            "intro": "Here is your reset token. Enter it on the reset page and you can set a new password.",
+            "expires": "The token is good for 10 minutes, then you will need a fresh one.",
+            "disclaimer": "Did not ask for this? Ignore this email. Your password stays exactly as it is, and nobody can change it without this token. Never share it.",
         },
         "fr": {
             "heading": "Réinitialisez votre mot de passe",
-            "intro": "Nous avons reçu une demande de réinitialisation de votre mot de passe. Utilisez le jeton ci-dessous pour en définir un nouveau.",
-            "expires": "Ce jeton expire dans 10 minutes.",
-            "disclaimer": "Si vous n'avez pas demandé de réinitialisation de mot de passe, ignorez cet e-mail, votre mot de passe reste inchangé. Ne partagez jamais ce jeton.",
+            "intro": "Voici votre jeton de réinitialisation. Saisissez-le sur la page de réinitialisation et vous pourrez choisir un nouveau mot de passe.",
+            "expires": "Le jeton est valable 10 minutes, ensuite il vous en faudra un nouveau.",
+            "disclaimer": "Vous n'avez rien demandé ? Ignorez cet e-mail. Votre mot de passe reste exactement le même, et personne ne peut le changer sans ce jeton. Ne le partagez jamais.",
         },
         "pt": {
             "heading": "Redefina a sua palavra-passe",
-            "intro": "Recebemos um pedido para redefinir a sua palavra-passe. Utilize o código abaixo para definir uma nova.",
-            "expires": "Este código expira em 10 minutos.",
-            "disclaimer": "Se não solicitou a redefinição da palavra-passe, ignore este e-mail, a sua palavra-passe permanece inalterada. Nunca partilhe este código.",
+            "intro": "Aqui está o seu código de redefinição. Introduza-o na página de redefinição e poderá escolher uma nova palavra-passe.",
+            "expires": "O código é válido durante 10 minutos, depois disso precisa de um novo.",
+            "disclaimer": "Não pediu nada disto? Ignore este e-mail. A sua palavra-passe fica exatamente como está, e ninguém a pode alterar sem este código. Nunca o partilhe.",
         },
     },
 
     # ── afc_auth: password changed confirmation ──
+    # This is a tripwire email: its whole value is the "warning" line, so that line names the actual
+    # consequence (someone else is in the account) and gives two ordered actions, not a vague
+    # "your account may be at risk".
     "password_changed": {
         "en": {
             "heading": "Your password was changed",
-            "intro": "This confirms the password for {username} was updated on {when}.",
-            "warning": "Did not do this? Your account may be at risk. Reset your password immediately and contact {support}.",
+            "intro": "The password for {username} was changed on {when}.",
+            "warning": "If that was not you, someone else is in your account. Reset your password now and tell {support} straight away.",
             "support_label": "support",
         },
         "fr": {
             "heading": "Votre mot de passe a été modifié",
-            "intro": "Ceci confirme que le mot de passe de {username} a été mis à jour le {when}.",
-            "warning": "Vous n'êtes pas à l'origine de cette action ? Votre compte pourrait être menacé. Réinitialisez immédiatement votre mot de passe et contactez {support}.",
+            "intro": "Le mot de passe de {username} a été modifié le {when}.",
+            "warning": "Si ce n'était pas vous, quelqu'un d'autre est dans votre compte. Réinitialisez votre mot de passe maintenant et prévenez {support} sans attendre.",
             "support_label": "le support",
         },
         "pt": {
             "heading": "A sua palavra-passe foi alterada",
-            "intro": "Isto confirma que a palavra-passe de {username} foi atualizada em {when}.",
-            "warning": "Não foi você? A sua conta pode estar em risco. Redefina imediatamente a sua palavra-passe e contacte {support}.",
+            "intro": "A palavra-passe de {username} foi alterada em {when}.",
+            "warning": "Se não foi você, outra pessoa está na sua conta. Redefina já a palavra-passe e avise {support} de imediato.",
             "support_label": "o suporte",
         },
     },
@@ -354,99 +396,104 @@ COPY = {
     "change_code": {
         "en": {
             "heading": "Confirm your new email",
-            "intro": "Someone (hopefully you) asked to switch an AFC account's email to this address. Enter the code below on the profile settings page to confirm it.",
-            "expires": "This code expires in 10 minutes.",
-            "disclaimer": "If you did not request this, you can ignore this email, no account was changed. Never share this code.",
+            "intro": "An AFC account is being moved to this email address. Enter the code below in your profile settings to confirm the address is yours.",
+            "expires": "The code is good for 10 minutes.",
+            "disclaimer": "If this was not you, ignore this email. Nothing has changed on any account, and nothing will without this code.",
         },
         "fr": {
             "heading": "Confirmez votre nouvelle adresse e-mail",
-            "intro": "Quelqu'un (nous espérons que c'est vous) a demandé à remplacer l'adresse e-mail d'un compte AFC par cette adresse. Saisissez le code ci-dessous sur la page des paramètres du profil pour le confirmer.",
-            "expires": "Ce code expire dans 10 minutes.",
-            "disclaimer": "Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mail, aucun compte n'a été modifié. Ne partagez jamais ce code.",
+            "intro": "Un compte AFC est en train d'être transféré vers cette adresse e-mail. Saisissez le code ci-dessous dans les paramètres de votre profil pour confirmer que l'adresse est bien la vôtre.",
+            "expires": "Le code est valable 10 minutes.",
+            "disclaimer": "Si ce n'était pas vous, ignorez cet e-mail. Aucun compte n'a été modifié, et rien ne le sera sans ce code.",
         },
         "pt": {
             "heading": "Confirme o seu novo e-mail",
-            "intro": "Alguém (esperamos que tenha sido você) pediu para mudar o e-mail de uma conta AFC para este endereço. Introduza o código abaixo na página de definições do perfil para o confirmar.",
-            "expires": "Este código expira em 10 minutos.",
-            "disclaimer": "Se não solicitou isto, pode ignorar este e-mail, nenhuma conta foi alterada. Nunca partilhe este código.",
+            "intro": "Uma conta AFC está a ser transferida para este endereço de e-mail. Introduza o código abaixo nas definições do seu perfil para confirmar que o endereço é seu.",
+            "expires": "O código é válido durante 10 minutos.",
+            "disclaimer": "Se não foi você, ignore este e-mail. Nenhuma conta foi alterada, e nada será alterado sem este código.",
         },
     },
 
     # ── afc_auth: email changed confirmation (to old + new address) ──
+    # Sent to BOTH addresses, so the warning has to make sense in the OLD inbox: it names why losing
+    # the address matters (password resets now go elsewhere) rather than saying "may be at risk".
     "email_changed": {
         "en": {
             "heading": "Your account email was changed",
-            "intro": "The email on {username}'s AFC account was changed to {new_email} on {when}. Sign in with your new email from now on.",
-            "warning": "Did not do this? Your account may be at risk. Contact {support} right away.",
+            "intro": "The email on {username}'s AFC account is now {new_email}, changed on {when}. Sign in with that address from now on.",
+            "warning": "If that was not you, contact {support} straight away. Whoever made the change can now receive your password resets.",
             "support_label": "support",
         },
         "fr": {
             "heading": "L'adresse e-mail de votre compte a été modifiée",
-            "intro": "L'adresse e-mail du compte AFC de {username} a été remplacée par {new_email} le {when}. Connectez-vous désormais avec votre nouvelle adresse e-mail.",
-            "warning": "Vous n'êtes pas à l'origine de cette action ? Votre compte pourrait être menacé. Contactez {support} immédiatement.",
+            "intro": "L'adresse e-mail du compte AFC de {username} est désormais {new_email}, modifiée le {when}. Connectez-vous avec cette adresse à partir de maintenant.",
+            "warning": "Si ce n'était pas vous, contactez {support} sans attendre. La personne qui a fait ce changement peut désormais recevoir vos réinitialisations de mot de passe.",
             "support_label": "le support",
         },
         "pt": {
             "heading": "O e-mail da sua conta foi alterado",
-            "intro": "O e-mail da conta AFC de {username} foi alterado para {new_email} em {when}. A partir de agora, inicie sessão com o seu novo e-mail.",
-            "warning": "Não foi você? A sua conta pode estar em risco. Contacte {support} imediatamente.",
+            "intro": "O e-mail da conta AFC de {username} é agora {new_email}, alterado em {when}. A partir de agora, inicie sessão com esse endereço.",
+            "warning": "Se não foi você, contacte {support} de imediato. Quem fez a alteração passa a receber as suas redefinições de palavra-passe.",
             "support_label": "o suporte",
         },
     },
 
     # ── afc_shop: order lifecycle + shared summary labels ──
+    # All three order emails render the shared summary card (items, totals, delivery address)
+    # between the intro and the closing line, so the prose never repeats what the card already
+    # shows. "the address below" in order_shipped points at that card and is literally true.
     "order_received": {
         "en": {
             "heading": "We received your order",
-            "intro": "Hi {buyer}, thank you for your purchase. Your payment is confirmed and the seller is preparing your order. We will email you again when it ships.",
-            "track": "You can track this order any time at {link}.",
+            "intro": "Thanks {buyer}. Your payment went through and the seller is packing your order. We will email you again the moment it ships.",
+            "track": "You can check the status any time at {link}.",
         },
         "fr": {
             "heading": "Nous avons reçu votre commande",
-            "intro": "Bonjour {buyer}, merci pour votre achat. Votre paiement est confirmé et le vendeur prépare votre commande. Nous vous enverrons un nouvel e-mail lors de l'expédition.",
-            "track": "Vous pouvez suivre cette commande à tout moment sur {link}.",
+            "intro": "Merci {buyer}. Votre paiement a été accepté et le vendeur prépare votre colis. Nous vous écrirons dès qu'il partira.",
+            "track": "Vous pouvez consulter l'état de la commande à tout moment sur {link}.",
         },
         "pt": {
             "heading": "Recebemos a sua encomenda",
-            "intro": "Olá {buyer}, obrigado pela sua compra. O seu pagamento está confirmado e o vendedor está a preparar a sua encomenda. Iremos enviar-lhe um novo e-mail quando for expedida.",
-            "track": "Pode acompanhar esta encomenda a qualquer momento em {link}.",
+            "intro": "Obrigado {buyer}. O seu pagamento foi aceite e o vendedor está a preparar a encomenda. Voltamos a escrever-lhe assim que ela seguir.",
+            "track": "Pode consultar o estado a qualquer momento em {link}.",
         },
     },
     "order_shipped": {
         "en": {
             "heading": "Your order is on the way",
-            "intro": "Good news, {buyer}. Your order has been shipped and is heading to you.",
+            "intro": "{buyer}, the seller has shipped your order. It is on its way to the address below.",
             "ship_label": "Estimated ship date:",
-            "questions": "Questions about delivery? Reach us at {link}.",
+            "questions": "If anything is wrong with the delivery, tell us at {link}.",
         },
         "fr": {
             "heading": "Votre commande est en route",
-            "intro": "Bonne nouvelle, {buyer}. Votre commande a été expédiée et arrive vers vous.",
+            "intro": "{buyer}, le vendeur a expédié votre commande. Elle est en route vers l'adresse indiquée ci-dessous.",
             "ship_label": "Date d'expédition estimée :",
-            "questions": "Des questions sur la livraison ? Contactez-nous sur {link}.",
+            "questions": "Si quelque chose ne va pas avec la livraison, dites-le-nous sur {link}.",
         },
         "pt": {
             "heading": "A sua encomenda está a caminho",
-            "intro": "Boas notícias, {buyer}. A sua encomenda foi expedida e está a caminho.",
+            "intro": "{buyer}, o vendedor expediu a sua encomenda. Segue para a morada indicada abaixo.",
             "ship_label": "Data de expedição estimada:",
-            "questions": "Dúvidas sobre a entrega? Contacte-nos em {link}.",
+            "questions": "Se houver algum problema com a entrega, diga-nos em {link}.",
         },
     },
     "order_completed": {
         "en": {
             "heading": "Your order is complete",
-            "intro": "Thank you, {buyer}. Your order has been delivered and is now complete. We hope you enjoy it.",
-            "shop_again": "Shop again any time at {link}.",
+            "intro": "{buyer}, your order is marked delivered and closed. If it never reached you, tell us and we will look into it.",
+            "shop_again": "Everything else in the shop is at {link}.",
         },
         "fr": {
             "heading": "Votre commande est terminée",
-            "intro": "Merci, {buyer}. Votre commande a été livrée et est désormais terminée. Nous espérons qu'elle vous plaira.",
-            "shop_again": "Faites vos achats à tout moment sur {link}.",
+            "intro": "{buyer}, votre commande est marquée comme livrée et clôturée. Si elle ne vous est jamais parvenue, dites-le-nous et nous vérifierons.",
+            "shop_again": "Le reste de la boutique est sur {link}.",
         },
         "pt": {
             "heading": "A sua encomenda está concluída",
-            "intro": "Obrigado, {buyer}. A sua encomenda foi entregue e está agora concluída. Esperamos que goste.",
-            "shop_again": "Compre novamente a qualquer momento em {link}.",
+            "intro": "{buyer}, a sua encomenda está marcada como entregue e fechada. Se nunca lhe chegou, diga-nos e vamos verificar.",
+            "shop_again": "O resto da loja está em {link}.",
         },
     },
     # Shared order-summary labels (items table + totals + delivery), used by all three shop emails.
@@ -480,87 +527,95 @@ COPY = {
     "vendor_new_order": {
         "en": {
             "heading": "You have a new order",
-            "intro": "Order #{order_no} is paid and ready to fulfil. Buyer: {buyer}. Open your fulfilment page on {link} to acknowledge it and set a ship date.",
+            "intro": "Order #{order_no} is paid. Buyer: {buyer}. Open your fulfilment page at {link} to accept it and set a ship date.",
         },
         "fr": {
             "heading": "Vous avez une nouvelle commande",
-            "intro": "La commande n° {order_no} est payée et prête à être traitée. Acheteur : {buyer}. Ouvrez votre page de traitement sur {link} pour la confirmer et définir une date d'expédition.",
+            "intro": "La commande n° {order_no} est payée. Acheteur : {buyer}. Ouvrez votre page de traitement sur {link} pour l'accepter et fixer une date d'expédition.",
         },
         "pt": {
             "heading": "Tem uma nova encomenda",
-            "intro": "A encomenda n.º {order_no} está paga e pronta a ser processada. Comprador: {buyer}. Abra a sua página de processamento em {link} para a confirmar e definir uma data de expedição.",
+            "intro": "A encomenda n.º {order_no} está paga. Comprador: {buyer}. Abra a sua página de processamento em {link} para a aceitar e definir uma data de expedição.",
         },
     },
 
     # ── afc_sponsors: registration rejection (reason is free text, injected untranslated) ──
+    # "title" mirrors the SUBJECTS entry of the same key; afc_sponsors/engagements.py takes its
+    # subject from subject_for() and renders only "body", so the two must not drift apart.
+    # The retry variant repeats {sponsor} at the end on purpose: the player needs to know WHO is
+    # still holding their registration, not just that it is "pending".
     "sponsor_reject_final": {
         "en": {
             "title": "Registration rejected for {event_name}",
-            "body": "{sponsor} rejected your registration for {event_name}. Reason: {reason}. Your slot has been released.",
+            "body": "{sponsor} has rejected your registration for {event_name}. The reason given: {reason}. Your slot is now free for another player.",
         },
         "fr": {
             "title": "Inscription refusée pour {event_name}",
-            "body": "{sponsor} a refusé votre inscription pour {event_name}. Raison : {reason}. Votre place a été libérée.",
+            "body": "{sponsor} a refusé votre inscription à {event_name}. Motif indiqué : {reason}. Votre place est désormais libre pour un autre joueur.",
         },
         "pt": {
             "title": "Inscrição recusada para {event_name}",
-            "body": "{sponsor} recusou a sua inscrição para {event_name}. Motivo: {reason}. A sua vaga foi libertada.",
+            "body": "{sponsor} recusou a sua inscrição em {event_name}. Motivo indicado: {reason}. A sua vaga está agora livre para outro jogador.",
         },
     },
     "sponsor_reject_retry": {
         "en": {
             "title": "Action needed: fix your {label} for {event_name}",
-            "body": "{sponsor} rejected your {label} for {event_name}. Reason: {reason}. Open the event page and re-enter the correct value; your registration stays pending until the sponsor approves it.",
+            "body": "{sponsor} rejected your {label} for {event_name}. The reason given: {reason}. Open the event page and enter the correct value. Your registration stays pending until {sponsor} approves it.",
         },
         "fr": {
             "title": "Action requise : corrigez votre {label} pour {event_name}",
-            "body": "{sponsor} a refusé votre {label} pour {event_name}. Raison : {reason}. Ouvrez la page de l'événement et saisissez à nouveau la valeur correcte ; votre inscription reste en attente jusqu'à ce que le sponsor l'approuve.",
+            "body": "{sponsor} a refusé votre {label} pour {event_name}. Motif indiqué : {reason}. Ouvrez la page de l'événement et saisissez la bonne valeur. Votre inscription reste en attente tant que {sponsor} ne l'a pas approuvée.",
         },
         "pt": {
             "title": "Ação necessária: corrija o seu {label} para {event_name}",
-            "body": "{sponsor} recusou o seu {label} para {event_name}. Motivo: {reason}. Abra a página do evento e volte a introduzir o valor correto; a sua inscrição permanece pendente até que o patrocinador a aprove.",
+            "body": "{sponsor} recusou o seu {label} para {event_name}. Motivo indicado: {reason}. Abra a página do evento e introduza o valor correto. A sua inscrição fica pendente até {sponsor} a aprovar.",
         },
     },
 
     # ── afc_tournament_and_scrims: team fully registered (to the team owner) ──
+    # Order on the page: congrats (h1), dear, verified, box (highlighted), match_details, stay,
+    # need_help, look_forward, regards + board, then the two footer buttons.
+    # "match_details" names the ONE place room IDs actually arrive (dashboard notifications), which
+    # is the single most useful fact in this email and used to be buried in a parenthetical.
     "team_registered": {
         "en": {
-            "congrats": "Congratulations",
-            "dear": "Dear {leader} (Team {team_name}),",
-            "verified": "We are pleased to inform you that all members of your team have been successfully verified and accepted.",
-            "box": "Your team {team_name} is now fully registered for {event_name}.",
-            "match_details": "All match details (room IDs, passwords, schedules) will be available in your AFC dashboard notifications.",
-            "stay": "Stay prepared and keep checking the platform regularly.",
-            "need_help": "Need help? Contact us at {email}",
-            "look_forward": "We look forward to seeing your team compete!",
+            "congrats": "Your team is in",
+            "dear": "Hi {leader} ({team_name}),",
+            "verified": "Every player on your roster has been checked and accepted. There is nothing else we need from you.",
+            "box": "{team_name} is fully registered for {event_name}.",
+            "match_details": "Room IDs, passwords and match times arrive as notifications in your AFC dashboard. That is where to look for them.",
+            "stay": "Check the dashboard on the day you play, so nothing catches you out.",
+            "need_help": "Something not right? Write to {email}",
+            "look_forward": "Good luck out there.",
             "regards": "Best regards,",
             "board": "AFC Management Board",
             "visit_website": "Visit Website",
             "join_discord": "Join Discord",
         },
         "fr": {
-            "congrats": "Félicitations",
-            "dear": "Bonjour {leader} (équipe {team_name}),",
-            "verified": "Nous avons le plaisir de vous informer que tous les membres de votre équipe ont été vérifiés et acceptés avec succès.",
-            "box": "Votre équipe {team_name} est désormais entièrement inscrite à {event_name}.",
-            "match_details": "Tous les détails des matchs (identifiants de salle, mots de passe, horaires) seront disponibles dans les notifications de votre tableau de bord AFC.",
-            "stay": "Restez prêts et consultez régulièrement la plateforme.",
-            "need_help": "Besoin d'aide ? Contactez-nous à {email}",
-            "look_forward": "Nous avons hâte de voir votre équipe en compétition !",
+            "congrats": "Votre équipe est inscrite",
+            "dear": "Bonjour {leader} ({team_name}),",
+            "verified": "Chaque joueur de votre effectif a été vérifié et accepté. Nous n'avons plus besoin de rien de votre côté.",
+            "box": "{team_name} est entièrement inscrite à {event_name}.",
+            "match_details": "Les identifiants de salle, les mots de passe et les horaires des matchs arrivent sous forme de notifications dans votre tableau de bord AFC. C'est là qu'il faut les chercher.",
+            "stay": "Passez sur le tableau de bord le jour où vous jouez, pour ne pas être pris de court.",
+            "need_help": "Un souci ? Écrivez à {email}",
+            "look_forward": "Bonne chance.",
             "regards": "Cordialement,",
             "board": "Le conseil de direction AFC",
             "visit_website": "Visiter le site",
             "join_discord": "Rejoindre Discord",
         },
         "pt": {
-            "congrats": "Parabéns",
-            "dear": "Olá {leader} (equipa {team_name}),",
-            "verified": "Temos o prazer de informar que todos os membros da sua equipa foram verificados e aceites com sucesso.",
-            "box": "A sua equipa {team_name} está agora totalmente inscrita em {event_name}.",
-            "match_details": "Todos os detalhes das partidas (IDs de sala, palavras-passe, horários) estarão disponíveis nas notificações do seu painel AFC.",
-            "stay": "Mantenham-se preparados e consultem a plataforma regularmente.",
-            "need_help": "Precisa de ajuda? Contacte-nos em {email}",
-            "look_forward": "Estamos ansiosos por ver a sua equipa competir!",
+            "congrats": "A sua equipa está inscrita",
+            "dear": "Olá {leader} ({team_name}),",
+            "verified": "Todos os jogadores do seu plantel foram verificados e aceites. Não precisamos de mais nada da sua parte.",
+            "box": "{team_name} está totalmente inscrita em {event_name}.",
+            "match_details": "Os IDs de sala, as palavras-passe e os horários das partidas chegam como notificações no seu painel AFC. É aí que os deve procurar.",
+            "stay": "Passe pelo painel no dia em que jogam, para não ser apanhado de surpresa.",
+            "need_help": "Algum problema? Escreva para {email}",
+            "look_forward": "Boa sorte.",
             "regards": "Com os melhores cumprimentos,",
             "board": "A direção da AFC",
             "visit_website": "Visitar o site",
@@ -569,94 +624,102 @@ COPY = {
     },
 
     # ── afc_tournament_and_scrims: player accepted (to the player) ──
+    # "status_word" is rendered by the builder inside a bold green <span> and injected into
+    # "accepted" as {status}, so the sentence carries the full stop and status_word carries none.
     "player_accepted": {
         "en": {
-            "heading": "Registration Accepted",
-            "dear": "Dear {player},",
-            "accepted": "Your registration for {event_name} has been {status}",
-            "status_word": "verified and accepted!",
-            "eligible": "You are now eligible to participate. Match details will be available in your dashboard.",
-            "questions": "If you have questions, contact: {email}",
-            "good_luck": "Good luck in the tournament!",
+            "heading": "You're in",
+            "dear": "Hi {player},",
+            "accepted": "Your registration for {event_name} is {status}.",
+            "status_word": "confirmed",
+            "eligible": "You are on the player list. Room IDs, passwords and match times arrive as notifications in your AFC dashboard.",
+            "questions": "Anything unclear? Write to {email}",
+            "good_luck": "Good luck.",
             "regards": "Best regards,",
             "board": "AFC Management Board",
         },
         "fr": {
-            "heading": "Inscription acceptée",
+            "heading": "Vous êtes inscrit",
             "dear": "Bonjour {player},",
-            "accepted": "Votre inscription pour {event_name} a été {status}",
-            "status_word": "vérifiée et acceptée !",
-            "eligible": "Vous êtes désormais éligible pour participer. Les détails des matchs seront disponibles dans votre tableau de bord.",
-            "questions": "Si vous avez des questions, contactez : {email}",
-            "good_luck": "Bonne chance dans le tournoi !",
+            "accepted": "Votre inscription à {event_name} est {status}.",
+            "status_word": "confirmée",
+            "eligible": "Vous figurez sur la liste des joueurs. Les identifiants de salle, les mots de passe et les horaires des matchs arrivent sous forme de notifications dans votre tableau de bord AFC.",
+            "questions": "Une question ? Écrivez à {email}",
+            "good_luck": "Bonne chance.",
             "regards": "Cordialement,",
             "board": "Le conseil de direction AFC",
         },
         "pt": {
-            "heading": "Inscrição aceite",
+            "heading": "Está inscrito",
             "dear": "Olá {player},",
-            "accepted": "A sua inscrição para {event_name} foi {status}",
-            "status_word": "verificada e aceite!",
-            "eligible": "Está agora elegível para participar. Os detalhes das partidas estarão disponíveis no seu painel.",
-            "questions": "Se tiver dúvidas, contacte: {email}",
-            "good_luck": "Boa sorte no torneio!",
+            "accepted": "A sua inscrição em {event_name} está {status}.",
+            "status_word": "confirmada",
+            "eligible": "Está na lista de jogadores. Os IDs de sala, as palavras-passe e os horários das partidas chegam como notificações no seu painel AFC.",
+            "questions": "Alguma dúvida? Escreva para {email}",
+            "good_luck": "Boa sorte.",
             "regards": "Com os melhores cumprimentos,",
             "board": "A direção da AFC",
         },
     },
 
     # ── afc_tournament_and_scrims: player accepted (to the team owner) ──
+    # Here "status_word" stands ALONE after "status_label" ("Status: Accepted"), so unlike the
+    # player-facing template above it has to be a standalone word, not a sentence fragment.
     "player_accepted_owner": {
         "en": {
-            "heading": "Player Status Update",
-            "dear": "Dear {leader} (Team {team_name}),",
-            "reviewed": "Player {player} has been reviewed for {event_name}.",
+            "heading": "Roster update",
+            "dear": "Hi {leader} ({team_name}),",
+            "reviewed": "{player} has been checked for {event_name}.",
             "status_label": "Status:",
             "status_word": "Accepted",
-            "track": "You can track all players in your dashboard.",
+            "track": "The rest of your roster's status is in your dashboard.",
             "need_help": "Need help? {contact}",
             "contact_support": "Contact support",
-            "thanks": "Thanks for your participation.",
+            "thanks": "Thanks for getting the roster in on time.",
             "regards": "Best regards,",
             "board": "AFC Management Board",
         },
         "fr": {
-            "heading": "Mise à jour du statut du joueur",
-            "dear": "Bonjour {leader} (équipe {team_name}),",
-            "reviewed": "Le joueur {player} a été examiné pour {event_name}.",
+            "heading": "Mise à jour de l'effectif",
+            "dear": "Bonjour {leader} ({team_name}),",
+            "reviewed": "{player} a été vérifié pour {event_name}.",
             "status_label": "Statut :",
             "status_word": "Accepté",
-            "track": "Vous pouvez suivre tous les joueurs dans votre tableau de bord.",
+            "track": "L'état du reste de votre effectif se trouve dans votre tableau de bord.",
             "need_help": "Besoin d'aide ? {contact}",
             "contact_support": "Contactez le support",
-            "thanks": "Merci pour votre participation.",
+            "thanks": "Merci d'avoir envoyé votre effectif à temps.",
             "regards": "Cordialement,",
             "board": "Le conseil de direction AFC",
         },
         "pt": {
-            "heading": "Atualização do estado do jogador",
-            "dear": "Olá {leader} (equipa {team_name}),",
-            "reviewed": "O jogador {player} foi avaliado para {event_name}.",
+            "heading": "Atualização do plantel",
+            "dear": "Olá {leader} ({team_name}),",
+            "reviewed": "{player} foi verificado para {event_name}.",
             "status_label": "Estado:",
             "status_word": "Aceite",
-            "track": "Pode acompanhar todos os jogadores no seu painel.",
+            "track": "O estado do resto do seu plantel está no seu painel.",
             "need_help": "Precisa de ajuda? {contact}",
             "contact_support": "Contacte o suporte",
-            "thanks": "Obrigado pela sua participação.",
+            "thanks": "Obrigado por ter enviado o plantel a tempo.",
             "regards": "Com os melhores cumprimentos,",
             "board": "A direção da AFC",
         },
     },
 
     # ── afc_tournament_and_scrims: player rejected (to the player) ──
+    # Bad news, so: no exclamation, no encouragement, no "we regret to inform you". The reason box
+    # is rendered unconditionally right after "rejected", and "correct" points at it.
+    # "status_word" is injected as {status} inside a bold red <span>, which is why the sentence is
+    # built around it rather than ending in it.
     "player_rejected": {
         "en": {
-            "heading": "Registration Update",
-            "dear": "Dear {player},",
-            "rejected": "Your application for {event_name} has been {status}.",
-            "status_word": "rejected",
+            "heading": "About your registration",
+            "dear": "Hi {player},",
+            "rejected": "Your registration for {event_name} {status}.",
+            "status_word": "was not accepted",
             "reason_label": "Reason:",
-            "correct": "Please correct the issue and re-submit your registration.",
+            "correct": "Correct the problem above and submit your registration again.",
             "update_btn": "Update Registration",
             "need_help": "Need help? {contact}",
             "contact_support": "Contact support",
@@ -664,12 +727,12 @@ COPY = {
             "board": "AFC Management Board",
         },
         "fr": {
-            "heading": "Mise à jour de l'inscription",
+            "heading": "Au sujet de votre inscription",
             "dear": "Bonjour {player},",
-            "rejected": "Votre candidature pour {event_name} a été {status}.",
-            "status_word": "refusée",
-            "reason_label": "Raison :",
-            "correct": "Veuillez corriger le problème et soumettre à nouveau votre inscription.",
+            "rejected": "Votre inscription à {event_name} {status}.",
+            "status_word": "n'a pas été retenue",
+            "reason_label": "Motif :",
+            "correct": "Corrigez le point indiqué ci-dessus et renvoyez votre inscription.",
             "update_btn": "Mettre à jour l'inscription",
             "need_help": "Besoin d'aide ? {contact}",
             "contact_support": "Contactez le support",
@@ -677,12 +740,12 @@ COPY = {
             "board": "Le conseil de direction AFC",
         },
         "pt": {
-            "heading": "Atualização da inscrição",
+            "heading": "Sobre a sua inscrição",
             "dear": "Olá {player},",
-            "rejected": "A sua candidatura para {event_name} foi {status}.",
-            "status_word": "recusada",
+            "rejected": "A sua inscrição em {event_name} {status}.",
+            "status_word": "não foi aceite",
             "reason_label": "Motivo:",
-            "correct": "Por favor, corrija o problema e volte a submeter a sua inscrição.",
+            "correct": "Corrija o ponto indicado acima e volte a submeter a sua inscrição.",
             "update_btn": "Atualizar inscrição",
             "need_help": "Precisa de ajuda? {contact}",
             "contact_support": "Contacte o suporte",
@@ -692,41 +755,43 @@ COPY = {
     },
 
     # ── afc_tournament_and_scrims: player rejected (to the team owner) ──
+    # "reviewed" stays neutral because the verdict is already spelled out one line below in
+    # "status_label" + "status_word"; saying it twice is the three-sentences-for-one problem.
     "player_rejected_owner": {
         "en": {
-            "heading": "Player Status Update",
-            "dear": "Dear {leader} (Team {team_name}),",
-            "reviewed": "Player {player} has been reviewed for {event_name}.",
+            "heading": "Roster update",
+            "dear": "Hi {leader} ({team_name}),",
+            "reviewed": "{player}'s entry for {event_name} has been reviewed.",
             "status_label": "Status:",
-            "status_word": "Rejected",
+            "status_word": "Not accepted",
             "reason_label": "Reason:",
-            "monitor": "You can monitor your team in the dashboard.",
+            "monitor": "Your full roster status is in your dashboard.",
             "need_help": "Need help? {contact}",
             "contact_support": "Contact support",
             "regards": "Best regards,",
             "board": "AFC Management Board",
         },
         "fr": {
-            "heading": "Mise à jour du statut du joueur",
-            "dear": "Bonjour {leader} (équipe {team_name}),",
-            "reviewed": "Le joueur {player} a été examiné pour {event_name}.",
+            "heading": "Mise à jour de l'effectif",
+            "dear": "Bonjour {leader} ({team_name}),",
+            "reviewed": "L'inscription de {player} à {event_name} a été examinée.",
             "status_label": "Statut :",
-            "status_word": "Refusé",
-            "reason_label": "Raison :",
-            "monitor": "Vous pouvez suivre votre équipe dans le tableau de bord.",
+            "status_word": "Non accepté",
+            "reason_label": "Motif :",
+            "monitor": "L'état complet de votre effectif se trouve dans votre tableau de bord.",
             "need_help": "Besoin d'aide ? {contact}",
             "contact_support": "Contactez le support",
             "regards": "Cordialement,",
             "board": "Le conseil de direction AFC",
         },
         "pt": {
-            "heading": "Atualização do estado do jogador",
-            "dear": "Olá {leader} (equipa {team_name}),",
-            "reviewed": "O jogador {player} foi avaliado para {event_name}.",
+            "heading": "Atualização do plantel",
+            "dear": "Olá {leader} ({team_name}),",
+            "reviewed": "A inscrição de {player} em {event_name} foi analisada.",
             "status_label": "Estado:",
-            "status_word": "Recusado",
+            "status_word": "Não aceite",
             "reason_label": "Motivo:",
-            "monitor": "Pode acompanhar a sua equipa no painel.",
+            "monitor": "O estado completo do seu plantel está no seu painel.",
             "need_help": "Precisa de ajuda? {contact}",
             "contact_support": "Contacte o suporte",
             "regards": "Com os melhores cumprimentos,",
@@ -735,36 +800,40 @@ COPY = {
     },
 
     # ── afc_player_market: application received (to team staff) ──
+    # "applied_sub" sits directly under a very large application COUNT, so it reads as the caption
+    # of that number and stays a fragment on purpose. "message" replaced "Don't let talent slip
+    # away, log in to review, shortlist, and invite" with the one fact that matters: nothing happens
+    # to these applications until a human opens them.
     "pm_application_received": {
         "en": {
-            "header": "Your Post Is Getting Attention!",
+            "header": "Your post is getting applications",
             "mgmt": "{team} Management",
-            "hi": "Hi {mgmt}, your recruitment post for {team} is attracting players!",
-            "total_label": "Total Applications",
+            "hi": "Hi {mgmt}. Players are applying to your recruitment post for {team}.",
+            "total_label": "Applications so far",
             "applied_sub": "players have applied to join your team",
-            "message": "Don't let talent slip away, log in to review your applications, shortlist the best candidates, and invite players to trial.",
-            "cta": "Review Applications",
+            "message": "Applications sit in your queue until someone opens them. Read the profiles, then invite anyone worth a trial.",
+            "cta": "Review applications",
             "footer_staff": "You received this because you are a staff member of {team}.",
             "rights": "© 2026 African Free Fire Community. All rights reserved.",
         },
         "fr": {
-            "header": "Votre annonce attire l'attention !",
+            "header": "Votre annonce reçoit des candidatures",
             "mgmt": "la direction de {team}",
-            "hi": "Bonjour {mgmt}, votre annonce de recrutement pour {team} attire des joueurs !",
-            "total_label": "Total des candidatures",
-            "applied_sub": "joueurs ont posé leur candidature pour rejoindre votre équipe",
-            "message": "Ne laissez pas filer les talents, connectez-vous pour examiner les candidatures, présélectionner les meilleurs profils et inviter des joueurs à un essai.",
+            "hi": "Bonjour {mgmt}. Des joueurs postulent à votre annonce de recrutement pour {team}.",
+            "total_label": "Candidatures reçues",
+            "applied_sub": "joueurs ont postulé pour rejoindre votre équipe",
+            "message": "Les candidatures restent dans votre file tant que personne ne les ouvre. Lisez les profils, puis invitez à l'essai ceux qui le méritent.",
             "cta": "Examiner les candidatures",
             "footer_staff": "Vous recevez ce message car vous êtes membre du staff de {team}.",
             "rights": "© 2026 African Free Fire Community. Tous droits réservés.",
         },
         "pt": {
-            "header": "A sua publicação está a chamar a atenção!",
+            "header": "A sua publicação está a receber candidaturas",
             "mgmt": "a direção de {team}",
-            "hi": "Olá {mgmt}, a sua publicação de recrutamento para {team} está a atrair jogadores!",
-            "total_label": "Total de candidaturas",
+            "hi": "Olá {mgmt}. Há jogadores a candidatar-se à sua publicação de recrutamento para {team}.",
+            "total_label": "Candidaturas recebidas",
             "applied_sub": "jogadores candidataram-se para entrar na sua equipa",
-            "message": "Não deixe o talento escapar, inicie sessão para analisar as candidaturas, selecionar os melhores candidatos e convidar jogadores para um teste.",
+            "message": "As candidaturas ficam na sua fila até alguém as abrir. Leia os perfis e convide para teste quem valer a pena.",
             "cta": "Analisar candidaturas",
             "footer_staff": "Recebeu esta mensagem porque é membro do staff de {team}.",
             "rights": "© 2026 African Free Fire Community. Todos os direitos reservados.",
@@ -772,70 +841,79 @@ COPY = {
     },
 
     # ── afc_player_market: application rejected (to the player) ──
+    # The worst offender in the old catalog: "After careful consideration, we regret to inform
+    # you...", "keep honing your skills", "Every great player started somewhere", "your next
+    # opportunity could be just around the corner", "We wish you the best of luck in your esports
+    # journey." Five sentences of padding around one fact.
+    # Now: the team decided, here is the reason, here is what you can actually do, and the footer
+    # says whose decision it was. NOTE "footer" is rendered WITHOUT .format(), so it must carry no
+    # placeholder, which is why it says "the team" rather than {team}.
     "pm_application_rejected": {
         "en": {
-            "header": "Application Update",
+            "header": "About your application",
             "hi": "Hi {player},",
-            "body": "Thank you for your interest in joining {team}. After careful consideration, we regret to inform you that your application was not successful at this time. We encourage you to keep honing your skills and consider applying again in the future.",
+            "body": "{team} has read your application and decided not to take it further.",
             "reason_label": "Reason",
-            "keep_going_title": "Keep Going",
-            "keep_going_body": "Every great player started somewhere. Keep practicing, stay active in the community, and your next opportunity could be just around the corner.",
-            "cta": "Browse Other Teams",
-            "footer": "We wish you the best of luck in your esports journey.",
+            "keep_going_title": "What to do next",
+            "keep_going_body": "Other teams on the Player Market are recruiting right now, and nothing stops you applying to several at once.",
+            "cta": "See who else is recruiting",
+            "footer": "This decision was made by the team, not by AFC.",
             "rights": "© 2026 African Free Fire Community. All rights reserved.",
         },
         "fr": {
-            "header": "Mise à jour de la candidature",
+            "header": "Au sujet de votre candidature",
             "hi": "Bonjour {player},",
-            "body": "Merci de l'intérêt que vous portez à {team}. Après mûre réflexion, nous avons le regret de vous informer que votre candidature n'a pas été retenue cette fois-ci. Nous vous encourageons à continuer de perfectionner vos compétences et à envisager de postuler à nouveau à l'avenir.",
-            "reason_label": "Raison",
-            "keep_going_title": "Continuez",
-            "keep_going_body": "Tous les grands joueurs ont commencé quelque part. Continuez à vous entraîner, restez actif dans la communauté, et votre prochaine opportunité pourrait être à portée de main.",
-            "cta": "Parcourir d'autres équipes",
-            "footer": "Nous vous souhaitons bonne chance dans votre parcours esport.",
+            "body": "{team} a lu votre candidature et a décidé de ne pas y donner suite.",
+            "reason_label": "Motif",
+            "keep_going_title": "La suite",
+            "keep_going_body": "D'autres équipes recrutent en ce moment sur le Player Market, et rien ne vous empêche de postuler à plusieurs à la fois.",
+            "cta": "Voir qui recrute",
+            "footer": "Cette décision vient de l'équipe, pas de l'AFC.",
             "rights": "© 2026 African Free Fire Community. Tous droits réservés.",
         },
         "pt": {
-            "header": "Atualização da candidatura",
+            "header": "Sobre a sua candidatura",
             "hi": "Olá {player},",
-            "body": "Obrigado pelo seu interesse em juntar-se a {team}. Após uma análise cuidadosa, lamentamos informar que a sua candidatura não foi bem-sucedida desta vez. Encorajamo-lo a continuar a aperfeiçoar as suas competências e a considerar candidatar-se novamente no futuro.",
+            "body": "{team} leu a sua candidatura e decidiu não avançar com ela.",
             "reason_label": "Motivo",
-            "keep_going_title": "Continue",
-            "keep_going_body": "Todos os grandes jogadores começaram algures. Continue a treinar, mantenha-se ativo na comunidade, e a sua próxima oportunidade pode estar mesmo ao virar da esquina.",
-            "cta": "Ver outras equipas",
-            "footer": "Desejamos-lhe boa sorte no seu percurso no esport.",
+            "keep_going_title": "O que fazer a seguir",
+            "keep_going_body": "Há outras equipas a recrutar neste momento no Player Market, e nada o impede de se candidatar a várias ao mesmo tempo.",
+            "cta": "Ver quem está a recrutar",
+            "footer": "Esta decisão é da equipa, não da AFC.",
             "rights": "© 2026 African Free Fire Community. Todos os direitos reservados.",
         },
     },
 
     # ── afc_player_market: trial started (to the player) ──
+    # "whatnext_body" tells the player where to reply, because this email arrives from
+    # info@africanfreefirecommunity.com and a reply to it reaches AFC, not the team.
     "pm_trial_started_player": {
         "en": {
-            "header": "Your Trial Has Begun!",
-            "hey": "Hey {player}, {team} has selected you for a trial! A dedicated trial chat has been created where you can communicate directly with the team's management.",
+            "header": "Your trial has started",
+            "hey": "{player}, {team} has picked you for a trial. There is now a trial chat where you and the team's staff can talk directly.",
             "team_label": "Team",
             "whatnext_title": "What happens next?",
-            "whatnext_body": "Use the trial chat in the AFC app to coordinate with the team. This is your chance to impress, give it your all!",
+            "whatnext_body": "The team uses that chat to set times and tell you what they want to see. Reply there, not to this email.",
             "cta": "Open Trial Chat",
             "footer": "This trial was started because you applied to {team} on the AFC Player Market.",
             "rights": "© 2026 African Free Fire Community. All rights reserved.",
         },
         "fr": {
-            "header": "Votre essai a commencé !",
-            "hey": "Salut {player}, {team} vous a sélectionné pour un essai ! Un chat d'essai dédié a été créé où vous pouvez communiquer directement avec la direction de l'équipe.",
+            "header": "Votre essai a commencé",
+            "hey": "{player}, {team} vous a retenu pour un essai. Un chat d'essai est ouvert : vous pouvez y parler directement avec le staff de l'équipe.",
             "team_label": "Équipe",
             "whatnext_title": "Que se passe-t-il ensuite ?",
-            "whatnext_body": "Utilisez le chat d'essai dans l'application AFC pour vous coordonner avec l'équipe. C'est votre chance de briller, donnez tout !",
+            "whatnext_body": "L'équipe se sert de ce chat pour fixer les horaires et vous dire ce qu'elle attend de vous. Répondez là-bas, pas à cet e-mail.",
             "cta": "Ouvrir le chat d'essai",
-            "footer": "Cet essai a été lancé car vous avez postulé auprès de {team} sur le Player Market AFC.",
+            "footer": "Cet essai a été lancé parce que vous avez postulé auprès de {team} sur le Player Market AFC.",
             "rights": "© 2026 African Free Fire Community. Tous droits réservés.",
         },
         "pt": {
-            "header": "O seu teste começou!",
-            "hey": "Olá {player}, {team} selecionou-o para um teste! Foi criado um chat de teste dedicado onde pode comunicar diretamente com a direção da equipa.",
+            "header": "O seu teste começou",
+            "hey": "{player}, {team} escolheu-o para um teste. Já existe um chat de teste onde pode falar diretamente com o staff da equipa.",
             "team_label": "Equipa",
             "whatnext_title": "O que acontece a seguir?",
-            "whatnext_body": "Utilize o chat de teste na aplicação AFC para se coordenar com a equipa. Esta é a sua oportunidade de impressionar, dê o seu melhor!",
+            "whatnext_body": "A equipa usa esse chat para marcar horários e dizer-lhe o que quer ver. Responda por lá, não a este e-mail.",
             "cta": "Abrir chat de teste",
             "footer": "Este teste foi iniciado porque se candidatou a {team} no Player Market da AFC.",
             "rights": "© 2026 African Free Fire Community. Todos os direitos reservados.",
@@ -845,10 +923,10 @@ COPY = {
     # ── afc_player_market: trial started (to the team staff) ──
     "pm_trial_started_team": {
         "en": {
-            "header": "Trial Started",
+            "header": "Trial started",
             "mgmt": "{team} Management",
             "hi": "Hi {mgmt},",
-            "body": "{player} has been added to a trial with your team. A dedicated trial chat is now available to coordinate and evaluate their performance.",
+            "body": "{player} is now on trial with your team. The trial chat is open, so you can set times and talk to them there.",
             "player_label": "Player on Trial",
             "cta": "Open Trial Chat",
             "footer_staff": "You received this because you are a staff member of {team}.",
@@ -858,7 +936,7 @@ COPY = {
             "header": "Essai lancé",
             "mgmt": "la direction de {team}",
             "hi": "Bonjour {mgmt},",
-            "body": "{player} a été ajouté à un essai avec votre équipe. Un chat d'essai dédié est désormais disponible pour vous coordonner et évaluer sa performance.",
+            "body": "{player} est désormais à l'essai avec votre équipe. Le chat d'essai est ouvert : vous pouvez y fixer les horaires et lui parler.",
             "player_label": "Joueur à l'essai",
             "cta": "Ouvrir le chat d'essai",
             "footer_staff": "Vous recevez ce message car vous êtes membre du staff de {team}.",
@@ -868,7 +946,7 @@ COPY = {
             "header": "Teste iniciado",
             "mgmt": "a direção de {team}",
             "hi": "Olá {mgmt},",
-            "body": "{player} foi adicionado a um teste com a sua equipa. Está agora disponível um chat de teste dedicado para coordenar e avaliar o seu desempenho.",
+            "body": "{player} está agora em teste com a sua equipa. O chat de teste está aberto, por isso pode marcar horários e falar com ele por lá.",
             "player_label": "Jogador em teste",
             "cta": "Abrir chat de teste",
             "footer_staff": "Recebeu esta mensagem porque é membro do staff de {team}.",
@@ -877,40 +955,43 @@ COPY = {
     },
 
     # ── afc_player_market: direct trial invite (to the player) ──
+    # This one has a real deadline, so the window copy is the loudest thing in it and says what
+    # happens when the clock runs out. {hours} is injected as "72 hours" (hours_text) by the
+    # builder, which is why the sentence reads around it rather than hardcoding the number.
     "pm_trial_invite": {
         "en": {
-            "header": "A Team Wants You!",
-            "hey": "Hey {player}, {team} saw your availability post and wants you on their roster for a trial!",
+            "header": "A team wants you",
+            "hey": "{player}, {team} saw your availability post and wants you in for a trial.",
             "team_inviting": "Team Inviting You",
             "message_label": "Message",
-            "window_title": "72-Hour Window",
-            "window_body": "You must accept or decline within {hours}. After that, the invite expires.",
+            "window_title": "You have 72 hours",
+            "window_body": "Accept or decline within {hours}. After that the invite expires and the team would have to send a new one.",
             "hours_text": "72 hours",
-            "cta": "View & Respond to Invite",
+            "cta": "See the invite",
             "footer": "This invite was sent because you have an active availability post on the AFC Player Market.",
             "rights": "© 2026 African Free Fire Community. All rights reserved.",
         },
         "fr": {
-            "header": "Une équipe vous veut !",
-            "hey": "Salut {player}, {team} a vu votre annonce de disponibilité et vous veut dans son effectif pour un essai !",
+            "header": "Une équipe vous veut",
+            "hey": "{player}, {team} a vu votre annonce de disponibilité et vous veut à l'essai.",
             "team_inviting": "Équipe qui vous invite",
             "message_label": "Message",
-            "window_title": "Fenêtre de 72 heures",
-            "window_body": "Vous devez accepter ou refuser dans un délai de {hours}. Passé ce délai, l'invitation expire.",
+            "window_title": "Vous avez 72 heures",
+            "window_body": "Acceptez ou refusez dans un délai de {hours}. Passé ce délai, l'invitation expire et l'équipe devrait en envoyer une nouvelle.",
             "hours_text": "72 heures",
-            "cta": "Voir et répondre à l'invitation",
-            "footer": "Cette invitation a été envoyée car vous avez une annonce de disponibilité active sur le Player Market AFC.",
+            "cta": "Voir l'invitation",
+            "footer": "Cette invitation vous est envoyée parce que vous avez une annonce de disponibilité active sur le Player Market AFC.",
             "rights": "© 2026 African Free Fire Community. Tous droits réservés.",
         },
         "pt": {
-            "header": "Uma equipa quer-te!",
-            "hey": "Olá {player}, {team} viu a sua publicação de disponibilidade e quer-te no plantel para um teste!",
+            "header": "Uma equipa quer contar consigo",
+            "hey": "{player}, {team} viu a sua publicação de disponibilidade e quer contar consigo para um teste.",
             "team_inviting": "Equipa que o convida",
             "message_label": "Mensagem",
-            "window_title": "Janela de 72 horas",
-            "window_body": "Deve aceitar ou recusar no prazo de {hours}. Após isso, o convite expira.",
+            "window_title": "Tem 72 horas",
+            "window_body": "Aceite ou recuse dentro de {hours}. Passado esse prazo o convite expira e a equipa teria de enviar um novo.",
             "hours_text": "72 horas",
-            "cta": "Ver e responder ao convite",
+            "cta": "Ver o convite",
             "footer": "Este convite foi enviado porque tem uma publicação de disponibilidade ativa no Player Market da AFC.",
             "rights": "© 2026 African Free Fire Community. Todos os direitos reservados.",
         },
@@ -919,30 +1000,30 @@ COPY = {
     # ── afc_player_market: direct trial invite accepted (to the team staff) ──
     "pm_trial_accepted_team": {
         "en": {
-            "header": "Trial Accepted!",
+            "header": "Trial accepted",
             "mgmt": "{team} Management",
             "hi": "Hi {mgmt},",
-            "body": "{player} has accepted your trial invite. A dedicated trial chat is now open.",
+            "body": "{player} accepted your trial invite. The trial chat is open.",
             "player_label": "Player on Trial",
             "cta": "Open Trial Chat",
             "footer_staff": "You received this because you are a staff member of {team}.",
             "rights": "© 2026 African Free Fire Community. All rights reserved.",
         },
         "fr": {
-            "header": "Essai accepté !",
+            "header": "Essai accepté",
             "mgmt": "la direction de {team}",
             "hi": "Bonjour {mgmt},",
-            "body": "{player} a accepté votre invitation à un essai. Un chat d'essai dédié est maintenant ouvert.",
+            "body": "{player} a accepté votre invitation à l'essai. Le chat d'essai est ouvert.",
             "player_label": "Joueur à l'essai",
             "cta": "Ouvrir le chat d'essai",
             "footer_staff": "Vous recevez ce message car vous êtes membre du staff de {team}.",
             "rights": "© 2026 African Free Fire Community. Tous droits réservés.",
         },
         "pt": {
-            "header": "Teste aceite!",
+            "header": "Teste aceite",
             "mgmt": "a direção de {team}",
             "hi": "Olá {mgmt},",
-            "body": "{player} aceitou o seu convite para teste. Está agora aberto um chat de teste dedicado.",
+            "body": "{player} aceitou o seu convite para teste. O chat de teste está aberto.",
             "player_label": "Jogador em teste",
             "cta": "Abrir chat de teste",
             "footer_staff": "Recebeu esta mensagem porque é membro do staff de {team}.",
@@ -959,6 +1040,9 @@ COPY = {
     #
     # The recipient is an ORGANISATION, not a player, so the register is a shade more formal than
     # the rest of this catalog and never uses an in-game name.
+    #
+    # LEFT AS WRITTEN by the backlog-#18 rewrite: these four were authored last and already follow
+    # the rules at the top of this file, so they were re-read and kept rather than re-worded.
     #
     # NOTE WHAT THE APPROVAL COPY DOES NOT SAY: it never contains a client secret or an API key.
     # It points at a single-use link that expires, because an inbox does not. See the module
