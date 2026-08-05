@@ -2339,6 +2339,52 @@ def create_event(request):
         return Response({"message": f"Could not create the event: {exc}"}, status=500)
 
 
+def _cloned_dates(source):
+    """The four date fields for a clone, shifted so the copy sits in the FUTURE.
+
+    WHY (owner backlog item 27). duplicate_event resets event_status to "upcoming", but it used to
+    copy the source's dates unchanged. `update_event_and_stage_statuses`, the beat task that runs
+    every five minutes, then looked at a start date in the past and re-stamped the clone
+    "completed" on its own. The organizer's report was exactly that: duplicate, set a future start
+    date, publish, still says Event completed. Even after editing, several surfaces read the raw
+    stored status rather than the effective one, so the stale word followed the event around.
+
+    THE SHIFT PRESERVES THE SHAPE. Everything moves by the same delta, the gap between the
+    source's start date and tomorrow, so a three day event stays three days and registration still
+    opens the same number of days before the start. Clearing the dates instead would have been
+    simpler and worse: the edit form treats them as required, so the organizer would have to
+    rebuild a schedule they duplicated the event in order to reuse.
+
+    TOMORROW, not today: an event starting today is already inside its own window, which is a
+    strange state to hand somebody who has not finished editing yet.
+
+    A source with no start date cannot anchor a shift, so its dates are carried across untouched.
+    That is the pre-existing behaviour, and an event with no start date is not one the sweep can
+    mis-stamp anyway.
+    """
+    import datetime as _dt
+
+    fields = ("start_date", "end_date", "registration_open_date", "registration_end_date")
+    values = {name: getattr(source, name, None) for name in fields}
+
+    start = values.get("start_date")
+    if not start:
+        return values
+
+    tomorrow = timezone.localdate() + _dt.timedelta(days=1)
+    if start >= tomorrow:
+        # Already in the future, so the sweep has nothing to act on and the organizer's own dates
+        # are more likely to be what they want than anything computed here.
+        return values
+
+    delta = tomorrow - start
+    return {
+        name: (value + delta) if value else value
+        for name, value in values.items()
+    }
+
+
+
 # ── EVENT DUPLICATION (feature "event-duplicate", 2026-06-10) ──────────────────────────
 @api_view(["POST"])
 def duplicate_event(request, event_id):
@@ -2444,10 +2490,19 @@ def duplicate_event(request, event_id):
             # 40-char max so a long source name can't overflow event_name.
             event_name=(f"{source.event_name} (Copy)")[:40],
             event_mode=source.event_mode,
-            start_date=source.start_date,
-            end_date=source.end_date,
-            registration_open_date=source.registration_open_date,
-            registration_end_date=source.registration_end_date,
+            # ── DATES ARE SHIFTED, NOT COPIED (owner backlog item 27) ──
+            # Copying them verbatim is the root of "I duplicated an event, gave it a future start
+            # date, published it, and it still says Event completed". A clone of a finished event
+            # carried that event's PAST dates, and the status sweep that runs every five minutes
+            # re-stamped it "completed" on its own, undoing the reset two lines below before
+            # anybody had a chance to edit it.
+            #
+            # Shifted by the gap between the source's start and today, so the SHAPE of the event
+            # survives: a three day event stays three days, and registration still opens the same
+            # number of days before it starts. Cleared dates would have been simpler and worse,
+            # because the create form treats them as required and the organizer would have had to
+            # reconstruct a schedule they were trying to reuse.
+            **_cloned_dates(source),
             prizepool=source.prizepool,
             prizepool_cash_value=source.prizepool_cash_value,
             prize_distribution=source.prize_distribution,

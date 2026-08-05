@@ -298,6 +298,10 @@ def compute_registered_events(player):
     Consumed by: get_public_player_stats -> payload["registered_events"] -> frontend
     PlayerClient.tsx "Registered Events" section on the public player profile.
     """
+    # Deferred: afc_tournament_and_scrims.views reaches back into this app, so importing it at
+    # module level is a cycle. Same pattern the rest of this codebase uses for cross-app helpers.
+    from afc_tournament_and_scrims.views import effective_event_status
+
     # Keyed by event_id so a player registered in the same event both ways is listed once.
     events_by_id = OrderedDict()
 
@@ -306,16 +310,27 @@ def compute_registered_events(player):
         RegisteredCompetitors.objects
         .filter(user=player)
         .exclude(status__in=["rejected", "withdrawn", "left", "disqualified"])
-        .filter(event__is_draft=False, event__event_status__in=["upcoming", "ongoing"])
+        # WIDENED, then filtered in Python below (owner backlog item 27). This used to filter
+        # event_status in SQL, which reads the RAW stored word. A duplicated event carries a
+        # stored "completed" until the next sweep re-stamps it, so a player who registered for
+        # one simply did not appear to be registered for anything: the row was dropped by the
+        # database before any code could ask what the status EFFECTIVELY is. The same event
+        # showed "upcoming" on its own page at the same moment.
+        .filter(event__is_draft=False)
+        .exclude(event__event_status__in=["cancelled"])
         .select_related("event")
     )
     for rc in solo_qs:
         ev = rc.event
+        status = effective_event_status(ev)
+        if status not in ("upcoming", "ongoing"):
+            continue
         events_by_id[ev.event_id] = {
             "event_id": ev.event_id,
             "event_slug": ev.slug,
             "event_name": ev.event_name,
-            "event_status": ev.event_status,
+            # The EFFECTIVE status, so the badge here cannot disagree with the event's own page.
+            "event_status": status,
             "event_date": ev.start_date.isoformat() if ev.start_date else None,
             "participant_type": "solo",
         }
@@ -326,19 +341,21 @@ def compute_registered_events(player):
         .filter(user=player)
         .exclude(status="rejected")
         .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
-        .filter(
-            tournament_team__event__is_draft=False,
-            tournament_team__event__event_status__in=["upcoming", "ongoing"],
-        )
+        # Same widening as the solo queryset above, for the same reason.
+        .filter(tournament_team__event__is_draft=False)
+        .exclude(tournament_team__event__event_status__in=["cancelled"])
         .select_related("tournament_team__event")
     )
     for ttm in squad_qs:
         ev = ttm.tournament_team.event
+        status = effective_event_status(ev)
+        if status not in ("upcoming", "ongoing"):
+            continue
         events_by_id[ev.event_id] = {
             "event_id": ev.event_id,
             "event_slug": ev.slug,
             "event_name": ev.event_name,
-            "event_status": ev.event_status,
+            "event_status": status,
             "event_date": ev.start_date.isoformat() if ev.start_date else None,
             "participant_type": "squad",
         }
