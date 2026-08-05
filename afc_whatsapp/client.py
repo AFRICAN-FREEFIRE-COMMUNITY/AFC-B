@@ -214,7 +214,8 @@ def _post(payload):
 # ──────────────────────────────────────────────────────────────────────────────
 # Public sends
 # ──────────────────────────────────────────────────────────────────────────────
-def send_template(to, template_name, language, body_params=None, button_payloads=None):
+def send_template(to, template_name, language, body_params=None, button_payloads=None,
+                  url_button_suffix=None):
     """Send an APPROVED message TEMPLATE. The business-initiated path.
 
     WhatsApp only permits free-form messages inside 24 hours of the recipient's last
@@ -234,6 +235,13 @@ def send_template(to, template_name, language, body_params=None, button_payloads
         button_payloads: ordered payload strings, one per quick-reply button (max 3).
                          Each is echoed back to our webhook when the recipient taps,
                          which is how a tap is mapped to the thing it acts on.
+        url_button_suffix: the value for a DYNAMIC URL button. A template approved with
+                         a dynamic "Visit website" button stores a fixed base URL ending
+                         in {{1}}, and this is what gets appended at send time, e.g. an
+                         event slug onto ".../tournaments/". Meta allows the variable
+                         only at the END of the URL, so this is a suffix and never a
+                         whole address: the base is frozen at approval, which is what
+                         stops an approved template being repointed at another domain.
 
     Returns the standard result dict (see the module header). Never raises.
     """
@@ -257,6 +265,18 @@ def send_template(to, template_name, language, body_params=None, button_payloads
             "sub_type": "quick_reply",
             "index": index,
             "parameters": [{"type": "payload", "payload": str(payload_value)}],
+        })
+
+    # DYNAMIC URL button. Same "button" component type as above but sub_type "url", and its
+    # parameter is a plain text value rather than a payload: Meta appends it to the base URL
+    # frozen in the approved template. index 0 because a template may carry only one URL button,
+    # and it is always the first of its kind.
+    if url_button_suffix:
+        components.append({
+            "type": "button",
+            "sub_type": "url",
+            "index": 0,
+            "parameters": [{"type": "text", "text": str(url_button_suffix)}],
         })
 
     return _post({

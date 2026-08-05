@@ -144,6 +144,7 @@ def send_whatsapp_message(
     language="",
     body_params=None,
     button_payloads=None,
+    url_button_suffix=None,
     text="",
     user_id=None,
     country=None,
@@ -160,6 +161,8 @@ def send_whatsapp_message(
         language:        the language the template was approved under ("en_US").
         body_params:     ordered values for the template's {{1}}..{{N}} variables.
         button_payloads: ordered quick-reply payloads (max 3), echoed back on tap.
+        url_button_suffix: value appended to a dynamic URL button's frozen base URL,
+                         e.g. an event slug onto ".../tournaments/".
         text:            body for a free-form send (only valid inside the 24 hour
                          service window).
         user_id:         AFC user this is going to, for the log and the opt-in check.
@@ -190,7 +193,11 @@ def send_whatsapp_message(
             direction="outbound",
             template_name=template_name or "",
             template_language=language or "",
-            variables={"body": list(body_params or []), "buttons": list(button_payloads or [])},
+            variables={"body": list(body_params or []),
+                       "buttons": list(button_payloads or []),
+                       # Recorded so a delivery row shows WHERE the button sent the player,
+                       # which is otherwise invisible: the base URL lives on Meta's side.
+                       "url_suffix": url_button_suffix or ""},
             body=text or "",
             event_id=event_id,
             match_id=match_id,
@@ -221,6 +228,7 @@ def send_whatsapp_message(
         result = client.send_template(
             normalised, template_name, language,
             body_params=body_params, button_payloads=button_payloads,
+            url_button_suffix=url_button_suffix,
         )
     else:
         result = client.send_text(normalised, text)
@@ -254,6 +262,7 @@ def send_whatsapp_message(
             "language": language,
             "body_params": body_params,
             "button_payloads": button_payloads,
+            "url_button_suffix": url_button_suffix,
             "text": text,
             "user_id": user_id,
             "country": country,
@@ -301,7 +310,8 @@ def _resolve(user, event, match):
 
 
 def queue_template(to, template_name, language, *, body_params=None, button_payloads=None,
-                   user=None, country=None, event=None, match=None, context=""):
+                   url_button_suffix=None, user=None, country=None, event=None, match=None,
+                   context=""):
     """Queue an approved TEMPLATE send. The entry point for anything AFC initiates.
 
     Args:
@@ -310,6 +320,7 @@ def queue_template(to, template_name, language, *, body_params=None, button_payl
         language:        the language it was approved under ("en_US" != "en").
         body_params:     ordered values for {{1}}..{{N}}.
         button_payloads: ordered quick-reply payloads (max 3).
+        url_button_suffix: value appended to a dynamic URL button's base URL.
         user:            the AFC User (or user id) being messaged. Drives the opt-in
                          check and, when `country` is not given, the country used to
                          normalise a local number.
@@ -335,6 +346,7 @@ def queue_template(to, template_name, language, *, body_params=None, button_payl
         "language": language,
         "body_params": list(body_params or []),
         "button_payloads": list(button_payloads or []),
+        "url_button_suffix": url_button_suffix,
         "user_id": user_id,
         "country": country,
         "event_id": event_id,
