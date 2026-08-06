@@ -219,6 +219,21 @@ def _post(payload):
 # ──────────────────────────────────────────────────────────────────────────────
 # Public sends
 # ──────────────────────────────────────────────────────────────────────────────
+def _wa_id(number):
+    """The recipient as Meta's Cloud API wants it: digits only, no leading plus.
+
+    to_e164() returns a display-style "+2348132533372", which is the right thing for showing a
+    number to a person and the wrong thing to put in the `to` field. Meta answers a plus-prefixed
+    recipient with a bare "(#100) Invalid parameter" and NO detail, which is indistinguishable
+    from a wrong template name or a bad body - it cost several rounds of debugging on 2026-08-06
+    to separate the two.
+
+    Applied at the payload boundary rather than inside to_e164, because to_e164 is also used for
+    display and storage where the plus belongs.
+    """
+    return str(number or "").strip().lstrip("+").replace(" ", "")
+
+
 def send_template(to, template_name, language, body_params=None, button_payloads=None,
                   url_button_suffix=None):
     """Send an APPROVED message TEMPLATE. The business-initiated path.
@@ -287,7 +302,7 @@ def send_template(to, template_name, language, body_params=None, button_payloads
     return _post({
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
-        "to": wa_id,
+        "to": _wa_id(wa_id),
         "type": "template",
         "template": {
             "name": template_name,
@@ -320,7 +335,7 @@ def send_text(to, body):
     return _post({
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
-        "to": wa_id,
+        "to": _wa_id(wa_id),
         "type": "text",
         "text": {"body": str(body)},
     })
