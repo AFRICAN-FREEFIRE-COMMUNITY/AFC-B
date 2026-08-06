@@ -29,10 +29,12 @@ Run: python manage.py test afc_auth.tests_two_factor
 """
 import json
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlparse
 
 from django.contrib.auth.hashers import make_password
-from django.test import Client, TestCase
+from django.core.cache import cache
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from afc_auth import two_factor
@@ -536,3 +538,203 @@ class TwoFactorModuleTests(TwoFactorTestBase):
         # An unknown or future value falls back rather than crashing a login.
         self.assertEqual(two_factor.get_method("totp").code, "email")
         self.assertEqual(two_factor.get_method(None).code, "email")
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# SSO: GOOGLE AND DISCORD GO THROUGH THE SAME GATE (owner 2026-08-06)
+#
+# A second factor that a linked social account walks straight past is not a second factor, and the
+# accounts most likely to switch 2FA on (admins, organizers) are exactly the ones with Discord
+# linked. These tests exist to make that regression loud if anyone re-adds a provider-local login.
+#
+# Both providers are mocked at the SERVICE BOUNDARY - Google's ID-token verifier, Discord's two
+# HTTP calls - so nothing here touches a real OAuth server and no real client id/secret is needed.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+@override_settings(GOOGLE_OAUTH_CLIENT_ID="test-client-id.apps.googleusercontent.com")
+class GoogleSsoTwoFactorTests(TwoFactorTestBase):
+    """POST /auth/google/ runs login_or_challenge, exactly like the password login."""
+
+    def _google_login(self):
+        # The claims Google would have signed for this account.
+        claims = {"email": self.user.email, "email_verified": True, "name": "Player One"}
+        with patch("google.oauth2.id_token.verify_oauth2_token", return_value=claims):
+            return self.post("/auth/google/", {"credential": "a-google-id-token"})
+
+    def test_without_2fa_google_signs_in_exactly_as_before(self):
+        resp = self._google_login()
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        # The shape this endpoint has always returned: the login body plus is_new.
+        self.assertEqual(set(body.keys()), {"message", "session_token", "user", "geo", "is_new"})
+        self.assertFalse(body["is_new"])
+        self.assertTrue(
+            SessionToken.objects.filter(user=self.user, token=body["session_token"]).exists())
+
+    def test_with_2fa_google_is_challenged_and_gets_no_session(self):
+        self.enable_2fa()
+        SessionToken.objects.filter(user=self.user).delete()
+
+        resp = self._google_login()
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["two_factor_required"])
+        self.assertNotIn("session_token", body)
+        # is_new must NOT ride along on a challenge: it would tell someone who has not yet passed
+        # the factor whether an account had just been created.
+        self.assertNotIn("is_new", body)
+        self.assertFalse(SessionToken.objects.filter(user=self.user).exists())
+
+    def test_google_challenge_is_completed_by_the_shared_verify_endpoint(self):
+        self.enable_2fa()
+        SessionToken.objects.filter(user=self.user).delete()
+        self.sent_codes.clear()
+        challenge_token = self._google_login().json()["challenge_token"]
+
+        resp = self.post("/auth/two-factor/verify/",
+                         {"challenge_token": challenge_token, "code": self.sent_codes[-1]})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("session_token", resp.json())
+
+    def test_google_wrong_code_is_refused_and_mints_nothing(self):
+        self.enable_2fa()
+        SessionToken.objects.filter(user=self.user).delete()
+        challenge_token = self._google_login().json()["challenge_token"]
+
+        resp = self.post("/auth/two-factor/verify/",
+                         {"challenge_token": challenge_token, "code": "000000"})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(SessionToken.objects.filter(user=self.user).exists())
+
+    def test_google_challenge_is_single_use(self):
+        self.enable_2fa()
+        SessionToken.objects.filter(user=self.user).delete()
+        self.sent_codes.clear()
+        challenge_token = self._google_login().json()["challenge_token"]
+        code = self.sent_codes[-1]
+        self.assertEqual(
+            self.post("/auth/two-factor/verify/",
+                      {"challenge_token": challenge_token, "code": code}).status_code, 200)
+
+        replay = self.post("/auth/two-factor/verify/",
+                           {"challenge_token": challenge_token, "code": code})
+
+        self.assertEqual(replay.status_code, 400)
+        self.assertEqual(SessionToken.objects.filter(user=self.user).count(), 1)
+
+
+# LocMemCache, not the project's Redis: the Discord handoff lives in the cache, and these tests
+# must neither depend on Redis being up nor write into the cache the dev server shares.
+@override_settings(
+    DISCORD_CLIENT_ID="discord-client",
+    DISCORD_CLIENT_SECRET="discord-secret",
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
+class DiscordSsoTwoFactorTests(TwoFactorTestBase):
+    """The Discord redirect flow: the callback stashes the gate's result, the exchange hands it
+    over. The challenge has to survive the redirect WITHOUT appearing in the URL."""
+
+    def _callback(self):
+        """Drive start -> callback with Discord's two HTTP calls mocked. Returns the redirect."""
+        start = self.client.get("/auth/discord/sso/start/?next=/home")
+        self.assertEqual(start.status_code, 302)
+        # Pull the CSRF state nonce back out of the consent URL we were sent to.
+        state = parse_qs(urlparse(start["Location"]).query)["state"][0]
+
+        token_response = Mock(status_code=200)
+        token_response.json.return_value = {"access_token": "an-access-token"}
+        me_response = Mock()
+        me_response.json.return_value = {
+            "id": "42", "email": self.user.email, "verified": True,
+            "username": "player1", "global_name": "Player One",
+        }
+        with patch("afc_auth.views.requests.post", return_value=token_response), \
+             patch("afc_auth.views.requests.get", return_value=me_response):
+            return self.client.get(
+                f"/auth/discord/sso/callback/?code=discord-code&state={state}")
+
+    def _handoff_from(self, redirect_response):
+        self.assertEqual(redirect_response.status_code, 302)
+        return parse_qs(urlparse(redirect_response["Location"]).query)["code"][0]
+
+    def test_without_2fa_discord_signs_in_exactly_as_before(self):
+        handoff = self._handoff_from(self._callback())
+
+        resp = self.post("/auth/discord/sso/exchange/", {"code": handoff})
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("session_token", body)
+        self.assertTrue(
+            SessionToken.objects.filter(user=self.user, token=body["session_token"]).exists())
+
+    def test_with_2fa_discord_is_challenged_and_gets_no_session(self):
+        self.enable_2fa()
+        SessionToken.objects.filter(user=self.user).delete()
+
+        handoff = self._handoff_from(self._callback())
+        resp = self.post("/auth/discord/sso/exchange/", {"code": handoff})
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["two_factor_required"])
+        self.assertNotIn("session_token", body)
+        self.assertFalse(SessionToken.objects.filter(user=self.user).exists())
+
+    def test_the_challenge_token_never_appears_in_the_redirect_url(self):
+        """The whole reason the handoff exists: this URL lands in browser history and can leak
+        through Referer, so nothing usable may be in it."""
+        self.enable_2fa()
+        SessionToken.objects.filter(user=self.user).delete()
+
+        redirect_response = self._callback()
+        location = redirect_response["Location"]
+        handoff = self._handoff_from(redirect_response)
+        challenge = self.post("/auth/discord/sso/exchange/",
+                              {"code": handoff}).json()["challenge_token"]
+
+        self.assertNotIn(challenge, location)
+        # And the opaque handoff is single use, so the URL itself cannot be replayed.
+        self.assertEqual(
+            self.post("/auth/discord/sso/exchange/", {"code": handoff}).status_code, 400)
+
+    def test_discord_challenge_is_completed_by_the_shared_verify_endpoint(self):
+        self.enable_2fa()
+        SessionToken.objects.filter(user=self.user).delete()
+        self.sent_codes.clear()
+        handoff = self._handoff_from(self._callback())
+        challenge_token = self.post("/auth/discord/sso/exchange/",
+                                    {"code": handoff}).json()["challenge_token"]
+
+        resp = self.post("/auth/two-factor/verify/",
+                         {"challenge_token": challenge_token, "code": self.sent_codes[-1]})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("session_token", resp.json())
+
+    def test_discord_wrong_code_is_refused_and_mints_nothing(self):
+        self.enable_2fa()
+        SessionToken.objects.filter(user=self.user).delete()
+        handoff = self._handoff_from(self._callback())
+        challenge_token = self.post("/auth/discord/sso/exchange/",
+                                    {"code": handoff}).json()["challenge_token"]
+
+        resp = self.post("/auth/two-factor/verify/",
+                         {"challenge_token": challenge_token, "code": "000000"})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(SessionToken.objects.filter(user=self.user).exists())
+
+    def test_exchange_still_accepts_a_pre_deploy_handoff(self):
+        """Handoffs minted by the previous version stored a bare session-token STRING. They live
+        90 seconds, so a deploy can straddle one and it must not 500."""
+        SessionToken.objects.create(user=self.user, token="legacy_token_1")
+        cache.set("discord_sso_handoff:legacy", "legacy_token_1", 90)
+
+        resp = self.post("/auth/discord/sso/exchange/", {"code": "legacy"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["session_token"], "legacy_token_1")

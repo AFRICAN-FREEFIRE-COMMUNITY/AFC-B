@@ -1096,6 +1096,69 @@ def establish_session(request, user):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE TWO-FACTOR GATE (owner 2026-08-06)
+#
+# ONE function, called by EVERY sign-in path: password login(), google_auth(), and
+# discord_sso_callback(). It is deliberately the only place that decides "session now" versus
+# "challenge first". A second factor that one provider walks past is not a second factor, and the
+# accounts most likely to switch 2FA on are admins and organizers, who are exactly the people with
+# Discord linked - so the gate cannot be something a provider opts into by remembering to copy it.
+#
+# CONTRACT: every caller hands over a user whose identity is ALREADY proven (password checked,
+# Google signature verified, Discord token exchanged) and gets back (payload, http_status):
+#   • no 2FA        -> (the normal login body, 200). Byte-identical to what each path returned
+#                      before, plus whatever the caller passes in `extra` (Google/Discord add is_new).
+#   • 2FA on        -> (the two_factor_required challenge body, 200) and NO session token. The
+#                      client finishes at POST /auth/two-factor/verify/ - the SAME endpoint and the
+#                      SAME response shape for all three providers, so there is one code screen.
+#   • 2FA on but the hourly send budget is spent -> (error body, 429).
+#
+# `extra` is merged ONLY into the success body. It must never ride along on a challenge: is_new
+# would leak whether an account had just been created to someone who has not passed the factor yet.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+def login_or_challenge(request, user, extra=None):
+    """Decide whether `user` gets a session right now or has to pass a second factor first."""
+    # is_enabled_for is False for every account that has not opted in, and ALSO False (fail-soft)
+    # if the 2FA tables do not exist yet - migrations are generated on the server in this repo, so
+    # a deploy that lands code before the migration must degrade to "2FA is not live yet" rather
+    # than breaking every sign-in on every provider at once.
+    if two_factor.is_enabled_for(user):
+        issued = two_factor.issue_challenge(user, purpose="login")
+        challenge = issued["challenge"]
+        if challenge is None:
+            # No live challenge AND the hourly budget is spent. The only case we refuse outright.
+            return ({
+                'message': 'Too many sign-in codes requested. Please try again in an hour.',
+                'two_factor_required': True,
+                'retry_after': issued["retry_after"],
+            }, status.HTTP_429_TOO_MANY_REQUESTS)
+
+        # A DELIVERY FAILURE still returns the challenge rather than refusing. Refusing would lock
+        # every 2FA user out for the length of an SMTP outage; returning it keeps the recovery-code
+        # path on the same screen open. The message says what happened instead of telling them to
+        # check an inbox nothing was sent to.
+        delivery_failed = issued["reason"] == "delivery_failed"
+        return ({
+            'message': ('We could not send your sign-in code just now. Try again, or use a '
+                        'recovery code.') if delivery_failed
+                       else 'Enter the code we sent you to finish signing in.',
+            'two_factor_required': True,
+            'challenge_token': challenge.token,
+            'method': issued["method"],
+            'destination': issued["destination"],   # masked, safe on a pre-login screen
+            'code_sent': issued["sent"],            # False when we reused a code already sent
+            'delivery_failed': delivery_failed,
+            'expires_in': int(two_factor.TwoFactorChallenge.CODE_LIFETIME.total_seconds()),
+            'retry_after': issued["retry_after"],
+        }, status.HTTP_200_OK)
+
+    payload = establish_session(request, user)
+    if extra:
+        payload.update(extra)
+    return (payload, status.HTTP_200_OK)
+
+
 @api_view(['POST'])
 def login(request):
     """POST /auth/login/  Public. Body: { ign_or_uid, password }.
@@ -1131,43 +1194,11 @@ def login(request):
                 'message': 'Your account is not confirmed. Please verify your email address.'
             }, status=status.HTTP_403_FORBIDDEN)
 
-        # ── Two-factor gate (owner 2026-08-06) ────────────────────────────────────────────────
-        # OPT-IN ONLY. two_factor.is_enabled_for() is False for every account that has not turned
-        # 2FA on, and it is also False (fail-soft) if the 2FA tables do not exist yet - migrations
-        # are generated on the server in this repo, so a deploy that lands the code before the
-        # migration must degrade to "2FA is not live yet", never to "nobody can log in".
-        if two_factor.is_enabled_for(user):
-            issued = two_factor.issue_challenge(user, purpose="login")
-            challenge = issued["challenge"]
-            if challenge is None:
-                # No live challenge AND the hourly send budget is spent. Rare, and the only case
-                # where we refuse outright. The message names the wait rather than being cryptic.
-                return Response({
-                    'message': 'Too many sign-in codes requested. Please try again in an hour.',
-                    'two_factor_required': True,
-                    'retry_after': issued["retry_after"],
-                }, status=status.HTTP_429_TOO_MANY_REQUESTS)
-            # A DELIVERY FAILURE still returns the challenge rather than refusing. Refusing would
-            # lock every 2FA user out for the length of an SMTP outage; returning the challenge
-            # keeps the recovery-code path on the same screen open. The message says what happened
-            # instead of telling them to check an inbox nothing was sent to.
-            delivery_failed = issued["reason"] == "delivery_failed"
-            return Response({
-                'message': ('We could not send your sign-in code just now. Try again, or use a '
-                            'recovery code.') if delivery_failed
-                           else 'Enter the code we sent you to finish signing in.',
-                'two_factor_required': True,
-                'challenge_token': challenge.token,
-                'method': issued["method"],
-                'destination': issued["destination"],   # masked, safe on a pre-login screen
-                'code_sent': issued["sent"],            # False when we reused a code already sent
-                'delivery_failed': delivery_failed,
-                'expires_in': int(two_factor.TwoFactorChallenge.CODE_LIFETIME.total_seconds()),
-                'retry_after': issued["retry_after"],
-            }, status=status.HTTP_200_OK)
-
-        # Return success response with the session token
-        return Response(establish_session(request, user), status=status.HTTP_200_OK)
+        # Two-factor gate. Shared with google_auth + discord_sso_callback (see login_or_challenge
+        # above) so no provider can quietly skip it. Opt-in: for every account that has not turned
+        # 2FA on this returns the exact body login has always returned.
+        payload, code = login_or_challenge(request, user)
+        return Response(payload, status=code)
     else:
         # Authentication failed, return error response
         return Response({
@@ -1329,56 +1360,24 @@ def google_auth(request):
         return Response({"message": "Your account is not active. Please contact support."},
                         status=status.HTTP_403_FORBIDDEN)
 
-    # ── issue our SessionToken (mirrors the password login view) ────────────────
-    # Multi-session (owner 2026-07-04): do NOT delete the user's OTHER active sessions on
-    # login - that logged users/admins out of their other tabs + devices at random (any new
-    # login for the account nuked every token, so a still-open tab's next request 401'd ->
-    # forced re-login). Prune only EXPIRED tokens for housekeeping; the fresh token is added
-    # alongside any still-valid ones, so multiple tabs/devices stay logged in concurrently.
-    SessionToken.objects.filter(user=user, expires_at__lt=timezone.now()).delete()
-    session_token = generate_session_token()
-    SessionToken.objects.create(user=user, token=session_token)
-    user.last_login = timezone.now()
-    user.save(update_fields=["last_login"])
-
-    # Login history + once-a-day geo + first-login language detect (same as login).
-    ip = get_client_ip(request)
-    today = timezone.localdate()
-    cached = (LoginHistory.objects
-              .filter(user=user, created_at__date=today)
-              .exclude(country__isnull=True).exclude(country="")
-              .order_by("created_at").first())
-    if cached:
-        response = {"country": cached.country, "city": cached.city, "region": cached.region,
-                    "timezone": cached.timezone, "org": cached.org, "cached": True}
-        org = cached.org
-        is_vpn = cached.is_vpn
-    else:
-        response = geo_for_ip(ip)
-        org = response.get("org")
-        is_vpn = looks_like_vpn(org)
-    LoginHistory.objects.create(
-        user=user, ip_address=ip, user_agent=request.META.get("HTTP_USER_AGENT", ""),
-        country=response.get("country"), city=response.get("city"),
-        region=response.get("region"), timezone=response.get("timezone"),
-        org=org, is_vpn=is_vpn,
-    )
-    try:
-        set_ip_country(user, response.get("country"), is_vpn)  # IP-derived player flag (best-effort)
-    except Exception:
-        pass
-    try:
-        detected_country = response.get("country")
-        if not user.language and detected_country:
-            user.language = language_for_country(detected_country)
-            user.save(update_fields=["language"])
-    except Exception:
-        pass
+    # ── two-factor gate + session, through the SHARED path (owner 2026-08-06) ───
+    # This used to be its own copy of the SessionToken + geo + LoginHistory + language block.
+    # It now goes through login_or_challenge -> establish_session, the same code the password
+    # login runs, for two reasons: the 2FA gate cannot be something a provider forgets to copy,
+    # and the two near-identical session blocks had already started to drift (this one saved
+    # last_login with update_fields, the other saved the whole row).
+    #
+    # A user with 2FA on gets a challenge here and NO session token, and finishes at
+    # POST /auth/two-factor/verify/ exactly like a password login. A user without 2FA - which is
+    # everyone today - gets the identical body this endpoint has always returned, is_new included.
+    payload, code = login_or_challenge(request, user, extra={"is_new": is_new})
 
     # Welcome email for a brand-new Google account (owner 2026-06-20). Google users skip the
     # email-verification step (no code), so they would otherwise never get the welcome that
     # verify_code sends to password signups. Same email_welcome builder + send_email chokepoint,
-    # localized to the user's language. Best-effort: a mail hiccup must NOT fail the sign-in.
+    # localized to the user's language (which establish_session may have just auto-detected).
+    # Best-effort: a mail hiccup must NOT fail the sign-in. A brand-new account cannot have 2FA
+    # on, so this never fires on the challenge branch.
     if is_new:
         try:
             welcome_lang = user.language or "en"
@@ -1392,13 +1391,7 @@ def google_auth(request):
         except Exception:
             pass
 
-    return Response({
-        "message": "Login successful",
-        "session_token": session_token,
-        "user": {"id": user.user_id, "username": user.username, "language": user.language or "en"},
-        "geo": response,
-        "is_new": is_new,
-    }, status=status.HTTP_200_OK)
+    return Response(payload, status=code)
 
 
 @api_view(["POST"])
@@ -5749,47 +5742,27 @@ def discord_sso_callback(request):
     except Exception:
         pass
 
-    # ── issue our SessionToken (mirrors login/google_auth) ──
-    # Multi-session (owner 2026-07-04): do NOT delete the user's OTHER active sessions on
-    # login - that logged users/admins out of their other tabs + devices at random (any new
-    # login for the account nuked every token, so a still-open tab's next request 401'd ->
-    # forced re-login). Prune only EXPIRED tokens for housekeeping; the fresh token is added
-    # alongside any still-valid ones, so multiple tabs/devices stay logged in concurrently.
-    SessionToken.objects.filter(user=user, expires_at__lt=timezone.now()).delete()
-    session_token = generate_session_token()
-    SessionToken.objects.create(user=user, token=session_token)
-    user.last_login = timezone.now()
-    user.save(update_fields=["last_login"])
-
-    # Login history + once-a-day geo + first-login language detect (best-effort).
+    # ── two-factor gate + session, through the SHARED path (owner 2026-08-06) ──
+    # Was its own third copy of the SessionToken + geo + LoginHistory + language block. It now
+    # calls login_or_challenge, the same gate the password login and Google use, so a linked
+    # Discord account cannot be a way straight past 2FA. That mattered most here: the accounts
+    # most likely to switch 2FA on are admins and organizers, and they are exactly the people who
+    # have Discord linked.
+    #
+    # `result` is (payload, http_status): either the normal login body or the two_factor_required
+    # challenge body with NO session token. Either way it is what the frontend receives from the
+    # exchange below, so the Discord code screen is the SAME screen as the password one.
+    # Guarded because this is a REDIRECT endpoint: the old inline block wrapped its geo/history
+    # work in try/except so a hiccup bounced the user to the friendly failure page instead of
+    # showing a raw Django 500. Keeping that behaviour rather than inheriting the password path's
+    # unguarded style, which can afford to 500 because it answers a JSON POST.
     try:
-        ip = get_client_ip(request)
-        today = timezone.localdate()
-        cached = (LoginHistory.objects
-                  .filter(user=user, created_at__date=today)
-                  .exclude(country__isnull=True).exclude(country="")
-                  .order_by("created_at").first())
-        if cached:
-            geo = {"country": cached.country, "city": cached.city, "region": cached.region,
-                   "timezone": cached.timezone, "org": cached.org}
-            org, is_vpn = cached.org, cached.is_vpn
-        else:
-            geo = geo_for_ip(ip)
-            org = geo.get("org")
-            is_vpn = looks_like_vpn(org)
-        LoginHistory.objects.create(
-            user=user, ip_address=ip, user_agent=request.META.get("HTTP_USER_AGENT", ""),
-            country=geo.get("country"), city=geo.get("city"), region=geo.get("region"),
-            timezone=geo.get("timezone"), org=org, is_vpn=is_vpn,
-        )
-        set_ip_country(user, geo.get("country"), is_vpn)  # IP-derived player flag (best-effort)
-        if not user.language and geo.get("country"):
-            user.language = language_for_country(geo.get("country"))
-            user.save(update_fields=["language"])
+        result = login_or_challenge(request, user, extra={"is_new": is_new})
     except Exception:
-        pass
+        return redirect(fail)
 
-    # Welcome email for a brand-new Discord account (no email-verification code path).
+    # Welcome email for a brand-new Discord account (no email-verification code path). A brand-new
+    # account cannot have 2FA on, so this never fires on the challenge branch.
     if is_new:
         try:
             welcome_lang = user.language or "en"
@@ -5798,25 +5771,48 @@ def discord_sso_callback(request):
         except Exception:
             pass
 
-    # ── one-time handoff: keep the session token OUT of the URL ──
+    # ── one-time handoff: keep EVERYTHING sensitive out of the URL ──
+    # WHY THE CHALLENGE RIDES THE EXISTING HANDOFF instead of a new URL parameter: this redirect
+    # lands in browser history, and the frontend origin can leak via Referer. The handoff code is
+    # opaque, single-use and lives 90 seconds; the real payload is only ever handed over in the
+    # BODY of the exchange POST below. So the challenge token never touches a URL, exactly like
+    # the session token never has.
+    #
+    # Note this makes the redirect strictly SAFER for a 2FA user than for anyone else: if a
+    # handoff code were stolen out of a URL, it now yields a challenge that is useless without the
+    # emailed code, where before it yielded a full session.
     handoff = secrets.token_urlsafe(24)
-    cache.set(f"discord_sso_handoff:{handoff}", session_token, 90)
+    cache.set(f"discord_sso_handoff:{handoff}", result, 90)
     return redirect(f"{fo}/discord/callback?code={handoff}&next={quote(next_path)}")
 
 
 @api_view(["POST"])
 def discord_sso_exchange(request):
-    """Swap the one-time handoff code (from the callback redirect) for the real session
-    token. Single-use + short-lived. Body: { "code": "<handoff>" }."""
+    """POST /auth/discord/sso/exchange/  Public. Body: { code }.
+
+    Swap the one-time handoff code from the callback redirect for the real result. Single-use and
+    short-lived (90s). Returns whichever of the two login bodies the gate produced:
+      • no 2FA : { message, session_token, user{...}, geo, is_new }  - unchanged
+      • 2FA on : { message, two_factor_required, challenge_token, ... } and NO session token, the
+                 SAME shape POST /auth/login/ returns, finished at POST /auth/two-factor/verify/.
+
+    Consumed by frontend app/(auth)/discord/callback/page.tsx."""
     code = request.data.get("code")
     if not code:
         return Response({"message": "code is required."}, status=400)
     key = f"discord_sso_handoff:{code}"
-    session_token = cache.get(key)
-    if not session_token:
+    entry = cache.get(key)
+    if not entry:
         return Response({"message": "This sign-in link has expired. Please try again."}, status=400)
     cache.delete(key)  # one-time use
-    return Response({"session_token": session_token}, status=200)
+
+    # Back-compat for the ~90 second window across a deploy: handoffs minted by the previous
+    # version stored the bare session-token STRING rather than a (payload, status) pair.
+    if isinstance(entry, str):
+        return Response({"session_token": entry}, status=200)
+
+    payload, http_status = entry
+    return Response(payload, status=http_status)
 
 
 @api_view(["GET"])
