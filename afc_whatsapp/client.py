@@ -197,9 +197,14 @@ def _post(payload):
         }
 
     code, title, detail = _parse_error(data, response.status_code)
+    # Log the DETAIL, not just the title (owner-reported 2026-08-06). Meta's titles are useless on
+    # their own - "(#100) Invalid parameter" is true of a dozen different mistakes - while
+    # error_data.details names the actual one ("template param count mismatch", "invalid language",
+    # and so on). It was already being parsed and then dropped on the floor here, so a real failure
+    # cost a round trip to the database to find out what it had been.
     logger.warning(
-        "whatsapp send failed (HTTP %s, meta code %s): %s",
-        response.status_code, code, title,
+        "whatsapp send failed (HTTP %s, meta code %s): %s | detail: %s",
+        response.status_code, code, title, detail or "(none given)",
     )
     return _failure(
         title,
