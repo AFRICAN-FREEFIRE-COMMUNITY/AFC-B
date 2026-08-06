@@ -90,6 +90,23 @@ class Event(models.Model):
     prizepool_cash_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     prize_distribution = models.JSONField(default=dict)
     event_rules = models.CharField(max_length=200)
+    # ── What the tournament IS, in the organizer's own words (owner 2026-08-05, backlog item 26) ──
+    # Deliberately NOT the same thing as event_rules above, which is why it is a separate column
+    # rather than a longer event_rules. Rules answer "what will get you disqualified" and are
+    # already served two ways (this 200-char field, or an uploaded PDF in uploaded_rules). Nothing
+    # on the event answered "what is this tournament, who is it for, what is the story", so an
+    # organizer had nowhere to write it and players read a page of dates and numbers.
+    #
+    # TextField, not CharField, because event_rules' 200-char ceiling is exactly the limitation
+    # being fixed: a paragraph or two is the point. Blank by default, so every existing event
+    # keeps rendering as it does today and the About block simply does not appear.
+    #
+    # Written by create_event / edit_event (Basic Info tab + create wizard step 1), echoed by BOTH
+    # public detail builders (get_event_details and get_event_details_not_logged_in) and run
+    # through the translate-on-read layer beside event_name / event_rules, so a French or
+    # Portuguese visitor reads it in their own language. Rendered by the public tournament page
+    # (EventDetailsWrapper, the "About this tournament" block).
+    event_description = models.TextField(blank=True, default="")
     event_status = models.CharField(max_length=20, choices=EVENT_STATUS_CHOICES)
     registration_link = models.URLField()
     tournament_tier = models.CharField(max_length=20, choices=TOURNAMENT_TIER_CHOICES, default="tier_3")
@@ -443,6 +460,70 @@ class SponsorEvent(models.Model):
     sponsor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+# ---------------- Public (display-only) sponsors ----------------
+class EventPublicSponsor(models.Model):
+    """A logo and a link an event shows to EVERY visitor, with nothing asked of them in return
+    (owner 2026-08-05, backlog item 26: "sponsor logos and sponsor links visible to everyone,
+    distinct from the registration sponsor").
+
+    WHY THIS IS A NEW TABLE AND NOT A FLAG ON afc_sponsors.EventSponsorship
+        AFC already has TWO sponsor concepts, and both of them are GATES on registering:
+          * the legacy free-text one on Event itself (is_sponsored / sponsor_name /
+            sponsor_field_label / sponsor_requirement_description), which makes a registrant type
+            a value for the sponsor;
+          * afc_sponsors.EventSponsorship, whose entire reason to exist is requires_approval +
+            engagements - follow this account, join that group, and a registration that does not
+            complete until the sponsor approves it (see SponsorEngagementSubmission).
+        What is wanted here is the opposite of a gate: a strip of logos on the public page that
+        asks the visitor for nothing. Bolting a "show this one publicly" flag onto EventSponsorship
+        would mean every query in afc_sponsors/engagements.py that reasons about "the sponsors of
+        this event" would first have to work out whether a given row is a real gate or a piece of
+        decoration, and getting that wrong in either direction is a registration bug.
+
+        The second reason is permissions, and it is the decisive one. A Sponsor entity can only be
+        created by a sponsor-admin (afc_sponsors.views._is_sponsor_admin); an ORGANIZER cannot make
+        one. The owner's ask starts with "organizers and admins can add", so a model that needs an
+        AFC sponsor-admin to mint a row first cannot satisfy it. This table is owned by the event,
+        so whoever may edit the event may edit its public sponsors, and nothing else changes.
+
+    HOW IT CONNECTS
+        - Written by afc_tournament_and_scrims.views_public_sponsors (add / update / delete),
+          gated by the SAME permission as edit_event: _is_event_admin OR org_can_event.
+        - Read by BOTH public detail builders, get_event_details and
+          get_event_details_not_logged_in, as the `public_sponsors` key, via
+          views_public_sponsors.serialize_public_sponsors - so a logged-out visitor sees them.
+        - Edited on the shared Sponsor tab of the admin + organizer event-edit wizards
+          (frontend app/(a)/a/events/[slug]/edit/_components/SponsorTab.tsx, "Public sponsors"
+          card) and rendered on the public tournament page (EventDetailsWrapper).
+        - NOT copied by clone_event, matching the existing policy there for SponsorEvent /
+          StreamChannel (a clone copies Event config columns, not attached rows).
+
+    The `link` is attacker-supplied and ends up in an anchor on a public page, so it is validated
+    with afc_sso.provisioning._clean_url (https only, real URL) on the way in, and rendered with
+    rel="noopener noreferrer". The `logo` goes through afc_sso.provisioning._clean_logo_upload,
+    the same Pillow-decode + re-encode + rename guard the partner logo upload uses.
+    """
+    id = models.AutoField(primary_key=True)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="public_sponsors")
+    # Always shown, and the alt text of the logo, so a sponsor with no usable image still reads.
+    name = models.CharField(max_length=100)
+    # Optional: a sponsor may want to be credited without sending anyone anywhere. Stored only
+    # after passing _clean_url, so anything in here is already an absolute https URL or "".
+    link = models.URLField(max_length=300, blank=True, default="")
+    logo = models.ImageField(upload_to="event_public_sponsors/", null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Creation order IS the display order. No separate rank column, because the owner asked
+        # for logos on a page, not a ranking UI, and "the order I added them" is what an organizer
+        # expects when there is no control to say otherwise.
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.name} (public sponsor of event {self.event_id})"
+
 
 # ---------------- Stream Channels ----------------
 class StreamChannel(models.Model):
