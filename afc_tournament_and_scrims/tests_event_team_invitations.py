@@ -267,19 +267,39 @@ class EventTeamInvitationTests(TestCase):
 
         res = self._post(_accept_url(invitation_id), {"roster_member_ids": self._roster_ids()},
                          self.captain)
-        # PRE-EXISTING QUIRK, asserted deliberately rather than papered over. register_for_event's
-        # team branch does `if existing_registration.status != "registered"` against a
-        # TournamentTeam, whose STATUS choices are active/disqualified/withdrawn/left - "registered"
-        # is not one of them (that value belongs to RegisteredCompetitors). So an already-registered
-        # team is caught by the rejoin branch and gets 400 "You cannot rejoin this event." rather
-        # than the 409 "already registered" that lives further down. The behaviour is right (the
-        # duplicate IS refused) and the wording is misleading, for invited and self-registering
-        # teams alike. Asserting the real text is the point of this test: whatever
-        # register_for_event says, the accept endpoint must say the SAME thing, quirks included.
-        # Fixing the wording would change the self-registration path for everybody and belongs to
-        # its own change, not to this feature.
-        self.assertEqual(res.status_code, 400)
-        self.assertEqual(res.json()["message"], "You cannot rejoin this event.")
+
+        # THE EQUIVALENCE, now PROVEN rather than restated. This assertion used to be a second
+        # hardcoded copy of the sentence, which meant the test could only ever confirm that the
+        # string had not changed - it could not notice the two doors drifting apart, which is the
+        # thing that actually matters. So the same captain also self-registers the same team for
+        # the same event, straight through register_for_event, and the two answers are compared.
+        # If anybody ever gives invited teams their own refusal path, this fails, whatever wording
+        # either side happens to use.
+        direct = self.client.post(
+            "/events/register-for-event/",
+            data=json.dumps({
+                "event_id": self.event.event_id,
+                "team_id": self.team.team_id,
+                "roster_member_ids": self._roster_ids(),
+            }),
+            content_type="application/json",
+            **self._auth(self.captain),
+        )
+        self.assertEqual(
+            (res.status_code, res.json()["message"]),
+            (direct.status_code, direct.json()["message"]),
+            "An invited team must be refused in exactly the words a self-registering team is.",
+        )
+
+        # And the wording itself, pinned, because the module docstring above quotes it verbatim.
+        # It used to be 400 "You cannot rejoin this event." - the quirk this file documented when
+        # the feature was built, where register_for_event compared a TournamentTeam's status against
+        # "registered" (a RegisteredCompetitors value no TournamentTeam ever holds) and so told
+        # every already-registered team it had tried to rejoin. Fixed on its own terms
+        # (views._existing_team_registration_refusal, 2026-08-06); the answer is now the 409 this
+        # file always said it should be.
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.json()["message"], "This team is already registered for this event.")
         self.assertEqual(EventTeamInvitation.objects.get(id=invitation_id).status, "pending")
         self.assertEqual(
             TournamentTeam.objects.filter(event=self.event, team=self.team).count(), 1)

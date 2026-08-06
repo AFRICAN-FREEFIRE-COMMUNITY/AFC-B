@@ -6668,6 +6668,82 @@ def _letter_avatars_required_response(event, available):
     }
 
 
+# ── An EXISTING team entry: what it MEANS, and what to tell the captain ────────────────────────
+# TournamentTeam(event, team) is UNIQUE at the DB level (migration 0050,
+# uniq_event_team_registration), so a team has exactly ONE row per event and that row's status IS
+# the whole story of its involvement:
+#
+#   active / pending  the team is IN the event right now. "pending" is a SPONSORED entry waiting on
+#                     the sponsor's approval (written by register_for_event itself and by
+#                     check_and_activate_team); is_waitlisted=True is also "in", just not holding a
+#                     confirmed slot yet.
+#   disqualified      an organizer threw the team out (disqualify_team).
+#   withdrawn / left  the team dropped out AFTER THE FACT. Note leave_event DELETES the row rather
+#                     than setting a status, so a team that quits inside the registration window is
+#                     genuinely free to come back; these two are the later exits, set by an admin.
+#
+# WHY THIS EXISTS (bug, owner 2026-08-06): the team branch used to test that status against the
+# string "registered", which is not one of TournamentTeam.TEAM_STATUS at all - "registered" belongs
+# to RegisteredCompetitors. Every existing row therefore failed the comparison, and all of these
+# very different situations were answered with the same sentence, "You cannot rejoin this event.",
+# including the commonest one by far: a team that is simply already registered and never went
+# anywhere. The REFUSAL was correct (a duplicate registration must still be refused, and the unique
+# constraint would reject it regardless); only the reason given was untrue.
+#
+# Returns (body, http_status).
+#   409  you are ALREADY IN IT - a duplicate, not a permission problem. Matches the in-transaction
+#        duplicate guard inside register_for_event's atomic block.
+#   403  you MAY NOT come in - the same code every other eligibility gate in register_for_event
+#        uses (ban, organizer blacklist, country restriction, Discord, team logo, letter avatars).
+#
+# `code` is the stable machine key, and it is the part that matters for translation: the message
+# itself is English and both surfaces that show it (EventDetailsWrapper.handleRegistrationGateError
+# on the event page, EventInvitationsCard.handleAccept on the team page) toast the backend string
+# verbatim. Those wrappers already translate the codes they know (discord_required,
+# letter_avatars_required, ...) by ignoring the English and rendering a next-intl key instead, so
+# giving each case a code is what lets the frontend do the same here. The English `message` stays
+# as the fallback for any caller with no branch for the code yet.
+#
+# event_wording.event_noun keeps a scrims block from being called a tournament (backlog item 32);
+# the "the <noun> '<name>'" shape is copied from the disqualification notices, which is the phrasing
+# that reads correctly for both kinds.
+def _existing_team_registration_refusal(event, existing):
+    """Body + HTTP status for a team that already has a TournamentTeam row for this event."""
+    from .event_wording import event_noun
+    named = f"the {event_noun(event, capitalized=False)} '{event.event_name}'"
+
+    if existing.status == "disqualified":
+        return {
+            "code": "team_disqualified",
+            "message": f"Your team was disqualified from {named} and cannot register for it again.",
+        }, 403
+    if existing.status == "withdrawn":
+        return {
+            "code": "team_withdrawn",
+            "message": f"Your team withdrew from {named} and cannot rejoin it.",
+        }, 403
+    if existing.status == "left":
+        return {
+            "code": "team_left",
+            "message": f"Your team left {named} and cannot rejoin it.",
+        }, 403
+    if existing.is_waitlisted:
+        # Already in, but on the waitlist rather than in a confirmed slot. Saying "already
+        # registered" here would be the same class of untruth this whole helper exists to end.
+        return {
+            "code": "team_already_waitlisted",
+            "message": f"Your team is already on the waitlist for {named}.",
+        }, 409
+    # active / pending / anything else a future status adds: the team is in the event. The sentence
+    # is kept VERBATIM from the in-transaction duplicate guard below so both doors give one answer -
+    # event_invites.accept_team_invitation hands this straight back to an invited captain, and its
+    # docstring quotes this exact string.
+    return {
+        "code": "team_already_registered",
+        "message": "This team is already registered for this event.",
+    }, 409
+
+
 @api_view(["POST"])
 def register_for_event(request):
     # -------------------------
@@ -7089,16 +7165,24 @@ def register_for_event(request):
         if not TeamMembers.objects.filter(team=team, member=user).exists():
             return Response({"message": "You are not a member of this team."}, status=403)
 
+        # ── this team's existing entry, if it has one ──
+        # (event, team) is unique, so at most one row exists and its status says exactly what
+        # happened: already in, disqualified, withdrew, or left. _existing_team_registration_refusal
+        # turns that into the true sentence + the right status code (see its header for the bug this
+        # replaced). Checked HERE, ahead of the roster / blacklist / Discord work below, so a team
+        # that cannot register is answered without paying for gates that cannot change the answer.
         existing_registration = TournamentTeam.objects.filter(event=event, team=team).first()
+        if existing_registration:
+            body, http_status = _existing_team_registration_refusal(event, existing_registration)
+            return Response(body, status=http_status)
 
-        if existing_registration and existing_registration.status != "registered":
-            return Response({"message": "You cannot rejoin this event."}, status=400)
-
-        # NOTE (Bug C, duplicate registration race): the "already registered" duplicate check used to
-        # live HERE, OUTSIDE the atomic block, so two near-simultaneous requests both passed it and
-        # each created a TournamentTeam row (#15, #16) for the same (event, team). It has been MOVED
-        # inside the `with transaction.atomic():` below, behind a select_for_update lock on the event,
-        # so concurrent registrations serialize and the second one 409s instead of duplicating.
+        # NOTE (Bug C, duplicate registration race): the check above is the ORDINARY one - it reads
+        # before the transaction and so cannot see a row a concurrent request has not committed yet.
+        # The duplicate guard that closes the race lives inside the `with transaction.atomic():`
+        # below, behind a select_for_update lock on the event, because two near-simultaneous requests
+        # both passed a pre-transaction check and each created a TournamentTeam row (#15, #16) for the
+        # same (event, team). That guard answers with the SAME helper, so the loser of a race reads
+        # the same sentence as a team that simply arrived a second later.
 
         if event.is_sponsored:
             if not sponsor_ids:
@@ -7370,10 +7454,24 @@ def register_for_event(request):
             # _resolve_event_team). The uniq_event_team_registration DB constraint + the IntegrityError
             # guards on the creates below are the hard backstop. We check RegisteredCompetitors (active
             # path) OR TournamentTeam (also catches a waitlist row, which has no RC) to cover both.
+            #
+            # NOT dead code, despite the pre-transaction check above covering the ordinary case: this
+            # only fires when a row appeared BETWEEN that check and this lock (the race it was added
+            # for), or when a RegisteredCompetitors row exists with no TournamentTeam beside it.
             event = Event.objects.select_for_update().get(pk=event.pk)
-            if RegisteredCompetitors.objects.filter(event=event, team=team).exists() or \
-               TournamentTeam.objects.filter(event=event, team=team).exists():
-                return Response({"message": "This team is already registered for this event."}, status=409)
+            raced_registration = TournamentTeam.objects.filter(event=event, team=team).first()
+            if raced_registration:
+                # Same helper as the pre-transaction check, so losing a race does not change what the
+                # captain is told - they get the true reason, not a generic one.
+                body, http_status = _existing_team_registration_refusal(event, raced_registration)
+                return Response(body, status=http_status)
+            if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
+                # A registration row with no TournamentTeam beside it. There is no status to read, so
+                # this is the one place the generic sentence is the honest answer.
+                return Response({
+                    "code": "team_already_registered",
+                    "message": "This team is already registered for this event.",
+                }, status=409)
 
             active_count = TournamentTeam.objects.filter(
                 event=event,
