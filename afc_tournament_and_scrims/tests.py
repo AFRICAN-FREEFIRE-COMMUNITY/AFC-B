@@ -941,3 +941,200 @@ class TeamRegistrationBanTests(TestCase):
         res = self._register()
         self.assertEqual(res.status_code, 201, res.content)
         self.assertTrue(TournamentTeam.objects.filter(event=self.event, team=self.team).exists())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# WHAT A TEAM IS TOLD WHEN IT ALREADY HAS AN ENTRY (register_for_event, duo/squad path).
+#
+# THE BUG (owner 2026-08-06). The team branch compared its existing TournamentTeam against the
+# status string "registered". That is not one of TournamentTeam.TEAM_STATUS - the choices are
+# active / disqualified / withdrawn / left, and "registered" belongs to RegisteredCompetitors. So
+# the comparison was true for EVERY existing row, and four very different situations all came back
+# as "You cannot rejoin this event.", including the commonest by far: a team that is simply
+# registered already and never went anywhere. The refusal was right; the reason was not.
+#
+# These tests pin the four answers and - the part that matters most - that each one is still a
+# REFUSAL. A test that only read the sentence would pass while quietly letting a team register
+# twice, so every case also asserts no second TournamentTeam / RegisteredCompetitors row appeared.
+#
+# Same fixture shape as TeamRegistrationBanTests above: a public, free, non-sponsored squad event
+# with an open window and one Discord-role-less stage, so nothing here touches the network.
+# ──────────────────────────────────────────────────────────────────────────────
+class TeamRegistrationExistingEntryTests(TestCase):
+    """register_for_event must tell a team the TRUE reason it cannot register again, and must
+    still refuse the duplicate."""
+
+    def _token_for(self, user):
+        st = SessionToken.objects.create(
+            user=user,
+            token=f"tok-{user.username}-{uuid.uuid4().hex}",
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        return st.token
+
+    def _auth(self, user):
+        return {"HTTP_AUTHORIZATION": f"Bearer {self._token_for(user)}"}
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username="dup_admin", email="dupadmin@example.com", password="x", role="admin"
+        )
+        self.owner = User.objects.create_user(
+            username="dup_owner", email="dupowner@example.com", password="x",
+            role="player", country="Nigeria",
+        )
+        self.m2 = User.objects.create_user(
+            username="dup_m2", email="dupm2@example.com", password="x", country="Nigeria")
+        self.m3 = User.objects.create_user(
+            username="dup_m3", email="dupm3@example.com", password="x", country="Nigeria")
+        self.m4 = User.objects.create_user(
+            username="dup_m4", email="dupm4@example.com", password="x", country="Nigeria")
+
+        self.event = self._event("tournament", "Duplicate Cup")
+
+        self.team = Team.objects.create(
+            team_name="Dup Reg Team", join_settings="open", team_creator=self.owner,
+            team_owner=self.owner, team_captain=self.owner, country="Nigeria",
+        )
+        for u in (self.owner, self.m2, self.m3, self.m4):
+            TeamMembers.objects.create(team=self.team, member=u, management_role="member")
+
+        self.roster_ids = [self.owner.user_id, self.m2.user_id, self.m3.user_id, self.m4.user_id]
+
+    def _event(self, competition_type, name):
+        """A registerable squad event of the given KIND. competition_type is what event_wording
+        reads to decide whether a refusal says "tournament" or "scrims"."""
+        today = date.today()
+        event = Event.objects.create(
+            competition_type=competition_type, participant_type="squad", event_type="internal",
+            max_teams_or_players=16, event_name=name, event_mode="virtual",
+            start_date=today + timedelta(days=3), end_date=today + timedelta(days=5),
+            registration_open_date=today - timedelta(days=1),
+            registration_end_date=today + timedelta(days=2),
+            prizepool="$500", event_rules="No cheating", event_status="upcoming",
+            registration_link="https://example.com/reg", number_of_stages=1,
+            creator=self.admin, is_public=True, is_sponsored=False,
+        )
+        Stages.objects.create(
+            event=event, stage_name="Group Stage", start_date=today,
+            end_date=today + timedelta(days=1), number_of_groups=1,
+            stage_format="br - normal", teams_qualifying_from_stage=1,
+            stage_discord_role_id=None,
+        )
+        return event
+
+    def _register(self, event=None):
+        return self.client.post(
+            "/events/register-for-event/",
+            data={
+                "event_id": (event or self.event).event_id,
+                "team_id": self.team.team_id,
+                "roster_member_ids": self.roster_ids,
+            },
+            content_type="application/json",
+            **self._auth(self.owner),
+        )
+
+    def _existing_entry(self, team_status, *, event=None, is_waitlisted=False):
+        """Put the team into the event in the given state, the way the endpoint or an organizer
+        would have left it, without going through registration."""
+        return TournamentTeam.objects.create(
+            event=event or self.event, team=self.team, status=team_status,
+            registered_by=self.owner, is_waitlisted=is_waitlisted,
+        )
+
+    def _assert_still_refused(self, event=None):
+        """The duplicate did not sneak in behind the message: one entry, no new registration."""
+        event = event or self.event
+        self.assertEqual(
+            TournamentTeam.objects.filter(event=event, team=self.team).count(), 1)
+        self.assertFalse(
+            RegisteredCompetitors.objects.filter(event=event, team=self.team).exists())
+
+    # ── the four states ───────────────────────────────────────────────────────
+    def test_a_team_that_is_already_in_is_told_that_not_that_it_tried_to_rejoin(self):
+        self._existing_entry("active")
+
+        res = self._register()
+
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json()["code"], "team_already_registered")
+        self.assertEqual(
+            res.json()["message"], "This team is already registered for this event.")
+        self.assertNotIn("rejoin", res.json()["message"].lower())
+        self._assert_still_refused()
+
+    def test_a_waitlisted_team_is_told_it_is_on_the_waitlist(self):
+        # A waitlist entry is "in the event" too, but it is not a registration, and calling it one
+        # would be the same class of untruth the fix removed.
+        self._existing_entry("active", is_waitlisted=True)
+
+        res = self._register()
+
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json()["code"], "team_already_waitlisted")
+        self.assertIn("waitlist", res.json()["message"].lower())
+        self._assert_still_refused()
+
+    def test_a_disqualified_team_is_told_it_was_disqualified(self):
+        self._existing_entry("disqualified")
+
+        res = self._register()
+
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertEqual(res.json()["code"], "team_disqualified")
+        self.assertIn("disqualified", res.json()["message"].lower())
+        self._assert_still_refused()
+
+    def test_a_withdrawn_team_is_told_it_withdrew(self):
+        # This is the case the "rejoin" wording was actually written for, so it keeps saying so.
+        self._existing_entry("withdrawn")
+
+        res = self._register()
+
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertEqual(res.json()["code"], "team_withdrawn")
+        self.assertIn("withdrew", res.json()["message"].lower())
+        self.assertIn("rejoin", res.json()["message"].lower())
+        self._assert_still_refused()
+
+    def test_a_team_that_left_is_told_it_left(self):
+        self._existing_entry("left")
+
+        res = self._register()
+
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertEqual(res.json()["code"], "team_left")
+        self.assertIn("left", res.json()["message"].lower())
+        self._assert_still_refused()
+
+    # ── the refusal is real, driven end to end ────────────────────────────────
+    def test_registering_twice_through_the_endpoint_writes_exactly_one_entry(self):
+        """The rows above are planted by hand; this one drives the ACTUAL registration twice, which
+        is the only version that proves the endpoint refuses its own output."""
+        first = self._register()
+        self.assertEqual(first.status_code, 201, first.content)
+
+        second = self._register()
+
+        self.assertEqual(second.status_code, 409, second.content)
+        self.assertEqual(second.json()["code"], "team_already_registered")
+        self.assertEqual(
+            TournamentTeam.objects.filter(event=self.event, team=self.team).count(), 1)
+        self.assertEqual(
+            RegisteredCompetitors.objects.filter(event=self.event, team=self.team).count(), 1)
+        self.assertEqual(
+            TournamentTeamMember.objects.filter(tournament_team__event=self.event).count(),
+            len(self.roster_ids))
+
+    # ── a scrims block is not a tournament (backlog item 32) ──────────────────
+    def test_a_scrims_refusal_says_scrims_not_tournament(self):
+        scrims = self._event("scrims", "Thursday Scrims")
+        self._existing_entry("disqualified", event=scrims)
+
+        res = self._register(event=scrims)
+
+        message = res.json()["message"]
+        self.assertIn("scrims", message.lower())
+        self.assertNotIn("tournament", message.lower())
+        self._assert_still_refused(event=scrims)
