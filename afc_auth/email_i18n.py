@@ -155,6 +155,14 @@ SUBJECTS = {
         "fr": "L'adresse e-mail de votre compte AFC a été mise à jour",
         "pt": "O e-mail da sua conta AFC foi atualizado",
     },
+    # Two-factor sign-in code (owner 2026-08-06). The code itself is deliberately NOT in the subject
+    # line: subjects show in phone notifications on a locked screen, which is exactly the place a
+    # second factor must not appear.
+    "two_factor": {
+        "en": "Your AFC sign-in code",
+        "fr": "Votre code de connexion AFC",
+        "pt": "O seu código de início de sessão AFC",
+    },
 
     # ── afc_shop ──
     "order_received": {
@@ -411,6 +419,35 @@ COPY = {
             "intro": "Uma conta AFC está a ser transferida para este endereço de e-mail. Introduza o código abaixo nas definições do seu perfil para confirmar que o endereço é seu.",
             "expires": "O código é válido durante 10 minutos.",
             "disclaimer": "Se não foi você, ignore este e-mail. Nenhuma conta foi alterada, e nada será alterado sem este código.",
+        },
+    },
+
+    # ── afc_auth: two-factor sign-in code ──
+    # Rendered by afc_auth/views.py email_two_factor_code, sent by the EmailCodeMethod in
+    # afc_auth/two_factor.py. GOLD accent, like the other security mail.
+    #
+    # The disclaimer does real work here and is not boilerplate: this email arrives when SOMEONE HAS
+    # ALREADY TYPED THE RIGHT PASSWORD. If it was not the account owner, the password is known to
+    # another person and changing it is the only thing that helps, so the copy says that plainly
+    # rather than the usual "ignore this email".
+    "two_factor_code": {
+        "en": {
+            "heading": "Your sign-in code",
+            "intro": "Someone signed in to your AFC account with your password. Enter this code to finish signing in.",
+            "expires": "The code is good for 10 minutes and works once.",
+            "disclaimer": "If this was not you, someone knows your password. Nobody can get in without this code, but change your password now.",
+        },
+        "fr": {
+            "heading": "Votre code de connexion",
+            "intro": "Quelqu'un s'est connecté à votre compte AFC avec votre mot de passe. Saisissez ce code pour terminer la connexion.",
+            "expires": "Le code est valable 10 minutes et ne fonctionne qu'une seule fois.",
+            "disclaimer": "Si ce n'était pas vous, quelqu'un connaît votre mot de passe. Personne ne peut entrer sans ce code, mais changez votre mot de passe maintenant.",
+        },
+        "pt": {
+            "heading": "O seu código de início de sessão",
+            "intro": "Alguém iniciou sessão na sua conta AFC com a sua palavra-passe. Introduza este código para concluir o início de sessão.",
+            "expires": "O código é válido durante 10 minutos e funciona uma única vez.",
+            "disclaimer": "Se não foi você, alguém sabe a sua palavra-passe. Ninguém consegue entrar sem este código, mas mude já a sua palavra-passe.",
         },
     },
 

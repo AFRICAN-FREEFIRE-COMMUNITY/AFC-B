@@ -84,6 +84,12 @@ CALLER_PLACEHOLDERS = {
     "change_code": {
         "heading": set(), "intro": set(), "expires": set(), "disclaimer": set(),
     },
+    # afc_auth/views.py email_two_factor_code, called by the EmailCodeMethod in two_factor.py.
+    # No placeholders at all: the code itself is rendered by _email_code() as its own block, never
+    # interpolated into a sentence, so there is nothing for str.format to fill.
+    "two_factor_code": {
+        "heading": set(), "intro": set(), "expires": set(), "disclaimer": set(),
+    },
     "email_changed": {
         "heading": set(), "intro": {"username", "new_email", "when"}, "warning": {"support"},
         "support_label": set(),
@@ -201,6 +207,7 @@ CALLER_SUBJECT_PLACEHOLDERS = {
     "confirm_new_email": set(),
     "email_changed": set(),
     "email_updated_admin": set(),
+    "two_factor": set(),
     "order_received": set(),
     "order_shipped": set(),
     "order_completed": set(),

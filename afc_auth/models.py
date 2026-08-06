@@ -1130,3 +1130,163 @@ class FxRate(models.Model):
 
     def __str__(self):
         return f"1 USD = {self.rate} {self.currency}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# TWO-FACTOR AUTHENTICATION (owner 2026-08-06)
+#
+# WHY IT LOOKS LIKE THIS
+#   • EMAIL CODE FIRST. WhatsApp reaches roughly 90 of ~6,790 users; every account has a verified
+#     email. A second factor most people cannot switch on is not a second factor.
+#   • OPT IN, NEVER FORCED. Turning it on for 6,790 mostly-mobile players overnight locks people out
+#     of accounts that worked yesterday. Admins/organizers get a NUDGE (frontend TwoFactorPrompt),
+#     not a wall.
+#   • THREE SEPARATE TABLES, AND NOTHING ON `User`. This is deliberate and it is a SAFETY decision,
+#     not a style one: afc_auth.views.login calls user.save(), which writes the FULL User row, so
+#     adding ANY column to User makes EVERY valid production login 500 with "Unknown column ..."
+#     until makemigrations+migrate is run on the server (migrations are gitignored in this repo -
+#     see .gitignore "**/migrations/*.py"). That exact failure took prod down on 2026-06-28 when
+#     `stats_visible` was added. Keeping 2FA state in its own tables means a late migration degrades
+#     to "2FA is not available yet" (afc_auth.two_factor fails soft on the missing table) instead of
+#     "nobody can log in".
+#
+# THE THREE TABLES
+#   TwoFactorSettings   - one row per user who has ever touched 2FA: is it on, and by which method.
+#   TwoFactorChallenge  - ONE in-flight verification (a login second step, or the proof required to
+#                         enable/disable). Holds the HASH of the one-time code, never the code.
+#   TwoFactorBackupCode - the printable one-shot codes handed out at enable time, also hashed.
+#
+# HOW IT CONNECTS
+#   - Logic lives in afc_auth/two_factor.py (method registry + issue/verify), HTTP in
+#     afc_auth/views_two_factor.py, routes under `auth/two-factor/` in afc_auth/urls.py.
+#   - afc_auth.views.login reads TwoFactorSettings to decide whether to hand back a session token
+#     (unchanged behaviour) or a challenge token (opted-in users only).
+#   - Codes are emailed through the single localized chokepoint send_email(..., language=...) using
+#     the hand-authored catalog entry "two_factor_code" in afc_auth/email_i18n.py.
+#   - Frontend: lib/twoFactor.ts -> the login second step (app/(auth)/_components/TwoFactorStep.tsx,
+#     components/AuthModal.tsx) and the security page (app/(user)/profile/security/).
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+class TwoFactorSettings(models.Model):
+    """Per-user 2FA preferences. A row exists only once a user has started setting 2FA up; absent
+    row == 2FA off, which is what every one of the ~6,790 existing accounts is on day one.
+
+    `method` is stored even while only "email" is enabled so a later WhatsApp or authenticator-app
+    method is a new row VALUE, not a schema change (see afc_auth.two_factor.METHODS)."""
+
+    # Delivery/verification methods. Only EMAIL is wired up today; the other two are declared here
+    # so the column can already hold them and afc_auth.two_factor can register an implementation
+    # later without a migration. See two_factor.ENABLED_METHODS for what users may actually pick.
+    METHOD_CHOICES = [
+        ("email", "Email code"),
+        ("whatsapp", "WhatsApp code"),   # future: afc_whatsapp.client.send_template("login_code", ...)
+        ("totp", "Authenticator app"),   # future: RFC 6238, no delivery step
+    ]
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="two_factor")
+    is_enabled = models.BooleanField(default=False)
+    method = models.CharField(max_length=10, choices=METHOD_CHOICES, default="email")
+    # When the user actually completed the enable flow (null while off). Shown on the security page.
+    enabled_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        state = "on" if self.is_enabled else "off"
+        return f"{self.user.username} 2FA {state} ({self.method})"
+
+
+class TwoFactorChallenge(models.Model):
+    """ONE in-flight verification. Created by afc_auth.two_factor.issue_challenge and consumed by
+    verify_challenge; both live in that module so the rules below cannot be re-implemented per view.
+
+    SECURITY PROPERTIES this table exists to enforce:
+      • The code is NEVER stored or logged in plaintext - only `code_hash` (Django's password hasher,
+        the same make_password/check_password pair afc_auth.views.change_password uses). A six-digit
+        code has ~20 bits of entropy, so a fast hash would be trivially reversible from a DB dump;
+        PBKDF2 is the right cost here even though it is slow.
+      • SHORT LIFE: CODE_LIFETIME (10 minutes), matching PasswordResetToken/EmailChangeRequest.
+      • SINGLE USE: `consumed_at` is stamped on the first success and re-use is refused.
+      • INVALIDATED ON RE-ISSUE: issuing a new code marks any older live challenge consumed, so an
+        old code in an old email cannot still be used.
+      • ATTEMPT CAP: MAX_ATTEMPTS wrong guesses burn the challenge, which is what stops someone from
+        walking the 10^6 code space with a known password.
+
+    `token` is the opaque CHALLENGE token handed to the browser between login step one and step two.
+    It identifies the challenge; it is NOT a session token and grants nothing on its own."""
+
+    PURPOSE_CHOICES = [
+        ("login", "Login second step"),
+        ("enable", "Prove the method works before enabling"),
+        ("disable", "Prove identity before disabling"),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="two_factor_challenges")
+    purpose = models.CharField(max_length=10, choices=PURPOSE_CHOICES, default="login")
+    # Which method produced this code. Denormalized from TwoFactorSettings so a method change
+    # mid-challenge cannot make an already-sent code verifiable by the wrong path.
+    method = models.CharField(max_length=10, default="email")
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    code_hash = models.CharField(max_length=128)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    # default=timezone.now (NOT auto_now_add) so tests and the resend path can move it deliberately,
+    # mirroring EmailChangeRequest.created_at for the same reason.
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+    expires_at = models.DateTimeField()
+
+    # Tunables. Named constants (not literals at the call sites) so the backend rules and the
+    # frontend copy in messages/en/twoFactor.json stay in lockstep with one edit.
+    CODE_LIFETIME = timedelta(minutes=10)     # how long a code stays valid
+    MAX_ATTEMPTS = 5                          # wrong guesses before the challenge is burned
+    RESEND_COOLDOWN = timedelta(seconds=60)   # minimum gap between two sends (mirrors resend_token)
+    MAX_SENDS_PER_HOUR = 5                    # hard cap on codes emailed to one user per hour
+
+    class Meta:
+        indexes = [
+            # The two hot lookups: "this user's live challenges" (issue/rate-limit) and the
+            # rate-limit count over a time window.
+            models.Index(fields=["user", "purpose", "consumed_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        # Default the expiry to the full code window when a caller does not set it explicitly
+        # (same idiom as SessionToken.save above).
+        if not self.expires_at:
+            self.expires_at = timezone.now() + self.CODE_LIFETIME
+        super().save(*args, **kwargs)
+
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    def is_live(self):
+        """Usable right now: not consumed, not expired, and still under the attempt cap."""
+        return (
+            self.consumed_at is None
+            and not self.is_expired()
+            and self.attempts < self.MAX_ATTEMPTS
+        )
+
+    def consume(self):
+        """Burn the challenge so it can never be used again (success, attempt cap, or re-issue)."""
+        self.consumed_at = timezone.now()
+        self.save(update_fields=["consumed_at"])
+
+    def __str__(self):
+        return f"{self.user.username} {self.purpose} challenge ({self.token[:6]}...)"
+
+
+class TwoFactorBackupCode(models.Model):
+    """One single-use recovery code. A set is generated when 2FA is switched on and shown EXACTLY
+    once; only the hash is kept, so AFC cannot show them again (the regenerate endpoint issues a
+    fresh set instead).
+
+    WHY IT EXISTS: without recovery codes, a user who loses access to their mailbox is locked out of
+    an account they own, and that becomes a support ticket AFC has to resolve by hand. These are the
+    self-serve way back in, and they also let someone turn 2FA back off."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="two_factor_backup_codes")
+    code_hash = models.CharField(max_length=128)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user.username} backup code ({'used' if self.used_at else 'unused'})"

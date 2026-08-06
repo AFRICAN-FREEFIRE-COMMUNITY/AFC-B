@@ -29,6 +29,17 @@ from .views_broadcast_audience import (
     broadcast_audience_preview,
     broadcast_audience_send,
 )
+# Two-factor authentication (owner 2026-08-06). Opt-in email codes as a second sign-in step; see
+# views_two_factor.py for the endpoint docs and two_factor.py for the rules they enforce.
+from .views_two_factor import (
+    two_factor_verify,
+    two_factor_resend,
+    two_factor_status,
+    two_factor_send_code,
+    two_factor_enable,
+    two_factor_disable,
+    two_factor_regenerate_backup_codes,
+)
 
 
 urlpatterns = [
@@ -45,6 +56,19 @@ urlpatterns = [
     # SessionToken (sign up + sign in in one). Consumed by the FE "Continue with
     # Google" button -> AuthContext.loginWithGoogle. See views.google_auth.
     path('google/', google_auth, name='google_auth'),
+    # ── Two-factor authentication (owner 2026-08-06) ────────────────────────────
+    # Step TWO of signing in, plus the self-service switches. verify/ + resend/ are
+    # PUBLIC (they run before a session exists and are gated by the challenge token
+    # login/ hands out); the rest are Bearer-gated. Only users who opted in ever see
+    # any of this - login/ is unchanged for everyone else. See views_two_factor.py.
+    path('two-factor/verify/', two_factor_verify, name='two_factor_verify'),
+    path('two-factor/resend/', two_factor_resend, name='two_factor_resend'),
+    path('two-factor/status/', two_factor_status, name='two_factor_status'),
+    path('two-factor/send-code/', two_factor_send_code, name='two_factor_send_code'),
+    path('two-factor/enable/', two_factor_enable, name='two_factor_enable'),
+    path('two-factor/disable/', two_factor_disable, name='two_factor_disable'),
+    path('two-factor/backup-codes/', two_factor_regenerate_backup_codes,
+         name='two_factor_regenerate_backup_codes'),
     # Discord sign-in/sign-up (SSO) - start -> Discord, callback exchanges the code +
     # issues a session, exchange swaps the one-time handoff for the token. See views.
     path('discord/sso/start/', discord_sso_start, name='discord_sso_start'),
