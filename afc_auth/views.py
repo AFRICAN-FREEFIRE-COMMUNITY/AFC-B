@@ -26,6 +26,12 @@ from afc_auth.audit import set_audit
 # i18n Phase 0 (owner 2026-06-15): map the login geo country to a default language for first-time users.
 # Used in login() (auto-detect) and read alongside User.language in the auth payloads below.
 from afc_auth.language_utils import language_for_country
+# Two-factor authentication (owner 2026-08-06). login() below asks this module ONE question -
+# is_enabled_for(user) - and it answers False for every account that has not opted in, so the login
+# path for the other ~6,790 users is untouched. Safe to import at module load: two_factor imports
+# only .models at the top level and pulls send_email/email_two_factor_code from THIS module lazily
+# inside EmailCodeMethod.deliver, so there is no import cycle.
+from afc_auth import two_factor
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -616,6 +622,33 @@ def email_change_code(code, lang="en"):
     return _email_shell(inner, "gold")
 
 
+def email_two_factor_code(code, lang="en"):
+    """Two-factor sign-in code (gold security accent). Consumed by the EmailCodeMethod in
+    afc_auth/two_factor.py, which is the ONLY caller: the login gate, the enable proof and the
+    disable proof all issue their code through that one method, so they all send this one email.
+
+    Same shape as email_change_code deliberately - a user who has seen AFC's verification and
+    email-change codes should recognise this instantly rather than wonder if it is a phishing page.
+
+    i18n (owner 2026-08-06): hand-authored copy from the catalog (template "two_factor_code") in
+    `lang`. Caller sends with prelocalized=True + subject_for("two_factor", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("two_factor_code", lang)
+    inner = f"""
+  <tr><td style="padding:38px 44px 8px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.6;color:#aab5ae;margin-top:12px;">{c["intro"]}</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 8px;" align="center">
+    {_email_code(code, "gold")}
+  </td></tr>
+  <tr><td style="padding:14px 44px 26px;text-align:center;"><div style="font-size:13px;color:#7c8c83;">{c["expires"]}</div></td></tr>
+  <tr><td style="padding:0 44px 8px;">
+    <div style="font-size:12px;line-height:1.6;color:#6b7a71;">{c["disclaimer"]}</div>
+  </td></tr>"""
+    return _email_shell(inner, "gold")
+
+
 def email_email_changed(username, new_email, when_text, lang="en"):
     """Email-changed confirmation, sent to BOTH the old and new addresses (green). Consumed by
     confirm_email_change + admin_set_user_email (owner 2026-07-09, bug #1). Doubles as a tripwire:
@@ -947,8 +980,143 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
 #         )
 
 
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# Session establishment - everything that happens once a login is FULLY authenticated.
+#
+# WHY THIS IS A FUNCTION NOW (owner 2026-08-06, two-factor authentication)
+#   This block used to sit inline at the bottom of login(). 2FA gave the site a SECOND place where a
+#   session legitimately gets created: afc_auth.views_two_factor.two_factor_verify, the step-two
+#   exchange of "challenge token + code" for a session. That second path has to produce a session
+#   that is IDENTICAL to a normal login in every respect - same SessionToken lifetime, same
+#   LoginHistory row, same once-per-day geo caching, same first-login language detect, same response
+#   body - so the code is SHARED rather than copied. Two near-identical login paths drifting apart is
+#   the single worst outcome available here.
+#
+#   The body below is the pre-existing login() code, moved verbatim. Nothing about what a
+#   non-2FA user experiences changed.
+#
+# CALLERS: login() (every user without 2FA, which is everyone today) and
+#          views_two_factor.two_factor_verify() (users who opted in, after their code checks out).
+# RETURNS: the response dict login() has always returned - {message, session_token, user{...}, geo}.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+def establish_session(request, user):
+    """Create the session token, record the login, and build the standard login response body."""
+    # 🔥 CLEAR OLD SESSIONS
+    # Multi-session (owner 2026-07-04): do NOT delete the user's OTHER active sessions on
+    # login - that logged users/admins out of their other tabs + devices at random (any new
+    # login for the account nuked every token, so a still-open tab's next request 401'd ->
+    # forced re-login). Prune only EXPIRED tokens for housekeeping; the fresh token is added
+    # alongside any still-valid ones, so multiple tabs/devices stay logged in concurrently.
+    SessionToken.objects.filter(user=user, expires_at__lt=timezone.now()).delete()
+
+    # Generate a session token
+    session_token = generate_session_token()
+
+    SessionToken.objects.create(user=user, token=session_token)
+
+    # Save session token to the user model
+    user.last_login = timezone.now()
+    user.save()
+
+    ip = get_client_ip(request)
+
+    # ── Geo lookup: at most ONCE per user per day ──────────────────────────────────
+    # The ipinfo.io call is billed + adds latency, and it used to fire on EVERY login. Instead,
+    # reuse the geo from this user's FIRST LoginHistory row TODAY (created_at date == today) and
+    # only hit ipinfo on the day's first login (or if that row had no country). The real
+    # per-login IP + user-agent are still recorded every time; only the (paid) geo lookup is
+    # de-duplicated. (owner ask 2026-06-14: log the IP/geo once on the first login of the day.)
+    today = timezone.localdate()
+    cached = (LoginHistory.objects
+              .filter(user=user, created_at__date=today)
+              .exclude(country__isnull=True).exclude(country="")
+              .order_by("created_at").first())
+    if cached:
+        response = {
+            "country": cached.country,
+            "city": cached.city,
+            "region": cached.region,
+            "timezone": cached.timezone,
+            "org": cached.org,
+            "cached": True,  # tells the FE this is today's cached geo, not a fresh lookup
+        }
+        org = cached.org
+        is_vpn = cached.is_vpn
+    else:
+        response = geo_for_ip(ip)  # fail-soft: {} if ipinfo is slow/down
+        org = response.get("org")
+        is_vpn = looks_like_vpn(org)  # heuristic datacenter/VPN flag (review signal, not a block)
+
+    LoginHistory.objects.create(
+        user=user,
+        ip_address=ip,
+        user_agent=request.META.get("HTTP_USER_AGENT", ""),
+        country=response.get("country"),
+        city=response.get("city"),
+        region=response.get("region"),
+        timezone=response.get("timezone"),
+        org=org,
+        is_vpn=is_vpn,
+    )
+
+    # Refresh the player's IP-derived flag country (best-effort; never blocks login).
+    try:
+        set_ip_country(user, response.get("country"), is_vpn)
+    except Exception:
+        pass
+
+    # ── i18n Phase 0: auto-detect the user's language from their country on FIRST login only ──
+    # If the user has never had a language set (blank/None) and the geo lookup above resolved a
+    # country, default them to fr/pt for Francophone/Lusophone Africa (else en) via
+    # language_for_country (afc_auth.language_utils). This NEVER overrides a language the user has
+    # already chosen in their profile settings (edit_profile) - we only fill an empty value. The
+    # whole block is wrapped in try/except so a geo/normalization hiccup can never break login.
+    try:
+        detected_country = response.get("country")  # ISO code or full name (cached OR fresh geo)
+        if not user.language and detected_country:
+            user.language = language_for_country(detected_country)
+            user.save(update_fields=["language"])
+    except Exception:
+        # Best-effort only: language auto-detect must never block a successful login.
+        pass
+
+    # The success body. UNCHANGED from what login() has always returned - the frontend AuthContext
+    # reads session_token, and user.language seeds the NEXT_LOCALE cookie.
+    return {
+        'message': 'Login successful',
+        'session_token': session_token,
+        'user': {
+            'id': user.user_id,
+            'username': user.username,
+            # Preferred language code ("en"/"fr"/"pt"), consumed by the frontend AuthContext so it
+            # can set the active locale (NEXT_LOCALE cookie) right after login. Coalesced to "en".
+            'language': user.language or "en",
+        },
+        "geo": response,
+    }
+
+
 @api_view(['POST'])
 def login(request):
+    """POST /auth/login/  Public. Body: { ign_or_uid, password }.
+
+    Step ONE of signing in, and for almost everybody the ONLY step.
+
+    RESPONSE SHAPES
+      • 200, no 2FA (every account today): { message, session_token, user{id,username,language}, geo }
+        - byte-for-byte what this endpoint has always returned.
+      • 200, 2FA on for this user: { message, two_factor_required: true, challenge_token, method,
+        destination (masked), code_sent, expires_in, retry_after } and NO session_token. The client
+        then posts the challenge token plus the emailed code to /auth/two-factor/verify/, which is
+        what actually mints the session (via establish_session above).
+      • 403 unverified email, 401 bad credentials - both unchanged.
+
+    WHY THE GATE SITS EXACTLY HERE: after the password and is_active checks, and BEFORE
+    establish_session. No SessionToken is created for a 2FA user until their code checks out, so a
+    stolen password alone yields nothing that can call the API.
+
+    Consumed by: frontend app/(auth)/_components/LoginForm.tsx and components/AuthModal.tsx (both
+    branch on two_factor_required), and lib/twoFactor.ts for the second step."""
     ign_or_uid = request.data.get('ign_or_uid')
     password = request.data.get('password')
 
@@ -963,99 +1131,43 @@ def login(request):
                 'message': 'Your account is not confirmed. Please verify your email address.'
             }, status=status.HTTP_403_FORBIDDEN)
 
-
-        # 🔥 CLEAR OLD SESSIONS
-        # Multi-session (owner 2026-07-04): do NOT delete the user's OTHER active sessions on
-        # login - that logged users/admins out of their other tabs + devices at random (any new
-        # login for the account nuked every token, so a still-open tab's next request 401'd ->
-        # forced re-login). Prune only EXPIRED tokens for housekeeping; the fresh token is added
-        # alongside any still-valid ones, so multiple tabs/devices stay logged in concurrently.
-        SessionToken.objects.filter(user=user, expires_at__lt=timezone.now()).delete()
-
-        # Generate a session token
-        session_token = generate_session_token()
-
-        SessionToken.objects.create(user=user, token=session_token)
-
-        # Save session token to the user model
-        user.last_login = timezone.now()
-        user.save()
-
-        ip = get_client_ip(request)
-
-        # ── Geo lookup: at most ONCE per user per day ──────────────────────────────────
-        # The ipinfo.io call is billed + adds latency, and it used to fire on EVERY login. Instead,
-        # reuse the geo from this user's FIRST LoginHistory row TODAY (created_at date == today) and
-        # only hit ipinfo on the day's first login (or if that row had no country). The real
-        # per-login IP + user-agent are still recorded every time; only the (paid) geo lookup is
-        # de-duplicated. (owner ask 2026-06-14: log the IP/geo once on the first login of the day.)
-        today = timezone.localdate()
-        cached = (LoginHistory.objects
-                  .filter(user=user, created_at__date=today)
-                  .exclude(country__isnull=True).exclude(country="")
-                  .order_by("created_at").first())
-        if cached:
-            response = {
-                "country": cached.country,
-                "city": cached.city,
-                "region": cached.region,
-                "timezone": cached.timezone,
-                "org": cached.org,
-                "cached": True,  # tells the FE this is today's cached geo, not a fresh lookup
-            }
-            org = cached.org
-            is_vpn = cached.is_vpn
-        else:
-            response = geo_for_ip(ip)  # fail-soft: {} if ipinfo is slow/down
-            org = response.get("org")
-            is_vpn = looks_like_vpn(org)  # heuristic datacenter/VPN flag (review signal, not a block)
-
-        LoginHistory.objects.create(
-            user=user,
-            ip_address=ip,
-            user_agent=request.META.get("HTTP_USER_AGENT", ""),
-            country=response.get("country"),
-            city=response.get("city"),
-            region=response.get("region"),
-            timezone=response.get("timezone"),
-            org=org,
-            is_vpn=is_vpn,
-        )
-
-        # Refresh the player's IP-derived flag country (best-effort; never blocks login).
-        try:
-            set_ip_country(user, response.get("country"), is_vpn)
-        except Exception:
-            pass
-
-        # ── i18n Phase 0: auto-detect the user's language from their country on FIRST login only ──
-        # If the user has never had a language set (blank/None) and the geo lookup above resolved a
-        # country, default them to fr/pt for Francophone/Lusophone Africa (else en) via
-        # language_for_country (afc_auth.language_utils). This NEVER overrides a language the user has
-        # already chosen in their profile settings (edit_profile) - we only fill an empty value. The
-        # whole block is wrapped in try/except so a geo/normalization hiccup can never break login.
-        try:
-            detected_country = response.get("country")  # ISO code or full name (cached OR fresh geo)
-            if not user.language and detected_country:
-                user.language = language_for_country(detected_country)
-                user.save(update_fields=["language"])
-        except Exception:
-            # Best-effort only: language auto-detect must never block a successful login.
-            pass
+        # ── Two-factor gate (owner 2026-08-06) ────────────────────────────────────────────────
+        # OPT-IN ONLY. two_factor.is_enabled_for() is False for every account that has not turned
+        # 2FA on, and it is also False (fail-soft) if the 2FA tables do not exist yet - migrations
+        # are generated on the server in this repo, so a deploy that lands the code before the
+        # migration must degrade to "2FA is not live yet", never to "nobody can log in".
+        if two_factor.is_enabled_for(user):
+            issued = two_factor.issue_challenge(user, purpose="login")
+            challenge = issued["challenge"]
+            if challenge is None:
+                # No live challenge AND the hourly send budget is spent. Rare, and the only case
+                # where we refuse outright. The message names the wait rather than being cryptic.
+                return Response({
+                    'message': 'Too many sign-in codes requested. Please try again in an hour.',
+                    'two_factor_required': True,
+                    'retry_after': issued["retry_after"],
+                }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            # A DELIVERY FAILURE still returns the challenge rather than refusing. Refusing would
+            # lock every 2FA user out for the length of an SMTP outage; returning the challenge
+            # keeps the recovery-code path on the same screen open. The message says what happened
+            # instead of telling them to check an inbox nothing was sent to.
+            delivery_failed = issued["reason"] == "delivery_failed"
+            return Response({
+                'message': ('We could not send your sign-in code just now. Try again, or use a '
+                            'recovery code.') if delivery_failed
+                           else 'Enter the code we sent you to finish signing in.',
+                'two_factor_required': True,
+                'challenge_token': challenge.token,
+                'method': issued["method"],
+                'destination': issued["destination"],   # masked, safe on a pre-login screen
+                'code_sent': issued["sent"],            # False when we reused a code already sent
+                'delivery_failed': delivery_failed,
+                'expires_in': int(two_factor.TwoFactorChallenge.CODE_LIFETIME.total_seconds()),
+                'retry_after': issued["retry_after"],
+            }, status=status.HTTP_200_OK)
 
         # Return success response with the session token
-        return Response({
-            'message': 'Login successful',
-            'session_token': session_token,
-            'user': {
-                'id': user.user_id,
-                'username': user.username,
-                # Preferred language code ("en"/"fr"/"pt"), consumed by the frontend AuthContext so it
-                # can set the active locale (NEXT_LOCALE cookie) right after login. Coalesced to "en".
-                'language': user.language or "en",
-            },
-            "geo": response
-        }, status=status.HTTP_200_OK)
+        return Response(establish_session(request, user), status=status.HTTP_200_OK)
     else:
         # Authentication failed, return error response
         return Response({
