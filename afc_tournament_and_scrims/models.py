@@ -456,6 +456,108 @@ class EventInviteToken(models.Model):
     is_shared = models.BooleanField(default=False)
 
 
+# ── TEAM INVITATIONS TO AN EVENT (owner backlog item 34, 2026-08-06) ─────────────────────────────
+class EventTeamInvitation(models.Model):
+    """One ASK: "we would like your team in this event", which the team must ACCEPT or DECLINE.
+
+    THE ITEM IN THE OWNER'S WORDS
+        "Invite teams to an event as a distinct invitation type they must accept or decline."
+
+    WHY THIS IS A NEW TABLE AND NOT A FLAG ON SOMETHING THAT EXISTS
+        AFC already had two things that look adjacent and are not this:
+          * add_teams_to_event (POST events/add-teams-to-event/) FORCE-registers a team. Nobody on
+            the team is asked, nobody can say no, and the team is in the bracket the same second.
+          * EventInviteToken (above) is a LINK for a private event. It carries no addressee, so it
+            cannot be listed as "who did we invite", it cannot be declined, and it cannot tell an
+            organizer why a team said no.
+        An invitation is a conversation with a named team that has a state, so it needs a row of
+        its own: who asked, which team, what they said, and why.
+
+    HOW ACCEPTING WORKS (the important part)
+        Accepting does NOT write registration rows here. It replays the captain's answer through
+        the ORDINARY registration endpoint (views.register_for_event) - see
+        event_invites._register_through_the_normal_path - so an invited team passes exactly the
+        same gates a self-registering team passes (roster size, staff exclusion, bans, per-player
+        profile requirements, Discord, letter avatars, country restriction, organizer blacklist,
+        capacity/waitlist, closed window, already-registered) and gets exactly the same error text
+        when one of them refuses. An invitation is a shortcut to the FRONT of the queue, never a
+        way around the door.
+
+    HOW IT CONNECTS
+        - Written + read by afc_tournament_and_scrims/event_invites.py (all six endpoints).
+        - Accept path -> views.register_for_event -> RegisteredCompetitors + TournamentTeam +
+          TournamentTeamMember (the same rows a normal registration creates).
+        - Notifies through afc_auth.Notifications with target_type/target_id set, so the captain's
+          "Take me there" opens their team page and the inviter's opens the event.
+        - Frontend: the organizer/admin side is EventTeamInvitesCard.tsx (inside the shared
+          RegisteredTeamsTab); the team side is EventInvitationsCard.tsx on the team page.
+    """
+    STATUS_CHOICES = [
+        ("pending", "Pending"),        # sent, waiting on the team
+        ("accepted", "Accepted"),      # the team registered through register_for_event
+        ("declined", "Declined"),      # the team said no (decline_reason may say why)
+        ("cancelled", "Cancelled"),    # the inviter took it back before it was answered
+        ("expired", "Expired"),        # expires_at passed with nobody answering
+    ]
+
+    id = models.AutoField(primary_key=True)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="team_invitations")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="event_invitations")
+    # SET_NULL, not CASCADE: an organizer's account being deleted must not silently erase the
+    # invitations they sent, because the team may already have accepted one and be in the bracket.
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="event_team_invitations_sent",
+    )
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="pending")
+    # Optional note from the inviter ("we saved you a slot in the Lagos qualifier"). Shown to the
+    # team verbatim, so it is length-capped rather than a TextField.
+    message = models.CharField(max_length=280, blank=True, default="")
+    # Optional reason the team gave when declining. The whole point of a decline over silence is
+    # that the organizer learns WHY, so it is surfaced on the organizer's invitation list.
+    decline_reason = models.CharField(max_length=280, blank=True, default="")
+    responded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="event_team_invitations_answered",
+    )
+    # PRIVATE events only. register_for_event demands an invite_token when Event.is_public is
+    # False, so an invitation to a closed event would be impossible to accept without one. Rather
+    # than teaching the registration path a second way in (which is exactly the bypass this
+    # feature must not create), creating the invitation MINTS a single-use EventInviteToken and
+    # the accept replays it. Public events leave this NULL. Cancelling deletes the token so a
+    # withdrawn invitation cannot still let the team in.
+    invite_token = models.ForeignKey(
+        EventInviteToken, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="team_invitation",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    # Optional deadline. NULL (the default) means the invitation stands until the event's own
+    # registration window closes, which register_for_event enforces anyway on accept.
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["event", "status"]),   # organizer list: this event's invitations
+            models.Index(fields=["team", "status"]),    # captain list: my team's invitations
+        ]
+        # NO UniqueConstraint for "one PENDING invitation per (event, team)". Expressing that needs
+        # a CONDITIONAL unique index (condition=Q(status="pending")), and MySQL - the database this
+        # project runs on - has no partial indexes, so Django would silently skip creating it and
+        # the guarantee would be a comment pretending to be a constraint. The rule is enforced in
+        # event_invites.create_team_invitations instead, inside the same transaction that creates
+        # the rows. (Same reasoning the Invite.accepted_user_ids comment in afc_team/models.py
+        # records for its own MySQL workaround.)
+
+    def is_expired(self):
+        """True when a deadline was set and it has passed. Callers flip such rows to 'expired' on
+        read (a lazy sweep in the two list endpoints) rather than needing a scheduled job."""
+        return bool(self.expires_at and timezone.now() > self.expires_at)
+
+    def __str__(self):
+        return f"invite {self.team_id} -> event {self.event_id} ({self.status})"
+
+
 class SponsorEvent(models.Model):
     sponsor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.CASCADE)

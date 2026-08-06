@@ -50,6 +50,18 @@ from .event_links import (
     fire_link_view,
     decide,
 )
+# Team invitations to an event (owner backlog item 34, 2026-08-06): AFC or the organizer invites a
+# named team, the team accepts or declines. Accepting replays the answer through
+# views.register_for_event, so an invited team passes the identical gates. Own module, same
+# isolation rationale as event_payments / event_links.
+from .event_invites import (
+    create_team_invitations,
+    list_event_invitations,
+    cancel_team_invitation,
+    list_my_team_invitations,
+    accept_team_invitation,
+    decline_team_invitation,
+)
 # Clash-Squad head-to-head brackets (bracket sub-project C): generate / read / report-result
 # for knockout, double-elimination and league CS stages. Engine in head_to_head.py; the
 # completed-bracket placements feed the existing leaderboard + rankings pipelines via the
@@ -498,6 +510,22 @@ urlpatterns = [
          name="approve_team_map_submission"),
     path("team-map-results/<int:submission_id>/reject/", reject_team_map_submission,
          name="reject_team_map_submission"),
+
+    # ── Team invitations to an event (owner backlog item 34, 2026-08-06) ──────────────────
+    # Full URLs are events/team-invitations/... The first three are the ORGANIZER/ADMIN side,
+    # gated by the same permission add-teams-to-event uses (_can_invite); the last three are the
+    # TEAM's side, gated by "may this person register this team" (views._user_can_register_team),
+    # because accepting an invitation IS registering. "mine/" is declared BEFORE the <int:...>
+    # routes are relevant only for readability - the paths do not overlap.
+    path("team-invitations/create/", create_team_invitations, name="create_team_invitations"),
+    path("team-invitations/", list_event_invitations, name="list_event_invitations"),
+    path("team-invitations/mine/", list_my_team_invitations, name="list_my_team_invitations"),
+    path("team-invitations/<int:invitation_id>/cancel/", cancel_team_invitation,
+         name="cancel_team_invitation"),
+    path("team-invitations/<int:invitation_id>/accept/", accept_team_invitation,
+         name="accept_team_invitation"),
+    path("team-invitations/<int:invitation_id>/decline/", decline_team_invitation,
+         name="decline_team_invitation"),
 
     # ── Public sponsors (owner 2026-08-05, backlog item 26) ───────────────────────────────
     # Full URLs are events/public-sponsors/... All three are organizer/admin writes gated by the
