@@ -73,8 +73,11 @@ def _templates():
             "setting": "WHATSAPP_ROOM_3D_TEMPLATE",
             "lang_setting": "WHATSAPP_ROOM_TEMPLATE_LANG",
             "category": "UTILITY",
+            # "Hi " in front is NOT cosmetic. Meta rejects a body that STARTS or ENDS with a
+            # variable ("Variables can't be at the start or end of the template"), and the doc's
+            # wording opened on {{1}}. Caught on the first real submission, 2026-08-06.
             "body": (
-                "{{1}}, one more thing about your room for {{2}}: it is a 3D room, so joining "
+                "Hi {{1}}, one more thing about your room for {{2}}: it is a 3D room, so joining "
                 "works differently.\n\n"
                 "Create a group and add all 4 squad members. The group leader then goes to "
                 "Customs, then League, or searches the room ID. Tap the join icon, then enter "
@@ -157,6 +160,10 @@ class Command(BaseCommand):
                             help="Comma separated template NAMES to act on (default: all).")
         parser.add_argument("--waba", default="",
                             help="Override the WABA id from settings.")
+        parser.add_argument("--delete-rejected", action="store_true",
+                            help="Delete REJECTED templates so a corrected version can be "
+                                 "submitted under the same name. Meta keeps the name occupied "
+                                 "until the rejected row is removed.")
 
     # ── HTTP ──
     def _graph(self, path, token, method="GET", body=None):
@@ -205,7 +212,8 @@ class Command(BaseCommand):
                 return
 
         existing, err = self._graph(
-            f"{waba}/message_templates?limit=100&fields=name,language,status,category", token)
+            f"{waba}/message_templates?limit=100"
+            f"&fields=name,language,status,category,rejected_reason,quality_score", token)
         if err:
             self.stderr.write(f"could not read templates: {json.dumps(err)}")
             return
@@ -213,6 +221,28 @@ class Command(BaseCommand):
         self.stdout.write(f"\nalready on this WABA ({len(have)}):")
         for (name, lang), t in sorted(have.items()):
             self.stdout.write(f"  {name:26} {lang:6} {t['status']:10} {t.get('category','')}")
+            # The REASON is the only useful part of a rejection, and it is not shown anywhere in
+            # the submit response - only on a later read. Print it here or the operator is left
+            # guessing exactly as we were.
+            if t.get("status") == "REJECTED" and t.get("rejected_reason"):
+                self.stdout.write(self.style.ERROR(
+                    f"      rejected: {t['rejected_reason']}"))
+
+        # Clearing a rejected row frees its NAME. Meta will not accept a second template under a
+        # name that already exists, even a rejected one, so a corrected body cannot be submitted
+        # until the old row is gone.
+        if opts["delete_rejected"]:
+            for (name, lang), t in sorted(have.items()):
+                if t.get("status") != "REJECTED":
+                    continue
+                _res, derr = self._graph(
+                    f"{waba}/message_templates?name={name}", token, method="DELETE")
+                if derr:
+                    self.stdout.write(self.style.ERROR(f"  delete {name}: {json.dumps(derr)[:160]}"))
+                else:
+                    self.stdout.write(self.style.SUCCESS(f"  deleted rejected template: {name}"))
+                    have.pop((name, lang), None)
+
         if opts["check"]:
             return
 
