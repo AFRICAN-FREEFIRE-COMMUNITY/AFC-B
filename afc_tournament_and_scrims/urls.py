@@ -6,6 +6,14 @@ from .views_room_release import release_room_details_to_waitlist
 # targets ONLY the failures. Consumed by EditMatchModal. See views_room_delivery.py.
 from .views_room_delivery import match_room_delivery, resend_room_details
 from .views_autoseed import auto_seed_now
+# Public (display-only) sponsors of an event: logos + links every visitor sees, with no
+# registration gate attached (owner 2026-08-05, backlog item 26). Deliberately separate from the
+# afc_sponsors engagement system, which exists to gate registration. See views_public_sponsors.py.
+from .views_public_sponsors import (
+    add_event_public_sponsor,
+    delete_event_public_sponsor,
+    update_event_public_sponsor,
+)
 # Teams submit their own per-map results, organizers approve them (owner 2026-08-04,
 # backlog item 6). Approval writes through the SAME function manual entry uses
 # (result_writes.write_team_result_row), so an approved submission produces exactly the
@@ -490,4 +498,14 @@ urlpatterns = [
          name="approve_team_map_submission"),
     path("team-map-results/<int:submission_id>/reject/", reject_team_map_submission,
          name="reject_team_map_submission"),
+
+    # ── Public sponsors (owner 2026-08-05, backlog item 26) ───────────────────────────────
+    # Full URLs are events/public-sponsors/... All three are organizer/admin writes gated by the
+    # same permission as edit_event. There is no READ route: the sponsors ride in the two
+    # get-event-details payloads the pages already load, and every write returns the full list.
+    path("public-sponsors/add/", add_event_public_sponsor, name="add_event_public_sponsor"),
+    path("public-sponsors/<int:sponsor_id>/update/", update_event_public_sponsor,
+         name="update_event_public_sponsor"),
+    path("public-sponsors/<int:sponsor_id>/delete/", delete_event_public_sponsor,
+         name="delete_event_public_sponsor"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

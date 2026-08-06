@@ -41,6 +41,11 @@ from afc_auth.audit import set_audit
 # oversight. All gating goes through org_can / org_can_event so the owner/admin-bypass rules
 # stay in afc_organizers/permissions.py (single source of truth).
 from afc_organizers.permissions import org_can, org_can_event, is_platform_org_admin
+# The `public_sponsors` list both public detail builders below emit (owner 2026-08-05, item 26).
+# One serializer, shared with the write endpoints in that module, so the shape a page reads and
+# the shape a save returns can never drift. Safe to import at module level: views_public_sponsors
+# imports back from this file only INSIDE its functions, so there is no import cycle.
+from .views_public_sponsors import serialize_public_sponsors
 from afc_organizers.models import Organization
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -2132,6 +2137,10 @@ def create_event(request):
                 prize_currency=prize_currency,  # default USD (owner 2026-07-01)
                 prize_distribution=prize_distribution,
                 event_rules=request.data.get("event_rules", ""),
+                # Free-text "what this tournament is" (owner 2026-08-05, item 26). Sent by the
+                # create wizard's step 1 (Step1EventDetails) on both the admin and organizer
+                # flows; blank when the creator skips it, which every pre-item-26 event also is.
+                event_description=request.data.get("event_description", ""),
                 event_status=request.data.get("event_status", "upcoming"),
                 registration_link=request.data.get("registration_link", ""),
                 tournament_tier=request.data.get("tournament_tier", "tier_3"),
@@ -2525,6 +2534,11 @@ def duplicate_event(request, event_id):
             prizepool_cash_value=source.prizepool_cash_value,
             prize_distribution=source.prize_distribution,
             event_rules=source.event_rules,
+            # Config field, so it is copied (owner 2026-08-05, item 26). The event's PUBLIC
+            # SPONSORS are NOT: they are attached rows, and this clone deliberately copies Event
+            # columns only, exactly as it already skips SponsorEvent and StreamChannel (see the
+            # docstring above).
+            event_description=source.event_description,
             # Lifecycle RESET: a clone is always a fresh upcoming draft.
             event_status="upcoming",
             registration_link=source.registration_link,
@@ -3403,7 +3417,10 @@ def edit_event(request):
         "competition_type", "participant_type",
         "max_teams_or_players", "event_name", "event_mode",
         "event_status", "registration_link",
-        "event_rules", "is_draft", "is_public", "event_type"
+        # event_description (owner 2026-08-05, item 26) rides the plain update_field loop like
+        # event_rules: update_field only writes keys the request actually SENT, so an older client
+        # that does not know about the field can never blank an organizer's description.
+        "event_rules", "event_description", "is_draft", "is_public", "event_type"
     ]:
         update_field(field)
     # NOTE: tournament_tier is intentionally NOT in the loop above (owner 2026-06-30): it is set by
@@ -5007,6 +5024,17 @@ def get_event_details(request):
         # registration close + results (owner 2026-06-30 stage-over rule; consumed by EventDetailsWrapper).
         "your_team_stage_over": viewer_team_stage_over,
         "event_rules": event.event_rules,
+        # The organizer's own description of the event (owner 2026-08-05, item 26). Distinct from
+        # event_rules above: rules say what gets you disqualified, this says what the tournament
+        # IS. Localized just below with event_name/event_rules. The logged-out builder
+        # (get_event_details_not_logged_in) emits the same key, because the About block on the
+        # public page must render for a visitor who never signs in.
+        "event_description": event.event_description,
+        # Display-only sponsors: logos + links shown to EVERYONE, with nothing asked of the
+        # viewer (owner 2026-08-05, item 26). NOT the registration sponsor - the gate lives in
+        # afc_sponsors (EventSponsorship engagements) and in the legacy is_sponsored/sponsor_*
+        # fields further down, and neither is read here. See views_public_sponsors.py.
+        "public_sponsors": serialize_public_sponsors(event, request),
         # Read-time display status: "ongoing" once start_date+event_start_time has passed, else
         # "upcoming" (completed stays completed). See effective_event_status.
         "event_status": effective_event_status(event),
@@ -5102,8 +5130,8 @@ def get_event_details(request):
         "results_published": event.results_published,
     }
 
-    # i18n TRANSLATE-ON-READ (owner 2026-06-15): localize the two user-visible event copy fields
-    # (name + rules, both plain CharText) to the caller's locale (request.locale, from
+    # i18n TRANSLATE-ON-READ (owner 2026-06-15): localize the user-visible event copy fields
+    # (name + rules + description, all plain text) to the caller's locale (request.locale, from
     # afc_auth.locale_middleware via Accept-Language). localize_field overwrites event_data[key] with
     # the translation and, when a real translation happened, also writes event_name_en / event_rules_en
     # + sets translated=true so the event page can offer "Show original". Cache-first (TranslationCache)
@@ -5113,6 +5141,10 @@ def get_event_details(request):
     _locale = get_locale(request)
     localize_field(event_data, "event_name", event.event_name, _locale)
     localize_field(event_data, "event_rules", event.event_rules, _locale)
+    # event_description (owner 2026-08-05, item 26) rides the same path: it is organizer-written
+    # prose a French or Portuguese player must be able to read. A public SPONSOR's name is NOT
+    # translated - a brand is a brand in every language.
+    localize_field(event_data, "event_description", event.event_description, _locale)
 
     # ============================================================
     # REGISTERED COMPETITORS (SOLO ONLY)
@@ -5933,6 +5965,11 @@ def get_event_details_not_logged_in(request):
         # public Results/Structure view shows "Results not published yet". See results_hidden / set_results_visibility.
         "results_published": event.results_published,
         "event_rules": event.event_rules,
+        # Mirror of get_event_details (owner 2026-08-05, item 26). BOTH builders must emit these
+        # two keys or the About block and the sponsor strip vanish the moment a visitor is logged
+        # out, which is precisely the visitor they exist for.
+        "event_description": event.event_description,
+        "public_sponsors": serialize_public_sponsors(event, request),
         # Read-time display status (anon detail): mirror get_event_details so a started event shows
         # "ongoing" without waiting on the sweep. See effective_event_status.
         "event_status": effective_event_status(event),
@@ -6023,8 +6060,8 @@ def get_event_details_not_logged_in(request):
     }
 
     # i18n TRANSLATE-ON-READ (owner 2026-06-15): the public, logged-out mirror of get_event_details -
-    # localize the same two copy fields (event_name + event_rules) to the caller's locale
-    # (request.locale, from afc_auth.locale_middleware). localize_field adds the *_en companions +
+    # localize the same copy fields (event_name + event_rules + event_description) to the caller's
+    # locale (request.locale, from afc_auth.locale_middleware). localize_field adds the *_en companions +
     # translated=true when translated, for the "Show original" toggle. Cache-first + failure-safe.
     # Consumed by frontend app/(user)/tournaments/[slug]/page.tsx (logged-out path).
     from afc_auth.locale_middleware import get_locale
@@ -6032,6 +6069,7 @@ def get_event_details_not_logged_in(request):
     _locale = get_locale(request)
     localize_field(event_data, "event_name", event.event_name, _locale)
     localize_field(event_data, "event_rules", event.event_rules, _locale)
+    localize_field(event_data, "event_description", event.event_description, _locale)
 
     # ✅ KEEP registered competitors section (as you requested)
     registered = []
