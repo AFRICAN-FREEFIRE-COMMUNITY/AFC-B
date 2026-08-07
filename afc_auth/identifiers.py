@@ -69,6 +69,29 @@ LOGIN_IDENTIFIER_PRECEDENCE = (
     ("uid", "uid"),
 )
 
+# ── AND ONE RULE THAT OUTRANKS THE ORDER ABOVE: a VERIFIED account beats an unverified one ───────
+# On this model is_active IS the email-verified flag, and an is_active=False row is an abandoned
+# signup that never entered its code, has never logged in, and by register()'s own definition
+# "holds no real account data". Such a row has never proven ANY claim to the string it is sitting
+# on, so it does not get to outrank an account that has.
+#
+# THE SURPRISING HALF, stated plainly: an ACTIVE match WINS EVEN WHEN AN INACTIVE MATCH SITS ON A
+# HIGHER-PRECEDENCE FIELD. An unverified account whose EMAIL is the typed string loses to a
+# verified account merely NAMED that string. The field order only decides between candidates of
+# equal standing; verification is the stronger claim and is applied first.
+#
+# WHAT IT FIXES. 4 of the 10 live collisions have an unverified name-holder. Without this rule the
+# string resolved to that dead row and the real player typing their own UID was answered
+# "Your account is not confirmed. Please verify your email address." - about an account that was
+# never theirs. With it they reach their own account.
+#
+# IT ALSO CLOSES A SQUATTING VECTOR: signing up (unverified) on a string somebody else already uses
+# can no longer take that login route away from the verified owner, even transiently.
+#
+# It does NOT touch the single-match case: one match still resolves to itself whether or not it is
+# active, so somebody typing their OWN identifier on an unverified account still gets the genuine
+# "verify your email" path instead of a bare "invalid credentials".
+
 # Human wording for each column, for the "you cannot use that here" messages callers build.
 IDENTIFIER_LABELS = {
     "email": "email address",
@@ -107,16 +130,34 @@ def resolve_login_identifier(identifier):
     Matching is unchanged from the query this replaced: exact on username and uid, case-insensitive
     on email. No stripping is done, deliberately - trimming the input would silently change which
     strings match, and this is the login path.
+
+    TWO RULES, APPLIED IN THIS ORDER (see the constant block above for the full reasoning):
+      1. A VERIFIED (is_active) match beats an unverified one, whatever field each sits on.
+      2. Between candidates of equal standing, the field order decides: email, username, uid.
     """
     if not identifier:
         return None
 
     User = get_user_model()
+
+    # Walk the fields in precedence order, remembering the best UNVERIFIED candidate as we go. The
+    # first ACTIVE match short-circuits, so the common case (an ordinary account matched on email)
+    # is still a single indexed query; the extra lookups only happen when the best candidate so far
+    # is an abandoned unverified row, which is exactly when it is worth looking further.
+    best_unverified = None
     for _field, lookup in LOGIN_IDENTIFIER_PRECEDENCE:
         match = User.objects.filter(**{lookup: identifier}).first()
-        if match is not None:
+        if match is None:
+            continue
+        if match.is_active:
             return match
-    return None
+        if best_unverified is None:
+            best_unverified = match
+
+    # Nothing verified matched. Fall back to the highest-precedence unverified row, so a single
+    # unverified match still resolves to itself and the login view can answer "verify your email"
+    # rather than the misleading "invalid credentials".
+    return best_unverified
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

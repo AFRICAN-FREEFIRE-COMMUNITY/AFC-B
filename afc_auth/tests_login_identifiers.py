@@ -116,6 +116,52 @@ class PrecedenceTests(TestCase):
         )
 
 
+class VerifiedBeatsUnverifiedTests(TestCase):
+    """A verified account outranks an unverified one, and that is applied BEFORE the field order.
+
+    An is_active=False row is an abandoned signup that never entered its code. It has never proven
+    any claim to the string it is sitting on, so it does not get to outrank an account that has."""
+
+    def test_both_matches_active_means_the_field_order_still_decides(self):
+        """The case that keeps resolution deterministic: equal standing, so precedence rules."""
+        name_owner = make_user("9137457129", "nameowner@gmail.com")
+        make_user("Kinglarry21", "larry@gmail.com", uid="9137457129")
+        self.assertEqual(resolve_login_identifier("9137457129"), name_owner)
+
+    def test_an_active_match_beats_an_inactive_one_on_a_HIGHER_precedence_field(self):
+        """The surprising half, stated as a test.
+
+        The unverified account's EMAIL is the typed string, which is the top-precedence field. The
+        verified account is merely NAMED it, the middle field. Verification wins anyway."""
+        make_user("deadsignup", "contested@gmail.com", is_active=False)   # email, but unverified
+        verified = make_user("contested@gmail.com", "real@gmail.com")     # username, verified
+        self.assertEqual(resolve_login_identifier("contested@gmail.com"), verified)
+
+    def test_the_real_shape_of_the_four_affected_pairs(self):
+        """4 of the 10 live collisions: the name-holder is an abandoned unverified signup.
+
+        Before this rule the digits resolved to that dead row and the real player was told to
+        verify an email for an account that was never theirs."""
+        make_user("7766554433", "abandoned@gmail.com", is_active=False)
+        uid_owner = make_user("RealPlayer", "real@gmail.com", uid="7766554433")
+        self.assertEqual(resolve_login_identifier("7766554433"), uid_owner)
+
+    def test_a_lone_unverified_match_still_resolves_to_itself(self):
+        """So somebody typing their OWN identifier on an unverified account still gets the genuine
+        "verify your email" path, not a bare "invalid credentials"."""
+        pending = make_user("PendingPlayer", "pending@gmail.com", uid="1212121212",
+                            is_active=False)
+        for typed in ("pending@gmail.com", "PendingPlayer", "1212121212"):
+            self.assertEqual(resolve_login_identifier(typed), pending, f"{typed} should resolve")
+
+    def test_two_unverified_matches_fall_back_to_the_field_order(self):
+        """Nothing verified to prefer, so the highest-precedence candidate is returned rather than
+        nobody. Both are refused by the is_active check downstream either way."""
+        email_holder = make_user("someone", "both@gmail.com", is_active=False)
+        make_user("both@gmail.com", "other@gmail.com", is_active=False)
+        self.assertEqual(resolve_login_identifier("both@gmail.com"), email_holder)
+
+
 class UniqueColumnAssumptionTests(TestCase):
     """resolve_login_identifier uses .filter().first() per column and calls it deterministic.
 
@@ -172,6 +218,24 @@ class BackendTests(TestCase):
                                      ("9137457129", ""), (None, None)):
             resp = self.login(identifier, password)
             self.assertEqual(resp.status_code, 401, f"{identifier!r}/{password!r} should be a 401")
+
+    def test_a_uid_owner_reaches_their_OWN_account_when_the_name_holder_is_unverified(self):
+        """End to end through the login view for the 4 affected pairs.
+
+        Before prefer-active this returned 403 "Your account is not confirmed" about the abandoned
+        row. The player now signs in to the account that is actually theirs."""
+        make_user("7766554433", "abandoned@gmail.com", is_active=False)
+        make_user("RealPlayer", "real@gmail.com", uid="7766554433", password=OTHER_PASSWORD)
+
+        resp = self.login("7766554433", OTHER_PASSWORD)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["user"]["username"], "RealPlayer")
+
+    def test_an_unverified_user_typing_their_own_identifier_still_gets_the_verify_message(self):
+        make_user("PendingPlayer", "pending@gmail.com", is_active=False)
+        resp = self.login("PendingPlayer", PASSWORD)
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("not confirmed", resp.json()["message"])
 
     def test_login_by_each_identifier_when_there_is_no_collision(self):
         solo = make_user("SoloPlayer", "solo@gmail.com", uid="4242424242")
