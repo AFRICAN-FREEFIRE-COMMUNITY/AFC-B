@@ -40,6 +40,14 @@ from .views_two_factor import (
     two_factor_disable,
     two_factor_regenerate_backup_codes,
 )
+# Admin identity repair (owner 2026-08-07): head_admin/super_admin fixing a user's Free Fire UID or
+# their account email when the user cannot. See views_admin_identity.py for the gate, the audit
+# fields, and why an admin-set email arrives verified.
+from .views_admin_identity import (
+    admin_user_identity,
+    admin_set_user_uid,
+    admin_set_user_email,
+)
 
 
 urlpatterns = [
@@ -113,6 +121,15 @@ urlpatterns = [
     # Consumed by frontend profile settings "Change email" dialog + admin player-detail "Edit email".
     path('request-email-change/', request_email_change, name='request_email_change'),
     path('confirm-email-change/', confirm_email_change, name='confirm_email_change'),
+    # ── Admin identity repair (owner 2026-08-07), head_admin / super_admin ONLY ──────────────
+    # Fixing what a user cannot fix themselves: a wrong Free Fire UID (unique column, and frozen
+    # for the player's own edits while they are in a live event) and a wrong/dead account email
+    # (the self-serve flow above needs them signed in AND able to read the new inbox). Both write
+    # an AuditLog row carrying who, whom, before, after and a MANDATORY typed reason.
+    # Consumed by the admin player-detail page (frontend app/(a)/a/players/[id]/page.tsx).
+    # set-user-email keeps its original path so the existing dialog kept working across the move.
+    path('admin/user-identity/<int:user_id>/', admin_user_identity, name='admin_user_identity'),
+    path('admin/set-user-uid/', admin_set_user_uid, name='admin_set_user_uid'),
     path('admin/set-user-email/', admin_set_user_email, name='admin_set_user_email'),
     path('edit-profile/', edit_profile, name='edit_profile'),
     path('get-user-profile/', get_user_profile, name='get_user_profile'),

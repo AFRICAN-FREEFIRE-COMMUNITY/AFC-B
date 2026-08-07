@@ -475,6 +475,44 @@ COPY = {
         },
     },
 
+    # ── afc_auth: email changed BY SUPPORT (to old + new address) ──
+    # Rendered by afc_auth/views.py email_admin_email_changed, sent by
+    # afc_auth/views_admin_identity.py admin_set_user_email. GOLD accent: it is security mail, not a
+    # confirmation of something the reader just did.
+    #
+    # This is a separate template from "email_changed" because the reader did NOT make this change.
+    # They may be reading it in an inbox they had given up on, so the copy names who acted, what it
+    # means for signing in, and the two follow-ups they now own: sign in again (every session was
+    # ended) and switch two-factor back on when it had to come down. The 2FA line is only rendered
+    # when that actually happened. The OLD address is never named, because this same body goes to the
+    # new inbox as well.
+    "admin_email_changed": {
+        "en": {
+            "heading": "AFC support changed your account email",
+            "intro": "The email on {username}'s AFC account is now {new_email}, changed on {when} by AFC support. Sign in with that address from now on.",
+            "signed_out": "Every device signed in to this account was signed out, so you will need to sign in again.",
+            "warning": "If you did not ask AFC for this, contact {support} straight away. Whoever holds that address can now reset your password.",
+            "two_factor": "Two-factor authentication was switched off to make this change. Turn it back on from your security settings once you are signed in.",
+            "support_label": "support",
+        },
+        "fr": {
+            "heading": "Le support AFC a modifié l'adresse e-mail de votre compte",
+            "intro": "L'adresse e-mail du compte AFC de {username} est désormais {new_email}, modifiée le {when} par le support AFC. Connectez-vous avec cette adresse à partir de maintenant.",
+            "signed_out": "Tous les appareils connectés à ce compte ont été déconnectés, vous devrez donc vous reconnecter.",
+            "warning": "Si vous n'avez rien demandé au support AFC, contactez {support} sans attendre. La personne qui détient cette adresse peut désormais réinitialiser votre mot de passe.",
+            "two_factor": "La double authentification a été désactivée pour effectuer ce changement. Réactivez-la dans vos paramètres de sécurité dès que vous êtes reconnecté.",
+            "support_label": "le support",
+        },
+        "pt": {
+            "heading": "O suporte da AFC alterou o e-mail da sua conta",
+            "intro": "O e-mail da conta AFC de {username} é agora {new_email}, alterado em {when} pelo suporte da AFC. A partir de agora, inicie sessão com esse endereço.",
+            "signed_out": "As sessões em todos os dispositivos foram terminadas, por isso terá de iniciar sessão novamente.",
+            "warning": "Se não pediu isto ao suporte da AFC, contacte {support} de imediato. Quem tiver esse endereço passa a poder redefinir a sua palavra-passe.",
+            "two_factor": "A autenticação de dois fatores foi desativada para permitir esta alteração. Volte a ativá-la nas definições de segurança assim que iniciar sessão.",
+            "support_label": "o suporte",
+        },
+    },
+
     # ── afc_shop: order lifecycle + shared summary labels ──
     # All three order emails render the shared summary card (items, totals, delivery address)
     # between the intro and the closing line, so the prose never repeats what the card already
