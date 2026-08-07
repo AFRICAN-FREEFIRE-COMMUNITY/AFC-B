@@ -418,6 +418,8 @@ COLUMN_HEADER_LABELS = {
     "damage": "DAMAGE",
     "assists": "ASSISTS",
     "mvp_count": "MVPS",
+    # The map a booyah was won on (owner 2026-08-06); only booyah rows carry it.
+    "match_map": "MAP",
     # LIVE-only stats (a design may place them; they get a label too rather than an unlabelled column).
     "deaths": "DEATHS", "knockdowns": "KNOCKS", "headshots": "HEADSHOTS",
     "most_used_weapon": "WEAPON", "survival_time": "SURVIVAL",
