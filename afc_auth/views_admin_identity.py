@@ -52,6 +52,9 @@ from rest_framework.response import Response
 
 from . import two_factor
 from .audit import set_audit
+# The ONE place the "a value may not be two different login identifiers" rule lives, shared with
+# register / edit_profile / the Google SSO username generator in views.py (see identifiers.py).
+from .identifiers import IDENTIFIER_LABELS, cross_field_conflict
 from .models import (
     AdminHistory,
     EmailChangeRequest,
@@ -91,29 +94,25 @@ UID_MAX_LENGTH = 15
 REASON_MAX_LENGTH = 200
 
 
-def _login_ambiguity_clash(target, value):
-    """The account (if any) whose USERNAME is `value`, which would make `value` an ambiguous login.
+def _login_ambiguity_clash(target, value, field):
+    """The account (if any) already using `value` as a DIFFERENT kind of login identifier.
 
-    WHY THIS EXISTS. Sign-in resolves ONE identifier against three columns at once
-    (afc_auth/backends.py EmailOrUsernameModelBackend):
+    Thin wrapper over the shared guard in afc_auth/identifiers.py so this module, register,
+    edit_profile and the Google SSO username generator all enforce ONE rule from ONE place.
+    Returns (holder, held_as) or (None, None); `field` is the column being written here.
 
-        User.objects.get(Q(username=x) | Q(uid=x) | Q(email__iexact=x))
+    WHY IT EXISTS. Sign-in resolves ONE typed identifier against email, username and uid
+    (identifiers.resolve_login_identifier). If account A's uid equals account B's username, that
+    string is ambiguous, and before the resolver was ordered it refused the login for BOTH of them.
+    Uniqueness on each column does NOT catch this: the collision is ACROSS columns. In the live
+    table 10 accounts already sit in exactly that state (e.g. uid "9137457129" against another
+    player NAMED "9137457129"), and 106 usernames are well-formed email addresses. Since the whole
+    point of this module is to END a lockout, it must not be able to create one.
 
-    so if account A's uid (or email) equals account B's username, that string matches TWO rows,
-    .get() raises MultipleObjectsReturned, and the backend refuses the login - for BOTH accounts,
-    not just one. Uniqueness on the uid and email columns does NOT catch this: the collision is
-    ACROSS columns.
-
-    This is not hypothetical. In the live table 10 accounts already sit in exactly that state
-    (their uid is another player's username, e.g. uid "9137457129" against the username
-    "Kinglarry21"), and 106 usernames are well-formed email addresses. Since the whole point of
-    this module is to END a lockout, it must not be able to create one, so both writes call this
-    and refuse rather than hand the admin a fresh pair of locked-out users.
-
-    Matching mirrors the backend deliberately: `username=` (not __iexact) because that is the exact
-    lookup sign-in performs, and MySQL's case-insensitive collation makes both behave the same way.
+    Unlike the player-facing surfaces, the messages built from this DO name the holder: an admin
+    needs to know which account to go and fix, and is already trusted with that.
     """
-    return User.objects.exclude(pk=target.pk).filter(username=value).first()
+    return cross_field_conflict(value, field, exclude_pk=target.pk)
 
 
 def _reason(request):
@@ -324,14 +323,14 @@ def admin_set_user_uid(request):
                 {"message": f"That UID is already on {clash.username}'s account. Remove it there first."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # Cross-column collision: this UID is somebody's in-game NAME, and sign-in matches a typed
-        # identifier against username/uid/email together. Saving it would lock BOTH accounts out.
-        # See _login_ambiguity_clash - 116 accounts have an all-digits username, so a UID landing on
-        # one is a live possibility, not a theoretical one.
-        name_clash = _login_ambiguity_clash(target, new_uid)
+        # Cross-column collision: this UID is somebody's in-game NAME (or email), and sign-in
+        # matches a typed identifier against all three together. Saving it would make that string
+        # ambiguous. See _login_ambiguity_clash - 116 accounts have an all-digits username, so a
+        # UID landing on one is a live possibility, not a theoretical one.
+        name_clash, held_as = _login_ambiguity_clash(target, new_uid, "uid")
         if name_clash:
             return Response(
-                {"message": f"That UID is {name_clash.username}'s in-game name, and players can sign in with their name or their UID. Using it here would lock both accounts out."},
+                {"message": f"That UID is {name_clash.username}'s {IDENTIFIER_LABELS[held_as]}, and players can sign in with their name, their email or their UID. Using it here would lock both accounts out."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
     elif not previous_uid:
@@ -482,11 +481,11 @@ def admin_set_user_email(request):
                         status=status.HTTP_400_BAD_REQUEST)
     # Same cross-column trap as the UID (see _login_ambiguity_clash): 106 accounts have a username
     # that IS a well-formed email address, so an address can collide with somebody's in-game name
-    # even when no account holds it as an email. Sign-in would then match two rows and refuse both.
-    name_clash = _login_ambiguity_clash(target, new_email)
+    # even when no account holds it as an email. That string would then be ambiguous at sign-in.
+    name_clash, held_as = _login_ambiguity_clash(target, new_email, "email")
     if name_clash:
         return Response(
-            {"message": f"That address is {name_clash.username}'s in-game name, and players can sign in with their name or their email. Using it here would lock both accounts out."},
+            {"message": f"That address is {name_clash.username}'s {IDENTIFIER_LABELS[held_as]}, and players can sign in with their name, their email or their UID. Using it here would lock both accounts out."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

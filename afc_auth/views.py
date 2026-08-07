@@ -23,6 +23,12 @@ from .models import canonical_profile  # dup-safe UserProfile resolution (see mo
 # set_audit lets these admin views supply a SPECIFIC human audit summary (entity name + before/after)
 # that the AuditLogMiddleware records instead of its generic "Edited ... #id" fallback.
 from afc_auth.audit import set_audit
+# Login-identifier rules (owner 2026-08-07). cross_field_conflict is the guard that stops one value
+# being written into two different login columns (email / username / uid) across two accounts, which
+# is what made a typed string ambiguous at sign-in. Used by register, edit_profile and
+# _unique_username_from_email below; the matching resolver lives in the same module and is consumed
+# by afc_auth/backends.py.
+from afc_auth.identifiers import anonymous_conflict_message, cross_field_conflict
 # i18n Phase 0 (owner 2026-06-15): map the login geo country to a default language for first-time users.
 # Used in login() (auto-detect) and read alongside User.language in the auth payloads below.
 from afc_auth.language_utils import language_for_country
@@ -1252,13 +1258,24 @@ def _unique_username_from_email(email):
     Google SSO users never chose a username, but the User model requires a unique
     one. Slugify the email local-part to [a-z0-9_], then append -2, -3, ... until
     it is free. Called only by google_auth (below).
+
+    CROSS-COLUMN (owner 2026-08-07): "free" now means free across ALL THREE login columns, not
+    just username. The slug keeps [a-z0-9_], so an address like 9137457129@gmail.com produces the
+    all-digits username "9137457129" - which can land exactly on another player's Free Fire UID.
+    116 live accounts already have an all-digits username, so this generator is a standing source
+    of the very collision afc_auth/identifiers.py exists to stop. A candidate that clashes with
+    anyone's email or uid is skipped the same way a taken username is, so the -2, -3 suffix loop
+    walks past it instead of minting an ambiguous identifier nobody typed.
     """
     import re as _re
     base = _re.sub(r"[^a-z0-9_]", "", email.split("@")[0].lower()) or "player"
     base = base[:40]
     candidate = base
     n = 1
-    while User.objects.filter(username=candidate).exists():
+    while (
+        User.objects.filter(username=candidate).exists()
+        or cross_field_conflict(candidate, "username")[0] is not None
+    ):
         n += 1
         suffix = f"-{n}"
         candidate = (base[: 40 - len(suffix)]) + suffix
@@ -1502,6 +1519,25 @@ def signup(request):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        # ── CROSS-COLUMN conflict (owner 2026-08-07) ──
+        # The three checks above each compare a field against ITS OWN column, which is what the DB
+        # unique constraints cover. They cannot see the other half of the problem: sign-in resolves
+        # one typed string against email OR username OR uid together, so a value that is one row's
+        # in-game name and another row's UID is ambiguous even though neither column has a
+        # duplicate. THIS ENDPOINT IS WHERE ALL TEN LIVE COLLISIONS WERE BORN - people typing their
+        # Free Fire UID into the in-game name box at signup, next to a player who owns that number.
+        # Same verified-only rule as above: an ACTIVE holder is refused outright, an unverified one
+        # is an abandoned signup and gets swept by the takeover below.
+        for _value, _field in ((in_game_name, "username"), (email, "email"), (uid, "uid")):
+            _holder, _held_as = cross_field_conflict(_value, _field)
+            if _holder and _holder.is_active:
+                # Never names the holder: this endpoint is public, so saying whose account it is
+                # would confirm an account's existence to anyone who cares to probe.
+                return Response(
+                    {"message": anonymous_conflict_message(_field, _held_as)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         # ── UNVERIFIED TAKEOVER (the core unblock) ──
         #
         # If the only thing holding the in-game name / email / UID is an UNVERIFIED user
@@ -1514,12 +1550,18 @@ def signup(request):
         # rejected above and never reaches here, so a takeover can never wipe a real account
         # or let an attacker hijack someone's confirmed username/email. The CASCADE on
         # UserProfile (and any other FK to this user) cleans up the stale profile too.
-        stale_unverified = User.objects.filter(is_active=False).filter(
-            Q(username=in_game_name) | Q(email=email)
-        )
-        if uid:
-            stale_unverified = stale_unverified | User.objects.filter(is_active=False, uid=uid)
-        stale_unverified = stale_unverified.distinct()
+        #
+        # CROSS-COLUMN (owner 2026-08-07): the sweep now matches each incoming value against ALL
+        # THREE login columns, not just its own. An abandoned signup that typed a UID into the
+        # in-game name box is holding that number hostage against the player who actually owns it,
+        # and that is exactly how the ten live collisions were created. Same guarantee as before:
+        # only is_active=False rows are ever touched, and an ACTIVE holder was already rejected
+        # above (both same-column and cross-column), so this can never wipe a real account.
+        _incoming = [v for v in (in_game_name, email, uid) if v]
+        _held = Q()
+        for _value in _incoming:
+            _held |= Q(username=_value) | Q(email__iexact=_value) | Q(uid=_value)
+        stale_unverified = User.objects.filter(is_active=False).filter(_held).distinct()
 
         # `country` comes from a best-effort ipinfo lookup that can fail or return None;
         # the column is NOT NULL, so coalesce to "" to avoid a spurious IntegrityError.
@@ -3016,7 +3058,7 @@ def edit_profile(request):
 
     if User.objects.exclude(pk=user.pk).filter(email=email).exists():
         return Response({"message": "Email is already registered to another user."}, status=status.HTTP_400_BAD_REQUEST)
-    
+
     is_valid, message = is_valid_email(email)
 
     if not is_valid:
@@ -3024,6 +3066,24 @@ def edit_profile(request):
 
     if User.objects.exclude(pk=user.pk).filter(username=in_game_name).exists():
         return Response({"message": "In-game name is already taken."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # ── CROSS-COLUMN conflict (owner 2026-08-07) ──
+    # The three checks above compare each field against its own column only, which is all the DB
+    # unique constraints cover. Sign-in resolves one typed string against email OR username OR uid
+    # together (afc_auth/identifiers.py), so a value that is somebody else's in-game name cannot be
+    # saved here as this user's UID, or vice versa, without making that string ambiguous at login.
+    # exclude_pk is this user, so keeping your own values, or setting a UID equal to your OWN name,
+    # is not a conflict. No is_active carve-out here: unlike register there is no takeover path to
+    # sweep an abandoned row, so an unresolvable clash must simply be refused.
+    for _value, _field in ((in_game_name, "username"), (email, "email"), (uid, "uid")):
+        _holder, _held_as = cross_field_conflict(_value, _field, exclude_pk=user.pk)
+        if _holder:
+            # Does not name the holder: this is a normal player editing their own profile, and
+            # naming another account would confirm its existence to them.
+            return Response(
+                {"message": anonymous_conflict_message(_field, _held_as)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     # i18n Phase 0: the manual language override the user picks in the profile settings selector.
     # The frontend posts "language" as one of "en"/"fr"/"pt". We validate against the model's
