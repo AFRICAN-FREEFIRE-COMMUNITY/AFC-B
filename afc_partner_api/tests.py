@@ -1665,3 +1665,341 @@ class PartnerMediaTextDesignTests(TestCase):
         # The real names on the fixture users must never appear anywhere in the output.
         self.assertNotIn("Real Name One", blob)
         self.assertNotIn("Real Name Two", blob)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Backlog item 8 audit (2026-08-06 / 2026-08-07) - key lifecycle + the auth oracle
+# ──────────────────────────────────────────────────────────────────────────────
+# Everything below was written FROM a defect found by exercising the running API with a
+# real key, not from reading the code. Each test names the behaviour it pins down, and
+# every one of them fails against the code as it stood before this batch.
+#
+#   1. THE PREFIX ORACLE (auth.py). An unauthenticated caller must not be able to learn
+#      whether a key prefix exists. The wording was unified once already, but the EXPIRY
+#      check still ran BEFORE the constant-time secret compare, so a guessed prefix plus a
+#      junk secret answered "Key expired." for an expired key and "Unknown or revoked key."
+#      for everything else. Confirmed live against the running server before the fix. The
+#      tests here assert that every dead end reads identically to a caller holding no
+#      secret, and that the informative messages stay available to the real key holder.
+#
+#   2. KEY EXPIRY AT ISSUE TIME (views_admin._parse_expires_at). PartnerApiKey.expires_at
+#      was enforced by auth but nothing could set it, so every issued key lived forever.
+#      These pin the accepted shapes (bare date -> END of that day, ISO-8601 timestamp),
+#      the rejections (past, malformed, impossible, non-string), and the default (omitted
+#      -> never expires), including the two shapes that used to 500 rather than 400.
+#
+#   3. HARD DELETE (views_admin.delete_key). The endpoint shipped without a test. Deleting
+#      a key must remove the row AND stop the credential working immediately, and deleting
+#      a key that is already gone must 404 rather than 500.
+#
+#   4. EDIT ATOMICITY (views_admin._edit_partner). A body mixing a valid toggle with an
+#      invalid scope list used to return 400 with the toggle ALREADY committed: the admin
+#      is told the change was rejected while the partner silently gained a field. The test
+#      sends exactly that body and asserts nothing moved.
+#
+# Consumed surfaces: the admin partner-detail Keys tab (frontend app/(a)/a/partners/[slug])
+# issues, revokes and deletes; every partner read endpoint authenticates through auth.py.
+# ──────────────────────────────────────────────────────────────────────────────
+class PartnerKeyLifecycleAuditTests(TestCase):
+    def setUp(self):
+        import datetime
+
+        from afc_auth.models import Roles, SessionToken, User, UserRoles
+
+        self.rf = RequestFactory()
+        self.partner = Partner.objects.create(name="Broadcast Co", slug="broadcast-co")
+
+        # An AFC head_admin, forged the same way PartnerAdminEndpointTests does it.
+        role, _ = Roles.objects.get_or_create(role_name="head_admin")
+        self.admin = User.objects.create_user(
+            username="audit_staff", email="audit@x.com", password="x",
+            full_name="Audit Staff", role="admin")
+        UserRoles.objects.create(user=self.admin, role=role)
+        self.admin_token = SessionToken.objects.create(
+            user=self.admin, token="partner-audit-token-1234567890",
+            expires_at=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=1)).token
+
+    def _auth(self):
+        return {"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"}
+
+    def _req(self, key):
+        return self.rf.get("/api/v1/partner/events/", HTTP_X_API_KEY=key or "")
+
+    def _issue_row(self, **kwargs):
+        """Create a key row directly, returning (plaintext, row).
+
+        Used only where a test needs a state the admin endpoint deliberately refuses to
+        create for it, i.e. an ALREADY-expired key."""
+        full, prefix, h = auth.generate_key()
+        row = PartnerApiKey.objects.create(
+            partner=self.partner, key_prefix=prefix, key_hash=h, **kwargs)
+        return full, row
+
+    @staticmethod
+    def _forge_secret(full_key):
+        """Same prefix, wrong secret: what a caller who guessed a prefix would send."""
+        ns, prefix, _secret = full_key.split("_")
+        return f"{ns}_{prefix}_{'0' * 48}"
+
+    # ── 1. the prefix oracle ──────────────────────────────────────────────────
+    def test_expired_key_message_is_unreachable_without_the_real_secret(self):
+        # THE REGRESSION THIS CLASS EXISTS FOR. Before the fix the expiry check ran ahead of
+        # compare_digest, so this forged credential was answered "Key expired." - confirming
+        # to an unauthenticated caller that the guessed prefix names a real key.
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        full, _row = self._issue_row(expires_at=timezone.now() - timedelta(days=1))
+        with self.assertRaises(auth.PartnerAuthError) as ctx:
+            auth.authenticate_partner(self._req(self._forge_secret(full)))
+        self.assertEqual(str(ctx.exception), auth.UNAUTHENTICATED_MESSAGE)
+
+    def test_suspended_partner_message_is_unreachable_without_the_real_secret(self):
+        # The sibling of the test above: "Partner suspended." is equally a statement about a
+        # key that exists, so it has to sit behind the same compare.
+        full, _row = self._issue_row()
+        Partner.objects.filter(pk=self.partner.pk).update(status="suspended")
+        with self.assertRaises(auth.PartnerAuthError) as ctx:
+            auth.authenticate_partner(self._req(self._forge_secret(full)))
+        self.assertEqual(str(ctx.exception), auth.UNAUTHENTICATED_MESSAGE)
+
+    def test_every_dead_end_reads_identically_to_a_caller_with_no_secret(self):
+        # Unknown prefix, revoked key, and a known prefix with a wrong secret must be one
+        # indistinguishable answer, or the wording itself becomes the enumeration tool.
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        live_full, _live = self._issue_row()
+        revoked_full, revoked = self._issue_row()
+        revoked.status = "revoked"
+        revoked.save(update_fields=["status"])
+        expired_full, _expired = self._issue_row(
+            expires_at=timezone.now() - timedelta(days=1))
+
+        messages = set()
+        for candidate in (
+            "afcp_dead_" + "0" * 48,                    # a prefix that was never issued
+            self._forge_secret(live_full),              # real prefix, wrong secret
+            revoked_full,                               # a revoked key, in full
+            self._forge_secret(revoked_full),           # revoked prefix, wrong secret
+            self._forge_secret(expired_full),           # expired prefix, wrong secret
+        ):
+            with self.assertRaises(auth.PartnerAuthError) as ctx:
+                auth.authenticate_partner(self._req(candidate))
+            messages.add(str(ctx.exception))
+        self.assertEqual(messages, {auth.UNAUTHENTICATED_MESSAGE})
+
+    def test_the_real_holder_still_learns_why_the_key_stopped_working(self):
+        # The flip side of the oracle fix: hiding the reason from strangers must not hide it
+        # from the partner. Someone presenting the CORRECT key still gets the specific cause,
+        # which is what makes a support ticket answerable in one round trip.
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        expired_full, _row = self._issue_row(expires_at=timezone.now() - timedelta(days=1))
+        with self.assertRaises(auth.PartnerAuthError) as ctx:
+            auth.authenticate_partner(self._req(expired_full))
+        self.assertEqual(str(ctx.exception), "Key expired.")
+
+        suspended_full, _row2 = self._issue_row()
+        Partner.objects.filter(pk=self.partner.pk).update(status="suspended")
+        with self.assertRaises(auth.PartnerAuthError) as ctx:
+            auth.authenticate_partner(self._req(suspended_full))
+        self.assertEqual(str(ctx.exception), "Partner suspended.")
+
+    def test_an_expired_key_is_never_stamped_as_used(self):
+        # last_used_at is an audit trail of ACCEPTED calls. A refused request must not write
+        # to it, or "when did this key last work" stops being answerable.
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        full, row = self._issue_row(expires_at=timezone.now() - timedelta(days=1))
+        with self.assertRaises(auth.PartnerAuthError):
+            auth.authenticate_partner(self._req(full))
+        row.refresh_from_db()
+        self.assertIsNone(row.last_used_at)
+
+    # ── 2. expiry set at issue time ───────────────────────────────────────────
+    def _issue_via_endpoint(self, body):
+        return self.client.post(
+            "/partners/admin/broadcast-co/keys/", body,
+            content_type="application/json", **self._auth())
+
+    def test_bare_date_expiry_lands_at_the_end_of_that_day(self):
+        # "Expires on the 9th" has to mean usable THROUGH the 9th. Midnight would silently
+        # cost a partner the last day of a tournament weekend.
+        resp = self._issue_via_endpoint({"expires_at": "2030-08-09"})
+        self.assertEqual(resp.status_code, 201)
+        row = PartnerApiKey.objects.get(key_id=resp.json()["key"]["key_id"])
+        self.assertEqual(
+            (row.expires_at.year, row.expires_at.month, row.expires_at.day,
+             row.expires_at.hour, row.expires_at.minute, row.expires_at.second),
+            (2030, 8, 9, 23, 59, 59))
+
+    def test_iso_timestamp_expiry_is_kept_to_the_minute(self):
+        resp = self._issue_via_endpoint({"expires_at": "2030-12-31T18:30:00Z"})
+        self.assertEqual(resp.status_code, 201)
+        row = PartnerApiKey.objects.get(key_id=resp.json()["key"]["key_id"])
+        self.assertEqual((row.expires_at.hour, row.expires_at.minute), (18, 30))
+
+    def test_omitted_expiry_means_the_key_never_expires(self):
+        resp = self._issue_via_endpoint({"label": "no expiry"})
+        self.assertEqual(resp.status_code, 201)
+        self.assertIsNone(
+            PartnerApiKey.objects.get(key_id=resp.json()["key"]["key_id"]).expires_at)
+        self.assertIsNone(resp.json()["key"]["expires_at"])
+
+    def test_blank_expiry_means_the_key_never_expires(self):
+        # The admin form submits "" for an untouched date input, which must read as "none"
+        # rather than as a malformed value.
+        resp = self._issue_via_endpoint({"expires_at": ""})
+        self.assertEqual(resp.status_code, 201)
+        self.assertIsNone(
+            PartnerApiKey.objects.get(key_id=resp.json()["key"]["key_id"]).expires_at)
+
+    def test_past_expiry_is_refused_rather_than_minting_a_dead_key(self):
+        resp = self._issue_via_endpoint({"expires_at": "2020-01-01"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(PartnerApiKey.objects.count(), 0)   # nothing was created
+
+    def test_impossible_and_malformed_expiries_are_400_not_500(self):
+        # "2026-02-31" is well SHAPED but is not a real date: Django's parse_date raises
+        # ValueError on it rather than returning None, which used to escape as a 500 debug
+        # page - crashing the admin's save and leaking internals on the way out.
+        for bad in ("2026-02-31", "next tuesday", "31/12/2030", 12345, {"y": 2030}, []):
+            with self.subTest(value=bad):
+                resp = self._issue_via_endpoint({"expires_at": bad})
+                self.assertEqual(resp.status_code, 400)
+        self.assertEqual(PartnerApiKey.objects.count(), 0)
+
+    def test_an_expiring_key_works_until_it_does_not(self):
+        # End to end through the credential path: issue with a future expiry, authenticate,
+        # move the clock past it by rewriting the column, authenticate again.
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        full = self._issue_via_endpoint({"expires_at": "2030-08-09"}).json()["api_key"]
+        partner, _key = auth.authenticate_partner(self._req(full))
+        self.assertEqual(partner.partner_id, self.partner.partner_id)
+
+        PartnerApiKey.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+        with self.assertRaises(auth.PartnerAuthError):
+            auth.authenticate_partner(self._req(full))
+
+    # ── 3. hard delete ────────────────────────────────────────────────────────
+    def test_delete_removes_the_row_and_kills_the_credential(self):
+        full = self._issue_via_endpoint({"label": "doomed"}).json()["api_key"]
+        key_id = PartnerApiKey.objects.get().key_id
+        # It authenticates before the delete, so the failure afterwards can only be the delete.
+        auth.authenticate_partner(self._req(full))
+
+        resp = self.client.delete(
+            f"/partners/admin/keys/{key_id}/delete/", **self._auth())
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(PartnerApiKey.objects.filter(key_id=key_id).exists())
+        with self.assertRaises(auth.PartnerAuthError):
+            auth.authenticate_partner(self._req(full))
+
+    def test_deleting_a_key_that_is_already_gone_is_404(self):
+        resp = self.client.delete("/partners/admin/keys/999999/delete/", **self._auth())
+        self.assertEqual(resp.status_code, 404)
+
+    def test_delete_requires_a_partner_admin(self):
+        # The destructive endpoint must sit behind the same gate as everything else: a
+        # missing token is 400, a bad one 401, and neither may remove the row.
+        self._issue_via_endpoint({})
+        key_id = PartnerApiKey.objects.get().key_id
+        self.assertEqual(
+            self.client.delete(f"/partners/admin/keys/{key_id}/delete/").status_code, 400)
+        self.assertEqual(
+            self.client.delete(f"/partners/admin/keys/{key_id}/delete/",
+                               HTTP_AUTHORIZATION="Bearer nonsense").status_code, 401)
+        self.assertTrue(PartnerApiKey.objects.filter(key_id=key_id).exists())
+
+    def test_revoked_key_stays_in_the_list_but_a_deleted_one_does_not(self):
+        # The difference the admin UI promises: revoke keeps the audit row ("who had access
+        # last March"), delete removes it. Both stop the credential dead.
+        revoked_full = self._issue_via_endpoint({"label": "revoked"}).json()["api_key"]
+        deleted_full = self._issue_via_endpoint({"label": "deleted"}).json()["api_key"]
+        revoked_id = PartnerApiKey.objects.get(label="revoked").key_id
+        deleted_id = PartnerApiKey.objects.get(label="deleted").key_id
+
+        self.client.post(f"/partners/admin/keys/{revoked_id}/revoke/", {},
+                         content_type="application/json", **self._auth())
+        self.client.delete(f"/partners/admin/keys/{deleted_id}/delete/", **self._auth())
+
+        listed = self.client.get(
+            "/partners/admin/broadcast-co/", **self._auth()).json()["keys"]
+        by_id = {k["key_id"]: k for k in listed}
+        self.assertIn(revoked_id, by_id)
+        self.assertEqual(by_id[revoked_id]["status"], "revoked")
+        self.assertNotIn(deleted_id, by_id)
+        for dead in (revoked_full, deleted_full):
+            with self.assertRaises(auth.PartnerAuthError):
+                auth.authenticate_partner(self._req(dead))
+
+    # ── 4. edit atomicity ─────────────────────────────────────────────────────
+    def test_a_rejected_edit_writes_nothing_at_all(self):
+        # The exact body that used to half-apply: a valid toggle next to a scope value of the
+        # wrong type. The 400 has to mean nothing changed, on a permissions surface above all.
+        self.partner.include_damage = True
+        self.partner.save(update_fields=["include_damage"])
+
+        resp = self.client.patch(
+            "/partners/admin/broadcast-co/",
+            {"include_damage": False, "allowed_events": "130"},
+            content_type="application/json", **self._auth())
+        self.assertEqual(resp.status_code, 400)
+        self.partner.refresh_from_db()
+        self.assertTrue(self.partner.include_damage)
+
+    def test_a_rejected_edit_writes_nothing_when_the_bad_key_is_an_organization_list(self):
+        resp = self.client.patch(
+            "/partners/admin/broadcast-co/",
+            {"can_read_events": True, "allowed_organizations": {"id": 3}},
+            content_type="application/json", **self._auth())
+        self.assertEqual(resp.status_code, 400)
+        self.partner.refresh_from_db()
+        self.assertFalse(self.partner.can_read_events)
+
+    def test_an_unknown_field_is_rejected_before_any_valid_sibling_is_written(self):
+        resp = self.client.patch(
+            "/partners/admin/broadcast-co/",
+            {"can_read_teams": True, "status": "active"},
+            content_type="application/json", **self._auth())
+        self.assertEqual(resp.status_code, 400)
+        self.partner.refresh_from_db()
+        self.assertFalse(self.partner.can_read_teams)
+
+    def test_clearing_a_scope_list_still_works(self):
+        # The guard must not have broken the legitimate "empty the multiselect" path: the FE
+        # sends [] (and a null for a cleared field), both of which mean "remove every grant".
+        from afc_tournament_and_scrims.models import Event
+
+        ev = Event.objects.create(
+            event_name="Audit Open", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=12, event_mode="virtual",
+            start_date="2026-01-01", end_date="2026-01-02",
+            registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+            prizepool="100", event_rules="-", event_status="completed",
+            registration_link="https://x", number_of_stages=1, organization=None)
+        self.partner.allowed_events.set([ev.pk])
+
+        resp = self.client.patch(
+            "/partners/admin/broadcast-co/", {"allowed_events": []},
+            content_type="application/json", **self._auth())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.partner.allowed_events.count(), 0)
+
+        self.partner.allowed_events.set([ev.pk])
+        resp = self.client.patch(
+            "/partners/admin/broadcast-co/", {"allowed_events": None},
+            content_type="application/json", **self._auth())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.partner.allowed_events.count(), 0)

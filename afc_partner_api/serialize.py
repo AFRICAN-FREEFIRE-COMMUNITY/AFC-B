@@ -224,7 +224,8 @@ def team_status(tt, played_match_count):
     partners have to switch on. An unrecognised status therefore degrades into the derived states
     rather than inventing a new contract value.
 
-    Documented for partners in WEBSITE/PARTNER_API.md ("Team participation status"). The values
+    Documented for partners in backend/PARTNER_API.md ("Team participation status") and on the
+    public guide page (frontend app/(root)/partners/api). The values
     are part of the public API contract: renaming one breaks every integration reading it, so add
     a new value rather than repurposing an existing one.
     """
