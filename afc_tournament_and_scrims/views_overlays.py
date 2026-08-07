@@ -395,10 +395,21 @@ def _design_look(design_id, request):
 
 
 def _booyah_payload(event, config, request):
-    """The design-templated booyah banner's extras (owner 2026-07-02): the picked design's look +
-    the WINNING TEAM'S ROSTER (player names + esport images) so the banner can show the players of
-    the booyah team, not just the team name/logo. Roster resolves from config.team_name against the
-    event's registered teams (works for manual, auto-fired and live-resolved configs alike)."""
+    """The booyah banner's extras. TWO shapes ride along, and which one the FE uses depends entirely
+    on the bound design's TYPE:
+
+      • `board` (owner 2026-08-06) - present ONLY when the picked design is design_type="booyah".
+        It carries the FULL serialized design (the same _serialize_design payload the leaderboard
+        overlay feed ships) plus the resolved booyah ROWS, so the FE renders the moment through
+        DesignBoard - the very same renderer the live leaderboard uses. That is the owner's ask:
+        "the overlays should be based off what's on the design and what was set to come up there".
+      • `design` (the 4-key look) + `roster` - the LEGACY hard-coded banner's inputs, kept because
+        every booyah overlay configured before this change is bound to a leaderboard design (or to
+        none), and must keep rendering exactly as it did. See the FE BooyahView: `board` wins when
+        present, otherwise the legacy banner draws. Nothing was migrated, nothing changed shape.
+
+    Roster (legacy path) resolves from config.team_name against the event's registered teams (works
+    for manual, auto-fired and live-resolved configs alike)."""
     from .models import TournamentTeam, TournamentTeamMember
     roster = []
     team_name = (config.get("team_name") or "").strip()
@@ -418,7 +429,239 @@ def _booyah_payload(event, config, request):
                     # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
                     "image": esports_pic_url(u, request),
                 })
-    return {"design": _design_look(config.get("design_id"), request), "roster": roster}
+    return {
+        "design": _design_look(config.get("design_id"), request),
+        "roster": roster,
+        "board": _booyah_board(event, config, request),
+    }
+
+
+# ── DESIGN-DRIVEN BOOYAH BOARD (owner 2026-08-06) ─────────────────────────────────────────────────
+# "Let it work like the way leaderboard works, that whatever will populate on the design will come
+# from the leaderboard, so the overlays should be based off what's on the design."
+#
+# The leaderboard overlay is design + a flat list of ROWS keyed by design field_type; the FE
+# DesignBoard draws row[field.field_type] at each placed field's x_pct, tiling rows down the design's
+# column groups. Everything below exists to express a BOOYAH MOMENT in that same row shape, so the
+# booyah overlay can go through the SAME renderer instead of its own hard-coded markup:
+#
+#   slot 1        -> the WINNING TEAM, its row lifted straight out of the live leaderboard
+#                    (_overlay_standings_rows - the identical helper the leaderboard overlay uses,
+#                    so the points on the banner ARE the points on the site), plus `match_map`.
+#   slots 2..N+1  -> that team's PLAYERS in the won match (name, photo, kills, damage, assists,
+#                    and the rich 3D-room stats when a debugger log filled them).
+#
+# `slot` is what DesignBoard positions by; `pos` stays a DISPLAYABLE rank (the team's rank on the
+# leaderboard, each player's rank within the squad), so placing the POS column shows something
+# meaningful on either block. A design lays this out with two column groups: one row starting at
+# rank 1 (the team), then N rows starting at rank 2 (the roster) - which is exactly what the editor's
+# "add column group" button produces by default, since it starts the next group at
+# start_rank + row_count.
+#
+# CONNECTS TO: overlay_config (the 1s public poll) -> FE app/overlay/view/[token]/[overlayId]
+# BooyahView -> DesignBoard. Data sources: TournamentTeamMatchStats (which team won which map),
+# _overlay_standings_rows (the leaderboard numbers), TournamentPlayerMatchStats (the squad's map
+# stats), TournamentTeamMember (the roster fallback when a map has no per-player rows yet).
+
+# Slot numbers the rows above occupy. Named because BOTH the resolver and the tests assert on them,
+# and because a reader of a design's column groups needs to know what "start_rank 2" means here.
+BOOYAH_TEAM_SLOT = 1
+BOOYAH_FIRST_PLAYER_SLOT = 2
+# How many players of the winning squad the board can carry (a Free Fire squad is 4, +2 headroom for
+# substitutes on the event roster). Mirrors the legacy banner's [:6] roster cap.
+BOOYAH_MAX_PLAYERS = 6
+# How deep into the group's standings to look for the winning team's row. A booyah winner is usually
+# near the top, but not always on the first map of a stage, so this is generous rather than tight -
+# it only bounds one already-computed list.
+BOOYAH_STANDINGS_CAP = 200
+
+
+def _booyah_design(design_id):
+    """The bound design IF it was authored for the booyah moment (design_type="booyah"), else None.
+
+    This ONE check is the whole migration story: a booyah overlay only leaves the legacy banner when
+    somebody deliberately binds a booyah-TYPE design to it. Every overlay configured before this
+    change points at a leaderboard design (or at nothing), so it keeps the banner it has."""
+    if not design_id:
+        return None
+    from afc_organizers.models import OrgLeaderboardDesign
+    d = (OrgLeaderboardDesign.objects
+         .filter(id=design_id, design_type="booyah")
+         .prefetch_related("logos", "fields", "texts", "pages").first())
+    return d
+
+
+def _booyah_winning_stat(event, config):
+    """The TournamentTeamMatchStats row (placement 1 = the booyah) the banner is currently showing.
+
+    Three ways a booyah overlay names its winner, all handled here:
+      • config.live -> the event's LATEST booyah (the same row _booyah_live_config resolves, so the
+        board and the banner never disagree about who won);
+      • a manual/auto trigger -> config.team_name (+ config.match_map when the operator typed one,
+        which disambiguates a team that has won more than one map);
+      • nothing set yet -> None, and the caller renders no board.
+    Returns None when the named team has no booyah on record (e.g. triggered before the result was
+    uploaded); the caller then falls back to the roster-only row set."""
+    from .models import TournamentTeamMatchStats
+    qs = (TournamentTeamMatchStats.objects
+          .filter(match__group__stage__event=event, placement=1)
+          .select_related("match", "match__group", "tournament_team__team")
+          .order_by("-match__match_date", "-match__match_id"))
+    team_name = (config.get("team_name") or "").strip()
+    if not team_name:
+        # LIVE mode (or an untouched card): the most recent booyah in the event.
+        return qs.first() if config.get("live") else None
+    scoped = qs.filter(tournament_team__team__team_name=team_name)
+    match_map = (config.get("match_map") or "").strip()
+    if match_map:
+        on_map = scoped.filter(match__match_map__iexact=match_map).first()
+        if on_map is not None:
+            return on_map
+    return scoped.first()
+
+
+def _booyah_suppressed(event, kind, team_id=None, user_id=None):
+    """True when this event's media audit suppressed a team logo / a player's esport image
+    (EventMediaOptOut, set from the studio's media-audit card). The leaderboard row builder already
+    honours the team-logo opt-out; the booyah board honours BOTH so a player who asked for their
+    photo to be off a broadcast does not reappear on the winner banner."""
+    from .models import EventMediaOptOut
+    qs = EventMediaOptOut.objects.filter(event=event, kind=kind)
+    return qs.filter(team_id=team_id).exists() if team_id else qs.filter(user_id=user_id).exists()
+
+
+def _booyah_team_row(event, win, request):
+    """Slot 1: the winning team, taken FROM THE LEADERBOARD.
+
+    Runs the winning match's group through _overlay_standings_rows - the exact helper the live
+    leaderboard overlay uses - and picks out the winner's row, so every number on the booyah banner
+    (total points, kills, kill/placement points, booyahs, matches) is the number the site shows. Only
+    when that lookup cannot resolve (no group on the match, or the team is not in that group's
+    standings) does it fall back to the match's own stats, so a board still draws."""
+    from .views import _overlay_standings_rows
+    team = win.tournament_team.team if win.tournament_team else None
+    team_name = team.team_name if team else ""
+    group = win.match.group
+
+    row = None
+    if group is not None and team_name:
+        for r in _overlay_standings_rows(event, None, group, BOOYAH_STANDINGS_CAP, request):
+            if r.get("team_name") == team_name:
+                row = dict(r)
+                break
+    if row is None:
+        # Fallback: the won MATCH's own stats. Same keys, so a design placed against the leaderboard
+        # row renders identically - just scoped to the single map instead of the group total.
+        logo = None
+        if team and team.team_logo and not _booyah_suppressed(
+                event, "team_logo", team_id=team.team_id):
+            logo = request.build_absolute_uri(team.team_logo.url)
+        row = {
+            "pos": win.placement,
+            "team_name": team_name or "-",
+            "team_logo": logo,
+            "team_country": (team.country or "") if team else "",
+            "esports_image": None,
+            "booyah": 1,
+            "placement_points": win.placement_points,
+            "kill_points": win.kill_points,
+            "total_points": win.total_points,
+            "kills": win.kills,
+            "matches": 1,
+            "base_total": win.total_points,
+            "bonus": win.bonus_points,
+            "penalty": win.penalty_points,
+        }
+
+    row.update({
+        "slot": BOOYAH_TEAM_SLOT,
+        # Stable identity across polls so DesignBoard keeps the same DOM element (and its count-up
+        # animation) while the same team is on screen.
+        "row_key": f"team-{win.tournament_team_id}",
+        # The one value a booyah has that a standings row does not: which map was won.
+        "match_map": win.match.match_map or "",
+    })
+    return row
+
+
+def _booyah_player_rows(event, win, team_row, request):
+    """Slots 2+: the winning squad, with their stats FROM THE MAP THEY JUST WON.
+
+    Ordered by kills (then the stats-row id) so the standout player leads the block and the order is
+    deterministic between polls. When the match has no per-player rows yet (a result entered without
+    them, or a manual trigger fired before the upload), falls back to the event ROSTER
+    (TournamentTeamMember) with zeroed stats - the same source the legacy banner's roster cards use -
+    so the block is never empty just because the numbers have not landed."""
+    from afc_auth.models import esports_pic_url
+    from .models import TournamentPlayerMatchStats, TournamentTeamMember
+
+    def _shell(user, index, stats=None):
+        """One player row keyed by the design's PLAYER field types, inheriting the team-level values
+        so a design can repeat the team name/logo/flag/map beside each player if it wants to."""
+        photo = None
+        if not _booyah_suppressed(event, "esports_image", user_id=user.user_id):
+            photo = esports_pic_url(user, request)
+        return {
+            "slot": BOOYAH_FIRST_PLAYER_SLOT + index,
+            "row_key": f"player-{user.user_id}",
+            # Rank WITHIN the winning squad, so a placed POS column reads 1, 2, 3, 4 down the block.
+            "pos": index + 1,
+            "player_name": getattr(user, "in_game_name", "") or user.username,
+            "esports_image": photo,
+            # Inherited team context (a booyah design usually shows the team once, but nothing stops
+            # it repeating the crest per player).
+            "team_name": team_row.get("team_name", ""),
+            "team_logo": team_row.get("team_logo"),
+            "team_country": team_row.get("team_country", ""),
+            "match_map": team_row.get("match_map", ""),
+            "matches": 1,
+            "kills": getattr(stats, "kills", 0),
+            "damage": getattr(stats, "damage", 0),
+            "assists": getattr(stats, "assists", 0),
+            # Rich 3D-room stats: real values only when a debugger log was ingested for this match
+            # (rich_stats_filled), 0 otherwise - the same contract the leaderboard columns carry.
+            "deaths": getattr(stats, "deaths", 0),
+            "knockdowns": getattr(stats, "knockdowns", 0),
+            "headshots": getattr(stats, "headshots", 0),
+            "revives_received": getattr(stats, "revives_received", 0),
+            "survival_time": getattr(stats, "survival_seconds", 0),
+        }
+
+    played = list(
+        TournamentPlayerMatchStats.objects
+        .filter(team_stats=win).select_related("player")
+        .order_by("-kills", "player_stats_id")[:BOOYAH_MAX_PLAYERS]
+    )
+    if played:
+        return [_shell(ps.player, i, ps) for i, ps in enumerate(played) if ps.player]
+
+    roster = TournamentTeamMember.objects.filter(
+        tournament_team=win.tournament_team).select_related("user")[:BOOYAH_MAX_PLAYERS]
+    return [_shell(m.user, i) for i, m in enumerate(roster) if m.user]
+
+
+def _booyah_board(event, config, request):
+    """The design-driven booyah board, or None when this overlay should keep the legacy banner.
+
+    Returns {design: <full _serialize_design>, rows: [...], size: "youtube"} - everything the FE
+    DesignBoard needs, in one poll. None whenever there is no booyah-type design bound, or no booyah
+    resolved yet, which is precisely when the FE must fall back to the old banner."""
+    design = _booyah_design(config.get("design_id"))
+    if design is None:
+        return None
+    win = _booyah_winning_stat(event, config)
+    if win is None:
+        return None
+    from afc_organizers.views_leaderboard_design import _serialize_design
+    team_row = _booyah_team_row(event, win, request)
+    rows = [team_row] + _booyah_player_rows(event, win, team_row, request)
+    return {
+        "design": _serialize_design(design, request),
+        "rows": rows,
+        # OBS browser sources are 1920x1080, matching the leaderboard overlay's stable link, which
+        # also hardcodes size=youtube (see the FE leaderboardUrl builder).
+        "size": "youtube",
+    }
 
 
 # ── AFC CAPTURE remote update + config (owner 2026-07-02) ───────────────────────

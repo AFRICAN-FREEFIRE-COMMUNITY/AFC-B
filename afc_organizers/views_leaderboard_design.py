@@ -498,9 +498,15 @@ def _apply_fields(d, data):
         d.background_behavior = bb if bb in ("persistent", "animate") else "persistent"
     # Design type + versus stat rows (owner 2026-07-02). versus_config arrives as a JSON string
     # over multipart; malformed values are ignored (keep the existing config).
+    # "booyah" (owner 2026-08-06) joins the list: a design authored for the BOOYAH moment rather
+    # than a standings table. It uses the very same editor tools (background, column groups, placed
+    # fields, logos, texts) - the type is only a MARKER, so the booyah overlay knows this design was
+    # laid out for its row shape (slot 1 = the winning team, slots 2+ = that team's players) and can
+    # render it instead of the legacy hard-coded banner. See afc_tournament_and_scrims
+    # .views_overlays._booyah_payload / _booyah_board_rows and the FE BooyahView.
     if "design_type" in data:
         dt = str(data.get("design_type") or "").strip().lower()
-        d.design_type = dt if dt in ("leaderboard", "versus") else "leaderboard"
+        d.design_type = dt if dt in ("leaderboard", "versus", "booyah") else "leaderboard"
     if "versus_config" in data:
         raw = data.get("versus_config")
         try:

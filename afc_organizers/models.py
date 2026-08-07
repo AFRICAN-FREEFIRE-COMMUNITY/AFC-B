@@ -426,6 +426,19 @@ class OrgLeaderboardDesignField(models.Model):
         # TEAM leaderboard render these keys are simply absent (blank cell), so adding them is safe.
         ("player_name", "Player name (IGN)"), ("damage", "Damage"),
         ("assists", "Assists"), ("mvp_count", "Map MVPs won"),
+        # ── TEAM COUNTRY FLAG (owner 2026-07-04) ──────────────────────────────────────────────────
+        # An IMAGE column: the row's `team_country` resolved to a flag (the FE DesignBoard maps it to
+        # a flagcdn URL, afc_leaderboard.graphic._flag_image_for does the same for the PNG). It was
+        # implemented end to end in BOTH renderers and offered as a palette chip, but never added to
+        # this list - so `POST .../fields/` answered "Unknown field type" and the chip could not be
+        # placed. Added here (additive, choices-only) so the chip works; no other code changes.
+        ("team_flag", "Team country flag"),
+        # ── BOOYAH-moment field (owner 2026-08-06) ────────────────────────────────────────────────
+        # The MAP a booyah was won on (Match.match_map). It is the one thing the old hard-coded booyah
+        # banner drew that a design had no field type for, so a design-driven booyah overlay could not
+        # reproduce it. Only booyah rows carry it (see views_overlays._booyah_board_rows); a team
+        # standings row simply has no such key, so the cell renders blank on a leaderboard design.
+        ("match_map", "Map name (booyah)"),
         ("booyah", "Booyah"), ("placement_points", "Placement points"),
         ("kill_points", "Kill points"), ("total_points", "Total points"),
         ("rush_points", "Rush points"), ("kills", "Kills (raw)"), ("matches", "Matches played"),
