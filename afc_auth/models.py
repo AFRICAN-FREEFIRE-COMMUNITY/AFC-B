@@ -1185,16 +1185,17 @@ class TwoFactorSettings(models.Model):
     """Per-user 2FA preferences. A row exists only once a user has started setting 2FA up; absent
     row == 2FA off, which is what every one of the ~6,790 existing accounts is on day one.
 
-    `method` is stored even while only "email" is enabled so a later WhatsApp or authenticator-app
-    method is a new row VALUE, not a schema change (see afc_auth.two_factor.METHODS)."""
+    `method` is a row VALUE rather than a schema decision, which is what let the authenticator app
+    ship as a second choice without touching this table's shape (see afc_auth.two_factor.METHODS)."""
 
-    # Delivery/verification methods. Only EMAIL is wired up today; the other two are declared here
-    # so the column can already hold them and afc_auth.two_factor can register an implementation
-    # later without a migration. See two_factor.ENABLED_METHODS for what users may actually pick.
+    # Delivery/verification methods. EMAIL and TOTP are both wired up and selectable; WhatsApp is
+    # declared so the column can already hold it and afc_auth.two_factor can register an
+    # implementation later without a migration. See two_factor.ENABLED_METHODS for what users may
+    # actually pick right now.
     METHOD_CHOICES = [
         ("email", "Email code"),
         ("whatsapp", "WhatsApp code"),   # future: afc_whatsapp.client.send_template("login_code", ...)
-        ("totp", "Authenticator app"),   # future: RFC 6238, no delivery step
+        ("totp", "Authenticator app"),   # RFC 6238, no delivery step (added 2026-08-07)
     ]
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="two_factor")
@@ -1203,6 +1204,37 @@ class TwoFactorSettings(models.Model):
     # When the user actually completed the enable flow (null while off). Shown on the security page.
     enabled_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # ── AUTHENTICATOR APP (TOTP, RFC 6238) - added 2026-08-07 ────────────────────────────────
+    # The three columns below only ever hold anything for a user who has gone through the
+    # authenticator-app enrolment. Every email-method account keeps them empty forever, which is
+    # why they are added here rather than in a second table: one row per user either way, and
+    # afc_auth.two_factor.settings_for() already fetches this row on every login.
+    #
+    # WHAT IS ACTUALLY IN totp_secret / totp_pending_secret: NOT the base32 secret. It is that
+    # secret ENCRYPTED (Fernet, key derived from the Django secret key) by
+    # afc_auth.two_factor.encrypt_totp_secret. A TOTP secret cannot be hashed the way a one-time
+    # code is - the server has to reproduce codes from it - so encryption at rest is the only
+    # protection available, and it is what stops a stolen database dump from being a pile of
+    # working second factors. ~140 chars of base64, hence max_length=255.
+    #
+    # WHY TWO SECRET COLUMNS: enrolment shows a QR before the user has proved anything. Writing
+    # that new secret straight over the live one would break the authenticator app of somebody
+    # who starts a re-enrolment and walks away. The pending secret is promoted into totp_secret
+    # only once a code generated from it checks out (see views_two_factor.totp_confirm).
+    totp_secret = models.CharField(max_length=255, blank=True, default="")
+    totp_pending_secret = models.CharField(max_length=255, blank=True, default="")
+    # When the in-flight enrolment started. Enrolments go stale (two_factor.TOTP_ENROLMENT_LIFETIME)
+    # so a QR left on a shared screen cannot be confirmed by whoever sits down next hour.
+    totp_pending_at = models.DateTimeField(null=True, blank=True)
+    # When the ACTIVE secret was proved by a real code. Null means "no confirmed authenticator".
+    totp_confirmed_at = models.DateTimeField(null=True, blank=True)
+    # REPLAY DEFENCE. The last 30-second time step this account successfully spent. A TOTP code is
+    # valid for its whole step (plus the drift window either side), so without this the same six
+    # digits would keep working for up to 90 seconds - long enough for anyone who shoulder-surfed
+    # or intercepted them to sign in a second time. two_factor.consume_totp refuses any step that
+    # is not strictly greater than this value.
+    totp_last_step = models.BigIntegerField(null=True, blank=True)
 
     def __str__(self):
         state = "on" if self.is_enabled else "off"

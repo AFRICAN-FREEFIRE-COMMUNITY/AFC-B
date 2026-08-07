@@ -535,8 +535,11 @@ class TwoFactorModuleTests(TwoFactorTestBase):
 
     def test_get_method_never_returns_none(self):
         self.assertEqual(two_factor.get_method("email").code, "email")
-        # An unknown or future value falls back rather than crashing a login.
-        self.assertEqual(two_factor.get_method("totp").code, "email")
+        # "totp" became a REAL registered method on 2026-08-07 (see tests_two_factor_totp.py);
+        # before that it was one of the future values this test used to prove fell back.
+        self.assertEqual(two_factor.get_method("totp").code, "totp")
+        # An unknown or future value still falls back rather than crashing a login.
+        self.assertEqual(two_factor.get_method("whatsapp").code, "email")
         self.assertEqual(two_factor.get_method(None).code, "email")
 
 
