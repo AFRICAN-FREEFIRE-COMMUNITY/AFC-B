@@ -608,8 +608,12 @@ class RetireTests(TestCase):
         self.assertIsNotNone(rule.retired_at)
         self.assertEqual(rule.retired_by, self.admin)
         # The conditions are intact, so a past event's tier can still be explained.
+        # `currency` is written by the create endpoint (2026-08-07: a prize threshold names the
+        # currency it is authored in). This rule was posted without one, and an omitted currency
+        # means naira, so the threshold means exactly what it did before - the write path just
+        # spells it out rather than leaving the next reader to know the default.
         self.assertEqual(rule.conditions,
-                         [{"field": "prize", "op": "gte", "value": 100000}])
+                         [{"field": "prize", "op": "gte", "value": 100000, "currency": "NGN"}])
         self.assertEqual(rule.name, "Major prize")
 
     def test_a_retired_rule_classifies_nothing_new(self):

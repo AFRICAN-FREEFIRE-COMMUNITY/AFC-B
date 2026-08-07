@@ -220,8 +220,11 @@ FIELD_META = MappingProxyType({
         "currency": "NGN",
         "value_unit": "tier",
         "help": (
-            "Tier rule prize thresholds are in Nigerian naira. An event whose pool is recorded "
-            "in another currency is converted to naira before the rule is tested."
+            "Tier rule prize thresholds are COMPARED in Nigerian naira. An event whose pool is "
+            "recorded in another currency is converted to naira before the rule is tested, and "
+            "since 2026-08-07 a threshold may itself be written in another currency, in which "
+            "case it is converted the same way at the rate in force when the event is classified. "
+            "A threshold with no currency of its own means naira."
         ),
     },
 })
