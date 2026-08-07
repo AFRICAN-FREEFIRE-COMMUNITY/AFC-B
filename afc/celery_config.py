@@ -74,6 +74,20 @@ app.conf.beat_schedule = {
         'task': 'afc_auth.tasks.publish_scheduled_news',
         'schedule': crontab(minute='*'),           # every minute
     },
+    # ── Rankings repair pass (owner 2026-08-06, backlog item 14 "real time") ──────
+    # Rankings normally update themselves the moment a result lands: afc_rankings.signals
+    # enqueues a per-entity recalculation onto the rankings_recalc queue. This is the backstop
+    # for the one failure mode that is invisible from the outside - nothing draining that queue,
+    # which freezes every ladder while the site keeps serving it as current (it has happened here
+    # before). Deliberately on the DEFAULT queue, NOT rankings_recalc: a backstop that queues
+    # behind the worker it is insuring against would never run either. It recomputes the current
+    # month + active season directly and is idempotent, so a night with the rankings worker up
+    # costs one redundant pass and a night with it down still ends with correct ladders.
+    # 04:00 server time, after the OCR jobs and the event sweeps, when the DB is quietest.
+    'rankings_sweep_nightly': {
+        'task': 'afc_rankings.tasks.sweep_rankings',
+        'schedule': crontab(minute=0, hour=4),     # 04:00 every day
+    },
 }
 
 @app.task(bind=True)

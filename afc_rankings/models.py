@@ -843,14 +843,42 @@ class EventTierConfig(models.Model):
 # aggregation._excluded_event_ids BEFORE the engine inputs are built - a disabled
 # component is zeroed and an excluded event row is skipped, so the scoring engine stays pure.
 class EventCountingControl(models.Model):
-    """Per-tournament admin toggles for whether each scoring component COUNTS toward
-    rankings (the Result Markers surface). Checked in ``aggregation.py`` BEFORE the engine
-    input is built - a disabled component is zeroed out for every team/player in that event,
-    so the scoring engine itself stays pure. No row for an event ⇒ everything counts.
+    """Per-tournament admin toggles for whether an event's results COUNT toward rankings
+    (the Result Markers surface). Checked in ``aggregation.py`` BEFORE the engine input is
+    built - a disabled component is zeroed out for every team/player in that event, so the
+    scoring engine itself stays pure. No row for an event ⇒ everything counts.
+
+    Two levels, deliberately: ``counts_toward_rankings`` is the MASTER switch for the whole
+    event (nothing about it reaches the rankings, prize money included), and the three
+    ``count_*`` flags are finer trims that keep the event counting but drop one component.
+    The master switch wins - when it is off the component flags are not consulted at all.
     """
     event = models.OneToOneField(
         "afc_tournament_and_scrims.Event", on_delete=models.CASCADE, related_name="counting_control",
     )
+    # ── master off switch for the WHOLE event (owner 2026-08-03, backlog item 14) ──
+    # "Admin toggle so all events count by default, with admins able to switch individual ones off."
+    # The three component toggles below could never express that. Turning all three off still left
+    # the finals bonus, the MVP points, the participation points and the quarterly PRIZE MONEY
+    # counting, so there was no way to say "this competition does not feed the rankings at all" -
+    # which is what an admin needs for a test event, an exhibition, a re-run after a rules dispute,
+    # or a scrim series being played for practice.
+    #
+    # default=True + "no row ⇒ everything counts" together mean this field changes NOTHING for any
+    # event that exists today: an event with no control row is unaffected, and an event that already
+    # has one (created by a component toggle) gets True on migrate, which is its current behaviour.
+    # Switching it OFF is always an explicit admin act, recorded in the audit log.
+    #
+    # READ SIDE (this is the "respected everywhere" list - keep it in step if you add a scoring input):
+    #   * aggregation._switched_off_event_ids folds the event into the same ``excluded`` set that
+    #     ResultExclusion uses, in BOTH _collect_team and _collect_player, so its tournament rows,
+    #     its scrim rows and its role-breakdown contributions all disappear;
+    #   * aggregation.compute_team_quarterly / compute_player_quarterly exclude its EventPrizePayout
+    #     rows, so the prize-money component goes too (a payout is keyed off the event, not off a
+    #     match, so it needed its own filter and does not ride the ``excluded`` set).
+    # A standalone leaderboard keeps its own StandaloneLeaderboard.counts_toward_rankings switch;
+    # this one governs Events only, which is why the two names match on purpose.
+    counts_toward_rankings = models.BooleanField(default=True)
     count_winner = models.BooleanField(default=True)      # winner bonus counts
     count_placement = models.BooleanField(default=True)   # placement points count
     count_kills = models.BooleanField(default=True)       # kill points count

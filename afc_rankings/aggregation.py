@@ -95,6 +95,46 @@ def _excluded_event_ids(event_ids, *, team=None, player=None):
     return set(qs.values_list("event_id", flat=True))
 
 
+def _switched_off_event_ids(controls):
+    """Set of event_ids an admin has switched OFF wholesale (EventCountingControl master switch).
+
+    The counterpart of ``_excluded_event_ids``: that one is per ENTITY ("this team's results in
+    this event don't count"), this one is per EVENT ("nothing about this event counts, for
+    anybody"). Both feed the SAME ``excluded`` set in _collect_team / _collect_player, so a
+    switched-off event drops out of the tournament loop, the scrim rows and the role breakdown in
+    exactly one place rather than needing a new check at each of them.
+
+    Takes the already-fetched ``{event_id: EventCountingControl}`` map from ``_counting_controls``
+    rather than querying again - the rows are read anyway for the component toggles. An event with
+    no control row is absent from the map and therefore counts, which is the model's documented
+    "no row ⇒ everything counts" default (owner 2026-08-03: everything counts unless switched off).
+    """
+    return {event_id for event_id, c in controls.items() if not c.counts_toward_rankings}
+
+
+def _non_counting_prize_q(*, team=None, player=None) -> Q:
+    """Q matching EventPrizePayout rows whose event must NOT contribute prize-money points.
+
+    Prize money is the one scoring input that does not come from a match, so it never passes
+    through the ``excluded`` set the two _collect_* functions build - it is summed straight off
+    EventPrizePayout in compute_team_quarterly / compute_player_quarterly. Without this filter an
+    admin could switch an event off (or exclude a disqualified team from it) and still see its
+    prize money scoring, which would make both switches a half-truth.
+
+    Matches on the payout's OWN event rather than on the events the entity has match stats for,
+    so a payout recorded for an event whose results were never uploaded is filtered too.
+
+    Two reasons an event's prize must not count, mirroring the two switches:
+      * the event's master switch is off  (EventCountingControl.counts_toward_rankings False);
+      * this specific team/player is excluded from the event (ResultExclusion).
+    Used with ``.exclude(...)``, so a payout is dropped when EITHER holds.
+    """
+    q = Q(event__counting_control__counts_toward_rankings=False)
+    if team is not None:
+        return q | Q(event__result_exclusions__team=team)
+    return q | Q(event__result_exclusions__player=player)
+
+
 def _unverified_org_event_ids(event_ids):
     """Organizer integrity gate: org-owned events whose results have NOT been verified by an
     AFC admin (Event.rankings_verified is False) do not count toward the official rankings.
@@ -222,6 +262,9 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date,
     event_ids = list(tour_events.keys()) + list(scrim_event_ids)
     controls = _counting_controls(event_ids)
     excluded = _excluded_event_ids(event_ids, team=team)
+    # An event switched off wholesale is treated exactly like an exclusion: it drops out of the
+    # tournament loop AND the scrim rows below, so nothing about it reaches the engine.
+    excluded |= _switched_off_event_ids(controls)
     # The organizer-verification gate is applied to TOURNAMENTS ONLY, on purpose. Every scrim in
     # production today is org-owned with rankings_verified=False, so folding scrims into this gate
     # would silently switch off every scrim that currently counts - the opposite of the owner's
@@ -360,10 +403,13 @@ def compute_team_quarterly(team: Team, season) -> TeamAgg:
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
     tournaments, scrims, wins, kills = _collect_team(team, start, end, tables)
 
-    # prize money (§7.2) - sum payouts to this team's tournament-teams in the season window
+    # prize money (§7.2) - sum payouts to this team's tournament-teams in the season window,
+    # minus any event switched off or excluded for this team (see _non_counting_prize_q: the
+    # payout is keyed off the event, so it does not ride the match-derived ``excluded`` set).
     prize = (EventPrizePayout.objects
              .filter(tournament_team__team=team,
                      created_at__date__gte=start, created_at__date__lt=end)
+             .exclude(_non_counting_prize_q(team=team))
              .aggregate(total=Sum("amount"))["total"] or 0)
 
     # social (§7.3) - quarter snapshot. Only a VERIFIED snapshot contributes points
@@ -461,6 +507,7 @@ def _collect_player(player, start: datetime.date, end: datetime.date,
     event_ids = list(tour.keys()) + list(scrim_event_ids)
     controls = _counting_controls(event_ids)
     excluded = _excluded_event_ids(event_ids, player=player)
+    excluded |= _switched_off_event_ids(controls)            # master switch, see _collect_team
     excluded |= _unverified_org_event_ids(list(tour.keys()))  # unverified org events don't count
     scrim_rows = [r for r in scrim_rows if r[3] not in excluded]
 
@@ -567,10 +614,13 @@ def compute_player_quarterly(player, season) -> PlayerAgg:
     tables = resolve_tables(season=season)
     start, end = season.start_date, season.end_date + datetime.timedelta(days=1)
     tournaments, scrims, mvp, finals, kills, roles = _collect_player(player, start, end, tables)
-    # inherited prize money - payouts to any team the player was rostered on (Phase 1: via tournament_team membership)
+    # inherited prize money - payouts to any team the player was rostered on (Phase 1: via
+    # tournament_team membership), minus any event switched off or excluded for this player
+    # (same rule as the team path, see _non_counting_prize_q).
     prize = (EventPrizePayout.objects
              .filter(tournament_team__members__user=player,
                      created_at__date__gte=start, created_at__date__lt=end)
+             .exclude(_non_counting_prize_q(player=player))
              .aggregate(total=Sum("amount"))["total"] or 0)
     result = engine.quarterly_player_score(
         tournaments, scrims,

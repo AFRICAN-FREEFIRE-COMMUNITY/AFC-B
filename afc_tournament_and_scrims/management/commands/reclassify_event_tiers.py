@@ -17,9 +17,18 @@
 #
 # The tier this writes is what afc_rankings.aggregation feeds the scoring engine as
 # TournamentInput.tier (tier_1 = 2.0x, tier_2 = 1.5x, tier_3 = 1.0x), so a changed tier changes
-# every team/player score derived from that event. Scores are NOT recomputed here (the recalc layer
-# is async by project rule); run `manage.py recalc_rankings` afterwards, or let the next result edit
-# trigger it through afc_rankings.signals.
+# every TEAM score derived from that event. Since 2026-08-06 the recalculation is automatic: the
+# `ev.save(update_fields=["tournament_tier"])` below is picked up by afc_rankings.signals
+# .on_event_tier_change, which enqueues a recalc for every team in the event, for the months the
+# event was actually played in. Nothing further is needed for the team ladders.
+#
+# TWO CAVEATS on a large --apply run. (1) Each changed event enqueues one recalc per registered
+# team onto the rankings_recalc queue, so re-tiering hundreds of events at once produces a large
+# burst - fine for an idempotent, debounced queue, but confirm a worker is actually draining it
+# (deploy/systemd/celery-rankings.service) or the work simply piles up. (2) PLAYER scores are not
+# affected at all: the player engine has no tier factor (scoring/engine._player_components), so
+# there is nothing to recompute for them. `manage.py recalc_rankings` remains available as a
+# belt-and-braces full rebuild.
 #
 # RUN:  python manage.py reclassify_event_tiers            # preview only, writes nothing
 #       python manage.py reclassify_event_tiers --apply    # write the new tiers
@@ -83,6 +92,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Updated {len(changed)} event tier(s)."))
         if changed:
             self.stdout.write(
-                "Scores derived from these events are now stale. Run `manage.py recalc_rankings` "
-                "to rebuild the team/player scores with the new tier multipliers."
+                "Team scores for these events are being recalculated automatically "
+                "(afc_rankings.signals.on_event_tier_change). Confirm a worker is draining the "
+                "rankings_recalc queue, or run `manage.py recalc_rankings` to rebuild in-process."
             )
