@@ -58,6 +58,15 @@ class Command(BaseCommand):
         if not opts["include_drafts"]:
             qs = qs.filter(is_draft=False)
 
+        # ONE FxRate read for the whole sweep (2026-08-07). Both sides of the comparison need it -
+        # the event's pool AND, since tier-rule thresholds can be authored in any currency, the
+        # rule's threshold. Before this, _prize_pool_ngn built its own map per event, so a run over
+        # every event re-read the whole 166-row FxRate table once per event, twice per changed one.
+        # Building it here also means every event in a run is classified at the SAME rate, so a
+        # sweep cannot straddle an FX refresh and tier two identical events differently.
+        from afc_rankings.admin_tournament_tiers import _fx_rate_map
+        rate_map = _fx_rate_map()
+
         changed, pinned, unchanged = [], 0, 0
         for ev in qs:
             # A head/super admin pinned this tier - the rules must not overwrite it (same contract
@@ -65,7 +74,7 @@ class Command(BaseCommand):
             if ev.tier_overridden:
                 pinned += 1
                 continue
-            new_tier = auto_classify_event(ev)
+            new_tier = auto_classify_event(ev, rate_map)
             if new_tier == ev.tournament_tier:
                 unchanged += 1
                 continue
@@ -74,7 +83,8 @@ class Command(BaseCommand):
                 f"  ev{ev.event_id} {ev.event_name!r}  "
                 # ASCII "NGN" not the naira sign: this prints to a Windows console (cp1252) where
                 # the symbol raises UnicodeEncodeError and kills the command.
-                f"pool={ev.prizepool_cash_value} {ev.prize_currency} (= NGN {_prize_pool_ngn(ev):,})  "
+                f"pool={ev.prizepool_cash_value} {ev.prize_currency} "
+                f"(= NGN {_prize_pool_ngn(ev, rate_map):,})  "
                 f"{ev.tournament_tier} -> {new_tier}"
             )
 

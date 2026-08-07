@@ -490,9 +490,16 @@ def _validate_tier_count(row, path, tier_mode, errors, contradictions):
 # Tournament tier rules - the owner's "two rules both above 100" case
 # ---------------------------------------------------------------------------
 # A rule dict is the plain-data form of an EventTierRule row:
-#   {"id", "name", "priority", "match": "all"|"any", "conditions": [{field, op, value}],
-#    "tier": int, "enabled": bool, "retired": bool}
+#   {"id", "name", "priority", "match": "all"|"any",
+#    "conditions": [{field, op, value, currency?}], "tier": int, "enabled": bool, "retired": bool}
 # The Django layer builds these from the ORM; this module never touches the database.
+#
+# CURRENCY. A `prize` condition may name the currency its threshold is written in; no key means
+# naira (scoring/currency.condition_currency). Every check below runs on thresholds ALREADY
+# converted to naira by _normalized_rules, because otherwise "prize >= 1000 USD" and
+# "prize >= 100000 NGN" would be compared as the bare numbers 1000 and 100000 and this module would
+# report the shadowing backwards - claiming the naira rule hides the dollar rule when the opposite
+# is true. Converting once at the top means every existing check works unchanged.
 
 _NUMERIC_OPS = ("gte", "lte")
 
@@ -576,17 +583,79 @@ def _describe(rule):
     return f"rule #{rule.get('id')}"
 
 
-def rule_contradictions(rules, default_tier=None, tables=None):
+def _normalized_rules(rules, rate_map):
+    """Every rule with its prize thresholds restated in NAIRA, plus the ones that would not convert.
+
+    Returns ``(normalized_rules, unconvertible)`` where ``unconvertible`` is a list of
+    ``(rule, condition, currency)`` triples. Only PRIZE conditions are touched; a teams/players
+    count and a format test are copied through as they are.
+
+    Each normalized rule keeps ``source_conditions``, the untouched list the admin actually
+    authored. Contradiction ``entries`` quote that rather than the converted view, so a tool reading
+    the report sees the rule as it is stored instead of a naira number nobody wrote.
+
+    A condition whose currency has no exchange rate is DROPPED from the normalized rule rather than
+    left in with its raw number. Two reasons. It is reported separately, so nothing is lost. And
+    leaving it in would let the analysis treat a dollar figure as a naira figure, which is the exact
+    confusion the conversion exists to prevent. Dropping it makes the checker claim LESS (a rule
+    with a dropped condition stops implying things it cannot back up), which is the safe direction
+    for a report that a human acts on.
+    """
+    from .currency import condition_currency, threshold_ngn
+
+    out, unconvertible = [], []
+    for rule in rules:
+        conditions, kept = rule.get("conditions") or [], []
+        for cond in conditions:
+            if not isinstance(cond, dict):
+                continue
+            if cond.get("field") != "prize":
+                kept.append(cond)
+                continue
+            ngn = threshold_ngn(cond, rate_map)
+            if ngn is None:
+                unconvertible.append((rule, cond, condition_currency(cond)))
+                continue
+            # Currency stripped along with the conversion: downstream now reads one currency, so a
+            # leftover key could only mislead the next person to read this code.
+            kept.append({"field": "prize", "op": cond.get("op"), "value": float(ngn),
+                         "source_currency": condition_currency(cond)})
+        clone = dict(rule)
+        clone["conditions"] = kept
+        clone["source_conditions"] = conditions
+        out.append(clone)
+    return out, unconvertible
+
+
+def rule_contradictions(rules, default_tier=None, tables=None, rate_map=None):
     """Report tier rules that can never fire, and ranges no rule covers.
 
     ``rules``     - plain dicts (see the module note), any order; priority decides evaluation.
     ``default_tier`` - the fall-through tier, used only to explain where a gap lands.
     ``tables``    - optional ScoringTables, so a rule awarding a RETIRED tier can be flagged.
+    ``rate_map``  - optional {currency: units per 1 USD}, needed only to compare thresholds written
+                    in different currencies. Rules written in naira (which is every rule that omits
+                    a currency, and therefore every rule authored before 2026-08-07) need no rates
+                    and are analysed identically with or without it.
 
     Returns a list of contradiction dicts. Nothing here blocks a save; it is reporting.
     """
     found = []
-    live = _live(rules)
+    # Convert first, then run every existing check against one currency.
+    normalized, unconvertible = _normalized_rules(rules, rate_map)
+    live = _live(normalized)
+
+    # 0. Thresholds that could not be converted. Reported FIRST because a rule in this state is not
+    #    merely odd, it currently matches nothing at all: the classifier fails a condition it cannot
+    #    convert closed (scoring/currency.convert_to_ngn explains why that beats the alternative).
+    for rule, cond, currency in unconvertible:
+        found.append(_contra(
+            "unconvertible_threshold", f"event_tier_rules[{rule.get('id')}]",
+            f"{_describe(rule)} has a prize threshold in {currency}, but no exchange rate is "
+            f"stored for it, so that condition cannot be compared and the rule will not match "
+            f"anything. Rewrite the threshold in naira, or pick a currency with rate data.",
+            entries=[{"id": rule.get("id"), "currency": currency, "value": cond.get("value")}],
+        ))
 
     # 1. Unreachable rules. Every pair is checked, not just neighbours, because a shadowing
     #    rule can sit several places above the rule it hides.
@@ -597,13 +666,18 @@ def rule_contradictions(rules, default_tier=None, tables=None):
                     "unreachable_rule", f"event_tier_rules[{later.get('id')}]",
                     f"{_describe(later)} can never fire: {_describe(earlier)} is checked "
                     f"first and already matches every event this rule would have matched.",
+                    # `source_conditions` = what the admin authored, currency and all. The
+                    # naira-converted view is an implementation detail of the check above and must
+                    # not leak into a report a human reads.
                     entries=[
                         {"role": "shadowed_by", "id": earlier.get("id"),
                          "name": earlier.get("name"), "priority": earlier.get("priority"),
-                         "tier": earlier.get("tier"), "conditions": earlier.get("conditions")},
+                         "tier": earlier.get("tier"),
+                         "conditions": earlier.get("source_conditions")},
                         {"role": "unreachable", "id": later.get("id"),
                          "name": later.get("name"), "priority": later.get("priority"),
-                         "tier": later.get("tier"), "conditions": later.get("conditions")},
+                         "tier": later.get("tier"),
+                         "conditions": later.get("source_conditions")},
                     ],
                 ))
                 break  # one explanation per hidden rule is enough
