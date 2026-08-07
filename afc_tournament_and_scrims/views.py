@@ -4863,6 +4863,28 @@ def get_event_details(request):
     # clean "Results not published yet" empty state. Toggled via set_results_visibility.
     results_hidden = not event.results_published
 
+    # ── Teams the viewer SPEAKS FOR in this event ────────────────────────────────────────────────
+    # (owner report 2026-08-07) A captain / vice-captain / manager / coach who registers the team
+    # but does NOT put THEMSELVES in the 4-6 player roster has no TournamentTeamMember row here.
+    # Every viewer-context read below used to ask only "am I on the roster", so for those people:
+    #   - is_registered came back False, so the page offered registration FROM THE BEGINNING again,
+    #   - the saved draft was never swept (the frontend sweeps it on is_registered),
+    #   - and register_for_event then refused the duplicate, which is the "You cannot rejoin this
+    #     event." the owner was shown.
+    # They could never reach Edit Registration for a team they had registered themselves.
+    # So authority over a registered team counts as being registered, using EXACTLY the authority
+    # register_for_event itself accepts (_user_can_register_team: the team owner, or a member whose
+    # management_role is in TEAM_EVENT_REGISTER_ROLES). Anything looser would show one team's
+    # registration to somebody who cannot act on it.
+    _viewer_team_q = (
+        Q(members__user=user)                       # on the submitted roster
+        | Q(team__team_owner=user)                  # owns the team
+        | Q(                                        # holds a registering role in the team
+            team__memberships__member=user,
+            team__memberships__management_role__in=TEAM_EVENT_REGISTER_ROLES,
+        )
+    ) if user else None
+
     # -------- IS REGISTERED CHECK --------
     is_registered = False
     if user:
@@ -4873,11 +4895,16 @@ def get_event_details(request):
                 status="registered"
             ).exists()
         else:
-            # ✅ Use TournamentTeamMember for squad/duo
-            is_registered = TournamentTeamMember.objects.filter(
-                tournament_team__event=event,
-                user=user
-            ).exists()
+            # Roster membership OR authority over a team that is registered here. Teams that
+            # withdrew, left or were disqualified are excluded: those people are not registered
+            # and must fall through to the normal (refusing) registration path, not be shown an
+            # Edit Registration button for a team that is out of the event.
+            is_registered = (
+                TournamentTeam.objects
+                .filter(_viewer_team_q, event=event)
+                .exclude(status__in=["disqualified", "withdrawn", "left"])
+                .exists()
+            )
 
     # Per-team roster-edit window for the VIEWER's OWN team in this event (owner 2026-06-24). Lets the
     # user-facing Edit Roster button open for a team the organizer specifically allowed, even when the
@@ -4886,9 +4913,14 @@ def get_event_details(request):
     viewer_team_roster_edit_open = False
     viewer_team_stage_over = False
     if user and event.participant_type != "solo":
+        # Same widened rule as is_registered above: a manager or coach who registered the team
+        # but is not on the roster must still get the roster-edit window, otherwise the very
+        # person who submitted the roster cannot fix it. .distinct() because the teammembers
+        # join can match a user more than once.
         _vtt = (TournamentTeam.objects
-                .filter(event=event, members__user=user)
+                .filter(_viewer_team_q, event=event)
                 .exclude(status__in=["disqualified", "withdrawn", "left"])
+                .distinct()
                 .first())
         if _vtt:
             viewer_team_roster_edit_until = _vtt.roster_edit_until
