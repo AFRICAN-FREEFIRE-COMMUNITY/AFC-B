@@ -44,6 +44,73 @@ def current_season():
     return Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
 
 
+def event_periods(event_id):
+    """The (months, season_id) an event's results actually land in.
+
+    WHY THIS EXISTS. Every admin lever that changes how an event scores - the Result Markers
+    counting toggles, a ResultExclusion, a tier change - has to recompute the ladders that lever
+    moved. Those ladders belong to the month the event was PLAYED in, which is very often not the
+    month the admin is clicking in. The enqueue helpers used to pass ``current_month()``, so
+    switching a July event off in August rewrote each team's (unaffected) August row and left the
+    July ladder showing the old numbers indefinitely. Deriving the periods from the event's own
+    matches is what makes "switched off" mean switched off on the ladder the results are on.
+
+    Returns ``(months, season_id)``:
+      * ``months``     - the first-of-month dates the event's matches fall in, deduped. An event
+                         that straddles a month boundary yields both, so neither ladder is missed.
+      * ``season_id``  - the ACTIVE season covering the earliest of those days, else the current
+                         active season. Seasons are quarters, so a live event sits in exactly one.
+
+    The ``is_active`` filter on the season lookup is deliberate, and it is the same one
+    ``signals._season_for`` has always applied. An event played inside a season that has since
+    CLOSED resolves to the current season instead of its own: a closed season is frozen by its
+    SeasonScoringConfig pin and its tiers are locked by the quarterly evaluation, so re-deriving it
+    because somebody edited an old event is precisely the retroactive rewrite that pin exists to
+    prevent. The contribution to the current season is then a no-op for that event, which is the
+    correct outcome. Reopening a past season's ladder stays a deliberate admin action
+    (``recalc_rankings --season <id>``), never a side effect of a toggle.
+
+    An event with no played matches yet (created, toggled, never played) has no days to derive
+    from, so it falls back to the current month + active season: there is nothing on a past ladder
+    to repair, and the caller still gets a well-formed period to enqueue.
+
+    Matches hang off an event through group -> stage -> event OR through a leaderboard, the same
+    two walks ``aggregation._event_of_match`` makes, so both are queried here.
+
+    Callers: ``admin_results._enqueue_event_team_recalc`` / ``_enqueue_event_player_recalc`` /
+    ``_enqueue_entity_recalc`` (the Result Markers surface) and ``signals.on_event_tier_change``.
+    """
+    from django.db.models import Q
+    from afc_tournament_and_scrims.models import Match
+
+    matches = Match.objects.filter(
+        Q(group__stage__event_id=event_id) | Q(leaderboard__event_id=event_id)
+    )
+    days = {d for d in (aggregation._match_day(m) for m in matches) if d}
+    if not days:
+        season = current_season()
+        return [current_month()], (season.season_id if season else None)
+
+    months = sorted({d.replace(day=1) for d in days})
+    earliest = min(days)
+    season = (Season.objects
+              .filter(is_active=True, start_date__lte=earliest, end_date__gte=earliest)
+              .first()) or current_season()
+    return months, (season.season_id if season else None)
+
+
+def _player_scrim_pts(result) -> float:
+    """A player's total scrim contribution for the period, from an engine result.
+
+    The team results carry ONE ``scrim_pts`` field; the player results split the same idea into
+    ``scrim_kill_pts`` + ``scrim_win_pts`` (PlayerScoreResult / PlayerQuarterlyResult, spec §19.7 /
+    §19.8). The participation-floor gates below only need "did any scrim points land", so this
+    collapses the two so the player gates read the same as the team ones and there is a single
+    place to change if a third scrim component is ever added.
+    """
+    return (result.scrim_kill_pts or 0) + (result.scrim_win_pts or 0)
+
+
 # ───────────────────────── TEAM ─────────────────────────
 # Each recalc_* reads engine output from aggregation.compute_*, writes the score
 # model, then re-ranks. Reached via the tasks.py Celery wrappers (from signals),
@@ -95,7 +162,13 @@ def recalc_team_quarterly(team_id, season_id):
         rerank_team_quarter(season)
         return
     agg = aggregation.compute_team_quarterly(team, season)
-    if agg.tournaments_played == 0:
+    if agg.tournaments_played == 0 and not agg.result.scrim_pts:
+        # No activity at all this season -> no row. See recalc_team_monthly for the full note:
+        # scrim points satisfy this gate too (owner 2026-08-03, "scrims must count toward tiers
+        # and rankings"). The monthly gate was amended then but this one was not, so a scrim-only
+        # team scored on the monthly ladder and was still deleted off the SEASON ladder - which is
+        # the table tiers are assigned from, so it was never given a tier at all. Only a team with
+        # neither tournament nor scrim activity is removed now.
         TeamQuarterlyScore.objects.filter(team=team, season=season).delete()
         rerank_team_quarter(season)
         return
@@ -240,7 +313,11 @@ def recalc_player_monthly(player_id, month: datetime.date = None):
     month = (month or current_month()).replace(day=1)
     agg = aggregation.compute_player_monthly(player, month)
     # Admin-editable monthly floor (default 1 tournament, spec §6), from this month's config.
-    if agg.tournaments_played < aggregation.resolve_tables(month=month).player_monthly_floor:
+    # Scrim activity satisfies it too, the same amendment recalc_team_monthly already carries
+    # (owner 2026-08-03): a player whose month was all scrims earns real scrim_kill_pts /
+    # scrim_win_pts, and deleting the row anyway was what made scrims "not count" for players.
+    if (agg.tournaments_played < aggregation.resolve_tables(month=month).player_monthly_floor
+            and not _player_scrim_pts(agg.result)):
         PlayerMonthlyScore.objects.filter(player=player, month=month).delete()
         rerank_player_month(month)
         return
@@ -278,7 +355,9 @@ def recalc_player_quarterly(player_id, season_id):
         rerank_player_quarter(season)
         return
     agg = aggregation.compute_player_quarterly(player, season)
-    if agg.tournaments_played == 0:
+    if agg.tournaments_played == 0 and not _player_scrim_pts(agg.result):
+        # Same amendment as the team season gate above: a scrim-only player keeps a season row,
+        # so they appear on the ladder the tiers are read off instead of vanishing from it.
         PlayerQuarterlyScore.objects.filter(player=player, season=season).delete()
         rerank_player_quarter(season)
         return

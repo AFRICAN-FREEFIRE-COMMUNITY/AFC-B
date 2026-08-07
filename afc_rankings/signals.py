@@ -7,11 +7,11 @@ the recalc reads the just-saved state. Score-model writes are NOT senders here, 
 recursion. In dev these run inline (RANKINGS_RECALC_SYNC); in prod they hit Celery.
 """
 from django.db import transaction
-from django.db.models.signals import post_save, post_delete
+from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 
 from afc_tournament_and_scrims.models import (
-    TournamentTeamMatchStats, TournamentPlayerMatchStats, TournamentTeam, EventPrizePayout,
+    Event, TournamentTeamMatchStats, TournamentPlayerMatchStats, TournamentTeam, EventPrizePayout,
 )
 # P3 standalone-leaderboard senders. signals.py is imported from apps.ready() AFTER every app's
 # models have loaded, so importing afc_leaderboard.models here is safe (no load-order cycle).
@@ -113,6 +113,72 @@ def on_tournament_team_markers(sender, instance, **kwargs):
             tasks.enqueue_team(team_id, season.start_date.replace(day=1), season.season_id)
 
     transaction.on_commit(fire)
+
+
+# ───────────────────────── tournament tier changes (owner backlog item 12/14) ─────────────────────────
+# An event's tier is the single biggest multiplier on every result in it: aggregation feeds
+# Event.tournament_tier to the engine as TournamentInput.tier, and tier_1 is worth 2.0x placement
+# and kill points plus a 30-point win bonus against tier_3's 1.0x and 12 (scoring/constants.py).
+#
+# Nothing recalculated when it changed. The tier moves through three doors - a head/super admin's
+# manual pick (afc_tournament_and_scrims.views.apply_event_tier), the automatic classifier when an
+# event is created or edited, and the `reclassify_event_tiers` management command re-running that
+# classifier in bulk after a rule or FX change - and none of them touched the rankings. So an admin
+# could correct a mis-tiered tournament and every affected ladder would keep serving the old
+# numbers until something unrelated touched those teams, or until the nightly sweep. That is
+# exactly the "rankings must update automatically" gap, on the input most likely to be corrected.
+#
+# Deliberately NOT wired to EventTierRule edits: editing a RULE changes how FUTURE events are
+# classified and mutates no stored tier, which is why admin_tournament_tiers documents that it does
+# not enqueue. A rule edit only reaches the rankings once reclassify_event_tiers rewrites an event's
+# tournament_tier - and that write lands here, so the bulk pass gets its recalculation for free.
+@receiver(pre_save, sender=Event)
+def stash_previous_event_tier(sender, instance, **kwargs):
+    """Remember the stored tier so post_save can tell whether it actually moved.
+
+    post_save cannot see the old value, and Event.save() is called often (the every-few-minutes
+    status convergence sweep completes and reopens events). Firing a whole-event recalculation on
+    every Event save would be a stampede, so the receiver below fires ONLY on a real tier change.
+    The cost of that precision is this one extra row read per Event save, on an already-narrow set.
+    """
+    if not instance.pk:
+        instance._rankings_prev_tier = None      # creating: there is no previous tier
+        return
+    instance._rankings_prev_tier = (
+        Event.objects.filter(pk=instance.pk).values_list("tournament_tier", flat=True).first()
+    )
+
+
+@receiver(post_save, sender=Event)
+def on_event_tier_change(sender, instance, created, **kwargs):
+    """The event's tier moved -> recompute every TEAM whose results it weighted.
+
+    Scope mirrors admin_results._enqueue_event_team_recalc (the Result Markers surface): every
+    registered team. Periods come from recalc.event_periods, so the ladders repaired are the ones
+    for the months the event was PLAYED in.
+
+    TEAMS ONLY, and that is not an oversight. A player's score has no tier factor anywhere in it:
+    scoring/engine._player_components computes compressed personal kills and placement plus the
+    flat MVP / finals / team-win / participation weights, and never reads
+    PlayerTournamentInput.tier (spec §7 - players reach a tier by INHERITING their team's at
+    quarterly evaluation, §8.1, not by scoring more per point). Enqueueing every player in the
+    event on a tier change would therefore be a guaranteed no-op pass over the whole roster. If the
+    player engine is ever given a tier factor, add the player enqueue here - the field is already
+    carried through aggregation._collect_player, so it is one line.
+
+    A newly created event is skipped - it has no results yet, so there is nothing to reweight.
+    """
+    if created:
+        return
+    previous = getattr(instance, "_rankings_prev_tier", None)
+    if previous is None or previous == instance.tournament_tier:
+        return
+
+    # Lazy import: admin_results is a view module and imports .admin_views, which pulls in DRF.
+    # signals.py is loaded from apps.ready(), so keeping the import inside the handler avoids
+    # dragging the whole admin surface into app startup.
+    from .admin_results import _enqueue_event_team_recalc
+    _enqueue_event_team_recalc(instance.event_id)
 
 
 @receiver(post_save, sender=EventPrizePayout)

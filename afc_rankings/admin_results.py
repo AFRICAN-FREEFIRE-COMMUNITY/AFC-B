@@ -8,10 +8,12 @@ read at aggregation time (see ``aggregation.py`` -> ``_counting_controls`` /
 ``_excluded_event_ids``), so flipping either one and recalculating re-derives the affected
 scores. Neither lever mutates a score directly - the score engine stays pure.
 
-  * EventCountingControl  - per-event toggles for whether each scoring COMPONENT counts:
-                            ``count_winner`` (winner bonus), ``count_placement`` (placement
-                            points), ``count_kills`` (kill points). OneToOne with Event.
-                            NO row for an event ⇒ everything counts (defaults all-True).
+  * EventCountingControl  - per-event toggles. ``counts_toward_rankings`` is the MASTER switch
+                            for the whole event (off ⇒ nothing about it scores, prize money
+                            included); ``count_winner`` (winner bonus), ``count_placement``
+                            (placement points) and ``count_kills`` (kill points) are finer trims
+                            that keep the event counting but drop one component. OneToOne with
+                            Event. NO row for an event ⇒ everything counts (defaults all-True).
   * ResultExclusion       - per-event opt-out for ONE team or player: their results in this
                             event don't count at all (e.g. a disqualification / protest).
                             team XOR player (enforced here AND by a DB CheckConstraint).
@@ -89,9 +91,13 @@ from afc_tournament_and_scrims.models import Event, TournamentTeam
 # Every audit row from this surface buckets under "tournament_result" (RankingAuditLog.OBJECT_TYPES).
 AUDIT_OBJECT_TYPE = "tournament_result"
 
-# The three counting toggles, as actual EventCountingControl field names. Used by both the
-# serializer (default-True view) and the PATCH handler (which fields a caller may set).
-COUNTING_FIELDS = ("count_winner", "count_placement", "count_kills")
+# The counting toggles, as actual EventCountingControl field names. Used by both the serializer
+# (default-True view) and the PATCH handler (which fields a caller may set).
+# ``counts_toward_rankings`` is the MASTER switch for the whole event and is listed first because
+# it wins: when it is off the three component flags below are not consulted at all (see
+# aggregation._switched_off_event_ids). All four default to True, so an event with no control row
+# - which is every event until an admin edits one - counts in full.
+COUNTING_FIELDS = ("counts_toward_rankings", "count_winner", "count_placement", "count_kills")
 
 # A ResultExclusion targets exactly one of these (team XOR player).
 ENTITY_TYPES = ("team", "player")
@@ -101,11 +107,15 @@ ENTITY_TYPES = ("team", "player")
 def _enqueue_event_team_recalc(event_id):
     """Enqueue a recalc for EVERY team registered in this event, AFTER commit.
 
-    A counting toggle (winner/placement/kills) changes the derived score for all of the
-    event's teams, so we recompute each one. We resolve the underlying ``team_id`` from each
-    ``TournamentTeam`` (the score models key off Team, not TournamentTeam) and dedupe so a
-    team registered twice isn't enqueued twice. Recalc against the current month + active
-    season, mirroring admin_prize.py.
+    A counting toggle (winner/placement/kills, or the master ``counts_toward_rankings``) changes
+    the derived score for all of the event's teams, so we recompute each one. We resolve the
+    underlying ``team_id`` from each ``TournamentTeam`` (the score models key off Team, not
+    TournamentTeam) and dedupe so a team registered twice isn't enqueued twice.
+
+    Periods come from ``recalc.event_periods`` - the months the event was actually PLAYED in, not
+    the month the admin happens to be clicking in. Switching a July event off in August used to
+    recompute each team's August row (which the toggle does not touch) and leave the July ladder
+    showing the old numbers; see that function for the full note.
     """
     team_ids = (
         TournamentTeam.objects
@@ -113,30 +123,63 @@ def _enqueue_event_team_recalc(event_id):
         .values_list("team_id", flat=True)
         .distinct()
     )
-    month = recalc.current_month()
-    season = recalc.current_season()
-    season_id = season.season_id if season else None
+    months, season_id = recalc.event_periods(event_id)
     # Snapshot the ids now (the queryset is lazy); the on_commit closure fires post-commit.
     ids = [tid for tid in team_ids if tid]
+    # An event straddling a month boundary enqueues the same SEASON recalc twice. Left as is on
+    # purpose: it is idempotent and the tasks.py lock collapses it, and spelling out a
+    # "season on the first month only" special case buys nothing for the one-month common case.
     transaction.on_commit(
-        lambda: [tasks.enqueue_team(tid, month, season_id) for tid in ids]
+        lambda: [tasks.enqueue_team(tid, month, season_id) for tid in ids for month in months]
     )
 
 
-def _enqueue_entity_recalc(*, team_id=None, player_id=None):
+def _enqueue_event_player_recalc(event_id):
+    """Enqueue a recalc for every PLAYER who has a result in this event, AFTER commit.
+
+    The twin of ``_enqueue_event_team_recalc`` above, and it was missing: a counting toggle
+    changes the player scores as much as the team ones (count_kills gates a player's kill points,
+    count_winner their team-win bonus, and the master ``counts_toward_rankings`` removes their
+    MVP / finals / participation points as well), yet only the teams were being recalculated. A
+    player's row therefore stayed at its old score until something unrelated touched them.
+
+    Players are resolved from TournamentPlayerMatchStats rather than from the event roster, because
+    only a player with a recorded result contributes anything to score in the first place. Matches
+    hang off the event either through group -> stage -> event or through a leaderboard, so both
+    paths are covered (the same two _event_of_match walks in aggregation.py).
+    """
+    from django.db.models import Q
+    from afc_tournament_and_scrims.models import TournamentPlayerMatchStats
+    player_ids = (
+        TournamentPlayerMatchStats.objects
+        .filter(Q(team_stats__match__group__stage__event_id=event_id) |
+                Q(team_stats__match__leaderboard__event_id=event_id))
+        .values_list("player_id", flat=True)
+        .distinct()
+    )
+    months, season_id = recalc.event_periods(event_id)   # played-in months, see the twin above
+    ids = [pid for pid in player_ids if pid]
+    transaction.on_commit(
+        lambda: [tasks.enqueue_player(pid, month, season_id) for pid in ids for month in months]
+    )
+
+
+def _enqueue_entity_recalc(event_id, *, team_id=None, player_id=None):
     """Enqueue a recalc for the single team OR player an exclusion touches, AFTER commit.
 
     Used when a ResultExclusion is created (entity newly excluded) or deleted (entity freed)
-    - either way that one entity's score must be re-derived. Current month + active season,
-    consistent with the rest of the data-entry surfaces.
+    - either way that one entity's score must be re-derived. ``event_id`` is required because
+    the periods to recompute are the ones the EVENT was played in, not the month the admin is
+    working in (see ``recalc.event_periods``); a disqualification recorded weeks after a
+    tournament has to reach that tournament's ladder, which is the whole point of the lever.
     """
-    month = recalc.current_month()
-    season = recalc.current_season()
-    season_id = season.season_id if season else None
+    months, season_id = recalc.event_periods(event_id)
     if team_id:
-        transaction.on_commit(lambda: tasks.enqueue_team(team_id, month, season_id))
+        transaction.on_commit(
+            lambda: [tasks.enqueue_team(team_id, month, season_id) for month in months])
     elif player_id:
-        transaction.on_commit(lambda: tasks.enqueue_player(player_id, month, season_id))
+        transaction.on_commit(
+            lambda: [tasks.enqueue_player(player_id, month, season_id) for month in months])
 
 
 # ───────────────────────── local serializers (manual-dict, per house style) ─────────────────────────
@@ -165,6 +208,10 @@ def serialize_event_markers(event, control, exclusion_count):
         "competition_type": event.competition_type,
         "team_count": TournamentTeam.objects.filter(event=event).count(),
         # Counting state: read from the control row, else default True (everything counts).
+        # counts_toward_rankings is the master switch - when it is false the three component
+        # flags are still reported as stored, but nothing from this event scores (the admin UI
+        # should show the row as switched off rather than reading the components).
+        "counts_toward_rankings": control.counts_toward_rankings if control else True,
         "count_winner": control.count_winner if control else True,
         "count_placement": control.count_placement if control else True,
         "count_kills": control.count_kills if control else True,
@@ -183,6 +230,7 @@ def serialize_counting_control(event, control):
     return {
         "event_id": event.event_id,
         "event_name": event.event_name,
+        "counts_toward_rankings": control.counts_toward_rankings if control else True,
         "count_winner": control.count_winner if control else True,
         "count_placement": control.count_placement if control else True,
         "count_kills": control.count_kills if control else True,
@@ -332,16 +380,24 @@ def event_counting_detail(request, event_id):
 # ───────────────────────── PATCH event-counting/<event_id>/  (set toggles) ─────────────────────────
 @api_view(["PATCH"])
 def event_counting_update(request, event_id):
-    """Set an event's counting toggles (count_winner / count_placement / count_kills).
+    """Set an event's counting toggles.
 
-    Body: any subset of the three booleans + the mandatory ``reason``. Partial - only the
-    fields present in the body are changed; absent fields keep their current (or default-True)
-    value. ``get_or_create`` materialises the control row on first edit (so the implicit
-    all-True default becomes explicit), and ``updated_by`` is stamped to the acting admin.
+    Body: any subset of ``counts_toward_rankings`` (the master switch for the whole event) and
+    ``count_winner`` / ``count_placement`` / ``count_kills`` (per-component trims), plus the
+    mandatory ``reason``. Partial - only the fields present in the body are changed; absent
+    fields keep their current (or default-True) value. ``get_or_create`` materialises the control
+    row on first edit (so the implicit all-True default becomes explicit), and ``updated_by`` is
+    stamped to the acting admin.
 
-    Because a component toggle affects EVERY team in the event, we enqueue a recalc for each
-    registered team (via TournamentTeam) on commit. Audited as ``tournament_result`` /
-    ``counting``.
+    Setting ``counts_toward_rankings`` false takes the whole event out of the rankings: no
+    placement, kill, win, finals, MVP or participation points, and no prize-money points either
+    (aggregation._switched_off_event_ids + aggregation._non_counting_prize_q). It is the switch
+    behind the owner's "all events count by default, with admins able to switch individual ones
+    off"; the three component flags are the finer trims and are ignored while it is off.
+
+    Because a toggle affects EVERY team and player in the event, we enqueue a recalc for each
+    registered team (via TournamentTeam) and each player with a result on commit. Audited as
+    ``tournament_result`` / ``counting``.
     """
     user, err = _auth(request)
     if err:
@@ -389,8 +445,10 @@ def event_counting_update(request, event_id):
             object_ref=f"event:{event.event_id}",
             before=before, after=after, season=recalc.current_season(),
         )
-        # Recalc every team in the event - the toggle changed how their results score.
+        # Recalc every team AND every player in the event - the toggle changed how their results
+        # score. Players were previously left out, so their rows went stale after a toggle.
         _enqueue_event_team_recalc(event.event_id)
+        _enqueue_event_player_recalc(event.event_id)
 
     return Response(after)
 
@@ -528,6 +586,7 @@ def result_exclusion_create(request):
         )
         # Recalc the now-excluded entity - its results stop counting.
         _enqueue_entity_recalc(
+            event.event_id,
             team_id=team_id if entity_type == "team" else None,
             player_id=player_id if entity_type == "player" else None,
         )
@@ -573,6 +632,6 @@ def result_exclusion_delete(request, exclusion_id):
             before=before, after={}, season=recalc.current_season(),
         )
         # Recalc the freed entity - its results count again.
-        _enqueue_entity_recalc(team_id=freed_team_id, player_id=freed_player_id)
+        _enqueue_entity_recalc(event_id, team_id=freed_team_id, player_id=freed_player_id)
 
     return Response({"message": "Result exclusion deleted."})
