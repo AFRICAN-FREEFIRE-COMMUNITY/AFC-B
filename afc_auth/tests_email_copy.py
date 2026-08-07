@@ -94,6 +94,15 @@ CALLER_PLACEHOLDERS = {
         "heading": set(), "intro": {"username", "new_email", "when"}, "warning": {"support"},
         "support_label": set(),
     },
+    # Sent BY SUPPORT to the old AND the new address (afc_auth/views.py
+    # email_admin_email_changed, called from views_admin_identity.admin_set_user_email). Same
+    # three placeholders as email_changed above, plus two sentences the self-serve version has no
+    # need for: `signed_out` (every session was ended) and `two_factor` (only rendered when 2FA
+    # actually had to come down). Neither takes a placeholder, so both are rendered raw.
+    "admin_email_changed": {
+        "heading": set(), "intro": {"username", "new_email", "when"}, "signed_out": set(),
+        "warning": {"support"}, "two_factor": set(), "support_label": set(),
+    },
     "order_received": {
         "heading": set(), "intro": {"buyer"}, "track": {"link"},
     },

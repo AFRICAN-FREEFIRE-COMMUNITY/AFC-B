@@ -674,6 +674,46 @@ def email_email_changed(username, new_email, when_text, lang="en"):
     return _email_shell(inner, "green")
 
 
+def email_admin_email_changed(username, new_email, when_text, two_factor_off=False, lang="en"):
+    """Email-changed-BY-SUPPORT notice, sent to BOTH the old and new addresses (gold security accent).
+
+    Consumed by afc_auth/views_admin_identity.py::admin_set_user_email, the head-admin recovery path
+    for a user locked out of their signup address. Separate from email_email_changed (the self-serve
+    confirmation) because three things are true here that are not true there, and each one changes
+    what the reader has to do:
+      • a person other than the account owner made the change, so the copy says so plainly - this
+        message is the tripwire if the owner never asked for it;
+      • every session was ended, so they must sign in again rather than wonder why they were kicked;
+      • 2FA may have been switched off to make the change, in which case they have to switch it back
+        on themselves. That block is only rendered when it actually happened (two_factor_off).
+
+    The OLD address is NOT named in the body: this same HTML goes to the new inbox too, and a
+    mistyped new address should not teach a stranger the address it replaced.
+
+    i18n: hand-authored copy from the catalog (template "admin_email_changed") in `lang`. The caller
+    sends with prelocalized=True + subject_for("email_updated_admin", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("admin_email_changed", lang)
+    username_html = f'<span style="color:#e8efe9;font-weight:600;">{username}</span>'
+    new_email_html = f'<span style="color:#e8efe9;font-weight:600;">{new_email}</span>'
+    support_html = f'<a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">{c["support_label"]}</a>'
+    # Only rendered when 2FA really came down, so nobody is told to re-enable something they never had.
+    two_factor_block = f"""
+  <tr><td style="padding:0 44px 18px;">
+    {_email_note(c["two_factor"], "gold")}
+  </td></tr>""" if two_factor_off else ""
+    inner = f"""
+  <tr><td style="padding:40px 44px 6px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"].format(username=username_html, new_email=new_email_html, when=when_text)}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:10px;">{c["signed_out"]}</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 18px;">
+    {_email_note(c["warning"].format(support=support_html), "gold")}
+  </td></tr>{two_factor_block}"""
+    return _email_shell(inner, "gold")
+
+
 # ── Broadcast delivery (owner 2026-06-13) ──────────────────────────────────────────────────────
 # Every "broadcast" surface on the site (event-wide announcement, per-group message, and the
 # single player/team message) lets the sender pick a CHANNEL: in-app push, email, or both. When
@@ -3806,8 +3846,10 @@ def change_password(request):
 #   1. SELF-SERVE (logged-in user): request_email_change -> confirm_email_change. Re-auth = current
 #      password + the OLD email on file (owner's chosen verification), then a code sent to the NEW
 #      address proves ownership so a typo can't re-lock the account. Uses EmailChangeRequest.
-#   2. ADMIN-ASSISTED: admin_set_user_email. For LOCKED-OUT legacy users (wrong email + can't log in),
-#      who by definition can't self-serve. Also flips is_active True to unlock never-verified signups.
+#   2. ADMIN-ASSISTED: admin_set_user_email, which now LIVES IN afc_auth/views_admin_identity.py
+#      (head_admin/super_admin only, typed reason, both addresses mailed, sessions ended, 2FA taken
+#      down explicitly). For LOCKED-OUT legacy users (wrong email + can't log in), who by definition
+#      can't self-serve. Also flips is_active True to unlock never-verified signups.
 # Related: edit_profile no longer writes email (that direct write was a no-reauth takeover hole);
 # login (EmailOrUsernameModelBackend) accepts email/username/uid; send_email localizes per recipient.
 # Consumed by: profile settings "Change email" dialog + the admin player-detail "Edit email" control.
@@ -3922,65 +3964,12 @@ def confirm_email_change(request):
     return Response({"message": "Your email has been updated.", "email": new_email}, status=200)
 
 
-@api_view(["POST"])
-def admin_set_user_email(request):
-    """POST /auth/admin/set-user-email/  Bearer auth, ADMIN only. Body: { user_id, new_email }.
-    Directly corrects a user's email when they can't self-serve (forgot/wrong email + locked out).
-    Also flips is_active True so a never-verified (is_active=False) signup becomes loginable. Audited
-    + logged like suspend_user. Identity is verified out-of-band by support before calling this."""
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
-    admin_user = validate_token(auth.split(" ")[1])
-    if not admin_user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
-    if admin_user.role != "admin":
-        return Response({"message": "You do not have permission to change a user's email."}, status=403)
-
-    user_id = request.data.get("user_id")
-    new_email = (request.data.get("new_email") or "").strip()
-    if not user_id or not new_email:
-        return Response({"message": "user_id and new_email are required."}, status=400)
-
-    is_valid, msg = is_valid_email(new_email)
-    if not is_valid:
-        return Response({"error": msg}, status=400)
-
-    try:
-        target = User.objects.get(user_id=user_id)
-    except User.DoesNotExist:
-        return Response({"message": "User not found."}, status=404)
-
-    if User.objects.exclude(pk=target.pk).filter(email__iexact=new_email).exists():
-        return Response({"message": "That email is already registered to another account."}, status=400)
-
-    old_email = target.email
-    target.email = new_email
-    # Unlock a never-verified signup (is_active=False = never entered the signup code = locked out),
-    # the exact legacy case this endpoint exists for.
-    target.is_active = True
-    target.save(update_fields=["email", "is_active"])
-
-    set_audit(request, f"Changed the email of {target.username} from {old_email} to {new_email}")
-    AdminHistory.objects.create(
-        admin_user=admin_user,
-        action="set_user_email",
-        description=f"Set email for {target.username} (ID: {target.user_id}): {old_email} -> {new_email}",
-    )
-
-    # Best-effort heads-up to the NEW address (the user likely can't read the old one).
-    try:
-        lang = target.language or language_for_country(target.country) or "en"
-    except Exception:
-        lang = "en"
-    try:
-        when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
-        send_email(new_email, subject_for("email_updated_admin", lang),
-                   email_email_changed(target.username, new_email, when, lang), language=lang, prelocalized=True)
-    except Exception as e:
-        print(f"Admin email-change confirmation failed for {target.username}: {e}")
-
-    return Response({"message": f"Email for {target.username} updated to {new_email}.", "email": new_email}, status=200)
+# admin_set_user_email MOVED (owner 2026-08-07) to afc_auth/views_admin_identity.py, where it now
+# sits next to admin_set_user_uid as one "admin identity repair" surface. The URL is unchanged
+# (auth/admin/set-user-email/), so no caller had to move. What changed there, and why it could not
+# stay here: the gate is now require_head_admin instead of role=="admin" (that let every news/shop/
+# sponsor admin change any account's email), a typed reason is mandatory, BOTH addresses are mailed,
+# every session is ended, and 2FA has to be explicitly taken down rather than silently bypassed.
 
 
 @api_view(["POST"])
