@@ -8,8 +8,8 @@ no auth, keyed by username/IGN).
 
 WHY a shared helper:
 The admin endpoint already computes the canonical aggregate numbers (total_kills,
-total_wins, total_mvps, kdr, avg_damage, win_rate, scrim/tournament splits,
-booyahs). The public Team Stats + Player Profile pages need the SAME numbers plus
+total_wins, total_mvps, kdr, avg_damage, win_rate, scrim/tournament splits).
+The public Team Stats + Player Profile pages need the SAME numbers plus
 a per-event and per-match breakdown. Rather than duplicate (and risk drift), the
 heavy lifting lives here once and both views call it.
 
@@ -39,6 +39,10 @@ from afc_tournament_and_scrims.models import (
     TournamentTeamMatchStats,
     TournamentTeamMember,
 )
+# The ONE rule for "did this player really take part" (status / waitlist / no-show / draft
+# gates), shared with afc_auth.views.get_user_profile so the public player page and the
+# owner's own profile cannot disagree. See afc_tournament_and_scrims/participation.py.
+from afc_tournament_and_scrims.participation import counted_tournament_team_ids
 
 
 # Map the Event's stored tournament_tier code to a human label for display.
@@ -76,7 +80,17 @@ def compute_player_stats(player, *, include_breakdown=True):
       • the same scalar aggregates the admin endpoint returns
         (total_kills, total_wins, total_mvps, kdr, avg_damage, win_rate,
          scrims_kills, tournaments_kills, scrims_wins, tournaments_wins,
-         scrim_booyah, tournament_booyah, total_matches)
+         total_matches) plus the separately-named TEAM record
+        (team_matches, team_wins, team_win_rate)
+
+    TWO DIFFERENT WIN STATISTICS, deliberately kept apart (owner bug 2026-08-07):
+      • total_wins / win_rate  -> the PLAYER'S OWN record. Only matches this player was on
+        the sheet for; a win is that match's team line placing 1st. Numerator and denominator
+        are the same rows, so win_rate is bounded 0-100%.
+      • team_wins / team_win_rate -> the record of the TEAMS the player was rostered on, every
+        match, played or not. Useful, but it is the team's rate and is labelled as such.
+    They were previously fused into one number (team wins over the player's own match count),
+    which reported 400% win rates for four real players on the public site.
       • when include_breakdown=True, two extra real lists:
          - per_event[]  → one row per Event the player competed in
          - recent_matches[] → the player's last 25 individual match lines
@@ -107,6 +121,17 @@ def compute_player_stats(player, *, include_breakdown=True):
     scrim_kills = 0
     tournament_kills = 0
 
+    # ── the player's OWN win record (owner bug 2026-08-07) ────────────────────────────────────
+    # Counted HERE, in the same loop as total_matches, because numerator and denominator MUST
+    # come from the same population. See the win_rate note in §5: these used to be counted from
+    # every rostered team's match rows while total_matches counted only the player's own rows,
+    # which is what produced a 400% win rate on the live site.
+    # A match is a win for the player when the team line of the match THEY PLAYED placed 1st -
+    # s.team_stats is exactly that row, so no extra query is needed.
+    total_wins = 0
+    scrim_wins = 0
+    tournament_wins = 0
+
     # per-event accumulator (kills / mvps / placement context), keyed by event_id.
     # OrderedDict keeps insertion order stable for a deterministic response.
     events_acc = OrderedDict()
@@ -127,6 +152,15 @@ def compute_player_stats(player, *, include_breakdown=True):
         elif event_type is not None:
             # any non-scrims competition_type counts as tournament (mirrors admin's else-branch)
             tournament_kills += s.kills
+
+        # This match's team line placed 1st, and this player was on the sheet for it, so it is
+        # THEIR win. Same row set as total_matches, so win_rate can never exceed 100%.
+        if team_stats is not None and team_stats.placement == 1:
+            total_wins += 1
+            if event_type == "scrims":
+                scrim_wins += 1
+            elif event_type is not None:
+                tournament_wins += 1
 
         if include_breakdown and event is not None:
             # ── per-event roll-up ──
@@ -180,11 +214,20 @@ def compute_player_stats(player, *, include_breakdown=True):
     # ── 2. MVPs (Match.mvp points at the User) ──
     total_mvps = Match.objects.filter(mvp=player).count()
 
-    # ── 3. Wins / booyahs (read from the TEAM line of every team the player rostered) ──
-    # A "win" is a team placement == 1 in a match the player's tournament-team played.
-    team_ids = TournamentTeamMember.objects.filter(user=player).values_list(
-        "tournament_team", flat=True
-    )
+    # ── 3. The player's TEAM record (a DIFFERENT statistic, now named as one) ──────────────────
+    # Every match played by every tournament-team this player was legitimately rostered on,
+    # whether or not the player was on the sheet for that particular match.
+    #
+    # This is what the old `total_wins` was secretly measuring while being labelled as the
+    # player's own. It is a genuinely useful number - "how did the teams I was part of do" - so it
+    # is kept, but it is now reported under its own team_* names and rendered under its own
+    # "Team Wins" / "Team Win Rate" labels, never mixed into the player's personal rate.
+    #
+    # Roster membership is resolved through participation.counted_tournament_team_ids so a
+    # REJECTED or pending roster slot, or a slot on a disqualified/withdrawn team, does not lend
+    # this player a record they were never part of (same rule the profile's tournaments-played
+    # count uses - see afc_tournament_and_scrims/participation.py).
+    team_ids = counted_tournament_team_ids(player)
     team_stat_rows = (
         TournamentTeamMatchStats.objects.filter(tournament_team_id__in=team_ids)
         .select_related(
@@ -195,24 +238,15 @@ def compute_player_stats(player, *, include_breakdown=True):
         )
     )
 
-    total_wins = 0
-    scrim_wins = 0
-    tournament_wins = 0
-    scrim_booyah = 0
-    tournament_booyah = 0
+    team_matches = 0
+    team_wins = 0
 
     for t in team_stat_rows:
         event = _event_of(t)
-        event_type = event.competition_type if event else None
 
+        team_matches += 1
         if t.placement == 1:
-            total_wins += 1
-            if event_type == "scrims":
-                scrim_wins += 1
-                scrim_booyah += 1
-            elif event_type is not None:
-                tournament_wins += 1
-                tournament_booyah += 1
+            team_wins += 1
 
         # fold the team line into the per-event roll-up (best placement + team points)
         if include_breakdown and event is not None and event.event_id in events_acc:
@@ -234,9 +268,15 @@ def compute_player_stats(player, *, include_breakdown=True):
                 events_acc[ev.event_id]["mvps"] += 1
 
     # ── 5. Derived ratios (guard divide-by-zero exactly like the admin endpoint) ──
+    # EVERY ratio below divides a number by the population it was counted from:
+    #   kdr / avg_damage / win_rate  -> the player's own match rows  (total_matches)
+    #   team_win_rate                -> the rostered teams' match rows (team_matches)
+    # Mixing the two is the bug this block was rewritten to make impossible; win_rate is now
+    # bounded to 0-100% by construction because total_wins is a subset of total_matches.
     kdr = total_kills / total_matches if total_matches > 0 else 0
     avg_damage = total_damage / total_matches if total_matches > 0 else 0
     win_rate = (total_wins / total_matches * 100) if total_matches > 0 else 0
+    team_win_rate = (team_wins / team_matches * 100) if team_matches > 0 else 0
 
     result = {
         "total_matches": total_matches,
@@ -248,10 +288,16 @@ def compute_player_stats(player, *, include_breakdown=True):
         "win_rate": round(win_rate, 2),
         "scrims_kills": scrim_kills,
         "tournaments_kills": tournament_kills,
+        # Personal wins split by the event's competition_type. These used to be shadowed by an
+        # identical scrim_booyah/tournament_booyah pair that was incremented in the same branch and
+        # so could never differ; a booyah IS a match win in Free Fire, so the duplicate pair was
+        # removed rather than kept as a second name for one number (owner bug 2026-08-07).
         "scrims_wins": scrim_wins,
         "tournaments_wins": tournament_wins,
-        "scrim_booyah": scrim_booyah,
-        "tournament_booyah": tournament_booyah,
+        # ── the TEAM record, explicitly named so it can never be read as the player's own ──
+        "team_matches": team_matches,
+        "team_wins": team_wins,
+        "team_win_rate": round(team_win_rate, 2),
     }
 
     if include_breakdown:

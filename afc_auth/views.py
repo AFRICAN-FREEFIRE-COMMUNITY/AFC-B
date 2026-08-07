@@ -3308,41 +3308,54 @@ def get_user_profile(request):
         )
     )
 
-    # Team wins/booyahs: based on TournamentTeamMatchStats placement=1,
-    # but only for teams the user belongs to.
-    team_ids = list(TournamentTeamMember.objects.filter(user=user).values_list("tournament_team_id", flat=True))
+    # The ONE rule for "did this user really take part in this event" - registration/roster status,
+    # team status, waitlist, no-show and draft-event gates - shared with the public player profile
+    # (afc_player.aggregation) so the two pages cannot report different totals. Imported locally,
+    # matching this function's existing local-import idiom for cross-app helpers (see Vendor and
+    # EventPrizePayout below).
+    from afc_tournament_and_scrims.participation import counted_event_ids
 
-    team_wins = 0
-    if team_ids:
-        team_wins = (TournamentTeamMatchStats.objects
-            .filter(tournament_team_id__in=team_ids, placement=1)
-            .count()
-        )
+    # Team-side booyahs: matches THIS USER was fielded in whose team line placed 1st.
+    #
+    # It used to count every placement=1 row of every team the user appeared on a roster for,
+    # which is the same population mix-up as the public player page's 400% win rate: the wins came
+    # from the team while everything beside them (kills, damage, matches_played, and the profile's
+    # win rate) came from the user's own match lines. A player fielded once in a team that won four
+    # matches was credited with four booyahs. Reading the player's own rows and asking whether THAT
+    # match was won keeps numerator and denominator on the same population, and makes this number
+    # agree with total_wins on the public profile for the same person (owner bug 2026-08-07).
+    #
+    # Roster status is still enforced, one level down: a player only has a TournamentPlayerMatchStats
+    # row for a match they were actually fielded in, and the tournaments-played counts below go
+    # through the shared participation rule (a REJECTED slot, 39 of them live, is not participation).
+    team_wins = (TournamentPlayerMatchStats.objects
+        .filter(player=user, team_stats__placement=1)
+        .count()
+    )
 
     # ---------------- MVPs ----------------
     # Match.mvp is a FK to User
     total_mvps = Match.objects.filter(mvp=user).count()
 
     # ---------------- BOOYAHs ----------------
-    # booyah = first placement across SOLO + TEAM
+    # A BOOYAH is a match win in Free Fire: the competitor finished 1st in a single match.
+    # Counted across BOTH entry paths (solo competitor line + the user's tournament teams).
+    #
+    # This is the ONLY win-count this endpoint reports, on purpose (owner bug 2026-08-07). It used
+    # to be computed twice, into `total_booyahs` and `total_wins`, from the identical expression -
+    # so the profile displayed "Wins 7, Booyahs 7" and the two could never differ. There is no
+    # second win concept in this data to give "Wins": the event-level winner marker
+    # (TournamentTeam.is_tournament_winner) is False on every row in the database because the
+    # result-finalisation workflow that sets it is unused, so deriving "Wins" from it would print
+    # 0 for every player on the site. One real number gets one honest label.
     total_booyahs = int(solo_agg["total_wins"]) + int(team_wins)
 
     # ---------------- TOURNAMENTS / SCRIMS PLAYED ----------------
-    # SOLO: events where user registered
-    solo_event_ids = list(
-        RegisteredCompetitors.objects.filter(user=user).values_list("event_id", flat=True).distinct()
-    )
-
-    # TEAM: events where user is in a TournamentTeam for that event
-    team_event_ids = []
-    if team_ids:
-        team_event_ids = list(
-            TournamentTeam.objects.filter(tournament_team_id__in=team_ids)
-            .values_list("event_id", flat=True)
-            .distinct()
-        )
-
-    all_event_ids = set(solo_event_ids) | set(team_event_ids)
+    # Every event the user genuinely competed in, both entry paths, deduped. Previously this
+    # counted RegisteredCompetitors and TournamentTeam rows with NO status check at all, so a
+    # disqualified registration, a rejected roster slot, a withdrawn team and a waitlisted entry
+    # that never got a slot each still counted as a tournament played.
+    all_event_ids = counted_event_ids(user)
 
     total_tournaments_played = Event.objects.filter(event_id__in=all_event_ids, competition_type="tournament").count()
     total_scrims_played = Event.objects.filter(event_id__in=all_event_ids, competition_type="scrims").count()
@@ -3380,8 +3393,10 @@ def get_user_profile(request):
     # Total kills = solo kills + team kills
     total_kills = int(solo_agg["total_kills"]) + int(team_player_agg["team_kills"])
 
-    # Total wins (you can keep separate too)
-    total_wins = int(solo_agg["total_wins"]) + int(team_wins)
+    # NOTE: there is deliberately no `total_wins` here any more. It was
+    # `int(solo_agg["total_wins"]) + int(team_wins)`, character for character the same expression
+    # as total_booyahs above, and the profile rendered both as two separate tiles. See the BOOYAHs
+    # block for why one number now carries one name.
 
     # is_vendor: True if this user is an ACTIVE marketplace vendor. The FE uses it to show
     # the "Vendor Dashboard" sidebar entry (the /vendor portal is otherwise only reachable by
@@ -3462,8 +3477,10 @@ def get_user_profile(request):
 
         "stats": {
             "total_kills": total_kills,
-            "total_wins": total_wins,
             "total_mvps": total_mvps,
+            # Match wins. The former sibling key "total_wins" held this exact same value and was
+            # dropped (owner bug 2026-08-07); frontend consumers are AuthContext.UserStats ->
+            # ProfileContent.tsx (overview tile) and profile/_components/achievements.ts.
             "total_booyahs": total_booyahs,
             "total_tournaments_played": total_tournaments_played,
             "total_scrims_played": total_scrims_played,

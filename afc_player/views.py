@@ -6,15 +6,13 @@ from rest_framework.decorators import api_view
 
 from afc_auth.models import User, BannedPlayer
 from afc_team.models import TeamMembers
-from afc_tournament_and_scrims.models import Match, TournamentPlayerMatchStats, TournamentTeamMatchStats, TournamentTeamMember
+from afc_tournament_and_scrims.models import Match, TournamentPlayerMatchStats
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.db.models import Sum
 from afc_auth.models import User
 from afc_tournament_and_scrims.models import (
     TournamentPlayerMatchStats,
-    TournamentTeamMatchStats,
-    TournamentTeamMember,
     Match,
     # PlayerWinning = a player's share of an event prize, written by
     # afc_rankings.admin_prize.prize_create (_distribute_payout) when an admin/organizer
@@ -163,8 +161,12 @@ def get_all_users(request):
     The previous version ran ~6-8 ORM queries PER user inside a Python for-loop. With
     ~6k users that is an N+1 explosion of ~40k queries (the endpoint took 30-45s and the
     admin page never finished loading). It is now a fixed handful of GROUPED/bulk queries
-    assembled in memory. The response shape and every number are byte-for-byte identical
-    to the old loop - the win/team-name/ban semantics below mirror the original exactly.
+    assembled in memory. The response SHAPE is unchanged, and the kills/mvp/team-name/ban
+    semantics still mirror the original loop exactly.
+
+    total_wins is the ONE number that deliberately no longer matches the original loop: it
+    used to be the team's wins, not the player's, and disagreed with the same player's detail
+    page. See wins_by_user below (owner bug 2026-08-07).
     """
     users = list(User.objects.all().only("user_id", "username", "status", "role"))
 
@@ -182,17 +184,18 @@ def get_all_users(request):
         .values("mvp").annotate(c=Count("pk"))
     }
 
-    # ── tournament-team participation: user -> [tournament_team ids] (for WINS only) ──
-    # TournamentTeamMember is the per-event participation HISTORY (who played for which
-    # team in a tournament); rows are never deleted, so it is the right source for
-    # counting wins across every team a player ever competed with - but it is the WRONG
-    # source for "current team" (a player who once played under a team keeps showing it
-    # forever even after leaving). See the bug fix below for the displayed team name.
-    team_ids_by_user = {}
-    for m in (TournamentTeamMember.objects
-              .values("user", "tournament_team")
-              .order_by("user", "id")):
-        team_ids_by_user.setdefault(m["user"], []).append(m["tournament_team"])
+    # ── wins per player: one grouped count over the player's OWN match lines ──────────────────
+    # A win is a match THIS PLAYER was fielded in whose team line placed 1st. This used to sum
+    # placement-1 rows across every tournament team the player had ever appeared on a roster for,
+    # which credited a player fielded in one match with all four of their team's wins, and made
+    # this column disagree with the "Wins" on the same player's detail page and public profile
+    # (owner bug 2026-08-07 - the same population mix-up that printed a 400% win rate). Counting
+    # the player's own rows makes all three surfaces report one number.
+    wins_by_user = {
+        row["player"]: row["c"]
+        for row in TournamentPlayerMatchStats.objects.filter(team_stats__placement=1)
+        .values("player").annotate(c=Count("pk"))
+    }
 
     # ── CURRENT team name: from the LIVE roster TeamMembers (owner bug 2026-06-20) ──
     # The admin players list used to show last_team_name from TournamentTeamMember (the
@@ -206,13 +209,6 @@ def get_all_users(request):
         for row in TeamMembers.objects.values("member", "team__team_name")
     }
 
-    # ── wins (placement == 1) per tournament_team: one grouped count ──
-    wins_by_team = {
-        row["tournament_team"]: row["c"]
-        for row in TournamentTeamMatchStats.objects.filter(placement=1)
-        .values("tournament_team").annotate(c=Count("pk"))
-    }
-
     # ── active bans: one set lookup (was: an .exists() per user) ──
     banned_ids = set(
         BannedPlayer.objects.filter(is_active=True).values_list("banned_player", flat=True)
@@ -221,8 +217,8 @@ def get_all_users(request):
     data = []
     for user in users:
         uid = user.user_id
-        # total_wins = matches where ANY of this user's teams placed 1st (same as old query)
-        total_wins = sum(wins_by_team.get(tid, 0) for tid in team_ids_by_user.get(uid, []))
+        # total_wins = matches THIS player was fielded in whose team placed 1st (see wins_by_user)
+        total_wins = wins_by_user.get(uid, 0)
         data.append({
             "user_id": uid,
             "name": user.username,
@@ -309,8 +305,14 @@ def get_player_details(request):
         "scrims_wins": agg["scrims_wins"],
         "tournaments_wins": agg["tournaments_wins"],
 
-        "scrim_booyah": agg["scrim_booyah"],
-        "tournament_booyah": agg["tournament_booyah"],
+        # The TEAM record (every match of every team this player was rostered on), kept
+        # separate from the player's own total_wins/win_rate above. See the two-statistics
+        # note in afc_player.aggregation.compute_player_stats. The former scrim_booyah /
+        # tournament_booyah keys are gone: they were a second name for scrims_wins /
+        # tournaments_wins and this page summed the two, reporting double (owner 2026-08-07).
+        "team_matches": agg["team_matches"],
+        "team_wins": agg["team_wins"],
+        "team_win_rate": agg["team_win_rate"],
 
         # ── NEW additive breakdown (admin page can render the same tables the public page does) ──
         "total_matches": agg["total_matches"],
@@ -417,8 +419,12 @@ def get_public_player_stats(request):
             "tournaments_kills": stats["tournaments_kills"],
             "scrims_wins": stats["scrims_wins"],
             "tournaments_wins": stats["tournaments_wins"],
-            "scrim_booyah": stats["scrim_booyah"],
-            "tournament_booyah": stats["tournament_booyah"],
+            # The TEAM record, named separately from the player's own total_wins/win_rate
+            # above (see compute_player_stats). Replaces the removed scrim_booyah /
+            # tournament_booyah, which only ever mirrored scrims_wins / tournaments_wins.
+            "team_matches": stats["team_matches"],
+            "team_wins": stats["team_wins"],
+            "team_win_rate": stats["team_win_rate"],
             # breakdown lists
             "per_event": stats["per_event"],
             "recent_matches": stats["recent_matches"],
@@ -443,8 +449,9 @@ def get_public_player_stats(request):
             "tournaments_kills": 0,
             "scrims_wins": 0,
             "tournaments_wins": 0,
-            "scrim_booyah": 0,
-            "tournament_booyah": 0,
+            "team_matches": 0,
+            "team_wins": 0,
+            "team_win_rate": 0,
             "per_event": [],
             "recent_matches": [],
             # Prize winnings are private too: zero the total + empty the list for unauthorized
