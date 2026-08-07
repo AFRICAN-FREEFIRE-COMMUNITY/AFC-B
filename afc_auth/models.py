@@ -410,9 +410,24 @@ class BannedPlayer(models.Model):
 
 
 class News(models.Model):
+    # ── category: the SINGLE source of truth for what an admin may tag a post with ─────────────
+    # afc_auth.views.create_news / edit_news validate the incoming `category` against these keys
+    # (they read CATEGORY_CHOICES directly, so a category added here is immediately accepted with
+    # no second list to keep in sync). get_all_news / get_news_detail return the RAW key; the
+    # human label is NOT taken from the second tuple element, because the public surfaces are
+    # multilingual: the frontend maps the key to a localized label from
+    # frontend/messages/<locale>/news.json (categories.*) for /news and
+    # frontend/messages/<locale>/home.json (latestNews.categories.*) for the home-page teaser.
+    # The labels below are therefore only what Django admin and this model's own choices display.
     CATEGORY_CHOICES = [
         ("general", "General News"),
         ("tournament", "Tournament Updates"),
+        # "education" (owner request 2026-08-06: "add EDUCATION UPDATES as a category"): teaching
+        # posts - guides, rules explainers, how-to-compete walkthroughs. Placed AFTER "tournament"
+        # and BEFORE "bans" because general/tournament/education are all informational content and
+        # read as a group, while "bans" is the enforcement notice board and reads best last. The
+        # picker, both public filters and the admin filter all follow this same order.
+        ("education", "Education Updates"),
         ("bans", "Banned Players/Teams"),
     ]
 

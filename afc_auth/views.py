@@ -2172,8 +2172,10 @@ def create_news(request):
     if not news_title or not content or not category:
         return Response({"message": "Title, content, and category are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Validate category choice
-    valid_categories = ["general", "tournament", "bans"]
+    # Validate category choice. Read straight off News.CATEGORY_CHOICES (afc_auth/models.py) instead
+    # of a hardcoded copy, so adding a category to the model is enough for the admin News form to be
+    # able to save it - there is no second list here that can silently drift out of sync.
+    valid_categories = [key for key, _label in News.CATEGORY_CHOICES]
     if category not in valid_categories:
         return Response({"message": "Invalid category."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -2300,8 +2302,9 @@ def edit_news(request):
     category = request.data.get("category", news.category)
     related_event_id = request.data.get("related_event", None)   # legacy single-event link (back-compat)
 
-    # Validate category if changed
-    valid_categories = ["general", "tournament", "bans"]
+    # Validate category if changed. Same single source of truth as create_news above:
+    # News.CATEGORY_CHOICES (afc_auth/models.py), never a hardcoded copy.
+    valid_categories = [key for key, _label in News.CATEGORY_CHOICES]
     if category and category not in valid_categories:
         return Response({"message": "Invalid category."}, status=status.HTTP_400_BAD_REQUEST)
 
