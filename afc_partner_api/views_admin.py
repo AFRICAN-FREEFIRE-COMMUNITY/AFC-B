@@ -32,7 +32,13 @@
 # The coordinator owns route mounting - this file ONLY defines view functions; the
 # routes live in admin_urls.py. Full spec: WEBSITE/tasks/partner-api-design.md (§9).
 # ──────────────────────────────────────────────────────────────────────────────
+import re
+from datetime import datetime, time, timezone as dt_timezone
+
+from django.db import transaction
+from django.utils.dateparse import parse_date, parse_datetime
 from django.utils.text import slugify
+from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -218,6 +224,77 @@ def _paginate(request, queryset):
     return page, total_count, has_more
 
 
+# ── key expiry parsing (issue_key) ────────────────────────────────────────────
+# Turns the optional `expires_at` in an issue-key body into an aware datetime, or a 400.
+# The admin UI sends a plain <input type="date"> value ("2026-08-10"); an API caller may
+# send a full ISO-8601 timestamp. Both are accepted.
+#
+# A DATE-ONLY value means "usable through the END of that day", so it becomes 23:59:59 on
+# that date in UTC (the backend's timezone). "expires 10 August" reading as "dies at
+# 00:00 on the 10th" would surprise every admin who ever types it, and would silently cost
+# the partner the whole final day of a tournament weekend.
+#
+# Returns (value, error_response): exactly one is non-None. (None, None) means the caller
+# omitted it, which is legal and leaves the key non-expiring.
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _parse_expires_at(raw):
+    # Omitted / blank -> no expiry (unchanged from before this field was accepted).
+    if raw in (None, ""):
+        return None, None
+
+    if not isinstance(raw, str):
+        return None, Response(
+            {"message": "expires_at must be a date (YYYY-MM-DD) or an ISO-8601 timestamp."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    raw = raw.strip()
+    bad_shape = Response(
+        {"message": "expires_at must be a date (YYYY-MM-DD) or an ISO-8601 timestamp."},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+    # Match the bare-date form EXPLICITLY, before trying parse_datetime. Order matters and
+    # a regex is used on purpose: since Django 4.1 parse_datetime delegates to
+    # datetime.fromisoformat, which happily accepts "2026-12-31" and hands back MIDNIGHT -
+    # so a "try timestamp, fall back to date" order silently swallows every date-only value
+    # and the end-of-day rule below never runs (caught in live testing 2026-08-06).
+    #
+    # Both parsers are wrapped: Django's parse_date / parse_datetime return None for a
+    # string of the wrong SHAPE, but RAISE ValueError for a well-shaped impossible value
+    # like "2026-02-31" (also caught live - it 500'd with a debug page, which both crashes
+    # the admin's save and leaks internals, against best-practice §21).
+    try:
+        if _DATE_ONLY_RE.fullmatch(raw):
+            date_only = parse_date(raw)
+            if date_only is None:
+                return None, bad_shape
+            # End of the named day (see the docstring on why not midnight).
+            parsed = datetime.combine(date_only, time(23, 59, 59))
+        else:
+            parsed = parse_datetime(raw)
+            if parsed is None:
+                return None, bad_shape
+    except ValueError:
+        return None, bad_shape
+
+    # A naive value (no offset) is read as UTC - the timezone every stored datetime in
+    # this project is in, and the one authenticate_partner compares against.
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, dt_timezone.utc)
+
+    # An expiry already in the past would mint a key that 401s on its first call.
+    if parsed <= timezone.now():
+        return None, Response(
+            {"message": "expires_at must be in the future."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return parsed, None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 1) create_partner  (POST partners/admin/create/)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -346,12 +423,21 @@ def _get_partner(request, slug):
 
 
 # edit_partner - whitelist-validated partial update of a partner's scope + toggles.
-# The whitelist IS the security boundary: only the 14 PARTNER_TOGGLE_FIELDS, the two
+# The whitelist IS the security boundary: only the 16 PARTNER_TOGGLE_FIELDS, the two
 # scope id-lists (allowed_events / allowed_organizations), and allow_all_native_afc
 # may be set. ANY other key in the body is a 400 - so a typo or a malicious payload
 # can never set an attribute it shouldn't (e.g. status to bypass suspend, or
 # contact_email). True PATCH semantics: only keys actually present in the body are
 # touched.
+#
+# VALIDATE-EVERYTHING-THEN-WRITE, ALL INSIDE ONE TRANSACTION (bug found 2026-08-06,
+# backlog item 8 audit). This used to save the toggles and THEN validate the scope
+# id-lists, so a body like {"include_damage": true, "allowed_events": "130"} came back
+# 400 "allowed_events must be a list" while include_damage had ALREADY been written and
+# committed. On a permissions surface that is the worst possible failure mode: the admin
+# is told the change was rejected, and the partner quietly gained a field. Both guards
+# now run before the first setattr, and the writes are wrapped in transaction.atomic()
+# so any later failure rolls the whole edit back rather than leaving it half-applied.
 def _edit_partner(request, slug):
     # Auth + partner-admin gate.
     user, err = _require_partner_admin(request)
@@ -366,6 +452,7 @@ def _edit_partner(request, slug):
     SCOPE_FIELDS = ("allowed_events", "allowed_organizations", "allow_all_native_afc")
     allowed_keys = set(PARTNER_TOGGLE_FIELDS) | set(SCOPE_FIELDS)
 
+    # ── validation pass: every check that can 400 runs HERE, before any write ──
     # Reject the WHOLE request if any unknown key is present (fail closed, don't
     # silently ignore - a rejected field tells the admin their payload was wrong).
     unknown = set(request.data.keys()) - allowed_keys
@@ -375,30 +462,34 @@ def _edit_partner(request, slug):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # ── boolean toggles (the 14 PARTNER_TOGGLE_FIELDS) + the native-AFC switch ──
-    # bool() coerces whatever truthy/falsy value the client sent into a real boolean.
-    for f in PARTNER_TOGGLE_FIELDS:
-        if f in request.data:
-            setattr(partner, f, bool(request.data[f]))
-    if "allow_all_native_afc" in request.data:
-        partner.allow_all_native_afc = bool(request.data["allow_all_native_afc"])
+    # Scope id-lists must be lists. `or []` first so an explicit null/"" reads as "clear
+    # the grants" (the FE sends [] for an empty multiselect), matching the old behaviour;
+    # anything else non-list (a bare string, a dict, a number) is the caller's mistake.
+    scope_lists = {}
+    for field, label in (("allowed_events", "event"), ("allowed_organizations", "organization")):
+        if field in request.data:
+            ids = request.data.get(field) or []
+            if not isinstance(ids, list):
+                return Response({"message": f"{field} must be a list of {label} ids."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            scope_lists[field] = ids
 
-    partner.save()
+    # ── write pass: nothing below can 400, and it all commits or none of it does ──
+    with transaction.atomic():
+        # boolean toggles (the 16 PARTNER_TOGGLE_FIELDS) + the native-AFC switch.
+        # bool() coerces whatever truthy/falsy value the client sent into a real boolean.
+        for f in PARTNER_TOGGLE_FIELDS:
+            if f in request.data:
+                setattr(partner, f, bool(request.data[f]))
+        if "allow_all_native_afc" in request.data:
+            partner.allow_all_native_afc = bool(request.data["allow_all_native_afc"])
 
-    # ── scope id-lists: replace the M2M set with the supplied ids (true PATCH:
-    # only set when the key is present, so omitting it leaves the grants untouched). ──
-    if "allowed_events" in request.data:
-        ids = request.data.get("allowed_events") or []
-        if not isinstance(ids, list):
-            return Response({"message": "allowed_events must be a list of event ids."},
-                            status=status.HTTP_400_BAD_REQUEST)
-        partner.allowed_events.set(ids)
-    if "allowed_organizations" in request.data:
-        ids = request.data.get("allowed_organizations") or []
-        if not isinstance(ids, list):
-            return Response({"message": "allowed_organizations must be a list of organization ids."},
-                            status=status.HTTP_400_BAD_REQUEST)
-        partner.allowed_organizations.set(ids)
+        partner.save()
+
+        # Scope id-lists: replace the M2M set with the supplied ids (true PATCH: only set
+        # when the key was present, so omitting it leaves the grants untouched).
+        for field, ids in scope_lists.items():
+            getattr(partner, field).set(ids)
 
     return Response(
         {"message": "Partner updated successfully.", "partner": _serialize_partner_detail(partner)},
@@ -441,6 +532,20 @@ def suspend_partner(request, slug):
 # we persist ONLY the prefix + hash and return the FULL plaintext exactly ONCE in this
 # response. The plaintext is never stored and can never be re-fetched - this is the
 # only moment the admin can copy it (the FE shows a "you won't see this again" dialog).
+#
+# Request:  {label?: str, rate_limit_per_min?: int, expires_at?: "YYYY-MM-DD" | ISO-8601}
+# Response: 201 {message, api_key (plaintext, ONCE), key: {...metadata}}
+# Auth:     Bearer session token, head_admin / partner_admin only.
+# Consumed by: the admin partner-detail Keys tab (frontend app/(a)/a/partners/[slug]),
+#           via partnersApi.issueKey in lib/partners.ts.
+#
+# EXPIRY (audit finding 2026-08-06, backlog item 8): PartnerApiKey.expires_at has always
+# been ENFORCED by auth.authenticate_partner ("Key expired." -> 401), but nothing could
+# ever SET it: this view did not read it and the admin UI had no field, so the column was
+# dead config and every key AFC issued lived forever. Accepting it here (with the UI date
+# field that now feeds it) is what makes a time-boxed grant - a broadcaster who only needs
+# data for one tournament weekend - expressible without an admin having to remember to
+# come back and revoke.
 @api_view(["POST"])
 def issue_key(request, slug):
     # Auth + partner-admin gate.
@@ -462,6 +567,15 @@ def issue_key(request, slug):
         rate_limit = 60
     rate_limit = max(1, rate_limit)
 
+    # Optional expiry. Unlike rate_limit (where a junk value harmlessly falls back to the
+    # default), a junk or past expiry is REJECTED rather than defaulted: silently issuing a
+    # never-expiring key because the date failed to parse is exactly the surprise this
+    # field exists to prevent, and an already-past expiry would mint a key that is dead on
+    # arrival. Empty / omitted keeps the previous behaviour (no expiry).
+    expires_at, err = _parse_expires_at(request.data.get("expires_at"))
+    if err:
+        return err
+
     # Generate the credential, store ONLY prefix + hash (the secret is discarded after
     # hashing inside generate_key), and stamp WHICH admin issued it (audit trail).
     full_key, prefix, key_hash = auth.generate_key()
@@ -471,6 +585,7 @@ def issue_key(request, slug):
         key_hash=key_hash,
         label=label,
         rate_limit_per_min=rate_limit,
+        expires_at=expires_at,
         created_by=user,
     )
 
