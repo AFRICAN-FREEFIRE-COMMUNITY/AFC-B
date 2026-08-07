@@ -140,13 +140,21 @@ def _is_head_or_super_admin(user):
 # (FxRate.rate = units per 1 USD, NGN passthrough, and it keeps the raw number when FX data is
 # missing rather than dropping the value). One conversion path, so tiering and prize points can
 # never disagree about what an event's pool is worth.
-def _prize_pool_ngn(event) -> int:
+#
+# BATCHING (2026-08-07): pass `rate_map` when converting more than one event. Without it this
+# function re-reads the WHOLE FxRate table (166 rows on prod) on every single call, so the
+# `reclassify_event_tiers` sweep did one full table read per event. `rate_map` is the same
+# {currency: units per 1 USD} dict afc_rankings.admin_tournament_tiers._fx_rate_map builds, so
+# a caller classifying a batch builds it once and hands the same map to both sides of the
+# comparison (the event's pool here, the rule's threshold in the classifier).
+def _prize_pool_ngn(event, rate_map=None) -> int:
     from .prize_sync import _amount_ngn
     from afc_auth.models import FxRate
     raw = event.prizepool_cash_value
     if not raw:
         return 0
-    rate_map = {f.currency: f.rate for f in FxRate.objects.all()}
+    if rate_map is None:
+        rate_map = {f.currency: f.rate for f in FxRate.objects.all()}
     ngn = _amount_ngn(raw, getattr(event, "prize_currency", "USD"), rate_map)
     return int(ngn) if ngn else 0
 
@@ -164,10 +172,19 @@ def _prize_pool_ngn(event) -> int:
 # rule or FX change. The tier it returns is what afc_rankings.aggregation feeds the scoring engine
 # as TournamentInput.tier (tier_1 = 2.0x, tier_2 = 1.5x, tier_3 = 1.0x), so this function decides
 # how much every result in the event is worth in the rankings.
-def auto_classify_event(event):
+#
+# CURRENCY (owner 2026-08-07): a rule's prize THRESHOLD may now be authored in any supported
+# currency, so both sides of the comparison need the FX map - the event's pool is converted to naira
+# by _prize_pool_ngn, the threshold by the classifier. One `rate_map` is built here (or supplied by
+# a batch caller such as the reclassify_event_tiers command) and handed to both, so they can never
+# convert at two different rates. A threshold written in naira, which is every rule authored before
+# that date, never consults the map at all.
+def auto_classify_event(event, rate_map=None):
     try:
-        from afc_rankings.admin_tournament_tiers import classify, _get_config
+        from afc_rankings.admin_tournament_tiers import classify, _get_config, _fx_rate_map
         from afc_rankings.models import EventTierRule
+        if rate_map is None:
+            rate_map = _fx_rate_map()
         is_solo = event.participant_type == "solo"
         cap = int(event.max_teams_or_players or 0)
         # Event.event_mode -> the classifier's lan/virtual format. hybrid counts as lan (it has a
@@ -175,13 +192,13 @@ def auto_classify_event(event):
         fmt = {"physical(lan)": "lan", "virtual": "virtual", "hybrid": "lan"}.get(event.event_mode)
         sample = {
             # NGN, not the raw stored amount - see _prize_pool_ngn above.
-            "prize": _prize_pool_ngn(event),
+            "prize": _prize_pool_ngn(event, rate_map),
             "teams": 0 if is_solo else cap,
             "players": cap if is_solo else 0,
             "format": fmt,
         }
         rules = list(EventTierRule.objects.all().order_by("priority", "created_at"))
-        result = classify(rules, _get_config().default_tier, sample)
+        result = classify(rules, _get_config().default_tier, sample, rate_map)
         return f"tier_{result['tier']}"
     except Exception:
         return event.tournament_tier or "tier_3"
@@ -16145,6 +16162,32 @@ def edit_solo_match_result(request):
         placement_points = {1:12,2:9,3:8,4:7,5:6,6:5,7:4,8:3,9:2,10:1}
     kill_point = float(lb.kill_point or 1.0)
 
+    # ---------------- PLACEMENT VALIDATION ----------------
+    # The OTHER three manual-entry write paths (enter_team_match_result_manual,
+    # enter_solo_match_result_manual, edit_match_result) all run validate_placements; this one was
+    # the only path without it, so a blank placement reached `int(None)` below and answered with a
+    # 500 Django error page instead of a readable 400. Proven against the running stack on
+    # 2026-08-06: POST placement=null here returned 500 "TypeError: int() argument must be a
+    # string, a bytes-like object or a real number, not 'NoneType'", while the identical payload
+    # to the TEAM endpoint returned a clean 400.
+    #
+    # This is the server half of the owner's manual-entry bug ("they can leave score blank for
+    # certain players"). The frontend now catches it first and names the offending rows
+    # (lib/scoreInput.ts rowsMissingPlacement), but the guard has to exist here too: the admin
+    # editor's separate ADJUSTMENT save posts placements straight through, and the endpoint is
+    # public API surface that must not 500 on bad input either way.
+    #
+    # CONNECTS TO: app/(a)/a/leaderboards/[id]/edit/page.tsx (solo branch of buildMatchSaveRequest
+    # + the adjustment save), app/(organizer)/organizer/events/[slug]/leaderboard/page.tsx and
+    # GroupResultsEditor.tsx, all of which surface the returned `message` verbatim as a toast.
+    # Runs BEFORE the transaction so a rejected save leaves the stored results untouched.
+    _played_rows = [r for r in rows if r.get("played", True)]
+    _placement_error = validate_placements(
+        [r.get("placement") for r in _played_rows], noun="player"
+    )
+    if _placement_error:
+        return Response({"message": _placement_error}, status=400)
+
     with transaction.atomic():
         for r in rows:
             competitor_id = r.get("competitor_id")
@@ -16154,9 +16197,15 @@ def edit_solo_match_result(request):
             stats = get_object_or_404(SoloPlayerMatchStats, match=match, competitor_id=competitor_id)
 
             if "placement" in r:
-                stats.placement = int(r["placement"])
+                # A NOT-played row is exempt from the validation above, so its placement box may
+                # legitimately arrive blank; store 0 for it exactly as the manual solo entry path
+                # does (`int(p.get("placement") or 0) if played else 0`). Played rows are already
+                # guaranteed non-blank here, so `or 0` cannot mask a real omission.
+                stats.placement = int(r["placement"] or 0)
             if "kills" in r:
-                stats.kills = int(r["kills"])
+                # `or 0` keeps a blank kills box meaning none. A real 0 is unaffected: int(0 or 0)
+                # is 0, the same value, so a deliberate zero still stores as zero.
+                stats.kills = int(r["kills"] or 0)
 
             if "bonus_points" in r:
                 stats.bonus_points = int(r["bonus_points"] or 0)
@@ -16955,6 +17004,19 @@ def enter_team_match_result_manual(request):
 
         match.save(update_fields=["result_inputted", "leaderboard"])
 
+    # ── Give this map's flagged / attributed kills back (data-loss fix, owner 2026-08-06) ────────
+    # Same hole as edit_match_result, same reason: result_writes.write_team_result_row stores
+    # kills = Σ the posted rows, which is only PART of a team's real total. Re-entering a map that
+    # was originally uploaded would drop every ringer / uid-changed / unlisted-in-file kill. Folded
+    # back in (added, not rebuilt - this writer is the one that allows unnamed slots) scoped to this
+    # map. See the fuller write-up on _fold_flagged_kills_into_saved_match.
+    try:
+        _fold_flagged_kills_into_saved_match(event, match)
+    except Exception:
+        import logging
+        logging.getLogger("afc_tournament_and_scrims").exception(
+            "flagged-kill fold-in failed for match %s", match.match_id)
+
     # Auto-complete the event if this save finished its final stage (owner 2026-06-16). Best-effort:
     # never let a completion/linking hiccup fail an already-committed result save.
     try:
@@ -17608,6 +17670,10 @@ def edit_match_result(request):
                     match=match,
                     tournament_team_id=tt.tournament_team_id,
                     placement=placement,
+                    # NOTE: `kills` here is the sum of the POSTED player rows only. Any flagged or
+                    # attributed kills this team also owns are added back by the canonical
+                    # _recompute_team_kills_for_event call after this transaction - see the block at
+                    # the end of this view. Do not "simplify" that away.
                     kills=total_kills,
                     damage=total_damage,
                     assists=total_assists,
@@ -17616,6 +17682,13 @@ def edit_match_result(request):
                     bonus_points=bonus,
                     penalty_points=penalty,
                     total_points=pts["total_points"],
+                    # `played` was omitted here until 2026-08-06, so a team the admin explicitly
+                    # unticked was stored with the model default True and this endpoint disagreed
+                    # with result_writes.write_team_result_row (which has always set it) for the
+                    # same input. Points were unaffected either way (a not-played team gets
+                    # placement 0 and no player rows), but the column lied about what happened,
+                    # and _recompute_team_kills_for_event reads ts.played back when it re-scores.
+                    played=team_played,
                 )
             )
 
@@ -17681,6 +17754,32 @@ def edit_match_result(request):
             match.leaderboard = lb
 
         match.save(update_fields=["result_inputted", "leaderboard"])
+
+    # ── Give this map's flagged / attributed kills back (data-loss fix, owner 2026-08-06) ────────
+    # A team's kills are NOT just the sum of its player rows. The canonical definition (see
+    # _recompute_team_kills_for_event) is
+    #       rostered player rows + counting MatchKillFlags + attributed UnmatchedTeamBlocks
+    # because a ringer, a returning player whose Free Fire UID changed, or a player line the FF
+    # client dropped from the log all produce kills with no roster row to hang them on.
+    #
+    # The transaction above rebuilt this map from the POSTED player rows alone, so every one of
+    # those kills was silently dropped. That made a PLAIN RE-SAVE destructive: on match 3723 an
+    # unchanged "Save this map" rewrote NOOBZ Esports 3 -> 2 and CLIQ ESPORT 8 -> 7 and answered
+    # HTTP 200. The MatchKillFlag rows survived, so nothing looked broken; the totals just quietly
+    # got smaller every time somebody corrected a placement.
+    #
+    # These are ADDED to what the transaction stored rather than the total being rebuilt from the
+    # player rows, because manual entry allows an unnamed slot whose kills have no player row to
+    # rebuild from - see the write-up on _fold_flagged_kills_into_saved_match. Scoped to this map so
+    # a "Save this map" click does not sweep the whole event. Flags the admin has rejected
+    # (count_kills=False) stay excluded, since effective_count still decides.
+    # Best-effort: a correct save must not 500 because the recount hit a snag.
+    try:
+        _fold_flagged_kills_into_saved_match(event, match)
+    except Exception:
+        import logging
+        logging.getLogger("afc_tournament_and_scrims").exception(
+            "flagged-kill fold-in failed for match %s", match.match_id)
 
     # Auto-complete the event if this edit finished its final stage (owner 2026-06-16). Best-effort.
     try:
@@ -24783,6 +24882,47 @@ def set_results_visibility(request):
 # default, (2) flip the event-wide count_flagged_kills default, and (3) override a single flagged
 # player's count_kills. Any change re-scores the affected team-match totals via
 # _recompute_team_kills_for_event, so the standings update without a re-upload.
+def _flagged_kill_contributions(event, match=None):
+    """The kills in `event` that exist WITHOUT a rostered player row to hang them on.
+
+    Returns (counted_by_key, attr_kills, attr_placement), each keyed (match_id, tournament_team_id):
+      counted_by_key  Σ MatchKillFlag.kills where the flag currently COUNTS (effective_count =
+                      per-flag override if set, else the event's count_flagged_kills default), i.e.
+                      ringers, returning players whose Free Fire UID changed, and the synthetic
+                      "unlisted_in_file" flag for a player line the FF client dropped from the log.
+      attr_kills      Σ UnmatchedTeamBlock.kills an admin attributed to a registered team
+                      (owner 2026-06-30). NULL-attributed blocks contribute nothing.
+      attr_placement  the placement to seed a row for a team that appears ONLY via an attribution.
+
+    `match` restricts the lookup to one map.
+
+    Extracted 2026-08-06 so the two callers below cannot drift apart: they disagree on what to DO
+    with these numbers (replace vs add - see _fold_flagged_kills_into_saved_match) but must never
+    disagree on what the numbers ARE."""
+    from collections import defaultdict
+    from .models import MatchKillFlag, UnmatchedTeamBlock
+
+    counted_by_key = defaultdict(int)
+    flag_qs = MatchKillFlag.objects.filter(tournament_team__event=event)
+    if match is not None:
+        flag_qs = flag_qs.filter(match=match)
+    for f in flag_qs.select_related("tournament_team__event"):
+        if f.effective_count:
+            counted_by_key[(f.match_id, f.tournament_team_id)] += f.kills
+
+    attr_kills = defaultdict(int)
+    attr_placement = {}
+    block_qs = UnmatchedTeamBlock.objects.filter(
+        match__group__stage__event=event, attributed_team__isnull=False)
+    if match is not None:
+        block_qs = block_qs.filter(match=match)
+    for blk in block_qs.select_related("match"):
+        key = (blk.match_id, blk.attributed_team_id)
+        attr_kills[key] += blk.kills
+        attr_placement.setdefault(key, blk.placement)
+    return counted_by_key, attr_kills, attr_placement
+
+
 def _recompute_team_kills_for_event(event):
     """Rebuild every team-match total in `event` from ROSTERED player kills + the flagged kills that
     currently COUNT (MatchKillFlag.effective_count = per-flag override else event default). Saves
@@ -24791,29 +24931,16 @@ def _recompute_team_kills_for_event(event):
     (read from each match's own scoring_settings) + bonus - penalty - so a flag toggle / per-flag
     override recount never silently DROPS assist or damage points (bug #15, 2026-07-06; previously this
     path hardcoded assist/damage to 0 and disagreed with the stored totals). Called after the toggle or
-    a per-flag override changes."""
-    from collections import defaultdict
+    a per-flag override changes.
+
+    CAUTION: this REBUILDS the total from the stored player rows, so it is only correct where every
+    non-flag kill has a player row - which is true of the UPLOAD path it was written for. It is NOT
+    safe after manual entry, where an unnamed slot ("kills: 8" with no user_id) contributes to the
+    team total and deliberately creates no player row; rebuilding there would erase those kills.
+    Manual writers use _fold_flagged_kills_into_saved_match instead."""
     from django.db.models import Sum
-    from .models import MatchKillFlag, UnmatchedTeamBlock
 
-    counted_by_key = defaultdict(int)   # (match_id, tournament_team_id) -> Σ counted flagged kills
-    for f in (MatchKillFlag.objects.filter(tournament_team__event=event)
-              .select_related("tournament_team__event")):
-        if f.effective_count:
-            counted_by_key[(f.match_id, f.tournament_team_id)] += f.kills
-
-    # Admin-attributed unmatched-team blocks (owner 2026-06-30): a block attributed to a registered team
-    # adds its kills to that team's match total, and seeds a placement if the team has no row in the
-    # match (it appears ONLY via the attribution, e.g. "the saint" -> "The saints"). NULL-attributed
-    # blocks contribute nothing.
-    attr_kills = defaultdict(int)        # (match_id, tt_id) -> Σ attributed block kills
-    attr_placement = {}                  # (match_id, tt_id) -> placement to seed a brand-new row
-    for blk in (UnmatchedTeamBlock.objects
-                .filter(match__group__stage__event=event, attributed_team__isnull=False)
-                .select_related("match")):
-        key = (blk.match_id, blk.attributed_team_id)
-        attr_kills[key] += blk.kills
-        attr_placement.setdefault(key, blk.placement)
+    counted_by_key, attr_kills, attr_placement = _flagged_kill_contributions(event)
 
     def _score(match, placement, kills, damage, assists, bonus, penalty, played):
         scoring = match.scoring_settings or {}
@@ -24867,6 +24994,66 @@ def _recompute_team_kills_for_event(event):
             placement_points=pts["placement_points"], kill_points=pts["kill_points"],
             total_points=pts["total_points"], played=True, penalty_points=0, bonus_points=0,
         )
+        updated += 1
+    return updated
+
+
+def _fold_flagged_kills_into_saved_match(event, match):
+    """ADD one map's flagged / attributed kills on top of the totals a manual writer just stored.
+
+    WHY THIS EXISTS, and why it is not _recompute_team_kills_for_event (data-loss fix, 2026-08-06).
+    Both manual writers rebuild a map from the POSTED rows, so they store
+        kills = Σ posted player rows (+ any unnamed slots)
+    and know nothing about MatchKillFlags. That made a PLAIN RE-SAVE destructive: on match 3723 an
+    unchanged "Save this map" rewrote NOOBZ Esports 3 -> 2 and CLIQ ESPORT 8 -> 7 and answered HTTP
+    200. The flag rows survived, so nothing looked broken; the totals just quietly got smaller every
+    time somebody corrected a placement.
+
+    The obvious fix - call the canonical _recompute_team_kills_for_event - is WRONG here, and the
+    existing suite catches it. That function REBUILDS the total from the stored player rows, but
+    manual entry allows an UNNAMED slot ("kills: 8" with no user_id) whose kills go into the team
+    total and deliberately produce no player row (see result_writes.write_team_result_row). A rebuild
+    erases those. So this ADDS instead, which is also idempotent: each save recreates the team row
+    from the payload first, so the flag contribution is folded in exactly once per save.
+
+    Adds to EXISTING rows only. A team that appears solely through an attributed UnmatchedTeamBlock
+    is left to the event-wide recompute that already runs when an admin changes an attribution;
+    inventing a row here would contradict the placements the admin just entered.
+
+    CONNECTS TO: called at the end of enter_team_match_result_manual and edit_match_result, i.e.
+    behind every "Save this map" from the admin grid, the organizer grid and GroupResultsEditor.
+    Shares _flagged_kill_contributions with _recompute_team_kills_for_event so the two can never
+    disagree about which kills count.
+    """
+    counted_by_key, attr_kills, _ = _flagged_kill_contributions(event, match=match)
+    if not counted_by_key and not attr_kills:
+        return 0                                  # nothing flagged on this map, nothing to do
+
+    scoring = match.scoring_settings or {}
+    try:
+        pp = {int(k): int(v) for k, v in (scoring.get("placement_points") or {}).items()}
+    except Exception:
+        pp = {}
+
+    updated = 0
+    for ts in TournamentTeamMatchStats.objects.filter(match=match):
+        key = (ts.match_id, ts.tournament_team_id)
+        extra = counted_by_key.get(key, 0) + attr_kills.get(key, 0)
+        if not extra:
+            continue
+        ts.kills = (ts.kills or 0) + extra
+        # Re-score through the shared formula, honouring this match's own assist/damage settings so
+        # the recount cannot disagree with what the writer stored (bug #15, 2026-07-06).
+        pts = scoring_lib.compute_team_points(
+            placement_points=pp, kill_point=float(scoring.get("kill_point", 1)),
+            points_per_assist=float(scoring.get("points_per_assist", 0) or 0),
+            points_per_1000_damage=float(scoring.get("points_per_1000_damage", 0) or 0),
+            placement=ts.placement, kills=ts.kills, damage=ts.damage, assists=ts.assists,
+            bonus=ts.bonus_points or 0, penalty=ts.penalty_points or 0, played=ts.played,
+        )
+        ts.kill_points = pts["kill_points"]
+        ts.total_points = pts["total_points"]
+        ts.save(update_fields=["kills", "kill_points", "total_points"])
         updated += 1
     return updated
 
