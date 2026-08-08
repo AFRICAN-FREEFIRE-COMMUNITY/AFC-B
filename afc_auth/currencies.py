@@ -119,6 +119,42 @@ CURRENCY_CODES = frozenset(code for code, _name in AFC_CURRENCIES)
 # a safe fallback (see afc_auth.fx: a USD amount needs no conversion and therefore cannot be wrong).
 DEFAULT_CURRENCY = "USD"
 
+# ── the CHARGEABLE subset ─────────────────────────────────────────────────────────────────────
+# Everything in CURRENCY_CODES is CONVERTIBLE: it has an FxRate row, so a prize pool or a broadcast
+# amount quoted in it can be re-expressed in any reader's own currency. Only these seven are
+# CHARGEABLE, i.e. may be stored on a registration fee, because that field becomes a live Stripe
+# Checkout session rather than a number we merely display.
+#
+# WHY THE FULL MENU CANNOT BE CHARGED
+#   1. Stripe takes amounts in MINOR UNITS. afc_tournament_and_scrims.event_payments._amount_minor
+#      multiplies by 100 unless the code is in a short zero-decimal set, so a three-decimal fee
+#      (TND, LYD) would bill a TENTH of its value and a zero-decimal one (DJF, KMF, GNF, RWF, BIF,
+#      ...) would bill a HUNDRED TIMES it. Stripe also documents per-currency special cases (ISK and
+#      UGX are charged as two-decimal values ending in 00), so the correct table is not derivable
+#      from ISO-4217 alone and must not be written from memory.
+#   2. A Stripe account only settles a subset of world currencies. Most of the menu would fail at
+#      session creation with an error the organizer cannot act on.
+#
+# These seven are the set the per-country override validator has always enforced, and all seven are
+# ordinary two-decimal currencies, so _amount_minor is correct for every one of them.
+#
+# TO WIDEN: confirm the currency is enabled on the AFC Stripe account, confirm _amount_minor computes
+# its minor units correctly against Stripe's own zero-decimal and special-case lists, then add it
+# here AND to CHARGEABLE_CURRENCY_CODES in frontend/lib/currencies.ts (the test suite diffs the two).
+#
+# Readers: afc_tournament_and_scrims.views._parse_country_payment_rules (_ALLOWED_CCY) for per-country
+# overrides; frontend Step1EventDetails + BasicInfoTab + CountryPaymentRulesEditor for the menus.
+CHARGEABLE_CURRENCY_CODES = frozenset({"USD", "NGN", "GHS", "KES", "ZAR", "GBP", "EUR"})
+
+
+def is_chargeable_currency(code):
+    """True if `code` may be used for a REGISTRATION FEE (a real Stripe charge).
+
+    Narrower than is_supported_currency() on purpose: that one answers "may this be stored and
+    converted", this one answers "may we bill in it". See CHARGEABLE_CURRENCY_CODES above."""
+    return str(code or "").strip().upper() in CHARGEABLE_CURRENCY_CODES
+
+
 # ── DEPRECATED ISO codes we still accept on READ ──────────────────────────────────────────────
 # Two redenominations happened after some AFC rows were written, so historical data can carry the old
 # code. We keep ACCEPTING these (so an old event still validates and still converts) but they are NOT

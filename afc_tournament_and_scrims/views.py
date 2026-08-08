@@ -1046,10 +1046,12 @@ def _parse_country_payment_rules(raw):
     import json as _json
     from decimal import Decimal, InvalidOperation
 
-    # Override currencies the platform actually supports (mirrors the FE REGISTRATION_FEE_CURRENCIES
-    # picker). Enforced here so a non-FE client can't store an unsupported code that would only fail
-    # later at the Stripe checkout. Keep in sync with frontend create/_components/types.ts.
-    _ALLOWED_CCY = {"USD", "NGN", "GHS", "KES", "ZAR", "GBP", "EUR"}
+    # Currencies AFC can actually BILL in. Enforced here so a non-FE client can't store a code that
+    # would only fail later at the Stripe checkout, or bill at the wrong magnitude because Stripe
+    # takes minor units. No longer a literal: it is the ONE definition in afc_auth.currencies, which
+    # the frontend picker (CHARGEABLE_CURRENCY_CODES in lib/currencies.ts) is diffed against by
+    # afc_auth.test_currencies, so this set and the menu cannot drift apart again (backlog item 28).
+    from afc_auth.currencies import CHARGEABLE_CURRENCY_CODES as _ALLOWED_CCY
 
     if raw in (None, "", "null"):
         return None, None
