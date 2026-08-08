@@ -46,13 +46,42 @@ HOW IT CONNECTS
     - Frontend: EventTeamInvitesCard.tsx (organizer/admin, inside the shared RegisteredTeamsTab)
       and EventInvitationsCard.tsx (the team page). i18n namespace messages/*/eventInvites.json.
 
+THE THREE KINDS (owner 2026-08-08, the follow-up ask)
+    "The admins can pick where they receive the invitations, the normal places, can also decide what
+    kind: if it is fcfs, or single per team that's automatically generated and attributed to each
+    team and sent, or it's a single general bulk invite."
+
+    Every send now creates an EventInvitationCampaign (models.py) carrying the KIND, the note, the
+    deadline, the delivery channels and, for fcfs, the slot count. The kinds differ in exactly one
+    thing, HOW MANY ADDRESSED ROWS THEY WRITE, which is why the kind lives on the campaign and not
+    on the invitation:
+
+      per_team  N teams -> N EventTeamInvitation rows. All may be accepted. Item 34, unchanged.
+      fcfs      N teams -> N rows, but only `slots` of them may ever be accepted (and the event's
+                own capacity still applies on top). More teams are asked than there is room for.
+      bulk      N teams -> ZERO rows. One general offer any audience team may take up; a row is
+                written when somebody ANSWERS, so it records the answer rather than the ask.
+
+    The accept path is the SAME for all three and still ends in register_for_event. A kind decides
+    who is asked and how many may say yes; it never decides who gets in.
+
+DELIVERY (the other half of the same ask)
+    Which channels an invitation goes out on is the admin's choice, carried on the campaign as
+    `delivery` in afc_auth.audience's existing vocabulary and fanned out by
+    event_invite_delivery.deliver_invitation: in-app notification, email (hand-authored copy, in the
+    recipient's own language), and WhatsApp. Every channel reaches EVERYONE who may answer, which is
+    the same set _user_can_register_team accepts, not just the captain.
+
 ENDPOINTS (mounted under events/ by afc_tournament_and_scrims/urls.py)
     POST events/team-invitations/create/            create_team_invitations   organizer/admin
     GET  events/team-invitations/                   list_event_invitations    organizer/admin
     POST events/team-invitations/<id>/cancel/       cancel_team_invitation    organizer/admin
+    POST events/invitation-campaigns/<id>/close/    close_invitation_campaign organizer/admin
     GET  events/team-invitations/mine/              list_my_team_invitations  team side
     POST events/team-invitations/<id>/accept/       accept_team_invitation    team side
     POST events/team-invitations/<id>/decline/      decline_team_invitation   team side
+    POST events/invitation-campaigns/<id>/accept/   accept_bulk_campaign      team side (bulk only)
+    POST events/invitation-campaigns/<id>/decline/  decline_bulk_campaign     team side (bulk only)
 """
 import json
 
@@ -68,8 +97,10 @@ from afc_auth.models import Notifications
 from afc_auth.views import validate_token
 from afc_team.models import Team, TeamMembers
 
+from .event_invite_delivery import deliver_invitation, reach_for_teams
 from .models import (
-    Event, EventInviteToken, EventTeamInvitation, RegisteredCompetitors, TournamentTeam,
+    Event, EventInvitationCampaign, EventInviteToken, EventTeamInvitation, RegisteredCompetitors,
+    TournamentTeam,
 )
 # Top-level import of the big views module, exactly like views_checkin.py does: urls.py imports
 # .views first, and views.py only ever reaches back into this app's satellite modules lazily, so
@@ -171,9 +202,15 @@ def _serialize(inv, for_team=False):
         "team_country": inv.team.country if inv.team_id else None,
         "invited_by": inv.invited_by.username if inv.invited_by_id else None,
         "responded_by": inv.responded_by.username if inv.responded_by_id else None,
+        # WHICH KIND of offer this row came from. A row written before campaigns existed has no
+        # campaign, and "per_team" is exactly what those rows are, so the fallback is the truth
+        # rather than a guess. Both cards branch on this to say the right thing to the team.
+        "kind": inv.campaign.kind if inv.campaign_id else "per_team",
+        "campaign_id": inv.campaign_id,
     }
     if for_team:
         event = inv.event
+        campaign = inv.campaign
         data.update({
             "event_id": event.event_id,
             "event_name": event.event_name,
@@ -187,6 +224,77 @@ def _serialize(inv, for_team=False):
             "team_registered": TournamentTeam.objects.filter(
                 event=event, team_id=inv.team_id,
             ).exists(),
+            # FCFS only, and NULL for every other kind: how many of this campaign's places are
+            # left. The team card turns this into "3 places left", which is the one number that
+            # makes a first come, first served invitation behave like one.
+            "slots_remaining": campaign.slots_remaining() if campaign else None,
+            # Places the EVENT itself has left, whatever the campaign says. Shown for fcfs and bulk
+            # because for those two the event filling up is the thing that ends the offer, and a
+            # team deciding needs to see it coming.
+            "event_places_left": _event_places_left(event),
+        })
+    return data
+
+
+def _event_places_left(event):
+    """How many active places the EVENT still has, or None when it is uncapped.
+
+    Read-only and advisory: the authoritative capacity check is the one inside register_for_event,
+    behind its select_for_update lock. This number is what the team card shows so a captain can see
+    a first come, first served race closing; it is never what decides a registration."""
+    if not event.max_teams_or_players:
+        return None
+    taken = TournamentTeam.objects.filter(event=event, is_waitlisted=False).count()
+    return max(0, event.max_teams_or_players - taken)
+
+
+def _serialize_campaign(campaign, *, for_team=False, team=None):
+    """One campaign as the two frontend cards read it.
+
+    The organizer's table lists campaigns so a bulk send appears as the ONE thing it is rather than
+    as nothing at all (bulk writes no addressed rows, so without this it would be invisible).
+
+    `for_team=True` renders an OPEN BULK campaign as an offer on the team page. It deliberately
+    borrows the shape of a serialized invitation (same keys: status, message, event_name, accept
+    affordances) so EventInvitationsCard can render offers and addressed invitations in one list
+    without a second component. `id` is negative for exactly this reason: the team card keys rows by
+    id, and a campaign id and an invitation id would otherwise collide in that list.
+    """
+    data = {
+        "campaign_id": campaign.id,
+        "kind": campaign.kind,
+        "status": campaign.status,
+        "message": campaign.message,
+        "delivery": campaign.delivery,
+        "slots": campaign.slots,
+        "slots_remaining": campaign.slots_remaining(),
+        "audience_size": len(campaign.audience_team_ids or []),
+        "created_at": campaign.created_at,
+        "expires_at": campaign.expires_at,
+        "created_by": campaign.created_by.username if campaign.created_by_id else None,
+        # How many teams have actually taken this campaign up. For bulk this is the only count that
+        # exists, since there are no pending rows to tally.
+        "accepted_count": campaign.invitations.filter(status="accepted").count(),
+    }
+    if for_team:
+        event = campaign.event
+        data.update({
+            "id": -campaign.id,          # see the docstring: keeps the team list's keys unique
+            "is_offer": True,            # the card branches on this to hit the campaign endpoints
+            "event_id": event.event_id,
+            "event_name": event.event_name,
+            "event_slug": event.slug,
+            "participant_type": event.participant_type,
+            "start_date": event.start_date,
+            "registration_open": registration_is_open(event),
+            "event_status": effective_event_status(event),
+            "invited_by": campaign.created_by.username if campaign.created_by_id else None,
+            "decline_reason": "",
+            "responded_by": None,
+            "team_registered": bool(team) and TournamentTeam.objects.filter(
+                event=event, team_id=team.team_id,
+            ).exists(),
+            "event_places_left": _event_places_left(event),
         })
     return data
 
@@ -242,37 +350,35 @@ def _register_through_the_normal_path(request, invitation):
 # ── notification helpers ─────────────────────────────────────────────────────────────────────
 def _team_decision_makers(team):
     """The people on `team` who may answer an invitation, i.e. exactly those _user_can_register_team
-    accepts: the owner plus captain / vice-captain / manager / coach. Used to decide who gets the
-    "you have been invited" notification, so the ping lands on somebody who can actually act."""
-    from .views import TEAM_EVENT_REGISTER_ROLES
+    accepts: the owner plus captain / vice-captain / manager / coach.
 
-    users = {
-        m.member for m in TeamMembers.objects.filter(
-            team=team, management_role__in=TEAM_EVENT_REGISTER_ROLES,
-        ).select_related("member")
-    }
-    if team.team_owner_id:
-        users.add(team.team_owner)
-    return list(users)
+    Kept as a thin alias over the delivery module's own resolver so there is ONE definition of "who
+    can answer" rather than two that can drift. Used here only to count WhatsApp reach before a
+    send; the actual delivery calls it itself."""
+    from .event_invite_delivery import _decision_makers
+
+    return _decision_makers(team)
 
 
-def _notify_invited_team(invitation):
-    """Tell the team they have been invited. The deep link points at the TEAM page, which is where
-    the Accept / Decline card lives (target_type "team" -> /teams/<id>)."""
-    event = invitation.event
-    for user in _team_decision_makers(invitation.team):
-        Notifications.objects.create(
-            user=user,
-            notification_type="event_team_invitation",
-            title=f"Invitation to {event.event_name}",
-            message=(
-                f"{invitation.team.team_name} has been invited to {event.event_name}. "
-                "Open your team page to accept or decline."
-            ),
-            related_event=event,
-            target_type="team",
-            target_id=str(invitation.team_id),
-        )
+def _deliver(invitation_or_team, event, campaign, organizer_name):
+    """Send one team's invitation out over the campaign's chosen channels.
+
+    Replaces the old notification-only helper. Everything about WHO is told and HOW lives in
+    event_invite_delivery.deliver_invitation; this wrapper exists so the two call sites (an
+    addressed invitation, and one audience team of a bulk campaign) read the same.
+
+    Returns the per-channel counts so create_team_invitations can tell the organizer what actually
+    went out ("18 notified, 18 emailed, 2 on WhatsApp") instead of just "invited".
+    """
+    team = getattr(invitation_or_team, "team", invitation_or_team)
+    return deliver_invitation(
+        team=team,
+        event=event,
+        delivery=campaign.delivery,
+        organizer_name=organizer_name,
+        note=campaign.message,
+        kind=campaign.kind,
+    )
 
 
 def _notify_inviter(invitation, accepted):
@@ -302,13 +408,39 @@ def _notify_inviter(invitation, accepted):
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # ORGANIZER / ADMIN SIDE
 # ══════════════════════════════════════════════════════════════════════════════════════════════
+# Kinds the create endpoint accepts, and the delivery channels it recognises. Both are validated
+# against these rather than trusted, because both end up steering how many rows get written and how
+# many people get emailed.
+VALID_KINDS = {"per_team", "fcfs", "bulk"}
+
+
+def _clean_delivery(raw):
+    """Normalise the caller's channel choice to a canonical token, or ("", error) when it names no
+    channel we know.
+
+    Delegates the vocabulary entirely to afc_auth.audience, the SAME parser the broadcast composer
+    uses, so "both", "push,email" and ["push","email"] all mean the one thing and a typo cannot
+    silently send nothing. An invitation that reaches nobody is worse than a refused request, which
+    is why an unrecognised value is a 400 here rather than a quiet no-op."""
+    from afc_auth.audience import delivery_token, parse_delivery
+
+    channels = parse_delivery(raw if raw not in (None, "") else "both")
+    token = delivery_token(channels)
+    if not token:
+        return "", "delivery must name at least one of: push, email, both, whatsapp."
+    return token, None
+
+
 @api_view(["POST"])
 def create_team_invitations(request):
-    """POST events/team-invitations/create/ - invite one or several teams to an event.
+    """POST events/team-invitations/create/ - invite teams to an event, in one of three kinds.
 
-    REQUEST   {event_id: int, team_ids: [int], message?: str, expires_at?: ISO-8601}
-    RESPONSE  201 {invited: [<invitation>], skipped: [{team_id, team_name, reason}],
-                   message: str}
+    REQUEST   {event_id: int, team_ids: [int], kind?: "per_team"|"fcfs"|"bulk",
+               delivery?: "push"|"email"|"both"|"whatsapp" (comma-joined combinations allowed),
+               slots?: int (fcfs only), message?: str, expires_at?: ISO-8601}
+    RESPONSE  201 {campaign: <campaign>, invited: [<invitation>],
+                   skipped: [{team_id, team_name, reason}], delivered: {recipients, pushed,
+                   emailed, whatsapp}, message: str}
               Partial success is normal and is reported rather than refused: picking eight teams of
               which one is already registered must invite the other seven, not fail the batch.
     AUTH      Bearer session token; AFC event admin, or organizer with can_manage_registrations on
@@ -316,8 +448,23 @@ def create_team_invitations(request):
     CONSUMED BY  EventTeamInvitesCard.tsx (the "Invite teams" dialog inside the shared
               RegisteredTeamsTab, so both the admin and organizer event-edit pages get it).
 
+    THE THREE KINDS, and what each actually writes
+      per_team  one EventTeamInvitation per selected team. All may be accepted; the event's own
+                capacity is the only ceiling. This is item 34's behaviour and is the default, so an
+                older client that sends no `kind` keeps working unchanged.
+      fcfs      one EventTeamInvitation per selected team, plus a campaign `slots` ceiling. More
+                teams are asked than there is room for and the quick ones get in. The race is safe
+                because the slot is CLAIMED by a single guarded UPDATE (campaign.claim_slot) and the
+                event's capacity is guarded by register_for_event's own select_for_update.
+      bulk      NO invitation rows at all. One open offer, delivered to the selected teams and
+                acceptable by any of them, which is what "a single general bulk invite" means. The
+                selected ids are kept on the campaign as its audience, and a row appears only when a
+                team answers.
+
     A team is SKIPPED (never an error) when it is already registered, already holds a pending
-    invitation, is banned, or does not exist. Each skip carries a reason the dialog shows.
+    invitation, is banned, or does not exist. Each skip carries a reason the dialog shows. Bulk
+    skips only the impossible cases (missing, banned, already registered): "already invited" cannot
+    apply to an offer that addresses nobody.
     """
     user, err = _auth_user(request)
     if err:
@@ -327,11 +474,38 @@ def create_team_invitations(request):
     team_ids = request.data.get("team_ids") or []
     message = (request.data.get("message") or "").strip()[:280]
     expires_at = request.data.get("expires_at") or None
+    kind = (request.data.get("kind") or "per_team").strip().lower()
+    delivery, delivery_error = _clean_delivery(request.data.get("delivery"))
 
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
     if not isinstance(team_ids, list) or not team_ids:
         return Response({"message": "team_ids must be a non-empty list of team ids."}, status=400)
+    if kind not in VALID_KINDS:
+        return Response(
+            {"message": "kind must be one of: per_team, fcfs, bulk."}, status=400,
+        )
+    if delivery_error:
+        return Response({"message": delivery_error}, status=400)
+
+    # `slots` is meaningful for fcfs alone. Accepting it for the other kinds would create a ceiling
+    # nothing enforces, so it is refused rather than ignored: a silently dropped limit is how an
+    # organizer ends up with more teams than they meant to invite.
+    slots = request.data.get("slots")
+    if slots in ("", None):
+        slots = None
+    else:
+        try:
+            slots = int(slots)
+        except (TypeError, ValueError):
+            return Response({"message": "slots must be a whole number."}, status=400)
+        if slots < 1:
+            return Response({"message": "slots must be at least 1."}, status=400)
+        if kind != "fcfs":
+            return Response(
+                {"message": "slots only applies to a first come, first served invitation."},
+                status=400,
+            )
 
     event = get_object_or_404(Event, event_id=event_id)
     if not _can_invite(user, event):
@@ -356,6 +530,10 @@ def create_team_invitations(request):
 
     teams = {t.team_id: t for t in Team.objects.filter(team_id__in=wanted)}
     invited, skipped = [], []
+    # Per-channel totals across the whole send, so the organizer is told what actually went out
+    # rather than just how many rows were written.
+    delivered = {"recipients": 0, "pushed": 0, "emailed": 0, "whatsapp": 0}
+    organizer_name = getattr(user, "username", "") or ""
 
     with transaction.atomic():
         # One pending invitation per (event, team) is enforced HERE rather than by a DB constraint:
@@ -374,6 +552,24 @@ def create_team_invitations(request):
             ).values_list("team_id", flat=True)
         )
 
+        # PRIVATE event: mint the token the accept will replay, so the invitation is actually
+        # acceptable without teaching register_for_event a second way in. per_team keeps item 34's
+        # one single-use token PER INVITATION; fcfs and bulk need ONE SHARED token for the campaign,
+        # because by definition more than one team redeems them (EventInviteToken.is_shared already
+        # models exactly that, and register_for_event already honours it).
+        campaign_token = None
+        if not event.is_public and kind in ("fcfs", "bulk"):
+            campaign_token = EventInviteToken.objects.create(
+                event=event, created_by=user, is_shared=True,
+            )
+
+        campaign = EventInvitationCampaign.objects.create(
+            event=event, kind=kind, message=message, delivery=delivery, slots=slots,
+            expires_at=expires_at or None, created_by=user, invite_token=campaign_token,
+            audience_team_ids=[],
+        )
+
+        audience = []
         for team_id in wanted:
             team = teams.get(team_id)
             if not team:
@@ -387,30 +583,111 @@ def create_team_invitations(request):
                     "team_id": team_id, "team_name": team.team_name, "reason": "already_registered",
                 })
                 continue
-            if team_id in already_pending:
+            # Only an ADDRESSED kind can collide with an existing addressed invitation. A bulk offer
+            # addresses nobody, so a team holding a pending per_team invitation can still be told
+            # about it.
+            if kind != "bulk" and team_id in already_pending:
                 skipped.append({
                     "team_id": team_id, "team_name": team.team_name, "reason": "already_invited",
                 })
                 continue
 
-            # PRIVATE event: mint the single-use token the accept will replay, so the invitation is
-            # actually acceptable without teaching register_for_event a second way in.
-            token = None
-            if not event.is_public:
-                token = EventInviteToken.objects.create(event=event, created_by=user)
+            audience.append(team_id)
 
-            invitation = EventTeamInvitation.objects.create(
-                event=event, team=team, invited_by=user, message=message,
-                expires_at=expires_at or None, invite_token=token,
-            )
-            _notify_invited_team(invitation)
-            invited.append(_serialize(invitation))
+            if kind == "bulk":
+                # No row: the offer IS the campaign. The team is delivered to below, and a row gets
+                # written only if they answer (accept_bulk_campaign / decline_bulk_campaign).
+                counts = deliver_invitation(
+                    team=team, event=event, delivery=delivery,
+                    organizer_name=organizer_name, note=message, kind=kind,
+                )
+            else:
+                token = None
+                if not event.is_public:
+                    # per_team keeps its own single-use token; fcfs shares the campaign's.
+                    token = campaign_token or EventInviteToken.objects.create(
+                        event=event, created_by=user,
+                    )
+                invitation = EventTeamInvitation.objects.create(
+                    event=event, team=team, invited_by=user, message=message,
+                    expires_at=expires_at or None, invite_token=token, campaign=campaign,
+                )
+                counts = _deliver(invitation, event, campaign, organizer_name)
+                invited.append(_serialize(invitation))
+
+            for key in delivered:
+                delivered[key] += counts.get(key, 0)
+
+        campaign.audience_team_ids = audience
+        campaign.save(update_fields=["audience_team_ids"])
+
+    if kind == "bulk":
+        summary = f"Open invitation sent to {len(audience)} team(s), {len(skipped)} skipped."
+    else:
+        summary = f"{len(invited)} team(s) invited, {len(skipped)} skipped."
 
     return Response({
-        "message": f"{len(invited)} team(s) invited, {len(skipped)} skipped.",
+        "message": summary,
+        "campaign": _serialize_campaign(campaign),
         "invited": invited,
         "skipped": skipped,
+        "delivered": delivered,
     }, status=201)
+
+
+@api_view(["GET"])
+def invitation_reach(request):
+    """GET events/team-invitations/reach/?event_id=<id>&team_ids=1,2,3 - who a send would reach.
+
+    REQUEST   query string; team_ids is a comma-separated list (the composer sends its current
+              selection, so this is re-asked as teams are ticked).
+    RESPONSE  200 {recipients: int, email: int, whatsapp: int, teams: int}
+              `recipients` counts PEOPLE, deduplicated across the selected teams, because one
+              person can run two of them and would still only be told once.
+    AUTH      Bearer session token; the same _can_invite gate as creating an invitation. Reach is
+              a read of who can be contacted, so it is not shown to anybody who could not send.
+    CONSUMED BY  EventTeamInvitesCard.tsx - the line under the WhatsApp tick box in the invite
+              dialog ("WhatsApp reaches 2 of these 14 people").
+
+    WHY THIS ENDPOINT EXISTS AT ALL
+        Because the channels became a choice, and the three are not equivalent. Everyone has an
+        email address; WhatsApp only reaches somebody who saved a number AND left the opt-in on,
+        which site-wide is about 4% of the people who can answer an invitation. Without this the
+        admin ticks WhatsApp, sees "invitations sent", and believes the teams were told. The
+        numbers are computed live rather than written into the copy so they cannot go stale.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+
+    event_id = request.GET.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required."}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if not _can_invite(user, event):
+        return Response({"message": "Unauthorized."}, status=403)
+
+    # Bounded like every other list here: a hand-made call must not be able to ask us to walk the
+    # whole team table. MAX_LIMIT is the same ceiling the invitation lists use.
+    wanted = []
+    for raw_id in (request.GET.get("team_ids") or "").split(","):
+        raw_id = raw_id.strip()
+        if not raw_id:
+            continue
+        try:
+            wanted.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    wanted = wanted[:MAX_LIMIT]
+    if not wanted:
+        return Response(
+            {"recipients": 0, "email": 0, "whatsapp": 0, "teams": 0}, status=200,
+        )
+
+    teams = list(Team.objects.filter(team_id__in=wanted))
+    data = reach_for_teams(teams)
+    data["teams"] = len(teams)
+    return Response(data, status=200)
 
 
 @api_view(["GET"])
@@ -446,14 +723,24 @@ def list_event_invitations(request):
     for row in base.values("status").annotate(n=Count("id")):
         counts[row["status"]] = row["n"]
 
-    qs = base.select_related("team", "invited_by", "responded_by").order_by("-created_at")
+    qs = base.select_related("team", "invited_by", "responded_by", "campaign").order_by("-created_at")
     status_filter = request.GET.get("status")
     if status_filter:
         qs = qs.filter(status=status_filter)
 
     rows, meta = _paginate(qs, request)
+    # Campaigns are listed ALONGSIDE the addressed rows, not instead of them, because a bulk send
+    # writes no addressed rows and would otherwise be invisible on the organizer's own screen: they
+    # would press Send, see nothing appear, and send again. Bounded by the same MAX_LIMIT as the
+    # rows; an event has a handful of campaigns, not a page of them.
+    campaigns = (
+        EventInvitationCampaign.objects.filter(event=event)
+        .select_related("created_by")
+        .order_by("-created_at")[:MAX_LIMIT]
+    )
     return Response({
         "invitations": [_serialize(inv) for inv in rows],
+        "campaigns": [_serialize_campaign(c) for c in campaigns],
         "counts": counts,
         **meta,
     }, status=200)
@@ -489,12 +776,19 @@ def cancel_team_invitation(request, invitation_id):
 
     with transaction.atomic():
         token = invitation.invite_token
+        # A per_team invitation owns its token outright, so cancelling destroys it. An fcfs
+        # invitation SHARES its campaign's token with every other team in the same send, and
+        # deleting that would lock all of them out of a private event because one was withdrawn.
+        # So the token is only destroyed when it belongs to this invitation alone.
+        token_is_shared = bool(
+            token and invitation.campaign_id and invitation.campaign.invite_token_id == token.id
+        )
         invitation.status = "cancelled"
         invitation.responded_by = user
         invitation.responded_at = timezone.now()
         invitation.invite_token = None
         invitation.save(update_fields=["status", "responded_by", "responded_at", "invite_token"])
-        if token:
+        if token and not token_is_shared:
             token.delete()
 
     return Response(
@@ -549,19 +843,66 @@ def list_my_team_invitations(request):
     base = EventTeamInvitation.objects.filter(team=team)
     _expire_stale(base)
 
-    qs = base.select_related("event", "team", "invited_by", "responded_by").order_by("-created_at")
+    qs = base.select_related(
+        "event", "team", "invited_by", "responded_by", "campaign",
+    ).order_by("-created_at")
     status_filter = request.GET.get("status")
     if status_filter:
         qs = qs.filter(status=status_filter)
 
     rows, meta = _paginate(qs, request)
+    offers = _open_offers_for(team)
     return Response({
-        "invitations": [_serialize(inv, for_team=True) for inv in rows],
+        # Offers first: an open bulk invitation is the only row here with a live deadline attached
+        # to somebody else's speed, so it belongs above the addressed ones a team can answer at
+        # leisure. Both shapes carry the same keys (see _serialize_campaign), so the card renders
+        # one list.
+        "invitations": [_serialize_campaign(c, for_team=True, team=team) for c in offers]
+                       + [_serialize(inv, for_team=True) for inv in rows],
         "can_respond": _user_can_register_team(user, team),
         "team_id": team.team_id,
-        "pending_count": base.filter(status="pending").count(),
+        "pending_count": base.filter(status="pending").count() + len(offers),
         **meta,
     }, status=200)
+
+
+def _open_offers_for(team):
+    """The open BULK campaigns this team may still take up.
+
+    Three things have to be true: the campaign is open, the team is on its guest list, and the team
+    has not already answered it. The last one is why an accepted or declined offer stops appearing:
+    answering writes an EventTeamInvitation row, and that row then shows in the ordinary list with
+    its real status, so the offer does not need to linger.
+
+    `audience_team_ids__contains` is a JSON containment lookup, which MySQL supports, so the guest
+    list is filtered in the database rather than by loading every open campaign and scanning it.
+    Capped at MAX_LIMIT for the same reason every list here is: a team's page must not be able to
+    grow unbounded because somebody ran a lot of campaigns.
+    """
+    answered = set(
+        EventTeamInvitation.objects.filter(team=team, campaign__isnull=False)
+        .values_list("campaign_id", flat=True)
+    )
+    open_campaigns = (
+        EventInvitationCampaign.objects.filter(
+            kind="bulk", status="open", audience_team_ids__contains=team.team_id,
+        )
+        .select_related("event", "created_by")
+        .order_by("-created_at")[:MAX_LIMIT]
+    )
+    offers = []
+    for campaign in open_campaigns:
+        if campaign.id in answered:
+            continue
+        # Lazy deadline sweep, matching _expire_stale's contract for addressed rows: a campaign
+        # nobody looks at does not need a cron job to go stale.
+        if campaign.is_expired():
+            EventInvitationCampaign.objects.filter(pk=campaign.pk, status="open").update(
+                status="closed",
+            )
+            continue
+        offers.append(campaign)
+    return offers
 
 
 def _load_for_response(user, invitation_id):
@@ -569,7 +910,10 @@ def _load_for_response(user, invitation_id):
     for that team, and check the invitation is still answerable. Returns (invitation, None) or
     (None, error Response)."""
     invitation = get_object_or_404(
-        EventTeamInvitation.objects.select_related("event", "team", "invited_by"),
+        # `campaign` is joined here because both callers read it straight afterwards (accept for the
+        # fcfs slot claim, decline for the serialized kind), so it costs one join instead of one
+        # extra query per answer.
+        EventTeamInvitation.objects.select_related("event", "team", "invited_by", "campaign"),
         id=invitation_id,
     )
     # Answering IS registering, so the permission must be the SAME one register_for_event applies
@@ -607,6 +951,10 @@ def accept_team_invitation(request, invitation_id):
               registration_requirements_unmet / discord_required / letter_avatars_required bodies,
               402 payment_required - unchanged, so the team sees the same wording anyone else does.
               The invitation stays PENDING on refusal, so it can be accepted again once fixed.
+              409 "This invitation is closed" is the ONE refusal that is ours rather than
+              register_for_event's: a first come, first served campaign whose places are gone. It
+              has to come before the registration attempt, because by the time that endpoint spoke
+              the team would already be in.
     AUTH      Bearer session token; whoever may register the team (views._user_can_register_team).
     CONSUMED BY  EventInvitationsCard.tsx - the Accept dialog's roster picker on the team page.
 
@@ -622,11 +970,39 @@ def accept_team_invitation(request, invitation_id):
     if err:
         return err
 
+    campaign = invitation.campaign
+
+    # ── FCFS: claim one of the campaign's places BEFORE registering ──────────────────────────
+    # Only bites when the organizer set a `slots` ceiling; otherwise claim_slot is a no-op returning
+    # True and the event's own capacity is the only limit. The claim is a single guarded UPDATE, so
+    # two captains pressing Accept on the last place at the same instant cannot both win it: one
+    # matches a row, the other matches zero. See EventInvitationCampaign.claim_slot.
+    claimed = False
+    if campaign is not None:
+        if campaign.status != "open":
+            return Response(
+                {"message": "This invitation is closed. All of its places have been taken."},
+                status=409,
+            )
+        if not campaign.claim_slot():
+            # Somebody else took the last place between the card rendering and this press. Close the
+            # campaign so the remaining invitations stop offering something that is gone.
+            _close_if_full(campaign)
+            return Response(
+                {"message": "This invitation is closed. All of its places have been taken."},
+                status=409,
+            )
+        claimed = campaign.slots is not None and campaign.kind == "fcfs"
+
     response = _register_through_the_normal_path(request, invitation)
 
     # Anything that is not a success leaves the invitation exactly as it was: the team has not
     # registered, so they have not accepted. Handing the refusal back untouched is the whole point.
+    # The claimed place goes back, or a team whose roster was one player short would have burned a
+    # slot nobody is standing in.
     if response.status_code >= 400:
+        if claimed:
+            campaign.release_slot()
         return response
 
     invitation.status = "accepted"
@@ -634,10 +1010,29 @@ def accept_team_invitation(request, invitation_id):
     invitation.responded_at = timezone.now()
     invitation.save(update_fields=["status", "responded_by", "responded_at"])
     _notify_inviter(invitation, accepted=True)
+    if campaign is not None:
+        _close_if_full(campaign)
 
     if isinstance(response.data, dict):
         response.data["invitation"] = _serialize(invitation, for_team=True)
     return response
+
+
+def _close_if_full(campaign):
+    """Flip an fcfs campaign to 'closed' once its last place is claimed.
+
+    Cosmetic but load-bearing for the team side: without it, the teams who were invited and lost the
+    race keep seeing a live Accept button for an offer that will now always refuse them, and the
+    organizer's list keeps showing pending rows for a race that is over. Only fcfs campaigns with an
+    explicit ceiling can be 'full' in this sense; the other kinds end when the EVENT fills, which
+    register_for_event reports on its own."""
+    if campaign.kind != "fcfs" or campaign.slots is None:
+        return
+    if campaign.status == "open" and campaign.slots_remaining() == 0:
+        EventInvitationCampaign.objects.filter(pk=campaign.pk, status="open").update(
+            status="closed",
+        )
+        campaign.status = "closed"
 
 
 @api_view(["POST"])
@@ -674,4 +1069,195 @@ def decline_team_invitation(request, invitation_id):
     return Response(
         {"message": "Invitation declined.", "invitation": _serialize(invitation, for_team=True)},
         status=200,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# BULK CAMPAIGNS: the team side of an offer that addresses nobody
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+def _load_bulk_for_response(user, campaign_id, team_id):
+    """Shared front half of the two bulk endpoints: resolve the campaign and the team answering it,
+    check this caller may answer for that team, and check the offer is still takeable.
+
+    Returns (campaign, team, None) or (None, None, error Response).
+
+    The permission is the SAME one an addressed invitation uses (_user_can_register_team), for the
+    same reason: answering IS registering, so anybody allowed to answer must be somebody
+    register_for_event would accept. A bulk offer is open, but it is not open to a random member.
+    """
+    campaign = get_object_or_404(
+        EventInvitationCampaign.objects.select_related("event", "created_by"), id=campaign_id,
+    )
+    if campaign.kind != "bulk":
+        return None, None, Response(
+            {"message": "This is not an open invitation."}, status=400,
+        )
+
+    if not team_id:
+        return None, None, Response({"message": "team_id is required."}, status=400)
+    team = get_object_or_404(Team, team_id=team_id)
+
+    if not _user_can_register_team(user, team):
+        return None, None, Response(
+            {"message": "Only the team owner, captain, vice-captain, manager, or coach can "
+                        "answer an event invitation."},
+            status=403,
+        )
+    # The audience is the guest list. Without this check any team that learned the campaign id could
+    # walk into an event they were never offered, which would turn a "general" invitation into a
+    # public one.
+    if team.team_id not in (campaign.audience_team_ids or []):
+        return None, None, Response(
+            {"message": "This invitation was not sent to your team."}, status=403,
+        )
+    if campaign.is_expired() and campaign.status == "open":
+        EventInvitationCampaign.objects.filter(pk=campaign.pk).update(status="closed")
+        campaign.status = "closed"
+    if campaign.status != "open":
+        return None, None, Response(
+            {"message": "This invitation is closed."}, status=400,
+        )
+    # One answer per team. The row a previous answer wrote is what makes this idempotent, so a
+    # double-tap on a phone cannot register the same team twice or leave two rows behind.
+    existing = EventTeamInvitation.objects.filter(campaign=campaign, team=team).first()
+    if existing:
+        return None, None, Response(
+            {"message": f"Your team already {existing.status} this invitation."}, status=400,
+        )
+    return campaign, team, None
+
+
+@api_view(["POST"])
+def accept_bulk_campaign(request, campaign_id):
+    """POST events/invitation-campaigns/<campaign_id>/accept/ - take up an open (bulk) invitation.
+
+    REQUEST   {team_id: int, roster_member_ids: [int], sponsor_ids?: {}, sponsorships?: [],
+               invite_token?: str}
+    RESPONSE  201 the EXACT body register_for_event returns, plus {invitation: <invitation>}.
+              On refusal: the EXACT status and body register_for_event returned, unchanged, so a
+              team taking up an open invitation reads the same wording as anybody else.
+    AUTH      Bearer session token; whoever may register the team (views._user_can_register_team),
+              and the team must be in the campaign's audience.
+    CONSUMED BY  EventInvitationsCard.tsx, which renders an open offer beside addressed invitations
+              and posts here instead of the per-invitation accept when the row is an offer.
+
+    A bulk offer writes no row until it is answered, so accepting MATERIALIZES the
+    EventTeamInvitation (already 'accepted') rather than updating one. That row is what gives the
+    organizer a record of who took the offer up, and what stops the same team answering twice.
+
+    Registration itself still goes through views.register_for_event, exactly as every other kind
+    does; see _register_through_the_normal_path.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+
+    campaign, team, err = _load_bulk_for_response(
+        user, campaign_id, request.data.get("team_id"),
+    )
+    if err:
+        return err
+
+    # A throwaway, UNSAVED invitation carrying the campaign's event/team/token, purely so the accept
+    # can reuse _register_through_the_normal_path unchanged. It is saved only if the registration
+    # succeeds, which is what keeps a refused attempt from leaving a row behind.
+    draft = EventTeamInvitation(
+        event=campaign.event, team=team, invited_by=campaign.created_by,
+        message=campaign.message, campaign=campaign, invite_token=campaign.invite_token,
+    )
+    response = _register_through_the_normal_path(request, draft)
+    if response.status_code >= 400:
+        return response
+
+    draft.status = "accepted"
+    draft.responded_by = user
+    draft.responded_at = timezone.now()
+    draft.save()
+    _notify_inviter(draft, accepted=True)
+
+    if isinstance(response.data, dict):
+        response.data["invitation"] = _serialize(draft, for_team=True)
+    return response
+
+
+@api_view(["POST"])
+def decline_bulk_campaign(request, campaign_id):
+    """POST events/invitation-campaigns/<campaign_id>/decline/ - dismiss an open invitation.
+
+    REQUEST   {team_id: int, reason?: str}
+    RESPONSE  200 {message, invitation: <invitation>}
+    AUTH      Bearer session token; whoever may register the team, and the team must be in the
+              campaign's audience.
+    CONSUMED BY  EventInvitationsCard.tsx - the Decline button on an offer row.
+
+    Declining a general offer is not required (ignoring it is a perfectly good answer), but without
+    it the card would have no way to be dismissed and would sit on the team page until the event
+    ended. Writing the row also tells the organizer the team looked and said no, which is the whole
+    reason a decline beats silence.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+
+    campaign, team, err = _load_bulk_for_response(
+        user, campaign_id, request.data.get("team_id"),
+    )
+    if err:
+        return err
+
+    invitation = EventTeamInvitation.objects.create(
+        event=campaign.event, team=team, invited_by=campaign.created_by,
+        message=campaign.message, campaign=campaign, status="declined",
+        decline_reason=(request.data.get("reason") or "").strip()[:280],
+        responded_by=user, responded_at=timezone.now(),
+    )
+    _notify_inviter(invitation, accepted=False)
+
+    return Response(
+        {"message": "Invitation declined.", "invitation": _serialize(invitation, for_team=True)},
+        status=200,
+    )
+
+
+@api_view(["POST"])
+def close_invitation_campaign(request, campaign_id):
+    """POST events/invitation-campaigns/<campaign_id>/close/ - stop an offer taking new answers.
+
+    REQUEST   (no body)
+    RESPONSE  200 {message, campaign: <campaign>}
+    AUTH      Bearer session token; same _can_invite gate as creating.
+    CONSUMED BY  EventTeamInvitesCard.tsx - the Close button on an open campaign row.
+
+    This is the bulk and fcfs equivalent of cancelling a single invitation. Answers already given
+    stand (teams are in the bracket by then); it only stops NEW ones. The shared invite token is
+    destroyed so a closed offer cannot still let a team through a private event's door, which is the
+    same thing cancel_team_invitation does for a single invitation's token.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+
+    campaign = get_object_or_404(
+        EventInvitationCampaign.objects.select_related("event"), id=campaign_id,
+    )
+    if not _can_invite(user, campaign.event):
+        return Response({"message": "Unauthorized."}, status=403)
+    if campaign.status != "open":
+        return Response({"message": f"This invitation is already {campaign.status}."}, status=400)
+
+    with transaction.atomic():
+        token = campaign.invite_token
+        campaign.status = "cancelled"
+        campaign.invite_token = None
+        campaign.save(update_fields=["status", "invite_token"])
+        # Pending ADDRESSED rows under this campaign die with it: leaving them 'pending' would keep
+        # offering an Accept button that now always refuses.
+        EventTeamInvitation.objects.filter(campaign=campaign, status="pending").update(
+            status="cancelled", responded_by=user, responded_at=timezone.now(),
+        )
+        if token:
+            token.delete()
+
+    return Response(
+        {"message": "Invitation closed.", "campaign": _serialize_campaign(campaign)}, status=200,
     )

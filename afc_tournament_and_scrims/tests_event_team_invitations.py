@@ -155,9 +155,13 @@ class EventTeamInvitationTests(TestCase):
             Notifications.objects.filter(
                 user=self.captain, notification_type="event_team_invitation").exists())
         # The deep link must point at the team page, which is where the Accept card lives.
+        # By NAME, not by team_id (corrected 2026-08-08): this assertion used to require
+        # str(team_id), which is what the code did and what made the link a 404 in the browser, since
+        # /teams/[id] resolves that segment as the team NAME. The old expectation was the bug written
+        # down, so it is the expectation that changes here, not the requirement.
         note = Notifications.objects.filter(user=self.captain).first()
         self.assertEqual(note.target_type, "team")
-        self.assertEqual(note.target_id, str(self.team.team_id))
+        self.assertEqual(note.target_id, self.team.team_name)
 
         self._post(_accept_url(invitation_id), {"roster_member_ids": self._roster_ids()},
                    self.captain)
