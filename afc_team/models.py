@@ -283,3 +283,82 @@ class JoinRequest(models.Model):
 
     def __str__(self):
         return f"Join Request: {self.requester.username} -> ({self.team.team_name})"
+
+
+# ──────────────────── TeamRolePermission: the owner's control matrix ────────────────────
+# Owner 2026-08-08: "a way for team owners to decide what controls the other roles in the team
+# have over the team." One row = one team's answer for one management_role.
+#
+# WHY A ROW PER (TEAM, ROLE) AND NOT A JSON BLOB ON Team:
+#   Six roles times six capabilities is thirty-six answers. As a JSON column they would be
+#   unqueryable and unvalidated, and any typo'd key would read as False forever with nothing to
+#   catch it. As explicit BooleanFields each capability is a real column the DB checks, which is
+#   also how the closest prior art in this repo models the same problem (afc_organizers, the
+#   per-member organizer permission switches).
+#
+# WHY A ROW PER ROLE AND NOT PER MEMBER:
+#   The owner asked to configure ROLES ("what controls the other roles have"), not individuals. Per
+#   role means promoting somebody to coach hands them the coach's controls immediately, with
+#   nothing extra to remember, and a team with nine members still has at most six rows.
+#
+# WHY EVERY FIELD DEFAULTS TO FALSE, when the stock behaviour is NOT all-false:
+#   A row is only ever created by an owner's explicit save, and that save writes all six values, so
+#   the field default is never the thing that decides a live answer - afc_team.permissions
+#   .DEFAULT_ROLE_CAPABILITIES is. The default matters only for a capability ADDED LATER: a new
+#   column lands as False on already-saved rows, so an existing team never silently gains a control
+#   its owner never granted. Deny is the safe side of that trade.
+#
+# NO BACKFILL, EVER. Every team alive today has zero rows and keeps zero rows. Absent = the stock
+# behaviour, resolved per role in afc_team.permissions.team_role_can. See that module for the full
+# reasoning and for the list of gates that read this.
+class TeamRolePermission(models.Model):
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="role_permissions")
+
+    # One of TeamMembers.MANAGEMENT_ROLE_CHOICES. The team OWNER is deliberately NOT a valid value:
+    # "owner" is not a management_role, so no row here can ever restrict the owner, and a team
+    # cannot lock itself out. The write endpoint rejects any key outside these six.
+    management_role = models.CharField(
+        max_length=20, choices=TeamMembers.MANAGEMENT_ROLE_CHOICES)
+
+    # ── the capabilities (see afc_team.permissions.TEAM_CAPABILITIES for what each one gates) ──
+    can_invite_members = models.BooleanField(default=False)
+    can_manage_join_requests = models.BooleanField(default=False)
+    can_edit_roster = models.BooleanField(default=False)
+    can_remove_members = models.BooleanField(default=False)
+    can_register_for_events = models.BooleanField(default=False)
+    can_edit_team_profile = models.BooleanField(default=False)
+
+    # Audit trail. Only the owner can write a row, but ownership transfers (transfer_ownership /
+    # admin_transfer_team_ownership), so "which owner set this" is worth keeping. SET_NULL because
+    # a deleted account must not take the team's settings with it.
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="team_role_permission_updates")
+
+    class Meta:
+        # One answer per role per team. The write endpoint upserts on this pair, which is what
+        # makes saving the screen twice idempotent.
+        unique_together = ("team", "management_role")
+
+    def __str__(self):
+        return f"{self.team.team_name} / {self.management_role}"
+
+
+class JoinRequest(models.Model):
+    request_id = models.AutoField(primary_key=True)
+    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='sent_request')
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='received_request')
+    status_of_request = models.CharField(max_length=20, choices=[
+        ('unattended_to', 'Unattended To'),
+        ('attended_to', 'Attended To')
+    ], default='unattended_to')
+    decision = models.CharField(max_length=20, choices=[
+        ('approved', 'Approved'),
+        ('denied', 'Denied')
+    ], null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    message = models.CharField(max_length=150, null=True, blank=True)
+
+    def __str__(self):
+        return f"Join Request: {self.requester.username} -> ({self.team.team_name})"

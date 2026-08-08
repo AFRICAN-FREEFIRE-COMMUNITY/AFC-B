@@ -6398,16 +6398,24 @@ TEAM_EVENT_REGISTER_ROLES = ["team_captain", "vice_captain", "manager", "coach"]
 
 
 def _user_can_register_team(user, team) -> bool:
-    """True if `user` may register `team` for an event: the team owner, or a member whose
-    management_role is one of TEAM_EVENT_REGISTER_ROLES (captain / manager / coach).
-    Used ONLY by register_for_event - other team gates keep _user_is_team_captain_or_owner."""
-    if user == team.team_owner:
-        return True
-    return TeamMembers.objects.filter(
-        team=team,
-        member=user,
-        management_role__in=TEAM_EVENT_REGISTER_ROLES,
-    ).exists()
+    """True if `user` may register `team` for an event.
+
+    CONFIGURABLE SINCE 2026-08-08 (team role permissions). The answer now comes from the TEAM's own
+    matrix: afc_team.permissions.team_role_can(user, team, "can_register_for_events"). The owner is
+    always allowed, and for a team that has never opened the settings screen the resolved answer is
+    still exactly TEAM_EVENT_REGISTER_ROLES (captain / vice-captain / manager / coach), which is
+    what that constant above is now the documentation of rather than the enforcement.
+
+    Callers: register_for_event, and event_invites._load_for_response + list_my_team_invitations,
+    which is why accepting an event invitation is governed by this SAME capability - answering an
+    invitation registers the team by calling register_for_event, so a role allowed to answer but not
+    to register would be refused halfway through its own accept.
+
+    AFC admins and organizers are NOT affected: their overrides (_is_event_admin / org_can_event)
+    are checked separately by the endpoints that have them, before or beside this.
+    """
+    from afc_team.permissions import team_role_can
+    return team_role_can(user, team, "can_register_for_events")
 
 
 def _maybe_json_list(val):
