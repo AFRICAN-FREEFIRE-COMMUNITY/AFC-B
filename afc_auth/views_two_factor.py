@@ -20,6 +20,11 @@
 #     • POST auth/two-factor/totp/setup/       totp_setup                start an authenticator enrolment
 #     • POST auth/two-factor/totp/confirm/     totp_confirm              prove it, then switch to it
 #
+# NOT HERE: managing remembered devices. "Remember this device" (owner 2026-08-08) is GRANTED here,
+# by two_factor_verify, because that is the only moment a second factor has just been satisfied.
+# Everything after that - listing them, revoking them, and the separate business of signing other
+# sessions out - lives in afc_auth/views_devices.py, because a SessionToken is not a 2FA concept.
+#
 # THE AUTHENTICATOR APP (added 2026-08-07) NEEDED EXACTLY TWO NEW ENDPOINTS, and that is the point
 # of the method registry: signing in, resending, disabling and regenerating recovery codes are all
 # METHOD-BLIND. They ask afc_auth.two_factor for a challenge and hand back whatever it says. Only
@@ -44,7 +49,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from . import two_factor
+from . import trusted_devices, two_factor
 from .models import TwoFactorChallenge, TwoFactorSettings
 from .views import establish_session, validate_token
 
@@ -130,18 +135,58 @@ def _settings_payload(user):
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # §1  Login step two (public - no session exists yet, by definition)
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+def _verified_session(request, user):
+    """The login success body, plus a device token when the user asked to be remembered.
+
+    THE ONE PLACE TRUST IS EVER GRANTED, and it is reached only from two_factor_verify below, only
+    after a second factor has just been satisfied. Two conditions, both required:
+      • the factor passed (the caller has already established that by the time it calls this), and
+      • the user EXPLICITLY asked, by ticking a box. There is no default and nothing implicit: a
+        request that does not carry remember_device gets exactly the body it got yesterday.
+
+    `device_token` is therefore an ADDITIVE key on this response and nothing else about the shape
+    moved. A client that has never heard of it keeps working unchanged.
+
+    See afc_auth/trusted_devices.py for what the token is worth (nothing on its own: it is read only
+    after a correct password, and all it does then is skip the second step) and afc_auth/models.py
+    TrustedDevice for the 30-day window and everything that revokes it."""
+    payload = establish_session(request, user)
+
+    remember = request.data.get("remember_device")
+    # Accepts a real boolean or the string form, because a raw fetch() caller can send either.
+    # Anything else, including absent, means no.
+    if remember is True or str(remember or "").strip().lower() in ("true", "1", "yes"):
+        try:
+            payload["device_token"] = trusted_devices.remember_device(user, request)
+            payload["device_token_expires_in"] = int(
+                trusted_devices.TrustedDevice.TRUST_LIFETIME.total_seconds())
+        except Exception as exc:
+            # The sign-in HAS succeeded by this line. Failing to remember the device is a
+            # convenience that did not happen, not a reason to refuse the session - the user simply
+            # gets challenged again next time, which is the pre-feature behaviour.
+            print(f"Could not remember device for {getattr(user, 'username', '?')}: {exc}")
+    return payload
+
+
 @api_view(["POST"])
 def two_factor_verify(request):
-    """POST /auth/two-factor/verify/  PUBLIC. Body: { challenge_token, code } or
-    { challenge_token, backup_code }.
+    """POST /auth/two-factor/verify/  PUBLIC. Body: { challenge_token, code, remember_device? } or
+    { challenge_token, backup_code, remember_device? }.
 
     Step TWO of signing in: exchange the challenge token minted by /auth/login/ plus the emailed
     code for a real session. On success the response is byte-identical to a normal login response
     (it IS the same code path - afc_auth.views.establish_session), so the frontend AuthContext
     handles it without knowing 2FA happened.
 
+    `remember_device` is OPTIONAL and defaults to off. When true, the response carries two EXTRA
+    keys and nothing else changes: `device_token` (send it back as `device_token` on future
+    /auth/login/ calls to skip this screen for 30 days) and `device_token_expires_in`. It is
+    accepted on the recovery-code path too, deliberately: somebody signing in with a recovery code
+    is exactly the person who most wants not to do this again next week.
+
     RESPONSE
-      • 200 { message, session_token, user{id,username,language}, geo }
+      • 200 { message, session_token, user{id,username,language}, geo, device_token?,
+              device_token_expires_in? }
       • 400 { message, attempts_left } - wrong or dead code. `attempts_left` lets the UI warn
              someone before their fifth wrong guess burns the challenge; it is never a hint about
              the code itself.
@@ -167,7 +212,7 @@ def two_factor_verify(request):
     if backup_code:
         if two_factor.consume_backup_code(user, backup_code):
             challenge.consume()
-            return Response(establish_session(request, user), status=status.HTTP_200_OK)
+            return Response(_verified_session(request, user), status=status.HTTP_200_OK)
         # A wrong backup code costs an attempt exactly like a wrong emailed code, so this is not a
         # way around the cap.
         challenge.attempts += 1
@@ -183,7 +228,7 @@ def two_factor_verify(request):
     # ── Path B: the emailed code. ──
     ok, reason = two_factor.verify_code(challenge, code)
     if ok:
-        return Response(establish_session(request, user), status=status.HTTP_200_OK)
+        return Response(_verified_session(request, user), status=status.HTTP_200_OK)
 
     if reason == "locked":
         return Response({"message": _GENERIC_CHALLENGE_ERROR, "attempts_left": 0},
@@ -394,8 +439,11 @@ def two_factor_disable(request):
     the same challenge_token + code either way) or an unused recovery code. A live session alone is
     not enough: an unlocked laptop should not be able to strip the second factor off an account.
 
-    Deletes the recovery codes AND the authenticator secret along with the setting, so nothing from
-    the old configuration can be used against the account later.
+    Deletes the recovery codes, the authenticator secret AND every remembered device along with the
+    setting, so nothing from the old configuration can be used against the account later. The
+    devices matter as much as the secret: a trusted device is nothing but permission to skip a
+    factor, so leaving one behind would mean switching 2FA back on later silently honoured a browser
+    from before it was switched off.
 
     RESPONSE
       • 200 { message, ...status payload }
@@ -437,6 +485,12 @@ def two_factor_disable(request):
     # not still open the account if 2FA is switched back on next year. Turning it on again means
     # scanning a new QR. Harmless for an email-method account, which has nothing to clear.
     two_factor.clear_totp_secret(user)
+    # And every REMEMBERED DEVICE, for exactly the same reason (owner 2026-08-08). A trusted device
+    # is nothing but permission to skip a factor; with the factor gone the permission is meaningless,
+    # and leaving the rows would mean a browser remembered in August silently walked past the second
+    # step when 2FA was switched back on in November. Turning it on again means being asked once per
+    # device, always. See afc_auth/trusted_devices.py revoke_all.
+    trusted_devices.revoke_all(user)
 
     payload = _settings_payload(user)
     payload["message"] = "Two-factor authentication is off."

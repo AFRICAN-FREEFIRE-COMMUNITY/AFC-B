@@ -38,6 +38,16 @@ from afc_auth.language_utils import language_for_country
 # only .models at the top level and pulls send_email/email_two_factor_code from THIS module lazily
 # inside EmailCodeMethod.deliver, so there is no import cycle.
 from afc_auth import two_factor
+# "Remember this device" (owner 2026-08-08). The login gate asks it one question, and the password
+# change / reset paths tell it to forget everything. Safe to import at module load for the same
+# reason two_factor is: trusted_devices imports only .models at the top level and pulls
+# get_client_ip from THIS module lazily, inside remember_device.
+from afc_auth import trusted_devices
+# WhatsApp number normalisation with a COMPULSORY country code (owner 2026-08-08). Used by signup
+# and edit_profile, the two places UserProfile.whatsapp_number is written. Safe to import at module
+# load: afc_whatsapp.phone imports nothing from this app (only `logging` and an optional
+# `phonenumbers`), so no cycle can form.
+from afc_whatsapp.phone import require_international
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -720,6 +730,79 @@ def email_admin_email_changed(username, new_email, when_text, two_factor_off=Fal
     return _email_shell(inner, "gold")
 
 
+def email_recovery_password_reset(username, when_text, lang="en"):
+    """Password-reset-by-WHATSAPP notice (gold security accent).
+
+    Consumed by afc_auth/views_recovery.py::recovery_reset_password, the self-serve path for a user
+    who has forgotten their password and proved the WhatsApp number already on their account.
+
+    A SEPARATE template rather than a reuse of email_password_changed, because that one is the
+    receipt for a change made by somebody who was already signed in, and it cannot say the one fact
+    that matters here: the door that was used was the WhatsApp number, not the email inbox. This
+    message goes to an address whose owner may not have asked for any of it, and "somebody used
+    your WhatsApp number to reset your password" is precisely what tells them whether to worry.
+    That is why this email is the tripwire of the whole flow.
+
+    It has NO two-factor line, and its absence is deliberate: this flow never switches 2FA off and
+    never steps around it, so an account that had it still has it and there is nothing to turn back
+    on. See views_recovery.py's header for why that is safe.
+
+    i18n: hand-authored copy from the catalog (template "recovery_password_reset") in `lang`. The
+    caller sends with prelocalized=True + subject_for("password_reset_recovery", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("recovery_password_reset", lang)
+    username_html = f'<span style="color:#e8efe9;font-weight:600;">{username}</span>'
+    support_html = f'<a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">{c["support_label"]}</a>'
+    inner = f"""
+  <tr><td style="padding:40px 44px 6px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"].format(username=username_html, when=when_text)}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:10px;">{c["signed_out"]}</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 30px;">
+    {_email_note(c["warning"].format(support=support_html), "gold")}
+  </td></tr>"""
+    return _email_shell(inner, "gold")
+
+
+def email_recovery_email_changed(username, new_email, when_text, lang="en"):
+    """Account-email-moved-by-WHATSAPP notice (gold security accent).
+
+    Consumed by afc_auth/views_recovery.py::recovery_confirm_email_change, which sends this to BOTH
+    the old and the new address, in that order.
+
+    A SEPARATE template rather than a reuse of email_email_changed (the signed-in self-serve
+    receipt) or email_admin_email_changed (the support-assisted one), because neither can say the
+    fact that decides whether the reader should panic: the door that was used was the WhatsApp
+    number on the account. The reader at the OLD address may not have asked for any of this, and for
+    them this is the last message AFC can ever send to that inbox about this account, since every
+    future password reset goes to the new address. That is why the warning tells them to name the
+    old address when they contact support: it is the only handle support will have.
+
+    It has NO two-factor line, and its absence is deliberate: recovery_confirm_email_change refuses
+    to run at all on an account with two-step sign-in switched on, so nothing was disabled and there
+    is nothing to switch back on. Contrast email_admin_email_changed, which DOES carry that line,
+    because the admin path can take 2FA down with an explicit acknowledgement.
+
+    i18n: hand-authored copy from the catalog (template "recovery_email_changed") in `lang`. The
+    caller sends with prelocalized=True + subject_for("email_changed_recovery", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("recovery_email_changed", lang)
+    username_html = f'<span style="color:#e8efe9;font-weight:600;">{username}</span>'
+    new_email_html = f'<span style="color:#e8efe9;font-weight:600;">{new_email}</span>'
+    support_html = f'<a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">{c["support_label"]}</a>'
+    inner = f"""
+  <tr><td style="padding:40px 44px 6px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"].format(username=username_html, new_email=new_email_html, when=when_text)}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:10px;">{c["signed_out"]}</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 30px;">
+    {_email_note(c["warning"].format(support=support_html), "gold")}
+  </td></tr>"""
+    return _email_shell(inner, "gold")
+
+
 # ── Broadcast delivery (owner 2026-06-13) ──────────────────────────────────────────────────────
 # Every "broadcast" surface on the site (event-wide announcement, per-group message, and the
 # single player/team message) lets the sender pick a CHANNEL: in-app push, email, or both. When
@@ -1162,6 +1245,15 @@ def establish_session(request, user):
 #
 # `extra` is merged ONLY into the success body. It must never ride along on a challenge: is_new
 # would leak whether an account had just been created to someone who has not passed the factor yet.
+#
+# ── THE ONE THING THIS FUNCTION GAINED FOR TRUSTED DEVICES (owner 2026-08-08) ────────────────────
+# Exactly one `if` at the top of the 2FA branch: a device the user has explicitly chosen to remember
+# skips the second step and gets the normal login body, as though 2FA were off for that device. It
+# sits INSIDE the is_enabled_for branch on purpose, so an account without 2FA never even evaluates
+# it and the ~6,790 one-step sign-ins are byte-for-byte unchanged. Nothing else here moved: the
+# challenge body, the 429, `extra`, and every response shape are exactly what they were.
+# Everything the check involves (parsing, expiry, the user binding, the hash comparison) is in
+# afc_auth/trusted_devices.py, and it fails CLOSED - any doubt at all means the user is challenged.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 def login_or_challenge(request, user, extra=None):
     """Decide whether `user` gets a session right now or has to pass a second factor first."""
@@ -1170,6 +1262,16 @@ def login_or_challenge(request, user, extra=None):
     # a deploy that lands code before the migration must degrade to "2FA is not live yet" rather
     # than breaking every sign-in on every provider at once.
     if two_factor.is_enabled_for(user):
+        # REMEMBERED DEVICE: the second factor was already satisfied on this browser, and the user
+        # asked us not to ask again for 30 days. Note what is NOT skipped - the password (or the
+        # Google/Discord identity) has already been proved by the caller before we are reached, so
+        # this removes a step, it does not remove the sign-in.
+        if trusted_devices.device_from_request(request, user):
+            payload = establish_session(request, user)
+            if extra:
+                payload.update(extra)
+            return (payload, status.HTTP_200_OK)
+
         issued = two_factor.issue_challenge(user, purpose="login")
         challenge = issued["challenge"]
         if challenge is None:
@@ -1207,9 +1309,15 @@ def login_or_challenge(request, user, extra=None):
 
 @api_view(['POST'])
 def login(request):
-    """POST /auth/login/  Public. Body: { ign_or_uid, password }.
+    """POST /auth/login/  Public. Body: { ign_or_uid, password, device_token? }.
 
     Step ONE of signing in, and for almost everybody the ONLY step.
+
+    `device_token` is OPTIONAL and only ever consulted for an account that has 2FA on: it is the
+    "remember this device" token from a previous successful second step (afc_auth/trusted_devices.py),
+    and a live one belonging to THIS account makes the response the ordinary success body instead of
+    a challenge. It is not a credential on its own - it is read only after the password above has
+    already been accepted, and it is ignored entirely for the ~6,790 accounts without 2FA.
 
     RESPONSE SHAPES
       • 200, no 2FA (every account today): { message, session_token, user{id,username,language}, geo }
@@ -1459,6 +1567,12 @@ def signup(request):
     password = request.data.get("password")
     confirm_password = request.data.get("confirm_password")
     full_name = request.data.get("full_name")
+    # OPTIONAL WhatsApp number (owner 2026-08-08). Absent or blank is a perfectly good answer and
+    # must NEVER block a signup: the field is offered here only because a number saved on day one
+    # is a way back into the account on the day the email address stops working
+    # (afc_auth/views_recovery.py). It is validated below, alongside every other field, so a bad
+    # value is reported before the account is created rather than stored and discovered later.
+    whatsapp_number = request.data.get("whatsapp_number")
 
     ip = get_client_ip(request)
     # Fail-soft geo lookup (signup is one-time per user, so no daily cache; the short timeout just
@@ -1478,6 +1592,15 @@ def signup(request):
 
         if password != confirm_password:
             return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # THE COUNTRY CODE IS COMPULSORY when a number is given. Checked HERE, before any of the
+        # uniqueness work below, so a bad number costs one round trip instead of being discovered
+        # after the unverified-takeover sweep has already deleted an abandoned row. Blank returns
+        # ("", None) and falls straight through: the field is optional. See
+        # afc_whatsapp.phone.require_international.
+        whatsapp_e164, whatsapp_error = require_international(whatsapp_number)
+        if whatsapp_error:
+            return Response({"error": whatsapp_error}, status=status.HTTP_400_BAD_REQUEST)
 
         # ── Uniqueness pre-checks (return FRIENDLY 400s, never the raw DB 1062 error) ──
         #
@@ -1592,7 +1715,18 @@ def signup(request):
                 )
                 user.set_password(password)
                 user.save()
-                UserProfile.objects.create(user=user)
+                # whatsapp_e164 is "" when the field was left blank, which is the same value the
+                # column already defaults to, so an ordinary signup is unchanged. whatsapp_opt_in
+                # keeps its model default of True: the number is only ever messaged when one is
+                # actually saved, so default-on messages nobody who did not give one.
+                # whatsapp_number_updated_at dates the claim for the recovery flow's staleness rule
+                # (views_recovery.RECOVERY_NUMBER_MAX_AGE) and stays NULL when no number was given,
+                # so a profile with no number carries no meaningless date.
+                UserProfile.objects.create(
+                    user=user,
+                    whatsapp_number=whatsapp_e164,
+                    whatsapp_number_updated_at=timezone.now() if whatsapp_e164 else None,
+                )
         except IntegrityError:
             # Backstop for the race (two signups for the same name between our pre-check and
             # the insert) or any unique constraint we did not pre-check. The transaction has
@@ -3153,15 +3287,40 @@ def edit_profile(request):
 
     # ── WhatsApp notifications (owner 2026-07-02, Zernio): number + explicit opt-in, stored on the
     # profile (same home as the pics). Absent keys = unchanged, so partial saves can't wipe them.
+    #
+    # THE COUNTRY CODE IS COMPULSORY when a number is given (owner 2026-08-08). The number is now
+    # an ACCOUNT RECOVERY factor (afc_auth/views_recovery.py), so a value that cannot be dialled is
+    # not worth storing: it would be discovered at the exact moment somebody is locked out and
+    # needs it. The rule lives in ONE place, afc_whatsapp.phone.require_international, which is
+    # stricter than the send-time to_e164 on purpose - see that function's header for why anchoring
+    # a local number to a country field the user may have got wrong is worse than refusing it.
+    # Blank still clears the field: it is optional and must never block a profile save. The
+    # frontend control emits the international form already, so only a direct API caller sees this.
     _wa_changed = False
     if "whatsapp_number" in request.data:
-        user_profile.whatsapp_number = (request.data.get("whatsapp_number") or "").strip()[:20]
+        _wa_number, _wa_error = require_international(request.data.get("whatsapp_number"))
+        if _wa_error:
+            return Response({"message": _wa_error}, status=status.HTTP_400_BAD_REQUEST)
+        # Stored NORMALISED (E.164), not as typed. Every other player number on the site is stored
+        # raw and normalised at send time, and the result is 34 of 133 rows that cannot be resolved
+        # without knowing the country. This field is a way back into an account, so it is cleaned
+        # at the door instead.
+        user_profile.whatsapp_number = _wa_number[:20]
+        # Date the claim (owner 2026-08-08). views_recovery refuses a number that has not been typed
+        # for RECOVERY_NUMBER_MAX_AGE, because a recycled line hands the account to whoever holds the
+        # number now. Stamped on EVERY save of the field, including a re-save of the SAME number:
+        # that is a person confirming the number is still theirs, which is exactly the fact the
+        # recovery flow is asking about, and it is the only way a user can refresh it themselves.
+        # Cleared along with the number when the field is blanked, so an empty profile carries no
+        # stale date to be misread if a number is added again later by some other path.
+        user_profile.whatsapp_number_updated_at = timezone.now() if _wa_number else None
         _wa_changed = True
     if "whatsapp_opt_in" in request.data:
         user_profile.whatsapp_opt_in = str(request.data.get("whatsapp_opt_in")).lower() in ("true", "1", "yes", "on")
         _wa_changed = True
     if _wa_changed:
-        user_profile.save(update_fields=["whatsapp_number", "whatsapp_opt_in"])
+        user_profile.save(update_fields=["whatsapp_number", "whatsapp_opt_in",
+                                         "whatsapp_number_updated_at"])
 
     return Response({
         "message": "Profile updated successfully.",
@@ -3308,12 +3467,11 @@ def get_user_profile(request):
         )
     )
 
-    # The ONE rule for "did this user really take part in this event" - registration/roster status,
-    # team status, waitlist, no-show and draft-event gates - shared with the public player profile
-    # (afc_player.aggregation) so the two pages cannot report different totals. Imported locally,
-    # matching this function's existing local-import idiom for cross-app helpers (see Vendor and
-    # EventPrizePayout below).
-    from afc_tournament_and_scrims.participation import counted_event_ids
+    # The ONE rule for "did this user actually PLAY in this event" - at least one match line with a
+    # score written to it - shared with the public player profile (afc_player.aggregation) so the
+    # two pages cannot report different totals. Imported locally, matching this function's existing
+    # local-import idiom for cross-app helpers (see Vendor and EventPrizePayout below).
+    from afc_tournament_and_scrims.participation import played_event_counts
 
     # Team-side booyahs: matches THIS USER was fielded in whose team line placed 1st.
     #
@@ -3351,14 +3509,14 @@ def get_user_profile(request):
     total_booyahs = int(solo_agg["total_wins"]) + int(team_wins)
 
     # ---------------- TOURNAMENTS / SCRIMS PLAYED ----------------
-    # Every event the user genuinely competed in, both entry paths, deduped. Previously this
-    # counted RegisteredCompetitors and TournamentTeam rows with NO status check at all, so a
-    # disqualified registration, a rejected roster slot, a withdrawn team and a waitlisted entry
-    # that never got a slot each still counted as a tournament played.
-    all_event_ids = counted_event_ids(user)
-
-    total_tournaments_played = Event.objects.filter(event_id__in=all_event_ids, competition_type="tournament").count()
-    total_scrims_played = Event.objects.filter(event_id__in=all_event_ids, competition_type="scrims").count()
+    # Events the user actually PLAYED, split by competition_type (owner ruling 2026-08-08:
+    # "It should count events played. Matches they participated in where a score was assigned to
+    # them."). This used to count registrations and roster slots, so signing up - or being named on
+    # a roster and never fielded - was indistinguishable from turning up. It now counts only events
+    # holding at least one scored match line for this user. The whole rule, including why a
+    # zero-kill line still counts and how a disqualification is treated, lives in
+    # afc_tournament_and_scrims/participation.py.
+    total_tournaments_played, total_scrims_played = played_event_counts(user)
 
     # ---------------- CURRENT TEAM (live roster) ----------------
     # Owner bug 2026-06-20: this endpoint used to read user.team, a field that does NOT
@@ -3820,6 +3978,10 @@ def reset_password(request):
 
     reset_token.delete()  # remove token after successful password reset
 
+    # Same rule as change_password above, and it matters MORE here: a reset is what somebody who
+    # has actually lost control of their account reaches for. See trusted_devices.revoke_all.
+    trusted_devices.revoke_all_quietly(user)
+
     # Password-changed confirmation (best-effort; never block the reset on a mail error).
     # i18n: localized to the user's saved language, falling back to country / English.
     try:
@@ -3897,6 +4059,15 @@ def change_password(request):
     if user.check_password(old_password):
         user.set_password(new_password)
         user.save()  # BUGFIX: save() was missing, so the new password never persisted.
+
+        # ── Forget every remembered device (owner 2026-08-08) ────────────────────────────────
+        # The usual reason someone changes their password is that they think it leaked. A trusted
+        # device (afc_auth/trusted_devices.py) skips the second factor, so if an attacker had
+        # signed in and ticked "remember this device", leaving those rows would keep them a
+        # standing pass around 2FA that the one action the user knows to take did not take away.
+        # Quietly, because the password HAS already changed by this line: a failure here must not
+        # turn a successful change into a 500 the user reads as "it did not work".
+        trusted_devices.revoke_all_quietly(user)
 
         # Password-changed confirmation (best-effort; never block the change on a mail error).
         # i18n: localized to the user's saved language, falling back to country / English.

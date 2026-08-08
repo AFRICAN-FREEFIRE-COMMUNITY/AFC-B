@@ -103,6 +103,30 @@ CALLER_PLACEHOLDERS = {
         "heading": set(), "intro": {"username", "new_email", "when"}, "signed_out": set(),
         "warning": {"support"}, "two_factor": set(), "support_label": set(),
     },
+    # Sent to the account's address after a password was reset through WHATSAPP RECOVERY
+    # (afc_auth/views.py email_recovery_password_reset, called from
+    # views_recovery.recovery_reset_password). Same placeholder set as admin_email_changed MINUS
+    # `new_email` (no address changes) and MINUS the `two_factor` sentence, and that second absence
+    # is the point: the recovery flow never switches 2FA off and never steps around it, so there is
+    # nothing to tell the reader to turn back on. If a `two_factor` key ever appears in that copy,
+    # this row should fail first, because its presence would mean the flow started taking the
+    # factor down.
+    "recovery_password_reset": {
+        "heading": set(), "intro": {"username", "when"}, "signed_out": set(),
+        "warning": {"support"}, "support_label": set(),
+    },
+    # Sent to BOTH the old and the new address after the account email was moved through WHATSAPP
+    # RECOVERY (afc_auth/views.py email_recovery_email_changed, called from
+    # views_recovery.recovery_confirm_email_change). Same shape as admin_email_changed, including
+    # `new_email`, MINUS the `two_factor` sentence - and that absence is load-bearing in the same
+    # way it is for recovery_password_reset above, but for a different reason: this flow REFUSES
+    # outright to run on an account with two-step sign-in on (views_recovery.py §4), so nothing was
+    # ever taken down. A `two_factor` key appearing here would mean the refusal had been softened
+    # into a tear-down, and this row should fail before anybody notices in production.
+    "recovery_email_changed": {
+        "heading": set(), "intro": {"username", "new_email", "when"}, "signed_out": set(),
+        "warning": {"support"}, "support_label": set(),
+    },
     "order_received": {
         "heading": set(), "intro": {"buyer"}, "track": {"link"},
     },
@@ -203,6 +227,16 @@ CALLER_PLACEHOLDERS = {
         ("heading", "intro", "note", "reapply"),
         {"organisation", "reference", "note"},
     ),
+    # Rendered by afc_tournament_and_scrims.event_invite_delivery._invitation_email_html. The three
+    # urgency_* keys are alternatives, not a sequence: the campaign's kind picks exactly one, and
+    # none of them takes a placeholder because the sentence has to stand on its own in a list of
+    # other sentences. The organizer's free-text note is NOT a placeholder here; it is escaped and
+    # quoted as its own block, so it can never collide with a brace in the catalog.
+    "event_team_invitation": dict.fromkeys(
+        ("heading", "intro", "from_organizer", "urgency_per_team", "urgency_fcfs", "urgency_bulk",
+         "how_to_answer", "cta"),
+        {"team", "event", "name"},
+    ),
 }
 
 # What each subject_for() call site passes. Mirrors the grep of every subject_for( in the backend.
@@ -216,6 +250,17 @@ CALLER_SUBJECT_PLACEHOLDERS = {
     "confirm_new_email": set(),
     "email_changed": set(),
     "email_updated_admin": set(),
+    # No placeholders: the subject names the CHANNEL that was used ("using WhatsApp") rather than
+    # any value, because this is the tripwire and the reader has to be able to judge it from the
+    # subject line alone.
+    "password_reset_recovery": set(),
+    # Same rule as password_reset_recovery: names the CHANNEL, never a value. This one goes to the
+    # OLD address too, where its reader may not have asked for any of it, so the subject has to be
+    # judgeable on its own.
+    "email_changed_recovery": set(),
+    # The code sent to the NEW address during recovery. Distinct from "confirm_new_email" (the
+    # signed-in flow) because its reader is locked out and may not remember starting this.
+    "confirm_new_email_recovery": set(),
     "two_factor": set(),
     "order_received": set(),
     "order_shipped": set(),
@@ -238,6 +283,7 @@ CALLER_SUBJECT_PLACEHOLDERS = {
     "partner_apply_changes": {"reference", "organisation"},
     "partner_apply_approved": {"reference", "organisation"},
     "partner_apply_rejected": {"reference", "organisation"},
+    "event_team_invitation": {"event"},
 }
 
 

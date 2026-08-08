@@ -291,6 +291,26 @@ class UserProfile(models.Model):
     # (form default true + `?? true` seed). Consent note still holds: send_room_details also requires
     # a number to be set, so default-on alone never messages anyone without a number.
     whatsapp_opt_in = models.BooleanField(default=True)
+    # ── When the owner last WROTE this number (owner 2026-08-08) ────────────────────────────────
+    # Set by afc_auth/views.py signup + edit_profile, the only two places whatsapp_number is
+    # written. NOT a "verified" timestamp: AFC never sends a confirmation code at write time, so all
+    # this records is "the account holder typed this on this date", which is the most this codebase
+    # actually knows.
+    #
+    # WHY IT EXISTS, when nothing needed it before. The number stopped being a notification detail on
+    # 2026-08-08 and became a way INTO the account (afc_auth/views_recovery.py: it resets the
+    # password and moves the email). Mobile numbers get recycled after a line goes dead, so a number
+    # saved and forgotten years ago may now belong to a stranger, and that stranger would inherit the
+    # account. views_recovery._number_too_stale reads this field and refuses to treat a number older
+    # than RECOVERY_NUMBER_MAX_AGE as proof of anything. The number keeps working for ORDINARY
+    # notifications either way; only its use as a recovery factor expires.
+    #
+    # NULL means "we do not know when this was typed". Migration 0039 backfills every row that
+    # already holds a number to the migration timestamp, so the 116 accounts with a number on
+    # 2026-08-08 all start the clock that day rather than being locked out of a feature on the day it
+    # ships. That grace is not earned (a number already stale then is still trusted for a year), and
+    # it is the deliberate price of not knowing; see the migration for the full argument.
+    whatsapp_number_updated_at = models.DateTimeField(null=True, blank=True)
 
 
 class LoginHistory(models.Model):
@@ -1188,13 +1208,16 @@ class TwoFactorSettings(models.Model):
     `method` is a row VALUE rather than a schema decision, which is what let the authenticator app
     ship as a second choice without touching this table's shape (see afc_auth.two_factor.METHODS)."""
 
-    # Delivery/verification methods. EMAIL and TOTP are both wired up and selectable; WhatsApp is
-    # declared so the column can already hold it and afc_auth.two_factor can register an
-    # implementation later without a migration. See two_factor.ENABLED_METHODS for what users may
-    # actually pick right now.
+    # Delivery/verification methods. EMAIL and TOTP are the two a user may actually choose
+    # (two_factor.ENABLED_METHODS). WhatsApp is a REGISTERED method that is deliberately not
+    # offerable: the owner turned down WhatsApp sign-in, and the implementation exists to carry the
+    # FORGOT-PASSWORD code instead. The value stays in this list because a recovery challenge is a
+    # TwoFactorChallenge row and its method column has to be able to hold it.
     METHOD_CHOICES = [
         ("email", "Email code"),
-        ("whatsapp", "WhatsApp code"),   # future: afc_whatsapp.client.send_template("login_code", ...)
+        # Implemented 2026-08-08 (two_factor.WhatsAppCodeMethod), used ONLY for account recovery
+        # (afc_auth/views_recovery.py). Never a sign-in factor: see two_factor.ENABLED_METHODS.
+        ("whatsapp", "WhatsApp code"),
         ("totp", "Authenticator app"),   # RFC 6238, no delivery step (added 2026-08-07)
     ]
 
@@ -1264,6 +1287,15 @@ class TwoFactorChallenge(models.Model):
         ("login", "Login second step"),
         ("enable", "Prove the method works before enabling"),
         ("disable", "Prove identity before disabling"),
+        # PASSWORD RECOVERY (owner 2026-08-08). A code sent to the WhatsApp number already on the
+        # account, so somebody who has forgotten their password can prove the account is theirs and
+        # set a new one without the emailed reset token. Deliberately its OWN purpose rather than
+        # reusing "login": every rate limit and every live-challenge sweep in afc_auth.two_factor is
+        # scoped by purpose, so a recovery attempt can never burn the sign-in code budget of a user
+        # who is simply signing in, and - the one that actually matters - a code issued for
+        # RECOVERY can never be spent on the login endpoint to satisfy the second factor.
+        # See afc_auth/views_recovery.py.
+        ("recovery", "Prove a saved WhatsApp number to reset a forgotten password"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="two_factor_challenges")
@@ -1337,3 +1369,255 @@ class TwoFactorBackupCode(models.Model):
 
     def __str__(self):
         return f"{self.user.username} backup code ({'used' if self.used_at else 'unused'})"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# PASSWORD RECOVERY GRANT (owner 2026-08-08)
+#
+# WHAT IT IS, IN ONE SENTENCE: the thing a signed-in user would have used a SESSION for, issued to
+# somebody who by definition has no session, and able to authorise exactly one action.
+#
+# WHY IT IS NOT A CODE, AND NOT A SESSION
+#   "Forgot my password, send the code to WhatsApp instead" is three steps: name the account, prove
+#   the WhatsApp number, then set the new password. The proof step spends a TwoFactorChallenge, and
+#   a challenge is SINGLE USE by design, so nothing survives it to authorise the step that follows.
+#   There were exactly two ways to bridge that gap and both were rejected:
+#     • hand back a real SessionToken. That would sign the caller in, and signing in is exactly what
+#       two-step verification is there to gate. A password reset must NOT be a sign-in.
+#     • ask for the code again on the last step. Impossible: it is single use, and making it
+#       multi-use would undo the property that makes it worth anything.
+#   So: a separate, narrow, short-lived bearer value that grants ONE capability (set this account's
+#   password through afc_auth/views_recovery.py) and is accepted nowhere else on the site.
+#
+# WHY THERE IS NO ATTEMPT COUNTER, unlike TwoFactorChallenge
+#   Nothing guessable is checked against this row. The token itself is 256 bits of CSPRNG output,
+#   and the only other thing the last step reads is the new password, which is not a secret the
+#   caller is trying to guess. The cap that matters guards the six-digit CODE, and that one lives
+#   where it belongs, in two_factor.verify_code. An unused counter here would only look like a
+#   protection that was not actually protecting anything.
+#
+# HOW IT CONNECTS
+#   issued by  : afc_auth/views_recovery.py recovery_verify, after two_factor.verify_code accepts
+#                the code delivered by afc_auth.two_factor.WhatsAppCodeMethod.
+#   spent by   : afc_auth/views_recovery.py recovery_reset_password, which calls User.set_password.
+#   related    : TwoFactorChallenge (purpose "recovery") is the proof this is issued against;
+#                SessionToken rows and TrustedDevice rows are all deleted when the grant is spent.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+class AccountRecoveryGrant(models.Model):
+    """One proved-by-WhatsApp password reset, in flight. Not a session and not a code: see above."""
+
+    # 15 minutes. Longer than a code's 10 (TwoFactorChallenge.CODE_LIFETIME) on purpose: the clock
+    # starts when the code is accepted and the user still has to think of a new password, and a
+    # password manager round trip is slower than typing an address. Short enough that a grant left
+    # open on a shared machine is not still spendable after a coffee break.
+    LIFETIME = timedelta(minutes=15)
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="recovery_grants")
+    # The opaque bearer value the browser carries between the verify step and the reset step.
+    # 43 URL-safe characters from `secrets`, minted by views_recovery._generate_grant_token.
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    # default=timezone.now rather than auto_now_add so the tests can age a grant deliberately,
+    # exactly as TwoFactorChallenge.created_at does and for the same reason.
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+    expires_at = models.DateTimeField()
+
+    # ── WHAT THIS PROOF WAS SPENT ON, kept forever (owner 2026-08-08) ───────────────────────────
+    # THE TRAIL HAS TO LIVE HERE, because the usual one cannot reach this feature: AuditLog is
+    # written by AuditLogMiddleware, which returns early when `_resolve_actor(request)` is None, and
+    # every recovery endpoint is unauthenticated BY DEFINITION - the caller cannot sign in, which is
+    # why they are there. AdminHistory is no use either; its admin_user FK is not nullable.
+    #
+    # WHY IT IS WORTH STORING AT ALL. A WhatsApp-proved EMAIL MOVE is the one irreversible thing
+    # this feature does: from then on every password reset goes to the new address, so the person
+    # who lost it cannot take it back. If a recycled number is used to steal an account, the notice
+    # email is the only other record, and it goes to an inbox that is dead by assumption. Without
+    # this row support has nothing at all to reconstruct from, not even the address it used to be.
+    #
+    # Grants are marked consumed, never deleted, so these columns are a durable per-proof log of who
+    # recovered what and when. Nullable because a grant that was never spent has no outcome to
+    # record, and because that keeps the column additive on a live table.
+    OUTCOME_PASSWORD = "password_reset"
+    OUTCOME_EMAIL = "email_changed"
+    OUTCOME_CHOICES = [
+        (OUTCOME_PASSWORD, "Password reset"),
+        (OUTCOME_EMAIL, "Email changed"),
+    ]
+    outcome = models.CharField(max_length=20, choices=OUTCOME_CHOICES, blank=True, default="")
+    # The one fact the outcome alone cannot carry: which address the account moved OFF. Written only
+    # for an email move, as "old@example.com -> new@example.com". No password ever goes in here.
+    outcome_detail = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        indexes = [
+            # "this user's live grants", the only lookup that is not by token.
+            models.Index(fields=["user", "consumed_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        # Default the expiry to the full window when a caller does not set it, the same idiom
+        # SessionToken.save and TwoFactorChallenge.save already use.
+        if not self.expires_at:
+            self.expires_at = timezone.now() + self.LIFETIME
+        super().save(*args, **kwargs)
+
+    def is_live(self):
+        """Spendable right now: not consumed and not expired."""
+        return self.consumed_at is None and timezone.now() <= self.expires_at
+
+    def consume(self, outcome="", detail=""):
+        """Burn the grant so it can never be spent again, recording what it bought.
+
+        `outcome` is one of OUTCOME_CHOICES, or "" when the grant is being burned WITHOUT being
+        spent (the attempt cap in views_recovery §5 does exactly that). `detail` carries the one
+        fact the outcome cannot: the address the account moved off. Written in the same UPDATE as
+        consumed_at so a spent grant can never exist without its record.
+        """
+        self.consumed_at = timezone.now()
+        if outcome:
+            self.outcome = outcome
+        if detail:
+            self.outcome_detail = detail[:255]
+        self.save(update_fields=["consumed_at", "outcome", "outcome_detail"])
+
+    def __str__(self):
+        return f"{self.user.username} recovery grant ({self.token[:6]}...)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# TRUSTED DEVICES, "remember this device" (owner 2026-08-08)
+#
+# THE PROBLEM IT SOLVES, in the owner's words: "it'll be stressful to be inputting code each time
+# every user wants to login". That is a complaint about FREQUENCY, not about the channel. Moving the
+# code from email to WhatsApp would still be a code, typed on every sign-in, arriving somewhere else.
+# This is the thing that actually fixes it: after a user passes the second factor once, they may
+# mark THAT device as remembered, and it stops being challenged for TRUST_LIFETIME. A new or
+# unrecognised device is still challenged, every time.
+#
+# ── WHY 30 DAYS ─────────────────────────────────────────────────────────────────────────────────
+#   Long enough to be the point of the feature: an AFC player signing in a few times a week meets
+#   the second factor roughly twelve times a year instead of two hundred. Short enough that a phone
+#   that leaves its owner's hands stops skipping the factor within a month, without anybody having
+#   to remember to come here and revoke it. It is also what Google, GitHub and Microsoft use, so it
+#   is the interval users already have an intuition for. SessionToken.SESSION_LIFETIME (3h idle) is
+#   deliberately untouched: a remembered device still signs in with its password every time and
+#   still gets a normal 3-hour session. Trust removes ONE STEP, it does not keep anybody signed in.
+#
+# ── WHY THE ROW IS SPLIT INTO A SELECTOR AND A HASHED VERIFIER ──────────────────────────────────
+# The cookie a browser holds IS an authentication credential, so it must not sit in the database in
+# plaintext the way TwoFactorChallenge.token does (that one is defensible: it lives 10 minutes, this
+# one lives 30 days). But a hash cannot be looked up by, because the whole point of make_password is
+# that the same input hashes differently every time.
+#
+# So the cookie is two halves, "<selector>.<verifier>":
+#   • SELECTOR   a public, unique, indexed random id. Not a secret, and never compared for equality
+#                against anything sensitive. It answers "which row".
+#   • VERIFIER   the actual secret, stored ONLY as make_password(verifier), the same hasher
+#                TwoFactorChallenge.code_hash and TwoFactorBackupCode.code_hash use. It answers "and
+#                is the holder really the one we gave it to", through check_password.
+# A stolen database therefore yields nothing usable, exactly like the one-time codes, and the lookup
+# is still a single indexed query. This is the standard split-token pattern; the alternative (a fast
+# SHA-256 we could index) would also be safe at 256 bits of entropy, but it would put a SECOND
+# hashing scheme in a module that already has one, and one scheme is easier to keep honest.
+#
+# ── WHAT A STOLEN COOKIE IS AND IS NOT WORTH ────────────────────────────────────────────────────
+# Stated plainly because it is the question a reviewer should ask: this token is NOT a session and
+# NOT a password. On its own it does nothing at all. It is only ever consulted AFTER a correct
+# password (or a verified Google/Discord identity), and all it does then is skip the second step. So
+# the worst case is "an attacker who already had the password is back where they were before 2FA
+# existed", not "an attacker is signed in". That is why it is acceptable for it to be readable by
+# the page's own JavaScript, the same as the auth_token cookie this codebase already ships.
+#
+# ── IT IS NEVER AUTOMATIC ───────────────────────────────────────────────────────────────────────
+# A row is created only when the user ticks "Remember this device" on the code screen. There is no
+# default, no pre-tick and no "we noticed you sign in from here a lot".
+#
+# ── EVERYTHING THAT WIPES THE LOT ───────────────────────────────────────────────────────────────
+# The full list lives in afc_auth/trusted_devices.py revoke_all(); its call sites are a RECOVERY
+# CODE being spent, 2FA being switched off, a password change, a password reset, an admin moving the
+# account's email, and a completed WhatsApp password recovery. Three of those carry most of the
+# weight: spending a recovery code means the normal factor is gone (lost inbox, lost phone, or a lost
+# account), which is exactly when a browser that can skip the second step stops being trustworthy;
+# the admin tool exists to RESCUE a stolen account, so if it ended the sessions but left the trusted
+# devices behind, the rescue would leave the attacker a standing way past the second factor; and
+# WhatsApp recovery deliberately does not ask for the second factor, on the grounds that the factor
+# still stands at the next sign-in, which is only true because the remembered devices go too.
+#
+# HOW IT CONNECTS
+#   logic     : afc_auth/trusted_devices.py (mint / verify / revoke / list). Nothing else touches
+#               these columns.
+#   login gate: afc_auth.views.login_or_challenge asks trusted_devices.device_from_request BEFORE it
+#               issues a challenge. That is the ONLY line the login path gained.
+#   HTTP      : afc_auth/views_two_factor.py two_factor_verify mints one when asked;
+#               afc_auth/views_devices.py trusted_devices_list / trusted_device_revoke manage them.
+#   frontend  : lib/twoFactor.ts (the afc_trusted_device cookie), the "Remember this device" tick in
+#               app/(auth)/_components/TwoFactorStep.tsx, and the device list in
+#               app/(user)/profile/_components/TrustedDevices.tsx (rendered by TwoFactorSecurity.tsx
+#               on /profile/security).
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+class TrustedDevice(models.Model):
+    """One browser this user has chosen not to be challenged on. See the block above for the shape."""
+
+    # How long a device stays remembered. See "WHY 30 DAYS" above.
+    TRUST_LIFETIME = timedelta(days=30)
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="trusted_devices")
+    # The public half of the cookie: which row. Unique + indexed because it is the lookup key.
+    selector = models.CharField(max_length=64, unique=True, db_index=True)
+    # The secret half, hashed. Never stored or logged in plaintext, exactly like a one-time code.
+    verifier_hash = models.CharField(max_length=128)
+
+    # ── What the user sees in their device list ──────────────────────────────────────────────
+    # A list of anonymous rows is a list nobody can act on: "revoke the one that is not me" needs
+    # something recognisable. These are the same three signals LoginHistory already records, and
+    # they are read from the request that created the row.
+    #
+    # The raw user agent is kept rather than only the pretty label so a future label change can be
+    # applied to old rows, and so an odd browser is still identifiable when the parser gives up.
+    user_agent = models.TextField(blank=True, default="")
+    # Short human label derived from the user agent ("Chrome on Windows"), computed ONCE at creation
+    # by trusted_devices.device_label. Stored rather than derived on read so the list cannot change
+    # under the user when the parser is improved.
+    label = models.CharField(max_length=120, blank=True, default="")
+    last_ip = models.CharField(max_length=45, blank=True, default="")
+
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+    # Updated (throttled) every time the device skips a challenge, so "last used" in the list is
+    # true and a user can tell a live device from one they stopped using months ago.
+    last_used_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+
+    # Only persist a last_used_at slide when it moves by more than this, so a user hammering the
+    # login page writes the row once rather than once per attempt. Same idiom, and the same reason,
+    # as SessionToken.TOUCH_THROTTLE.
+    TOUCH_THROTTLE = timedelta(hours=1)
+
+    class Meta:
+        indexes = [
+            # "this user's live devices", the only lookup that is not by selector.
+            models.Index(fields=["user", "expires_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        # Default the expiry to the full trust window when a caller does not set it, the same idiom
+        # SessionToken.save and TwoFactorChallenge.save already use.
+        if not self.expires_at:
+            self.expires_at = timezone.now() + self.TRUST_LIFETIME
+        super().save(*args, **kwargs)
+
+    def is_live(self):
+        """Still trusted right now. There is no `consumed_at` here on purpose: a trusted device is
+        used many times, and REVOKING one DELETES the row (see trusted_devices.revoke_one). A soft
+        flag would leave a revoked credential sitting in the table waiting for a query that forgot
+        to filter on it."""
+        return timezone.now() <= self.expires_at
+
+    def touch(self):
+        """Record that this device was used, at most once per TOUCH_THROTTLE."""
+        now = timezone.now()
+        if now - self.last_used_at > self.TOUCH_THROTTLE:
+            self.last_used_at = now
+            self.save(update_fields=["last_used_at"])
+
+    def __str__(self):
+        return f"{self.user.username} trusted device ({self.label or 'unknown'})"

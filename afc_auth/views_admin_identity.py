@@ -50,7 +50,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from . import two_factor
+from . import trusted_devices, two_factor
 from .audit import set_audit
 # The ONE place the "a value may not be two different login identifiers" rule lives, shared with
 # register / edit_profile / the Google SSO username generator in views.py (see identifiers.py).
@@ -515,6 +515,13 @@ def admin_set_user_email(request):
         # Sessions + any half-finished self-serve email change, gone together.
         sessions_ended = SessionToken.objects.filter(user=target).delete()[0]
         EmailChangeRequest.objects.filter(user=target).delete()
+        # And every REMEMBERED DEVICE (owner 2026-08-08, afc_auth/trusted_devices.py). This
+        # endpoint exists to RESCUE an account that somebody else has taken; a trusted device skips
+        # the second factor, so leaving those rows behind would mean the rescue tool was the thing
+        # that kept the attacker's way in open. Inside the atomic block, and NOT swallowed, for the
+        # same reason the 2FA teardown below is not: if any part of this rescue cannot be written,
+        # none of it should be, and an admin needs to see that rather than be told it worked.
+        devices_forgotten = trusted_devices.revoke_all(target)
 
         two_factor_disabled = False
         if two_factor_on:

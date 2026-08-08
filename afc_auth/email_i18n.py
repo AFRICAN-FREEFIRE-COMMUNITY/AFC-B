@@ -155,6 +155,32 @@ SUBJECTS = {
         "fr": "L'adresse e-mail de votre compte AFC a été mise à jour",
         "pt": "O e-mail da sua conta AFC foi atualizado",
     },
+    # Password reset through WhatsApp (owner 2026-08-08). Deliberately says WHATSAPP in the
+    # subject: this is the tripwire, and the one thing the reader has to judge from the subject
+    # alone is whether they are the person who just did it. "Your password was reset" on its own
+    # would not tell them which door was used, which is the whole point of sending this at all.
+    "password_reset_recovery": {
+        "en": "Your AFC password was reset using WhatsApp",
+        "fr": "Le mot de passe de votre compte AFC a été réinitialisé via WhatsApp",
+        "pt": "A palavra-passe da sua conta AFC foi redefinida através do WhatsApp",
+    },
+    # Email MOVED through WhatsApp recovery (owner 2026-08-08). Names WhatsApp for the same reason
+    # password_reset_recovery does: this goes to the OLD address as well as the new one, and the
+    # reader at the old address has to be able to tell from the subject alone that somebody used
+    # their phone number to take the address off the account.
+    "email_changed_recovery": {
+        "en": "Your AFC account email was changed using WhatsApp",
+        "fr": "L'adresse e-mail de votre compte AFC a été modifiée via WhatsApp",
+        "pt": "O e-mail da sua conta AFC foi alterado através do WhatsApp",
+    },
+    # The 6-digit code sent to the NEW address during WhatsApp recovery. Deliberately distinct from
+    # "confirm_new_email" (the signed-in flow): a person reading this one is locked out, and the
+    # subject has to make sense to somebody who may not remember starting the process.
+    "confirm_new_email_recovery": {
+        "en": "Confirm your new AFC email address",
+        "fr": "Confirmez votre nouvelle adresse e-mail AFC",
+        "pt": "Confirme o seu novo endereço de e-mail AFC",
+    },
     # Two-factor sign-in code (owner 2026-08-06). The code itself is deliberately NOT in the subject
     # line: subjects show in phone notifications on a locked screen, which is exactly the place a
     # second factor must not appear.
@@ -285,6 +311,14 @@ SUBJECTS = {
         "en": "About your AFC partner application ({reference})",
         "fr": "Au sujet de votre demande de partenariat AFC ({reference})",
         "pt": "Sobre a sua candidatura a parceiro AFC ({reference})",
+    },
+    # ── afc_tournament_and_scrims: a team is invited to an event (owner 2026-08-08) ──
+    # Sent by event_invite_delivery._send_invitation_emails to everyone who may ANSWER for the team
+    # (owner / captain / vice-captain / manager / coach), each in their own language.
+    "event_team_invitation": {
+        "en": "Your team is invited to {event}",
+        "fr": "Votre équipe est invitée à {event}",
+        "pt": "A sua equipa foi convidada para {event}",
     },
 }
 
@@ -509,6 +543,95 @@ COPY = {
             "signed_out": "As sessões em todos os dispositivos foram terminadas, por isso terá de iniciar sessão novamente.",
             "warning": "Se não pediu isto ao suporte da AFC, contacte {support} de imediato. Quem tiver esse endereço passa a poder redefinir a sua palavra-passe.",
             "two_factor": "A autenticação de dois fatores foi desativada para permitir esta alteração. Volte a ativá-la nas definições de segurança assim que iniciar sessão.",
+            "support_label": "o suporte",
+        },
+    },
+
+    # ── afc_auth: password reset through WHATSAPP RECOVERY ──
+    # Rendered by afc_auth/views.py email_recovery_password_reset, sent by
+    # afc_auth/views_recovery.py recovery_reset_password. GOLD accent: security mail, not a receipt.
+    #
+    # A SEPARATE template rather than a reuse of "password_changed", because that one is the
+    # receipt for somebody who was already signed in and it cannot say the fact that matters here:
+    # the door that was used was the WhatsApp number, not the email inbox and not the old password.
+    # THIS EMAIL IS THE TRIPWIRE of the whole feature. If the real owner did not do this, it is the
+    # only warning they get, and the sentence that makes it useful is the one naming WhatsApp.
+    #
+    # There is no two-factor line: this flow never switches 2FA off and never steps around it (see
+    # views_recovery.py), so an account that had it still has it. Saying nothing is correct, because
+    # nothing changed - and it is also the reassuring fact, so the warning says it out loud.
+    #
+    # Portuguese here is EUROPEAN ("palavra-passe", "terá", "contacte"), matching every other entry
+    # in this file. The frontend catalog messages/pt/*.json is Brazilian; the two are deliberately
+    # not reconciled, because each matches its own neighbours.
+    "recovery_password_reset": {
+        "en": {
+            "heading": "Your AFC password was reset",
+            "intro": "The password on {username}'s AFC account was reset on {when} by someone who confirmed a code sent to the WhatsApp number saved on the account. If that was you, there is nothing else to do: just sign in with your new password.",
+            "signed_out": "Every device signed in to this account was signed out, and any device that had been remembered for two-step sign-in must be confirmed again.",
+            "warning": "If this was not you, contact {support} straight away and tell them your WhatsApp number may have been taken over. Your two-step sign-in was not touched and is still required, so if you use it your account is still protected.",
+            "support_label": "support",
+        },
+        "fr": {
+            "heading": "Le mot de passe de votre compte AFC a été réinitialisé",
+            "intro": "Le mot de passe du compte AFC de {username} a été réinitialisé le {when} par une personne ayant confirmé un code envoyé au numéro WhatsApp enregistré sur le compte. Si c'était bien vous, il n'y a rien d'autre à faire : connectez-vous simplement avec votre nouveau mot de passe.",
+            "signed_out": "Tous les appareils connectés à ce compte ont été déconnectés, et tout appareil mémorisé pour la connexion en deux étapes devra être confirmé à nouveau.",
+            "warning": "Si ce n'était pas vous, contactez {support} sans attendre et signalez que votre numéro WhatsApp a peut-être été détourné. Votre connexion en deux étapes n'a pas été modifiée et reste exigée : si vous l'utilisez, votre compte est toujours protégé.",
+            "support_label": "le support",
+        },
+        "pt": {
+            "heading": "A palavra-passe da sua conta AFC foi redefinida",
+            "intro": "A palavra-passe da conta AFC de {username} foi redefinida em {when} por alguém que confirmou um código enviado para o número de WhatsApp guardado na conta. Se foi você, não há mais nada a fazer: basta iniciar sessão com a nova palavra-passe.",
+            "signed_out": "As sessões em todos os dispositivos foram terminadas, e qualquer dispositivo memorizado para o início de sessão em duas etapas terá de ser confirmado novamente.",
+            "warning": "Se não foi você, contacte {support} de imediato e diga que o seu número de WhatsApp pode ter sido comprometido. O seu início de sessão em duas etapas não foi alterado e continua a ser exigido: se o utiliza, a sua conta continua protegida.",
+            "support_label": "o suporte",
+        },
+    },
+
+    # ── afc_auth: account email MOVED through WHATSAPP RECOVERY ──
+    # Rendered by afc_auth/views.py email_recovery_email_changed, sent by
+    # afc_auth/views_recovery.py recovery_confirm_email_change to BOTH addresses. GOLD accent:
+    # security mail, not a receipt.
+    #
+    # THE OLD ADDRESS IS THE ONE THAT MATTERS. This is the tripwire for the single most dangerous
+    # thing the recovery flow can do, because an address that has been moved cannot be moved back by
+    # the person who lost it: every "forgot password" from then on goes to the new inbox. So the copy
+    # is written for a reader who did NOT do this and needs to act in the next few minutes, and the
+    # warning names the number rather than the account, because "your WhatsApp number" is the thing
+    # they can actually check.
+    #
+    # The new address gets the identical body. It reads a little oddly for somebody who DID just do
+    # this (they are being warned about themselves), and that is the right trade: a single template
+    # cannot be sent to the wrong one of the two, and the alternative is two near-identical blocks
+    # that drift. views.email_admin_email_changed makes the same call for the same reason.
+    #
+    # There is no two-factor line, because this flow REFUSES outright to run on an account with
+    # two-step sign-in switched on (views_recovery.py §4). Nothing was taken down, so there is
+    # nothing to tell anybody to turn back on.
+    #
+    # Portuguese here is EUROPEAN ("palavra-passe", "contacte", "iniciar sessão"), matching every
+    # other entry in this file. The frontend catalog messages/pt/*.json is Brazilian; the two are
+    # deliberately not reconciled, because each matches its own neighbours.
+    "recovery_email_changed": {
+        "en": {
+            "heading": "The email on your AFC account was changed",
+            "intro": "The email address on {username}'s AFC account was changed to {new_email} on {when} by someone who confirmed a code sent to the WhatsApp number saved on the account, and then a second code sent to the new address.",
+            "signed_out": "Every device signed in to this account was signed out, and any device that had been remembered for two-step sign-in must be confirmed again.",
+            "warning": "If this was not you, contact {support} straight away and tell them your WhatsApp number may have been taken over. Say which account it is and what the old address was, because password resets now go to the new address and you will not be able to undo this yourself.",
+            "support_label": "support",
+        },
+        "fr": {
+            "heading": "L'adresse e-mail de votre compte AFC a été modifiée",
+            "intro": "L'adresse e-mail du compte AFC de {username} a été remplacée par {new_email} le {when} par une personne ayant confirmé un code envoyé au numéro WhatsApp enregistré sur le compte, puis un second code envoyé à la nouvelle adresse.",
+            "signed_out": "Tous les appareils connectés à ce compte ont été déconnectés, et tout appareil mémorisé pour la connexion en deux étapes devra être confirmé à nouveau.",
+            "warning": "Si ce n'était pas vous, contactez {support} sans attendre et signalez que votre numéro WhatsApp a peut-être été détourné. Précisez de quel compte il s'agit et quelle était l'ancienne adresse : les réinitialisations de mot de passe arrivent désormais à la nouvelle adresse et vous ne pourrez pas annuler ce changement vous-même.",
+            "support_label": "le support",
+        },
+        "pt": {
+            "heading": "O e-mail da sua conta AFC foi alterado",
+            "intro": "O endereço de e-mail da conta AFC de {username} foi alterado para {new_email} em {when} por alguém que confirmou um código enviado para o número de WhatsApp guardado na conta e, em seguida, um segundo código enviado para o novo endereço.",
+            "signed_out": "As sessões em todos os dispositivos foram terminadas, e qualquer dispositivo memorizado para o início de sessão em duas etapas terá de ser confirmado novamente.",
+            "warning": "Se não foi você, contacte {support} de imediato e diga que o seu número de WhatsApp pode ter sido comprometido. Indique de que conta se trata e qual era o endereço antigo, porque as reposições de palavra-passe passam agora a chegar ao novo endereço e não poderá anular esta alteração sozinho.",
             "support_label": "o suporte",
         },
     },
@@ -1209,6 +1332,48 @@ COPY = {
             "intro": "Lemos a candidatura de {organisation} ({reference}) e não nos é possível aprová-la.",
             "note": "O motivo é o seguinte: {note}",
             "reapply": "Isto não é definitivo. Se o ponto que levantámos mudar, pode voltar a candidatar-se, e pode responder a este e-mail se algo não estiver claro.",
+        },
+    },
+    # ── afc_tournament_and_scrims: a team is invited to an event (owner 2026-08-08) ──
+    # Rendered by event_invite_delivery._invitation_email_html. The paragraphs run in reading order:
+    # what happened (intro), who asked (from_organizer), what kind of offer this is (one of the
+    # three urgency_* keys, picked by the campaign's kind), and what to do (how_to_answer).
+    #
+    # The three urgency_* sentences are the whole point of this email having a kind at all. A team
+    # that does not know the difference between "this place is yours" and "first to accept wins"
+    # answers on the wrong timescale, which is exactly the failure a first come, first served
+    # invitation creates. Every builder passes all of them as candidates, so all three exist in all
+    # three languages and none takes a placeholder.
+    "event_team_invitation": {
+        "en": {
+            "heading": "You are invited to {event}",
+            "intro": "{team} has been invited to play in {event}.",
+            "from_organizer": "The invitation came from {name}.",
+            "urgency_per_team": "This place is yours to take or turn down. It is not being offered to anyone else.",
+            "urgency_fcfs": "Places are first come, first served. Several teams were invited and the ones who accept first take the slots, so answering early is what counts.",
+            "urgency_bulk": "This is an open invitation rather than a reserved place. Teams take the places as they accept, and it closes once the event is full.",
+            "how_to_answer": "Open your team page on AFC to accept or decline. Anyone who runs the team can answer: the owner, the captain, the vice-captain, the manager or the coach. Accepting registers your team, so the usual checks on your roster still apply.",
+            "cta": "Open your team page",
+        },
+        "fr": {
+            "heading": "Vous êtes invités à {event}",
+            "intro": "{team} est invitée à jouer à {event}.",
+            "from_organizer": "L'invitation vient de {name}.",
+            "urgency_per_team": "Cette place est la vôtre, à accepter ou à refuser. Elle n'est proposée à personne d'autre.",
+            "urgency_fcfs": "Les places sont attribuées aux premiers arrivés. Plusieurs équipes ont été invitées et celles qui acceptent en premier prennent les places, donc répondre tôt est ce qui compte.",
+            "urgency_bulk": "Il s'agit d'une invitation ouverte et non d'une place réservée. Les équipes prennent les places au fur et à mesure qu'elles acceptent, et elle se ferme dès que l'événement est complet.",
+            "how_to_answer": "Ouvrez la page de votre équipe sur AFC pour accepter ou refuser. Toute personne qui dirige l'équipe peut répondre : le propriétaire, le capitaine, le vice-capitaine, le manager ou le coach. Accepter inscrit votre équipe, les vérifications habituelles sur votre roster s'appliquent donc toujours.",
+            "cta": "Ouvrir la page de mon équipe",
+        },
+        "pt": {
+            "heading": "Estão convidados para {event}",
+            "intro": "A {team} foi convidada para jogar em {event}.",
+            "from_organizer": "O convite vem de {name}.",
+            "urgency_per_team": "Esta vaga é vossa, para aceitar ou recusar. Não está a ser oferecida a mais ninguém.",
+            "urgency_fcfs": "As vagas são por ordem de chegada. Várias equipas foram convidadas e as que aceitarem primeiro ficam com as vagas, por isso responder cedo é o que conta.",
+            "urgency_bulk": "Este é um convite aberto e não uma vaga reservada. As equipas ocupam as vagas à medida que aceitam, e fecha assim que o evento estiver cheio.",
+            "how_to_answer": "Abra a página da sua equipa na AFC para aceitar ou recusar. Qualquer pessoa que dirija a equipa pode responder: o proprietário, o capitão, o vice-capitão, o manager ou o treinador. Aceitar inscreve a sua equipa, por isso as verificações habituais ao vosso roster continuam a aplicar-se.",
+            "cta": "Abrir a página da equipa",
         },
     },
 }
