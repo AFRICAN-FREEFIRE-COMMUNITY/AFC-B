@@ -530,6 +530,16 @@ class EventTeamInvitation(models.Model):
         EventInviteToken, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="team_invitation",
     )
+    # The send this row belongs to (owner 2026-08-08). NULL on every row written before campaigns
+    # existed, and on nothing since: the create endpoint always makes a campaign now. Readers treat
+    # a NULL campaign as "per_team", which is exactly what those older rows are, so no backfill is
+    # needed. Declared as a string because EventInvitationCampaign is defined below this class.
+    # SET_NULL rather than CASCADE: deleting a campaign must not delete the record of which teams
+    # answered it, since some of them are in the bracket by then.
+    campaign = models.ForeignKey(
+        "EventInvitationCampaign", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="invitations",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     responded_at = models.DateTimeField(null=True, blank=True)
     # Optional deadline. NULL (the default) means the invitation stands until the event's own
@@ -556,6 +566,190 @@ class EventTeamInvitation(models.Model):
 
     def __str__(self):
         return f"invite {self.team_id} -> event {self.event_id} ({self.status})"
+
+
+# ── INVITATION CAMPAIGNS: what KIND of invitation, and where it is delivered ──────────────────────
+# (owner 2026-08-08, the follow-up to backlog item 34)
+class EventInvitationCampaign(models.Model):
+    """ONE invitation as the organizer AUTHORED it: the kind of offer, the note, and the channels.
+
+    THE ITEM IN THE OWNER'S WORDS
+        "The admins can pick where they receive the invitations, the normal places, can also decide
+        what kind: if it is fcfs, or single per team that's automatically generated and attributed
+        to each team and sent, or it's a single general bulk invite."
+
+    WHY A CAMPAIGN EXISTS AT ALL, RATHER THAN THREE FLAGS ON EventTeamInvitation
+        Item 34 shipped exactly one kind of invitation: one addressed row per team. The owner asked
+        for three, and the three differ in HOW MANY ROWS THEY PRODUCE, which is precisely the thing
+        a per-row flag cannot express:
+
+          per_team  N teams -> N addressed rows. Every one may be accepted (the event's own
+                    capacity is the only ceiling). This is item 34's behaviour, unchanged.
+          fcfs      N teams -> N addressed rows, but only `slots` of them may ever be accepted.
+                    More teams are asked than there is room for, and the quick ones get in.
+          bulk      N teams -> ZERO addressed rows. One general offer, held open, that any team in
+                    `audience_team_ids` may take up. A row is written only when somebody ANSWERS,
+                    so the row records the answer rather than the ask.
+
+        Putting `kind` on the invitation row would therefore be a lie for `bulk`, where at creation
+        time there is no row to put it on. The campaign is the thing that always exists, so the kind
+        (and the note, the deadline, the channels, the slot count, the audience) lives there and the
+        invitation rows stay what they always were: one team's answer.
+
+    THE ONE RULE THAT DID NOT CHANGE
+        None of this touches how ACCEPTING works. Every kind still ends up in
+        event_invites._register_through_the_normal_path, which replays the answer through
+        views.register_for_event, so an invited team passes exactly the gates a self-registering
+        team passes. A campaign decides WHO IS ASKED and HOW MANY MAY SAY YES. It never decides who
+        gets in: register_for_event does, on the same terms as everybody else.
+
+    HOW THE FCFS RACE IS MADE SAFE (the part worth reading twice)
+        Two captains pressing Accept on the last slot at the same instant must not both get in.
+        There are two independent ceilings and they are guarded in two different places, on purpose:
+
+          1. THE EVENT'S CAPACITY is already race-safe and is NOT re-implemented here.
+             views.register_for_event does `Event.objects.select_for_update()` inside its atomic
+             block and counts active TournamentTeam rows behind that lock, so two concurrent
+             registrations serialize and the loser gets "Registration limit reached." That existing
+             lock is the guarantee; this feature leans on it rather than counting anything itself.
+          2. THIS CAMPAIGN'S OWN `slots`, when the organizer set one, is claimed by a single
+             guarded UPDATE (see claim_slot below) rather than a read-then-write. One SQL statement
+             with a WHERE clause cannot interleave, so exactly one of two simultaneous callers sees
+             a rowcount of 1.
+
+        Deliberately NOT done: wrapping register_for_event in an outer transaction of ours to reuse
+        its event lock for the campaign count too. That would work (a nested atomic rolls back only
+        to its savepoint) but it silently moves that endpoint's commit boundary and holds its row
+        lock for the whole of our request, and item 34's promise is that the registration path is
+        called, not modified. A one-statement claim needs none of that.
+
+    HOW IT CONNECTS
+        - Written + read by afc_tournament_and_scrims/event_invites.py (the create endpoint builds
+          one of these per send; accept/decline read it back through EventTeamInvitation.campaign).
+        - Delivered by afc_tournament_and_scrims/event_invite_delivery.py, which fans the ask out
+          over the channels named in `delivery` (in-app notification, email, WhatsApp).
+        - `delivery` speaks the EXISTING channel vocabulary in afc_auth.audience (parse_delivery /
+          delivery_token: "push", "email", "both", "whatsapp", comma-joined). Reused rather than
+          invented so the invitation composer and the broadcast composer mean the same words.
+        - Frontend: the kind + channel picker in EventTeamInvitesCard.tsx (organizer/admin) and the
+          offer card in EventInvitationsCard.tsx (team page).
+    """
+    KIND_CHOICES = [
+        ("per_team", "One invitation per team"),        # item 34's original behaviour
+        ("fcfs", "First come, first served"),           # more teams asked than there are slots
+        ("bulk", "One general invitation"),             # a single open offer, no addressed rows
+    ]
+    STATUS_CHOICES = [
+        ("open", "Open"),              # still accepting answers
+        ("closed", "Closed"),          # fcfs slots all taken, or the organizer closed it
+        ("cancelled", "Cancelled"),    # withdrawn before it was answered
+    ]
+
+    id = models.AutoField(primary_key=True)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="invitation_campaigns")
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default="per_team")
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="open")
+    # The organizer's note, shown to every team this campaign reaches. Length-capped rather than a
+    # TextField for the same reason EventTeamInvitation.message is: it is displayed verbatim.
+    message = models.CharField(max_length=280, blank=True, default="")
+    # WHERE the invitation is delivered, in afc_auth.audience's vocabulary. "both" (in-app + email)
+    # is the default because those are the two channels every recipient actually has: all 813 people
+    # who can answer an invitation have an email address, where WhatsApp reaches 32 of them.
+    delivery = models.CharField(max_length=40, default="both")
+    # FCFS ONLY. How many of THIS campaign's invitations may be accepted. NULL means "no ceiling of
+    # our own", i.e. the event's own capacity is the only limit, which is the common case: invite 20
+    # teams to an event with 16 free places and the registration endpoint sorts it out. Set it when
+    # the organizer wants to reserve fewer places than the event actually has free.
+    slots = models.PositiveIntegerField(null=True, blank=True)
+    # FCFS ONLY, and a CLAIM counter rather than a tally: claim_slot() bumps it BEFORE the
+    # registration is attempted and release_slot() puts it back if that registration is refused.
+    # It is deliberately not "the number of accepted invitations" (which is derivable by counting
+    # rows) because the thing that has to be race-safe is the RESERVATION, not the reporting.
+    seats_claimed = models.PositiveIntegerField(default=0)
+    # BULK ONLY. Bulk writes no addressed rows, so the teams told about the offer have nowhere else
+    # to live. Queried with `audience_team_ids__contains=<team_id>` (a JSON containment lookup MySQL
+    # supports) to answer "is this team allowed to see this offer".
+    audience_team_ids = models.JSONField(default=list, blank=True)
+    # PRIVATE events only, and SHARED (is_shared=True) rather than single-use, because a bulk or
+    # fcfs campaign is by definition redeemed by more than one team. EventInviteToken already models
+    # exactly this ("ONE reusable link that many people register through", see its comment above),
+    # so a campaign reuses it instead of teaching register_for_event a second way in. Public events
+    # leave this NULL.
+    invite_token = models.ForeignKey(
+        EventInviteToken, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="invitation_campaigns",
+    )
+    # SET_NULL for the same reason EventTeamInvitation.invited_by is: deleting an organizer's
+    # account must not erase campaigns teams have already accepted and are playing in.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="event_invitation_campaigns",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Optional deadline, copied onto each addressed row it creates so the existing per-row expiry
+    # sweep (event_invites._expire_stale) keeps working untouched.
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["event", "status"]),   # organizer list: this event's campaigns
+            models.Index(fields=["status", "kind"]),    # team list: open bulk offers
+        ]
+
+    def is_expired(self):
+        """True when a deadline was set and it has passed. Same lazy-sweep contract as
+        EventTeamInvitation.is_expired: readers flip stale rows rather than a cron doing it."""
+        return bool(self.expires_at and timezone.now() > self.expires_at)
+
+    def slots_remaining(self):
+        """Places left in THIS campaign, or None when it sets no ceiling of its own (in which case
+        the event's capacity is the only limit and the team card says so instead of a number).
+        Read-only: the authoritative claim happens in claim_slot()."""
+        if self.kind != "fcfs" or self.slots is None:
+            return None
+        return max(0, self.slots - self.seats_claimed)
+
+    def claim_slot(self):
+        """Reserve one FCFS place, race-safely. True when this caller got one.
+
+        The whole guard is the WHERE clause: `UPDATE ... SET seats_claimed = seats_claimed + 1
+        WHERE id = %s AND seats_claimed < slots` is ONE statement, so the database serializes two
+        simultaneous callers and the second one matches zero rows once the last place is gone. A
+        read-then-write here (`if remaining > 0: save()`) is the classic lost-update bug and would
+        let two captains both take the final slot.
+
+        Campaigns with no ceiling of their own (slots is NULL, or a kind that is not fcfs) always
+        return True: there is nothing of ours to run out of, and register_for_event's own capacity
+        check is what stops the event overfilling.
+        """
+        from django.db.models import F
+
+        if self.kind != "fcfs" or self.slots is None:
+            return True
+        claimed = EventInvitationCampaign.objects.filter(
+            pk=self.pk, seats_claimed__lt=F("slots"),
+        ).update(seats_claimed=F("seats_claimed") + 1)
+        if claimed:
+            self.refresh_from_db(fields=["seats_claimed"])
+        return bool(claimed)
+
+    def release_slot(self):
+        """Hand a claimed FCFS place back after the registration it was claimed for was REFUSED.
+
+        Without this, a captain whose accept bounced off register_for_event (an incomplete roster,
+        say) would burn a place nobody occupies. Guarded by `seats_claimed__gt=0` so a double
+        release can never drive the counter negative."""
+        from django.db.models import F
+
+        if self.kind != "fcfs" or self.slots is None:
+            return
+        EventInvitationCampaign.objects.filter(pk=self.pk, seats_claimed__gt=0).update(
+            seats_claimed=F("seats_claimed") - 1,
+        )
+        self.refresh_from_db(fields=["seats_claimed"])
+
+    def __str__(self):
+        return f"{self.kind} campaign -> event {self.event_id} ({self.status})"
 
 
 class SponsorEvent(models.Model):

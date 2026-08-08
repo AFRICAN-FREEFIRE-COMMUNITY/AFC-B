@@ -57,10 +57,16 @@ from .event_links import (
 from .event_invites import (
     create_team_invitations,
     list_event_invitations,
+    invitation_reach,
     cancel_team_invitation,
     list_my_team_invitations,
     accept_team_invitation,
     decline_team_invitation,
+    # Campaign-level routes (owner 2026-08-08): bulk invitations are answered here because they
+    # write no addressed row until somebody answers, and `close` ends an offer of any kind.
+    accept_bulk_campaign,
+    decline_bulk_campaign,
+    close_invitation_campaign,
 )
 # Clash-Squad head-to-head brackets (bracket sub-project C): generate / read / report-result
 # for knockout, double-elimination and league CS stages. Engine in head_to_head.py; the
@@ -519,6 +525,10 @@ urlpatterns = [
     # routes are relevant only for readability - the paths do not overlap.
     path("team-invitations/create/", create_team_invitations, name="create_team_invitations"),
     path("team-invitations/", list_event_invitations, name="list_event_invitations"),
+    # Declared BEFORE the <int:invitation_id> routes would ever be considered; it does not collide
+    # with them, but it reads next to the list it belongs to. Answers "who would this send reach,
+    # per channel" so the composer can print the WhatsApp figure before the admin commits.
+    path("team-invitations/reach/", invitation_reach, name="invitation_reach"),
     path("team-invitations/mine/", list_my_team_invitations, name="list_my_team_invitations"),
     path("team-invitations/<int:invitation_id>/cancel/", cancel_team_invitation,
          name="cancel_team_invitation"),
@@ -526,6 +536,19 @@ urlpatterns = [
          name="accept_team_invitation"),
     path("team-invitations/<int:invitation_id>/decline/", decline_team_invitation,
          name="decline_team_invitation"),
+
+    # ── Invitation CAMPAIGNS: the three kinds + where they are delivered (owner 2026-08-08) ──
+    # A campaign is the invitation as the organizer authored it (kind, note, channels, fcfs slots).
+    # per_team and fcfs still answer through the team-invitations/<id>/ routes above, because they
+    # write one addressed row per team. BULK writes no addressed row, so it needs its own accept /
+    # decline: the row is created BY the answer. `close` is the campaign-level equivalent of
+    # cancelling one invitation, and is gated by the same _can_invite as creating.
+    path("invitation-campaigns/<int:campaign_id>/accept/", accept_bulk_campaign,
+         name="accept_bulk_campaign"),
+    path("invitation-campaigns/<int:campaign_id>/decline/", decline_bulk_campaign,
+         name="decline_bulk_campaign"),
+    path("invitation-campaigns/<int:campaign_id>/close/", close_invitation_campaign,
+         name="close_invitation_campaign"),
 
     # ── Public sponsors (owner 2026-08-05, backlog item 26) ───────────────────────────────
     # Full URLs are events/public-sponsors/... All three are organizer/admin writes gated by the
