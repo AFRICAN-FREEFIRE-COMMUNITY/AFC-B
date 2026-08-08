@@ -9,6 +9,13 @@ from rest_framework import status
 from afc_auth.views import validate_token, is_stats_admin
 from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats, EventPrizePayout
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
+# Team role permissions (owner 2026-08-08): the team OWNER decides which management roles may
+# invite, kick, edit the roster, register for events or edit the team profile. team_role_can is the
+# single gate every one of those endpoints below now asks; capabilities_for is what get_team_details
+# hands the frontend so it renders only the controls the viewer can actually use. A team with no
+# saved settings resolves to exactly the behaviour that was hard-coded here before, per role - see
+# afc_team/permissions.py for the defaults table and the reasoning.
+from .permissions import capabilities_for, team_role_can
 from afc_auth.models import AdminHistory, BannedPlayer, Notifications, TeamBan, User, UserProfile, UserRoles
 from django.utils.timezone import now
 # Invite.invite_id is a UUID. Looking it up with a non-UUID value (e.g. a tampered URL)
@@ -513,9 +520,18 @@ def invite_member(request):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # Validate the team and check if the inviter is the owner or captain
-        team = Team.objects.get(team_id=team_id, team_owner=inviter)
-        
+        # Validate the team, then ask whether this team lets the inviter's role invite people.
+        # This used to be a combined lookup (`team_id=..., team_owner=inviter`), i.e. owner-only and
+        # not configurable. can_invite_members defaults to nobody-but-the-owner, so the answer is
+        # unchanged for every team that has not customised it (afc_team/permissions.py).
+        team = Team.objects.get(team_id=team_id)
+        if not team_role_can(inviter, team, "can_invite_members"):
+            return Response(
+                {'message': 'Your role on this team cannot invite members.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+
         # Validate invitee by email or IN-GAME NAME.
         #
         # The in-game name IS User.username: afc_auth.models.User has no `in_game_name` column
@@ -944,8 +960,10 @@ def review_join_request(request):
         join_request = JoinRequest.objects.get(request_id=request_id)
         team = join_request.team
 
-        # Check if the reviewer has permission to approve/deny join requests
-        if team.team_owner != reviewer:
+        # Check if the reviewer has permission to approve/deny join requests. Was owner-only and
+        # not configurable; can_manage_join_requests defaults to owner-only, so unchanged unless the
+        # owner has granted it to a role (afc_team/permissions.py).
+        if not team_role_can(reviewer, team, "can_manage_join_requests"):
             return Response({"message": "You do not have permission to review join requests for this team."}, status=status.HTTP_403_FORBIDDEN)
 
         # Ensure the request has not already been reviewed
@@ -1041,8 +1059,18 @@ def view_join_requests(request):
         # can own multiple teams -- .get() would raise MultipleObjectsReturned -> 500. Use
         # .filter().first() (the repo convention, see lines 89/411/1277) + a guard instead.
         team = Team.objects.filter(team_owner=user).first()
+        # Not the owner of any team? Fall back to the team this user is ON. An owner-granted
+        # can_manage_join_requests is useless without this: a captain has no owned team to resolve
+        # from, so the lookup above would 403 them before their capability was ever consulted.
+        if not team:
+            membership = TeamMembers.objects.filter(member=user).select_related("team").first()
+            team = membership.team if membership else None
         if not team:
             return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
+        # Defaults to owner-only, so a plain member still gets a 403 here exactly as before - only
+        # the wording differs (afc_team/permissions.py).
+        if not team_role_can(user, team, "can_manage_join_requests"):
+            return Response({"message": "Your role on this team cannot review join requests."}, status=status.HTTP_403_FORBIDDEN)
 
         # Fetch all pending join requests for the team
         join_requests = JoinRequest.objects.filter(team=team, status_of_request="unattended_to")
@@ -1063,36 +1091,82 @@ def view_join_requests(request):
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 
+def _join_requests_refusal():
+    """The single refusal used for BOTH "no such team" and "you may not see this team's requests".
+
+    The two MUST be indistinguishable: a caller who could tell them apart could walk team_id 1..N
+    and learn exactly which teams exist. Built fresh per call rather than kept as a module-level
+    constant, because a DRF Response is stateful once rendered and sharing one instance across
+    requests leaks that state.
+    """
+    return Response(
+        {"message": "You do not have permission to view join requests for this team."},
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
 @api_view(["POST"])
 def view_join_requests_for_a_team(request):
-    team_id = request.data.get("team_id")
+    """POST /team/view-join-requests-for-a-team/ - one team's PENDING join requests.
 
+    REQUEST   {team_id: int}
+    RESPONSE  200 {join_requests: [{request_id, requester, uid, message, request_date}]}
+              403 identical body for "team does not exist" and "you may not see this".
+    AUTH      Bearer session token, AND the caller's role must hold can_manage_join_requests for
+              that team (afc_team/permissions.py). Defaults to the team OWNER only, which is
+              exactly who the consuming surface is shown to.
+    CONSUMED BY  the "Requests" tab on app/(user)/teams/[id], whose TabsTrigger is already gated on
+              the viewer being the team owner. That page now skips this call entirely unless
+              get-team-details said my_capabilities.can_manage_join_requests, so the refusal below
+              is a backstop rather than something a normal user ever meets.
+
+    SECURITY FIX 2026-08-08. This endpoint previously had NO AUTHENTICATION OF ANY KIND: it took a
+    team_id from an anonymous POST and returned, for every pending request, the requester's
+    username AND their Free Fire uid. That is not merely a privacy leak. Sign-in on this platform
+    resolves a typed identifier against username OR uid OR email
+    (afc_auth.EmailOrUsernameModelBackend), so the response handed an unauthenticated caller two of
+    the three ways to name a real account, in bulk, for anyone who had ever asked to join a team -
+    ready-made input for credential stuffing. Iterating team_id also enumerated which teams exist.
+
+    The `uid` is KEPT in the payload because the surface genuinely uses it: the Requests table
+    renders a translated "UID" column beside the name, which is how an owner confirms that the
+    applicant is the Free Fire player they expect. It is now only ever sent to a caller who has
+    passed both gates above. The sibling GET /team/view-join-requests/ returns the same fields for
+    the caller's own team.
+    """
+    # (1) A valid session. Without this nothing below matters.
+    user, err = _get_authed_user(request)
+    if err:
+        return err
+
+    team_id = request.data.get("team_id")
     if not team_id:
         return Response({"message": "Team ID is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        # Ensure the team exists
         team = Team.objects.get(team_id=team_id)
+    except (Team.DoesNotExist, ValueError):
+        # Same refusal as the entitlement failure below, so team ids cannot be probed.
+        return _join_requests_refusal()
 
-        # Fetch all pending join requests for the team
-        join_requests = JoinRequest.objects.filter(team=team, status_of_request="unattended_to")
+    # (2) Entitlement, from the team's own role-permission matrix rather than a bespoke check, so
+    # an owner who grants can_manage_join_requests to (say) their manager gets it here too and the
+    # review endpoint and this list endpoint can never disagree about who may see what.
+    if not team_role_can(user, team, "can_manage_join_requests"):
+        return _join_requests_refusal()
 
-        requests_data = []
-        for req in join_requests:
-            requests_data.append({
-                "request_id": req.request_id,
-                "requester": req.requester.username,
-                "uid": req.requester.uid,
-                "message": req.message,
-                "request_date": req.created_at
-            })
+    join_requests = JoinRequest.objects.filter(
+        team=team, status_of_request="unattended_to").select_related("requester")
 
-        return Response({"join_requests": requests_data}, status=status.HTTP_200_OK)
+    requests_data = [{
+        "request_id": req.request_id,
+        "requester": req.requester.username,
+        "uid": req.requester.uid,
+        "message": req.message,
+        "request_date": req.created_at,
+    } for req in join_requests]
 
-    except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return Response({"join_requests": requests_data}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -1137,8 +1211,14 @@ def edit_team(request):
     except Team.DoesNotExist:
         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    # Ensure the user is the team owner
-    if team.team_owner != user:
+    # Ensure the user may edit this team's profile. Was owner-only and not configurable;
+    # can_edit_team_profile defaults to owner-only, so nothing changes for a team that has not
+    # customised it (afc_team/permissions.py). NOTE this gates the profile fields handled below
+    # (name / tag / logo / description / join settings / social links) only - the stats-privacy
+    # toggle and the letter-avatar picker are separate endpoints with their own, wider role sets
+    # (set_team_stats_visibility, set_team_letters) and are deliberately left alone, because
+    # folding them in here would take controls away from managers on every existing team.
+    if not team_role_can(user, team, "can_edit_team_profile"):
         return Response({"message": "You do not have permission to edit this team."}, status=status.HTTP_403_FORBIDDEN)
 
     # ── ban guard (afc_auth.BannedPlayer + Team.is_banned) ──
@@ -2140,6 +2220,17 @@ def get_team_details(request):
         "member_letters": member_letters,
         "manual_letters": manual_letters,
         "can_manage_letters": _can_manage_team_letters(viewer, team),
+        # ── What THIS viewer may do with the team (owner 2026-08-08) ──
+        # {can_invite_members, can_manage_join_requests, can_edit_roster, can_remove_members,
+        #  can_register_for_events, can_edit_team_profile} for the logged-in viewer, resolved from
+        # the team's own role-permission matrix (afc_team/permissions.py). All False for an
+        # anonymous or non-member viewer; all True for the owner.
+        #
+        # The team page (app/(user)/teams/[id]) reads this instead of re-deriving the rules from
+        # role strings in the browser - that duplication is exactly how the frontend's
+        # canManageRoster / canManageTeam checks drifted from the backend's. Hiding a button is a
+        # convenience only: every endpoint re-checks the same answer server-side.
+        "my_capabilities": capabilities_for(viewer, team),
         # Stats (zeroed when stats_visible is False)
         "total_wins": total_wins,
         "total_losses": total_matches - total_wins,
@@ -2401,7 +2492,20 @@ def generate_invite_link(request):
                 {"message": f"A link can be used between 1 and {MAX_MEMBERS} times."}, status=400)
 
     try:
-        team = Team.objects.get(team_owner=user)
+        # Which team is this link for? The caller's OWN team, resolved the way it always was (the
+        # team they own), falling back to the team they are a member of - a captain the owner has
+        # granted can_invite_members owns no team, so the original lookup alone would 404 them.
+        # can_invite_members defaults to owner-only, so a member of a team that has not customised
+        # its settings is still refused, just at the capability check instead of the lookup.
+        team = Team.objects.filter(team_owner=user).first()
+        if team is None:
+            membership = TeamMembers.objects.filter(member=user).select_related("team").first()
+            if membership is None:
+                raise Team.DoesNotExist
+            team = membership.team
+        if not team_role_can(user, team, "can_invite_members"):
+            return Response(
+                {"message": "Your role on this team cannot create invite links."}, status=403)
         # Same capacity gate as invite_member: don't mint a link into a seat that does not exist.
         capacity_error = _roster_capacity_error(team, role_to_be_given_upon_acceptance)
         if capacity_error:
@@ -2582,19 +2686,11 @@ def get_team_details_based_on_invite(request, invite_id):
     return Response({"team": team_data}, status=status.HTTP_200_OK)
 
 
-def _can_manage_roster(user, team):
-    """Who may manage a team's roster (change roles + kick members).
-
-    Allowed: the team OWNER, and any member whose management_role is 'coach'.
-    NOT allowed: team captains, vice captains, managers, analysts, members.
-    The check is bound to THIS team (the team looked up by team_id), so it can
-    never authorize managing a different team's roster.
-    """
-    if team.team_owner_id == user.user_id:
-        return True
-    return TeamMembers.objects.filter(
-        team=team, member=user, management_role="coach"
-    ).exists()
+# _can_manage_roster used to live here: "the team OWNER, and any member whose management_role is
+# 'coach'", shared by manage_team_roster and kick_team_member. Both now ask team_role_can() for
+# can_edit_roster / can_remove_members respectively (owner 2026-08-08), which resolves to exactly
+# that same pair when a team has not customised its settings. The rule it encoded is preserved
+# verbatim as the 'coach' entry in afc_team.permissions.DEFAULT_ROLE_CAPABILITIES.
 
 
 def _member_in_active_event_roster(team, member_id) -> bool:
@@ -2742,8 +2838,10 @@ def manage_team_roster(request):
         except Team.DoesNotExist:
             return Response({"error": "Team not found"}, status=404)
 
-        # Roster management is allowed for the team owner OR a coach (see _can_manage_roster).
-        if not _can_manage_roster(user, team):
+        # Roster management: whoever the OWNER has granted can_edit_roster. Defaults to the owner
+        # plus 'coach', which is exactly what _can_manage_roster hard-coded before this was
+        # configurable, so an untouched team behaves identically (afc_team/permissions.py).
+        if not team_role_can(user, team, "can_edit_roster"):
             return Response({"error": "Only the team owner or a coach can manage the roster"}, status=403)
 
         # ── Transfer-window lock on POSITIONS (in_game_role) ──────────────────────
@@ -2982,8 +3080,11 @@ def kick_team_member(request):
         except Team.DoesNotExist:
             return Response({"error": "Team not found"}, status=404)
 
-        # Kicking is allowed for the team owner OR a coach (see _can_manage_roster).
-        if not _can_manage_roster(user, team):
+        # Kicking: whoever the OWNER has granted can_remove_members. Defaults to the owner plus
+        # 'coach' (what _can_manage_roster hard-coded), so an untouched team behaves identically.
+        # Separate from can_edit_roster because removing somebody is not undoable in a click the way
+        # a demotion is - see afc_team/permissions.py.
+        if not team_role_can(user, team, "can_remove_members"):
             return Response({"error": "Only the team owner or a coach can kick members"}, status=403)
 
         # Roster moves are locked outside the transfer window - members cannot be kicked
@@ -3421,6 +3522,15 @@ def admin_add_member(request):
         message=f"{player.username} has been added to your team '{team.team_name}' by an admin.",
         notification_type="team_join"
     )
+
+    # Pre-existing bug, found 2026-08-08 by afc_team.tests_role_permissions while proving that a
+    # team's role settings cannot lock an AFC admin out: this function fell off its end without
+    # returning, so DRF raised "Expected a Response ... but received NoneType" and the admin saw a
+    # 500 on the SUCCESS path - after the member had already been added. Every failure branch above
+    # returns properly, which is why it went unnoticed. Shape matches admin_remove_member's reply.
+    return Response({
+        "message": f"{player.username} was added to '{team.team_name}' as {management_role}.",
+    }, status=status.HTTP_200_OK)
 
 
 # ── Admin Team Management ──────────────────────────────────────────────────────

@@ -1,5 +1,10 @@
 from django.urls import path, include
 from .views import *
+# Team role permissions (owner 2026-08-08). Same reason as above: its own module, so the star
+# import is not what pulls these in. See afc_team/views_permissions.py.
+# Team role permissions (owner 2026-08-08). Same reason as above: its own module, so the star
+# import is not what pulls these in. See afc_team/views_permissions.py.
+from .views_permissions import get_team_role_permissions, set_team_role_permissions
 from django.conf import settings
 from django.conf.urls.static import static
 
