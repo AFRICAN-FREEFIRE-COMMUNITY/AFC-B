@@ -538,8 +538,14 @@ class TwoFactorModuleTests(TwoFactorTestBase):
         # "totp" became a REAL registered method on 2026-08-07 (see tests_two_factor_totp.py);
         # before that it was one of the future values this test used to prove fell back.
         self.assertEqual(two_factor.get_method("totp").code, "totp")
+        # "whatsapp" became a REAL registered method on 2026-08-08 (see
+        # tests_recovery_whatsapp.py). It is REGISTERED but not OFFERED: account recovery asks for
+        # it by name, and no user can choose it as their sign-in factor, which is the next
+        # assertion rather than a comment.
+        self.assertEqual(two_factor.get_method("whatsapp").code, "whatsapp")
+        self.assertNotIn("whatsapp", two_factor.ENABLED_METHODS)
         # An unknown or future value still falls back rather than crashing a login.
-        self.assertEqual(two_factor.get_method("whatsapp").code, "email")
+        self.assertEqual(two_factor.get_method("sms").code, "email")
         self.assertEqual(two_factor.get_method(None).code, "email")
 
 

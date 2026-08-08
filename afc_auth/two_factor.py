@@ -13,8 +13,10 @@
 #   accounts can all actually use (WhatsApp reaches roughly 90 of them). But the flow was written
 #   against a small TwoFactorMethod interface instead of hardcoding "send an email", and on
 #   2026-08-07 that paid off: TOTP (authenticator apps) was added as a subclass plus one entry in
-#   METHODS. No view signature, no response shape and no login-gate line had to change. WhatsApp,
-#   the remaining known method, drops in the same way.
+#   METHODS. No view signature, no response shape and no login-gate line had to change. WhatsApp
+#   went in the same way on 2026-08-08, to carry the FORGOT-PASSWORD code (afc_auth/views_recovery.py):
+#   it is registered in METHODS but held out of ENABLED_METHODS, so it is addressable by name and not
+#   offerable as a sign-in factor. See WhatsAppCodeMethod for why that line is drawn there.
 #
 # HOW IT CONNECTS
 #   models   : TwoFactorSettings / TwoFactorChallenge / TwoFactorBackupCode (afc_auth/models.py)
@@ -60,6 +62,7 @@ from django.db import transaction
 from django.db.models import F, Sum
 from django.utils import timezone
 
+from . import trusted_devices
 from .models import TwoFactorBackupCode, TwoFactorChallenge, TwoFactorSettings
 
 # How many digits a one-time code has. Six matches every other code AFC already emails (signup
@@ -218,13 +221,156 @@ class TotpMethod(TwoFactorMethod):
         return consume_totp(user, submitted)
 
 
-# The registry. Adding WhatsApp later = write a WhatsAppCodeMethod calling
-# afc_whatsapp.client.send_template(number, "login_code", lang, body_params=[code]), add it here,
-# and add "whatsapp" to ENABLED_METHODS. Nothing else in the stack changes - which is exactly how
-# TotpMethod above went in.
+class WhatsAppCodeMethod(TwoFactorMethod):
+    """A six-digit code to the WhatsApp number saved on the account (added 2026-08-08).
+
+    WHAT IT IS FOR TODAY: the FORGOT-PASSWORD code, and only that. It is registered in METHODS below
+    but deliberately NOT listed in ENABLED_METHODS, so no user can pick it as the factor that guards
+    their sign-in. afc_auth/views_recovery.py asks for it BY NAME
+    (issue_challenge(user, purpose="recovery", method_code="whatsapp")); nothing else does.
+
+    WHY IT IS NOT A SIGN-IN FACTOR. The owner considered WhatsApp sign-in and turned it down, so
+    this is a settled decision and not an unfinished one. The two reasons it was turned down:
+      • REACH. 116 of 6,809 accounts have a number saved (about 1.7%), so offering it on the
+        security page would advertise a factor almost nobody can use.
+      • It is the RECOVERY channel. Making the same number both the second factor AND the way back
+        in when that factor fails would collapse two independent proofs into one, and it would undo
+        the reasoning views_recovery.py rests on: that a WhatsApp-proved password reset is safe
+        precisely BECAUSE the second factor is something else and still stands afterwards.
+    The exclusion from ENABLED_METHODS is therefore the feature, not a TODO. Do not add "whatsapp"
+    to that tuple without the owner reversing the decision, and afc_auth/tests_trusted_devices.py
+    pins it so a well-meaning edit fails a test instead of quietly shipping.
+
+    DELIVERY goes through afc_whatsapp.tasks.queue_template, the single send chokepoint, which
+    normalises the number, honours the recipient's opt-out (Meta policy), refuses a template the
+    WABA has not approved, writes a WhatsAppMessage row BEFORE it calls Meta and retries transient
+    failures. Nothing about the wire is re-implemented here.
+
+    LANGUAGE: the template name and the language it was approved under come from settings
+    (WHATSAPP_LOGIN_CODE_TEMPLATE / _LANG). Meta approves a template PER LANGUAGE and treats "en"
+    and "en_US" as different templates, so the recipient's own language is used only when a
+    template exists for it (see _template_language); otherwise the send falls back to the approved
+    default rather than failing with Meta error 132001 and telling the user nothing.
+    """
+
+    code = "whatsapp"
+
+    def _number(self, user):
+        """The user's saved WhatsApp number in E.164, or "" when they have none we can send to.
+
+        Resolved through afc_auth.canonical_profile, NOT profile_of: duplicate UserProfile rows
+        exist in production and canonical_profile is the one resolver every reader and writer in
+        this codebase agrees on (lowest profile_id). Same call afc_whatsapp.tasks._opted_out makes.
+        """
+        try:
+            from afc_whatsapp.phone import to_e164
+
+            from .models import canonical_profile
+            profile = canonical_profile(user)
+        except Exception:
+            # A profile lookup must never take down a login or a recovery request.
+            return ""
+        if profile is None:
+            return ""
+        # OPT-OUT IS RESPECTED HERE, not only at send time. queue_template would drop the message
+        # anyway, but doing it here means is_available() answers False, so issue_challenge refuses
+        # with "unavailable" instead of minting a challenge whose code was silently binned. The
+        # profile settings copy says plainly that switching WhatsApp off also switches off
+        # recovery, so this is a choice the user made with the consequence in front of them.
+        if not getattr(profile, "whatsapp_opt_in", True):
+            return ""
+        raw = (getattr(profile, "whatsapp_number", "") or "").strip()
+        if not raw:
+            return ""
+        # The stored value may predate the country-code rule (34 of 133 rows were in local form
+        # when afc_whatsapp/phone.py was written), so it is anchored to the account's country
+        # exactly as every other send path does before being used.
+        country = getattr(user, "ip_country", "") or getattr(user, "country", "") or None
+        return to_e164(raw, country) or ""
+
+    def is_available(self, user) -> bool:
+        return bool(self._number(user))
+
+    def destination_hint(self, user) -> str:
+        from afc_whatsapp.phone import mask_e164
+        return mask_e164(self._number(user))
+
+    def deliver(self, user, code) -> bool:
+        from django.conf import settings
+
+        from afc_whatsapp.tasks import queue_template
+
+        template = getattr(settings, "WHATSAPP_LOGIN_CODE_TEMPLATE", "") or ""
+        if not template:
+            # BLANK MEANS DO NOT SEND, the same off switch WHATSAPP_ROOM_3D_TEMPLATE and the order
+            # templates use. Reported as a delivery failure so the caller says "we could not send
+            # it" rather than telling somebody to check a phone nothing was sent to.
+            print("WhatsApp 2FA code not sent: WHATSAPP_LOGIN_CODE_TEMPLATE is not configured.")
+            return False
+        try:
+            queued = queue_template(
+                self._number(user),
+                template,
+                _template_language(user),
+                body_params=[code],
+                user=user,
+                context="account_recovery_code",
+                # The digits must NOT be written to the WhatsApp message log. Everything else
+                # about the send is still recorded (the row, the wamid, the delivery receipts), so
+                # "did my code go out?" is still answerable, but a live one-time code never sits in
+                # plaintext where a database dump or a Django admin session can read it. That is the
+                # same rule the rest of this module keeps: the plaintext exists only between
+                # issue_challenge and the recipient's phone.
+                redact_variables=True,
+            )
+            # queue_template returns a WhatsAppMessage id when it ran INLINE (WHATSAPP_SYNC, which
+            # defaults to DEBUG), True when a worker took it, and None when nothing was sent. Only
+            # None is a failure; treating a truthy id or True as success is the contract stated in
+            # its own docstring, and getting this wrong is what made the room-details sender report
+            # zero deliveries on production.
+            return queued is not None
+        except Exception as exc:
+            # Deliberately logs the EXCEPTION and the username, never the code and never the number.
+            print(f"2FA WhatsApp delivery failed for {getattr(user, 'username', '?')}: {exc}")
+            return False
+
+
+def _template_language(user):
+    """The Meta template language to send this user's code under.
+
+    Meta approves a template PER LANGUAGE and rejects a mismatch with error 132001, so we may only
+    ask for a language the WABA actually has. WHATSAPP_LOGIN_CODE_LANG is the one that is known to
+    exist; a recipient language is used only when the registry (WhatsAppTemplate, filled by
+    `manage.py sync_whatsapp_templates`) confirms an APPROVED row for it. That is what lets a
+    French player get a French code once the French template is approved, with no code change here,
+    while never turning an untranslated template into a message that simply never arrives.
+    """
+    from django.conf import settings
+
+    default = getattr(settings, "WHATSAPP_LOGIN_CODE_LANG", "en") or "en"
+    lang = (getattr(user, "language", "") or "").strip().lower()[:2]
+    if not lang or lang == default[:2].lower():
+        return default
+    try:
+        from afc_whatsapp.models import WhatsAppTemplate
+        template = getattr(settings, "WHATSAPP_LOGIN_CODE_TEMPLATE", "") or ""
+        for candidate in (lang, f"{lang}_{lang.upper()}"):
+            known, approved = WhatsAppTemplate.approval_state(template, candidate)
+            if known and approved:
+                return candidate
+    except Exception:
+        # An unmigrated or unreachable registry must not stop a recovery code going out.
+        pass
+    return default
+
+
+# The registry. Every method the code knows how to run. Membership here is what makes a method
+# ADDRESSABLE (issue_challenge(..., method_code=...)); ENABLED_METHODS below is what makes it
+# OFFERABLE. WhatsApp sits in the first list and not the second on purpose: see WhatsAppCodeMethod.
 METHODS = {
     EmailCodeMethod.code: EmailCodeMethod(),
     TotpMethod.code: TotpMethod(),
+    WhatsAppCodeMethod.code: WhatsAppCodeMethod(),
 }
 
 # What a user is allowed to CHOOSE right now. Kept separate from METHODS so a method can be
@@ -540,7 +686,27 @@ def consume_backup_code(user, submitted) -> bool:
     """Spend one unused backup code. True when it matched (and is now spent), False otherwise.
 
     Normalizes case and the display hyphen so "abcde-fghij", "ABCDEFGHIJ" and "ABCDE-FGHIJ" are the
-    same code to a user typing it on a phone. Walks only UNUSED rows, so a code really is one-shot."""
+    same code to a user typing it on a phone. Walks only UNUSED rows, so a code really is one-shot.
+
+    ── SPENDING A CODE ALSO FORGETS EVERY REMEMBERED DEVICE (owner 2026-08-08) ───────────────────
+    Reaching for a recovery code means the normal factor did not work: the inbox is gone, the phone
+    is gone, or the account is not in the owner's hands any more. That is precisely the moment every
+    browser that can SKIP the second step becomes suspect, so all of them go
+    (afc_auth/trusted_devices.py revoke_all). A user who still wants one remembered ticks the box on
+    the same screen and gets exactly one: the browser they are sitting at.
+
+    IT IS DONE HERE, at the single chokepoint, rather than at the call sites, because there are
+    three of them (the login second step, disabling 2FA, and switching to an authenticator app in
+    views_two_factor.py) and a fourth added later would inherit the rule for free instead of
+    silently missing it. This is also the ONE place where "trust survives a method change" (see
+    trusted_devices.revoke_all) does not hold: a switch proved with the CURRENT factor keeps the
+    devices, a switch proved with a recovery code does not.
+
+    FAILS CLOSED, and it is the only trusted-device operation allowed to fail a request. The
+    revocation shares a transaction with marking the code used, so a database error rolls BOTH back:
+    the code is not spent (the user can try the same one again) and no session is handed out. The
+    alternative, swallowing the error, would grant a sign-in while leaving every remembered device
+    standing at the exact moment they are least trustworthy."""
     submitted = (submitted or "").strip().upper().replace(" ", "")
     if not submitted:
         return False
@@ -549,8 +715,10 @@ def consume_backup_code(user, submitted) -> bool:
 
     for row in TwoFactorBackupCode.objects.filter(user=user, used_at__isnull=True):
         if check_password(submitted, row.code_hash):
-            row.used_at = timezone.now()
-            row.save(update_fields=["used_at"])
+            with transaction.atomic():
+                row.used_at = timezone.now()
+                row.save(update_fields=["used_at"])
+                trusted_devices.revoke_all(user)
             return True
     return False
 

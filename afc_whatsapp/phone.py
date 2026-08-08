@@ -348,3 +348,95 @@ def to_wa_id(e164):
     client strips it at the wire edge while we keep the readable "+234..." on the
     WhatsAppMessage row. Accepts either form; returns digits only."""
     return _digits(e164 or "")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# The COUNTRY CODE IS COMPULSORY rule, for the surfaces where a number is TYPED
+# (owner 2026-08-08: "if they're inputting WhatsApp number, then country code is
+# compulsory").
+#
+# to_e164() above is deliberately FORGIVING: handed a country it will happily
+# resolve "08051234567", which is exactly right at SEND time, where the job is to
+# rescue the 34-of-133 rows already sitting in the database in local form. It is
+# the wrong rule at WRITE time, and the difference matters:
+#
+#   * a local number resolved against a country field the person may have got
+#     wrong produces a PLAUSIBLE wrong number, and a plausible wrong number
+#     messages a real stranger. An obviously bad one never leaves.
+#   * this number is now an ACCOUNT RECOVERY factor (afc_auth/views_recovery.py).
+#     Storing one that cannot be dialled means discovering it at the exact moment
+#     somebody is locked out and needs it.
+#   * refusing at the door puts the error in front of the only person who can fix
+#     it, while they are still looking at the form.
+#
+# The frontend control (react-phone-number-input, via components/PhoneNumberInput)
+# always emits the international form, so an honest user never meets this error;
+# the ones who do are posting to the API directly. A client-side rule alone is not
+# a rule, which is why this exists.
+#
+# CONSUMED BY: afc_auth/views.py signup + edit_profile (the two places a player's
+# UserProfile.whatsapp_number is written). afc_partner_apply/views_public.py
+# _clean_whatsapp enforces the SAME rule inline for the partner application form,
+# written first and left alone here on purpose: it is a different form with its own
+# error copy, and rewiring it is not part of this change.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# The one sentence every caller shows. Named so the wording cannot drift between
+# the signup path and the profile-edit path.
+COUNTRY_CODE_REQUIRED_MESSAGE = (
+    "That WhatsApp number needs your country code. Give it in international form, "
+    "starting with a plus and your country code, for example +234 805 123 4567."
+)
+
+
+def require_international(raw):
+    """Normalise a TYPED WhatsApp number to E.164, insisting on a country code.
+
+    Returns (e164, error):
+        ("+2348051234567", None)  a usable number
+        ("", None)                blank, which is a legitimate answer: the field is
+                                  OPTIONAL everywhere it appears and must never block
+                                  a signup or a profile save
+        (None, "<message>")       given, but not in international form or not dialable
+
+    Accepts a leading "+" or the "00" dial-out prefix. Everything else is refused,
+    INCLUDING a national number that would have resolved fine with a country hint:
+    see the section header for why that forgiveness belongs at send time only.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return "", None
+
+    # The shape gate runs BEFORE to_e164 so the message can name the actual problem
+    # ("we need your country code") instead of a vague "that number is unreadable".
+    digits_only = _digits(text)
+    if not (text.startswith("+") or digits_only.startswith("00")):
+        return None, COUNTRY_CODE_REQUIRED_MESSAGE
+
+    # No country_code argument, deliberately: an international number carries its
+    # own, and withholding a fallback is what stops a local number slipping past
+    # this second gate.
+    e164 = to_e164(text)
+    if not e164:
+        return None, COUNTRY_CODE_REQUIRED_MESSAGE
+    return e164, None
+
+
+def mask_e164(e164):
+    """"+2348051234567" -> "+234 ***** 4567". Safe to show once possession of the
+    number has been PROVEN, never before.
+
+    Same job as afc_auth.two_factor.mask_email: enough for the owner to recognise
+    their own number, not enough for a stranger at the keyboard to learn it. The
+    country code is kept because it is the part that reassures ("yes, that is my
+    Nigerian number") while narrowing the number down to about a million people.
+    """
+    digits = _digits(e164 or "")
+    if len(digits) < 4:
+        return ""
+    tail = digits[-4:]
+    head = digits[:-4]
+    # Show at most the first 3 digits (the longest dial code we carry) so the mask
+    # never widens with the number's length.
+    lead = head[:3]
+    return f"+{lead} ***** {tail}"

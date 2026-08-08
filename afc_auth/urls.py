@@ -51,6 +51,28 @@ from .views_admin_identity import (
     admin_set_user_uid,
     admin_set_user_email,
 )
+# Account recovery by WhatsApp (owner 2026-08-08), for a user whose emailed reset token goes to an
+# inbox they cannot read. ONE proof of the number saved on the account, then TWO possible endings:
+# reset the password, or move the account onto an address they can actually read. See
+# views_recovery.py for the steps, why nothing here leaks whether an account exists, why a reset
+# proved this way is not a way around two-step sign-in, and why the email move REFUSES outright on
+# any account that has two-step sign-in switched on.
+from .views_recovery import (
+    recovery_start,
+    recovery_verify,
+    recovery_reset_password,
+    recovery_request_email_change,
+    recovery_confirm_email_change,
+)
+# Devices and sessions (owner 2026-08-08): the "remember this device" control panel. A TRUSTED
+# DEVICE skips the second sign-in step for 30 days but is not a sign-in; a SESSION is being signed
+# in right now. Two different things, two different controls. See views_devices.py.
+from .views_devices import (
+    trusted_devices_list,
+    trusted_device_revoke,
+    sessions_list,
+    sessions_sign_out_others,
+)
 
 
 urlpatterns = [
@@ -86,6 +108,42 @@ urlpatterns = [
     # changes nothing; confirm/ proves it and only then switches the account over.
     path('two-factor/totp/setup/', totp_setup, name='totp_setup'),
     path('two-factor/totp/confirm/', totp_confirm, name='totp_confirm'),
+    # ── Account recovery by WhatsApp (owner 2026-08-08) ─────────────────────────
+    # ALL OF THESE ARE PUBLIC, by definition: the caller cannot sign in, which is
+    # why they are here. Each step is gated by what the step before it handed out
+    # (a recovery token, then a grant token), and start/ answers every input
+    # identically so it cannot be used to find out whether an account exists.
+    #
+    # start/ + verify/ are the shared proof. Then ONE of two endings, and whichever
+    # one completes consumes the grant, so a single code cannot do both:
+    #   reset-password/         the priority case, a forgotten password.
+    #   request-email-change/   for the person whose inbox is dead. A second code
+    #   confirm-email-change/   goes to the NEW address and has to come back before
+    #                           anything is written, so a typo cannot re-lock them.
+    #
+    # Neither ending signs anybody in. The reset leaves two-step sign-in untouched
+    # and it is still demanded at the next login; the email move REFUSES outright
+    # on any account that has two-step sign-in on, with no override, which is
+    # stricter than the admin-assisted path. See views_recovery.py §4.
+    path('recovery/whatsapp/start/', recovery_start, name='recovery_start'),
+    path('recovery/whatsapp/verify/', recovery_verify, name='recovery_verify'),
+    path('recovery/whatsapp/reset-password/', recovery_reset_password,
+         name='recovery_reset_password'),
+    path('recovery/whatsapp/request-email-change/', recovery_request_email_change,
+         name='recovery_request_email_change'),
+    path('recovery/whatsapp/confirm-email-change/', recovery_confirm_email_change,
+         name='recovery_confirm_email_change'),
+    # ── Devices and sessions (owner 2026-08-08) ─────────────────────────────────
+    # All Bearer-gated and all scoped to the caller's OWN account. The trusted list
+    # is what may skip the second factor (30 days, opted into per device on the code
+    # screen); the sessions list is where the account is signed in at this moment.
+    # Revoking trust and signing out are deliberately separate actions, because they
+    # answer different questions. See views_devices.py.
+    path('devices/trusted/', trusted_devices_list, name='trusted_devices_list'),
+    path('devices/trusted/revoke/', trusted_device_revoke, name='trusted_device_revoke'),
+    path('devices/sessions/', sessions_list, name='sessions_list'),
+    path('devices/sessions/sign-out-others/', sessions_sign_out_others,
+         name='sessions_sign_out_others'),
     # Discord sign-in/sign-up (SSO) - start -> Discord, callback exchanges the code +
     # issues a session, exchange swaps the one-time handoff for the token. See views.
     path('discord/sso/start/', discord_sso_start, name='discord_sso_start'),
