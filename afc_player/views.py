@@ -157,8 +157,8 @@ def _player_list_rows(include_identity=False):
     kills or ban state - the only difference between them is whether the row carries the
     account's LOGIN IDENTIFIERS:
 
-      • get_all_users            (PUBLIC, unauthenticated)  include_identity=False
-      • admin_list_players       (admin only)               include_identity=True
+      • get_all_users            (admin only)  include_identity=False
+      • admin_list_players       (admin only)  include_identity=True
 
     `include_identity` adds `uid` and `email`. It exists so the identifiers are opt-IN at the
     call site: a future edit to the shared aggregate code cannot leak them into the public
@@ -247,26 +247,66 @@ def _player_list_rows(include_identity=False):
     return data
 
 
+def _admin_or_refusal(request):
+    """(admin_user, None) for a staff caller, or (None, Response) to send back.
+
+    ONE gate for both list endpoints below, so they can never disagree about who counts as staff.
+
+    The predicate - base role "admin" OR any granular UserRoles row - is the same one
+    afc_auth.views.search_users uses to decide who may match a user by email, which keeps the two
+    "look a player up" surfaces consistent. It is NOT head-admin: reading the player list is
+    ordinary admin work. The identity EDIT controls (afc_auth/views_admin_identity.py) keep their
+    narrower require_head_admin gate.
+
+    "No token", "expired token" and "not an admin" deliberately return the SAME 401 body, so the
+    endpoint cannot be used to test whether a stolen token belongs to staff.
+    """
+    auth = request.headers.get("Authorization") or ""
+    user = validate_token(auth.split(" ", 1)[1].strip()) if auth.startswith("Bearer ") else None
+    if not user or not (user.role == "admin" or user.userroles.exists()):
+        return None, Response({"message": "Admin access required."},
+                              status=status.HTTP_401_UNAUTHORIZED)
+    return user, None
+
+
 @api_view(["GET"])
 def get_all_users(request):
     """
-    GET /player/get-all-players/  PUBLIC, no authentication.
+    GET /player/get-all-players/  Bearer auth, ADMIN ONLY (gated 2026-08-11, owner request).
 
     EVERY user with lightweight aggregate stats (total_kills / total_wins / total_mvps), their
     current team name, and ban/role status.
 
-    CONSUMED BY  frontend app/sitemap.ts (public player URLs) and the two admin rankings pages
-                 (a/rankings, a/rankings/results), which need names and nothing else.
-                 The admin Players tab moved OFF this endpoint to admin_list_players below.
+    WHY IT IS NOW GATED
+      It used to be open, and on production it answered ANY anonymous caller with ~6,800 accounts:
+      1,070,415 bytes of usernames, teams, roles and ban status. Nothing about that list is public
+      information - a ban status in particular is a moderation record - and a full member roster is
+      exactly the input an attacker wants before trying passwords, since a username is one of the
+      three things sign-in accepts (afc_auth/backends.py). It is now behind the same admin gate as
+      admin_list_players; the two differ ONLY in whether the row carries uid + email.
+
+    CONSUMED BY  frontend app/(a)/a/rankings/page.tsx and app/(a)/a/rankings/results/page.tsx,
+                 both admin-only screens, which send the viewer's token. (app/sitemap.ts mentions
+                 this endpoint in a comment explaining why it does NOT list players; it never
+                 calls it, so gating this changes nothing for crawlers.)
+                 The admin Players tab reads admin_list_players below instead.
+
+    RESPONSE  200 { users: [ {user_id, name, team_name, total_kills, total_wins, total_mvps,
+                             status, role} ] }
+              401 missing/invalid token or not an admin (ONE body for both).
 
     total_wins is the ONE number that deliberately no longer matches the original loop: it
     used to be the team's wins, not the player's, and disagreed with the same player's detail
     page. See wins_by_user in _player_list_rows (owner bug 2026-08-07).
 
-    ⚠ THIS RESPONSE IS WORLD-READABLE. Do not add a login identifier (uid, email, phone) or any
-    other personal field to it - see the note on admin_list_players. The shape is deliberately
-    frozen, and afc_player/tests_admin_player_list.py fails if uid or email appears here.
+    ⚠ Still do NOT add a login identifier (uid, email, phone) here. Authentication changed who can
+    read this list, not what belongs in it: callers that need the identifiers have
+    admin_list_players, and afc_player/tests_admin_player_list.py fails if they appear here.
     """
+    _admin, refusal = _admin_or_refusal(request)
+    if refusal:
+        return refusal
+
     return Response({"users": _player_list_rows()})
 
 
@@ -282,12 +322,16 @@ def admin_list_players(request):
       in-game name alone.
 
     WHY IT IS A SEPARATE ENDPOINT (owner 2026-08-11)
-      get_all_users is UNAUTHENTICATED and, on production, returns ~6,800 accounts to anyone who
-      asks. `User.uid` is a LOGIN IDENTIFIER - afc_auth/backends.py EmailOrUsernameModelBackend
-      resolves one typed string against username OR uid OR email - so adding uid/email there would
-      publish two of the three ways to name every account on the site. That is the same defect
-      that was fixed in afc_team.views_join_requests on 2026-08-08. The identifiers therefore live
-      behind a token on their own endpoint, and the public one keeps its exact current shape.
+      When this was written get_all_users was UNAUTHENTICATED and, on production, returned ~6,800
+      accounts to anyone who asked. `User.uid` is a LOGIN IDENTIFIER - afc_auth/backends.py
+      EmailOrUsernameModelBackend resolves one typed string against username OR uid OR email - so
+      adding uid/email there would have published two of the three ways to name every account on
+      the site (the same defect fixed in afc_team.views_join_requests on 2026-08-08).
+
+      get_all_users has SINCE been gated too, so the split is no longer what keeps the identifiers
+      safe. It is kept anyway, because the two answer different questions: this one is "find a
+      specific person", and identifiers are handed out only where that is the job. A caller that
+      just needs names and stats still gets a response with no identifiers in it at all.
 
     REQUEST   no body.
     RESPONSE  200 { users: [ {user_id, name, team_name, total_kills, total_wins, total_mvps,
@@ -306,12 +350,9 @@ def admin_list_players(request):
     CONSUMED BY  frontend app/(a)/a/_components/PlayersAdminContent.tsx (the Players tab of
                  /a/teams), which searches name + UID + email client-side and shows a UID column.
     """
-    auth = request.headers.get("Authorization") or ""
-    requester = validate_token(auth.split(" ", 1)[1].strip()) if auth.startswith("Bearer ") else None
-    # One refusal for every failure mode. See the docstring: a distinct 403 would confirm that a
-    # token is valid but unprivileged, which is information this endpoint should not hand out.
-    if not requester or not (requester.role == "admin" or requester.userroles.exists()):
-        return Response({"message": "Admin access required."}, status=status.HTTP_401_UNAUTHORIZED)
+    _admin, refusal = _admin_or_refusal(request)
+    if refusal:
+        return refusal
 
     return Response({"users": _player_list_rows(include_identity=True)})
 

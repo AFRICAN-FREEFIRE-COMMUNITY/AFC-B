@@ -19,7 +19,9 @@ WHAT IS COVERED
   • an admin (base role OR a granular UserRoles row) gets the rows, WITH uid and email;
   • the shared row builder still produces the same stats/team/ban columns for both endpoints;
   • ⚠ THE REGRESSION TEST THAT MATTERS: get_all_users still returns NEITHER uid NOR email, and the
-    raw values do not appear anywhere in its response bytes.
+    raw values do not appear anywhere in its response bytes;
+  • get_all_users itself is now behind the SAME admin gate (owner 2026-08-11): it used to answer
+    any anonymous caller with the whole roster, and both endpoints must refuse identically.
 
 Run: python manage.py test afc_player.tests_admin_player_list
 """
@@ -115,18 +117,21 @@ class AdminPlayerListTests(TestCase):
                             "just_a_player")
         self.assertEqual(row["uid"], "")
 
-    def test_shared_columns_match_the_public_endpoint(self):
+    def test_shared_columns_match_the_older_endpoint(self):
         """One row builder feeds both, so the stats/team/ban columns cannot drift apart."""
         admin_row = self._row_for(self._get(ADMIN_URL, token=self._session(self.admin)).json(),
                                   "just_a_player")
-        public_row = self._row_for(self._get(PUBLIC_URL).json(), "just_a_player")
+        public_row = self._row_for(
+            self._get(PUBLIC_URL, token=self._session(self.admin)).json(), "just_a_player")
         for key in ("user_id", "name", "team_name", "total_kills", "total_wins", "total_mvps",
                     "status", "role"):
             self.assertEqual(admin_row[key], public_row[key], key)
 
     # ── §3  THE REGRESSION TEST. Read the module docstring before changing this. ──────────────
-    def test_public_endpoint_still_leaks_neither_uid_nor_email(self):
-        resp = self._get(PUBLIC_URL)
+    def test_older_endpoint_still_returns_neither_uid_nor_email(self):
+        """Authentication changed who may READ the older list, not what belongs in it. A caller
+        that only needs names must not receive login identifiers it did not ask for."""
+        resp = self._get(PUBLIC_URL, token=self._session(self.admin))
         self.assertEqual(resp.status_code, 200)
 
         row = self._row_for(resp.json(), "just_a_player")
@@ -137,3 +142,28 @@ class AdminPlayerListTests(TestCase):
         # under a different key name.
         self.assertNotIn(b"3333333333", resp.content)
         self.assertNotIn(b"player@gmail.com", resp.content)
+
+    # ── §4  The older endpoint is gated too (owner 2026-08-11) ───────────────────────────────
+    # It used to answer any anonymous caller with every account on the site: on production,
+    # 1,070,415 bytes of usernames, teams, roles and ban status. A username is one of the three
+    # things sign-in accepts, and a ban status is a moderation record, so neither was ever public.
+    def test_older_endpoint_refuses_anonymous_bad_token_and_non_admin(self):
+        for label, token in (("anonymous", None),
+                             ("bad token", "not-a-real-token"),
+                             ("plain player", self._session(self.player))):
+            with self.subTest(caller=label):
+                resp = self._get(PUBLIC_URL, token=token)
+                self.assertEqual(resp.status_code, 401)
+                # And no part of the roster leaks on the way out.
+                self.assertNotIn(b"just_a_player", resp.content)
+
+    def test_older_endpoint_serves_an_admin(self):
+        """The two admin rankings pages read this one, so staff must still get it."""
+        resp = self._get(PUBLIC_URL, token=self._session(self.news_admin))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(any(r["name"] == "just_a_player" for r in resp.json()["users"]))
+
+    def test_both_lists_refuse_identically(self):
+        """One shared gate, so a refusal cannot start differing between the two endpoints and
+        become a way to tell which one a token is good for."""
+        self.assertEqual(self._get(PUBLIC_URL).content, self._get(ADMIN_URL).content)
