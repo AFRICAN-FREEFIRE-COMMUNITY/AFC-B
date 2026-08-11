@@ -1,6 +1,7 @@
 from django.shortcuts import render
 from django.shortcuts import get_object_or_404
 from django.db.models import Sum, Count
+from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
@@ -149,26 +150,32 @@ def _player_winnings(player):
 
 
 
-@api_view(["GET"])
-def get_all_users(request):
-    """
-    ADMIN players list. Returns EVERY user with lightweight aggregate stats
-    (total_kills / total_wins / total_mvps), their current team name, and ban/role
-    status. Consumed by the admin Players page (frontend app/(a)/a/players/page.tsx,
-    which fetches GET /player/get-all-players/ and paginates/filters client-side).
+def _player_list_rows(include_identity=False):
+    """The player-list rows both list endpoints below return.
+
+    ONE builder, two callers, because the two lists must never disagree about a player's team,
+    kills or ban state - the only difference between them is whether the row carries the
+    account's LOGIN IDENTIFIERS:
+
+      • get_all_users            (PUBLIC, unauthenticated)  include_identity=False
+      • admin_list_players       (admin only)               include_identity=True
+
+    `include_identity` adds `uid` and `email`. It exists so the identifiers are opt-IN at the
+    call site: a future edit to the shared aggregate code cannot leak them into the public
+    endpoint by accident, because the keys are only ever written under this flag.
 
     PERFORMANCE (why this looks like this):
-    The previous version ran ~6-8 ORM queries PER user inside a Python for-loop. With
-    ~6k users that is an N+1 explosion of ~40k queries (the endpoint took 30-45s and the
-    admin page never finished loading). It is now a fixed handful of GROUPED/bulk queries
-    assembled in memory. The response SHAPE is unchanged, and the kills/mvp/team-name/ban
-    semantics still mirror the original loop exactly.
-
-    total_wins is the ONE number that deliberately no longer matches the original loop: it
-    used to be the team's wins, not the player's, and disagreed with the same player's detail
-    page. See wins_by_user below (owner bug 2026-08-07).
+    The original version ran ~6-8 ORM queries PER user inside a Python for-loop. With ~6k users
+    that is an N+1 explosion of ~40k queries (the endpoint took 30-45s and the admin page never
+    finished loading). It is a fixed handful of GROUPED/bulk queries assembled in memory, and
+    `include_identity` adds two COLUMNS to the same single user query, never another query.
     """
-    users = list(User.objects.all().only("user_id", "username", "status", "role"))
+    # Only the columns the rows actually use. uid/email are fetched ONLY when they will be
+    # returned, so the public path cannot accidentally hold them in memory either.
+    fields = ["user_id", "username", "status", "role"]
+    if include_identity:
+        fields += ["uid", "email"]
+    users = list(User.objects.all().only(*fields))
 
     # ── total kills per player: one grouped aggregate (was: 1 aggregate per user) ──
     kills_by_user = {
@@ -219,7 +226,7 @@ def get_all_users(request):
         uid = user.user_id
         # total_wins = matches THIS player was fielded in whose team placed 1st (see wins_by_user)
         total_wins = wins_by_user.get(uid, 0)
-        data.append({
+        row = {
             "user_id": uid,
             "name": user.username,
             # CURRENT team from the live roster (was the stale tournament-history name).
@@ -229,9 +236,84 @@ def get_all_users(request):
             "total_mvps": mvps_by_user.get(uid, 0),
             "status": "banned" if uid in banned_ids else user.status,
             "role": user.role  # optional but useful
-        })
+        }
+        if include_identity:
+            # Free Fire UID and email. Admin-only: see admin_list_players for why these two keys
+            # can never ride on the public endpoint.
+            row["uid"] = user.uid or ""
+            row["email"] = user.email or ""
+        data.append(row)
 
-    return Response({"users": data})
+    return data
+
+
+@api_view(["GET"])
+def get_all_users(request):
+    """
+    GET /player/get-all-players/  PUBLIC, no authentication.
+
+    EVERY user with lightweight aggregate stats (total_kills / total_wins / total_mvps), their
+    current team name, and ban/role status.
+
+    CONSUMED BY  frontend app/sitemap.ts (public player URLs) and the two admin rankings pages
+                 (a/rankings, a/rankings/results), which need names and nothing else.
+                 The admin Players tab moved OFF this endpoint to admin_list_players below.
+
+    total_wins is the ONE number that deliberately no longer matches the original loop: it
+    used to be the team's wins, not the player's, and disagreed with the same player's detail
+    page. See wins_by_user in _player_list_rows (owner bug 2026-08-07).
+
+    ⚠ THIS RESPONSE IS WORLD-READABLE. Do not add a login identifier (uid, email, phone) or any
+    other personal field to it - see the note on admin_list_players. The shape is deliberately
+    frozen, and afc_player/tests_admin_player_list.py fails if uid or email appears here.
+    """
+    return Response({"users": _player_list_rows()})
+
+
+@api_view(["GET"])
+def admin_list_players(request):
+    """
+    GET /player/admin/list-players/  Bearer auth, ADMIN ONLY.
+
+    PURPOSE
+      The same player list as get_all_users PLUS the two identifiers support actually gets given
+      on a ticket: the Free Fire `uid` and the account `email`. It exists so an admin can find a
+      player by the UID they quote, which was impossible before: the Players tab filtered on the
+      in-game name alone.
+
+    WHY IT IS A SEPARATE ENDPOINT (owner 2026-08-11)
+      get_all_users is UNAUTHENTICATED and, on production, returns ~6,800 accounts to anyone who
+      asks. `User.uid` is a LOGIN IDENTIFIER - afc_auth/backends.py EmailOrUsernameModelBackend
+      resolves one typed string against username OR uid OR email - so adding uid/email there would
+      publish two of the three ways to name every account on the site. That is the same defect
+      that was fixed in afc_team.views_join_requests on 2026-08-08. The identifiers therefore live
+      behind a token on their own endpoint, and the public one keeps its exact current shape.
+
+    REQUEST   no body.
+    RESPONSE  200 { users: [ {user_id, name, team_name, total_kills, total_wins, total_mvps,
+                             status, role, uid, email} ] }
+              401 missing/invalid token or not an admin (ONE body for both - see below).
+
+    AUTH      A valid SessionToken whose user is an admin: base role "admin" OR any granular
+              UserRoles row. This is the SAME predicate afc_auth.views.search_users uses for
+              deciding who may match on email, so the two admin lookups agree on who counts as
+              staff. Not head-admin: this is the list every admin already reads, only now
+              authenticated. The EDIT controls (afc_auth/views_admin_identity.py) stay
+              head-admin only.
+              "No token", "expired token" and "not an admin" all return the SAME 401 body, so the
+              endpoint cannot be used to test whether a stolen token belongs to staff.
+
+    CONSUMED BY  frontend app/(a)/a/_components/PlayersAdminContent.tsx (the Players tab of
+                 /a/teams), which searches name + UID + email client-side and shows a UID column.
+    """
+    auth = request.headers.get("Authorization") or ""
+    requester = validate_token(auth.split(" ", 1)[1].strip()) if auth.startswith("Bearer ") else None
+    # One refusal for every failure mode. See the docstring: a distinct 403 would confirm that a
+    # token is valid but unprivileged, which is information this endpoint should not hand out.
+    if not requester or not (requester.role == "admin" or requester.userroles.exists()):
+        return Response({"message": "Admin access required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    return Response({"users": _player_list_rows(include_identity=True)})
 
 
 @api_view(["POST"])

@@ -19,10 +19,29 @@
 #   So it is built like one: the narrowest role gate on the site, a typed reason, a full audit trail,
 #   every session killed, and 2FA that has to be taken down deliberately rather than walked around.
 #
+# WHAT 2026-08-11 ADDED, AND WHY IT IS THE SAME MODULE
+#   Support kept hitting three more fields it could not touch, and all three share this module's
+#   one idea - a person other than the account owner changing something the owner normally owns -
+#   so they share its gate, its mandatory reason and its audit trail rather than growing three
+#   private rules elsewhere:
+#     3. "That is not my name." The in-game name is the THIRD login identifier, it is FROZEN for
+#        the player's own edits mid-event, and a name that is another account's UID or email
+#        cannot be typed in by a player at all (they cannot see the other account to resolve it).
+#     4. "I am not in that country." Not a login field, but User.country decides which broadcast
+#        audience the account lands in, and the column already holds `Nigeria` AND `NG` for one
+#        country. Typed values are therefore validated and stored in ONE canonical spelling.
+#     5. "That is not my WhatsApp number." Since 2026-08-08 that number PROVES ownership in
+#        self-serve recovery, so a wrong one is both a dead rescue path and a live risk. Writing
+#        it is close to handing over a key - which is why it sits behind THIS gate and not a
+#        broader one, and why the account owner is emailed every time.
+#
 # ENDPOINTS (prefix auth/, wired in afc_auth/urls.py)
-#   • GET  auth/admin/user-identity/<user_id>/   admin_user_identity   read UID + email + 2FA state
-#   • POST auth/admin/set-user-uid/              admin_set_user_uid    edit OR remove a UID
-#   • POST auth/admin/set-user-email/            admin_set_user_email  change an account email
+#   • GET  auth/admin/user-identity/<user_id>/   admin_user_identity     read the whole identity
+#   • POST auth/admin/set-user-uid/              admin_set_user_uid      edit OR remove a UID
+#   • POST auth/admin/set-user-email/            admin_set_user_email    change an account email
+#   • POST auth/admin/set-user-username/         admin_set_user_username change the in-game name
+#   • POST auth/admin/set-user-country/          admin_set_user_country  change the country
+#   • POST auth/admin/set-user-whatsapp/         admin_set_user_whatsapp edit OR remove the number
 #
 # PERMISSION GATE (reused, not invented)
 #   Every endpoint here calls views.require_head_admin - the SAME gate the audit log itself uses.
@@ -33,8 +52,17 @@
 #   super_admin's account onto an address they control.
 #
 # HOW IT CONNECTS
-#   models   : User.uid / User.email / User.is_active, SessionToken, EmailChangeRequest,
-#              TwoFactorSettings + TwoFactorChallenge + TwoFactorBackupCode, AdminHistory.
+#   models   : User.uid / User.email / User.username / User.country / User.is_active,
+#              UserProfile.whatsapp_number + .whatsapp_number_updated_at (through
+#              models.canonical_profile - duplicate profile rows exist in prod), SessionToken,
+#              EmailChangeRequest, TwoFactorSettings + TwoFactorChallenge + TwoFactorBackupCode,
+#              AdminHistory.
+#   country  : afc_auth/country_grouping.py canonical_country (compare) + canonical_country_name
+#              (store), the same vocabulary the broadcast audience builder folds by.
+#   phone    : afc_whatsapp/phone.py require_international (validate) + mask_e164 (what the audit
+#              row and every response carry, never the dialable number).
+#   recovery : afc_auth/views_recovery.py reads the number and its freshness stamp; that is why
+#              set-user-whatsapp writes whatsapp_number_updated_at rather than the number alone.
 #   audit    : afc_auth.audit.set_audit supplies the human summary + the before/after detail fields
 #              that AuditLogMiddleware writes onto the AuditLog row for this request. The legacy
 #              AdminHistory row is written too, matching every other sensitive action in views.py.
@@ -50,8 +78,14 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from afc_whatsapp.phone import mask_e164, require_international
+
 from . import trusted_devices, two_factor
 from .audit import set_audit
+# One country vocabulary for the whole site: the same fold the broadcast audience builder uses, so
+# a country repaired here groups with everyone else from that country instead of becoming spelling
+# number three. canonical_country_name is what gets STORED; canonical_country is used to compare.
+from .country_grouping import canonical_country, canonical_country_name
 # The ONE place the "a value may not be two different login identifiers" rule lives, shared with
 # register / edit_profile / the Google SSO username generator in views.py (see identifiers.py).
 from .identifiers import IDENTIFIER_LABELS, cross_field_conflict
@@ -62,12 +96,15 @@ from .models import (
     TwoFactorChallenge,
     TwoFactorSettings,
     User,
+    canonical_profile,
 )
 from .views import (
     _has_active_event_registration,
     _is_super_admin,
     _user_role_names,
     email_admin_email_changed,
+    email_admin_username_changed,
+    email_admin_whatsapp_changed,
     is_valid_email,
     language_for_country,
     require_head_admin,
@@ -87,6 +124,13 @@ from .email_i18n import subject_for
 # another one of those would defeat the point. Reading an existing dirty value is untouched - the
 # rule only applies to what gets written.
 UID_MAX_LENGTH = 15
+
+# User.username is CharField(max_length=40) and IS the in-game name on this site. Checked here so an
+# over-long value is refused with a sentence instead of a MySQL "Data too long" 500. No format rule
+# beyond the length: in-game names legitimately carry spaces, punctuation and stylized Unicode
+# (see utils/search_utils.py, which exists because of exactly that), so anything stricter would
+# refuse names players really hold.
+USERNAME_MAX_LENGTH = 40
 
 # The typed reason is mandatory and is what makes the audit trail answer "why", not just "what".
 # Capped so the summary sentence it is folded into stays inside AuditLog.summary (255 chars); the
@@ -183,14 +227,17 @@ def admin_user_identity(request, user_id):
     """GET auth/admin/user-identity/<user_id>/  Bearer auth, HEAD ADMIN / SUPER ADMIN only.
 
     PURPOSE
-      The state the two edit dialogs need before they let an admin type anything: the current UID
-      and email, whether the account has two-factor authentication switched on (which forces an
-      extra acknowledgement on an email change), whether the player is mid-event (their UID is
-      frozen for their own edits), and how many live sessions the change would end.
+      The state the FIVE edit dialogs need before they let an admin type anything: the current
+      in-game name, UID, email, country and WhatsApp number, whether the account has two-factor
+      authentication switched on (which forces an extra acknowledgement on an email change),
+      whether the player is mid-event (their name + UID are frozen for their own edits), and how
+      many live sessions an email change would end.
 
     REQUEST   no body. `user_id` is the User.user_id of the account being inspected.
     RESPONSE  200 {
-                user_id, username, email, uid,
+                user_id, username, email, uid, country,
+                whatsapp_number,      # MASKED ("+234 ***** 4567"), never the dialable number
+                has_whatsapp_number,  # so a dialog can offer Remove without unmasking anything
                 is_active,            # False = never-verified signup, an email change reactivates it
                 two_factor_enabled,   # True -> set-user-email needs disable_two_factor: true
                 active_sessions,      # how many logins would be ended by an email change
@@ -212,12 +259,20 @@ def admin_user_identity(request, user_id):
         return err
 
     two_factor_on, _row = _two_factor_state(target)
+    profile = canonical_profile(target)
+    raw_number = (getattr(profile, "whatsapp_number", "") or "").strip()
     return Response(
         {
             "user_id": target.user_id,
             "username": target.username,
             "email": target.email,
             "uid": target.uid or "",
+            "country": target.country or "",
+            # MASKED, never the dialable number. This payload is what the dialogs open onto, and a
+            # dialog only needs to show the admin WHICH number is on file so they can tell whether
+            # the one the player is quoting is different. Same rule the audit row follows.
+            "whatsapp_number": mask_e164(raw_number) if raw_number else "",
+            "has_whatsapp_number": bool(raw_number),
             "is_active": bool(target.is_active),
             "two_factor_enabled": two_factor_on,
             "active_sessions": SessionToken.objects.filter(
@@ -593,5 +648,406 @@ def admin_set_user_email(request):
             "two_factor_disabled": two_factor_disabled,
             "reactivated": reactivated,
         },
+        status=status.HTTP_200_OK,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §4  In-game name - the third login identifier (owner 2026-08-11)
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+@api_view(["POST"])
+def admin_set_user_username(request):
+    """POST auth/admin/set-user-username/  Bearer auth, HEAD ADMIN / SUPER ADMIN only.
+
+    PURPOSE
+      Correct somebody's in-game name when they cannot. A player normally edits it themselves in
+      profile settings, so this endpoint is for the two cases where that door is shut:
+        • the identity lock froze the field because they are committed to a LIVE event
+          (views.edit_profile, _has_active_event_registration);
+        • the name they need is refused by the cross-column rule (it is another account's UID or
+          email), which a player cannot resolve because they cannot see the other account.
+
+    REQUEST   { user_id: int, username: str, reason: str }
+    RESPONSE  200 { message, username, previous_username, identity_locked }
+              400 missing/blank, unchanged, already taken, equal to another account's UID or email,
+                  no reason · 401 bad session · 403 not a head admin / self / target is super_admin
+              404 unknown user.
+
+    WHAT THIS DOES NOT DO, AND WHY
+      • It does NOT end sessions. SessionToken keys off the user, not the name, so nothing is
+        invalidated by the rename, and killing sessions would log a player out MID-EVENT for what
+        is usually somebody else's typo. Contrast admin_set_user_email, which must end them: an
+        email change is a takeover primitive and the point is to lock the previous holder out.
+      • It does NOT touch two-factor. No factor is delivered to the in-game name.
+
+    IDENTITY LOCK
+      Deliberately OVERRIDDEN rather than refused, exactly like admin_set_user_uid: the admin is
+      the intended escape hatch from the lock. The lock state rides on the response, the audit row
+      and the player's email, so a mid-event rename is visible after the fact instead of silent.
+      Results already recorded keep the old name until that event is over.
+
+    AUTH      views.require_head_admin. Audited via set_audit + AdminHistory (before AND after).
+    CONSUMED BY  frontend app/(a)/a/_components/AccountIdentityMore.tsx -> EditUsernameDialog,
+                 rendered on app/(a)/a/players/[id]/page.tsx beside the UID and email controls.
+    """
+    admin_user, err = require_head_admin(request)
+    if err:
+        return err
+
+    target, err = _target(request.data.get("user_id"))
+    if err:
+        return err
+    blocked = _guard_target(admin_user, target)
+    if blocked:
+        return blocked
+
+    reason, err = _reason(request)
+    if err:
+        return err
+
+    new_name = (request.data.get("username") or "").strip()
+    previous_name = (target.username or "").strip()
+
+    # Unlike the UID there is no "remove" here: username is NOT NULL and is what every screen
+    # displays a player by, so a blank one would leave an unnameable account.
+    if not new_name:
+        return Response({"message": "An in-game name is required."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if len(new_name) > USERNAME_MAX_LENGTH:
+        return Response({"message": f"An in-game name can be at most {USERNAME_MAX_LENGTH} characters."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if new_name == previous_name:
+        return Response({"message": "That is already this user's in-game name."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    # Case-insensitive, matching admin_set_user_email's reasoning: MySQL's collation already
+    # compares this way, and saying so in code keeps the rule from drifting with a collation change.
+    clash = User.objects.exclude(pk=target.pk).filter(username__iexact=new_name).first()
+    if clash:
+        return Response(
+            {"message": f"That in-game name is already taken (account ID {clash.user_id}). Free it there first."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    # Cross-column collision: this NAME is somebody's UID or email, and sign-in matches one typed
+    # string against all three columns together. 116 accounts have an all-digits username and 106
+    # have a username that is a well-formed email address, so this is a live case, not theory.
+    other, held_as = _login_ambiguity_clash(target, new_name, "username")
+    if other:
+        return Response(
+            {"message": f"That name is {other.username}'s {IDENTIFIER_LABELS[held_as]}, and players can sign in with their name, their email or their UID. Using it here would lock both accounts out."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    identity_locked = _has_active_event_registration(target)
+
+    target.username = new_name
+    target.save(update_fields=["username"])
+
+    summary = (
+        f"Changed {previous_name}'s in-game name "
+        f"({previous_name} -> {new_name}): {reason}"
+    )
+    set_audit(
+        request, summary,
+        target_user=new_name,
+        target_user_id=target.user_id,
+        field="username",
+        before=previous_name,
+        after=new_name,
+        reason=reason,
+        identity_locked=identity_locked,
+    )
+    AdminHistory.objects.create(
+        admin_user=admin_user,
+        action="set_user_username",
+        description=(
+            f"Changed in-game name for account ID {target.user_id}: "
+            f"{previous_name} -> {new_name}. Reason: {reason}"
+        ),
+    )
+
+    # ── tell the player: one of the three things they sign in with just changed ─────────────────
+    lang = _recipient_language(target)
+    when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
+    try:
+        send_email(
+            target.email,
+            subject_for("username_updated_admin", lang),
+            email_admin_username_changed(new_name, when, mid_event=identity_locked, lang=lang),
+            language=lang, prelocalized=True,
+        )
+    except Exception as exc:
+        # Never fail the repair on a mail error - the account is already correct, and this endpoint
+        # exists precisely because some of these addresses are dead.
+        print(f"Admin username-change notice failed for account {target.user_id}: {exc}")
+
+    message = f"In-game name changed from {previous_name} to {new_name}."
+    if identity_locked:
+        message += " Note: this player is registered for a live event, so results already recorded there still show the old name."
+
+    return Response(
+        {"message": message, "username": new_name, "previous_username": previous_name,
+         "identity_locked": identity_locked},
+        status=status.HTTP_200_OK,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §5  Country - not a login field, but it decides who gets which broadcast (owner 2026-08-11)
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+@api_view(["POST"])
+def admin_set_user_country(request):
+    """POST auth/admin/set-user-country/  Bearer auth, HEAD ADMIN / SUPER ADMIN only.
+
+    PURPOSE
+      Fix the country on an account. It is not a login identifier, so this is the mildest of the
+      four repairs, but it is not cosmetic either: User.country is what the broadcast audience
+      builder groups by (afc_auth/audience.py) and what fills a blank language at login
+      (afc_auth/language_utils.py). A wrong value quietly sends someone the wrong announcements in
+      the wrong language.
+
+    REQUEST   { user_id: int, country: str, reason: str }
+              `country` is a country NAME or ISO-2 code. An empty value CLEARS it.
+    RESPONSE  200 { message, country, previous_country }
+              400 unrecognised country, unchanged, no reason · 401 · 403 · 404.
+
+    WHY THE VALUE IS VALIDATED RATHER THAN STORED AS TYPED
+      The live column already holds two spellings for one country - 2,892 rows say `Nigeria` and
+      1,817 say `NG`, and the same is true for a dozen more - which is why the audience builder had
+      to start folding them (afc_auth/country_grouping.py). A free-text box here would keep adding
+      new spellings to that pile. So the posted value is resolved through canonical_country (which
+      is pycountry-backed), anything it cannot recognise is refused, and what gets STORED is the
+      proper-cased pycountry name. From this endpoint onwards, one country is written one way.
+
+      Refusing an unresolvable value is safe precisely because it is not a login field: nobody is
+      locked out by having to pick a real country from the list.
+
+    WHAT IT DOES NOT TOUCH
+      UserProfile.country. A second column with the same name exists, nothing user-facing reads it
+      today, and writing both from one control is how two columns start disagreeing. If it ever
+      needs to move too, that is a deliberate change with its own reason, not a side effect here.
+      User.ip_country is untouched for a different reason: it is EVIDENCE (where the account
+      actually connects from), not a claim, and an admin overwriting it would erase the signal.
+
+    AUTH      views.require_head_admin. Audited via set_audit + AdminHistory.
+    CONSUMED BY  frontend AccountIdentityMore.tsx -> EditCountryDialog.
+    """
+    admin_user, err = require_head_admin(request)
+    if err:
+        return err
+
+    target, err = _target(request.data.get("user_id"))
+    if err:
+        return err
+    blocked = _guard_target(admin_user, target)
+    if blocked:
+        return blocked
+
+    reason, err = _reason(request)
+    if err:
+        return err
+
+    if "country" not in request.data:
+        return Response({"message": "country is required. Send an empty value to clear it."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    typed = (request.data.get("country") or "").strip()
+    previous_country = (target.country or "").strip()
+
+    if typed:
+        stored = canonical_country_name(typed)
+        if not stored:
+            return Response(
+                {"message": f"'{typed}' is not a country we recognise. Pick one from the list so it groups with everyone else from there."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    else:
+        stored = ""
+
+    # Compared through the canonical fold, not as raw strings: with the column holding `NG` and
+    # `Nigeria` for one country, a raw comparison would call `Nigeria` a change on an `NG` row and
+    # write an audit entry for a rename that moves nobody.
+    if canonical_country(stored) == canonical_country(previous_country):
+        return Response({"message": "That is already this user's country."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    target.country = stored
+    target.save(update_fields=["country"])
+
+    set_audit(
+        request,
+        f"Changed {target.username}'s country ({previous_country or 'none'} -> {stored or 'none'}): {reason}",
+        target_user=target.username,
+        target_user_id=target.user_id,
+        field="country",
+        before=previous_country or None,
+        after=stored or None,
+        reason=reason,
+    )
+    AdminHistory.objects.create(
+        admin_user=admin_user,
+        action="set_user_country",
+        description=(
+            f"Changed country for {target.username} (ID: {target.user_id}): "
+            f"{previous_country or 'none'} -> {stored or 'none'}. Reason: {reason}"
+        ),
+    )
+
+    # No email on purpose: nothing about signing in changed, and a message saying "support fixed
+    # your country" would train players to ignore the notices that DO matter.
+    message = (
+        f"Country cleared for {target.username}." if not stored
+        else f"Country for {target.username} set to {stored}."
+    )
+    return Response(
+        {"message": message, "country": stored, "previous_country": previous_country},
+        status=status.HTTP_200_OK,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §6  WhatsApp number - a contact detail that became a door (owner 2026-08-11)
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+@api_view(["POST"])
+def admin_set_user_whatsapp(request):
+    """POST auth/admin/set-user-whatsapp/  Bearer auth, HEAD ADMIN / SUPER ADMIN only.
+
+    PURPOSE
+      Correct or clear the WhatsApp number on somebody's account. Support needs it because the
+      number is typed at signup and never checked, so a wrong one is invisible until the day it
+      matters, and because a number that belonged to somebody else must be removable on request.
+
+    ⚠ WHAT AN ADMIN IS BEING TRUSTED WITH HERE
+      Since 2026-08-08 this number PROVES ownership in self-serve account recovery
+      (afc_auth/views_recovery.py): whoever answers it can reset the password or move the email.
+      So writing it is, in effect, handing somebody a key to the account.
+
+      It is allowed anyway, and the reason is that it grants no power this role did not already
+      have: admin_set_user_email in this same module lets the same head admin point the account's
+      email wherever they like, and password resets follow the email. The gate is therefore the
+      same one (require_head_admin), with the same typed reason, the same audit row, the same
+      refusal to act on your own account or on a super_admin, and - unlike the email path - a
+      notice to the account owner every single time.
+
+    REQUEST   { user_id: int, whatsapp_number: str, reason: str }
+              International form only ("+234..." or "00234..."). An EMPTY value REMOVES the number.
+              The key being absent is rejected rather than treated as a removal, the same rule
+              admin_set_user_uid follows and for the same reason (a June 2026 partial save silently
+              wiped UIDs).
+    RESPONSE  200 { message, whatsapp_number (MASKED), previous_number (MASKED), removed }
+              400 missing key, unparseable/local-format number, unchanged, nothing to remove, no
+                  reason · 401 · 403 · 404.
+
+    THE FRESHNESS STAMP, AND WHY IT IS THE POINT
+      Recovery refuses a number that has not been touched for RECOVERY_NUMBER_MAX_AGE (12 months),
+      because mobile lines get recycled. A corrected number therefore has to be stamped as fresh,
+      or support would "fix" it and the player still could not use it. So this endpoint writes
+      whatsapp_number_updated_at = now, exactly as signup and edit_profile do.
+
+    MASKING
+      The response and the audit row carry the number MASKED (afc_whatsapp/phone.py mask_e164).
+      The raw value lives on the profile, where the account owner and the send path read it; an
+      audit log is read by more people and over a longer period, so it stores the recognisable
+      form, not the dialable one.
+
+    AUTH      views.require_head_admin. Audited via set_audit + AdminHistory.
+    CONSUMED BY  frontend AccountIdentityMore.tsx -> EditWhatsappDialog.
+    """
+    admin_user, err = require_head_admin(request)
+    if err:
+        return err
+
+    target, err = _target(request.data.get("user_id"))
+    if err:
+        return err
+    blocked = _guard_target(admin_user, target)
+    if blocked:
+        return blocked
+
+    reason, err = _reason(request)
+    if err:
+        return err
+
+    if "whatsapp_number" not in request.data:
+        return Response({"message": "whatsapp_number is required. Send an empty value to remove it."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    # canonical_profile, NOT profile_of: duplicate UserProfile rows exist in production, and the
+    # lowest-profile_id row is the one every reader and writer in this codebase agrees on -
+    # including two_factor.WhatsAppCodeMethod, which is what would MESSAGE this number. Writing any
+    # other row would look like a silent no-op. create=True because ~1 in N accounts has no profile
+    # row at all and support must still be able to put a number on them.
+    profile = canonical_profile(target, create=True)
+    previous_number = (profile.whatsapp_number or "").strip()
+    typed = str(request.data.get("whatsapp_number") or "").strip()
+
+    if typed:
+        # require_international, not to_e164: a bare national number must be refused rather than
+        # guessed at from the account's country, because the country on the account is exactly the
+        # field the endpoint above exists to correct. Its own message names the real problem.
+        new_number, phone_error = require_international(typed)
+        if phone_error:
+            return Response({"message": phone_error}, status=status.HTTP_400_BAD_REQUEST)
+        if new_number == previous_number:
+            return Response({"message": "That is already this user's WhatsApp number."},
+                            status=status.HTTP_400_BAD_REQUEST)
+    else:
+        new_number = ""
+        if not previous_number:
+            return Response({"message": "This account has no WhatsApp number to remove."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+    profile.whatsapp_number = new_number
+    # Stamped on a removal too, so "when was this field last touched" stays answerable, and so a
+    # number typed back in later cannot inherit a stale date. See the docstring.
+    profile.whatsapp_number_updated_at = timezone.now()
+    profile.save(update_fields=["whatsapp_number", "whatsapp_number_updated_at"])
+
+    masked_new = mask_e164(new_number) if new_number else ""
+    masked_previous = mask_e164(previous_number) if previous_number else ""
+
+    action_word = "Removed" if not new_number else "Changed"
+    set_audit(
+        request,
+        f"{action_word} {target.username}'s WhatsApp number "
+        f"({masked_previous or 'none'} -> {masked_new or 'none'}): {reason}",
+        target_user=target.username,
+        target_user_id=target.user_id,
+        field="whatsapp_number",
+        # MASKED on both sides - see the docstring. The audit trail records that the number moved
+        # and roughly which number it is, never a dialable copy of it.
+        before=masked_previous or None,
+        after=masked_new or None,
+        reason=reason,
+    )
+    AdminHistory.objects.create(
+        admin_user=admin_user,
+        action="set_user_whatsapp",
+        description=(
+            f"{action_word} WhatsApp number for {target.username} (ID: {target.user_id}): "
+            f"{masked_previous or 'none'} -> {masked_new or 'none'}. Reason: {reason}"
+        ),
+    )
+
+    # ── tell the player, always: this changed how their account can be recovered ────────────────
+    lang = _recipient_language(target)
+    when = timezone.now().strftime("%d %b %Y, %H:%M UTC")
+    try:
+        send_email(
+            target.email,
+            subject_for("whatsapp_updated_admin", lang),
+            email_admin_whatsapp_changed(masked_new, when, removed=not new_number, lang=lang),
+            language=lang, prelocalized=True,
+        )
+    except Exception as exc:
+        print(f"Admin WhatsApp-change notice failed for account {target.user_id}: {exc}")
+
+    message = (
+        f"WhatsApp number removed from {target.username}." if not new_number
+        else f"WhatsApp number for {target.username} updated to {masked_new}."
+    )
+    return Response(
+        {"message": message, "whatsapp_number": masked_new,
+         "previous_number": masked_previous, "removed": not new_number},
         status=status.HTTP_200_OK,
     )

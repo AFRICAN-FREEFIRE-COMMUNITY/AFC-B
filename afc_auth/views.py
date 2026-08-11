@@ -730,6 +730,87 @@ def email_admin_email_changed(username, new_email, when_text, two_factor_off=Fal
     return _email_shell(inner, "gold")
 
 
+def email_admin_username_changed(new_name, when_text, mid_event=False, lang="en"):
+    """In-game-name-changed-BY-SUPPORT notice (gold security accent).
+
+    Consumed by afc_auth/views_admin_identity.py::admin_set_user_username, the head-admin repair
+    for a player whose in-game name is wrong and who cannot fix it themselves (the identity lock
+    freezes the field mid-event, and a name that collides with another account's UID or email
+    cannot be typed in at all).
+
+    A SEPARATE template from admin_email_changed, because two of that message's three follow-ups
+    are untrue here. Nothing was signed out: the session keys off the user id, so a name change
+    does not end sessions and telling the reader to sign in again would send them looking for a
+    problem that does not exist. And no second factor was touched. What IS true, and what this
+    copy leads with, is that the name they used to sign in with has stopped working while their
+    email and Free Fire UID still do (afc_auth/backends.py accepts all three).
+
+    `mid_event` renders the one extra line that is only sometimes true: results already recorded
+    in a live event stay under the old name. It comes straight from the endpoint's identity_locked.
+
+    i18n: hand-authored copy from the catalog (template "admin_username_changed") in `lang`. The
+    caller sends with prelocalized=True + subject_for("username_updated_admin", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("admin_username_changed", lang)
+    new_name_html = f'<span style="color:#e8efe9;font-weight:600;">{new_name}</span>'
+    support_html = f'<a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">{c["support_label"]}</a>'
+    # Only rendered when the player really was mid-event, so nobody is told their results are
+    # split across two names when they are not.
+    event_block = f"""
+  <tr><td style="padding:0 44px 18px;">
+    {_email_note(c["event"], "gold")}
+  </td></tr>""" if mid_event else ""
+    inner = f"""
+  <tr><td style="padding:40px 44px 6px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{c["intro"].format(new_name=new_name_html, when=when_text)}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:10px;">{c["signin"]}</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 18px;">
+    {_email_note(c["warning"].format(support=support_html), "gold")}
+  </td></tr>{event_block}"""
+    return _email_shell(inner, "gold")
+
+
+def email_admin_whatsapp_changed(masked_number, when_text, removed=False, lang="en"):
+    """WhatsApp-number-changed-BY-SUPPORT notice (gold security accent).
+
+    Consumed by afc_auth/views_admin_identity.py::admin_set_user_whatsapp.
+
+    This one is security mail rather than a profile receipt because of what that field became on
+    2026-08-08: the saved number PROVES ownership in account recovery (afc_auth/views_recovery.py),
+    so editing it edits how the account can be recovered. The account owner is the only person who
+    can say whether the new number is theirs, which is exactly why they are told.
+
+    The number is rendered MASKED (afc_whatsapp/phone.py mask_e164 does the masking; this function
+    is handed the masked string, never the raw one). Same reasoning as two_factor.mask_email: the
+    owner recognises their own number, a stranger reading the screen does not learn it.
+
+    `removed` swaps the opening line, because "your number is now ..." cannot describe a removal
+    and the consequence differs: WhatsApp recovery stops working altogether.
+
+    i18n: hand-authored copy from the catalog (template "admin_whatsapp_changed") in `lang`. The
+    caller sends with prelocalized=True + subject_for("whatsapp_updated_admin", lang)."""
+    from afc_auth.email_i18n import copy_for
+    c = copy_for("admin_whatsapp_changed", lang)
+    masked_html = f'<span style="color:#e8efe9;font-weight:600;">{masked_number}</span>'
+    support_html = f'<a href="{SITE_URL}/contact" style="color:#f5c518;text-decoration:none;">{c["support_label"]}</a>'
+    opening = (
+        c["removed"].format(when=when_text) if removed
+        else c["intro"].format(masked_number=masked_html, when=when_text)
+    )
+    inner = f"""
+  <tr><td style="padding:40px 44px 6px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:12px;">{opening}</div>
+    <div style="font-size:15px;line-height:1.65;color:#aab5ae;margin-top:10px;">{c["why"]}</div>
+  </td></tr>
+  <tr><td style="padding:24px 44px 30px;">
+    {_email_note(c["warning"].format(support=support_html), "gold")}
+  </td></tr>"""
+    return _email_shell(inner, "gold")
+
+
 def email_recovery_password_reset(username, when_text, lang="en"):
     """Password-reset-by-WHATSAPP notice (gold security accent).
 

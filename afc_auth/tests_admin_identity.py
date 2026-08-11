@@ -44,6 +44,7 @@ suite records what WOULD have gone out without touching Office365.
 Run: python manage.py test afc_auth.tests_admin_identity
 """
 import json
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth.hashers import make_password
@@ -61,6 +62,7 @@ from afc_auth.models import (
     TwoFactorSettings,
     User,
     UserRoles,
+    canonical_profile,
 )
 
 PASSWORD = "CorrectHorse!9"
@@ -139,6 +141,43 @@ class AdminIdentityTestBase(TestCase):
             body["disable_two_factor"] = ack
         return self.post("/auth/admin/set-user-email/", body,
                          token=token or self._session(self.head_admin))
+
+    def set_username(self, new_name, token=None, reason="Support ticket 412", user_id=None,
+                     omit_username=False):
+        body = {"user_id": user_id or self.target.user_id, "reason": reason}
+        if not omit_username:
+            body["username"] = new_name
+        return self.post("/auth/admin/set-user-username/", body,
+                         token=token or self._session(self.head_admin))
+
+    def set_country(self, country, token=None, reason="Support ticket 412", user_id=None,
+                    omit_country=False):
+        body = {"user_id": user_id or self.target.user_id, "reason": reason}
+        if not omit_country:
+            body["country"] = country
+        return self.post("/auth/admin/set-user-country/", body,
+                         token=token or self._session(self.head_admin))
+
+    def set_whatsapp(self, number, token=None, reason="Support ticket 412", user_id=None,
+                     omit_number=False):
+        body = {"user_id": user_id or self.target.user_id, "reason": reason}
+        if not omit_number:
+            body["whatsapp_number"] = number
+        return self.post("/auth/admin/set-user-whatsapp/", body,
+                         token=token or self._session(self.head_admin))
+
+    def freeze_target_mid_event(self):
+        """Put the target under the identity lock.
+
+        Patched at the name views_admin_identity imported, not at its definition, so no event
+        fixtures are needed and no other module's behaviour changes for the rest of the run. The
+        real predicate (views._has_active_event_registration) has its own tests in the tournament
+        app; what THIS file has to prove is that the endpoint OVERRIDES the lock and reports it.
+        """
+        patcher = patch("afc_auth.views_admin_identity._has_active_event_registration",
+                        return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     # ── assertion helpers ────────────────────────────────────────────────────────────────────
     def latest_audit(self, action):
@@ -512,3 +551,279 @@ class IdentityReadTests(AdminIdentityTestBase):
         resp = self.get(f"/auth/admin/user-identity/{self.target.user_id}/",
                         token=self._session(self.head_admin))
         self.assertTrue(resp.json()["two_factor_enabled"])
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Â§6  In-game name (owner 2026-08-11)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+class SetUsernameTests(AdminIdentityTestBase):
+    """The THIRD login identifier. Same gate and same collision rules as the UID, but deliberately
+    NOT the same session behaviour - see the endpoint docstring."""
+
+    # â”€â”€ the gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def test_plain_admin_self_and_super_admin_are_all_refused(self):
+        self.assertEqual(
+            self.set_username("newname", token=self._session(self.news_admin)).status_code, 403)
+        # Self: the actor is the target.
+        self.assertEqual(
+            self.set_username("newname", user_id=self.head_admin.user_id).status_code, 403)
+        # A head admin may not touch a super_admin.
+        self.assertEqual(
+            self.set_username("newname", user_id=self.super_admin.user_id).status_code, 403)
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.username, "victim")
+
+    def test_reason_is_mandatory(self):
+        self.assertEqual(self.set_username("newname", reason="   ").status_code, 400)
+
+    # â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def test_blank_and_absent_are_both_refused(self):
+        self.assertEqual(self.set_username("").status_code, 400)
+        self.assertEqual(self.set_username("", omit_username=True).status_code, 400)
+
+    def test_over_length_is_refused_rather_than_500ing(self):
+        self.assertEqual(self.set_username("x" * 41).status_code, 400)
+
+    def test_unchanged_is_refused(self):
+        self.assertEqual(self.set_username("victim").status_code, 400)
+
+    def test_taken_name_is_refused_case_insensitively(self):
+        resp = self.set_username("JUST_A_PLAYER")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("already taken", resp.json()["message"])
+
+    def test_name_that_is_another_accounts_uid_is_refused(self):
+        """Sign-in matches one typed string against name OR uid OR email, so this would make
+        that string ambiguous and lock BOTH accounts out."""
+        self._user("uid_holder", "uidholder@gmail.com", uid="9137457129")
+        resp = self.set_username("9137457129")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("sign in", resp.json()["message"])
+
+    def test_name_that_is_another_accounts_email_is_refused(self):
+        resp = self.set_username("player@gmail.com")
+        self.assertEqual(resp.status_code, 400)
+
+    # â”€â”€ the happy path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def test_rename_is_written_and_read_back_from_the_database(self):
+        resp = self.set_username("NewName")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["previous_username"], "victim")
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.username, "NewName")
+
+    def test_sessions_survive_a_rename(self):
+        """A name change invalidates nothing (SessionToken keys off the user), and logging a
+        player out mid-event over somebody else's typo would be the bug, not the feature."""
+        self.assertEqual(SessionToken.objects.filter(user=self.target).count(), 1)
+        self.assertEqual(self.set_username("NewName").status_code, 200)
+        self.assertEqual(SessionToken.objects.filter(user=self.target).count(), 1)
+
+    def test_the_player_is_emailed_in_their_language(self):
+        User.objects.filter(pk=self.target.pk).update(language="fr")
+        self.assertEqual(self.set_username("NewName").status_code, 200)
+        to, subject, body, lang = self.sent[0]
+        self.assertEqual(to, "old@gmail.com")
+        self.assertEqual(lang, "fr")
+        self.assertIn("pseudo", subject.lower())
+        self.assertIn("NewName", body)
+
+    def test_mid_event_rename_succeeds_and_says_so_everywhere(self):
+        """The identity lock is the player's, not the admin's: this endpoint is the escape hatch,
+        so it goes through and reports the cost instead of refusing."""
+        self.freeze_target_mid_event()
+        resp = self.set_username("NewName")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()["identity_locked"])
+        self.assertIn("live event", resp.json()["message"])
+        details = self.latest_audit("admin_set_user_username").metadata["details"]
+        self.assertTrue(details["identity_locked"])
+        # And the player is told their in-event results still carry the old name.
+        self.assertIn("live event", self.sent[0][2])
+
+    # â”€â”€ audit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def test_audit_row_carries_before_after_and_reason(self):
+        self.set_username("NewName", reason="Player asked, ticket 88")
+        row = self.latest_audit("admin_set_user_username")
+        self.assertIsNotNone(row)
+        details = row.metadata["details"]
+        self.assertEqual(details["field"], "username")
+        self.assertEqual(details["before"], "victim")
+        self.assertEqual(details["after"], "NewName")
+        self.assertEqual(details["reason"], "Player asked, ticket 88")
+        self.assertTrue(AdminHistory.objects.filter(action="set_user_username").exists())
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Â§7  Country (owner 2026-08-11)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+class SetCountryTests(AdminIdentityTestBase):
+    """Not a login field, so the rules are milder - except one: what gets STORED is canonical, so
+    this endpoint cannot add a third spelling to a column that already holds Nigeria AND NG."""
+
+    def test_gate_still_applies(self):
+        self.assertEqual(
+            self.set_country("Nigeria", token=self._session(self.news_admin)).status_code, 403)
+        self.assertEqual(
+            self.set_country("Nigeria", token=self._session(self.player)).status_code, 403)
+        self.assertEqual(self.set_country("Nigeria", reason="").status_code, 400)
+
+    def test_absent_key_is_refused(self):
+        self.assertEqual(self.set_country("", omit_country=True).status_code, 400)
+
+    def test_unrecognised_country_is_refused(self):
+        resp = self.set_country("Naijaaa")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("not a country we recognise", resp.json()["message"])
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.country, "")
+
+    def test_iso_code_and_name_both_store_the_canonical_name(self):
+        self.assertEqual(self.set_country("NG").status_code, 200)
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.country, "Nigeria")
+
+        # The lower-cased name lands on exactly the same stored value.
+        User.objects.filter(pk=self.target.pk).update(country="")
+        self.assertEqual(self.set_country("nigeria").status_code, 200)
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.country, "Nigeria")
+
+    def test_a_different_spelling_of_the_same_country_is_not_a_change(self):
+        """NG -> Nigeria moves nobody between audiences, so it must not write an audit row
+        claiming somebody's country changed."""
+        User.objects.filter(pk=self.target.pk).update(country="NG")
+        resp = self.set_country("Nigeria")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("already this user", resp.json()["message"])
+
+    def test_country_can_be_cleared(self):
+        User.objects.filter(pk=self.target.pk).update(country="Nigeria")
+        resp = self.set_country("")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.country, "")
+
+    def test_no_email_is_sent(self):
+        """Nothing about signing in changed. Mail for this would teach players to ignore the
+        notices that do matter."""
+        self.assertEqual(self.set_country("Ghana").status_code, 200)
+        self.assertEqual(self.sent, [])
+
+    def test_audit_row_carries_before_after_and_reason(self):
+        User.objects.filter(pk=self.target.pk).update(country="NG")
+        self.set_country("Ghana", reason="Player moved, ticket 91")
+        details = self.latest_audit("admin_set_user_country").metadata["details"]
+        self.assertEqual(details["field"], "country")
+        self.assertEqual(details["before"], "NG")
+        self.assertEqual(details["after"], "Ghana")
+        self.assertEqual(details["reason"], "Player moved, ticket 91")
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Â§8  WhatsApp number (owner 2026-08-11)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+class SetWhatsappTests(AdminIdentityTestBase):
+    """The number PROVES ownership in account recovery, so these tests care about three things:
+    that a garbage number cannot be stored, that the freshness stamp moves, and that the raw
+    digits never reach the audit log."""
+
+    GOOD = "+2348051234567"
+
+    def _profile(self):
+        return canonical_profile(self.target, create=True)
+
+    def test_gate_still_applies(self):
+        self.assertEqual(
+            self.set_whatsapp(self.GOOD, token=self._session(self.news_admin)).status_code, 403)
+        self.assertEqual(
+            self.set_whatsapp(self.GOOD, user_id=self.head_admin.user_id).status_code, 403)
+        self.assertEqual(self.set_whatsapp(self.GOOD, reason=" ").status_code, 400)
+
+    def test_absent_key_is_refused_rather_than_treated_as_a_removal(self):
+        self.assertEqual(self.set_whatsapp("", omit_number=True).status_code, 400)
+
+    def test_a_local_number_is_refused(self):
+        """No country fallback on purpose: the country on the account is the very field the
+        neighbouring endpoint exists to fix, so guessing from it would be guessing twice."""
+        resp = self.set_whatsapp("08051234567")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual((self._profile().whatsapp_number or ""), "")
+
+    def test_international_number_is_stored_in_e164(self):
+        resp = self.set_whatsapp("00234 805 123 4567")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(self._profile().whatsapp_number, self.GOOD)
+
+    def test_unchanged_number_is_refused(self):
+        self.assertEqual(self.set_whatsapp(self.GOOD).status_code, 200)
+        self.assertEqual(self.set_whatsapp(self.GOOD).status_code, 400)
+
+    def test_removal_needs_something_to_remove(self):
+        self.assertEqual(self.set_whatsapp("").status_code, 400)
+
+    def test_removal_clears_the_number(self):
+        self.assertEqual(self.set_whatsapp(self.GOOD).status_code, 200)
+        resp = self.set_whatsapp("")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()["removed"])
+        self.assertEqual((self._profile().whatsapp_number or ""), "")
+
+    def test_freshness_stamp_moves_so_recovery_trusts_the_new_number(self):
+        """Recovery refuses a number untouched for 12 months. A corrected number that kept an old
+        stamp would be a fix that fixes nothing."""
+        stale = timezone.now() - timedelta(days=800)
+        profile = self._profile()
+        profile.whatsapp_number = "+2348059999999"
+        profile.whatsapp_number_updated_at = stale
+        profile.save(update_fields=["whatsapp_number", "whatsapp_number_updated_at"])
+
+        self.assertEqual(self.set_whatsapp(self.GOOD).status_code, 200)
+        self.assertGreater(self._profile().whatsapp_number_updated_at, stale)
+
+    def test_response_and_audit_are_masked_and_never_carry_the_digits(self):
+        self.set_whatsapp(self.GOOD)
+        resp_body = self.set_whatsapp("+2348051119999").json()
+        self.assertNotIn("8051234567", json.dumps(resp_body))
+
+        row = self.latest_audit("admin_set_user_whatsapp")
+        blob = json.dumps(row.metadata) + (row.summary or "")
+        self.assertNotIn("8051234567", blob)
+        self.assertNotIn("8051119999", blob)
+        self.assertIn("*", blob)
+
+    def test_the_player_is_emailed_and_the_body_is_masked_too(self):
+        self.assertEqual(self.set_whatsapp(self.GOOD).status_code, 200)
+        to, subject, body, _lang = self.sent[0]
+        self.assertEqual(to, "old@gmail.com")
+        self.assertIn("WhatsApp", subject)
+        self.assertNotIn("8051234567", body)
+        self.assertIn("recover", body.lower())
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Â§9  The read endpoint, extended for the three new dialogs (owner 2026-08-11)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+class IdentityReadExtraFieldsTests(AdminIdentityTestBase):
+
+    def test_country_and_masked_number_are_returned(self):
+        User.objects.filter(pk=self.target.pk).update(country="Nigeria")
+        profile = canonical_profile(self.target, create=True)
+        profile.whatsapp_number = "+2348051234567"
+        profile.save(update_fields=["whatsapp_number"])
+
+        resp = self.get(f"/auth/admin/user-identity/{self.target.user_id}/",
+                        token=self._session(self.head_admin))
+        data = resp.json()
+        self.assertEqual(data["country"], "Nigeria")
+        self.assertTrue(data["has_whatsapp_number"])
+        # Masked, never dialable: this payload only has to tell the admin WHICH number is on file.
+        self.assertNotIn("8051234567", resp.content.decode())
+        self.assertIn("*", data["whatsapp_number"])
+
+    def test_no_number_reads_as_empty_and_false(self):
+        resp = self.get(f"/auth/admin/user-identity/{self.target.user_id}/",
+                        token=self._session(self.head_admin))
+        data = resp.json()
+        self.assertEqual(data["whatsapp_number"], "")
+        self.assertFalse(data["has_whatsapp_number"])

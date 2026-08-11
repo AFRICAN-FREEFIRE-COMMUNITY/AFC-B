@@ -50,6 +50,9 @@ from .views_admin_identity import (
     admin_user_identity,
     admin_set_user_uid,
     admin_set_user_email,
+    admin_set_user_username,
+    admin_set_user_country,
+    admin_set_user_whatsapp,
 )
 # Account recovery by WhatsApp (owner 2026-08-08), for a user whose emailed reset token goes to an
 # inbox they cannot read. ONE proof of the number saved on the account, then TWO possible endings:
@@ -198,6 +201,12 @@ urlpatterns = [
     path('admin/user-identity/<int:user_id>/', admin_user_identity, name='admin_user_identity'),
     path('admin/set-user-uid/', admin_set_user_uid, name='admin_set_user_uid'),
     path('admin/set-user-email/', admin_set_user_email, name='admin_set_user_email'),
+    # Three more repairs on the same gate (owner 2026-08-11). The in-game name is the THIRD login
+    # identifier and is frozen mid-event for the player; the country decides which broadcast
+    # audience they land in; the WhatsApp number is what proves ownership in account recovery.
+    path('admin/set-user-username/', admin_set_user_username, name='admin_set_user_username'),
+    path('admin/set-user-country/', admin_set_user_country, name='admin_set_user_country'),
+    path('admin/set-user-whatsapp/', admin_set_user_whatsapp, name='admin_set_user_whatsapp'),
     path('edit-profile/', edit_profile, name='edit_profile'),
     path('get-user-profile/', get_user_profile, name='get_user_profile'),
     # Flip the current user's first-time WELCOME tour flag to seen. Bearer-auth POST.
