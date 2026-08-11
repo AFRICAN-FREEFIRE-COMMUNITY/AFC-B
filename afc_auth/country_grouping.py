@@ -78,6 +78,46 @@ def canonical_country(value):
     return text.lower()
 
 
+def canonical_country_name(value):
+    """The proper-cased country NAME to STORE for a typed value, or "" if it is not a country.
+
+    The write-side companion to canonical_country above. That one folds whatever is already in the
+    column so two spellings group together; this one decides what a NEW value should look like, so
+    the column stops gaining spellings in the first place.
+
+      canonical_country_name("NG")      -> "Nigeria"
+      canonical_country_name("nigeria") -> "Nigeria"
+      canonical_country_name("Naija")   -> ""          (refused by the caller)
+
+    Returning "" for anything pycountry cannot resolve is the DELIBERATE difference from
+    canonical_country, which keeps unknown values rather than losing rows. Here there is no row to
+    lose: the caller is a person typing into a form and can be asked to pick a real country.
+
+    USED BY: afc_auth/views_admin_identity.py admin_set_user_country (head-admin repair). Anything
+    else writing User.country from typed input should go through this too.
+    """
+    if not value:
+        return ""
+
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    try:
+        import pycountry
+
+        # ISO-2 first, matching afc_tournament_and_scrims.views.normalize_country: `lookup` would
+        # otherwise resolve some two-letter strings by fuzzy name match rather than as a code.
+        found = pycountry.countries.get(alpha_2=text.upper()) if len(text) == 2 else None
+        if found is None:
+            found = pycountry.countries.lookup(text)
+        return found.name
+    except Exception:
+        # LookupError (not a country) and anything else (pycountry missing) mean the same thing to
+        # the caller: we cannot vouch for this value, so do not write it.
+        return ""
+
+
 def country_label(canonical_key, raw_values=()):
     """The name to SHOW an admin for a canonical key.
 

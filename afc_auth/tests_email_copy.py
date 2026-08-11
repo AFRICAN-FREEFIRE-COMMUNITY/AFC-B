@@ -103,6 +103,20 @@ CALLER_PLACEHOLDERS = {
         "heading": set(), "intro": {"username", "new_email", "when"}, "signed_out": set(),
         "warning": {"support"}, "two_factor": set(), "support_label": set(),
     },
+    # In-game name changed BY SUPPORT (afc_auth/views.py email_admin_username_changed, called from
+    # views_admin_identity.admin_set_user_username). No "signed_out": a name change does not end
+    # sessions. "event" is rendered only when the player was mid-event.
+    "admin_username_changed": {
+        "heading": set(), "intro": {"new_name", "when"}, "signin": set(), "event": set(),
+        "warning": {"support"}, "support_label": set(),
+    },
+    # WhatsApp number changed BY SUPPORT (afc_auth/views.py email_admin_whatsapp_changed, called
+    # from views_admin_identity.admin_set_user_whatsapp). "removed" replaces "intro" when the
+    # number was cleared, so it carries {when} but NOT {masked_number}.
+    "admin_whatsapp_changed": {
+        "heading": set(), "intro": {"masked_number", "when"}, "removed": {"when"}, "why": set(),
+        "warning": {"support"}, "support_label": set(),
+    },
     # Sent to the account's address after a password was reset through WHATSAPP RECOVERY
     # (afc_auth/views.py email_recovery_password_reset, called from
     # views_recovery.recovery_reset_password). Same placeholder set as admin_email_changed MINUS
@@ -250,6 +264,10 @@ CALLER_SUBJECT_PLACEHOLDERS = {
     "confirm_new_email": set(),
     "email_changed": set(),
     "email_updated_admin": set(),
+    # Both name the FIELD support changed, never a value: these go to an inbox whose owner may not
+    # have asked for any of it, and the subject has to be judgeable on its own.
+    "username_updated_admin": set(),
+    "whatsapp_updated_admin": set(),
     # No placeholders: the subject names the CHANNEL that was used ("using WhatsApp") rather than
     # any value, because this is the tripwire and the reader has to be able to judge it from the
     # subject line alone.

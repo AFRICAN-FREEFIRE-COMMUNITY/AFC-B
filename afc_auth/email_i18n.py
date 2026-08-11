@@ -155,6 +155,22 @@ SUBJECTS = {
         "fr": "L'adresse e-mail de votre compte AFC a été mise à jour",
         "pt": "O e-mail da sua conta AFC foi atualizado",
     },
+    # In-game name changed BY SUPPORT (owner 2026-08-11). Names the FIELD in the subject, because
+    # the in-game name is one of the three things a player can sign in with, and somebody reading
+    # a phone notification has to be able to tell this apart from a routine profile email.
+    "username_updated_admin": {
+        "en": "Your AFC in-game name was changed",
+        "fr": "Votre pseudo de jeu AFC a été modifié",
+        "pt": "O seu nome de jogo AFC foi alterado",
+    },
+    # WhatsApp number changed BY SUPPORT (owner 2026-08-11). Says WhatsApp for the same reason
+    # password_reset_recovery does: that number is now a door into the account (account recovery),
+    # so the reader must be able to judge from the subject alone whether they asked for it.
+    "whatsapp_updated_admin": {
+        "en": "Your AFC WhatsApp number was changed",
+        "fr": "Votre numéro WhatsApp AFC a été modifié",
+        "pt": "O seu número de WhatsApp AFC foi alterado",
+    },
     # Password reset through WhatsApp (owner 2026-08-08). Deliberately says WHATSAPP in the
     # subject: this is the tripwire, and the one thing the reader has to judge from the subject
     # alone is whether they are the person who just did it. "Your password was reset" on its own
@@ -543,6 +559,85 @@ COPY = {
             "signed_out": "As sessões em todos os dispositivos foram terminadas, por isso terá de iniciar sessão novamente.",
             "warning": "Se não pediu isto ao suporte da AFC, contacte {support} de imediato. Quem tiver esse endereço passa a poder redefinir a sua palavra-passe.",
             "two_factor": "A autenticação de dois fatores foi desativada para permitir esta alteração. Volte a ativá-la nas definições de segurança assim que iniciar sessão.",
+            "support_label": "o suporte",
+        },
+    },
+
+    # ── afc_auth: IN-GAME NAME changed BY SUPPORT ──
+    # Rendered by afc_auth/views.py email_admin_username_changed, sent by
+    # afc_auth/views_admin_identity.py admin_set_user_username. GOLD accent: security mail.
+    #
+    # A separate template from admin_email_changed for two reasons the reader can act on. First,
+    # nothing was signed out: an in-game name change does not end sessions (the session keys off
+    # the user id), so telling them to sign in again would be a lie. Second, the reassurance that
+    # matters is different - their old name no longer works at sign-in, but their email and UID
+    # still do, so the copy names the doors that are still open instead of leaving them guessing.
+    #
+    # `event` is rendered ONLY when the player was mid-event when support acted, because that is
+    # the one case where their own results carry the old name for a while.
+    "admin_username_changed": {
+        "en": {
+            "heading": "AFC support changed your in-game name",
+            "intro": "The in-game name on your AFC account is now {new_name}, changed on {when} by AFC support.",
+            "signin": "Your old name will no longer sign you in. Use the new name, your email address or your Free Fire UID.",
+            "event": "You are registered for a live event. Results already recorded there still show your old name until the event is over.",
+            "warning": "If you did not ask AFC for this, contact {support} straight away.",
+            "support_label": "support",
+        },
+        "fr": {
+            "heading": "Le support AFC a modifié votre pseudo de jeu",
+            "intro": "Le pseudo de jeu de votre compte AFC est désormais {new_name}, modifié le {when} par le support AFC.",
+            "signin": "Votre ancien pseudo ne permet plus de vous connecter. Utilisez le nouveau pseudo, votre adresse e-mail ou votre UID Free Fire.",
+            "event": "Vous êtes inscrit à un événement en cours. Les résultats déjà enregistrés y affichent encore votre ancien pseudo jusqu'à la fin de l'événement.",
+            "warning": "Si vous n'avez rien demandé au support AFC, contactez {support} sans attendre.",
+            "support_label": "le support",
+        },
+        "pt": {
+            "heading": "O suporte da AFC alterou o seu nome de jogo",
+            "intro": "O nome de jogo da sua conta AFC é agora {new_name}, alterado em {when} pelo suporte da AFC.",
+            "signin": "O seu nome antigo já não serve para iniciar sessão. Utilize o novo nome, o seu e-mail ou o seu UID do Free Fire.",
+            "event": "Está inscrito num evento a decorrer. Os resultados já registados aí mostram o seu nome antigo até o evento terminar.",
+            "warning": "Se não pediu isto ao suporte da AFC, contacte {support} de imediato.",
+            "support_label": "o suporte",
+        },
+    },
+
+    # ── afc_auth: WHATSAPP NUMBER changed BY SUPPORT ──
+    # Rendered by afc_auth/views.py email_admin_whatsapp_changed, sent by
+    # afc_auth/views_admin_identity.py admin_set_user_whatsapp. GOLD accent: security mail.
+    #
+    # This one exists because the saved number is no longer a contact detail: since 2026-08-08 it
+    # PROVES ownership in account recovery (afc_auth/views_recovery.py). So a support edit to it is
+    # a change to how the account can be recovered, and the person who owns the account is the only
+    # one who can say whether the new number is theirs. The number is shown MASKED - enough to
+    # recognise, not enough for a stranger reading over a shoulder to learn.
+    #
+    # `removed` replaces `intro` when the number was cleared rather than replaced, because "now
+    # ends 4567" is nonsense for a removal and the consequence is different: recovery by WhatsApp
+    # stops working entirely.
+    "admin_whatsapp_changed": {
+        "en": {
+            "heading": "AFC support changed your WhatsApp number",
+            "intro": "The WhatsApp number on your AFC account is now {masked_number}, changed on {when} by AFC support.",
+            "removed": "The WhatsApp number was removed from your AFC account on {when} by AFC support.",
+            "why": "That number can be used to recover this account, so it matters that it is yours.",
+            "warning": "If you did not ask AFC for this, contact {support} straight away.",
+            "support_label": "support",
+        },
+        "fr": {
+            "heading": "Le support AFC a modifié votre numéro WhatsApp",
+            "intro": "Le numéro WhatsApp de votre compte AFC est désormais {masked_number}, modifié le {when} par le support AFC.",
+            "removed": "Le numéro WhatsApp a été retiré de votre compte AFC le {when} par le support AFC.",
+            "why": "Ce numéro permet de récupérer ce compte : il est donc important qu'il soit bien le vôtre.",
+            "warning": "Si vous n'avez rien demandé au support AFC, contactez {support} sans attendre.",
+            "support_label": "le support",
+        },
+        "pt": {
+            "heading": "O suporte da AFC alterou o seu número de WhatsApp",
+            "intro": "O número de WhatsApp da sua conta AFC é agora {masked_number}, alterado em {when} pelo suporte da AFC.",
+            "removed": "O número de WhatsApp foi removido da sua conta AFC em {when} pelo suporte da AFC.",
+            "why": "Esse número permite recuperar esta conta, por isso é importante que seja mesmo o seu.",
+            "warning": "Se não pediu isto ao suporte da AFC, contacte {support} de imediato.",
             "support_label": "o suporte",
         },
     },

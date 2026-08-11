@@ -39,7 +39,19 @@ _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _ADMIN_ROLES = {"admin", "moderator", "support"}
 
 # Substrings that mark a metadata key as sensitive; its value is replaced with "***".
-_SENSITIVE = ("password", "token", "secret", "key", "cvv", "card", "pin", "otp", "authorization")
+#
+# "whatsapp"/"phone" added 2026-08-11. A phone number was ordinary contact detail when this list was
+# written; since account recovery shipped (afc_auth/views_recovery.py) the saved WhatsApp number
+# PROVES ownership of an account, which puts it in the same class as the rest of this list. It was
+# caught by a test on admin_set_user_whatsapp: that endpoint masks the number in its response, its
+# summary AND its audit details, and the raw digits still reached the log, because this middleware
+# stores the request BODY as well. A field is only as masked as its noisiest recorder.
+#
+# `email` is deliberately NOT here: admin_set_user_email records the before/after addresses in its
+# audit details ON PURPOSE (after a takeover, that row is the only surviving copy of the address the
+# account moved off), so redacting the body while keeping the details would be theatre.
+_SENSITIVE = ("password", "token", "secret", "key", "cvv", "card", "pin", "otp", "authorization",
+              "whatsapp", "phone")
 
 # Path prefixes we never audit: the audit reader itself (avoid self-noise), the Django admin, and
 # static/media. Note these are BACKEND paths (the /a/* admin UI lives on the frontend and reaches
