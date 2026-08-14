@@ -32,6 +32,9 @@ from afc_tournament_and_scrims import result_writes
 # earned instead of the role they hold today. See afc_tournament_and_scrims/roster_roles.py.
 from afc_tournament_and_scrims import roster_roles
 from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageAdvancementRule, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+# One answer to "what KIND of stage is this?" for all three generations of stage_format values
+# (owner item 21, 2026-08-13). create_event / edit_event branch on it below. See stage_formats.py.
+from .stage_formats import is_clash_squad
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
 # set_audit -> supply a SPECIFIC human audit summary (entity name + before/after) that the
 # AuditLogMiddleware records, e.g. "Changed Detty December: event type from internal to external".
@@ -2287,7 +2290,44 @@ def create_event(request):
                 # the plain `groups` for a CS stage. write_placement_stats() synthesises a single
                 # "Bracket Results" group on completion when the stage has none, so downstream
                 # leaderboard/rankings reads keep working with zero groups here.
-                _is_cs_stage = str(stage_data.get("stage_format", "")).startswith("cs - ")
+                # is_clash_squad, not a "cs - " literal: the stage picker writes plain "cs" since
+                # owner item 21 (2026-08-13), and a literal test would miss every stage created
+                # from today's wizard - re-creating the phantom BR lobbies this guard exists to
+                # prevent. See stage_formats.py.
+                _is_cs_stage = is_clash_squad(stage_data.get("stage_format"))
+
+                # ── Clash Squad ROOM SETTINGS, straight from the wizard (owner 2026-08-13) ──
+                # Optional: the stage modal offers the room configuration while the event is being
+                # created so an organizer can set it once, in the place they are already thinking
+                # about the stage, instead of coming back to the event page afterwards. Absent or
+                # empty means no configuration is created at all and the stage simply inherits (or
+                # has none), which is exactly how every event before this behaved.
+                _room_settings = stage_data.get("cs_room_settings")
+                if _is_cs_stage:
+                    # ── Clash Squad groups (owner item 21, 2026-08-13) ──────────────────────
+                    # The mode lives on the group now. An unsplit stage sends just
+                    # cs_bracket_format and gets one group; a split stage sends cs_groups.
+                    from . import cs_room as _cs_room
+                    try:
+                        _cs_room.sync_cs_groups(
+                            stage, stage_data.get("cs_groups"),
+                            mode=stage_data.get("cs_bracket_format"))
+                    except _cs_room.RoomConfigError as exc:
+                        import logging
+                        logging.getLogger("afc_tournament_and_scrims").warning(
+                            "create_event: bad CS group config on stage %s: %s",
+                            stage.stage_id, exc)
+                if _is_cs_stage and _room_settings:
+                    from . import cs_room
+                    try:
+                        cs_room.save_config("stage", stage, _room_settings, user=user)
+                    except cs_room.RoomConfigError as exc:
+                        # A bad room setting must not lose the whole event the organizer just
+                        # filled in. Skip the configuration, keep the stage, and say so.
+                        import logging
+                        logging.getLogger("afc_tournament_and_scrims").warning(
+                            "create_event: skipped CS room settings for stage %s: %s",
+                            stage.stage_id, exc)
 
                 for group_data in ([] if (_is_round_robin_stage or _is_cs_stage) else stage_data.get("groups", [])):
                     group = StageGroups.objects.create(
@@ -3236,6 +3276,11 @@ def snapshot_event(event):
                         "group_name": g.group_name,
                         "match_count": g.match_count,
                         "match_maps": g.match_maps,
+                        # Bookkeeping-only anchor group (Clash Squad "Bracket Results"): hidden by
+                        # every FE group surface (owner 2026-08-12).
+                        "is_synthetic": g.is_synthetic,
+                        # Bracket mode when this group runs one (owner item 21).
+                        "bracket_format": g.bracket_format,
                     }
                     for g in s.groups.all()
                 ]
@@ -3896,9 +3941,43 @@ def edit_event(request):
                 # per-team stats) that the FE never echoes back in `groups`, so without this it would
                 # be swept on the next edit and wipe the CS results. Exactly how _edit_round_robin_stage
                 # feeds its rebuilt lobby ids into kept_group_ids just above.
-                _is_cs_stage = str(stage_data.get("stage_format", "")).startswith("cs - ")
+                # is_clash_squad, not a "cs - " literal: the stage picker writes plain "cs" since
+                # owner item 21 (2026-08-13), and a literal test would miss every stage created
+                # from today's wizard - re-creating the phantom BR lobbies this guard exists to
+                # prevent. See stage_formats.py.
+                _is_cs_stage = is_clash_squad(stage_data.get("stage_format"))
                 if _is_cs_stage:
                     kept_group_ids.extend(stage.groups.values_list("group_id", flat=True))
+
+                    # ── Clash Squad ROOM SETTINGS from the edit form (owner 2026-08-13) ──
+                    # Same optional field the create wizard sends. Present = create or update the
+                    # stage's configuration; ABSENT = leave whatever is saved alone, because the
+                    # edit page is also where somebody changes a stage name and must not silently
+                    # wipe a room an organizer configured from the bracket card.
+                    # ── Clash Squad groups (owner item 21, 2026-08-13) - same as create ──
+                    from . import cs_room as _cs_room
+                    try:
+                        _cs_room.sync_cs_groups(
+                            stage, stage_data.get("cs_groups"),
+                            mode=stage_data.get("cs_bracket_format"))
+                        kept_group_ids.extend(
+                            stage.groups.values_list("group_id", flat=True))
+                    except _cs_room.RoomConfigError as exc:
+                        import logging
+                        logging.getLogger("afc_tournament_and_scrims").warning(
+                            "edit_event: bad CS group config on stage %s: %s",
+                            stage.stage_id, exc)
+
+                    _room_settings = stage_data.get("cs_room_settings")
+                    if _room_settings:
+                        from . import cs_room
+                        try:
+                            cs_room.save_config("stage", stage, _room_settings, user=user)
+                        except cs_room.RoomConfigError as exc:
+                            import logging
+                            logging.getLogger("afc_tournament_and_scrims").warning(
+                                "edit_event: skipped CS room settings for stage %s: %s",
+                                stage.stage_id, exc)
 
                 # CRITICAL (owner 2026-06-17): for a round-robin stage the game-day lobbies are owned
                 # entirely by _edit_round_robin_stage above. On EDIT the FE sends its tempGroups (the
@@ -5584,6 +5663,14 @@ def get_event_details(request):
                 # works even before the room is posted. Consumed by EventDetailsWrapper
                 # (YourMatchCallout) + the TournamentStructure "your group" highlight.
                 "is_my_group": group.group_id in viewer_group_ids,
+                # Bookkeeping-only group (the Clash Squad "Bracket Results" anchor). The FE hides
+                # these: a bracket stage has no lobbies, and drawing one as a group card confused
+                # organizers into trying to add teams to it (owner 2026-08-12).
+                "is_synthetic": group.is_synthetic,
+                # A Clash Squad group runs a BRACKET, not a lobby (owner item 21,
+                # 2026-08-13). Blank for every Battle Royale group. The FE uses it to
+                # drop the map + match-schedule sections, which a bracket has none of.
+                "bracket_format": group.bracket_format,
                 # Manual display order (reorder feature): echoed so the edit form re-submits it and a
                 # plain Save does NOT reset the dragged order back to auto-by-date. (bug fix 2026-06-15)
                 "group_order": group.group_order,
@@ -6333,6 +6420,13 @@ def get_event_details_not_logged_in(request):
             groups_payload.append({
                 "group_id": group.group_id,
                 "group_name": group.group_name,
+                # See the note on the authenticated payload above: the Clash Squad "Bracket
+                # Results" anchor group is bookkeeping, not a lobby, and the FE hides it.
+                "is_synthetic": group.is_synthetic,
+                # A Clash Squad group runs a BRACKET, not a lobby (owner item 21,
+                # 2026-08-13). Blank for every Battle Royale group. The FE uses it to
+                # drop the map + match-schedule sections, which a bracket has none of.
+                "bracket_format": group.bracket_format,
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,
@@ -10571,6 +10665,12 @@ def get_event_details_for_admin(request):
                 # endpoint, so it must echo group_order or a plain Save resets the dragged order to
                 # auto-by-date. (stage-reorder revert bug fix 2026-06-15)
                 "group_order": group.group_order,
+                # A Clash Squad group runs a BRACKET, and this is its mode (owner item 21,
+                # 2026-08-13). Echoed here for the same reason group_order is: THIS endpoint is
+                # what the edit form loads, so without it the stage modal opened every Clash
+                # Squad stage showing "Knockout" whatever mode it actually runs.
+                "bracket_format": group.bracket_format,
+                "is_synthetic": group.is_synthetic,
                 "playing_date": group.playing_date,
                 "playing_time": group.playing_time,
                 "teams_qualifying": group.teams_qualifying,

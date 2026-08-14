@@ -54,6 +54,9 @@ from .models import (
     Event, Match, Stages, StageGroups, StageCompetitor, StageGroupCompetitor,
     RegisteredCompetitors, TournamentTeam,
 )
+# One answer to "is this stage Clash Squad?", across all three generations of stage_format
+# values ("cs - knockout", plain "cs", ...). See stage_formats.py for why the literals moved.
+from .stage_formats import is_clash_squad
 
 
 # ── auth ───────────────────────────────────────────────────────────────────────────────────────
@@ -217,7 +220,27 @@ def _distribute_into_groups(stage, shuffle=True, only_ungrouped=False):
 # CS knockout/double-elim/league use fixed head-to-head brackets, so auto-distributing registrations
 # into them would be wrong. We restrict auto-seed to the group-standings formats and leave the rest to
 # their format-specific tools. (The MANUAL seed endpoints stay unrestricted, as before.)
-GROUP_DISTRIBUTABLE_FORMATS = {"br - normal", "cs - normal"}
+#
+# "br" is the GENERATION-3 spelling of the same classic Battle Royale stage (owner item 21,
+# 2026-08-13): the stage picker now asks which GAME a stage runs and leaves the mode to the group,
+# so a Battle Royale stage created from today's wizard is stored as plain "br", not "br - normal".
+# Without it here, registration auto-seed would silently stop placing teams into the groups of
+# every newly created BR stage - the main tournament flow. See stage_formats.py.
+GROUP_DISTRIBUTABLE_FORMATS = {"br - normal", "br"}
+
+# Clash Squad stages take the FIRST half of auto-seed only: registrations become the stage's
+# competitor POOL (StageCompetitor), and nothing is distributed into StageGroups because a CS
+# stage's groups are BRACKETS (one per group), filled by generate_bracket, not by registration.
+#
+# WHY THIS EXISTS (owner 2026-08-12, finding #15): "cs - normal" used to sit in
+# GROUP_DISTRIBUTABLE_FORMATS above, so registering for a CS event pushed teams into Battle
+# Royale groups for a format the engine actually runs as single elimination - phantom lobbies
+# nobody plays in. But dropping it entirely would have been worse than the bug: the generate-
+# bracket dialog now seeds from StageCompetitor, so a CS event whose pool is never filled shows
+# an empty seed list. Splitting the two halves gives each format what it actually needs.
+#
+# Asked through stage_formats.is_clash_squad rather than a literal set, so the generation-3 "cs"
+# value is covered too and the next format costs one edit in that module (owner item 21).
 
 
 def entry_stage(event):
@@ -279,8 +302,12 @@ def autoseed_stage(stage, *, shuffle=False):
     if not stage:
         result["skipped"] = "no_stage"
         return result
-    if stage.stage_format not in GROUP_DISTRIBUTABLE_FORMATS:
-        # RR base groups / CS brackets are placed by their own subsystems, not registration auto-seed.
+    # Three cases: distribute into groups (Battle Royale, see GROUP_DISTRIBUTABLE_FORMATS), pool
+    # only (every Clash Squad stage, of any format generation), or leave the stage entirely alone
+    # (round robin, which owns its base groups through the RoundRobinPanel).
+    pool_only = is_clash_squad(stage.stage_format)
+    if stage.stage_format not in GROUP_DISTRIBUTABLE_FORMATS and not pool_only:
+        # RR base groups are placed by their own subsystem, not registration auto-seed.
         result["skipped"] = f"format:{stage.stage_format}"
         return result
     try:
@@ -289,10 +316,16 @@ def autoseed_stage(stage, *, shuffle=False):
             if new_sc:
                 StageCompetitor.objects.bulk_create(new_sc, ignore_conflicts=True)
                 result["stage_competitors_added"] = len(new_sc)
-            # Distribute the still-ungrouped pool into the stage's groups (no-op if there are no groups).
-            result["group_seeds_added"] = _distribute_into_groups(
-                stage, shuffle=shuffle, only_ungrouped=True,
-            )
+            if pool_only:
+                # A Clash Squad stage has no groups to distribute into. The pool above is exactly
+                # what the generate-bracket dialog seeds from, in the order teams registered.
+                result["pool_only"] = True
+            else:
+                # Distribute the still-ungrouped pool into the stage's groups (no-op if there are
+                # no groups).
+                result["group_seeds_added"] = _distribute_into_groups(
+                    stage, shuffle=shuffle, only_ungrouped=True,
+                )
         # Best-effort Discord STAGE-role reconcile for the newly pooled competitors (group roles are
         # reconciled inside _distribute_into_groups). Mirrors views.seed_event_competitors_to_stage.
         if result["stage_competitors_added"]:

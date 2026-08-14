@@ -28,12 +28,24 @@ HOW IT CONNECTS
     plus - indirectly, via write_placement_stats - the event leaderboard UI and the
     afc_rankings pipeline.
 
+WHAT "A BRACKET" MEANS (changed 2026-08-13, owner backlog item 21)
+  A bracket is the matches of one GROUP, not of one stage. A Clash Squad stage can hold
+  several StageGroups rows, each with its own bracket_format, and each runs an independent
+  bracket with its own standings and its own winner - "Group A - Knockout" beside
+  "Group B - League". Every function here takes a group_id and reads through
+  bracket_matches(); group_id=None selects the LEGACY stage-wide bracket (rows with a NULL
+  group), which is what everything created before that date looks like.
+
+  The mode therefore lives on StageGroups.bracket_format. FORMAT_FROM_STAGE below is the
+  legacy fallback for a stage that still carries the mode in its own format string.
+
 stage_format -> fmt mapping (FORMAT_FROM_STAGE below):
   'cs - knockout'            -> single_elim
   'cs - double elimination'  -> double_elim
   'cs - league'              -> league
   'cs - round robin'         -> round_robin_h2h
   'cs - normal'              -> single_elim   (a "normal" CS stage is a straight knockout)
+  'cs'                       -> no stage-level mode at all; ask the group
 """
 import datetime
 from collections import defaultdict
@@ -44,6 +56,7 @@ from django.db import transaction
 # its normalizer so a synthetic CS placement scores exactly like a manually-entered BR one.
 from . import scoring as scoring_lib
 from .models import (
+    H2HPlayerStat,
     HeadToHeadMatch,
     Leaderboard,
     Match,
@@ -69,12 +82,118 @@ VALID_FORMATS = ("single_elim", "double_elim", "league", "round_robin_h2h")
 LEAGUE_FORMATS = ("league", "round_robin_h2h")
 # Sanity cap for a reported set score (round wins). Generous enough for any real best-of format,
 # small enough to reject fat-finger typos like "400". See report_result (P2, owner 2026-07-13).
+# A stage WITH room settings is additionally capped at that room's best-of - see cs_room.
 MAX_ROUND_SCORE = 99
+
+# League points (owner 2026-08-12). Football's 3/1/0: a win is worth more than two draws, which
+# is what makes a league table rank the way people expect. Kept as a constant rather than a
+# per-event setting until somebody actually asks for a different scale - one number in one place
+# is easier to change later than a settings screen nobody uses.
+LEAGUE_POINTS = {"win": 3, "draw": 1, "loss": 0}
 
 
 class BracketError(Exception):
     """Raised for any caller-facing bracket validation failure. The views catch this and
     return its message as a 400, so messages must stay human-readable."""
+
+
+# ── what "a bracket" means (owner backlog item 21, 2026-08-13) ───────────────────────────────
+def bracket_matches(stage, group_id=None):
+    """The matches of ONE bracket, as a queryset.
+
+    A Clash Squad stage can hold several independent brackets - one per StageGroups row that has
+    a bracket_format - so "a bracket" is the matches of one GROUP, not of one stage. Everything
+    that used to read `stage.h2h_matches` goes through here instead, which is what keeps Group A's
+    byes, standings, completion and placements from bleeding into Group B's.
+
+    group_id=None means the LEGACY shape: one bracket owned by the whole stage, its matches
+    carrying group_id NULL. Passing None therefore selects exactly those rows rather than "all of
+    them", so a legacy read stays correct even in a stage that has since gained group brackets.
+    """
+    return HeadToHeadMatch.objects.filter(stage=stage, group_id=group_id)
+
+
+def resolve_bracket_group_id(stage, group_id=None):
+    """Turn "the bracket of this stage" into a concrete group id.
+
+    Most callers - the overlay renderer, the leaderboard bridge, a test - just mean "this stage's
+    bracket" and should not have to know groups exist. This is what lets them keep saying that:
+
+      * an explicit group_id always wins;
+      * a stage still holding LEGACY matches (group NULL) resolves to None, so nothing that
+        predates 2026-08-13 changes behaviour;
+      * a stage with exactly ONE bracket group resolves to that group - the simple case, which is
+        almost every Clash Squad stage;
+      * a stage split into SEVERAL groups resolves to None, because "the bracket of this stage" is
+        genuinely ambiguous there and silently picking Group A would be a lie. Those callers pass
+        a group id.
+    """
+    if group_id:
+        return group_id
+    if HeadToHeadMatch.objects.filter(stage=stage, group__isnull=True).exists():
+        return None
+    groups = list(bracket_groups(stage)[:2])
+    return groups[0].group_id if len(groups) == 1 else None
+
+
+def bracket_groups(stage):
+    """Every group in `stage` that runs a bracket, in display order.
+
+    A Battle Royale lobby has no bracket_format and never appears here. Used by the endpoints to
+    answer "what brackets does this stage have?" and by the FE to draw one card per bracket.
+    """
+    return stage.groups.exclude(bracket_format="").order_by("group_order", "group_id")
+
+
+def ensure_bracket_group(stage, fmt, third_place=False):
+    """The group a bracket belongs to, creating the single default one when the stage has none.
+
+    WHY THIS EXISTS (owner 2026-08-13): most Clash Squad stages are ONE bracket and the organizer
+    should never have to think about groups at all - they pick Clash Squad, pick a mode, done.
+    Splitting a stage into several groups (the Champions League shape) is an opt-in for the
+    organizers who want it.
+
+    Rather than support both "the bracket hangs off the stage" and "the bracket hangs off a group"
+    forever, the simple case quietly gets ONE group. So there is a single shape in the database and
+    a single code path, while the screen stays as simple as it was. The auto-created group is named
+    "Main bracket" and carries the mode; nothing in the UI shows it unless the organizer turns
+    grouping on.
+
+    Returns the StageGroups row. Reuses the stage's existing bracket group when there is exactly
+    one, so regenerating never piles up groups.
+    """
+    existing = list(bracket_groups(stage))
+    if len(existing) == 1:
+        group = existing[0]
+        # Keep the mode in step when a one-bracket stage changes format.
+        if group.bracket_format != fmt or group.bracket_third_place != bool(third_place):
+            group.bracket_format = fmt
+            group.bracket_third_place = bool(third_place)
+            group.save(update_fields=["bracket_format", "bracket_third_place"])
+        return group
+    if existing:
+        # Several already exist: the caller must say which one it means.
+        raise BracketError(
+            "This stage is split into groups, so say which group's bracket you are generating.")
+
+    # None yet. Reuse a plain lobby row if the stage happens to have exactly one (a Clash Squad
+    # stage that was built through the Battle Royale wizard before item 21), else create ours.
+    plain = list(stage.groups.all()[:2])
+    group = plain[0] if len(plain) == 1 else StageGroups.objects.create(
+        stage=stage,
+        group_name="Main bracket",
+        playing_date=stage.start_date,
+        playing_time=datetime.time(0, 0),
+        teams_qualifying=stage.teams_qualifying_from_stage or 1,
+        match_count=0,   # Battle Royale lobby fields; a bracket has no use for them
+        match_maps=[],
+    )
+    group.bracket_format = fmt
+    group.bracket_third_place = bool(third_place)
+    # It holds a real bracket now, so it is not the hidden bookkeeping anchor any more.
+    group.is_synthetic = False
+    group.save(update_fields=["bracket_format", "bracket_third_place", "is_synthetic"])
+    return group
 
 
 # ── seeding helpers (pure) ───────────────────────────────────────────────────────────────────
@@ -186,13 +305,17 @@ def _resolve_byes(matches):
 
 
 # ── generation ───────────────────────────────────────────────────────────────────────────────
-def generate_bracket(stage, team_ids_in_seed_order, fmt):
+def generate_bracket(stage, team_ids_in_seed_order, fmt, third_place=False, group=None):
     """Build the full HeadToHeadMatch tree for `stage` and return the created matches.
 
     team_ids_in_seed_order: TournamentTeam pks, BEST team first (index 0 = seed 1). The
     caller (generate endpoint) validates the ids belong to the stage's event and deletes
     any previous bracket; this function only creates.
     fmt: one of VALID_FORMATS (see FORMAT_FROM_STAGE for the stage_format mapping).
+    third_place: single elimination only - also create the bronze match between the two
+    semifinal losers, so 3rd and 4th are decided instead of shared (owner 2026-08-12).
+    Ignored for the other formats: double elimination already separates 3rd from 4th by
+    construction, and a league table has no such match.
     """
     ids = list(team_ids_in_seed_order)
     if fmt not in VALID_FORMATS:
@@ -203,13 +326,13 @@ def generate_bracket(stage, team_ids_in_seed_order, fmt):
         raise BracketError("Double elimination needs at least 3 teams.")
 
     if fmt in LEAGUE_FORMATS:
-        return _generate_league(stage, ids)
+        return _generate_league(stage, ids, group=group)
     if fmt == "double_elim":
-        return _generate_double_elim(stage, ids)
-    return _generate_single_elim(stage, ids)
+        return _generate_double_elim(stage, ids, group=group)
+    return _generate_single_elim(stage, ids, third_place=third_place, group=group)
 
 
-def _generate_single_elim(stage, ids):
+def _generate_single_elim(stage, ids, third_place=False, group=None):
     """Standard power-of-2 single-elimination knockout.
 
     For n teams: bracket size P = next power of two, R = log2(P) rounds, all in
@@ -227,9 +350,25 @@ def _generate_single_elim(stage, ids):
         for p in range(P >> r):
             nxt = matches.get((r + 1, p // 2))
             matches[(r, p)] = HeadToHeadMatch.objects.create(
-                stage=stage, bracket="winners", round_number=r, position=p,
+                stage=stage, group=group, bracket="winners", round_number=r, position=p,
                 next_match=nxt, next_match_slot=("a" if p % 2 == 0 else "b") if nxt else None,
             )
+
+    # Optional bronze match (owner 2026-08-12). Needs semifinals to exist, i.e. at least two
+    # rounds; a 2-team bracket is only a final and has no 3rd place to play for. The two
+    # semifinals (round R-1, positions 0 and 1) drop their LOSERS into it, which is exactly the
+    # same wiring double elimination already uses, so _resolve_byes and report_result need no
+    # special case: a bye semifinal simply leaves its slot permanently empty and the bronze match
+    # resolves as a bye too.
+    if third_place and R >= 2:
+        third = HeadToHeadMatch.objects.create(
+            stage=stage, group=group, bracket="third", round_number=R, position=0)
+        for p, slot in ((0, "a"), (1, "b")):
+            semi = matches[(R - 1, p)]
+            semi.loser_next_match = third
+            semi.loser_next_match_slot = slot
+            semi.save(update_fields=["loser_next_match", "loser_next_match_slot", "updated_at"])
+        matches[("third", 0)] = third
 
     # Round-1 seeding: slot s holds seed slots[s]; seeds beyond n are byes (team None).
     slots = _seed_slots(P)
@@ -245,7 +384,7 @@ def _generate_single_elim(stage, ids):
     return created
 
 
-def _generate_double_elim(stage, ids):
+def _generate_double_elim(stage, ids, group=None):
     """Winners bracket + losers bracket + a single grand final.
 
     Structure for bracket size P = 2^R (R >= 2 since we require >= 3 teams):
@@ -269,7 +408,7 @@ def _generate_double_elim(stage, ids):
 
     # Grand final first (everything ultimately feeds it).
     grand_final = HeadToHeadMatch.objects.create(
-        stage=stage, bracket="winners", round_number=R + 1, position=0)
+        stage=stage, group=group, bracket="winners", round_number=R + 1, position=0)
 
     # Losers bracket, last round first so next links exist at create time.
     lb = {}  # (round, position) -> match
@@ -286,7 +425,7 @@ def _generate_double_elim(stage, ids):
                 # LB final: winner meets the WB champion in the grand final
                 nxt, slot = grand_final, "b"
             lb[(k, p)] = HeadToHeadMatch.objects.create(
-                stage=stage, bracket="losers", round_number=k, position=p,
+                stage=stage, group=group, bracket="losers", round_number=k, position=p,
                 next_match=nxt, next_match_slot=slot,
             )
 
@@ -303,7 +442,7 @@ def _generate_double_elim(stage, ids):
                 # WB round r (>=2) losers drop into the major round of block j = r-1, slot a.
                 loser_nxt, loser_slot = lb[(2 * (r - 1), p)], "a"
             wb[(r, p)] = HeadToHeadMatch.objects.create(
-                stage=stage, bracket="winners", round_number=r, position=p,
+                stage=stage, group=group, bracket="winners", round_number=r, position=p,
                 next_match=nxt, next_match_slot=slot,
                 loser_next_match=loser_nxt, loser_next_match_slot=loser_slot,
             )
@@ -322,7 +461,7 @@ def _generate_double_elim(stage, ids):
     return created
 
 
-def _generate_league(stage, ids):
+def _generate_league(stage, ids, group=None):
     """League / round-robin H2H: every pair plays exactly once, no advancement links.
 
     Scheduled with the classic CIRCLE METHOD so the matches come out grouped into rounds
@@ -343,7 +482,7 @@ def _generate_league(stage, ids):
             if a is None or b is None:
                 continue  # this pairing is the round's sit-out
             created.append(HeadToHeadMatch.objects.create(
-                stage=stage, bracket="league", round_number=round_number, position=position,
+                stage=stage, group=group, bracket="league", round_number=round_number, position=position,
                 team_a_id=a, team_b_id=b,
             ))
             position += 1
@@ -353,7 +492,117 @@ def _generate_league(stage, ids):
 
 
 # ── result reporting ─────────────────────────────────────────────────────────────────────────
-def report_result(match, score_a, score_b, acting_user=None):
+def write_player_stats(match, player_rows):
+    """Replace the per-player lines for ONE Clash Squad set (owner 2026-08-12).
+
+    player_rows: [{"player_id": int, "kills": int, "damage": int, "assists": int,
+                   "played": bool, "tournament_team_id": int}, ...]
+
+    Every player must be on the roster of one of the two teams in this match, and the
+    tournament_team_id they are filed under must be one of those two teams - otherwise a typo
+    could park a line on a team that is not even in the set. Replaces wholesale (delete then
+    create) so a correction cannot leave a stale line behind; passing an empty list clears them.
+
+    These rows are the per-SET grain. head_to_head.write_placement_stats sums them per player
+    into the single synthetic TournamentPlayerMatchStats row for the stage, which is what the
+    player profile, kill tables and afc_rankings actually read. Raises BracketError on any
+    validation failure; the view surfaces the message as a 400.
+    """
+    if player_rows is None:
+        return 0
+    if not isinstance(player_rows, list):
+        raise BracketError("player_stats must be a list of player lines.")
+
+    side_ids = {tid for tid in (match.team_a_id, match.team_b_id) if tid}
+    if not side_ids:
+        raise BracketError("This match has no teams yet, so player stats cannot be recorded.")
+
+    # Roster per side, from the SAME frozen per-event roster BR entry uses.
+    rosters = {
+        tid: set(
+            TournamentTeamMember.objects
+            .filter(tournament_team_id=tid, status__in=("active", "approved"))
+            .values_list("user_id", flat=True)
+        )
+        for tid in side_ids
+    }
+
+    cleaned = []
+    seen = set()
+    for raw in player_rows:
+        if not isinstance(raw, dict):
+            raise BracketError("Each player line must be an object.")
+        try:
+            player_id = int(raw.get("player_id"))
+            team_id = int(raw.get("tournament_team_id"))
+            kills = int(raw.get("kills") or 0)
+            damage = int(raw.get("damage") or 0)
+            assists = int(raw.get("assists") or 0)
+        except (TypeError, ValueError):
+            raise BracketError("Player lines need whole numbers for player, team, kills, "
+                               "damage and assists.")
+        if min(kills, damage, assists) < 0:
+            raise BracketError("Kills, damage and assists cannot be negative.")
+        if team_id not in side_ids:
+            raise BracketError("A player line was filed under a team that is not in this match.")
+        if player_id not in rosters[team_id]:
+            raise BracketError("A player line was filed for someone who is not on that team's "
+                               "roster for this event.")
+        if player_id in seen:
+            raise BracketError("The same player appears twice in this set.")
+        seen.add(player_id)
+        cleaned.append(H2HPlayerStat(
+            h2h_match=match, tournament_team_id=team_id, player_id=player_id,
+            kills=kills, damage=damage, assists=assists,
+            played=bool(raw.get("played", True)),
+        ))
+
+    with transaction.atomic():
+        H2HPlayerStat.objects.filter(h2h_match=match).delete()
+        if cleaned:
+            H2HPlayerStat.objects.bulk_create(cleaned)
+    return len(cleaned)
+
+
+def award_walkover(match, winner_team_id, result_type="walkover", note="", acting_user=None):
+    """Decide a set that was never played: a walkover, a forfeit or a disqualification.
+
+    WHY (owner 2026-08-12): until now the only way to record "the other team never showed" was to
+    type a scoreline that never happened, which then fed the round-difference tiebreak and the
+    player stats as if a real set had been played. This records the WINNER and marks HOW, leaving
+    the scoreline at the minimum the format needs.
+
+    winner_team_id must be one of the two teams in the match. The score is set to the room's
+    best-of target (or 1-0 when no room is configured), because a bracket has to advance somebody
+    and a league table has to see a win; the result_type is what tells every reader it was not
+    played. Advancement, bye cascade and the placement bridge all run exactly as for a real set,
+    by delegating to report_result.
+    """
+    if result_type not in dict(HeadToHeadMatch.RESULT_TYPE_CHOICES) or result_type == "normal":
+        raise BracketError("A walkover must be recorded as a forfeit, walkover or disqualification.")
+    if match.team_a_id is None or match.team_b_id is None:
+        raise BracketError("This match does not have both teams yet.")
+    if winner_team_id not in (match.team_a_id, match.team_b_id):
+        raise BracketError("The winning team must be one of the two teams in this match.")
+
+    from . import cs_room
+    target = cs_room.max_wins_for_match(match) or 1
+    if winner_team_id == match.team_a_id:
+        sa, sb = target, 0
+    else:
+        sa, sb = 0, target
+
+    # report_result clears result_type on any ordinary re-report (a real scoreline typed over a
+    # forfeit means the set WAS played). This flag tells it not to, since we are the caller that
+    # set it deliberately. Transient attribute, never a column.
+    match._awarding_walkover = True
+    match.result_type = result_type
+    match.result_note = (note or "")[:255]
+    match.save(update_fields=["result_type", "result_note", "updated_at"])
+    return report_result(match, sa, sb, acting_user=acting_user)
+
+
+def report_result(match, score_a, score_b, acting_user=None, player_stats=None):
     """Record a Clash Squad set result (round wins) on `match` and advance the bracket.
 
     Validates: both teams present, scores are non-negative ints, no ties in elimination
@@ -387,6 +636,24 @@ def report_result(match, score_a, score_b, acting_user=None):
     if sa > MAX_ROUND_SCORE or sb > MAX_ROUND_SCORE:
         raise BracketError(f"Scores look too large: max {MAX_ROUND_SCORE} round wins per team.")
 
+    # ── best-of, from the room settings (owner 2026-08-12) ──────────────────────────────────
+    # Until room settings existed there was no way to say how long a set is, so the only guard
+    # was the flat cap above. A room configured for 13 rounds is first-to-7: 9-2 is impossible,
+    # and so is 7-7. cs_room resolves match -> stage -> event, and returns None when the event
+    # has no room settings at all - in which case nothing below applies and events that predate
+    # this feature keep behaving exactly as they did.
+    from . import cs_room  # local import: cs_room reads models only, but keep the module graph flat
+    best_of_wins = cs_room.max_wins_for_match(match)
+    if best_of_wins:
+        if max(sa, sb) > best_of_wins:
+            raise BracketError(
+                f"This room is set to first-to-{best_of_wins}, so a team cannot win more than "
+                f"{best_of_wins} rounds. Change the room settings if the set was longer.")
+        if sa == best_of_wins and sb == best_of_wins:
+            raise BracketError(
+                f"Both teams cannot reach {best_of_wins} round wins: the set ends when the first "
+                f"one does.")
+
     elimination = match.bracket in ("winners", "losers")
     if elimination and sa == sb:
         raise BracketError("Ties are not allowed in elimination matches: one team must win the set.")
@@ -410,6 +677,19 @@ def report_result(match, score_a, score_b, acting_user=None):
         match.winner_id = winner_id
         match.status = "completed"
         match.save(update_fields=["score_a", "score_b", "winner", "status", "updated_at"])
+        # A correction that types a real scoreline over a forfeit means the set WAS played, so the
+        # marker has to clear itself. award_walkover sets result_type after calling nothing else,
+        # then delegates here, so it re-stamps its own value afterwards - see that function.
+        if match.result_type != "normal" and not getattr(match, "_awarding_walkover", False):
+            match.result_type = "normal"
+            match.result_note = ""
+            match.save(update_fields=["result_type", "result_note", "updated_at"])
+
+        # Optional per-player lines for this set (owner 2026-08-12). Written inside the same
+        # transaction as the score, so a rejected player line rolls the score back too rather
+        # than leaving a result recorded with stats that were refused.
+        if player_stats is not None:
+            write_player_stats(match, player_stats)
 
         # Advance. On a re-report the slots are deterministic, so writing the (possibly
         # different) new winner/loser simply overwrites the previous propagation.
@@ -420,7 +700,11 @@ def report_result(match, score_a, score_b, acting_user=None):
 
         # Completing a real match can reveal a downstream bye (a slot that was waiting on
         # us while its partner slot is permanently empty) - cascade those now.
-        all_matches = list(HeadToHeadMatch.objects.filter(stage=match.stage)
+        # Scoped to THIS match's bracket (owner 2026-08-13): a Clash Squad stage can hold
+        # several independent brackets, one per group, and a bye in Group A must not be resolved
+        # against Group B's tree - nor may finishing Group A's final report the whole stage
+        # complete while Group B is still being played.
+        all_matches = list(bracket_matches(match.stage, match.group_id)
                            .select_related("next_match", "loser_next_match"))
         _resolve_byes(all_matches)
 
@@ -429,26 +713,38 @@ def report_result(match, score_a, score_b, acting_user=None):
         # Re-running on a corrected final refreshes the same synthetic rows.
         complete = _bracket_complete(all_matches)
         if complete:
-            write_placement_stats(match.stage)
+            write_placement_stats(match.stage, match.group_id)
     return complete
 
 
 def _bracket_complete(matches):
     """A league bracket is complete when every match is; an elimination bracket when its
     FINAL (the single winners-bracket match with no next_match: the single-elim final or
-    the double-elim grand final) has a decided winner."""
+    the double-elim grand final) has a decided winner - AND, when the stage has an optional
+    third-place match, once that is decided too, so 3rd/4th are settled before we call the
+    bracket done and write placements downstream."""
     if not matches:
         return False
     if all(m.bracket == "league" for m in matches):
         return all(m.status == "completed" for m in matches)
     final = next((m for m in matches if m.bracket == "winners" and m.next_match_id is None), None)
-    return bool(final and final.status == "completed" and final.winner_id)
+    if not (final and final.status == "completed" and final.winner_id):
+        return False
+    third = next((m for m in matches if m.bracket == "third"), None)
+    if third is not None and third.status != "completed":
+        return False
+    return True
 
 
 # ── standings ────────────────────────────────────────────────────────────────────────────────
-def standings(stage):
-    """Rank the stage's bracket. Returns a list of
-    {tournament_team_id, team_name, placement, wins, losses, rounds_won, rounds_lost}.
+def standings(stage, group_id=None):
+    """Rank ONE bracket. Returns a list of
+    {tournament_team_id, team_name, placement, wins, draws, losses, rounds_won, rounds_lost,
+    points}.
+
+    group_id names which bracket (owner 2026-08-13): a Clash Squad stage can hold several, and
+    each one stands alone - its own table, its own winner, its own qualifiers - exactly like a
+    Battle Royale group. None = the legacy stage-wide bracket.
 
     League / round-robin H2H: a table over all completed matches, ranked by match wins,
     then round-win difference, then round wins, then team name (placement = row index + 1;
@@ -462,8 +758,11 @@ def standings(stage):
     While the bracket is still running, alive teams carry placement None and sort first.
     Byes never count as wins/losses or rounds.
     """
+    # "the standings of this stage" still works for the one-bracket case - see
+    # resolve_bracket_group_id for exactly when that is and is not honest.
+    group_id = resolve_bracket_group_id(stage, group_id)
     matches = list(
-        stage.h2h_matches.select_related("team_a__team", "team_b__team")
+        bracket_matches(stage, group_id).select_related("team_a__team", "team_b__team")
         .order_by("round_number", "position")
     )
     if not matches:
@@ -477,8 +776,12 @@ def standings(stage):
         if m.team_b_id:
             team_names[m.team_b_id] = m.team_b.team.team_name
 
-    # Per-team W/L + round tallies over completed REAL matches (both teams present).
-    tally = {tid: {"wins": 0, "losses": 0, "rounds_won": 0, "rounds_lost": 0}
+    # Per-team W/D/L + round tallies over completed REAL matches (both teams present).
+    # DRAWS are counted separately (owner 2026-08-12): a league match may legitimately tie, and
+    # until now a drawn set showed up nowhere - a team that played 5 with one draw read "2-2" and
+    # looked like it had played 4. Elimination brackets cannot tie, so their draw column is
+    # always 0 and the FE hides it.
+    tally = {tid: {"wins": 0, "draws": 0, "losses": 0, "rounds_won": 0, "rounds_lost": 0}
              for tid in team_names}
     for m in matches:
         if m.status != "completed" or not (m.team_a_id and m.team_b_id):
@@ -491,7 +794,14 @@ def standings(stage):
             loser_id = m.team_b_id if m.winner_id == m.team_a_id else m.team_a_id
             tally[m.winner_id]["wins"] += 1
             tally[loser_id]["losses"] += 1
-        # tie: no win/loss for either side
+        else:
+            tally[m.team_a_id]["draws"] += 1
+            tally[m.team_b_id]["draws"] += 1
+
+    def points(tid):
+        """League points for one team: 3 a win, 1 a draw, 0 a loss (LEAGUE_POINTS)."""
+        t = tally[tid]
+        return t["wins"] * LEAGUE_POINTS["win"] + t["draws"] * LEAGUE_POINTS["draw"]
 
     def row(tid, placement):
         t = tally[tid]
@@ -500,16 +810,24 @@ def standings(stage):
             "team_name": team_names[tid],
             "placement": placement,
             "wins": t["wins"],
+            "draws": t["draws"],
             "losses": t["losses"],
             "rounds_won": t["rounds_won"],
             "rounds_lost": t["rounds_lost"],
+            # Only meaningful in a league table; carried on every row so the FE reads one shape.
+            "points": points(tid),
         }
 
     # ── league table ──
+    # Ranked on POINTS first (owner 2026-08-12: a league needs a points column, and ranking on
+    # raw wins made a team with three draws finish below one that had lost three). Round-win
+    # difference then round wins break the tie, exactly as before, and the team name last so the
+    # order is stable rather than arbitrary.
     if all(m.bracket == "league" for m in matches):
         ordered = sorted(
             team_names,
             key=lambda tid: (
+                -points(tid),
                 -tally[tid]["wins"],
                 -(tally[tid]["rounds_won"] - tally[tid]["rounds_lost"]),
                 -tally[tid]["rounds_won"],
@@ -525,16 +843,41 @@ def standings(stage):
     # Each team's elimination point: the lost match with no loser drop. Keyed for ranking:
     # winners-bracket eliminations (single-elim rounds + the grand final) outrank
     # losers-bracket ones, and within a bracket a LATER round means a BETTER finish.
-    eliminated = {}  # team_id -> (bracket_rank, -round_number)
+    # Key shape: (bracket_rank, -round_number, sub). `sub` exists only for the third-place match,
+    # whose two teams must NOT share a placement: its winner is 3rd and its loser 4th, and both
+    # sit between the final's loser (2nd) and the quarterfinal losers. Because the bronze match
+    # carries round_number R, we file it under the semifinal round R-1 so it sorts in the right
+    # gap: (0,-R,0) final loser < (0,-(R-1),0) 3rd < (0,-(R-1),1) 4th < (0,-(R-2),0) QF losers.
+    # Semifinal losers themselves are NOT eliminated at the semifinal when a bronze match exists -
+    # they have a loser_next_match, so the `continue` below already skips them, and they stay
+    # "alive" until the bronze match is played. Everything else keeps sub = 0.
+    eliminated = {}  # team_id -> (bracket_rank, -round_number, sub)
     for m in matches:
         if m.status != "completed" or not m.winner_id or not (m.team_a_id and m.team_b_id):
             continue
         if m.loser_next_match_id is not None:
-            continue  # double elim winners-bracket loss: the team drops, not out yet
+            continue  # double elim winners-bracket loss (or a semifinal feeding the bronze match)
         loser_id = m.team_b_id if m.winner_id == m.team_a_id else m.team_a_id
-        eliminated[loser_id] = (0 if m.bracket == "winners" else 1, -m.round_number)
+        if m.bracket == "third":
+            eliminated[m.winner_id] = (0, -(m.round_number - 1), 0)  # 3rd
+            eliminated[loser_id] = (0, -(m.round_number - 1), 1)     # 4th
+            continue
+        eliminated[loser_id] = (0 if m.bracket == "winners" else 1, -m.round_number, 0)
 
-    alive = [tid for tid in team_names if tid != champion_id and tid not in eliminated]
+    # The two teams waiting on an UNPLAYED bronze match are a special kind of "alive": they can
+    # only finish 3rd or 4th, so they must not be listed above the final's loser. Without this,
+    # a table read between the final and the bronze match showed the beaten finalist as #4,
+    # because the two alive teams consumed slots 2 and 3 first (owner 2026-08-12, seen live).
+    pending_bronze = next(
+        (m for m in matches if m.bracket == "third" and m.status != "completed"), None)
+    bronze_waiting = set()
+    if pending_bronze is not None:
+        bronze_waiting = {tid for tid in (pending_bronze.team_a_id, pending_bronze.team_b_id) if tid}
+
+    alive = [
+        tid for tid in team_names
+        if tid != champion_id and tid not in eliminated and tid not in bronze_waiting
+    ]
 
     rows = []
     counter = 1
@@ -554,12 +897,21 @@ def standings(stage):
         for tid in group:
             rows.append(row(tid, counter))
         counter += len(group)
+    # Finally the pair still waiting on the bronze match: no placement yet, but listed BELOW the
+    # decided ones because 3rd/4th is the best either can do.
+    for tid in sorted(bronze_waiting, key=lambda t: (-tally[t]["wins"], team_names[t])):
+        rows.append(row(tid, None))
     return rows
 
 
 # ── SUB-PROJECT D BRIDGE ─────────────────────────────────────────────────────────────────────
-def write_placement_stats(stage):
+def write_placement_stats(stage, group_id=None):
     """Mirror a finished bracket's placements into the EXISTING results pipeline.
+
+    group_id names WHICH bracket finished (owner 2026-08-13). When a Clash Squad stage runs
+    several group brackets, each writes its placements into ITS OWN group - which is strictly
+    more correct than the synthetic anchor below, because the leaderboard has always read
+    per-group. Group A's winner is 1st in Group A; nothing is merged across groups.
 
     WHY: the leaderboard reads (get_all_leaderboard_details_for_event, the round_robin
     aggregators) and the afc_rankings aggregation all consume TournamentTeamMatchStats
@@ -587,13 +939,37 @@ def write_placement_stats(stage):
     of stat rows written. Called automatically by report_result when the bracket
     completes; safe to call again manually.
     """
-    placed = [r for r in standings(stage) if r["placement"]]
+    group_id = resolve_bracket_group_id(stage, group_id)
+    placed = [r for r in standings(stage, group_id) if r["placement"]]
     if not placed:
         return 0
 
-    # Anchor group: the stage's first lobby, or a dedicated results group for pure
-    # bracket stages (StageGroups requires the date/time/count fields, hence the stubs).
-    group = stage.groups.order_by("group_id").first()
+    # ── per-player totals for the whole stage (owner 2026-08-12) ────────────────────────────
+    # H2HPlayerStat is per SET. Everything downstream (player profiles, kill tables,
+    # afc_rankings) reads ONE TournamentPlayerMatchStats row per player per match, and a CS stage
+    # has exactly one synthetic match, so sum each player's sets here. A player with no lines at
+    # all still gets a row below (kills 0), which is what keeps participation credit working for
+    # organizers who only enter set scores.
+    player_totals = {}   # user_id -> {"kills": .., "damage": .., "assists": .., "played": bool}
+    team_kills = defaultdict(int)  # tournament_team_id -> kills, for the team stat row
+    for ps in H2HPlayerStat.objects.filter(h2h_match__in=bracket_matches(stage, group_id)):
+        acc = player_totals.setdefault(
+            ps.player_id, {"kills": 0, "damage": 0, "assists": 0, "played": False})
+        acc["kills"] += ps.kills
+        acc["damage"] += ps.damage
+        acc["assists"] += ps.assists
+        acc["played"] = acc["played"] or ps.played
+        team_kills[ps.tournament_team_id] += ps.kills
+
+    # Anchor group: the group whose bracket this IS, when the caller named one - the normal case
+    # since 2026-08-13, and the reason no synthetic row is needed for it. Otherwise the legacy
+    # path: the stage's first lobby, or a dedicated results group for a pure bracket stage
+    # (StageGroups requires the date/time/count fields, hence the stubs).
+    group = None
+    if group_id:
+        group = StageGroups.objects.filter(stage=stage, group_id=group_id).first()
+    if group is None:
+        group = stage.groups.order_by("group_id").first()
     if group is None:
         group = StageGroups.objects.create(
             stage=stage,
@@ -603,7 +979,16 @@ def write_placement_stats(stage):
             teams_qualifying=stage.teams_qualifying_from_stage or 1,
             match_count=0,  # holds only the synthetic match below, no real lobby matches
             match_maps=[],
+            # Bookkeeping only: nobody plays in this "group". Flagged so the admin Stages tab and
+            # every other group surface hides it instead of drawing a lobby card with "Add Teams
+            # to Group" on a bracket stage (owner 2026-08-12, finding #12).
+            is_synthetic=True,
         )
+    elif group.group_name == "Bracket Results" and not group.is_synthetic:
+        # Rows created before the flag existed: mark them on the next write so old CS events stop
+        # showing the phantom card too, rather than needing a data migration.
+        group.is_synthetic = True
+        group.save(update_fields=["is_synthetic"])
 
     # Score placements with the SAME table a manual BR entry on this group would use.
     leaderboard = Leaderboard.objects.filter(stage=stage, group=group).first()
@@ -635,7 +1020,12 @@ def write_placement_stats(stage):
             tournament_team_id=r["tournament_team_id"],
             defaults={
                 "placement": r["placement"],
-                "kills": 0,
+                # Kills entered per set (H2HPlayerStat) roll up here so a CS team's kill count is
+                # real rather than always zero. kill_points STAYS 0 on purpose: a Clash Squad stage
+                # is scored on where you finish in the bracket, so kills are a statistic, not a
+                # second source of points - adding them would silently change how CS standings
+                # rank. total_points therefore remains the placement points alone.
+                "kills": team_kills.get(r["tournament_team_id"], 0),
                 "damage": 0,
                 "assists": 0,
                 "placement_points": points,
@@ -670,10 +1060,16 @@ def write_placement_stats(stage):
         )
         roster_user_ids = [uid for uid, _role in roster_rows]
         for uid, role in roster_rows:
+            # Real per-set numbers when the organizer entered them, zeroes when they only entered
+            # set scores (which still earns participation credit, as before).
+            totals = player_totals.get(uid) or {"kills": 0, "damage": 0, "assists": 0}
             TournamentPlayerMatchStats.objects.update_or_create(
                 team_stats=team_stat, player_id=uid,
                 defaults={
-                    "kills": 0, "damage": 0, "assists": 0, "played": True,
+                    "kills": totals["kills"],
+                    "damage": totals["damage"],
+                    "assists": totals["assists"],
+                    "played": True,
                     "role_at_match": role or None,
                 },
             )

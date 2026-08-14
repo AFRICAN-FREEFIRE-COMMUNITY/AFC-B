@@ -29,6 +29,7 @@ from afc_team.models import Team
 from afc_tournament_and_scrims import head_to_head, round_robin
 from afc_tournament_and_scrims.models import (
     Event,
+    H2HPlayerStat,
     HeadToHeadMatch,
     Leaderboard,
     Match,
@@ -700,9 +701,17 @@ class CreateEventCSGroupGuardTests(TestCase):
         cs_stage = Stages.objects.get(event=event, stage_format="cs - knockout")
         br_stage = Stages.objects.get(event=event, stage_format="br - normal")
 
-        # CS stage: the forced group + its matches + leaderboard were IGNORED (no phantom rows) - 
-        # the bracket owns the structure, generated later from team_ids with zero groups.
-        self.assertEqual(StageGroups.objects.filter(stage=cs_stage).count(), 0)
+        # CS stage: the wizard's forced BR group - its maps, its matches, its leaderboard - is
+        # still IGNORED. That is the guard this test exists for, and it has not changed.
+        #
+        # What HAS changed (owner backlog item 21, 2026-08-13): the stage now carries exactly one
+        # BRACKET group, because the mode lives on the group rather than in stage_format. It is a
+        # bracket, not a lobby: no Match rows, no Leaderboard, no maps. Splitting a stage into
+        # several groups is the organizer's opt-in; one is what an unsplit stage looks like.
+        cs_groups = list(StageGroups.objects.filter(stage=cs_stage))
+        self.assertEqual(len(cs_groups), 1)
+        self.assertEqual(cs_groups[0].bracket_format, "single_elim")
+        self.assertEqual(cs_groups[0].match_maps, [])
         self.assertEqual(Match.objects.filter(group__stage=cs_stage).count(), 0)
         self.assertEqual(Leaderboard.objects.filter(stage=cs_stage).count(), 0)
 
@@ -754,3 +763,263 @@ class BracketOverlayPayloadTests(H2HBase):
         self.assertIsNotNone(out["bracket"])
         self.assertFalse(out["bracket"]["generated"])
         self.assertEqual(out["bracket"]["rounds"]["winners"], [])
+
+
+class ThirdPlaceMatchTests(H2HBase):
+    """The optional bronze match in a single-elimination bracket (owner 2026-08-12).
+
+    Without it, the two semifinal losers SHARE placement 3 and an event that pays 3rd and 4th
+    differently cannot use the bracket's own result. With it, they play each other: the winner
+    is 3rd, the loser 4th, and everyone knocked out earlier shifts down accordingly.
+    """
+
+    def _generate_third(self, team_ids, third_place=True):
+        return self.client.post(
+            f"/events/stages/{self.stage.stage_id}/bracket/generate/",
+            data={"team_ids": team_ids, "third_place": third_place},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+
+    def test_not_created_unless_asked(self):
+        # The default is unchanged: no bronze match, semifinal losers still share 3rd.
+        self._generate(self._ids(4))
+        self.assertFalse(HeadToHeadMatch.objects.filter(stage=self.stage, bracket="third").exists())
+
+    def test_created_and_fed_by_both_semifinals(self):
+        resp = self._generate_third(self._ids(4))
+        self.assertEqual(resp.status_code, 201)
+        third = HeadToHeadMatch.objects.get(stage=self.stage, bracket="third")
+        # 4 teams -> R = 2, so the semifinals are round 1 and both drop their loser into it.
+        semi_a = self._m("winners", 1, 0)
+        semi_b = self._m("winners", 1, 1)
+        self.assertEqual(semi_a.loser_next_match_id, third.h2h_match_id)
+        self.assertEqual(semi_a.loser_next_match_slot, "a")
+        self.assertEqual(semi_b.loser_next_match_id, third.h2h_match_id)
+        self.assertEqual(semi_b.loser_next_match_slot, "b")
+        # It is NOT in the winners bracket, so "the final is the winners match with no
+        # next_match" still resolves to the real final.
+        self.assertEqual(third.bracket, "third")
+        self.assertIsNone(third.next_match_id)
+
+    def test_skipped_when_there_are_no_semifinals(self):
+        # 2 teams is a final only; there is no 3rd place to play for.
+        self._generate_third(self._ids(2))
+        self.assertFalse(HeadToHeadMatch.objects.filter(stage=self.stage, bracket="third").exists())
+
+    def test_losers_are_routed_into_it_and_placements_split_3_and_4(self):
+        self._generate_third(self._ids(4))
+        third = HeadToHeadMatch.objects.get(stage=self.stage, bracket="third")
+
+        # Semifinals: T1 beats T4, T2 beats T3 (seeding puts 1v4 and 2v3).
+        semi_a, semi_b = self._m("winners", 1, 0), self._m("winners", 1, 1)
+        self._report(semi_a, 4, 1)
+        self._report(semi_b, 4, 2)
+
+        # Both losers have been dropped into the bronze match.
+        semi_a.refresh_from_db()
+        semi_b.refresh_from_db()
+        third.refresh_from_db()
+
+        def loser_of(m):
+            return m.team_b_id if m.winner_id == m.team_a_id else m.team_a_id
+
+        self.assertEqual(third.team_a_id, loser_of(semi_a))
+        self.assertEqual(third.team_b_id, loser_of(semi_b))
+
+        # Final first: the bracket must NOT be called complete while the bronze match is pending.
+        final = self._m("winners", 2, 0)
+        resp = self._report(final, 4, 3)
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["bracket_complete"])
+
+        # Now the bronze match decides 3rd and 4th.
+        third.refresh_from_db()
+        resp = self._report(third, 4, 0)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["bracket_complete"])
+
+        rows = {r["team_name"]: r["placement"] for r in head_to_head.standings(self.stage)}
+        final.refresh_from_db()
+        third.refresh_from_db()
+        bronze_winner = third.winner_id
+        bronze_loser = (third.team_b_id if bronze_winner == third.team_a_id else third.team_a_id)
+        names = {tt.tournament_team_id: tt.team.team_name for tt in self.tts}
+        self.assertEqual(rows[names[final.winner_id]], 1)
+        self.assertEqual(rows[names[bronze_winner]], 3)
+        self.assertEqual(rows[names[bronze_loser]], 4)
+        # Nobody shares a placement any more: 1, 2, 3, 4 all distinct.
+        self.assertEqual(sorted(rows.values()), [1, 2, 3, 4])
+
+    def test_eight_teams_quarterfinal_losers_sit_below_fourth(self):
+        self._generate_third(self._ids(6))  # 6 teams -> bracket of 8, two byes
+        # Play everything; the helper walks whatever is playable until nothing is left.
+        for _ in range(30):
+            m = (HeadToHeadMatch.objects
+                 .filter(stage=self.stage, status="pending",
+                         team_a__isnull=False, team_b__isnull=False)
+                 .order_by("bracket", "round_number", "position").first())
+            if not m:
+                break
+            head_to_head.report_result(m, 4, 1)
+
+        rows = head_to_head.standings(self.stage)
+        placements = sorted(r["placement"] for r in rows if r["placement"])
+        # 1, 2, 3, 4 distinct, then the two quarterfinal losers share 5th.
+        self.assertEqual(placements[:4], [1, 2, 3, 4])
+        self.assertEqual(placements[4:], [5, 5])
+
+    def test_payload_carries_the_bronze_match_in_its_own_bucket(self):
+        self._generate_third(self._ids(4))
+        body = self._get_bracket().json()
+        self.assertEqual(len(body["rounds"]["third"]), 1)
+        self.assertEqual(len(body["rounds"]["third"][0]["matches"]), 1)
+        # And it is not mixed into the winners columns: R=2 means exactly 2 winners rounds.
+        self.assertEqual(len(body["rounds"]["winners"]), 2)
+
+    def test_beaten_finalist_is_second_while_the_bronze_match_is_still_pending(self):
+        # Regression (owner saw it live 2026-08-12): between the final and the bronze match, the
+        # two teams waiting to play for 3rd used to occupy slots 2 and 3, which pushed the beaten
+        # finalist down to #4. They can only finish 3rd or 4th, so they belong below it.
+        self._generate_third(self._ids(4))
+        self._report(self._m("winners", 1, 0), 4, 1)
+        self._report(self._m("winners", 1, 1), 4, 2)
+        self._report(self._m("winners", 2, 0), 4, 3)  # final played, bronze still pending
+
+        rows = head_to_head.standings(self.stage)
+        placed = [(r["team_name"], r["placement"]) for r in rows if r["placement"]]
+        self.assertEqual([p for _, p in placed], [1, 2])   # champion and runner-up, nothing else
+        # The two waiting on the bronze match come last, with no placement yet.
+        self.assertIsNone(rows[-1]["placement"])
+        self.assertIsNone(rows[-2]["placement"])
+
+
+class PlayerStatEntryTests(H2HBase):
+    """Per-player lines on a Clash Squad set (owner 2026-08-12: "you should be able to enter for
+    each player also ... then there will be stats for players too like the BR section").
+
+    The per-set rows live on H2HPlayerStat; write_placement_stats then sums them into the one
+    synthetic TournamentPlayerMatchStats row per player, which is what player profiles, the kill
+    tables and afc_rankings actually read.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Two players on each of the first two teams, rostered for this event.
+        self.players = {}
+        for tt in self.tts[:2]:
+            for n in (1, 2):
+                u = User.objects.create(
+                    username=f"p{tt.tournament_team_id}_{n}",
+                    email=f"p{tt.tournament_team_id}_{n}@afc.test",
+                    full_name=f"Player {n}", role="player")
+                TournamentTeamMember.objects.create(
+                    tournament_team=tt, user=u, event=self.event,
+                    status="active", in_game_role="rusher")
+                self.players.setdefault(tt.tournament_team_id, []).append(u)
+
+    def _report_with_players(self, match, score_a, score_b, rows):
+        return self.client.post(
+            f"/events/h2h-matches/{match.h2h_match_id}/result/",
+            data={"score_a": score_a, "score_b": score_b, "player_stats": rows},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+
+    def _rows_for(self, match, kills_by_player):
+        out = []
+        for tid in (match.team_a_id, match.team_b_id):
+            for u in self.players[tid]:
+                out.append({
+                    "player_id": u.user_id, "tournament_team_id": tid,
+                    "kills": kills_by_player.get(u.user_id, 0), "damage": 100, "assists": 1,
+                    "played": True,
+                })
+        return out
+
+    def test_lines_are_stored_and_echoed_back(self):
+        self._generate(self._ids(2))       # T1 vs T2, a single final
+        final = self._m("winners", 1, 0)
+        a1 = self.players[final.team_a_id][0]
+        resp = self._report_with_players(final, 4, 2, self._rows_for(final, {a1.user_id: 7}))
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+        self.assertEqual(H2HPlayerStat.objects.filter(h2h_match=final).count(), 4)
+        stored = H2HPlayerStat.objects.get(h2h_match=final, player=a1)
+        self.assertEqual((stored.kills, stored.damage, stored.assists), (7, 100, 1))
+
+        # The bracket payload carries them, so a correction can pre-fill from what was entered.
+        body = self._get_bracket().json()
+        match_body = body["rounds"]["winners"][0]["matches"][0]
+        self.assertEqual(len(match_body["player_stats"]), 4)
+
+    def test_a_correction_replaces_rather_than_appends(self):
+        self._generate(self._ids(2))
+        final = self._m("winners", 1, 0)
+        a1 = self.players[final.team_a_id][0]
+        self._report_with_players(final, 4, 2, self._rows_for(final, {a1.user_id: 7}))
+        self._report_with_players(final, 4, 1, self._rows_for(final, {a1.user_id: 9}))
+
+        self.assertEqual(H2HPlayerStat.objects.filter(h2h_match=final).count(), 4)
+        self.assertEqual(H2HPlayerStat.objects.get(h2h_match=final, player=a1).kills, 9)
+
+    def test_a_player_from_another_team_is_refused_and_the_score_rolls_back(self):
+        self._generate(self._ids(2))
+        final = self._m("winners", 1, 0)
+        stranger = User.objects.create(
+            username="stranger", email="stranger@afc.test", full_name="S", role="player")
+        rows = [{"player_id": stranger.user_id, "tournament_team_id": final.team_a_id,
+                 "kills": 3, "damage": 0, "assists": 0}]
+        resp = self._report_with_players(final, 4, 2, rows)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("roster", resp.json()["message"].lower())
+
+        # The whole thing was refused: no score written either.
+        final.refresh_from_db()
+        self.assertEqual(final.status, "pending")
+        self.assertIsNone(final.winner_id)
+
+    def test_kills_roll_up_into_the_player_and_team_rows_the_rest_of_afc_reads(self):
+        self._generate(self._ids(2))
+        final = self._m("winners", 1, 0)
+        a1, a2 = self.players[final.team_a_id]
+        self._report_with_players(
+            final, 4, 2, self._rows_for(final, {a1.user_id: 7, a2.user_id: 3}))
+
+        # Bracket complete -> the sub-project D bridge ran.
+        team_stat = TournamentTeamMatchStats.objects.get(
+            match__group__stage=self.stage, tournament_team_id=final.team_a_id)
+        self.assertEqual(team_stat.kills, 10)          # 7 + 3, summed from the set
+        self.assertEqual(team_stat.kill_points, 0)     # CS is scored on placement, not kills
+        self.assertEqual(team_stat.total_points, team_stat.placement_points)
+
+        line = TournamentPlayerMatchStats.objects.get(team_stats=team_stat, player=a1)
+        self.assertEqual(line.kills, 7)
+        self.assertEqual(line.role_at_match, "rusher")
+
+    def test_set_scores_alone_still_work_and_leave_players_on_zero(self):
+        # Unchanged behaviour for an organizer who does not enter player lines.
+        self._generate(self._ids(2))
+        final = self._m("winners", 1, 0)
+        self._report(final, 4, 0)
+        team_stat = TournamentTeamMatchStats.objects.get(
+            match__group__stage=self.stage, tournament_team_id=final.team_a_id)
+        self.assertEqual(team_stat.kills, 0)
+        # Participation credit is still written for every rostered player.
+        self.assertEqual(
+            TournamentPlayerMatchStats.objects.filter(team_stats=team_stat).count(), 2)
+
+    def test_rosters_endpoint_lists_both_sides(self):
+        self._generate(self._ids(2))
+        final = self._m("winners", 1, 0)
+        resp = self.client.get(
+            f"/events/h2h-matches/{final.h2h_match_id}/rosters/",
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        teams = resp.json()["teams"]
+        self.assertEqual(len(teams), 2)
+        self.assertEqual(len(teams[0]["players"]), 2)
+
+    def test_rosters_endpoint_is_not_public(self):
+        self._generate(self._ids(2))
+        final = self._m("winners", 1, 0)
+        self.assertEqual(
+            self.client.get(f"/events/h2h-matches/{final.h2h_match_id}/rosters/").status_code, 400)
