@@ -76,6 +76,25 @@ from .head_to_head_views import (
     generate_h2h_bracket,
     get_h2h_bracket,
     report_h2h_match_result,
+    get_h2h_match_rosters,
+    update_h2h_match,
+)
+# Clash Squad ROOM SETTINGS (owner 2026-08-12): the in-game custom-room configuration an
+# organizer builds on AFC (rounds, map, store, economy, per-round areas, room ID + password)
+# and players read before they play. Logic in cs_room.py, option lists in cs_room_catalogue.py.
+from .cs_room_views import (
+    cs_room_catalogue_view,
+    delete_room_preset,
+    room_presets,
+    room_settings,
+)
+# Player-side Clash Squad result submission (owner 2026-08-12): the head-to-head counterpart of
+# views_team_submissions.py, which only ever covered Battle Royale maps.
+from .h2h_submissions import (
+    approve_h2h_submission,
+    list_h2h_submissions,
+    reject_h2h_submission,
+    submit_h2h_result,
 )
 # Roster Discord verification (owner 2026-06-13): per-player connected/in-server
 # check consumed by the registration SPONSOR step's Discord join_group panel
@@ -258,6 +277,25 @@ urlpatterns = [
     path('stages/<int:stage_id>/bracket/generate/', generate_h2h_bracket, name='generate_h2h_bracket'),  # POST
     path('stages/<int:stage_id>/bracket/', get_h2h_bracket, name='get_h2h_bracket'),                     # GET (public)
     path('h2h-matches/<int:match_id>/result/', report_h2h_match_result, name='report_h2h_match_result'), # POST
+    # Both teams' rosters for the per-player stat lines in the result dialog (owner 2026-08-12).
+    path('h2h-matches/<int:match_id>/rosters/', get_h2h_match_rosters, name='get_h2h_match_rosters'),  # GET
+    # Kick-off time + the live marker for one match (owner 2026-08-12).
+    path('h2h-matches/<int:match_id>/', update_h2h_match, name='update_h2h_match'),  # PATCH
+
+    # ── Player-side Clash Squad result submission (owner 2026-08-12) ──
+    # A team sends its own set result; an organizer approves (which writes it) or rejects it.
+    path('h2h-matches/<int:match_id>/submit-result/', submit_h2h_result, name='submit_h2h_result'),      # POST
+    path('h2h-matches/<int:match_id>/submissions/', list_h2h_submissions, name='list_h2h_submissions'),  # GET
+    path('h2h-submissions/<int:submission_id>/approve/', approve_h2h_submission, name='approve_h2h_submission'),  # POST
+    path('h2h-submissions/<int:submission_id>/reject/', reject_h2h_submission, name='reject_h2h_submission'),     # POST
+
+    # ── Clash Squad room settings (owner 2026-08-12) ──
+    # The catalogue is static reference data and PUBLIC; a scope's settings are a public READ
+    # (room ID/password hidden until published) with writes gated on can_edit_events.
+    path('cs-room-catalogue/', cs_room_catalogue_view, name='cs_room_catalogue'),                # GET (public)
+    path('cs-room-settings/<str:scope>/<int:object_id>/', room_settings, name='cs_room_settings'),  # GET/PUT/DELETE
+    path('cs-room-presets/', room_presets, name='cs_room_presets'),                              # GET/POST
+    path('cs-room-presets/<int:preset_id>/', delete_room_preset, name='delete_cs_room_preset'),  # DELETE
 
     # ── Paid-event registration payments (Stripe) ──
     path('init-registration-payment/', init_registration_payment, name='init_registration_payment'),

@@ -841,9 +841,20 @@ class Stages(models.Model):
         ("cs - double elimination", "Clash Squad - Double Elimination"),
         ("cs - round robin", "Clash Squad - Round Robin"),
         # BR Round-Robin (sub-project B): base groups A/B/C merge into game-day lobbies.
-        # Distinct from the dead "br - roundrobin" (mislabelled "Knockout") entry above - 
+        # Distinct from the dead "br - roundrobin" (mislabelled "Knockout") entry above -
         # that one is left untouched for backward compatibility.
-        ("br - round robin", "Battle Royale - Round Robin")
+        ("br - round robin", "Battle Royale - Round Robin"),
+        # ── The two-question picker (owner backlog item 21, built 2026-08-13) ─────────────────
+        # A stage now answers ONE question here - which game is this? - and the specific mode
+        # (knockout / double elimination / league / round robin) is chosen PER GROUP, on
+        # StageGroups.bracket_format. That is what lets a single Clash Squad stage run
+        # "Group A - Knockout" beside "Group B - League".
+        #
+        # Every value above still works and still means what it always meant: this is a new,
+        # shorter way to say the same thing, not a rename. Anything reading a format should ask
+        # eventformats.is_clash_squad() rather than testing for a literal.
+        ("cs", "Clash Squad"),
+        ("br", "Battle Royale"),
     ]
 
     STAGE_STATUS_CHOICES = [
@@ -949,6 +960,40 @@ class StageGroups(models.Model):
     # would seed nobody and look broken. Unticking one is how an organizer reserves a group, for
     # example a bracket-only or invitational group they intend to fill by hand.
     auto_seed_include = models.BooleanField(default=True)
+
+    # ── Clash Squad: this group IS a bracket (owner backlog item 21, built 2026-08-13) ─────────
+    # A Battle Royale group is a LOBBY: teams drop in together and are scored on placement + kills.
+    # A Clash Squad group is a BRACKET: its teams play each other head to head in the mode named
+    # here, and it has its own winner. One stage can hold several, on different modes -
+    # "Group A - Knockout" beside "Group B - League" - which is the whole point of the change.
+    #
+    # BLANK means an ordinary Battle Royale lobby, which is every group that existed before today,
+    # so nothing has to be backfilled for BR. Set means the group's matches are HeadToHeadMatch
+    # rows carrying group_id, and head_to_head.py treats "a bracket" as the matches of ONE group.
+    #
+    # The mode lives HERE and not on the stage on purpose: putting it on the stage is exactly what
+    # forced one bracket per stage and made the format list eight near-identical lines.
+    BRACKET_FORMAT_CHOICES = [
+        ("single_elim", "Knockout"),
+        ("double_elim", "Double elimination"),
+        ("league", "League"),
+        ("round_robin_h2h", "Round robin"),
+    ]
+    bracket_format = models.CharField(
+        max_length=24, choices=BRACKET_FORMAT_CHOICES, blank=True, default="")
+    # The optional bronze match, per group: this group decides its own 3rd and 4th rather than
+    # sharing 3rd between two beaten semi-finalists. Single elimination only, like the stage-level
+    # flag it replaces.
+    bracket_third_place = models.BooleanField(default=False)
+
+    # Is this group a BOOKKEEPING row rather than a lobby anyone plays in (owner 2026-08-12)?
+    # head_to_head.write_placement_stats has to hang its synthetic result Match off a StageGroups,
+    # because that is what the leaderboard and ranking pipelines read, so a Clash Squad bracket
+    # stage - which has no groups by design - gets a "Bracket Results" group created for it. That
+    # row then showed up on the admin Stages tab as a normal group card, complete with "Add Teams
+    # to Group" and "View Results", which is nonsense for a bracket. Marked here so every group
+    # surface can filter it out; nothing about how it stores results changes.
+    is_synthetic = models.BooleanField(default=False)
 
     group_order = models.PositiveIntegerField(default=0)
 
@@ -2054,6 +2099,14 @@ class HeadToHeadMatch(models.Model):
                                           # AND the grand final (round = winners rounds + 1)
         ("losers", "Losers bracket"),     # double elimination lower bracket
         ("league", "League / round robin"),  # every-pair-once formats; no advancement links
+        # The optional bronze match in a single-elimination bracket (owner 2026-08-12: an event
+        # that pays 3rd differently from 4th needs them separated, and sharing a placement between
+        # the two semifinal losers cannot do that). Fed by the loser links of the two semifinals;
+        # its winner is 3rd and its loser 4th. Deliberately NOT "winners", so the
+        # "the final is the winners match with no next_match" rule that decides when a bracket is
+        # complete keeps pointing at the real final. Value kept short ("third", not "third_place")
+        # so the existing max_length=10 column needs no schema change.
+        ("third", "Third-place match"),
     ]
     STATUS_CHOICES = [
         ("pending", "Pending"),
@@ -2064,6 +2117,18 @@ class HeadToHeadMatch(models.Model):
 
     h2h_match_id = models.AutoField(primary_key=True)
     stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="h2h_matches")
+    # ── which BRACKET this match belongs to (owner backlog item 21, built 2026-08-13) ──────────
+    # A Clash Squad stage can now hold several independent brackets, one per StageGroups row with
+    # a bracket_format. "A bracket" therefore means the matches of one GROUP, not of one stage:
+    # generation, standings, completion and the placement bridge all filter on this column.
+    #
+    # NULL means the legacy shape - a single bracket owned by the whole stage - which is what every
+    # row created before today looks like until the data migration moves it. Keeping `stage`
+    # alongside is deliberate denormalisation: "everything in this stage" stays a one-column filter
+    # and the hottest read (the public bracket page) needs no join.
+    group = models.ForeignKey(
+        StageGroups, null=True, blank=True, on_delete=models.CASCADE,
+        related_name="h2h_matches")
     # 1 = first round of its bracket side. In double elimination the grand final lives in
     # bracket="winners" at round (winners rounds + 1) - convention documented in head_to_head.py.
     round_number = models.PositiveIntegerField(default=1)
@@ -2096,8 +2161,26 @@ class HeadToHeadMatch(models.Model):
     loser_next_match_slot = models.CharField(max_length=1, choices=SLOT_CHOICES, null=True, blank=True)
 
     # Optional schedule the admin can fill in later (parallels StageGroups.playing_date/time).
+    # Written by head_to_head_views.update_h2h_match (owner 2026-08-12: the columns existed but
+    # nothing ever set or showed them, so a CS match had no kick-off time anywhere on the site).
+    # Stored as the organizer's chosen wall-clock date/time for the event, and rendered in the
+    # VIEWER's timezone by the FE LocalTime component, like every other time on AFC.
     scheduled_date = models.DateField(null=True, blank=True)
     scheduled_time = models.TimeField(null=True, blank=True)
+
+    # ── how the result came about (owner 2026-08-12) ──
+    # A set that nobody turned up for is not the same as a 7-0 thrashing, and paying prizes or
+    # judging a no-show record needs the difference recorded rather than inferred from a suspicious
+    # scoreline. "normal" is every ordinary played set, so existing rows keep their meaning.
+    RESULT_TYPE_CHOICES = [
+        ("normal", "Played"),
+        ("forfeit", "Forfeit"),        # a team gave the set up (late, short-handed, withdrew)
+        ("walkover", "Walkover"),      # the opponent never showed at all
+        ("dq", "Disqualification"),    # an admin removed a team for breaking a rule
+    ]
+    result_type = models.CharField(max_length=10, choices=RESULT_TYPE_CHOICES, default="normal")
+    # The one-line reason shown beside a non-normal result ("opponent did not join by 20:15").
+    result_note = models.CharField(max_length=255, blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -2107,6 +2190,9 @@ class HeadToHeadMatch(models.Model):
         ordering = ["round_number", "position", "h2h_match_id"]
         indexes = [
             models.Index(fields=["stage", "bracket", "round_number"]),
+            # Reading ONE group's bracket is now the common case, so it gets its own index
+            # rather than filtering a stage-wide scan (owner 2026-08-13).
+            models.Index(fields=["group", "bracket", "round_number"], name="idx_h2h_group_bracket"),
         ]
 
     def __str__(self):
@@ -2345,3 +2431,334 @@ class TeamMapResultSubmission(models.Model):
     def __str__(self):
         return (f"Submission {self.submission_id} | match {self.match_id} "
                 f"| team {self.tournament_team_id} | {self.status}")
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# CLASH-SQUAD PER-PLAYER STATS
+#
+# WHY THIS EXISTS (owner 2026-08-12: "when entering results you should be able to enter for each
+# player also ... then there will be stats for players too like the BR section"):
+# a HeadToHeadMatch only records the SET score (round wins per team). Battle Royale results carry
+# a per-player row each (kills/damage/assists via TournamentPlayerMatchStats), which is what feeds
+# player profiles, the kill leaderboards and the player ranking ladders. Clash Squad had nothing
+# equivalent, so a CS player's kills were always zero no matter how they played.
+#
+# WHY NOT REUSE TournamentPlayerMatchStats DIRECTLY: that model hangs off TournamentTeamMatchStats,
+# which hangs off a BR Match. A CS stage has ONE synthetic Match for the whole bracket (see
+# head_to_head.write_placement_stats), so it cannot express "per set". This model is the per-set
+# grain; head_to_head.write_placement_stats then SUMS these rows per player into that single
+# synthetic TournamentPlayerMatchStats row, which is how the numbers reach the existing player
+# profile / kill-table / afc_rankings pipelines with no changes on their side.
+#
+# HOW IT CONNECTS
+#   - written by afc_tournament_and_scrims/head_to_head.report_result (the optional player_stats
+#     part of the body), served back by head_to_head_views._match_payload;
+#   - the FE surface is the "Enter result" dialog on components/h2h-bracket.tsx, which lists both
+#     rosters under the two score boxes;
+#   - rosters come from TournamentTeamMember, the same frozen per-event roster BR entry uses, so
+#     the in-game role stamped on the aggregated row stays consistent with BR.
+# ════════════════════════════════════════════════════════════════════════════════════════════
+class H2HPlayerStat(models.Model):
+    """One player's line in one Clash Squad set.
+
+    Deliberately narrow: kills, damage and assists are what an organizer can read off the CS
+    end-of-set screen. The richer fields on TournamentPlayerMatchStats (deaths, headshots,
+    survival) come from debugger-log ingest, which does not exist for Clash Squad, so they are
+    not mirrored here rather than being stored as misleading zeroes.
+    """
+    h2h_player_stat_id = models.AutoField(primary_key=True)
+    h2h_match = models.ForeignKey(
+        HeadToHeadMatch, on_delete=models.CASCADE, related_name="player_stats")
+    # Which side of the set the player was on. Kept explicitly (rather than inferred from the
+    # roster) so a correction that swaps the teams cannot silently reattribute the line.
+    tournament_team = models.ForeignKey(
+        TournamentTeam, on_delete=models.CASCADE, related_name="h2h_player_stats")
+    player = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="h2h_player_stats")
+
+    kills = models.PositiveIntegerField(default=0)
+    damage = models.PositiveIntegerField(default=0)
+    assists = models.PositiveIntegerField(default=0)
+    # False marks a rostered player who did not play this set (a substitute). Their row still
+    # exists so the dialog can show the whole roster, but participation-based credit skips them.
+    played = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        # One line per player per set. A re-report overwrites rather than appends.
+        unique_together = ("h2h_match", "player")
+        indexes = [
+            models.Index(fields=["h2h_match"], name="idx_h2hps_match"),
+            models.Index(fields=["tournament_team"], name="idx_h2hps_team"),
+        ]
+
+    def __str__(self):
+        return (f"H2H stat m{self.h2h_match_id} player {self.player_id} "
+                f"| {self.kills}k {self.damage}dmg {self.assists}a")
+
+
+class H2HResultSubmission(models.Model):
+    """A team's own proposal for a Clash Squad set result, waiting for an organizer to approve it.
+
+    WHY IT EXISTS (owner 2026-08-12): TeamMapResultSubmission gave Battle Royale teams a way to
+    send in their own results, and Clash Squad had no equivalent - it is keyed to a BR `Match` with
+    a placement and kills, which a head-to-head set does not have. So on a CS event the organizer
+    was still the only person who could enter anything, and players had no way to see their own
+    result land.
+
+    A SUBMISSION IS NOT A RESULT. Nothing here is read by the bracket, the standings or the
+    leaderboard. APPROVING one is what calls head_to_head.report_result, the same function the
+    organizer's own "Enter result" uses, so an approved submission advances the bracket byte for
+    byte the way a manually typed one would.
+
+    WHY BOTH SIDES MAY SUBMIT: unlike a BR lobby, a set has exactly two teams and one scoreline,
+    and each of them knows it first-hand. Two submissions that AGREE are the strongest evidence an
+    organizer can get, so the queue shows agreement explicitly and a disagreement is visible
+    rather than being silently resolved by whoever typed first. A team still submits only its OWN
+    players' stat lines.
+
+    STATE MACHINE (mirrors TeamMapResultSubmission on purpose - one mental model for both)
+        pending ──approve──> approved       the result is written and the bracket advances
+                └─reject───> rejected       with a reason the team can read
+        pending ──(the same team submits again)──> superseded
+
+    Written and read by afc_tournament_and_scrims/h2h_submissions.py. Consumed by the player-side
+    "Submit our result" control on the bracket card, and by the organizer's review queue on the
+    same card.
+    """
+    STATUS_CHOICES = [
+        ("pending", "Pending review"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+        ("superseded", "Superseded by a later submission"),
+    ]
+
+    submission_id = models.AutoField(primary_key=True)
+    h2h_match = models.ForeignKey(
+        HeadToHeadMatch, on_delete=models.CASCADE, related_name="result_submissions")
+    # The submitting side. Always one of the two teams in the match - checked at submit time, and
+    # stored so a later roster change cannot make the submission ambiguous.
+    tournament_team = models.ForeignKey(
+        TournamentTeam, on_delete=models.CASCADE, related_name="h2h_result_submissions")
+
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="h2h_result_submissions")
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    # {"score_a": int, "score_b": int, "players": [{"player_id", "kills", "damage", "assists"}]}
+    # Scores are always in the match's OWN a/b order, never "us/them", so two submissions can be
+    # compared without knowing which side sent which. Stored exactly as sent and never edited, so
+    # the record of what the team actually claimed survives whatever the organizer does next.
+    submitted_payload = models.JSONField()
+    # Anything the team wants the organizer to know ("we have a screenshot in Discord").
+    note = models.CharField(max_length=255, blank=True, default="")
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="h2h_result_reviews")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    # Why it was rejected, or what the organizer changed before approving. Read by the team.
+    review_note = models.CharField(max_length=255, blank=True, default="")
+    # What was actually written on approval, when the organizer corrected the proposal first.
+    # Keeping BOTH payloads is what lets anyone see that a correction happened rather than having
+    # to trust that it did not.
+    approved_payload = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-submitted_at"]
+        indexes = [
+            models.Index(fields=["h2h_match", "status"], name="idx_h2hsub_match_status"),
+        ]
+
+    def __str__(self):
+        return (f"H2H submission {self.submission_id} | match {self.h2h_match_id} "
+                f"| team {self.tournament_team_id} | {self.status}")
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════
+# CLASH-SQUAD ROOM SETTINGS  (owner 2026-08-12, spec: WEBSITE/tasks/cs-room-settings-spec.md)
+#
+# WHAT THIS IS: the in-game custom-room configuration for a Clash Squad match, built on AFC by
+# the organizer instead of being agreed verbally in the lobby. Rounds, map, economy, the store,
+# the long list of yes/no toggles, the per-round areas - everything the Free Fire room screen
+# offers - plus the room ID and password players need to actually get in.
+#
+# WHY IT EXISTS: a CS stage carried NO room configuration at all. Teams learned the rules in the
+# lobby or from a Discord message, and any dispute ("we agreed headshot off") had no record on
+# the platform. The owner asked for the settings to live where the event lives and to be
+# readable by players before they play.
+#
+# TWO MODELS
+#   CSRoomConfig  - one configuration ATTACHED to exactly one scope (event / stage / group /
+#                   match). Resolution for a given match is match -> group -> stage -> event,
+#                   so "apply to every match in this stage" is a stage-scoped row and an
+#                   exception on the grand final is a match-scoped one. No copy-per-match.
+#   CSRoomPreset  - a saved, reusable configuration: AFC-global (the six Free Fire preset modes,
+#                   seeded read-only) or owned by one organization (their house rules).
+#                   Applying a preset COPIES its values into a config; it does NOT link, so
+#                   editing a preset later cannot silently rewrite an event that already ran.
+#
+# STORAGE SHAPE: named columns for what we filter, sort or show prominently (rounds, map,
+# economy ...) plus JSON for the long tail (the ~110-item store, the per-round economy and the
+# per-round areas). Garena changes that tail every patch; a JSON document avoids a migration per
+# gun while the named columns keep the common reads cheap and legible. The option lists
+# themselves live in cs_room_catalogue.py, never here.
+#
+# HOW IT CONNECTS
+#   - option lists + defaults: cs_room_catalogue.py
+#   - resolver, validation, preset apply, player summary: cs_room.py
+#   - endpoints: cs_room_views.py (mounted under events/, see urls.py)
+#   - FE: lib/csRoom.ts -> components/cs-room-settings.tsx (the admin editor, reachable from the
+#     bracket card and from a single match) and components/cs-room-card.tsx (what players read on
+#     the public event page and under a bracket match).
+# ════════════════════════════════════════════════════════════════════════════════════════════
+class CSRoomSettingsBase(models.Model):
+    """The settings themselves, shared by a scoped config and a reusable preset.
+
+    Abstract on purpose: a preset IS a configuration, just one that is not attached to anything
+    yet, so both surfaces edit the identical field set and one serializer covers both. The
+    alternative (a preset holding an opaque JSON blob) would have drifted from the config shape
+    the first time a column was added.
+    """
+    # ── core (named columns: shown in the summary line, filtered on, sorted by) ──
+    rounds = models.PositiveSmallIntegerField(default=7)          # cs_room_catalogue.ROUND_CHOICES
+    economy = models.CharField(max_length=20, default="500")      # ECONOMY_CHOICES value
+    special_mode = models.CharField(max_length=32, default="no")  # SPECIAL_MODE_CHOICES value
+    special_airdrop = models.CharField(max_length=32, default="no")
+    hp = models.PositiveSmallIntegerField(default=200)
+    ep = models.PositiveSmallIntegerField(default=0)
+    movement_speed = models.PositiveSmallIntegerField(default=100)   # percent
+    jump_height = models.PositiveSmallIntegerField(default=100)      # percent
+    environment = models.CharField(max_length=8, default="day")      # day | night
+    map_name = models.CharField(max_length=32, default="nexterra")   # MAP_CHOICES value
+
+    # Which built-in / organization preset this was last built from, for the "Esports Mode" line
+    # in the UI. Purely a label: the values above are already copied in, so clearing it changes
+    # nothing about how the room plays.
+    preset_key = models.CharField(max_length=40, blank=True, default="")
+
+    # ── the long tail (JSON: the catalogue changes every patch) ──
+    # {toggle_key: bool} for every key in cs_room_catalogue.TOGGLES.
+    toggles = models.JSONField(default=dict, blank=True)
+    # {item_code: {"enabled": bool, "price": int}} for every weapon/item in the store.
+    store = models.JSONField(default=dict, blank=True)
+    # {"1": 500, "2": 900, ...} starting cash per round. Keys are STRINGS: JSON has no integer
+    # keys, and MySQL hands them back as strings anyway, so we store what we will read.
+    round_economy = models.JSONField(default=dict, blank=True)
+    # {event_key: amount} for the winning-round / elimination / losing-streak bonuses.
+    economy_events = models.JSONField(default=dict, blank=True)
+    # {"1": "deca_square", ...} which area of the map each round is played in.
+    areas = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        abstract = True
+
+
+class CSRoomConfig(CSRoomSettingsBase):
+    """One room configuration attached to exactly one scope.
+
+    EXACTLY ONE of event / stage / group / h2h_match is set - enforced by the endpoint and by
+    cs_room.save_config - and each scope is unique (OneToOne), so "the config for this stage" is
+    always one row that gets updated, never a pile of history.
+
+    Read it through cs_room.resolve_for_match / resolve_for_stage, never directly, when the
+    question is "what settings apply here": a match usually has no row of its own and inherits.
+    """
+    cs_room_config_id = models.AutoField(primary_key=True)
+
+    # ── scope (exactly one) ──
+    event = models.OneToOneField(
+        Event, null=True, blank=True, on_delete=models.CASCADE, related_name="cs_room_config")
+    stage = models.OneToOneField(
+        Stages, null=True, blank=True, on_delete=models.CASCADE, related_name="cs_room_config")
+    # Group scope is for Battle Royale stages, which do have groups. A Clash Squad bracket has
+    # none, so nothing writes this today - it exists because the owner's decision was "Clash Squad
+    # first, widen to Battle Royale later" and adding the column now costs nothing.
+    group = models.OneToOneField(
+        StageGroups, null=True, blank=True, on_delete=models.CASCADE,
+        related_name="cs_room_config")
+    h2h_match = models.OneToOneField(
+        HeadToHeadMatch, null=True, blank=True, on_delete=models.CASCADE,
+        related_name="cs_room_config")
+
+    # ── how to get in (the part players actually need at match time) ──
+    # Free Fire room IDs are numeric but stored as text: they are an identifier, never arithmetic,
+    # and any leading zero must survive.
+    room_id = models.CharField(max_length=40, blank=True, default="")
+    room_password = models.CharField(max_length=40, blank=True, default="")
+    # Anything the organizer wants players to read that is not a setting ("join 10 minutes early").
+    notes = models.TextField(blank=True, default="")
+    # Off until the organizer is ready: an unpublished config is visible to managers only, so a
+    # room ID is not sitting on a public page hours early for anyone to walk into.
+    is_published = models.BooleanField(default=False)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["stage"], name="idx_csroom_stage"),
+            models.Index(fields=["h2h_match"], name="idx_csroom_match"),
+        ]
+
+    @property
+    def scope(self):
+        """'match' | 'group' | 'stage' | 'event' - narrowest first, matching resolution order."""
+        if self.h2h_match_id:
+            return "match"
+        if self.group_id:
+            return "group"
+        if self.stage_id:
+            return "stage"
+        return "event"
+
+    @property
+    def scope_object_id(self):
+        return self.h2h_match_id or self.group_id or self.stage_id or self.event_id
+
+    def __str__(self):
+        return f"CS room config ({self.scope} #{self.scope_object_id}) {self.rounds} rounds"
+
+
+class CSRoomPreset(CSRoomSettingsBase):
+    """A saved room configuration an organizer can apply to any event.
+
+    organization NULL = an AFC-global preset (the six Free Fire modes, seeded by
+    `manage.py seed_cs_room_presets`); set = that organization's house rules, visible only to its
+    members. is_builtin marks the seeded ones so the UI can stop anyone editing or deleting them.
+
+    Applying COPIES the values into a CSRoomConfig (cs_room.apply_preset). No foreign key points
+    from a config back to a preset, on purpose: an event that has already been played must not
+    change because someone edited a preset afterwards.
+    """
+    cs_room_preset_id = models.AutoField(primary_key=True)
+    name = models.CharField(max_length=80)
+    description = models.CharField(max_length=255, blank=True, default="")
+    organization = models.ForeignKey(
+        "afc_organizers.Organization", null=True, blank=True, on_delete=models.CASCADE,
+        related_name="cs_room_presets")
+    is_builtin = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_builtin", "name"]
+        # One name per owner. Two organizations may both call a preset "Finals"; one organization
+        # may not have two. A NULL organization is the AFC-global set, which MySQL treats as
+        # distinct per row, so the built-ins are additionally guarded by an idempotent seed.
+        unique_together = ("organization", "name")
+
+    def __str__(self):
+        owner = self.organization.name if self.organization_id else "AFC"
+        return f"CS preset '{self.name}' ({owner})"
