@@ -21,6 +21,9 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from .models import Event, EventOverlay
+# One answer to "is this stage Clash Squad?", across every generation of stage_format values.
+# The bracket scene below picks the stage to render with it. See stage_formats.py.
+from .stage_formats import is_clash_squad
 from .views import _broadcast_gate, _org_hidden
 
 VALID_KINDS = {k for k, _ in EventOverlay.KINDS}
@@ -243,20 +246,39 @@ def _h2h_payload(event, config, request):
 
     # ── Clash Squad bracket mode: render the stage bracket, not a stat comparison. ──
     if mode == "bracket":
-        from .models import Stages
+        from .models import StageGroups, Stages
         from .head_to_head_views import _bracket_payload
+        from . import head_to_head
         stage = None
         sid = config.get("stage_id")
         if sid not in (None, ""):
             stage = Stages.objects.filter(event=event, stage_id=sid).first()
         if stage is None:
             # No explicit / stale stage_id: fall back to the event's first Clash Squad stage.
-            stage = (Stages.objects.filter(event=event, stage_format__startswith="cs -")
-                     .order_by("stage_order", "stage_id").first())
+            # Asked through is_clash_squad so BOTH spellings match: a stage created since
+            # 2026-08-13 carries plain "cs" (owner item 21), everything older carries
+            # "cs - <mode>". The old query tested `startswith("cs -")` and skipped the new one.
+            stage = next(
+                (s for s in Stages.objects.filter(event=event)
+                                          .order_by("stage_order", "stage_id")
+                 if is_clash_squad(s.stage_format)),
+                None,
+            )
         return {
             "mode": "bracket",
             "competitors": [],
-            "bracket": _bracket_payload(stage) if stage is not None else None,
+            # A Clash Squad stage can be SPLIT into groups, each running its own bracket (owner
+            # item 21, 2026-08-13), and a bracket is now the matches of a group. An overlay shows
+            # ONE bracket, so it takes the stage's single one: resolve_bracket_group_id says which
+            # that is, keeps a pre-item-21 stage (matches with no group) on its old behaviour, and
+            # returns None for a stage split into several, where "the bracket" is genuinely
+            # ambiguous. Without this the payload asks for the matches that belong to NO group and
+            # every Clash Squad bracket overlay renders empty.
+            "bracket": _bracket_payload(
+                stage,
+                StageGroups.objects.filter(
+                    group_id=head_to_head.resolve_bracket_group_id(stage)).first(),
+            ) if stage is not None else None,
             "design": _design_look(config.get("design_id"), request),
         }
 
