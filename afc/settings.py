@@ -698,6 +698,27 @@ WHATSAPP_ORDER_SHIPPED_TEMPLATE = os.getenv("WHATSAPP_ORDER_SHIPPED_TEMPLATE", "
 WHATSAPP_ORDER_DELIVERED_TEMPLATE = os.getenv("WHATSAPP_ORDER_DELIVERED_TEMPLATE", "")
 WHATSAPP_ORDER_TEMPLATE_LANG = os.getenv("WHATSAPP_ORDER_TEMPLATE_LANG", "en")
 
+# ── ACCOUNT RECOVERY CODE (owner 2026-08-08) ───────────────────────────────────────────────────
+# WHATSAPP_LOGIN_CODE_TEMPLATE -> the six-digit code sent to the WhatsApp number saved on an
+#   account, so somebody locked out of their email inbox can prove the account is theirs and move
+#   it to an address they can read. ONE variable: {{1}} = the code.
+#   Sent by afc_auth.two_factor.WhatsAppCodeMethod, driven by afc_auth/views_recovery.py.
+# WHATSAPP_LOGIN_CODE_LANG -> the language it was APPROVED under. Meta treats "en" and "en_US" as
+#   two different templates and rejects a mismatch with error 132001, so this must match WhatsApp
+#   Manager exactly. Defaults to "en", matching the broadcast and order templates (the room
+#   templates are the odd ones out at "en_US"). A recipient's own language is used INSTEAD of this
+#   only when the synced registry confirms an approved template for it: see
+#   two_factor._template_language.
+#
+# BLANK MEANS DO NOT SEND, the same off switch the order and 3D-room templates use. The default is
+# BLANK rather than a real name on purpose: a name that is not approved on the live WABA produces a
+# send that fails with a Meta error nobody sees, and the recovery screen would tell a locked-out
+# person to check a phone nothing was sent to. Create and approve the template first
+# (`python manage.py create_whatsapp_templates --only login_code --apply`, then `--check` until it
+# reads APPROVED), then set this name in the server .env.
+WHATSAPP_LOGIN_CODE_TEMPLATE = os.getenv("WHATSAPP_LOGIN_CODE_TEMPLATE", "")
+WHATSAPP_LOGIN_CODE_LANG = os.getenv("WHATSAPP_LOGIN_CODE_LANG", "en")
+
 # Shop checkout currency. Both shop payment paths (Paystack + Stripe, see
 # afc_shop/stripe_checkout.py) charge in this currency, and Stripe Connect vendor
 # payouts (afc_shop/connect.py) transfer in it too. Defaults to NGN to match the

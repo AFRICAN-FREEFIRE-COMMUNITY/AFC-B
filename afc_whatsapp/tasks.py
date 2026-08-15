@@ -152,6 +152,7 @@ def send_whatsapp_message(
     match_id=None,
     context="",
     message_id=None,
+    redact_variables=False,
 ):
     """Send exactly ONE WhatsApp message and record what happened.
 
@@ -174,6 +175,19 @@ def send_whatsapp_message(
         message_id:      set by the retry path so a retried send updates the SAME
                          WhatsAppMessage row instead of creating a new one. Callers
                          leave it None.
+        redact_variables: do NOT record the body values on the WhatsAppMessage row.
+                         For sends whose variables are a SECRET, which today means
+                         the account-recovery code (afc_auth.two_factor.
+                         WhatsAppCodeMethod). The log normally keeps the values so a
+                         message can be reconstructed exactly as the recipient saw
+                         it, and that is right for a room ID or an order number and
+                         WRONG for a one-time code: it would leave a live code sitting
+                         in plaintext where any database dump, read replica or Django
+                         admin session could read it, which is the one thing
+                         afc_auth/two_factor.py takes care never to do. The row, the
+                         wamid, the status and the delivery receipts are all still
+                         recorded, so a support question ("did it go out?") is still
+                         answerable; only the digits are gone.
 
     Returns the WhatsAppMessage id, so a caller running inline (WHATSAPP_SYNC) can
     read the outcome straight off the row.
@@ -193,7 +207,10 @@ def send_whatsapp_message(
             direction="outbound",
             template_name=template_name or "",
             template_language=language or "",
-            variables={"body": list(body_params or []),
+            # "redacted" rather than an empty list, so a reader of the log can tell a
+            # deliberately withheld value from a template that simply had none.
+            variables={"body": (["redacted"] * len(body_params or [])
+                                if redact_variables else list(body_params or [])),
                        "buttons": list(button_payloads or []),
                        # Recorded so a delivery row shows WHERE the button sent the player,
                        # which is otherwise invisible: the base URL lives on Meta's side.
@@ -270,6 +287,7 @@ def send_whatsapp_message(
             "match_id": match_id,
             "context": context,
             "message_id": message.id,   # same row on every attempt
+            "redact_variables": redact_variables,
         })
 
     logger.warning(
@@ -318,7 +336,7 @@ def _resolve(user, event, match):
 
 def queue_template(to, template_name, language, *, body_params=None, button_payloads=None,
                    url_button_suffix=None, user=None, country=None, event=None, match=None,
-                   context=""):
+                   context="", redact_variables=False):
     """Queue an approved TEMPLATE send. The entry point for anything AFC initiates.
 
     Args:
@@ -334,6 +352,9 @@ def queue_template(to, template_name, language, *, body_params=None, button_payl
         country:         override for that country (ISO-2 code or name).
         event/match:     the Event/Match (or ids) this is about, for the log.
         context:         short trigger label, e.g. "room_details".
+        redact_variables: keep the body values OUT of the message log. Pass True when
+                         they are a secret (the account-recovery code). See the task's
+                         docstring for why the log is not the right place for one.
 
     Returns the WhatsAppMessage id when the send ran INLINE, True when a worker took it, and
     None when nothing was sent (the recipient opted out, or the dispatch itself failed). Callers
@@ -364,6 +385,7 @@ def queue_template(to, template_name, language, *, body_params=None, button_payl
         "event_id": event_id,
         "match_id": match_id,
         "context": context,
+        "redact_variables": redact_variables,
     })
 
 

@@ -132,6 +132,38 @@ def _templates():
             ],
         },
         {
+            # ACCOUNT RECOVERY CODE (owner 2026-08-08). Sent to the WhatsApp number already on an
+            # account so somebody locked out of their email can prove the account is theirs. Read
+            # by afc_auth.two_factor.WhatsAppCodeMethod, driven by afc_auth/views_recovery.py.
+            "setting": "WHATSAPP_LOGIN_CODE_TEMPLATE",
+            "lang_setting": "WHATSAPP_LOGIN_CODE_LANG",
+            # ── READ THIS BEFORE SUBMITTING ──────────────────────────────────────────────────
+            # Meta runs a SEPARATE "AUTHENTICATION" category for one-time codes, with its own
+            # fixed copy and a required OTP button component that afc_whatsapp/client.py does not
+            # build. It has also been seen to re-categorise a UTILITY template that reads like a
+            # code: the room_details entry above carries a comment about exactly that, and its
+            # wording was tuned to stay in UTILITY.
+            #
+            # So this is submitted as UTILITY with wording that is about ACCOUNT ACCESS rather
+            # than a bare "here is your code", and the outcome is NOT guaranteed. After
+            # `--apply`, run `--check`: if Meta rejects it or moves it to AUTHENTICATION, the
+            # template has to be created in WhatsApp Manager as an authentication template AND
+            # client.send_template needs a copy_code/one-tap button component before it can be
+            # sent. That is a known, deliberately un-guessed gap, not an oversight.
+            "category": "UTILITY",
+            # "Hi" first: Meta rejects a body that starts or ends with a variable (learned on the
+            # 3D room template, 2026-08-06).
+            "body": (
+                "Hi, someone asked to get back into the AFC account linked to this WhatsApp "
+                "number.\n\n"
+                "Your confirmation code is {{1}}\n\n"
+                "Type it on the AFC recovery page to set a new email address for your account. "
+                "It works once and runs out in 10 minutes.\n\n"
+                "If this was not you, ignore this message and nothing changes."
+            ),
+            "example": ["481902"],
+        },
+        {
             "setting": "WHATSAPP_BROADCAST_TEMPLATE",
             "lang_setting": "WHATSAPP_BROADCAST_TEMPLATE_LANG",
             # MARKETING, and billed accordingly: about $0.0516 per message to a Nigerian number
