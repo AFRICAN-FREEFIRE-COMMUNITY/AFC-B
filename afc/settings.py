@@ -633,7 +633,12 @@ WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
 # with the wrong one fails. The 3D language falls back to the room-details language, since the two
 # are approved together in practice.
 WHATSAPP_ROOM_TEMPLATE = os.getenv("WHATSAPP_ROOM_TEMPLATE", "room_details")
-WHATSAPP_ROOM_TEMPLATE_LANG = os.getenv("WHATSAPP_ROOM_TEMPLATE_LANG", "en_US")
+# "en", NOT "en_US": WhatsApp Manager shows room_details approved under English (en), and only
+# hello_world (Meta's own sample) is English (US). The default said en_US, which no approved
+# template answers to, so any environment that did not override this sent a template Meta rejects
+# with 132001. Production sets the variable and has been fine, which is exactly why the wrong
+# default survived: it only bites a fresh box, or the day someone drops the variable.
+WHATSAPP_ROOM_TEMPLATE_LANG = os.getenv("WHATSAPP_ROOM_TEMPLATE_LANG", "en")
 WHATSAPP_ROOM_3D_TEMPLATE = os.getenv("WHATSAPP_ROOM_3D_TEMPLATE", "")
 WHATSAPP_ROOM_3D_TEMPLATE_LANG = os.getenv(
     "WHATSAPP_ROOM_3D_TEMPLATE_LANG", WHATSAPP_ROOM_TEMPLATE_LANG)
