@@ -122,6 +122,29 @@ ALLOWED_EMAIL_DOMAINS = {
 }
 
 
+def _is_invited_address(email: str) -> bool:
+    """Has AFC itself asked this address to join? (owner 2026-08-14)
+
+    The domain allow-list below exists to stop junk signups from throwaway providers, and it does
+    that job. But a sponsor's contact is normally at their own company domain, so inviting them
+    was impossible in both directions: the invitation mail was refused before it was sent, and
+    they could not have created the account it invited them to.
+
+    A PENDING SponsorMemberInvite is AFC's own record that a sponsor-admin deliberately asked for
+    this person, which is a stronger signal than any domain list, so it lifts the restriction for
+    that one address. Nothing else changes: an uninvited signup on an unusual domain is still
+    refused. Lazy import keeps afc_auth free of an import-time dependency on afc_sponsors.
+    """
+    try:
+        from django.utils import timezone as _tz
+        from afc_sponsors.models import SponsorMemberInvite
+        return SponsorMemberInvite.objects.filter(
+            email__iexact=email, status="pending", expires_at__gt=_tz.now(),
+        ).exists()
+    except Exception:  # noqa: BLE001 - a lookup problem must never widen access
+        return False
+
+
 def is_valid_email(email: str) -> tuple[bool, str]:
     if not email:
         return False, "Email is required."
@@ -135,7 +158,7 @@ def is_valid_email(email: str) -> tuple[bool, str]:
     domain = email.split("@")[-1].lower()
 
     # Check if domain is allowed
-    if domain not in ALLOWED_EMAIL_DOMAINS:
+    if domain not in ALLOWED_EMAIL_DOMAINS and not _is_invited_address(email):
         return False, "Please use a valid email provider (e.g., Gmail, Yahoo)."
 
     return True, "Valid email."
@@ -1893,6 +1916,13 @@ def verify_code(request):
 
     # Remove the verification code after successful verification
     cache.delete(f"verification_code_{user.user_id}")
+
+    # A sponsor's contact can be invited by EMAIL before they have an AFC account (owner
+    # 2026-08-14). Now that this address is proven, turn any pending invitation for it into a real
+    # SponsorMember, so they land on their sponsor dashboard on the first login instead of being
+    # told to ask an admin. Best-effort inside: it never raises into a signup.
+    from afc_sponsors.invites import claim_invites_for_user
+    claim_invites_for_user(user)
 
     # Welcome / account-created email. Best-effort: a mail failure must never block the
     # account from being verified, so we swallow any send error.

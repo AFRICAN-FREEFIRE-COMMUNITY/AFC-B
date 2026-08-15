@@ -49,7 +49,15 @@ from afc_auth.models import Notifications
 from afc_auth.views import send_email, _email_shell
 
 from .models import Sponsor, EventSponsorship, SponsorEngagementSubmission
-from .views import _auth_user, _is_sponsor_admin, _membership, _page_params
+from .views import (
+    _auth_user,
+    _is_sponsor_admin,
+    _membership,
+    _page_params,
+    # Who may read + decide a sponsorship's submissions: sponsor-admin, the sponsor's own
+    # members, or the organizer who runs the event (owner 2026-08-14). See views.py.
+    can_act_on_sponsorship,
+)
 
 
 # ── engagement schema (spec section 2) ────────────────────────────────────────────────────────
@@ -335,6 +343,33 @@ def _sync_registration_state(submission):
 
 
 # ── P3: the portal's per-engagement submission tables ─────────────────────────────────────────
+def _submission_row(s, engagements, context=None):
+    """One submission as the approval tables read it.
+
+    Shared by the sponsor portal's per-event table and the cross-event queue (owner 2026-08-14)
+    so the two can never describe the same row differently. `context` adds the event + sponsor
+    names, which only the cross-event queue needs; the per-event table already knows them.
+    Privacy rule is unchanged: username and the submitted value, never an account email or phone.
+    """
+    engagement = engagements[s.engagement_index] if s.engagement_index < len(engagements) else {}
+    row = {
+        "id": s.id,
+        "username": s.user.username,
+        "engagement_index": s.engagement_index,
+        "engagement_label": engagement.get("label") or engagement.get("platform") or engagement.get("type"),
+        "engagement_type": engagement.get("type"),
+        "value": _payload_display(engagement, s.payload),
+        "payload": s.payload,
+        "approval_status": s.approval_status,
+        "reason": s.reason,
+        "can_undo": bool(s.prev_status),
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+    }
+    if context:
+        row.update(context)
+    return row
+
+
 @api_view(["GET"])
 def sponsorship_submissions(request, sponsor_id, event_id):
     """GET sponsors/<sponsor_id>/events/<event_id>/engagement-submissions/
@@ -350,14 +385,16 @@ def sponsorship_submissions(request, sponsor_id, event_id):
         sponsor = Sponsor.objects.get(id=sponsor_id)
     except Sponsor.DoesNotExist:
         return Response({"message": "Sponsor not found."}, status=404)
-    if not (_is_sponsor_admin(user) or _membership(user, sponsor)):
-        return Response({"message": "You do not have access to this sponsor."}, status=403)
     try:
-        sp = EventSponsorship.objects.select_related("event").get(
+        sp = EventSponsorship.objects.select_related("event", "sponsor").get(
             sponsor=sponsor, event_id=event_id,
         )
     except EventSponsorship.DoesNotExist:
         return Response({"message": "That event is not attached to this sponsor."}, status=404)
+    # Gate on the SPONSORSHIP, not the sponsor, so the organizer running this event passes for
+    # this event only (owner 2026-08-14). Sponsor members and sponsor-admins are unchanged.
+    if not can_act_on_sponsorship(user, sp):
+        return Response({"message": "You do not have access to this sponsor."}, status=403)
 
     qs = (
         SponsorEngagementSubmission.objects.filter(sponsorship=sp)
@@ -377,20 +414,7 @@ def sponsorship_submissions(request, sponsor_id, event_id):
     engagements = sp.engagements or []
 
     def _row(s):
-        engagement = engagements[s.engagement_index] if s.engagement_index < len(engagements) else {}
-        return {
-            "id": s.id,
-            "username": s.user.username,
-            "engagement_index": s.engagement_index,
-            "engagement_label": engagement.get("label") or engagement.get("platform") or engagement.get("type"),
-            "engagement_type": engagement.get("type"),
-            "value": _payload_display(engagement, s.payload),
-            "payload": s.payload,
-            "approval_status": s.approval_status,
-            "reason": s.reason,
-            "can_undo": bool(s.prev_status),
-            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
-        }
+        return _submission_row(s, engagements)
 
     if request.GET.get("csv"):
         resp = HttpResponse(content_type="text/csv")
@@ -414,6 +438,126 @@ def sponsorship_submissions(request, sponsor_id, event_id):
         "total_count": total,
         "has_more": offset + limit < total,
         "next_offset": offset + limit if offset + limit < total else None,
+    })
+
+
+# ── the cross-event approval queue (owner 2026-08-14) ────────────────────────────────────────
+@api_view(["GET"])
+def admin_submission_queue(request):
+    """GET sponsors/queue/engagement-submissions/
+        ?status=&event=&sponsor=&engagement=&limit=&offset=&csv=1
+
+    Every sponsor submission the CALLER may act on, across events and sponsors, newest pending
+    first. This is what the admin sponsor dashboard reads.
+
+    WHY IT EXISTS (owner 2026-08-14): approving used to live only in the sponsor's own portal, so
+    an event with "sponsor must approve registrations" on and a sponsor with no member account had
+    a queue nobody could clear, and AFC staff had no way to see it at all.
+
+    WHO SEES WHAT - the same rule as acting, so the list never shows a row the caller cannot
+    decide (afc_sponsors.views.can_act_on_sponsorship):
+      • sponsor-admin ladder -> every sponsorship;
+      • a sponsor's own members -> their sponsors' sponsorships;
+      • an organizer -> the sponsorships of the events they may edit.
+    The permission is evaluated on the SPONSORSHIP rows (a few dozen at most) and the submission
+    query is then restricted to the allowed ones, so the answer cannot drift from the decide
+    endpoint's gate.
+
+    RESPONSE: {results, total_count, has_more, next_offset, filters:{events, sponsors}} where
+    `filters` lists just the events/sponsors present in the caller's own scope, for the dropdowns.
+    CSV (?csv=1) streams the same filtered rows, including the event + sponsor columns.
+
+    CONSUMED BY: frontend app/(a)/a/sponsor-dashboard (the Approvals tab) via
+    lib/sponsors.ts sponsorsApi.queue. Decisions still go through
+    sponsors/submissions/<id>/decide/, which applies the same gate.
+    """
+    user, err = _auth_user(request)
+    if err:
+        return err
+
+    sponsorships = EventSponsorship.objects.select_related("event", "sponsor")
+    event_param = request.GET.get("event")
+    if event_param not in (None, ""):
+        try:
+            sponsorships = sponsorships.filter(event_id=int(event_param))
+        except (TypeError, ValueError):
+            pass
+    sponsor_param = request.GET.get("sponsor")
+    if sponsor_param not in (None, ""):
+        try:
+            sponsorships = sponsorships.filter(sponsor_id=int(sponsor_param))
+        except (TypeError, ValueError):
+            pass
+
+    if _is_sponsor_admin(user):
+        allowed = list(sponsorships)          # fast path: no per-row permission work
+    else:
+        allowed = [sp for sp in sponsorships if can_act_on_sponsorship(user, sp)]
+    if not allowed:
+        return Response({
+            "results": [], "total_count": 0, "has_more": False, "next_offset": None,
+            "filters": {"events": [], "sponsors": []},
+        })
+
+    by_id = {sp.id: sp for sp in allowed}
+    qs = (
+        SponsorEngagementSubmission.objects
+        .filter(sponsorship_id__in=list(by_id))
+        .select_related("user")
+        # Pending first so the work sits at the top, then most recently touched.
+        .order_by("approval_status", "-updated_at")
+    )
+    status_param = request.GET.get("status")
+    if status_param:
+        qs = qs.filter(approval_status=status_param)
+    engagement_param = request.GET.get("engagement")
+    if engagement_param not in (None, ""):
+        try:
+            qs = qs.filter(engagement_index=int(engagement_param))
+        except (TypeError, ValueError):
+            pass
+
+    def _row(s):
+        sp = by_id[s.sponsorship_id]
+        return _submission_row(s, sp.engagements or [], context={
+            "event_id": sp.event.event_id,
+            "event_name": sp.event.event_name,
+            "event_slug": sp.event.slug,
+            "sponsor_id": sp.sponsor.id,
+            "sponsor_name": sp.sponsor.name,
+            "requires_approval": sp.requires_approval,
+        })
+
+    if request.GET.get("csv"):
+        resp = HttpResponse(content_type="text/csv")
+        resp["Content-Disposition"] = 'attachment; filename="sponsor-approvals.csv"'
+        writer = csv.writer(resp)
+        writer.writerow(["event", "sponsor", "username", "engagement", "value",
+                         "status", "reason", "updated_at"])
+        for s in qs:
+            r = _row(s)
+            writer.writerow([r["event_name"], r["sponsor_name"], r["username"],
+                             r["engagement_label"], r["value"], r["approval_status"],
+                             r["reason"], r["updated_at"]])
+        return resp
+
+    limit, offset = _page_params(request)
+    total = qs.count()
+    rows = [_row(s) for s in qs[offset:offset + limit]]
+    # The dropdowns only ever offer what the caller can actually reach.
+    events, sponsors = {}, {}
+    for sp in allowed:
+        events[sp.event.event_id] = sp.event.event_name
+        sponsors[sp.sponsor.id] = sp.sponsor.name
+    return Response({
+        "results": rows,
+        "total_count": total,
+        "has_more": offset + limit < total,
+        "next_offset": offset + limit if offset + limit < total else None,
+        "filters": {
+            "events": [{"event_id": k, "event_name": v} for k, v in sorted(events.items())],
+            "sponsors": [{"sponsor_id": k, "name": v} for k, v in sorted(sponsors.items())],
+        },
     })
 
 
@@ -493,17 +637,21 @@ def decide_submission(request, submission_id):
                     rejected and the team drops back to pending review).
       undo          one-step revert of the last decision (prev_status snapshot), audit-logged
                     like every admin action via the global AuditLogMiddleware.
-    Auth: an ACTIVE member of the sponsorship's sponsor, or sponsor-admin."""
+    Auth: an ACTIVE member of the sponsorship's sponsor, sponsor-admin, or the organizer who may
+    edit the event (owner 2026-08-14, see views.can_act_on_sponsorship)."""
     user, err = _auth_user(request)
     if err:
         return err
     try:
         sub = SponsorEngagementSubmission.objects.select_related(
-            "sponsorship__sponsor", "event", "user",
+            # sponsorship__event too: the organizer gate below reads it (owner 2026-08-14).
+            "sponsorship__sponsor", "sponsorship__event", "event", "user",
         ).get(id=submission_id)
     except SponsorEngagementSubmission.DoesNotExist:
         return Response({"message": "Submission not found."}, status=404)
-    if not (_is_sponsor_admin(user) or _membership(user, sub.sponsorship.sponsor)):
+    # Sponsor-admin, the sponsor's own members, or the organizer of THIS event (owner
+    # 2026-08-14): a queue nobody can clear is worse than one cleared by the event's organizer.
+    if not can_act_on_sponsorship(user, sub.sponsorship):
         return Response({"message": "You do not have access to this sponsor."}, status=403)
 
     action = request.data.get("action")

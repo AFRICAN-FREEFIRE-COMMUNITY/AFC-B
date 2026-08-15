@@ -56,7 +56,7 @@ from afc_tournament_and_scrims.models import (
     Event, RegisteredCompetitors, TournamentTeam, TournamentTeamMember,
 )
 
-from .models import Sponsor, SponsorMember, EventSponsorship
+from .models import Sponsor, SponsorMember, SponsorMemberInvite, EventSponsorship
 
 
 DEFAULT_LIMIT = 25
@@ -125,6 +125,34 @@ def _membership(user, sponsor):
 def _can_view_sponsor(user, sponsor):
     """Members see their own sponsor; sponsor-admins see all (the ydpay-only scoping rule)."""
     return _is_sponsor_admin(user) or _membership(user, sponsor) is not None
+
+
+def can_act_on_sponsorship(user, sponsorship):
+    """Who may READ and DECIDE a sponsorship's engagement submissions (owner 2026-08-14).
+
+    WHY THIS EXISTS: approving was sponsor-only, so an event whose sponsorship has
+    `requires_approval` on and whose sponsor has no member account left every registrant sitting
+    at "pending" with nobody on the platform able to clear them. The owner's decision: AFC staff
+    and the ORGANIZER RUNNING THE EVENT can act too, because they are the people who answer for
+    the event when the sponsor is slow or has not been set up yet.
+
+    Three ways in:
+      • sponsor-admin ladder (admin / head_admin / super_admin / sponsor_admin) - see
+        _is_sponsor_admin;
+      • an ACTIVE SponsorMember of that sponsor - the sponsor's own people;
+      • whoever may EDIT the event the sponsorship hangs off (org_can_event "can_edit_events"),
+        which is the same gate that let them attach the sponsor and build the engagements.
+
+    CALLERS: engagements.sponsorship_submissions, engagements.decide_submission and the
+    cross-event queue (engagements.admin_submission_queue). The lazy import keeps afc_sponsors
+    free of an import-time dependency on afc_organizers.
+    """
+    if _is_sponsor_admin(user):
+        return True
+    if _membership(user, sponsorship.sponsor):
+        return True
+    from afc_organizers.permissions import org_can_event
+    return bool(org_can_event(user, "can_edit_events", sponsorship.event))
 
 
 def _serialize_sponsor(s, with_members=False):
@@ -340,6 +368,95 @@ def add_member(request, sponsor_id):
         "member": {"member_id": member.id, "user_id": target.user_id,
                    "username": target.username, "role": member.role},
     }, status=201)
+
+
+@api_view(["POST"])
+def invite_member(request, sponsor_id):
+    """POST sponsors/<id>/members/invite/  body: {email, role?: owner|member}
+
+    Invite a sponsor's own contact by EMAIL (owner 2026-08-14). add_member above can only point
+    at a username that already exists on AFC, which is the reason sponsors kept ending up with no
+    members and an approval queue nobody could clear.
+
+    Two outcomes, both reported in `outcome`: an address that already has an account becomes a
+    member immediately ("member_added"), anything else gets a pending invite and an email with a
+    sign-up link ("invited"), claimed automatically when that account is verified.
+    Auth: sponsor-admin. Logic in afc_sponsors/invites.py; consumed by the Manage-sponsor dialog
+    on /a/sponsors."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    if not _is_sponsor_admin(user):
+        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+    try:
+        sponsor = Sponsor.objects.get(id=sponsor_id)
+    except Sponsor.DoesNotExist:
+        return Response({"message": "Sponsor not found."}, status=404)
+
+    from .invites import invite_contact
+    result, error = invite_contact(
+        sponsor,
+        request.data.get("email"),
+        request.data.get("role") or "member",
+        invited_by=user,
+    )
+    if error:
+        return Response({"message": error}, status=400)
+
+    messages = {
+        "member_added": f"{result.get('username')} now manages {sponsor.name}.",
+        "already_member": f"{result.get('username')} already manages {sponsor.name}.",
+        "invited": f"Invitation sent to {result.get('email')}.",
+        "already_invited": f"Invitation re-sent to {result.get('email')}.",
+    }
+    return Response(
+        {"message": messages.get(result["outcome"], "Done."), **result},
+        status=201 if result["outcome"] in ("member_added", "invited") else 200,
+    )
+
+
+@api_view(["GET"])
+def list_invites(request, sponsor_id):
+    """GET sponsors/<id>/members/invites/ - the PENDING email invitations for this sponsor, so
+    the Manage dialog can show who has been asked but has not signed up yet. Auth: sponsor-admin."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    if not _is_sponsor_admin(user):
+        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+    rows = SponsorMemberInvite.objects.filter(
+        sponsor_id=sponsor_id, status="pending",
+    ).order_by("-created_at")
+    return Response({"results": [
+        {
+            "invite_id": i.id,
+            "email": i.email,
+            "role": i.role,
+            "expires_at": i.expires_at.isoformat() if i.expires_at else None,
+            "created_at": i.created_at.isoformat() if i.created_at else None,
+        }
+        for i in rows
+    ], "total_count": rows.count()})
+
+
+@api_view(["DELETE"])
+def revoke_invite(request, sponsor_id, invite_id):
+    """DELETE sponsors/<id>/members/invites/<invite_id>/ - withdraw an invitation that has not
+    been claimed. The row is kept as "revoked" so the audit trail survives. Auth: sponsor-admin."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    if not _is_sponsor_admin(user):
+        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+    try:
+        invite = SponsorMemberInvite.objects.get(id=invite_id, sponsor_id=sponsor_id)
+    except SponsorMemberInvite.DoesNotExist:
+        return Response({"message": "Invitation not found."}, status=404)
+    if invite.status != "pending":
+        return Response({"message": "That invitation is no longer pending."}, status=400)
+    invite.status = "revoked"
+    invite.save(update_fields=["status"])
+    return Response({"message": "Invitation revoked."})
 
 
 @api_view(["DELETE"])
