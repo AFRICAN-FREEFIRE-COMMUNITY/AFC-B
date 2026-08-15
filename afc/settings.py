@@ -93,6 +93,11 @@ INSTALLED_APPS = [
     # afc_sso/provisioning.py and afc_partner_api, so there is no second way to create a
     # partner. See afc_partner_apply/models.py.
     'afc_partner_apply',
+    # ONE poll engine, with award ballots as a preset of it (spec WEBSITE/tasks/polls-spec.md).
+    # An award ballot IS a questionnaire, so afc_awards (Section/Category/Nominee/Vote) is
+    # replaced rather than extended. afc_awards stays installed until its historical Vote rows
+    # have been migrated in a later phase. See afc_polls/models.py.
+    'afc_polls',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
