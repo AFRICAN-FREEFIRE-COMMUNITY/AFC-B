@@ -167,6 +167,68 @@ class TemplateSendTests(TestCase):
         self.assertEqual(WhatsAppMessage.objects.count(), 0)
 
 
+@override_settings(
+    WHATSAPP_PHONE_NUMBER_ID="1234567890",
+    WHATSAPP_ACCESS_TOKEN="test-token",
+    WHATSAPP_SYNC=True,
+    WHATSAPP_LOGIN_CODE_TEMPLATE="login_code",
+    WHATSAPP_LOGIN_CODE_LANG="en",
+)
+class RecoveryCodeSendTests(TestCase):
+    """The account-recovery code, driven through the REAL chokepoint.
+
+    WHY THIS EXISTS: afc_auth.two_factor.WhatsAppCodeMethod.deliver calls queue_template with
+    redact_variables=True, and afc_auth/tests_recovery_whatsapp.py asserts that it does, but that
+    file replaces queue_template with a stub. So when the caller and the chokepoint drifted apart
+    (the keyword shipped on the caller and not on the function it calls), every one of those tests
+    still passed and a real send would have raised TypeError the moment
+    WHATSAPP_LOGIN_CODE_TEMPLATE was set. These two tests call the actual function, with only the
+    HTTP boundary mocked, so the signature and the redaction are pinned by something that would
+    have failed.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="wa_recover", email="wa_recover@afc.test", password="x",
+        )
+        self.user.country = "Nigeria"
+        self.user.save(update_fields=["country"])
+        UserProfile.objects.create(
+            user=self.user, whatsapp_number="08051234567", whatsapp_opt_in=True,
+        )
+
+    @patch("afc_whatsapp.client.requests.post")
+    def test_the_code_reaches_meta_but_is_never_stored(self, mock_post):
+        mock_post.return_value = FakeResponse(ACCEPTED)
+        from afc_auth.two_factor import WhatsAppCodeMethod
+
+        self.assertTrue(WhatsAppCodeMethod().deliver(self.user, "481902"))
+
+        # It really went out, with the code in the body: redaction is about the LOG, never about
+        # what the recipient receives.
+        _args, kwargs = mock_post.call_args
+        body = kwargs["json"]["template"]["components"][0]["parameters"]
+        self.assertEqual(body[0]["text"], "481902")
+
+        # ...and the row keeps everything support needs EXCEPT the digits.
+        message = WhatsAppMessage.objects.get()
+        self.assertEqual(message.wamid, "wamid.TEST123")
+        self.assertEqual(message.status, "sent")
+        self.assertEqual(message.variables["body"], ["redacted"])
+        self.assertNotIn("481902", str(message.variables))
+
+    @patch("afc_whatsapp.client.requests.post")
+    def test_queue_template_accepts_the_redaction_flag(self, mock_post):
+        # The signature contract on its own, so the failure names the real cause if the keyword is
+        # ever dropped again.
+        mock_post.return_value = FakeResponse(ACCEPTED)
+        message_id = queue_template(
+            "08051234567", "login_code", "en",
+            body_params=["481902"], user=self.user, redact_variables=True,
+        )
+        self.assertEqual(WhatsAppMessage.objects.get(id=message_id).variables["body"], ["redacted"])
+
+
 @override_settings(WHATSAPP_PHONE_NUMBER_ID="", WHATSAPP_ACCESS_TOKEN="", WHATSAPP_SYNC=True)
 class UnconfiguredTests(TestCase):
     @patch("afc_whatsapp.client.requests.post")
