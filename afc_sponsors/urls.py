@@ -23,6 +23,10 @@ urlpatterns = [
          name="sponsors_resubmit_submission"),                                         # POST
     path("my-submissions/<int:event_id>/", engagements.my_event_submissions,
          name="sponsors_my_event_submissions"),                                        # GET
+    # The cross-event approval queue (owner 2026-08-14): every submission the CALLER may decide,
+    # scoped by the same rule as deciding one. Backs the admin sponsor dashboard's Approvals tab.
+    path("queue/engagement-submissions/", engagements.admin_submission_queue,
+         name="sponsors_admin_queue"),                                                 # GET (+?csv=1)
     path("<int:sponsor_id>/events/<int:event_id>/configure/", engagements.configure_sponsorship,
          name="sponsors_configure_sponsorship"),                                       # PATCH
     path("<int:sponsor_id>/events/<int:event_id>/engagement-submissions/",
@@ -39,6 +43,12 @@ urlpatterns = [
 
     # ── members ──
     path("<int:sponsor_id>/members/add/", views.add_member, name="sponsors_add_member"),  # POST
+    # Invite a sponsor's contact by EMAIL (owner 2026-08-14). "invites/" is declared before the
+    # <int:member_id> pattern so it is never swallowed by it.
+    path("<int:sponsor_id>/members/invite/", views.invite_member, name="sponsors_invite_member"),  # POST
+    path("<int:sponsor_id>/members/invites/", views.list_invites, name="sponsors_list_invites"),   # GET
+    path("<int:sponsor_id>/members/invites/<int:invite_id>/", views.revoke_invite,
+         name="sponsors_revoke_invite"),                                                          # DELETE
     path("<int:sponsor_id>/members/<int:member_id>/", views.remove_member, name="sponsors_remove_member"),  # DELETE
 
     # ── event attachment + portal reads ──

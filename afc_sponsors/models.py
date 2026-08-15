@@ -177,3 +177,59 @@ class SponsorEngagementSubmission(models.Model):
 
     def __str__(self):
         return f"Submission(sp={self.sponsorship_id} u={self.user_id} e={self.engagement_index} {self.approval_status})"
+
+
+class SponsorMemberInvite(models.Model):
+    """An INVITATION to manage a sponsor, sent to an email address (owner 2026-08-14).
+
+    WHY THIS EXISTS: SponsorMember can only point at a user who already has an AFC account, so
+    inviting a brand's contact meant telling them to sign up first, then hunting for their
+    username. A sponsor with nobody attached is worse than an inconvenience: with "sponsor must
+    approve registrations" on, its queue has no one who can clear it. An invite lets an admin
+    hand over access before the person exists on AFC.
+
+    HOW IT IS CLAIMED: the invite is keyed by EMAIL, not by a user. When an account with that
+    address is verified (afc_auth.views.verify_code -> invites.claim_invites_for_user), every
+    pending invite for it becomes a real SponsorMember. Someone who already has an account is
+    made a member immediately and never gets a row here.
+
+    An invite EXPIRES so a forwarded mailbox cannot hand out sponsor access months later, and
+    `token` lets the emailed link carry proof without exposing an id to guess.
+
+    CONNECTS TO: afc_sponsors.invites (create / claim / revoke), afc_sponsors.views.invite_member
+    (the endpoint), the email built in invites.py, and the frontend Manage-sponsor dialog
+    (app/(a)/a/sponsors/_components/SponsorProfilesContent.tsx).
+    """
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("accepted", "Accepted"),
+        ("revoked", "Revoked"),
+    ]
+
+    id = models.AutoField(primary_key=True)
+    sponsor = models.ForeignKey(Sponsor, on_delete=models.CASCADE, related_name="invites")
+    email = models.EmailField()
+    # The role the invitee gets when they claim it (same ladder as SponsorMember).
+    role = models.CharField(max_length=10, choices=SponsorMember.ROLE_CHOICES, default="member")
+    token = models.CharField(max_length=64, unique=True)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="pending")
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="sponsor_invites_sent",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    accepted_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="sponsor_invites_accepted",
+    )
+
+    class Meta:
+        indexes = [
+            # The claim path looks up every pending invite for one address.
+            models.Index(fields=["email", "status"], name="idx_sponsor_invite_email"),
+        ]
+
+    def __str__(self):
+        return f"Invite({self.email} -> {self.sponsor_id}, {self.status})"
