@@ -256,11 +256,79 @@ def _str_list(raw, cap=100):
     return out
 
 
+def _rank_range(raw):
+    """Normalise the poll-only `rank_range` block, or return None.
+
+    Shape: {"scope": "team"|"player", "from": 1, "to": 50, "frozen_at": iso,
+            "frozen_team_ids": [...], "frozen_user_ids": [...]}
+
+    FROZEN, NOT LIVE (polls spec decision 2). `rank` is rewritten by every afc_rankings
+    recalculation, so a live rank rule would show somebody a ballot on Monday and refuse their
+    submission on Tuesday. When `frozen_*_ids` is present it is used verbatim and the rankings
+    tables are not read at all: that stored id set IS the audience, captured when the poll opened.
+    Without it the window is resolved live, which is what the admin's preview needs before the
+    poll has opened."""
+    if not isinstance(raw, dict):
+        return None
+    scope = str(raw.get("scope") or "team").strip().lower()
+    if scope not in ("team", "player"):
+        scope = "team"
+    try:
+        start = int(raw.get("from") or 1)
+        end = int(raw.get("to") or 0)
+    except (TypeError, ValueError):
+        return None
+    if end < start or end <= 0:
+        return None
+    return {
+        "scope": scope,
+        "from": max(1, start),
+        "to": end,
+        "frozen_at": raw.get("frozen_at") or None,
+        "frozen_team_ids": _int_list(raw.get("frozen_team_ids"), cap=5000),
+        "frozen_user_ids": _int_list(raw.get("frozen_user_ids"), cap=20000),
+    }
+
+
+def _season_tiers(raw):
+    """Normalise the poll-only `season_tiers` block, or return None.
+
+    Shape: {"scope": "team"|"player", "values": [0, 1], "frozen_at": iso, "frozen_*_ids": [...]}
+
+    SEASON tier is afc_rankings.TeamQuarterlyScore / PlayerQuarterlyScore `tier_assigned`, computed
+    each quarter by the scoring engine. It is NOT the same fact as `tiers` above, which is the
+    hand-set afc_team.Team.team_tier that broadcasts have always meant. Both are offered, labelled
+    separately, and they INTERSECT when both are set (polls spec decision 1).
+
+    Watch the numbering: season tier 0 (Elite) is the BEST and 3 (Entry) the worst, the opposite
+    way round from hand-set tier 1. Neither filter may ever display the raw integer, which is why
+    the values are validated here but named only in the UI."""
+    if not isinstance(raw, dict):
+        return None
+    scope = str(raw.get("scope") or "team").strip().lower()
+    if scope not in ("team", "player"):
+        scope = "team"
+    values = [v for v in _int_list(raw.get("values"), cap=4) if 0 <= v <= 3]
+    if not values:
+        return None
+    return {
+        "scope": scope,
+        "values": sorted(set(values)),
+        "frozen_at": raw.get("frozen_at") or None,
+        "frozen_team_ids": _int_list(raw.get("frozen_team_ids"), cap=5000),
+        "frozen_user_ids": _int_list(raw.get("frozen_user_ids"), cap=20000),
+    }
+
+
 def parse_audience_spec(data):
     """Pull the audience spec off a request body (`data` is request.data) into a normalised dict.
 
     Accepts the spec either at the top level or nested under an "audience" key, so the preview and
-    send endpoints can share one parser while the send body also carries title/message/delivery."""
+    send endpoints can share one parser while the send body also carries title/message/delivery.
+
+    The last five keys were added for POLLS (afc_polls) and are inherited by the broadcast composer
+    for free, which is the whole reason polls extend this engine instead of writing a second one.
+    See WEBSITE/tasks/polls-spec.md section 2.1."""
     spec = data.get("audience") if isinstance(data.get("audience"), dict) else data
     return {
         "everyone": bool(spec.get("everyone")),
@@ -270,13 +338,29 @@ def parse_audience_spec(data):
         "countries": _str_list(spec.get("countries")),
         "roles": _str_list(spec.get("roles")),
         "languages": _str_list(spec.get("languages")),
+        # ── added for polls ──
+        # Everyone registered in these events, plus their roster members.
+        "event_ids": _int_list(spec.get("event_ids")),
+        # afc_team.TeamMembers.management_role values, e.g. ["team_captain", "vice_captain"].
+        "team_roles": _str_list(spec.get("team_roles"), cap=10),
+        "rank_range": _rank_range(spec.get("rank_range")),
+        "season_tiers": _season_tiers(spec.get("season_tiers")),
+        # NOT a queryset filter. A person with an empty UID IS the audience, they simply cannot
+        # vote yet, so this is evaluated only by afc_polls.eligibility.check_eligibility, where it
+        # produces a failing requirement that carries a link that fixes it. Putting it in the
+        # queryset would silently shrink the admin's audience count by everyone with an incomplete
+        # profile, and the admin would never learn that 300 people were one field away from voting.
+        "require_profile_fields": _str_list(spec.get("require_profile_fields"), cap=10),
         "include_suspended": bool(spec.get("include_suspended")),
     }
 
 
 def spec_is_empty(spec):
     """True when the admin has selected nothing at all. The endpoints turn this into a 400 rather
-    than resolving it, so an empty form can never be mistaken for "send to everyone"."""
+    than resolving it, so an empty form can never be mistaken for "send to everyone".
+
+    `require_profile_fields` is deliberately NOT counted here: it narrows nobody, so a spec that
+    holds only "you must have a UID" still selects nobody and is still empty."""
     return not (
         spec["everyone"]
         or spec["user_ids"]
@@ -285,6 +369,10 @@ def spec_is_empty(spec):
         or spec["countries"]
         or spec["roles"]
         or spec["languages"]
+        or spec.get("event_ids")
+        or spec.get("team_roles")
+        or spec.get("rank_range")
+        or spec.get("season_tiers")
     )
 
 
@@ -300,6 +388,121 @@ def eligible_users(include_suspended=False):
     if not include_suspended:
         qs = qs.exclude(status="suspended")
     return qs
+
+
+# ── afc_rankings-derived filters (rank window, season tier) ───────────────────────────────────
+# Two filters, one shape. Both name an ENTITY (a team or a player) by something afc_rankings
+# computed, and both are FROZEN at poll open (polls spec 2.4: anything afc_rankings computes is
+# frozen, anything a human can fix stays live). The three functions below are split so that the
+# freezing, the live lookup and the Q construction are each readable on their own.
+#
+# WHY THE FROZEN SET IS TEAM IDS AND NOT USER IDS when scope is "team": team MEMBERSHIP is live.
+# Freezing "these 50 teams" and resolving their rosters at query time is precisely the frozen/live
+# line the spec draws, so a player who joins a top-50 team during an open poll becomes eligible
+# (their team's rank did not move, they did), while a team that drops to 60th does not lose the
+# ballot it was shown.
+
+
+def _quarterly_season():
+    """The season whose quarterly scores the rank and season-tier filters read.
+
+    Quarterly, not monthly, and the same season for BOTH filters on purpose: season tier only
+    exists quarterly, so reading rank from the monthly table would let the two filters disagree
+    about which period they describe, and an admin combining them would get an intersection of two
+    different quarters without being told.
+
+    Reuses afc_rankings.recalc.current_season, which is the canonical getter everywhere else and
+    already runs the calendar-driven rollover, so an audience previewed the morning a new quarter
+    starts describes the new quarter rather than the old one. The fallback to the newest season
+    covers a deployment where no season is active (between quarters), where refusing everybody
+    would be a worse answer than describing the most recent one.
+    """
+    from afc_rankings.models import Season
+    from afc_rankings.recalc import current_season
+
+    return current_season() or Season.objects.order_by("-year", "-quarter").first()
+
+
+def _rank_window_ids(block):
+    """LIVE resolution of a rank window: the entity ids currently ranked from `from` to `to`."""
+    from afc_rankings.models import PlayerQuarterlyScore, TeamQuarterlyScore
+
+    season = _quarterly_season()
+    if not season:
+        return []
+    window = {"rank__gte": block["from"], "rank__lte": block["to"], "season": season}
+    if block["scope"] == "player":
+        return list(
+            PlayerQuarterlyScore.objects.filter(player__isnull=False, **window)
+            .values_list("player_id", flat=True)
+        )
+    return list(
+        TeamQuarterlyScore.objects.filter(team__isnull=False, **window)
+        .values_list("team_id", flat=True)
+    )
+
+
+def _season_tier_ids(block):
+    """LIVE resolution of a season-tier filter: the entity ids currently holding those tiers."""
+    from afc_rankings.models import PlayerQuarterlyScore, TeamQuarterlyScore
+
+    season = _quarterly_season()
+    if not season:
+        return []
+    if block["scope"] == "player":
+        return list(
+            PlayerQuarterlyScore.objects.filter(
+                player__isnull=False, season=season, tier_assigned__in=block["values"]
+            ).values_list("player_id", flat=True)
+        )
+    return list(
+        TeamQuarterlyScore.objects.filter(
+            team__isnull=False, season=season, tier_assigned__in=block["values"]
+        ).values_list("team_id", flat=True)
+    )
+
+
+def _ranked_q(block, live_resolver):
+    """Turn a rank_range / season_tiers block into a Q over User.
+
+    Uses the FROZEN id set when the block carries one, and only falls back to `live_resolver`
+    when it does not (which is the admin previewing an audience before the poll has opened)."""
+    if block["scope"] == "player":
+        user_ids = block.get("frozen_user_ids") or live_resolver(block)
+        return Q(user_id__in=user_ids)
+    team_ids = block.get("frozen_team_ids") or live_resolver(block)
+    # A team's audience is its roster AND its owner, the same rule the explicit team picker uses.
+    member_ids = TeamMembers.objects.filter(team_id__in=team_ids).values("member_id")
+    owner_ids = Team.objects.filter(team_id__in=team_ids).values("team_owner_id")
+    return Q(user_id__in=member_ids) | Q(user_id__in=owner_ids)
+
+
+def freeze_ranking_filters(spec, now=None):
+    """Stamp the afc_rankings-derived blocks of `spec` with the entity ids they select RIGHT NOW.
+
+    Called once, by afc_polls when a poll opens. Returns a NEW spec; the caller stores it back on
+    PollEligibilityRule.spec so the audience an admin previewed is provably the audience that
+    votes, even after a quarterly recalculation moves everybody.
+
+    Idempotent: a block that already carries a frozen set is left exactly as it was, so re-opening
+    or re-saving a poll can never silently re-freeze it against a newer ranking."""
+    from django.utils import timezone
+
+    now = now or timezone.now()
+    frozen = dict(spec)
+    for key, resolver in (("rank_range", _rank_window_ids), ("season_tiers", _season_tier_ids)):
+        block = frozen.get(key)
+        if not block or block.get("frozen_at"):
+            continue
+        block = dict(block)
+        ids = resolver(block)
+        if block["scope"] == "player":
+            block["frozen_user_ids"] = ids
+        else:
+            block["frozen_team_ids"] = ids
+        block["frozen_at"] = now.isoformat()
+        frozen[key] = block
+    return frozen
 
 
 def _category_q(spec):
@@ -359,6 +562,54 @@ def _category_q(spec):
 
     if spec["languages"]:
         clauses.append(Q(language__in=spec["languages"]))
+
+    # ── poll-only category filters (see the module header note on parse_audience_spec) ──────────
+    # Each one INTERSECTS with the filters above, exactly like tier and country do. That is the
+    # rule the composer states in words, so a new filter must not quietly union instead.
+
+    if spec.get("event_ids"):
+        # "Teams and players in this event" means the union of the SOLO competitors, the roster
+        # members of the registered teams, and those teams' owners (an owner is not always in
+        # TeamMembers, and leaving them out of their own team's poll would be wrong). Waitlisted
+        # and pending/withdrawn/disqualified registrations are not in the event, which is the same
+        # ("registered", "approved") + not-waitlisted pair the event views count by.
+        from afc_tournament_and_scrims.models import RegisteredCompetitors
+
+        registrations = RegisteredCompetitors.objects.filter(
+            event_id__in=spec["event_ids"],
+            status__in=["registered", "approved"],
+            is_waitlisted=False,
+        )
+        solo_ids = registrations.exclude(user__isnull=True).values("user_id")
+        event_team_ids = registrations.exclude(team__isnull=True).values("team_id")
+        roster_ids = TeamMembers.objects.filter(team_id__in=event_team_ids).values("member_id")
+        owner_ids = Team.objects.filter(team_id__in=event_team_ids).values("team_owner_id")
+        clauses.append(
+            Q(user_id__in=solo_ids) | Q(user_id__in=roster_ids) | Q(user_id__in=owner_ids)
+        )
+
+    if spec.get("team_roles"):
+        # "Captain" has TWO representations that can disagree: afc_team.Team.team_captain is a
+        # direct FK on the team, and TeamMembers.management_role == 'team_captain' is a separate
+        # row. The roster data is old enough that both spellings exist, so a rule that honoured
+        # only one of them would quietly exclude real captains, which is indistinguishable from a
+        # bug. The filter resolves to the UNION, and the UI says "however your team records it".
+        role_ids = TeamMembers.objects.filter(
+            management_role__in=spec["team_roles"]
+        ).values("member_id")
+        role_clause = Q(user_id__in=role_ids)
+        if "team_captain" in spec["team_roles"]:
+            captain_fk_ids = Team.objects.exclude(team_captain__isnull=True).values("team_captain_id")
+            role_clause |= Q(user_id__in=captain_fk_ids)
+        clauses.append(role_clause)
+
+    rank_range = spec.get("rank_range")
+    if rank_range:
+        clauses.append(_ranked_q(rank_range, _rank_window_ids))
+
+    season_tiers = spec.get("season_tiers")
+    if season_tiers:
+        clauses.append(_ranked_q(season_tiers, _season_tier_ids))
 
     if not clauses:
         return None
