@@ -66,8 +66,13 @@ MAP_CHOICES = [
 # key -> (label, default). All are yes/no except environment, which has its own choice list above.
 # Defaults are what a fresh Free Fire room opens with, per the screenshots (the highlighted side).
 TOGGLES = {
-    "ammo_limit":          ("Ammo limit", True),
-    "throwable_limit":     ("Throwable limit", True),
+    # ── "was anything unlimited?" (owner 2026-08-16) ─────────────────────────────────────────
+    # These two ARE the unlimited-ammo question, and there is deliberately no separate
+    # "unlimited ammo" toggle beside them: two keys describing one setting can disagree, and then
+    # nothing on the page tells a reader which one the room actually used. The labels say which
+    # way round it works so an organizer looking for "unlimited" finds it here.
+    "ammo_limit":          ("Ammo limit (off = unlimited ammo)", True),
+    "throwable_limit":     ("Throwable limit (off = unlimited)", True),
     "airdrop":             ("Airdrop", True),
     "high_tier_loot_zone": ("High tier loot zone", True),
     "supply_gadget":       ("Supply gadget", False),
@@ -90,6 +95,18 @@ TOGGLES = {
     "display_scores":      ("Display scores", False),
     "backpack_logo":       ("Backpack logo", False),
     "replay_final_shot":   ("Replay final shot", False),
+    # ── added 2026-08-16 (owner) ─────────────────────────────────────────────────────────────
+    # Two settings organizers were recording in the free-text notes because there was nowhere
+    # else to put them, which meant they could not be filtered on, copied into a preset, or shown
+    # in a room summary.
+    #
+    # Weapon skins default ON, matching a fresh Free Fire room; an organizer running a
+    # skins-banned event turns it off, and that is then part of the saved room rather than a
+    # sentence somebody has to read.
+    "weapon_skins":        ("Weapon skins", True),
+    # Blue zone defaults OFF, which is the inert choice: a room where nobody set it plays as it
+    # always has. A default I am not certain of should be the one that changes nothing.
+    "blue_zone":           ("Blue zone", False),
 }
 
 # ── store ────────────────────────────────────────────────────────────────────────────────────
