@@ -197,28 +197,41 @@ def _walk_player_stats(event, group_ids, request):
     return by_match, players
 
 
-def compute_event_mvp(event, request, group_ids=None):
-    """The MVP computation (per-map MVP -> event ranking) over a scope (`group_ids=None` = whole event,
-    else only those groups' matches). Returns the SAME dict event_mvp responds with. EXTRACTED so the
-    endpoint AND the overlay _mvp_payload share ONE implementation. Criteria + winning-team scope come
-    from the saved Event.mvp_config; the COMBINE scope (group_ids, owner unit = stages + groups) is
-    passed in already-resolved. See the CONTRACT block at the top of this module."""
+def _mvp_criteria(event):
+    """This event's MVP criteria arrangement, resolved. Returns (criteria, rankable, scope, avail).
+
+    `criteria` is the saved arrangement, `rankable` the subset that can actually be ranked on today
+    (the 3D-room stats only become rankable once this event has debugger-backfilled rows - see
+    debugger_ingest.py), `scope` is "overall" or "winning_team", and `avail` is the per-criterion
+    availability predicate the endpoint reports to the FE.
+
+    EXTRACTED 2026-08-08 so compute_top_killers can award map MVPs with the SAME arrangement
+    compute_event_mvp uses. Two functions deciding "who was MVP of this map" by different rules would
+    put two different numbers under one column name on two broadcast graphics."""
     cfg = event.mvp_config or {}
     criteria = [c for c in (cfg.get("criteria") or DEFAULT_CRITERIA) if c in CRITERIA_META]
     scope = cfg.get("scope") if cfg.get("scope") in ("overall", "winning_team") else DEFAULT_SCOPE
-    # The 3D-room criteria become RANKABLE once this event has debugger-backfilled rows
-    # (rich_stats_filled - see debugger_ingest.py). Until then they stay tagged/pending.
     has_rich = TournamentPlayerMatchStats.objects.filter(
         team_stats__match__group__stage__event=event, rich_stats_filled=True
     ).exists()
+
     def _avail(c):
         return CRITERIA_META[c][1] or has_rich
+
     rankable = [c for c in criteria if _avail(c)] or DEFAULT_CRITERIA
+    return criteria, rankable, scope, _avail
 
-    by_match, players = _walk_player_stats(event, group_ids, request)
 
-    # ── One MVP per MAP: rank that map's pool by the criteria; winning_team scope restricts the
-    #    pool to the booyah (placement-1) team's players of THAT map. ──
+def _award_map_mvps(by_match, players, rankable, scope):
+    """One MVP per MAP: rank that map's pool by the criteria and add 1 to that player's `mvp_count`.
+    "winning_team" scope restricts the pool to the booyah (placement-1) team's players of THAT map.
+
+    MUTATES `players` in place (that is the point - mvp_count is a per-player total) and returns the
+    per-map winner rows for display. EXTRACTED 2026-08-08 from compute_event_mvp so the top-killers
+    computation can call it too: mvp_count was left at 0 there, which was invisible while the
+    top-killer overlay drew a built-in list, but a design-driven board can PLACE a MAP MVPS column
+    (afc_organizers FIELD_CHOICES "mvp_count"), and it would have broadcast 0 for every player while
+    the MVP board showed the same people with 1. See views_overlays._player_board_rows."""
     map_mvps = []
     for match_id, lines in by_match.items():
         match = lines[0][0]
@@ -240,6 +253,20 @@ def compute_event_mvp(event, request, group_ids=None):
             "mvp_name": players[best["user_id"]]["in_game_name"],
             "kills": best["kills"], "damage": best["damage"], "assists": best["assists"],
         })
+    return map_mvps
+
+
+def compute_event_mvp(event, request, group_ids=None):
+    """The MVP computation (per-map MVP -> event ranking) over a scope (`group_ids=None` = whole event,
+    else only those groups' matches). Returns the SAME dict event_mvp responds with. EXTRACTED so the
+    endpoint AND the overlay _mvp_payload share ONE implementation. Criteria + winning-team scope come
+    from the saved Event.mvp_config; the COMBINE scope (group_ids, owner unit = stages + groups) is
+    passed in already-resolved. See the CONTRACT block at the top of this module."""
+    criteria, rankable, scope, _avail = _mvp_criteria(event)
+
+    by_match, players = _walk_player_stats(event, group_ids, request)
+
+    map_mvps = _award_map_mvps(by_match, players, rankable, scope)
 
     # ── Event ranking: most per-map MVPs first; count ties fall to the criteria on event totals. ──
     for r in players.values():
@@ -272,9 +299,18 @@ def compute_top_killers(event, request, group_ids=None):
     """TOP-KILLERS (complaint H): rank players by SUM(kills) over the scope (`group_ids=None` = whole
     event, else only those groups' matches). Returns the SAME player row shape as compute_event_mvp
     (identity + kills/damage/assists + esports_image + team + matches + mvp_count), so the MVP (G) and
-    Top-killers (H) boards share ONE render path + ONE FE renderer. Ties fall to damage then assists - 
-    a stable, meaningful order for a kills board. Capped at 50 like the MVP list."""
-    _by_match, players = _walk_player_stats(event, group_ids, request)
+    Top-killers (H) boards share ONE render path + ONE FE renderer. Ties fall to damage then assists -
+    a stable, meaningful order for a kills board. Capped at 50 like the MVP list.
+
+    mvp_count is filled here too (owner 2026-08-08). It used to be left at 0 for everybody, which was
+    invisible while this board drew a built-in list of names and kills. A design-driven top-killer
+    board can PLACE a MAP MVPS column, and it would then have broadcast 0 for every player while the
+    MVP board, computed from the same stat lines, showed those same people with 1. Awarded by the
+    SHARED _award_map_mvps with the event's own saved arrangement, so the two boards cannot disagree.
+    The RANKING is untouched: this board is still ordered by kills, then damage, then assists."""
+    by_match, players = _walk_player_stats(event, group_ids, request)
+    _criteria, rankable, scope, _avail = _mvp_criteria(event)
+    _award_map_mvps(by_match, players, rankable, scope)
     for r in players.values():
         r["kdr"] = round(r["kills"] / max(1, r["deaths"]), 2)
     ranked = sorted(

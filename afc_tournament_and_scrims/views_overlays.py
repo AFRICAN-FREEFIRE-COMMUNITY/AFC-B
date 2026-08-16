@@ -174,6 +174,8 @@ def overlay_config(request):
         payload["standings"] = _overlay_config_leaderboard_standings(event, row.config or {}, request)
     # H2H overlays ship their RESOLVED competitor stats + design look with the config poll, so the
     # public page needs exactly one request per poll (mirrors overlay_feed bundling design+standings).
+    # From 2026-08-08 they also ship `board` when an h2h-TYPE design is bound, and the FE then draws
+    # the comparison THROUGH that design (one column group per side) instead of the built-in cards.
     if row.kind == "h2h":
         payload["h2h"] = _h2h_payload(event, row.config or {}, request)
     # MVP (G) + TOP-KILLERS (H) overlays (owner 2026-07-05) bundle their RESOLVED ranked PLAYER rows +
@@ -181,7 +183,10 @@ def overlay_config(request):
     # scope (config {scope, group_ids, stage_ids}; whole stages expand to their groups, absent => whole
     # event), so the SAME stable link renders whatever combination the studio card saved. Both return the
     # identical row shape (keyed by the design player FIELD_CHOICES) so the FE renders G + H with ONE
-    # renderer through the bound design. See views_mvp.py (the CONTRACT block).
+    # renderer through the bound design. See views_mvp.py (the CONTRACT block). From 2026-08-08 both
+    # also ship `board` when a design of their OWN type ("mvp" / "top_killers") is bound: the same
+    # ranked rows, drawn through that design by DesignBoard rather than by the built-in list, with
+    # the design's column groups deciding how many of them show.
     if row.kind == "mvp":
         payload["mvp"] = _mvp_payload(event, row.config or {}, request)
     if row.kind == "top_killers":
@@ -236,13 +241,23 @@ def _h2h_payload(event, config, request):
     bracket GET returns (head_to_head_views._bracket_payload), so the FE draws it read-only over the
     design look. Returns {mode:"bracket", bracket:{...}|None, competitors:[], design:{...}}.
 
-    Returns {mode, competitors: [...], design: {...}} for the public overlay_config feed."""
+    DESIGN-DRIVEN board (owner 2026-08-08): when the bound design's type is "h2h" the response ALSO
+    carries `board` = {design, rows, size}, and the FE draws the comparison through that design with
+    DesignBoard instead of the built-in cards - one column group per side. `competitors` and `design`
+    are unchanged either way, so an overlay on the built-in cards is unaffected. See _h2h_board.
+
+    Returns {mode, competitors: [...], design: {...}, board: {...}|None} for the public config feed."""
     from django.db.models import Sum, Count, Case, When, Value, IntegerField
     from .models import TournamentTeamMatchStats, TournamentPlayerMatchStats
 
     mode = (config.get("mode") or "team").strip()
     ids = [int(i) for i in (config.get("competitor_ids") or []) if str(i).strip()][:3]
     competitors = []
+    # DesignBoard rows for the design-driven path, collected as (row, media_owner_id) alongside the
+    # competitor cards below - here, where the Team / User objects are still in hand. Building them
+    # unconditionally costs one dict per competitor and keeps the two loops from diverging; whether
+    # they are USED is decided by _h2h_board, which returns None unless an h2h-type design is bound.
+    board_rows = []
 
     # ── Clash Squad bracket mode: render the stage bracket, not a stat comparison. ──
     if mode == "bracket":
@@ -280,6 +295,9 @@ def _h2h_payload(event, config, request):
                     group_id=head_to_head.resolve_bracket_group_id(stage)).first(),
             ) if stage is not None else None,
             "design": _design_look(config.get("design_id"), request),
+            # A bracket is a TREE, not rows: there is no way to express "who plays who in round 3" as
+            # a flat row list, so bracket mode keeps its own renderer and never goes through a design.
+            "board": None,
         }
 
     if mode == "player":
@@ -294,17 +312,17 @@ def _h2h_payload(event, config, request):
                               deaths=Sum("deaths"), headshots=Sum("headshots"),
                               survival=Sum("survival_seconds"), matches=Count("player_stats_id")))
             from afc_auth.models import esports_pic_url
-            competitors.append({
-                "name": getattr(u, "in_game_name", "") or u.username,
-                # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
-                "image": esports_pic_url(u, request),
-                "stats": {
-                    "kills": agg["kills"] or 0, "damage": agg["damage"] or 0,
-                    "assists": agg["assists"] or 0, "deaths": agg["deaths"] or 0,
-                    "headshots": agg["headshots"] or 0, "survival_seconds": agg["survival"] or 0,
-                    "matches": agg["matches"] or 0,
-                },
-            })
+            name = getattr(u, "in_game_name", "") or u.username
+            image = esports_pic_url(u, request)  # esports_pic lives on UserProfile, not User
+            stats = {
+                "kills": agg["kills"] or 0, "damage": agg["damage"] or 0,
+                "assists": agg["assists"] or 0, "deaths": agg["deaths"] or 0,
+                "headshots": agg["headshots"] or 0, "survival_seconds": agg["survival"] or 0,
+                "matches": agg["matches"] or 0,
+            }
+            competitors.append({"name": name, "image": image, "stats": stats})
+            board_rows.append((
+                _h2h_competitor_row(len(board_rows), name, image, stats, mode), u.user_id))
     else:
         from afc_team.models import Team
         for tid in ids:
@@ -317,18 +335,23 @@ def _h2h_payload(event, config, request):
                               matches=Count("team_stats_id"),
                               booyahs=Sum(Case(When(placement=1, then=Value(1)),
                                                default=Value(0), output_field=IntegerField()))))
-            competitors.append({
-                "name": team.team_name,
-                "image": (request.build_absolute_uri(team.team_logo.url)
-                          if getattr(team, "team_logo", None) else None),
-                "stats": {
-                    "kills": agg["kills"] or 0, "points": agg["points"] or 0,
-                    "booyahs": agg["booyahs"] or 0, "matches": agg["matches"] or 0,
-                },
-            })
+            image = (request.build_absolute_uri(team.team_logo.url)
+                     if getattr(team, "team_logo", None) else None)
+            stats = {
+                "kills": agg["kills"] or 0, "points": agg["points"] or 0,
+                "booyahs": agg["booyahs"] or 0, "matches": agg["matches"] or 0,
+            }
+            competitors.append({"name": team.team_name, "image": image, "stats": stats})
+            board_rows.append((
+                _h2h_competitor_row(len(board_rows), team.team_name, image, stats, mode,
+                                    country=team.country or ""),
+                team.team_id))
 
     return {"mode": mode, "competitors": competitors,
-            "design": _design_look(config.get("design_id"), request)}
+            "design": _design_look(config.get("design_id"), request),
+            # None unless an h2h-TYPE design is bound (and two sides are picked), which is exactly
+            # when the FE keeps the built-in competitor cards. See _h2h_board.
+            "board": _h2h_board(event, config, mode, board_rows, request)}
 
 
 # ── MVP (G) + TOP-KILLERS (H) player-board payloads (owner 2026-07-05) ─────────────────────────────
@@ -360,38 +383,58 @@ def _mvp_payload(event, config, request):
     leaderboard combine uses, so an MVP board agrees with the site. Each row is keyed by the design
     player FIELD_CHOICES (pos/player_name/esports_image/kills/damage/assists/team_name/mvp_count) so G
     renders through any bound design. Returns {kind:"mvp", players:[...], top:<row|None>, combine:{...},
-    design:{...}}."""
+    design:{...}, board:{...}|None}.
+
+    DESIGN-DRIVEN board (owner 2026-08-08): `board` is set ONLY when the bound design's type is "mvp",
+    and then the FE draws the SAME rows through that design with DesignBoard instead of the built-in
+    list. The design decides how much of the ranking shows - a one-row column group is the MVP alone
+    (the moment), a ten-row group is the standings. `players` / `top` / `design` are untouched, so an
+    overlay bound to anything else keeps the built-in board exactly as it was."""
     from .views_mvp import (compute_event_mvp, build_player_design_rows, _resolve_player_scope)
     group_ids = _combine_ids_from_config(config, "group_ids", "group_id")
     stage_ids = _combine_ids_from_config(config, "stage_ids", "stage_id")
     scope_group_ids = _resolve_player_scope(event, group_ids, stage_ids)
     computed = compute_event_mvp(event, request, group_ids=scope_group_ids)
     rows = build_player_design_rows(computed["players"])
+    design = _scene_design(config.get("design_id"), "mvp")
     return {
         "kind": "mvp",
         "players": rows,
         "top": rows[0] if rows else None,
         "combine": {"group_ids": scope_group_ids, "combined": scope_group_ids is not None},
         "design": _design_look(config.get("design_id"), request),
+        "board": _scene_board(
+            design,
+            _player_board_rows(event, computed["players"], rows) if design is not None else [],
+            request),
     }
 
 
 def _top_killers_payload(event, config, request):
     """Resolve a TOP-KILLERS overlay (owner 2026-07-05, complaint H) to ranked player rows + design look
     - identical shape/keys to _mvp_payload (so G and H share ONE FE renderer), but ranked by SUM(kills)
-    over the same combine scope. Returns {kind:"top_killers", players, top, combine, design}."""
+    over the same combine scope. Returns {kind:"top_killers", players, top, combine, design, board}.
+
+    DESIGN-DRIVEN board (owner 2026-08-08): identical to the MVP one, gated on design_type
+    "top_killers" instead. A top-killer board is the closest of the three scenes to a leaderboard - a
+    ranked list - so its rows go through DesignBoard with nothing added but a stable row identity."""
     from .views_mvp import (compute_top_killers, build_player_design_rows, _resolve_player_scope)
     group_ids = _combine_ids_from_config(config, "group_ids", "group_id")
     stage_ids = _combine_ids_from_config(config, "stage_ids", "stage_id")
     scope_group_ids = _resolve_player_scope(event, group_ids, stage_ids)
     computed = compute_top_killers(event, request, group_ids=scope_group_ids)
     rows = build_player_design_rows(computed["players"])
+    design = _scene_design(config.get("design_id"), "top_killers")
     return {
         "kind": "top_killers",
         "players": rows,
         "top": rows[0] if rows else None,
         "combine": {"group_ids": scope_group_ids, "combined": scope_group_ids is not None},
         "design": _design_look(config.get("design_id"), request),
+        "board": _scene_board(
+            design,
+            _player_board_rows(event, computed["players"], rows) if design is not None else [],
+            request),
     }
 
 
@@ -414,6 +457,201 @@ def _design_look(design_id, request):
         # Versus designs pick WHICH stat rows the H2H shows (order = display order).
         "stat_keys": (getattr(d, "versus_config", {}) or {}).get("stat_keys") or [],
     }
+
+
+# ══ DESIGN-DRIVEN SCENE BOARDS (owner 2026-08-08) ═════════════════════════════════════════════════
+# "Fix up the MVP, top killer and h2h overlays like we did the booyah work."
+#
+# The booyah scene (2026-08-06) stopped being a hard-coded banner and started rendering THROUGH the
+# design an organizer built, using the very same DesignBoard component the live leaderboard overlay
+# uses. These helpers extend that to the other three scenes, on exactly the same terms:
+#
+#   • a design opts a scene in by its TYPE - "mvp", "top_killers" or "h2h". No design in any database
+#     holds those values today, so every MVP / top-killer / head-to-head overlay already configured
+#     renders its built-in layout byte-for-byte on the day this ships;
+#   • the payload gains ONE additive key, `board` = {design, rows, size}, alongside the keys the
+#     built-in renderers already read (`players` / `competitors` / `design`), which are untouched;
+#   • `board` is None whenever no matching design is bound or there is nothing to draw, and that is
+#     precisely when the frontend must keep the built-in layout;
+#   • the rows are keyed by design field_type, so DesignBoard draws row[field.field_type] and nothing
+#     else, exactly as it does for a standings row.
+#
+# CONNECTS TO: overlay_config (the 1s public poll) -> FE app/overlay/view/[token]/[overlayId]
+# (PlayerBoardView + H2HView) -> DesignBoard. Data comes from the SAME computations the built-in
+# layouts use (views_mvp.compute_event_mvp / compute_top_killers, and _h2h_payload's own aggregates),
+# so a design-driven board and the built-in one can never disagree about the numbers.
+
+# Which slot the FIRST head-to-head competitor occupies. Named because the resolver, the frontend
+# hint copy and the tests all have to agree on it (see _h2h_board for what a "slot" means here).
+H2H_FIRST_SLOT = 1
+
+# _h2h_payload stat key -> the design FIELD_CHOICES field type that carries the same number, so an
+# organizer places an ordinary KILLS / TOTAL POINTS / DAMAGE column and it fills. The two vocabularies
+# differ because the h2h aggregates predate the design field types by months; this table is the whole
+# of the translation and deliberately lives next to the row builder that uses it. A stat with no field
+# type (none today) would simply not be placeable, never a crash.
+H2H_STAT_FIELDS = {
+    # Team-mode aggregates (_h2h_payload's team branch).
+    "kills": "kills",
+    "points": "total_points",
+    "booyahs": "booyah",
+    "matches": "matches",
+    # Player-mode aggregates (_h2h_payload's player branch).
+    "damage": "damage",
+    "assists": "assists",
+    "deaths": "deaths",
+    "headshots": "headshots",
+    "survival_seconds": "survival_time",
+}
+
+
+def _scene_design(design_id, design_type):
+    """The bound design IF it was authored for THIS scene (its design_type matches), else None.
+
+    This ONE check is the whole migration story for every design-driven scene: an overlay only leaves
+    its built-in layout when somebody deliberately binds a design of the matching type to it. Every
+    overlay configured before that type existed points at a leaderboard design (or at nothing), so it
+    keeps the layout it has. Prefetches the children _serialize_design walks, so the once-a-second
+    poll costs one round trip rather than five."""
+    if not design_id:
+        return None
+    from afc_organizers.models import OrgLeaderboardDesign
+    return (OrgLeaderboardDesign.objects
+            .filter(id=design_id, design_type=design_type)
+            .prefetch_related("logos", "fields", "texts", "pages").first())
+
+
+def _scene_board(design, rows, request):
+    """Wrap a resolved design + its rows into the payload DesignBoard eats, or None.
+
+    None (rather than an empty board) whenever there is no matching design or nothing to draw, so the
+    frontend has ONE unambiguous signal for "keep the built-in layout" and an OBS source never shows
+    an empty frame where it used to show a board."""
+    if design is None or not rows:
+        return None
+    from afc_organizers.views_leaderboard_design import _serialize_design
+    return {
+        "design": _serialize_design(design, request),
+        "rows": rows,
+        # OBS browser sources are 1920x1080, matching the leaderboard overlay's stable link, which
+        # also hardcodes size=youtube (see the FE leaderboardUrl builder).
+        "size": "youtube",
+    }
+
+
+def _opted_out_media_ids(event, kind, id_field):
+    """The ids this event's media audit suppressed for `kind` ("team_logo" / "esports_image"), read in
+    ONE query so a once-a-second poll does not run an EXISTS per row.
+
+    Honoured on every design-driven board for the same reason the booyah board honours it: a player
+    who asked for their photo to stay off this event's broadcast must not reappear on the MVP board
+    because it happens to be a different scene. See views_media_audit.py (where the rows are created)
+    and _booyah_suppressed (the single-row twin the booyah resolver uses)."""
+    from .models import EventMediaOptOut
+    ids = (EventMediaOptOut.objects
+           .filter(event=event, kind=kind)
+           .values_list(id_field, flat=True))
+    return {i for i in ids if i is not None}
+
+
+def _player_board_rows(event, players, rows):
+    """MVP (G) + TOP-KILLERS (H): the shared ranked player rows, prepared for DesignBoard.
+
+    `rows` is build_player_design_rows' output - already keyed by the design's PLAYER field types
+    (pos / player_name / esports_image / kills / damage / assists / mvp_count / team_name /
+    team_country / matches), which is why a player board needs no row builder of its own. Two things
+    are added here:
+
+      • `row_key`, a stable per-player identity, which is REQUIRED rather than cosmetic. DesignBoard
+        identifies a row by row_key ?? team_name, and a player board is full of teammates: without it
+        every player of one team collapses onto a single React key and the block renders one player.
+      • the media opt-out, applied to the photo.
+
+    NO `slot` key: a player board IS a ranked list, so the row's `pos` already is its slot and
+    DesignBoard's `slot ?? pos` does the right thing. That is what makes the design alone decide how
+    much of the ranking shows: a column group of ONE row starting at rank 1 is "just the MVP, the
+    moment", a group of ten rows is the top ten, and two groups of five are two side-by-side columns.
+    `players` (the ranked dicts, which still carry user_id) and `rows` are 1:1 by construction -
+    build_player_design_rows maps one to one - so zip pairs each row with its own player."""
+    suppressed = _opted_out_media_ids(event, "esports_image", "user_id")
+    out = []
+    for player, row in zip(players, rows):
+        user_id = player.get("user_id")
+        board_row = dict(row)
+        board_row["row_key"] = f"player-{user_id}"
+        if user_id in suppressed:
+            board_row["esports_image"] = None
+        out.append(board_row)
+    return out
+
+
+def _h2h_board(event, config, mode, board_rows, request):
+    """HEAD TO HEAD: the design-driven versus board, or None to keep the built-in competitor cards.
+
+    THE SHAPE PROBLEM, AND WHY IT NEEDED NO NEW CONCEPT. A column group tiles its rows DOWNWARD from
+    one Y, and every field carries its own x. Two opposing sides are therefore two column groups of
+    ONE row each, given the same row_start_pct and fields placed at left-hand and right-hand x
+    values - the left side is group 0, the right side is group 1. That is the same mechanism the
+    two-column Dynasty leaderboard already uses (non-overlapping start_rank ranges), so slotByRank
+    needs nothing new, a three-way comparison is a third group, and an operator who wants the sides
+    STACKED instead just uses one group of two rows.
+
+    So a competitor is a row and `slot` is which side it is: slot 1 the first pick, slot 2 the second,
+    slot 3 the optional third. `pos` carries the same number as a DISPLAYABLE value, so a design can
+    print "1" / "2" beside each side.
+
+    `board_rows` is collected by _h2h_payload as it walks the competitors (it has the Team / User
+    objects in hand there, which is where the logo, flag and identity come from). Bracket mode never
+    reaches here: a bracket is a tree, not rows, so it keeps its own renderer."""
+    design = _scene_design(config.get("design_id"), "h2h")
+    if design is None:
+        return None
+    # A versus board with one side is not a comparison; the built-in cards refuse to draw under two
+    # competitors for the same reason, so the two paths agree on what "not ready" means.
+    if len(board_rows) < 2:
+        return None
+    suppressed_kind = "esports_image" if mode == "player" else "team_logo"
+    suppressed_field = "user_id" if mode == "player" else "team_id"
+    suppressed = _opted_out_media_ids(event, suppressed_kind, suppressed_field)
+    image_key = "esports_image" if mode == "player" else "team_logo"
+    rows = []
+    for row, source_id in board_rows:
+        r = dict(row)
+        if source_id in suppressed:
+            r[image_key] = None
+        rows.append(r)
+    return _scene_board(design, rows, request)
+
+
+def _h2h_competitor_row(slot_index, name, image, stats, mode, country=""):
+    """One head-to-head competitor as a DesignBoard row, keyed by design field types.
+
+    Team mode fills team_name / team_logo / team_country (so a TEAM FLAG column resolves), player mode
+    fills player_name / esports_image; the stats map through H2H_STAT_FIELDS so an organizer places
+    the ordinary KILLS / TOTAL POINTS / DAMAGE columns they already know. Keys the other mode would
+    use are simply absent, and an absent key renders a blank cell - the same contract a player column
+    has on a team leaderboard."""
+    row = {
+        "slot": H2H_FIRST_SLOT + slot_index,
+        # Stable identity between polls (the FLIP glide + count-up). Slot-based rather than id-based:
+        # a side keeps its element while the operator swaps WHO is in it, so the numbers count up to
+        # the new competitor's instead of the card jumping.
+        "row_key": f"h2h-slot-{slot_index + 1}",
+        # The side's number, as something a design can actually print.
+        "pos": slot_index + 1,
+    }
+    if mode == "player":
+        row["player_name"] = name
+        row["esports_image"] = image
+    else:
+        row["team_name"] = name
+        row["team_logo"] = image
+        row["team_country"] = country
+    for key, value in (stats or {}).items():
+        field_type = H2H_STAT_FIELDS.get(key)
+        if field_type:
+            row[field_type] = value
+    return row
 
 
 def _booyah_payload(event, config, request):
@@ -503,14 +741,11 @@ def _booyah_design(design_id):
 
     This ONE check is the whole migration story: a booyah overlay only leaves the legacy banner when
     somebody deliberately binds a booyah-TYPE design to it. Every overlay configured before this
-    change points at a leaderboard design (or at nothing), so it keeps the banner it has."""
-    if not design_id:
-        return None
-    from afc_organizers.models import OrgLeaderboardDesign
-    d = (OrgLeaderboardDesign.objects
-         .filter(id=design_id, design_type="booyah")
-         .prefetch_related("logos", "fields", "texts", "pages").first())
-    return d
+    change points at a leaderboard design (or at nothing), so it keeps the banner it has.
+
+    Delegates to _scene_design, the generalised twin the MVP / top-killer / head-to-head boards use
+    (owner 2026-08-08), so all four scenes resolve their design through ONE query and cannot drift."""
+    return _scene_design(design_id, "booyah")
 
 
 def _booyah_winning_stat(event, config):
@@ -674,16 +909,11 @@ def _booyah_board(event, config, request):
     win = _booyah_winning_stat(event, config)
     if win is None:
         return None
-    from afc_organizers.views_leaderboard_design import _serialize_design
     team_row = _booyah_team_row(event, win, request)
     rows = [team_row] + _booyah_player_rows(event, win, team_row, request)
-    return {
-        "design": _serialize_design(design, request),
-        "rows": rows,
-        # OBS browser sources are 1920x1080, matching the leaderboard overlay's stable link, which
-        # also hardcodes size=youtube (see the FE leaderboardUrl builder).
-        "size": "youtube",
-    }
+    # _scene_board serialises the design and stamps the canvas size, shared with the MVP /
+    # top-killer / head-to-head boards (owner 2026-08-08) so all four scenes ship one payload shape.
+    return _scene_board(design, rows, request)
 
 
 # ── AFC CAPTURE remote update + config (owner 2026-07-02) ───────────────────────

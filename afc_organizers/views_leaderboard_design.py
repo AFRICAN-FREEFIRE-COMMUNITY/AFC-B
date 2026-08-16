@@ -53,6 +53,24 @@ from afc_organizers.permissions import member_or_403 as _member_or_403
 FIELD_TYPES = {c[0] for c in OrgLeaderboardDesignField.FIELD_CHOICES}
 ALIGN_VALUES = {"left", "center", "right"}
 
+# ── Design TYPES (OrgLeaderboardDesign.design_type) ───────────────────────────────────────────────
+# The type is a MARKER, never a different editor: every design is authored with the same tools
+# (background, column groups, placed fields, logos, freeform text). What it says is WHICH live scene
+# the design was laid out for, and therefore which overlay may render THROUGH it rather than through
+# that scene's built-in layout:
+#   leaderboard  - standings rows (the default, and what every pre-existing design is)
+#   versus       - the legacy head-to-head LOOK: the built-in competitor cards take this design's
+#                  background + colours + versus_config slot positions (owner 2026-07-02)
+#   booyah       - the winner moment: slot 1 the winning team, slots 2+ its players (owner 2026-08-06)
+#   mvp          - the MVP board's ranked players (owner 2026-08-08)
+#   top_killers  - the top-killer board's ranked players (owner 2026-08-08)
+#   h2h          - a head-to-head board drawn from PLACED COLUMNS, one column group per side, rather
+#                  than the built-in cards `versus` styles (owner 2026-08-08)
+# The model column carries no `choices`, so extending this set needs NO migration; this is the only
+# gate, and anything else posted falls back to "leaderboard". Mirrored on the frontend by
+# lib/leaderboardDesigns.LeaderboardDesign["design_type"] and the editor's Design-type picker.
+DESIGN_TYPES = {"leaderboard", "versus", "booyah", "mvp", "top_killers", "h2h"}
+
 
 def _resolve_library(request, raw_org_id):
     """Resolve the (organization|None) a design library request targets, and whether the caller
@@ -504,9 +522,15 @@ def _apply_fields(d, data):
     # laid out for its row shape (slot 1 = the winning team, slots 2+ = that team's players) and can
     # render it instead of the legacy hard-coded banner. See afc_tournament_and_scrims
     # .views_overlays._booyah_payload / _booyah_board_rows and the FE BooyahView.
+    # "mvp" / "top_killers" / "h2h" (owner 2026-08-08) extend the same idea to the other three live
+    # scenes, each a MARKER only: a design of that type is laid out with the ordinary editor tools and
+    # its overlay renders THROUGH it (afc_tournament_and_scrims.views_overlays._mvp_payload /
+    # _top_killers_payload / _h2h_payload -> the `board` key -> the FE PlayerBoardView / H2HView)
+    # instead of that scene's built-in layout. An unknown value still falls back to "leaderboard", so
+    # a client that posts a type this build does not know cannot leave a design in a broken state.
     if "design_type" in data:
         dt = str(data.get("design_type") or "").strip().lower()
-        d.design_type = dt if dt in ("leaderboard", "versus", "booyah") else "leaderboard"
+        d.design_type = dt if dt in DESIGN_TYPES else "leaderboard"
     if "versus_config" in data:
         raw = data.get("versus_config")
         try:
