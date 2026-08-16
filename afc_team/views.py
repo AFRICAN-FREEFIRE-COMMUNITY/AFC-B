@@ -2041,6 +2041,25 @@ def get_team_details(request):
         _events_seen = {}
         for _p in tournament_performance:
             _events_seen[_p["event_id"]] = _p  # collapse multiple entries for the same event
+
+        # PLAYED, not REGISTERED (owner ruling 2026-08-08: "count events played, matches they
+        # participated in where a score was assigned to them"). tournament_performance is built
+        # from every TournamentTeam row, i.e. every REGISTRATION, so an event the team signed up
+        # for and never played still appears in it with matches_played = 0. Counting those was the
+        # team-side twin of the player-side bug fixed in afc_tournament_and_scrims/participation.py,
+        # and left the team card and the player card disagreeing about the same event.
+        #
+        # A team's evidence of play is its own scored match lines, so the gate is
+        # `matches_played > 0`, which is Count() of that team's TournamentTeamMatchStats rows for
+        # the event (computed as tt_agg above). Note this is a COUNT OF ROWS, never a truthiness
+        # test on a score: a team that played and scored zero points has matches_played >= 1 and
+        # still counts, which is the falsy-zero trap this repo has fallen into three times.
+        #
+        # The per-event breakdown list itself is left alone on purpose: an entered-but-not-played
+        # event is still part of the team's history and is honestly shown there with zeros.
+        _events_played = {
+            _eid: _p for _eid, _p in _events_seen.items() if (_p["matches_played"] or 0) > 0
+        }
         stats_overview = {
             "total_kills": total_kills_all,
             "tournament_wins": sum(
@@ -2052,10 +2071,10 @@ def get_team_details(request):
                 if _p["competition_type"] == "scrims" and _p["final_placement"] == 1
             ),
             "tournaments_played": sum(
-                1 for _p in _events_seen.values() if _p["competition_type"] == "tournament"
+                1 for _p in _events_played.values() if _p["competition_type"] == "tournament"
             ),
             "scrims_played": sum(
-                1 for _p in _events_seen.values() if _p["competition_type"] == "scrims"
+                1 for _p in _events_played.values() if _p["competition_type"] == "scrims"
             ),
         }
 
