@@ -1664,3 +1664,32 @@ class TrustedDevice(models.Model):
 
     def __str__(self):
         return f"{self.user.username} trusted device ({self.label or 'unknown'})"
+
+class FeatureInterest(models.Model):
+    """One person saying "I want this" about a feature that does not exist yet.
+
+    Generic on purpose. The first user is the Fantasy League coming-soon page (owner 2026-08-16),
+    but "one person, one feature, are they interested" has nothing to do with fantasy football, and
+    a table per coming-soon page would be four copies of this by the fifth page.
+
+    UNIQUE per (feature, user) because the number is only worth reading if it counts PEOPLE. An
+    untick DELETES the row rather than flagging it: "interested" is a current opinion, not an event
+    that happened, and a table of people who changed their mind is worth nothing.
+
+    Written and read by afc_auth.feature_interest (GET/POST auth/feature-interest/), rendered by
+    frontend app/(user)/fantasy/page.tsx.
+    """
+    interest_id = models.AutoField(primary_key=True)
+    # Which feature. Constrained by afc_auth.feature_interest.KNOWN_FEATURES at the endpoint rather
+    # than by `choices` here, so adding a coming-soon page needs no migration.
+    feature = models.CharField(max_length=40)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="feature_interests")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("feature", "user")
+        indexes = [models.Index(fields=["feature"])]
+
+    def __str__(self):
+        return f"{self.user_id} wants {self.feature}"
