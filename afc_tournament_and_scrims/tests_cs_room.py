@@ -24,7 +24,7 @@ import datetime
 from afc_auth.models import Notifications, SessionToken, User
 from afc_organizers.models import Organization, OrganizationMember
 
-from afc_tournament_and_scrims import cs_room, head_to_head
+from afc_tournament_and_scrims import cs_room, cs_room_catalogue, head_to_head
 from afc_tournament_and_scrims.models import (
     CSRoomConfig,
     CSRoomPreset,
@@ -88,7 +88,10 @@ class RoomSettingsSaveTests(H2HBase):
         config = CSRoomConfig.objects.get(stage=self.stage)
         self.assertGreater(len(config.store), 50)
         self.assertEqual(len(config.round_economy), 7)
-        self.assertEqual(len(config.toggles), 24)
+        # Counted against the CATALOGUE, not a literal: the point of the assertion is "a new
+        # config carries EVERY toggle", and a hardcoded number turns any legitimate addition to
+        # the catalogue into a failing test about nothing.
+        self.assertEqual(len(config.toggles), len(cs_room_catalogue.TOGGLES))
         self.assertEqual(len(config.areas), 7)
 
     def test_invalid_values_are_refused_with_a_readable_message(self):
@@ -293,8 +296,9 @@ class PresetTests(H2HBase):
         values = cs_room.apply_builtin_mode("esports_mode")
         self.assertEqual(values["rounds"], 13)
         self.assertEqual(values["economy"], "esports")
-        # A partial mode merges toggles rather than replacing the whole set.
-        self.assertEqual(len(values["toggles"]), 24)
+        # A partial mode merges toggles rather than replacing the whole set, so the result still
+        # holds every catalogue key. Counted against the catalogue for the same reason as above.
+        self.assertEqual(len(values["toggles"]), len(cs_room_catalogue.TOGGLES))
         self.assertTrue(values["toggles"]["block_emulators"])
         # Rounds moved to 13, so the per-round documents must follow.
         self.assertEqual(len(values["round_economy"]), 13)
