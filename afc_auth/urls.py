@@ -1,5 +1,8 @@
 from django.urls import path, include
 from .views import *
+# Its own module rather than another function in the 3,000-line views.py: it is a
+# self-contained two-endpoint feature with no overlap with account handling.
+from .feature_interest import feature_interest
 from django.conf import settings
 from django.conf.urls.static import static
 # Player-to-player reports (owner 2026-06-20) live in their own module, mirroring the
@@ -233,6 +236,10 @@ urlpatterns = [
     # homepage, newest first, capped at HOME_PINNED_NOTICES_LIMIT. Public, no auth. Consumed by
     # frontend app/(user)/_components/HomeNotices.tsx.
     path('get-pinned-news/', get_pinned_news, name='get_pinned_news'),
+    # "I want this" on a feature that does not exist yet (owner 2026-08-16). GET is public so the
+    # count renders for a signed-out reader; POST needs a login so the number counts PEOPLE rather
+    # than clicks. Consumed by the Fantasy League coming-soon page, frontend app/(user)/fantasy.
+    path('feature-interest/', feature_interest, name='feature_interest'),
     path('delete-news/', delete_news, name='delete_news'),
     path('add-role/', add_role, name='add_role'),
     path('delete-role/', delete_role, name='delete_role'),
