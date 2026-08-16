@@ -428,6 +428,13 @@ def get_player_details(request):
         "scrims_wins": agg["scrims_wins"],
         "tournaments_wins": agg["tournaments_wins"],
 
+        # Events this player actually PLAYED, split by competition_type (owner ruling
+        # 2026-08-08). Same shared rule, and therefore the same two numbers, as the
+        # player's own profile shows them (afc_auth.views.get_user_profile) and as the
+        # public player page renders. See afc_tournament_and_scrims/participation.py.
+        "tournaments_played": agg["tournaments_played"],
+        "scrims_played": agg["scrims_played"],
+
         # The TEAM record (every match of every team this player was rostered on), kept
         # separate from the player's own total_wins/win_rate above. See the two-statistics
         # note in afc_player.aggregation.compute_player_stats. The former scrim_booyah /
@@ -542,6 +549,12 @@ def get_public_player_stats(request):
             "tournaments_kills": stats["tournaments_kills"],
             "scrims_wins": stats["scrims_wins"],
             "tournaments_wins": stats["tournaments_wins"],
+            # Events this player actually PLAYED (owner ruling 2026-08-08): the SAME two
+            # numbers the owner's own profile shows, from the one shared rule, so the public
+            # player page and the profile cannot describe two different careers for one
+            # person. Rendered by PlayerClient.tsx's "Tournaments played" headline card.
+            "tournaments_played": stats["tournaments_played"],
+            "scrims_played": stats["scrims_played"],
             # The TEAM record, named separately from the player's own total_wins/win_rate
             # above (see compute_player_stats). Replaces the removed scrim_booyah /
             # tournament_booyah, which only ever mirrored scrims_wins / tournaments_wins.
@@ -572,6 +585,10 @@ def get_public_player_stats(request):
             "tournaments_kills": 0,
             "scrims_wins": 0,
             "tournaments_wins": 0,
+            # Zeroed with the rest of the performance block: how much someone has played is
+            # part of the record they chose to keep private (User.stats_visible).
+            "tournaments_played": 0,
+            "scrims_played": 0,
             "team_matches": 0,
             "team_wins": 0,
             "team_win_rate": 0,
