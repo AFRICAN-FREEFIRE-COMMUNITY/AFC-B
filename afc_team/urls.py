@@ -1,7 +1,8 @@
 from django.urls import path, include
 from .views import *
-# Team role permissions (owner 2026-08-08). Same reason as above: its own module, so the star
-# import is not what pulls these in. See afc_team/views_permissions.py.
+# Automatic transfer feed (backlog item 21). Imported explicitly rather than via the star import
+# above, because it lives in its own read-only module - see afc_team/views_transfers.py.
+from .views_transfers import get_transfer_feed
 # Team role permissions (owner 2026-08-08). Same reason as above: its own module, so the star
 # import is not what pulls these in. See afc_team/views_permissions.py.
 from .views_permissions import get_team_role_permissions, set_team_role_permissions
@@ -58,4 +59,15 @@ urlpatterns = [
     # Team typeahead for <TeamSearchSelect/> (Standalone Leaderboards wizard). Mirrors
     # auth/search-users/. Any logged-in user; q>=2; returns {results:[{team_id,team_name,team_tag,country}], total_count}.
     path('search-teams/', search_teams, name='search_teams'),
+    # Public automatic transfer feed (backlog item 21, owner 2026-08-08). No auth; supports
+    # ?team_id= / ?limit= / ?offset=. Consumed by the "Transfers" category on the public news page
+    # (frontend components/news/TransferFeed.tsx).
+    path('transfers/', get_transfer_feed, name='get_transfer_feed'),
+    # ── Team role permissions (owner 2026-08-08) ──────────────────────────────────────────────
+    # The owner decides what each management role may do with the team. READ is open to the team's
+    # own members (and AFC admins) so a player can see what their role allows; WRITE is owner-only.
+    # A team with no saved rows behaves exactly as it does today - see afc_team/permissions.py.
+    # Consumed by app/(user)/teams/[id]/permissions.
+    path('role-permissions/', get_team_role_permissions, name='get_team_role_permissions'),
+    path('set-role-permissions/', set_team_role_permissions, name='set_team_role_permissions'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
