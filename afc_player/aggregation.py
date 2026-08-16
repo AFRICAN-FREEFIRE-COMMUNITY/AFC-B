@@ -14,12 +14,22 @@ a per-event and per-match breakdown. Rather than duplicate (and risk drift), the
 heavy lifting lives here once and both views call it.
 
 DATA SOURCES (all real tables - nothing is fabricated here):
-  • TournamentPlayerMatchStats  → per-player per-match kills / damage  (the player line)
+  • TournamentPlayerMatchStats  → per-player per-match kills / damage  (the SQUAD player line)
+  • SoloPlayerMatchStats         → per-player per-match kills / placement (the SOLO player line)
   • TournamentTeamMatchStats     → per-team   per-match placement / points (the team line
                                     the player's booyah / win is read from)
   • Match.mvp                    → MVP awards
   • Event (via match.leaderboard.event) → competition_type (tournament vs scrims),
                                     name, date, tier
+
+BOTH ENTRY PATHS ARE READ (owner bug 2026-08-08). This module used to walk ONLY
+TournamentPlayerMatchStats, i.e. only squad play. afc_auth.views.get_user_profile has always
+added the solo table too, so the same human read one career on their OWN profile and a different
+one on the PUBLIC player page and the admin player detail: 109 players disagreed with themselves
+on total kills, and for 78 of them - people who have only ever entered solo events - the public
+page reported 0 kills and 0 matches while their own profile showed real numbers. Both surfaces
+now read solo + squad here, so there is one population and one answer. See §1 below for the one
+number that deliberately keeps a squad-only denominator (avg_damage) and why.
 
 If a player has no recorded stats every number is simply 0 / every list empty - 
 that is the truthful empty state, not a stub.
@@ -35,14 +45,19 @@ from afc_team.models import TeamMembers
 from afc_tournament_and_scrims.models import (
     Match,
     RegisteredCompetitors,
+    SoloPlayerMatchStats,
     TournamentPlayerMatchStats,
     TournamentTeamMatchStats,
     TournamentTeamMember,
 )
-# The ONE rule for "did this player really take part" (status / waitlist / no-show / draft
-# gates), shared with afc_auth.views.get_user_profile so the public player page and the
-# owner's own profile cannot disagree. See afc_tournament_and_scrims/participation.py.
-from afc_tournament_and_scrims.participation import counted_tournament_team_ids
+# The ONE rule for "did this player really play in this event" (a scored match line), shared
+# with afc_auth.views.get_user_profile so the public player page and the owner's own profile
+# cannot disagree, plus the separate roster-shaped rule the TEAM record needs. Both live in
+# afc_tournament_and_scrims/participation.py, which explains why they are different questions.
+from afc_tournament_and_scrims.participation import (
+    counted_tournament_team_ids,
+    played_event_counts,
+)
 
 
 # Map the Event's stored tournament_tier code to a human label for display.
@@ -81,7 +96,8 @@ def compute_player_stats(player, *, include_breakdown=True):
         (total_kills, total_wins, total_mvps, kdr, avg_damage, win_rate,
          scrims_kills, tournaments_kills, scrims_wins, tournaments_wins,
          total_matches) plus the separately-named TEAM record
-        (team_matches, team_wins, team_win_rate)
+        (team_matches, team_wins, team_win_rate) plus the events-PLAYED pair
+        (tournaments_played, scrims_played) shared with the owner's own profile
 
     TWO DIFFERENT WIN STATISTICS, deliberately kept apart (owner bug 2026-08-07):
       • total_wins / win_rate  -> the PLAYER'S OWN record. Only matches this player was on
@@ -114,9 +130,31 @@ def compute_player_stats(player, *, include_breakdown=True):
         )
     )
 
+    # SOLO match lines, the OTHER half of the same career (owner bug 2026-08-08). A solo
+    # competitor has no team and no roster, so their line hangs off their RegisteredCompetitors
+    # row, which is what carries the event - the same shape participation.scored_solo_match_lines
+    # reads. Without this half, a solo-only player's public page showed 0 kills and 0 matches
+    # while their own profile showed the real numbers (see the module header).
+    solo_stat_rows = (
+        SoloPlayerMatchStats.objects.filter(competitor__user=player)
+        .select_related("competitor", "competitor__event", "match")
+    )
+
     total_kills = 0
     total_damage = 0
-    total_matches = player_stat_rows.count()
+    # Counted as the two row sets are walked rather than with .count(), so the squad and solo
+    # halves land in ONE denominator and every ratio below divides by the population it was
+    # actually counted from.
+    total_matches = 0
+
+    # avg_damage keeps its own SQUAD-ONLY denominator. SoloPlayerMatchStats has no `damage`
+    # column at all (kills / placement / points only), so folding solo matches into the divisor
+    # while no solo row can add to the dividend would quietly drag every solo player's average
+    # damage towards zero - a new wrong number in the act of fixing an old one. Damage is
+    # therefore averaged over the matches damage was actually recorded for, and stays 0 for a
+    # solo-only player because there is genuinely no damage data for them, not because of a
+    # divide-by-zero guard.
+    damage_matches = 0
 
     scrim_kills = 0
     tournament_kills = 0
@@ -142,6 +180,8 @@ def compute_player_stats(player, *, include_breakdown=True):
     for s in player_stat_rows:
         total_kills += s.kills
         total_damage += s.damage
+        total_matches += 1
+        damage_matches += 1
 
         team_stats = s.team_stats
         event = _event_of(team_stats)
@@ -211,6 +251,93 @@ def compute_player_stats(player, *, include_breakdown=True):
                 "is_mvp": bool(match and match.mvp_id == player.user_id),
             })
 
+    # ── 1b. The SOLO half of the same career (owner bug 2026-08-08) ─────────────────────────────
+    # Identical accounting to the squad loop above, against the solo table: one row is one match
+    # the player was on the sheet for, a win is that row placing 1st, and the event is taken from
+    # competitor.event (a non-null FK) rather than match.leaderboard.event, for the same reason
+    # participation.py takes it there - Match.leaderboard is nullable and silently loses rows.
+    #
+    # NOTE there is no `damage` here and none is invented: SoloPlayerMatchStats has no such
+    # column, which is exactly why damage_matches is tracked separately above.
+    for s in solo_stat_rows:
+        event = s.competitor.event
+        # Draft events are an organizer's unpublished sketch, never a played event. The squad loop
+        # gets this filter for free (a draft event has no leaderboard, so _event_of returns None);
+        # the solo path resolves its event directly, so it must say so.
+        if event is None or event.is_draft:
+            continue
+        event_type = event.competition_type
+
+        total_kills += s.kills
+        total_matches += 1
+
+        if event_type == "scrims":
+            scrim_kills += s.kills
+        else:
+            tournament_kills += s.kills
+
+        # A solo win is this player's own row placing 1st - numerator and denominator are the same
+        # rows here by construction, since a solo competitor IS the whole competitor.
+        if s.placement == 1:
+            total_wins += 1
+            if event_type == "scrims":
+                scrim_wins += 1
+            else:
+                tournament_wins += 1
+
+        if include_breakdown:
+            # ── per-event roll-up ──
+            # Folded into the SAME accumulator as squad play, so a player who entered one event
+            # solo and another as a squad gets one combined history rather than two. Before this,
+            # a solo-only player's Stats tab was completely empty while the Overview tab claimed
+            # they had played tournaments.
+            acc = events_acc.get(event.event_id)
+            if acc is None:
+                acc = {
+                    "event_id": event.event_id,
+                    "event_name": event.event_name,
+                    "competition_type": event.competition_type,
+                    "event_date": event.start_date.isoformat() if event.start_date else None,
+                    "tournament_tier": event.tournament_tier,
+                    "tournament_tier_label": _EVENT_TIER_LABELS.get(event.tournament_tier),
+                    "kills": 0,
+                    "damage": 0,
+                    "matches_played": 0,
+                    "mvps": 0,
+                    "best_placement": None,
+                    "total_points": 0,
+                }
+                events_acc[event.event_id] = acc
+            acc["kills"] += s.kills
+            acc["matches_played"] += 1
+            # In a solo event the competitor's own line IS the standings line, so placement and
+            # points come straight off this row (in the squad path they come off the team line).
+            acc["total_points"] += s.total_points
+            if acc["best_placement"] is None or s.placement < acc["best_placement"]:
+                acc["best_placement"] = s.placement
+
+            # ── per-match line ──
+            match = getattr(s, "match", None)
+            match_breakdown.append({
+                "event_id": event.event_id,
+                "event_name": event.event_name,
+                "competition_type": event.competition_type,
+                # A solo event has no team/roster grouping to split by.
+                "stage_name": None,
+                "group_name": None,
+                "match_number": getattr(match, "match_number", None),
+                "match_map": getattr(match, "match_map", None),
+                "match_date": match.match_date.isoformat() if match and match.match_date else None,
+                "placement": s.placement,
+                "team_points": s.total_points,
+                "kills": s.kills,
+                # No damage/assists columns on the solo table - reported as 0, the honest
+                # "not recorded" value for this format, never a fabricated figure.
+                "damage": 0,
+                "assists": 0,
+                "is_mvp": bool(match and match.mvp_id == player.user_id),
+            })
+
     # ── 2. MVPs (Match.mvp points at the User) ──
     total_mvps = Match.objects.filter(mvp=player).count()
 
@@ -269,14 +396,29 @@ def compute_player_stats(player, *, include_breakdown=True):
 
     # ── 5. Derived ratios (guard divide-by-zero exactly like the admin endpoint) ──
     # EVERY ratio below divides a number by the population it was counted from:
-    #   kdr / avg_damage / win_rate  -> the player's own match rows  (total_matches)
-    #   team_win_rate                -> the rostered teams' match rows (team_matches)
-    # Mixing the two is the bug this block was rewritten to make impossible; win_rate is now
-    # bounded to 0-100% by construction because total_wins is a subset of total_matches.
+    #   kdr / win_rate  -> the player's own match rows, SOLO + SQUAD   (total_matches)
+    #   avg_damage      -> only the rows that carry a damage column     (damage_matches)
+    #   team_win_rate   -> the rostered teams' match rows              (team_matches)
+    # Mixing the first and the last is the bug this block was rewritten to make impossible;
+    # win_rate is bounded to 0-100% by construction because total_wins is a subset of
+    # total_matches. Splitting avg_damage onto its own divisor is the same discipline applied to
+    # the solo path, which records kills but no damage (owner bug 2026-08-08).
     kdr = total_kills / total_matches if total_matches > 0 else 0
-    avg_damage = total_damage / total_matches if total_matches > 0 else 0
+    avg_damage = total_damage / damage_matches if damage_matches > 0 else 0
     win_rate = (total_wins / total_matches * 100) if total_matches > 0 else 0
     team_win_rate = (team_wins / team_matches * 100) if team_matches > 0 else 0
+
+    # ── 6. Events PLAYED, split tournaments / scrims (owner ruling 2026-08-08) ──────────────────
+    # The same two numbers the owner's own profile shows, from the same shared rule, so the public
+    # player page and the profile can never report different careers for one person.
+    #
+    # Deliberately NOT derived by counting per_event above, even though per_event now covers both
+    # entry paths too: the SQUAD half of per_event resolves its event through Match.leaderboard,
+    # which is nullable, and 230 scored lines in the live database (one whole event) hang off
+    # matches with no leaderboard. Those rows are invisible to per_event and would be silently
+    # missing from the count. played_event_counts reads the non-null tournament_team.event
+    # instead, so it sees them. See participation.py, which explains the choice at length.
+    tournaments_played, scrims_played = played_event_counts(player)
 
     result = {
         "total_matches": total_matches,
@@ -294,6 +436,9 @@ def compute_player_stats(player, *, include_breakdown=True):
         # removed rather than kept as a second name for one number (owner bug 2026-08-07).
         "scrims_wins": scrim_wins,
         "tournaments_wins": tournament_wins,
+        # ── events PLAYED (not events registered for) - see §6 above ──
+        "tournaments_played": tournaments_played,
+        "scrims_played": scrims_played,
         # ── the TEAM record, explicitly named so it can never be read as the player's own ──
         "team_matches": team_matches,
         "team_wins": team_wins,
