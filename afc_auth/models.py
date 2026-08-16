@@ -700,6 +700,10 @@ class Notifications(models.Model):
         ("player", "Player"),
         ("shop", "Shop"),
         ("organizer", "Organizer"),
+        # poll -> Poll.slug -> /polls/<slug>. Written by afc_polls.views.admin_announce, which
+        # passes the poll's OWN eligibility spec as the broadcast audience, so the people notified
+        # are exactly the people who may vote. See afc_polls/views.py.
+        ("poll", "Poll"),
         ("custom", "Custom URL"),
         ("none", "No link"),
     ]
