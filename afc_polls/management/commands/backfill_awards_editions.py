@@ -45,65 +45,76 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        dry_run = options["dry_run"]
-
-        labels = sorted({
-            label for label in Poll.objects.filter(kind=Poll.AWARD)
-            .exclude(awards_edition="")
-            .values_list("awards_edition", flat=True)
-        })
-        if not labels:
-            self.stdout.write("No award polls carry an edition label. Nothing to do.")
-            return
-
-        created, linked = 0, 0
-        for label in labels:
-            polls = list(Poll.objects.filter(kind=Poll.AWARD, awards_edition=label))
-            edition = AwardsEdition.objects.filter(title=label).first()
-            if not edition:
-                edition = AwardsEdition.objects.filter(slug=slugify(label)[:120]).first()
-
-            if not edition:
-                # Every question published means the season is over and its winners are up, which
-                # is exactly the NFCA 2025 case. Anything else stays on AUTO so the dates an admin
-                # fills in later are what drives the page.
-                question_count = PollQuestion.objects.filter(poll__in=polls).count()
-                published = PollQuestion.objects.filter(
-                    poll__in=polls, published_winner_option__isnull=False
-                ).count()
-                edition_status = (
-                    AwardsEdition.WINNERS
-                    if question_count and published == question_count
-                    else AwardsEdition.AUTO
-                )
-                year = _year_from(label)
-                self.stdout.write(
-                    f"CREATE edition {slugify(label)!r} for {len(polls)} poll(s), "
-                    f"status={edition_status}, year={year}"
-                )
-                if not dry_run:
-                    with transaction.atomic():
-                        edition = AwardsEdition.objects.create(
-                            slug=_unique_slug(slugify(label)[:120] or "awards"),
-                            title=label,
-                            year=year,
-                            status=edition_status,
-                        )
-                created += 1
-
-            to_link = [poll for poll in polls if poll.edition_id != getattr(edition, "pk", None)]
-            if to_link:
-                self.stdout.write(f"  LINK {len(to_link)} poll(s) to {label!r}")
-                if not dry_run and edition:
-                    Poll.objects.filter(poll_id__in=[poll.pk for poll in to_link]).update(
-                        edition=edition
-                    )
-                linked += len(to_link)
-
-        verb = "would create" if dry_run else "created"
+        created, linked = ensure_editions(self.stdout, dry_run=options["dry_run"])
+        verb = "would create" if options["dry_run"] else "created"
         self.stdout.write(self.style.SUCCESS(
             f"{verb} {created} edition(s), linked {linked} poll(s)."
         ))
+
+
+def ensure_editions(stdout, dry_run=False):
+    """Create an AwardsEdition per distinct Poll.awards_edition label and link the polls to it.
+
+    Returns (editions_created, polls_linked). Extracted from handle() 2026-08-16 so
+    import_awards_winners can call it directly: an import that leaves the polls without an edition
+    row produces a /awards page reading "No awards season yet" while the winners sit right there in
+    the database, and the operator has no way to tell that a SECOND command was needed. Exactly
+    that happened on the first production deploy.
+    """
+    labels = sorted({
+        label for label in Poll.objects.filter(kind=Poll.AWARD)
+        .exclude(awards_edition="")
+        .values_list("awards_edition", flat=True)
+    })
+    if not labels:
+        stdout.write("No award polls carry an edition label. Nothing to do.")
+        return 0, 0
+
+    created, linked = 0, 0
+    for label in labels:
+        polls = list(Poll.objects.filter(kind=Poll.AWARD, awards_edition=label))
+        edition = AwardsEdition.objects.filter(title=label).first()
+        if not edition:
+            edition = AwardsEdition.objects.filter(slug=slugify(label)[:120]).first()
+
+        if not edition:
+            # Every question published means the season is over and its winners are up, which
+            # is exactly the NFCA 2025 case. Anything else stays on AUTO so the dates an admin
+            # fills in later are what drives the page.
+            question_count = PollQuestion.objects.filter(poll__in=polls).count()
+            published = PollQuestion.objects.filter(
+                poll__in=polls, published_winner_option__isnull=False
+            ).count()
+            edition_status = (
+                AwardsEdition.WINNERS
+                if question_count and published == question_count
+                else AwardsEdition.AUTO
+            )
+            year = _year_from(label)
+            stdout.write(
+                f"CREATE edition {slugify(label)!r} for {len(polls)} poll(s), "
+                f"status={edition_status}, year={year}"
+            )
+            if not dry_run:
+                with transaction.atomic():
+                    edition = AwardsEdition.objects.create(
+                        slug=_unique_slug(slugify(label)[:120] or "awards"),
+                        title=label,
+                        year=year,
+                        status=edition_status,
+                    )
+            created += 1
+
+        to_link = [poll for poll in polls if poll.edition_id != getattr(edition, "pk", None)]
+        if to_link:
+            stdout.write(f"  LINK {len(to_link)} poll(s) to {label!r}")
+            if not dry_run and edition:
+                Poll.objects.filter(poll_id__in=[poll.pk for poll in to_link]).update(
+                    edition=edition
+                )
+            linked += len(to_link)
+
+    return created, linked
 
 
 def _year_from(label):

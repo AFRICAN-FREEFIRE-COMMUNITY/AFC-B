@@ -394,6 +394,21 @@ class Command(BaseCommand):
                 f"questions removed={removed_questions}."
             )
         )
+        # ── the edition row, without which the awards page has nothing to show ────────────────
+        # Poll.awards_edition is a free-text LABEL; the awards surface lists AwardsEdition ROWS.
+        # Importing the winners and stopping there produces exactly the state the first production
+        # deploy hit: 27 categories sitting in the database and /awards reading "No awards season
+        # yet", with nothing on screen to suggest a second command was needed. So the import makes
+        # the row itself. ensure_editions is the SAME function `backfill_awards_editions` runs, and
+        # it is idempotent, so running either command in any order lands in the same place.
+        from .backfill_awards_editions import ensure_editions
+
+        editions_created, polls_linked = ensure_editions(self.stdout)
+        if editions_created or polls_linked:
+            self.stdout.write(self.style.SUCCESS(
+                f"Editions: created {editions_created}, linked {polls_linked} poll(s)."
+            ))
+
         self.stdout.write("Now run with --verify to compare the database against the file.")
 
     # ── compare against the recomputed tally (report only, never reconcile) ───────────────────
