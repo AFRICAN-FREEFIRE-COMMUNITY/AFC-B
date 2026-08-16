@@ -567,6 +567,24 @@ def _shadows(earlier, later):
     return all(_rule_matches_term(earlier, term) for term in later_terms)
 
 
+def _describe_condition(cond):
+    """One condition as a phrase a human reads, e.g. "prize >= 1,000 USD".
+
+    Falls back to the raw dict rather than guessing when the shape is unfamiliar: a contradiction
+    report that invents a phrase is worse than one that shows what is stored.
+    """
+    if not isinstance(cond, dict):
+        return str(cond)
+    field, op, value = cond.get("field"), cond.get("op"), cond.get("value")
+    if field is None or op is None:
+        return str(cond)
+    symbol = {"gte": ">=", "lte": "<=", "eq": "="}.get(op, op)
+    currency = cond.get("currency")
+    number = _as_number(value)
+    shown = f"{number:,.0f}" if number is not None else value
+    return f"{field} {symbol} {shown}{' ' + currency if currency else ''}"
+
+
 def _live(rules):
     """Rules that actually take part in classification, in evaluation order."""
     return [
@@ -718,6 +736,62 @@ def rule_contradictions(rules, default_tier=None, tables=None, rate_map=None):
                     f"{second[0]:,.0f} naira. Events in that range fall through to {where}.",
                     entries=[{"from": first[1], "to": second[0], "currency": "NGN"}],
                 ))
+
+    # 2b. A CONDITION inside a rule that can never decide anything.
+    #
+    # The checks above look for dead RULES. This one looks inside a rule, because a condition can
+    # be dead while the rule around it works fine, and nothing on screen would say so. The case
+    # that prompted it (owner, 2026-08-16): a Match ANY rule reading "prize >= 1,000,000 naira OR
+    # prize >= 1,000 USD", where $1,000 converts to about 1,358,704 naira. Every event clearing the
+    # dollar line has already cleared the naira line, so the dollar line can never be the branch
+    # that fires. The admin had written it expecting dollar events to be caught by it.
+    #
+    # The two match modes fail in opposite directions, and both are worth saying out loud:
+    #   MATCH ANY - a branch is dead when ANOTHER branch is LOOSER, because the looser one already
+    #               caught everything the stricter one would have.
+    #   MATCH ALL - a condition is dead when ANOTHER condition is STRICTER, because the stricter
+    #               one already excluded everything the looser one would have.
+    # Either way the rule still classifies correctly; the condition is simply doing no work, which
+    # is worth knowing before somebody edits the OTHER condition and silently changes the rule.
+    for rule in live:
+        conditions = [c for c in (rule.get("conditions") or []) if isinstance(c, dict)]
+        if len(conditions) < 2:
+            continue
+        any_mode = rule.get("match", "all") != "all"
+        for index, cond in enumerate(conditions):
+            others = conditions[:index] + conditions[index + 1:]
+            # WHICH ONE IS DEAD depends on the match mode, and getting it backwards names the
+            # condition that is doing the work:
+            #   ANY - this branch is dead when IT implies another, because everything it would
+            #         catch was already caught by the looser branch (the $1,000 line above the
+            #         1,000,000 naira line: the dollar line is the dead one).
+            #   ALL - this condition is dead when ANOTHER implies IT, because the stricter
+            #         condition has already excluded everything this one would have.
+            # _condition_implies takes a conjunction, so each other condition is offered alone.
+            covered_by = next(
+                (other for other in others
+                 if (_condition_implies([cond], other) if any_mode
+                     else _condition_implies([other], cond))),
+                None,
+            )
+            if covered_by is None:
+                continue
+            # Report what the ADMIN WROTE, currency and all. `conditions` here may be the
+            # naira-normalized view, and a message quoting "1,358,704" at somebody who typed
+            # "$1,000" is a message about a number they cannot find on their screen.
+            source = (rule.get("source_conditions") or conditions)
+            shown = source[index] if index < len(source) else cond
+            covered_index = conditions.index(covered_by)
+            covered_shown = (source[covered_index] if covered_index < len(source) else covered_by)
+            found.append(_contra(
+                "redundant_condition", f"event_tier_rules[{rule.get('id')}]",
+                f"{_describe(rule)} has a condition that can never decide anything: its "
+                f"{_describe_condition(shown)} is already covered by "
+                f"{_describe_condition(covered_shown)} in the same rule. The rule still works; "
+                f"that line just has no effect.",
+                entries=[{"id": rule.get("id"), "condition": shown,
+                          "covered_by": covered_shown}],
+            ))
 
     # 3. A live rule that still awards a retired tier.
     if tables is not None:
