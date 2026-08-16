@@ -377,6 +377,75 @@ class ContradictionTests(TestCase):
         self.assertIsNone(body["field_meta"]["social_media_points"]["currency"])
 
 
+# ═════════════════ a condition INSIDE a rule that can never decide anything ═════════════════
+# Owner, 2026-08-16, looking at a live rule reading "prize >= 1,000,000 naira OR prize >= 1,000
+# USD": the dollar line converts to about 1,358,704 naira, so every event clearing it had already
+# cleared the naira line. The rule classified correctly and nothing on screen said the dollar line
+# was doing nothing. The checks above look for dead RULES; these look inside one.
+class RedundantConditionTests(TestCase):
+    RATES = {"NGN": 1358.704, "USD": 1.0}
+
+    def _any_rule(self, conditions):
+        return {"id": 1, "name": "Tier 1 money", "priority": 0, "match": "any",
+                "conditions": conditions, "tier": 1, "enabled": True, "retired": False}
+
+    def test_on_match_any_the_STRICTER_branch_is_the_dead_one(self):
+        """It catches nothing the looser branch has not already caught."""
+        found = rule_contradictions([self._any_rule([
+            {"field": "prize", "op": "gte", "value": 1_000_000, "currency": "NGN"},
+            {"field": "prize", "op": "gte", "value": 1_000, "currency": "USD"},
+        ])], rate_map=self.RATES)
+        report = next(c for c in found if c["kind"] == "redundant_condition")
+        # The DOLLAR line is the dead one. Naming the naira line instead would send the admin to
+        # edit the condition that is doing all the work.
+        self.assertEqual(report["entries"][0]["condition"]["currency"], "USD")
+        self.assertEqual(report["entries"][0]["covered_by"]["currency"], "NGN")
+
+    def test_the_message_quotes_what_the_admin_TYPED_not_the_converted_number(self):
+        found = rule_contradictions([self._any_rule([
+            {"field": "prize", "op": "gte", "value": 1_000_000, "currency": "NGN"},
+            {"field": "prize", "op": "gte", "value": 1_000, "currency": "USD"},
+        ])], rate_map=self.RATES)
+        message = next(c for c in found if c["kind"] == "redundant_condition")["message"]
+        self.assertIn("1,000 USD", message)
+        # 1,358,704 is an implementation detail of the comparison, not a number on their screen.
+        self.assertNotIn("1,358,704", message)
+
+    def test_on_match_all_the_LOOSER_condition_is_the_dead_one(self):
+        """The stricter condition has already excluded everything the looser one would have."""
+        found = rule_contradictions([{
+            "id": 7, "name": "Tier 1", "priority": 0, "match": "all",
+            "conditions": [{"field": "prize", "op": "gte", "value": 500_000},
+                           {"field": "prize", "op": "gte", "value": 100_000}],
+            "tier": 1, "enabled": True, "retired": False,
+        }], rate_map=self.RATES)
+        report = next(c for c in found if c["kind"] == "redundant_condition")
+        self.assertEqual(report["entries"][0]["condition"]["value"], 100_000)
+        self.assertEqual(report["entries"][0]["covered_by"]["value"], 500_000)
+
+    def test_two_conditions_on_DIFFERENT_fields_are_never_redundant(self):
+        """Prize and format constrain different things, so neither covers the other. This is the
+        case that must stay silent: warning here would train an admin to ignore the panel."""
+        for mode in ("all", "any"):
+            found = rule_contradictions([{
+                "id": 9, "name": "Tier 1", "priority": 0, "match": mode,
+                "conditions": [{"field": "prize", "op": "gte", "value": 500_000},
+                               {"field": "format", "op": "eq", "value": "physical"}],
+                "tier": 1, "enabled": True, "retired": False,
+            }], rate_map=self.RATES)
+            self.assertEqual(
+                [c for c in found if c["kind"] == "redundant_condition"], [],
+                f"match {mode} should not report a redundant condition")
+
+    def test_a_single_condition_rule_is_never_reported(self):
+        found = rule_contradictions([{
+            "id": 11, "name": "Tier 1", "priority": 0, "match": "all",
+            "conditions": [{"field": "prize", "op": "gte", "value": 500_000}],
+            "tier": 1, "enabled": True, "retired": False,
+        }], rate_map=self.RATES)
+        self.assertEqual([c for c in found if c["kind"] == "redundant_condition"], [])
+
+
 # ═════════════════════════ season scope: the owner's central decision ═════════════════════════
 class SeasonScopeTests(_ScoredFixture):
     def test_a_change_does_not_alter_a_closed_season(self):
