@@ -127,6 +127,23 @@ _FX_NOTE = (
 _NUMERIC_FIELDS = ("prize", "teams", "players")
 _NUMERIC_OPS = ("gte", "lte")
 _FORMAT_OPS = ("is_lan", "is_virtual")
+
+# ── how the room was actually set up (owner 2026-08-16) ──────────────────────────────────────
+# A tournament played with weapon skins on, or with unlimited ammo, is not the same competition as
+# one played without them, and the owner wants that to be able to decide a tier rather than living
+# in a note somebody reads afterwards. Each is a yes/no, so they share the on/off ops.
+#
+# The values come from the room settings saved against the EVENT
+# (afc_tournament_and_scrims.CSRoomConfig.toggles). "Unlimited ammo" is not a stored toggle of its
+# own - `ammo_limit` off IS unlimited ammo - so it is derived, in ONE place, rather than added as a
+# second key that could disagree with the first.
+#
+# WHEN NOTHING WAS RECORDED the value is None and every one of these conditions fails closed, so a
+# rule about weapon skins simply does not fire for an event whose room was never filled in. That is
+# the honest answer: the alternative is guessing that an unrecorded setting was off, which would
+# quietly classify events on evidence nobody entered.
+_ROOM_FLAG_FIELDS = ("weapon_skins", "blue_zone", "unlimited_ammo")
+_ROOM_FLAG_OPS = ("is_on", "is_off")
 _VALID_MATCH = ("all", "any")
 _VALID_TIERS = (1, 2, 3)            # EventTierRule.TIER_CHOICES keys
 _VALID_FORMATS = ("lan", "virtual")  # accepted `format` values in a classify sample
@@ -357,10 +374,17 @@ def _validate_conditions(conditions):
             if op not in _FORMAT_OPS:
                 return None, f"Condition #{i}: field `format` requires op in {list(_FORMAT_OPS)}."
             clean.append({"field": "format", "op": op, "value": None})
+        elif field in _ROOM_FLAG_FIELDS:
+            # room flags → is_on / is_off; value irrelevant, same shape as a format condition.
+            if op not in _ROOM_FLAG_OPS:
+                return None, (
+                    f"Condition #{i}: field `{field}` requires op in {list(_ROOM_FLAG_OPS)}."
+                )
+            clean.append({"field": field, "op": op, "value": None})
         else:
             return None, (
                 f"Condition #{i}: `field` must be one of "
-                f"{list(_NUMERIC_FIELDS) + ['format']}."
+                f"{list(_NUMERIC_FIELDS) + ['format'] + list(_ROOM_FLAG_FIELDS)}."
             )
     return clean, None
 
@@ -403,6 +427,17 @@ def _eval_condition(c, sample, rate_map=None):
             return fmt == "lan"
         if op == "is_virtual":
             return fmt == "virtual"
+        return False
+    if field in _ROOM_FLAG_FIELDS:
+        flag = sample.get(field)
+        # None = the room settings were never filled in for this event. Both ops return False, so
+        # the rule does not fire either way rather than reading silence as an answer.
+        if flag is None:
+            return False
+        if op == "is_on":
+            return bool(flag)
+        if op == "is_off":
+            return not flag
         return False
     return False
 
