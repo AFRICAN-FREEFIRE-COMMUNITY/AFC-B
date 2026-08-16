@@ -10,14 +10,29 @@ WHY THIS COMMAND EXISTS, AND WHY IT RUNS BEFORE ANYTHING ELSE
     them in step (`afc_awards/views.py:352-356`) has been COMMENTED OUT since before those votes
     were cast. See WEBSITE/tasks/polls-spec.md section 7.2 trap 2.
 
-    So: THE PAGE FILE IS THE SOURCE OF TRUTH for the published winners. Nothing else is.
+    So the numbers had to be captured before that page was replaced. They were, and they are the
+    PUBLISHED_WINNERS literal below.
 
-WHY IT PARSES THE .tsx INSTEAD OF CARRYING A PYTHON COPY OF THE DATA
-    A transcribed copy is a second source of truth, and the whole point of this command is that
-    there is exactly one. Parsing the file means the import cannot silently disagree with what the
-    site shows, and `--verify` can re-read the file afterwards and prove row by row that it does
-    not. The parse is deliberately strict: it reads only the ACTIVE `const MANUAL_WINNERS` block,
-    drops commented-out lines, and refuses to guess at anything it cannot match.
+WHERE THE DATA LIVES NOW (changed 2026-08-16, and this is the important part)
+    It USED to parse the winners straight out of that page file, on the argument that a
+    transcribed copy would be a second source of truth. That argument died with the file: the
+    awards page became data-driven on 2026-08-16 and the `MANUAL_WINNERS` array no longer exists,
+    so the command failed outright with "No active `const MANUAL_WINNERS` declaration found" -
+    exactly the failure its own error message had been written to warn about.
+
+    The published results now live in the PUBLISHED_WINNERS literal below, transcribed once from
+    the last commit that still carried the array (frontend 64ff53c~1). That literal is the
+    bootstrap source for a fresh environment; the DATABASE is the source of truth thereafter.
+    `--file` still accepts a copy of the old page for anyone who wants to re-derive the numbers
+    from the original, and `--verify` compares the database against whichever source was used.
+
+ONE DELIBERATE DIFFERENCE FROM THE OLD PAGE (owner decision, 2026-08-16)
+    The page carried "Favorite DUO (Male)" and "Favorite DUO (MALE)" as two categories, both with
+    313 votes, one crediting JOKKIE and one XIXSCO. It was always ONE award; somebody split the
+    row in two so both names would display. Imported as-is it read as a duplicated category on the
+    public hall of fame, and "most decorated" credited JOKKIE with a win he shares. It is one
+    category here: "Favorite DUO Creators", won by "JOKKIE & XIXSCO", 313 votes. That makes the
+    2025 edition 27 categories, not 28.
 
 WHAT IT WRITES (and nothing else, per spec section 8 "Phase 0")
     One Poll per section of the file, kind='award', awards_edition='NFCA 2025':
@@ -45,6 +60,7 @@ USAGE
     python manage.py import_awards_winners               # import
     python manage.py import_awards_winners --verify      # re-read the file, compare against the DB
 """
+import copy
 import re
 from pathlib import Path
 
@@ -66,7 +82,56 @@ SECTION_SLUGS = {
     "esports-awards": "nfca-2025-esports",
 }
 
-# Default location of the source file, relative to the backend directory (BASE_DIR/..).
+# The published 2025 results, transcribed once from the last commit that still carried the
+# hardcoded array (frontend 64ff53c~1, `const MANUAL_WINNERS`). Shape matches parse_manual_winners'
+# return value exactly, so both paths feed the same importer. See the module docstring for why this
+# is a literal now and for the one deliberate difference from the page (the merged DUO category).
+PUBLISHED_WINNERS = [
+    {
+        "id": 'content-creators',
+        "name": 'Content Creators',
+        "categories": [
+            {"key": '1', "name": 'Best Overall Creator (Male)', "winner": 'JOKKIE', "votes": 310},
+            {"key": '2', "name": 'Best Overall Creator (Female)', "winner": 'SCARLETT', "votes": 281},
+            {"key": '3', "name": 'Best Streamer (Male)', "winner": 'RUDY', "votes": 229},
+            {"key": '4', "name": 'Best Streamer (Female)', "winner": 'SCARLETT', "votes": 259},
+            {"key": '5', "name": 'Funniest Creator (Male)', "winner": 'NNAYIZOOM', "votes": 142},
+            {"key": '6', "name": 'Funniest Creator (Female)', "winner": 'SUCCESS', "votes": 259},
+            {"key": '7', "name": 'Best Editor (Male)', "winner": 'DARKSEIDFF', "votes": 251},
+            {"key": '8', "name": 'Best Editor (Female)', "winner": 'STEPHHATESPEOPLE', "votes": 317},
+            {"key": '9', "name": 'Upcoming Creator (Male)', "winner": 'THABANG', "votes": 235},
+            {"key": '10', "name": 'Upcoming Creator (Female)', "winner": 'LUNA', "votes": 197},
+            {"key": '11', "name": 'Attractive Creator (Male)', "winner": 'DMS', "votes": 282},
+            {"key": '12', "name": 'Attractive Creator (Female)', "winner": 'SCARLETT', "votes": 272},
+            {"key": '13', "name": 'Educational Content (Male)', "winner": 'VIC VIX', "votes": 258},
+            {"key": '14', "name": 'Best Music Creator (Male)', "winner": 'ELVICCI', "votes": 271},
+            {"key": '15', "name": 'Best Voiceover (Male)', "winner": 'BAYMAX', "votes": 208},
+            {"key": '16', "name": 'Favorite DUO Creators', "winner": 'JOKKIE & XIXSCO', "votes": 313},
+        ],
+    },
+    {
+        "id": 'esports-awards',
+        "name": 'Esports Awards',
+        "categories": [
+            {"key": '19', "name": 'Best Esports Team', "winner": 'V-ENT ESPORTS', "votes": 143},
+            {"key": '20', "name": 'Best Esports Player', "winner": 'VT HYDRA', "votes": 133},
+            {"key": '21', "name": 'Best Esports Rusher', "winner": '3C SMITH', "votes": 115},
+            {"key": '22', "name": 'Best Esports Bomber', "winner": '3C MACIEN', "votes": 142},
+            {"key": '23', "name": 'Best Esports Sniper', "winner": 'ATH RORO', "votes": 128},
+            {"key": '24', "name": 'Best Esports Caster', "winner": 'WHOISZINO', "votes": 240},
+            {"key": '25', "name": 'Best Esports Creator', "winner": 'VT HYDRA', "votes": 129},
+            {"key": '26', "name": 'Best Esports Moderator', "winner": 'LORD JAY', "votes": 125},
+            {"key": '27', "name": 'Best Esports Tournament', "winner": 'DECA CUP', "votes": 224},
+            {"key": '28', "name": 'Best Esports Organization', "winner": '10N8E ESPORTS', "votes": 161},
+            {"key": '29', "name": 'Best Upcoming/Next Rated Team', "winner": 'ATHLEGAME', "votes": 122},
+        ],
+    },
+]
+
+
+# Where a copy of the OLD page can be passed with --file, if somebody wants to re-derive the
+# numbers from the original rather than trust the literal above. No longer a default: the real
+# awards page is data-driven now and holds no winner array.
 DEFAULT_PAGE_PATH = Path("frontend") / "app" / "(user)" / "awards" / "page.tsx"
 
 # One category entry inside the array. Matching the whole entry in one pattern (rather than three
@@ -174,16 +239,25 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from django.conf import settings
 
-        page_path = Path(options["file"]) if options["file"] else (
-            Path(settings.BASE_DIR).parent / DEFAULT_PAGE_PATH
-        )
-        if not page_path.exists():
-            raise CommandError(f"Awards page not found at {page_path}")
+        # --file parses a copy of the OLD page; with no --file the built-in literal is used. The
+        # literal is the default because the real awards page no longer carries the array: it went
+        # data-driven on 2026-08-16, and parsing it now fails outright. A missing --file is a hard
+        # error rather than a silent fall back to the literal, so a typo in a path cannot look like
+        # a successful import of different numbers.
+        if options["file"]:
+            page_path = Path(options["file"])
+            if not page_path.exists():
+                raise CommandError(f"Awards page not found at {page_path}")
+            sections, skipped_comment_lines = parse_manual_winners(page_path)
+            source_label = str(page_path)
+        else:
+            sections = copy.deepcopy(PUBLISHED_WINNERS)
+            skipped_comment_lines = 0
+            source_label = "built-in PUBLISHED_WINNERS literal (see the module docstring)"
 
-        sections, skipped_comment_lines = parse_manual_winners(page_path)
         total = sum(len(s["categories"]) for s in sections)
 
-        self.stdout.write(f"Source file : {page_path}")
+        self.stdout.write(f"Source      : {source_label}")
         self.stdout.write(f"Sections    : {len(sections)}")
         for section in sections:
             self.stdout.write(f"  {section['id']:<18} {section['name']:<20} "
@@ -213,6 +287,7 @@ class Command(BaseCommand):
     # ── import ────────────────────────────────────────────────────────────────────────────────
     def _import(self, sections):
         created_polls, created_questions, updated_questions = 0, 0, 0
+        removed_questions = 0
 
         # One transaction for the whole import: a half-imported set of winners is worse than none,
         # because it looks complete on the page that renders it.
@@ -287,10 +362,36 @@ class Command(BaseCommand):
                     created_questions += 1 if q_created else 0
                     updated_questions += 0 if q_created else 1
 
+                # ── prune categories the source no longer carries ─────────────────────────────
+                # get_or_create alone only ever ADDS and UPDATES, so a category that disappears
+                # from the source is left behind as an orphan and the import stops being
+                # idempotent. That is not hypothetical: merging the two "Favorite DUO" rows into
+                # one left the second still sitting on the public hall of fame.
+                #
+                # A question is only removed when it holds NO answers. These imported ballots are
+                # not answerable (opens_at is NULL, so Poll.is_open() is false), so in practice
+                # there are none - but a question somebody has voted on is evidence, not
+                # bookkeeping, and this command will not delete it. It says so and moves on.
+                keys = {int(c["key"]) for c in section["categories"]}
+                for question in poll.questions.exclude(order__in=keys):
+                    if question.answers.exists():
+                        self.stdout.write(self.style.WARNING(
+                            f"  kept '{question.prompt}' (order {question.order}): it is no longer "
+                            f"in the source, but it holds answers, so it was not deleted."
+                        ))
+                        continue
+                    self.stdout.write(
+                        f"  removed '{question.prompt}' (order {question.order}): "
+                        f"no longer in the source."
+                    )
+                    question.delete()
+                    removed_questions += 1
+
         self.stdout.write(
             self.style.SUCCESS(
                 f"\nImported. polls created={created_polls}, questions created={created_questions}, "
-                f"questions updated={updated_questions}."
+                f"questions updated={updated_questions}, "
+                f"questions removed={removed_questions}."
             )
         )
         self.stdout.write("Now run with --verify to compare the database against the file.")
