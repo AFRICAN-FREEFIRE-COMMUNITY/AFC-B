@@ -229,6 +229,10 @@ urlpatterns = [
     path('upload-news-video/', upload_news_video, name='upload_news_video'),
     path('get-news-detail/', get_news_detail, name='get_news_detail'),
     path('get-all-news/', get_all_news, name='get_all_news'),
+    # Homepage notices (backlog item 22, owner 2026-08-08): the news posts currently pinned to the
+    # homepage, newest first, capped at HOME_PINNED_NOTICES_LIMIT. Public, no auth. Consumed by
+    # frontend app/(user)/_components/HomeNotices.tsx.
+    path('get-pinned-news/', get_pinned_news, name='get_pinned_news'),
     path('delete-news/', delete_news, name='delete_news'),
     path('add-role/', add_role, name='add_role'),
     path('delete-role/', delete_role, name='delete_role'),

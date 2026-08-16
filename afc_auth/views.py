@@ -2458,6 +2458,57 @@ def _resolve_scheduled_publish(scheduled_raw):
     return None, True, None          # past/now -> nothing to schedule, publish right away
 
 
+# ── Homepage notices helpers (backlog item 22, owner 2026-08-08) ─────────────────────────────────
+# A "notice" is a NEWS POST that has been pinned to the homepage until a date. See the header of
+# News.pinned_until (afc_auth/models.py) for why this is one field on News rather than a second
+# model with a second admin screen.
+
+# How many pinned notices the homepage block shows at once.
+#
+# THREE, and the reason for a cap at all is that the block sits above the fold on /home: an
+# uncapped list lets one busy week push the dashboard itself off the screen, on a site where most
+# people are on a phone. Three is what fits without scrolling on a 390px viewport while still
+# letting a second and third announcement be seen at all.
+#
+# WHAT HAPPENS WHEN MORE THAN THREE ARE PINNED: the three most recently PUBLISHED win
+# (order_by -created_at), and the rest are not shown on the homepage. They are not lost or
+# unpinned - they stay pinned, stay published, and stay readable at /news like any other article,
+# and they re-appear in the block as the newer ones expire. So an editor never has to unpin
+# something to make room, and nothing silently disappears. The admin News list marks every pinned
+# post with a "Pinned" badge (is_pinned on get_all_news), so an editor can see at a glance when
+# more are pinned than the homepage can show.
+HOME_PINNED_NOTICES_LIMIT = 3
+
+# How long a pin lasts when an admin flips the switch on without picking a date. The form
+# pre-fills this so the common case is one click; the admin can still change the date.
+DEFAULT_PIN_DAYS = 7
+
+
+def _resolve_pinned_until(pinned_raw):
+    """Turn the optional `pinned_until` request value into (pinned_dt, error).
+
+    Single source of truth for create_news + edit_news so both endpoints treat pinning identically:
+      • blank / absent          -> (None, None)          => not pinned
+      • valid FUTURE datetime   -> (dt,   None)          => pinned until then
+      • valid PAST datetime     -> (None, None)          => NOT pinned. An expiry that has already
+                                   passed is not an error to argue with, it just means "not pinned"
+                                   - the same answer the reader would get a second later anyway.
+      • unparseable when given  -> (None, "<message>")   => caller returns 400
+
+    The frontend sends an ISO-8601 UTC string (new Date(localValue).toISOString()), mirroring the
+    scheduled-publish picker, so parse_datetime yields a timezone-aware datetime; a naive value is
+    coerced to aware defensively.
+    """
+    if not pinned_raw:
+        return None, None
+    dt = parse_datetime(pinned_raw)
+    if dt is None:
+        return None, "Invalid pinned_until datetime."
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt)
+    return (dt, None) if dt > timezone.now() else (None, None)
+
+
 @api_view(["POST"])
 def create_news(request):
     # Retrieve session token
@@ -2532,6 +2583,12 @@ def create_news(request):
     if sched_error:
         return Response({"message": sched_error}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Pin to homepage (optional, backlog item 22). A FUTURE pinned_until makes this post a homepage
+    # notice until that moment; blank or a past time means not pinned. See _resolve_pinned_until.
+    pinned_until, pin_error = _resolve_pinned_until(request.data.get("pinned_until"))
+    if pin_error:
+        return Response({"message": pin_error}, status=status.HTTP_400_BAD_REQUEST)
+
     # Create the news
     news = News.objects.create(
         news_title=news_title,
@@ -2542,6 +2599,7 @@ def create_news(request):
         author=user,
         scheduled_publish_at=scheduled_dt,
         is_published=is_published,
+        pinned_until=pinned_until,
     )
 
     # related_events (News overhaul): the new multi-event link. The admin News form submits each
@@ -2575,6 +2633,9 @@ def create_news(request):
         "category": news.category,
         "is_published": news.is_published,
         "scheduled_publish_at": news.scheduled_publish_at,
+        # Homepage pin state, so the admin form can confirm what it saved.
+        "pinned_until": news.pinned_until,
+        "is_pinned": news.is_pinned_now(),
         "author_name": user.username,
         "author_pic": request.build_absolute_uri(user.userprofile.profile_pic.url) if hasattr(user, 'userprofile') and user.userprofile.profile_pic else None
 
@@ -2678,6 +2739,17 @@ def edit_news(request):
         news.scheduled_publish_at = scheduled_dt
         news.is_published = is_published
 
+    # Pin to homepage (optional, backlog item 22). Only act when the field is actually present, so
+    # an edit that omits it leaves the pin untouched - the same contract as scheduled_publish_at,
+    # and what keeps any older caller that does not know about pinning from silently unpinning a
+    # notice. When present: a FUTURE datetime pins until then, blank or a past time UNPINS.
+    # Unpinning only clears this field: the article stays published and readable at /news.
+    if "pinned_until" in request.data:
+        pinned_until, pin_error = _resolve_pinned_until(request.data.get("pinned_until"))
+        if pin_error:
+            return Response({"message": pin_error}, status=status.HTTP_400_BAD_REQUEST)
+        news.pinned_until = pinned_until
+
     news.save()
 
     # related_events (News overhaul): when the field is present it is the FULL desired set - REPLACE the
@@ -2710,6 +2782,9 @@ def edit_news(request):
         "category": news.category,
         "is_published": news.is_published,
         "scheduled_publish_at": news.scheduled_publish_at,
+        # Homepage pin state, so the admin form can confirm what it saved.
+        "pinned_until": news.pinned_until,
+        "is_pinned": news.is_pinned_now(),
     }, status=status.HTTP_200_OK)
 
 
@@ -2942,6 +3017,12 @@ def get_all_news(request):
             "is_published": news.is_published,
             "scheduled_publish_at": news.scheduled_publish_at,
             "status": "published" if news.is_published else "scheduled",
+            # Homepage pin (backlog item 22). `is_pinned` is the derived "showing right now"
+            # answer (set AND in the future AND published); `pinned_until` is the raw expiry the
+            # admin edit form pre-fills its picker from. The ADMIN news list renders a "Pinned"
+            # badge off is_pinned, so an editor can see how many notices are live at a glance.
+            "pinned_until": news.pinned_until,
+            "is_pinned": news.is_pinned_now(),
         }
         # news_title is plain text; content is a Tiptap JSON document (richtext=True).
         localize_field(item, "news_title", news.news_title, locale)
@@ -2949,6 +3030,67 @@ def get_all_news(request):
         news_data.append(item)
 
     return Response({"news": news_data}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def get_pinned_news(request):
+    """GET /auth/get-pinned-news/ - the news posts currently pinned to the homepage.
+
+    Backlog item 22 (owner 2026-08-08): "Homepage section for public notices and important
+    announcements." A notice IS a news post with News.pinned_until set to a future moment; there is
+    no separate notices model or admin screen (see the field's header for why).
+
+    AUTH     : none. These are public announcements.
+    QUERY    : none.
+    RESPONSE : {"notices": [{news_id, slug, news_title, content, category, images_url, created_at,
+                             pinned_until}, ...]}  -- newest published first, at most
+               HOME_PINNED_NOTICES_LIMIT of them.
+
+    WHY A DEDICATED ENDPOINT rather than letting the homepage filter get-all-news: the homepage
+    would otherwise download every article on the site (and its like/dislike aggregates) to show
+    three of them, and the "how many are shown" rule would live in a client-side .slice() that any
+    future caller could get wrong. Here the cap is one named constant, applied once, server-side.
+
+    SELECTION, and what happens when more than three are pinned:
+      • is_published=True      - a SCHEDULED post that was pinned ahead of time must not leak onto
+                                 the homepage before its release moment.
+      • pinned_until > now     - an expiry in the past means not pinned. This is what makes a notice
+                                 take itself down instead of needing somebody to remember.
+      • order by -created_at   - newest announcement first, the same ordering as the news list, so
+                                 the block reads the way the rest of the site does.
+      • [:HOME_PINNED_NOTICES_LIMIT] - the extras stay pinned and stay readable at /news; they are
+                                 simply not in the homepage block, and they surface there as the
+                                 newer ones expire. See the constant for the full reasoning.
+
+    CONSUMED BY: frontend app/(user)/_components/HomeNotices.tsx (the notices block on /home).
+    """
+    notices = (
+        News.objects.filter(is_published=True, pinned_until__gt=timezone.now())
+        .order_by("-created_at")[:HOME_PINNED_NOTICES_LIMIT]
+    )
+
+    # i18n TRANSLATE-ON-READ (owner 2026-06-15): identical contract to get_all_news - localize the
+    # title (plain text) and content (Tiptap JSON) to the caller's locale so a French or Portuguese
+    # reader gets the notice in their language. Cache-first (TranslationCache) and failure-safe.
+    from afc_auth.locale_middleware import get_locale
+    from afc_auth.translation import localize_field
+    locale = get_locale(request)
+
+    data = []
+    for news in notices:
+        item = {
+            "news_id": news.news_id,
+            "slug": news.slug,
+            "category": news.category,
+            "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
+            "created_at": news.created_at,
+            "pinned_until": news.pinned_until,
+        }
+        localize_field(item, "news_title", news.news_title, locale)
+        localize_field(item, "content", news.content, locale, richtext=True)
+        data.append(item)
+
+    return Response({"notices": data}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -2990,6 +3132,9 @@ def get_news_detail(request):
         "is_published": news.is_published,
         "scheduled_publish_at": news.scheduled_publish_at,
         "status": "published" if news.is_published else "scheduled",
+        # Homepage pin (backlog item 22), so the admin edit form can pre-fill its switch + picker.
+        "pinned_until": news.pinned_until,
+        "is_pinned": news.is_pinned_now(),
     }
 
     # i18n TRANSLATE-ON-READ (owner 2026-06-15): same contract as get_all_news - localize the title

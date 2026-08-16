@@ -500,6 +500,45 @@ class News(models.Model):
     scheduled_publish_at = models.DateTimeField(null=True, blank=True)
     is_published = models.BooleanField(default=True)
 
+    # ── Pin to homepage / public notices (backlog item 22, owner 2026-08-08) ───────────────────
+    # "Homepage section for public notices and important announcements."
+    #
+    # A notice is just a NEWS POST that has been pinned. There is deliberately NO second notices
+    # model and no second admin screen: News already has categories, scheduling, translation, an
+    # author, an editor and a public page, and a second publishing surface would mean two places to
+    # look when something is wrong - and the one used less often is the one that rots.
+    #
+    # ONE FIELD, NOT A SWITCH PLUS A DATE. A post is pinned exactly when pinned_until is set AND
+    # still in the future. With a separate is_pinned boolean the two can disagree (pinned=True with
+    # an expiry in the past) and every reader would have to remember to check both; here "an expiry
+    # in the past means not pinned" is true by construction and cannot be got wrong. The admin form
+    # still shows a Switch - toggling it on fills in a default expiry, toggling it off clears the
+    # field - so the editor's mental model is unchanged while the data has no invalid state.
+    #
+    # It takes ITSELF down, like the NEW badge does: nothing has to be remembered, and a notice
+    # nobody removed is not still on the homepage in March.
+    #
+    # How it connects end to end:
+    #   - Written by : afc_auth.views.create_news / edit_news (optional `pinned_until` field from
+    #                  the admin News form, frontend app/(a)/a/news/create + [slug]/edit).
+    #   - Read by    : afc_auth.views.get_pinned_news (the homepage block, capped at
+    #                  HOME_PINNED_NOTICES_LIMIT) and returned on get_all_news / get_news_detail as
+    #                  `pinned_until` + the derived `is_pinned`, which the ADMIN news list renders
+    #                  as a "Pinned" badge.
+    #   - Rendered by: frontend app/(user)/_components/HomeNotices.tsx on /home.
+    #   - Unpinning DELETES NOTHING: clearing this field only removes the post from the homepage
+    #     block. It stays published and readable at /news and /news/<slug> exactly as before.
+    pinned_until = models.DateTimeField(null=True, blank=True)
+
+    def is_pinned_now(self):
+        """True when this post should appear in the homepage notices block right now.
+
+        Both halves matter: a post that was never pinned has no date, and a post whose pin has
+        expired has one in the past. Also requires is_published, so a SCHEDULED post pinned ahead
+        of time cannot leak onto the homepage before its release moment.
+        """
+        return bool(self.is_published and self.pinned_until and self.pinned_until > timezone.now())
+
     def __str__(self):
         return self.news_title
 
