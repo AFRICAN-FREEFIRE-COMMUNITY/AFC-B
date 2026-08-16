@@ -266,23 +266,95 @@ class Report(models.Model):
         return f"{self.team.name} - {self.get_action_display()} on {self.created_at}"
 
 
-class JoinRequest(models.Model):
-    request_id = models.AutoField(primary_key=True)
-    requester = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='sent_request')
-    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='received_request')
-    status_of_request = models.CharField(max_length=20, choices=[
-        ('unattended_to', 'Unattended To'),
-        ('attended_to', 'Attended To')
-    ], default='unattended_to')
-    decision = models.CharField(max_length=20, choices=[
-        ('approved', 'Approved'),
-        ('denied', 'Denied')
-    ], null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    message = models.CharField(max_length=150, null=True, blank=True)
+# ────────────────────────── TeamTransfer: the automatic transfer feed ──────────────────────────
+# Backlog item 21, owner 2026-08-08: "Public automatic transfer news showing players joining and
+# leaving teams." AUTOMATIC is the requirement - nobody writes these, so nobody can forget to.
+#
+# WHY A NEW TABLE AND NOT `Report` (which already logs roster actions):
+#   Report is an ADMIN activity log, and it cannot answer "who moved" reliably:
+#     • `Report.user` is sometimes the SUBJECT of the action and sometimes the ACTOR. On
+#       admin_remove_member / admin_add_member (views.py) it is the ADMIN, while the player who
+#       actually moved is only named inside the English `description` sentence.
+#     • The single most common join path, accepting an invite (views.respond_invite), writes
+#       action="invitation_reviewed" - a value that is not even in Report.ACTION_CHOICES - and
+#       never writes a "player_joined" row at all. That join is invisible in Report.
+#     • A DENIED join request writes action="player_removed" (review_join_request), i.e. a
+#       departure that never happened.
+#     • `description` is a pre-baked English sentence, so it cannot be shown to a French or
+#       Portuguese reader.
+#   Report also has its own consumers, so re-pointing it at this feature would change a log other
+#   code reads. This table records ONE fact in structured columns instead.
+#
+# WHY IT IS WRITTEN BY A SIGNAL AND NOT BY THE VIEWS:
+#   A TeamMembers row existing IS membership. Roughly ten endpoints create or delete one
+#   (respond_invite, review_join_request, join_team, exit_team, kick_team_member,
+#   admin_add_member, admin_remove_member, the force-move branch, disband_team, plus the Team
+#   cascade). Instrumenting ten call sites is exactly how a second log drifts from the first: the
+#   eleventh path, written next month, forgets. The post_save/post_delete signal in
+#   afc_team/signals.py fires on the DB write itself, so every present and future path is covered
+#   by construction. This mirrors the country-recompute receiver already living in that file.
+#
+# HOW IT CONNECTS:
+#   - Written by : afc_team.signals.record_team_join (post_save, created=True -> "joined") and
+#                  afc_team.signals.record_team_leave (post_delete -> "left").
+#   - Read by    : afc_team.views_transfers.get_transfer_feed (GET /team/transfers/), which applies
+#                  the HAS-COMPETED rule from afc_team.transfers.
+#   - Rendered by: frontend components/news/TransferFeed.tsx, shown as the "Transfers" category on
+#                  app/(user)/news.
+class TeamTransfer(models.Model):
+    DIRECTION_CHOICES = [
+        ("joined", "Joined"),
+        ("left", "Left"),
+    ]
+
+    transfer_id = models.AutoField(primary_key=True)
+
+    # SET_NULL, not CASCADE, on BOTH sides, and the display names are copied in beside them.
+    # Disbanding a team deletes its TeamMembers rows (which is what makes us write the "left"
+    # entries) and then deletes the Team itself - under CASCADE that Team delete would wipe the
+    # very rows just written, so the feed would silently lose exactly the moves that mattered
+    # most. With SET_NULL the row survives and still reads, because team_name_at_move holds the
+    # name. Same reasoning for a deleted user account.
+    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+                               blank=True, related_name="team_transfers")
+    team = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True,
+                             related_name="transfers")
+    player_username_at_move = models.CharField(max_length=150)
+    team_name_at_move = models.CharField(max_length=60)
+
+    direction = models.CharField(max_length=10, choices=DIRECTION_CHOICES)
+    # The management_role the membership carried at the moment of the move ('member', 'coach',
+    # 'team_captain', ...). Stored so the feed can say "joined as Coach" rather than implying every
+    # arrival is a player. Values are TeamMembers.MANAGEMENT_ROLE_CHOICES keys; the human label is
+    # localized on the frontend, never taken from the choice tuple.
+    management_role = models.CharField(max_length=20, blank=True)
+
+    occurred_at = models.DateTimeField(default=now)
+
+    # ── transfer-window context, CAPTURED AT THE MOMENT OF THE MOVE ──────────────────────────
+    # afc_rankings.Season carries the window (transfer_window_open..transfer_window_close), and an
+    # admin can open, close or EXTEND it after the fact (that is what TransferWindowLog records).
+    # So this must be stored, not derived on read: re-deriving would let a later extension quietly
+    # rewrite whether a past move was inside the window, and history would change under the reader.
+    #   True  = the window was OPEN, so the move was routine.
+    #   False = the window was CLOSED. Roster moves are frozen server-side while it is closed
+    #           (exit_team / kick_team_member / disband_team all refuse), so a move that landed
+    #           anyway is the notable case, and the feed flags it.
+    #   NULL  = there was no active season, so there is nothing honest to say either way.
+    season = models.ForeignKey("afc_rankings.Season", on_delete=models.SET_NULL, null=True,
+                               blank=True, related_name="team_transfers")
+    in_transfer_window = models.BooleanField(null=True)
+
+    class Meta:
+        ordering = ["-occurred_at", "-transfer_id"]
+        indexes = [
+            # The public feed is "newest first", optionally narrowed to one team.
+            models.Index(fields=["-occurred_at"]),
+            models.Index(fields=["team", "-occurred_at"]),
+        ]
 
     def __str__(self):
-        return f"Join Request: {self.requester.username} -> ({self.team.team_name})"
+        return f"{self.player_username_at_move} {self.direction} {self.team_name_at_move}"
 
 
 # ──────────────────── TeamRolePermission: the owner's control matrix ────────────────────
