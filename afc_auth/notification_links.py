@@ -127,6 +127,10 @@ def build_notification_link(target_type: str, target_id: str) -> Optional[str]:
         return f"/players/{target_id}"
     if target_type == "organizer":
         return f"/organizations/{_slug_for_organizer(target_id)}"
+    # poll -> Poll.slug, written by afc_polls.views.admin_announce (and by the Phase 3 close-soon
+    # reminder). Slug rather than id, so it matches the route the poll listing already links to.
+    if target_type == "poll":
+        return f"/polls/{target_id}"
 
     # Unknown type -> no link (forward-compatible: an unrecognised value never throws).
     return None
