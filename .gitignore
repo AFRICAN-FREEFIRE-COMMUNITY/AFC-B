@@ -73,3 +73,8 @@ eb-env/
 # Untracked 2026-06-14 - kept on disk so local ResultImage rows still resolve.
 db.sqlite3
 media/match_results/
+
+# Uploaded content: team logos, esports images, match screenshots, OCR uploads. These are user
+# data that lives on the server (and in S3 in production), not source. `git add -A` swept 2,233 of
+# them into a commit on 2026-08-16, which is why this line exists.
+media/

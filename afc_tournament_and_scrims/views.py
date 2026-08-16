@@ -182,6 +182,48 @@ def _prize_pool_ngn(event, rate_map=None) -> int:
 # a batch caller such as the reclassify_event_tiers command) and handed to both, so they can never
 # convert at two different rates. A threshold written in naira, which is every rule authored before
 # that date, never consults the map at all.
+
+def _room_flags(event):
+    """The room settings a tier rule can be written against, for ONE event.
+
+    Returns {"weapon_skins": bool|None, "blue_zone": bool|None, "unlimited_ammo": bool|None}.
+
+    Read from the CSRoomConfig saved at EVENT scope. A stage or group may carry its own room, but a
+    tier is a property of the whole event, so a per-stage override deliberately does not decide it:
+    otherwise the tier would depend on which stage somebody happened to configure last.
+
+    UNLIMITED AMMO IS DERIVED, not stored. `ammo_limit` off IS unlimited ammo, and this is the one
+    place that translation happens, so the rule engine and the room screen can never disagree about
+    what "unlimited" means.
+
+    None (not False) when there is no room row or the key was never set: a rule about weapon skins
+    must not fire for an event whose room was never filled in. Never raises - a tier classification
+    is not worth a 500, and the caller already treats a failure as "leave the tier alone".
+    """
+    blank = {"weapon_skins": None, "blue_zone": None, "unlimited_ammo": None}
+    try:
+        from afc_tournament_and_scrims.models import CSRoomConfig
+
+        config = CSRoomConfig.objects.filter(event=event).first()
+        if config is None:
+            return blank
+        toggles = config.toggles or {}
+
+        def flag(key):
+            value = toggles.get(key)
+            return None if value is None else bool(value)
+
+        ammo_limit = toggles.get("ammo_limit")
+        return {
+            "weapon_skins": flag("weapon_skins"),
+            "blue_zone": flag("blue_zone"),
+            # off = unlimited, so the derived flag is the inverse of the stored limit.
+            "unlimited_ammo": None if ammo_limit is None else (not bool(ammo_limit)),
+        }
+    except Exception:
+        return blank
+
+
 def auto_classify_event(event, rate_map=None):
     try:
         from afc_rankings.admin_tournament_tiers import classify, _get_config, _fx_rate_map
@@ -199,6 +241,11 @@ def auto_classify_event(event, rate_map=None):
             "teams": 0 if is_solo else cap,
             "players": cap if is_solo else 0,
             "format": fmt,
+            # How the room was actually set up, for rules written against it (owner 2026-08-16).
+            # Every key is None when no room settings were saved for this event, and every room
+            # condition fails closed on None, so an event nobody filled in is not classified on a
+            # setting nobody recorded.
+            **_room_flags(event),
         }
         rules = list(EventTierRule.objects.all().order_by("priority", "created_at"))
         result = classify(rules, _get_config().default_tier, sample, rate_map)
