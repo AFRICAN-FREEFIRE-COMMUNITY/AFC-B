@@ -33,6 +33,14 @@
 # RUN:  python manage.py reclassify_event_tiers            # preview only, writes nothing
 #       python manage.py reclassify_event_tiers --apply    # write the new tiers
 #       python manage.py reclassify_event_tiers --apply --event-id 172
+#       python manage.py reclassify_event_tiers --apply --competition scrims
+#
+# WHICH RULES EACH EVENT IS JUDGED BY (owner 2026-08-16): its own. Tournaments and scrims keep
+# separate rule sets, and auto_classify_event picks the set from the event's competition_type, so a
+# full sweep judges each kind by its own rules with nothing to pass in. --competition narrows the
+# sweep instead: after editing only the scrims rules, re-applying them should not also churn every
+# tournament, because an unrelated FX move between runs could change a tournament's tier and the
+# operator would have no idea which edit did it.
 # ─────────────────────────────────────────────────────────────────────────────
 from django.core.management.base import BaseCommand
 
@@ -50,6 +58,9 @@ class Command(BaseCommand):
                             help="Reclassify a single event instead of all of them.")
         parser.add_argument("--include-drafts", action="store_true",
                             help="Also reclassify draft events (skipped by default: they are not live yet).")
+        parser.add_argument("--competition", default=None, choices=["tournament", "scrims"],
+                            help="Only sweep events of this kind. Default: both, each judged by "
+                                 "its own rule set.")
 
     def handle(self, *args, **opts):
         qs = Event.objects.all().order_by("event_id")
@@ -57,6 +68,8 @@ class Command(BaseCommand):
             qs = qs.filter(event_id=opts["event_id"])
         if not opts["include_drafts"]:
             qs = qs.filter(is_draft=False)
+        if opts["competition"]:
+            qs = qs.filter(competition_type=opts["competition"])
 
         # ONE FxRate read for the whole sweep (2026-08-07). Both sides of the comparison need it -
         # the event's pool AND, since tier-rule thresholds can be authored in any currency, the

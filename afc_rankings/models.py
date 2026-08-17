@@ -788,7 +788,28 @@ class EventTierRule(models.Model):
     """
     MATCH_CHOICES = [("all", "Match all"), ("any", "Match any")]
     TIER_CHOICES = [(1, "Tier 1"), (2, "Tier 2"), (3, "Tier 3")]
+    # ── which competition these rules classify (owner 2026-08-16) ────────────────────────────
+    # "There should be a place we control rules for scrims like we do for tournaments." A scrim
+    # and a tournament are not the same competition and should not be forced through one ladder:
+    # a 200,000 naira scrim is a big scrim and a small tournament, and one rule set cannot say
+    # both. Two SETS of rules, each ordered and evaluated on its own.
+    #
+    # DEFAULT "tournament" is what keeps every rule already saved meaning exactly what it meant:
+    # they were all authored for tournaments, they classify tournaments today, and after this
+    # change they still classify tournaments and nothing else.
+    #
+    # THE SCRIM SET STARTS EMPTY, AND THAT IS NOT HARMLESS. An empty set matches nothing, so every
+    # scrim would fall through to the default tier. Measured on the live data before shipping:
+    # 2 of the 13 scrims were Tier 1 under the shared rules and would have silently dropped to
+    # Tier 3. So the set is SEEDED from the tournament rules once
+    # (admin_tournament_tiers.copy_rule_set, run by the seed_scrim_tier_rules command on deploy or
+    # by the button on the page's empty state), after which the two diverge as they are edited.
+    # With the seed in place, `reclassify_event_tiers` reports 0 events changing tier in either
+    # set - which is the acceptance test for a change that splits one list into two.
+    COMPETITION_CHOICES = [("tournament", "Tournaments"), ("scrims", "Scrims")]
 
+    competition_type = models.CharField(
+        max_length=12, choices=COMPETITION_CHOICES, default="tournament", db_index=True)
     priority = models.PositiveIntegerField(default=0)      # lower = evaluated first
     match = models.CharField(max_length=3, choices=MATCH_CHOICES, default="all")
     conditions = models.JSONField(default=list)
@@ -816,7 +837,12 @@ class EventTierRule(models.Model):
 
     class Meta:
         ordering = ["priority", "created_at"]
-        indexes = [models.Index(fields=["retired_at"])]
+        indexes = [
+            models.Index(fields=["retired_at"]),
+            # The classifier always reads one competition's live rules in order, so that is the
+            # index it gets.
+            models.Index(fields=["competition_type", "priority"]),
+        ]
 
     @property
     def is_retired(self) -> bool:
@@ -824,18 +850,31 @@ class EventTierRule(models.Model):
 
     def __str__(self):
         label = self.name or f"Rule #{self.priority}"
-        return f"{label} → Tier {self.tier}{' (retired)' if self.is_retired else ''}"
+        scope = "scrims" if self.competition_type == "scrims" else "tournaments"
+        return f"{label} ({scope}) -> Tier {self.tier}{' (retired)' if self.is_retired else ''}"
 
 
 class EventTierConfig(models.Model):
-    """Singleton settings row for tournament-tier classification - the fall-through tier
-    used when an event matches no ``EventTierRule``. (Kept as its own row so it is editable
-    from the admin surface alongside the rules.)"""
+    """The fall-through tier used when an event matches no ``EventTierRule``.
+
+    ONE ROW PER COMPETITION TYPE (owner 2026-08-16), not a singleton any more. Scrims got their
+    own rule set, and a rule set without its own fall-through is only half a rule set: every scrim
+    matching nothing would land on whatever tier tournaments happen to fall through to, which is a
+    number chosen for a different competition.
+
+    The existing row keeps competition_type="tournament", so the tournament default is exactly the
+    number it has always been. The scrims row is created on first read with the platform default of
+    Tier 3; the seed (copy_rule_set) then overwrites it with whatever tournaments actually fall
+    through to, so a seeded scrims set answers identically to the shared set it replaced.
+    """
+    competition_type = models.CharField(
+        max_length=12, choices=EventTierRule.COMPETITION_CHOICES,
+        default="tournament", unique=True)
     default_tier = models.PositiveSmallIntegerField(default=3)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"EventTierConfig (default Tier {self.default_tier})"
+        return f"EventTierConfig({self.competition_type}, default Tier {self.default_tier})"
 
 
 # ──────────────────────── Result Markers - counting controls ────────────────────────
