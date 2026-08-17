@@ -225,9 +225,19 @@ def _room_flags(event):
 
 
 def auto_classify_event(event, rate_map=None):
+    """The tier this event lands in, from the rules an admin wrote. Never raises.
+
+    WHICH RULES (owner 2026-08-16: "there should be a place we control rules for scrims like we do
+    for tournaments"): the event's OWN ``competition_type`` picks the set. A scrim is judged by the
+    scrims rules and a tournament by the tournament rules, and the two never see each other, so
+    lowering the bar for scrims cannot quietly re-tier a tournament. Each set carries its own
+    fall-through tier for the same reason. An unrecognised competition_type falls back to the
+    tournament set, which is what every event meant before the split existed.
+    """
     try:
-        from afc_rankings.admin_tournament_tiers import classify, _get_config, _fx_rate_map
-        from afc_rankings.models import EventTierRule
+        from afc_rankings.admin_tournament_tiers import (
+            COMPETITIONS, DEFAULT_COMPETITION, classify, _get_config, _fx_rate_map, _rules_for,
+        )
         if rate_map is None:
             rate_map = _fx_rate_map()
         is_solo = event.participant_type == "solo"
@@ -247,8 +257,12 @@ def auto_classify_event(event, rate_map=None):
             # setting nobody recorded.
             **_room_flags(event),
         }
-        rules = list(EventTierRule.objects.all().order_by("priority", "created_at"))
-        result = classify(rules, _get_config().default_tier, sample, rate_map)
+        competition = (
+            event.competition_type if event.competition_type in COMPETITIONS
+            else DEFAULT_COMPETITION
+        )
+        rules = list(_rules_for(competition, include_retired=True))
+        result = classify(rules, _get_config(competition).default_tier, sample, rate_map)
         return f"tier_{result['tier']}"
     except Exception:
         return event.tournament_tier or "tier_3"

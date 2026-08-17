@@ -71,12 +71,30 @@ Auth: writes are gated on head_admin OR metrics_admin (the default ``_auth`` set
 RANKING_ADMIN_ROLES). The read-only list + the dry-run classifier still require a valid
 admin token (they expose internal config), but skip the reason gate and the audit write.
 
-URL routes returned to the coordinator (mounted under the existing ``rankings/`` prefix):
+TWO RULE SETS: TOURNAMENTS AND SCRIMS (owner 2026-08-16: "there should be a place we control rules
+for scrims like we do for tournaments"). A scrim and a tournament are not the same competition, so
+one list of rules could only ever be right for one of them. Every rule now carries a
+``competition_type``, every endpoint here reads its scope through ``_competition()``, and the two
+sets never see each other: a rule cannot classify an event of the other kind, cannot shadow a rule
+in the other set, and cannot appear in the other set's contradiction report. Each set has its own
+fall-through tier for the same reason.
+
+Nothing changed meaning when the split landed: ``competition_type`` defaults to "tournament" on the
+model AND in ``_competition()``, so every rule that already existed, and every caller written before
+today, still means tournaments. The scrims set starts EMPTY, which would drop every live scrim to
+the fall-through tier - so ``copy_rule_set`` seeds it from the tournament rules (the admin page's
+empty-state button, and the ``seed_scrim_tier_rules`` command on deploy), and the two diverge from
+there as they are edited.
+
+URL routes returned to the coordinator (mounted under the existing ``rankings/`` prefix). Every one
+takes an optional ``competition_type`` (query string on GET, body on write); omitted means
+tournaments:
   GET    event-tier-rules/                     -> tier_rules_list      (read-only)
   POST   event-tier-rules/                     -> tier_rule_create
   PATCH  event-tier-rules/<int:rule_id>/       -> tier_rule_update
   DELETE event-tier-rules/<int:rule_id>/       -> tier_rule_delete
   POST   event-tier-rules/reorder/             -> tier_rules_reorder
+  POST   event-tier-rules/copy-from/           -> tier_rules_copy_from
   PATCH  event-tier-config/                    -> tier_config_update
   POST   event-tier-rules/classify/            -> tier_rules_classify   (read-only dry-run)
 """
@@ -147,6 +165,15 @@ _ROOM_FLAG_OPS = ("is_on", "is_off")
 _VALID_MATCH = ("all", "any")
 _VALID_TIERS = (1, 2, 3)            # EventTierRule.TIER_CHOICES keys
 _VALID_FORMATS = ("lan", "virtual")  # accepted `format` values in a classify sample
+# The two rule sets (owner 2026-08-16). Every endpoint below reads its scope through
+# _competition(), so there is one place that decides what an unspecified request means, and that
+# meaning is "tournaments" - which is what every caller written before today meant.
+# Derived from the model's own choices rather than restated, so the page's switch can never offer a
+# set the database would refuse. {"tournament": "Tournaments", "scrims": "Scrims"}.
+COMPETITIONS = dict(EventTierRule.COMPETITION_CHOICES)
+DEFAULT_COMPETITION = "tournament"
+
+
 # Only `prize` is money, so only `prize` may carry a currency. A currency on a team/player COUNT is
 # a mistake worth refusing rather than silently dropping: the admin would believe it did something.
 _CURRENCY_FIELDS = ("prize",)
@@ -248,7 +275,7 @@ def _rule_dicts(queryset=None):
     ]
 
 
-def _contradictions(rate_map=None):
+def _contradictions(rate_map=None, competition_type=DEFAULT_COMPETITION):
     """Report rules that can never fire, and prize ranges nothing covers.
 
     Recomputed on every read and after every write so the admin sees the consequence of the
@@ -259,8 +286,12 @@ def _contradictions(rate_map=None):
     1000 and 100000 and the checker would report the shadowing backwards.
     """
     from .aggregation import resolve_tables
+    # Scoped: the two sets never see each other during classification, so a tournament rule cannot
+    # shadow a scrim rule and reporting it as if it could would be a warning about nothing.
     return rule_contradictions(
-        _rule_dicts(), default_tier=_get_config().default_tier, tables=resolve_tables(),
+        _rule_dicts(_rules_for(competition_type, include_retired=True)),
+        default_tier=_get_config(competition_type).default_tier,
+        tables=resolve_tables(),
         rate_map=rate_map if rate_map is not None else _fx_rate_map(),
     )
 
@@ -278,10 +309,94 @@ def _validate_name(value):
 
 
 # ───────────────────────── shared helpers ─────────────────────────
-def _get_config():
-    """Fetch (or lazily create) the EventTierConfig singleton with the spec default (Tier 3)."""
-    config, _ = EventTierConfig.objects.get_or_create(pk=1, defaults={"default_tier": 3})
+def _competition(request, source=None):
+    """(competition_type, error_response). Unspecified means tournaments.
+
+    Defaulting rather than requiring is what keeps every existing client working: the admin page,
+    the reclassify command and any saved API call were all written before scrims had their own
+    rules, and every one of them meant tournaments.
+    """
+    raw = source.get("competition_type") if source is not None else request.query_params.get(
+        "competition_type")
+    value = (raw or DEFAULT_COMPETITION).strip()
+    if value not in COMPETITIONS:
+        return None, Response(
+            {"message": f"`competition_type` must be one of {list(COMPETITIONS)}."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return value, None
+
+
+def _rules_for(competition_type, include_retired=False):
+    """This competition's rules, in evaluation order."""
+    qs = EventTierRule.objects.filter(competition_type=competition_type)
+    if not include_retired:
+        qs = qs.filter(retired_at__isnull=True)
+    return qs.order_by("priority", "created_at")
+
+
+def _get_config(competition_type=DEFAULT_COMPETITION):
+    """Fetch (or lazily create) the fall-through tier row for ONE competition.
+
+    Scrims get their own row rather than sharing the tournament one: a rule set without its own
+    fall-through is half a rule set, and every scrim matching nothing would otherwise land on a
+    number chosen for tournaments.
+    """
+    config, _ = EventTierConfig.objects.get_or_create(
+        competition_type=competition_type, defaults={"default_tier": 3})
     return config
+
+
+
+def copy_rule_set(source, target, user=None, reason=None):
+    """Copy every LIVE rule from one competition's set into another, and the fall-through with it.
+
+    WHY THIS EXISTS. Splitting one rule list into two leaves the new list empty, and an empty list
+    classifies nothing - so on the day scrims got their own rules, every scrim would have dropped to
+    the fall-through tier without anybody changing a rule. That is a silent re-tiering of live
+    events caused by a feature that was supposed to give MORE control, not less. Copying gives the
+    honest starting point: "scrims behave exactly as they did yesterday, now you can change them."
+
+    REFUSES A NON-EMPTY TARGET. Running it twice must not double the rules, and running it after the
+    owner has edited scrims must not overwrite that work. It is a seed, not a sync.
+
+    Returns the number of rules copied (0 means the target already had rules, which is a no-op and
+    not an error). Retired rules are NOT copied: they classify nothing, and their whole purpose is
+    to explain the past of the set they were retired from.
+
+    Called by: the ``event-tier-rules/copy-from/`` endpoint (the admin page's empty-state button)
+    and the ``seed_scrim_tier_rules`` management command (the deploy path).
+    """
+    if _rules_for(target).exists():
+        return 0
+
+    source_rules = list(_rules_for(source))
+    with transaction.atomic():
+        for rule in source_rules:
+            EventTierRule.objects.create(
+                competition_type=target,
+                # Priority is copied as-is: the order IS the rule set, and re-numbering from zero
+                # would be the same order written differently, so there is nothing to gain.
+                priority=rule.priority,
+                name=rule.name,
+                match=rule.match,
+                conditions=rule.conditions,
+                tier=rule.tier,
+                enabled=rule.enabled,
+            )
+        # The fall-through travels with the rules. A copied set that keeps the source's order but
+        # falls through to a different tier is not the same set.
+        source_config = _get_config(source)
+        target_config = _get_config(target)
+        if target_config.default_tier != source_config.default_tier:
+            target_config.default_tier = source_config.default_tier
+            target_config.save(update_fields=["default_tier", "updated_at"])
+        if user is not None:
+            _audit(user, "event_tier", "create", reason or f"Seeded {target} rules from {source}.",
+                   object_ref=None, before={}, after={"competition_type": target,
+                                                     "copied_from": source,
+                                                     "rules": len(source_rules)})
+    return len(source_rules)
 
 
 def _validate_match(match):
@@ -517,11 +632,12 @@ def tier_rules_list(request):
 
     include_retired = str(request.query_params.get("include_retired", "")).lower() in (
         "1", "true", "yes")
-    qs = EventTierRule.objects.all().order_by("priority", "created_at")
-    if not include_retired:
-        qs = qs.filter(retired_at__isnull=True)
+    competition_type, scope_err = _competition(request)
+    if scope_err:
+        return scope_err
+    qs = _rules_for(competition_type, include_retired=include_retired)
     items, meta = paginate(request, qs)
-    config = _get_config()
+    config = _get_config(competition_type)
     # ONE FxRate read for the whole response: every serialized row and the contradiction pass share
     # it, instead of each re-reading the table (see _fx_rate_map).
     rate_map = _fx_rate_map()
@@ -532,8 +648,12 @@ def tier_rules_list(request):
         "base_currency": BASE_CURRENCY,
         "fx_note": _FX_NOTE,
         "field_meta": {"event_tier_rule_prize": FIELD_META["event_tier_rule_prize"]},
-        "contradictions": _contradictions(rate_map),
+        "contradictions": _contradictions(rate_map, competition_type),
         "include_retired": include_retired,
+        # Echoed so the page can prove which set it is showing rather than trusting the
+        # switch it drew, and so a stale link with an old query string is visibly wrong.
+        "competition_type": competition_type,
+        "competitions": [{"value": k, "label": v} for k, v in COMPETITIONS.items()],
     })
 
 
@@ -576,6 +696,11 @@ def tier_rule_create(request):
     reason, err = _require_reason(request)
     if err:
         return err
+    # Which rule set this write belongs to. Read from the BODY, defaulting to tournaments,
+    # which is what every caller written before scrims had their own rules meant.
+    competition_type, scope_err = _competition(request, request.data)
+    if scope_err:
+        return scope_err
 
     # Validate the inbound fields before opening the transaction.
     match, msg = _validate_match(request.data.get("match", "all"))
@@ -593,10 +718,15 @@ def tier_rule_create(request):
     enabled = bool(request.data.get("enabled", True))
 
     with transaction.atomic():
-        # New rule sorts to the bottom of the priority order (max + 1, or 0 when empty).
-        max_priority = EventTierRule.objects.order_by("-priority").values_list("priority", flat=True).first()
+        # New rule sorts to the bottom of ITS OWN set (max + 1, or 0 when that set is empty).
+        # Scoped, because the two sets are ordered independently: a first scrim rule taking
+        # priority 14 because tournaments already have 14 rules would sort correctly by accident
+        # and confusingly on screen.
+        max_priority = (EventTierRule.objects.filter(competition_type=competition_type)
+                        .order_by("-priority").values_list("priority", flat=True).first())
         next_priority = (max_priority + 1) if max_priority is not None else 0
         rule = EventTierRule.objects.create(
+            competition_type=competition_type,
             priority=next_priority,
             name=name,
             match=match,
@@ -610,7 +740,7 @@ def tier_rule_create(request):
 
     rate_map = _fx_rate_map()
     body = serialize_tier_rule(rule, rate_map)
-    body["contradictions"] = _contradictions(rate_map)
+    body["contradictions"] = _contradictions(rate_map, competition_type)
     return Response(body, status=status.HTTP_201_CREATED)
 
 
@@ -686,7 +816,7 @@ def tier_rule_update(request, rule_id):
 
     rate_map = _fx_rate_map()
     body = serialize_tier_rule(rule, rate_map)
-    body["contradictions"] = _contradictions(rate_map)
+    body["contradictions"] = _contradictions(rate_map, rule.competition_type)
     return Response(body)
 
 
@@ -743,7 +873,7 @@ def tier_rule_delete(request, rule_id):
     return Response({
         "message": "Tier rule retired.",
         "rule": serialize_tier_rule(rule, rate_map),
-        "contradictions": _contradictions(rate_map),
+        "contradictions": _contradictions(rate_map, rule.competition_type),
     })
 
 
@@ -792,7 +922,7 @@ def tier_rule_restore(request, rule_id):
     return Response({
         "message": "Tier rule restored.",
         "rule": serialize_tier_rule(rule, rate_map),
-        "contradictions": _contradictions(rate_map),
+        "contradictions": _contradictions(rate_map, rule.competition_type),
     })
 
 
@@ -823,6 +953,11 @@ def tier_rules_reorder(request):
     reason, err = _require_reason(request)
     if err:
         return err
+    # Which rule set this write belongs to. Read from the BODY, defaulting to tournaments,
+    # which is what every caller written before scrims had their own rules meant.
+    competition_type, scope_err = _competition(request, request.data)
+    if scope_err:
+        return scope_err
 
     order = request.data.get("order")
     if not isinstance(order, list) or not order:
@@ -837,8 +972,7 @@ def tier_rules_reorder(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    live_ids = set(EventTierRule.objects.filter(retired_at__isnull=True)
-                   .values_list("id", flat=True))
+    live_ids = set(_rules_for(competition_type).values_list("id", flat=True))
     if set(order) != live_ids:
         return Response(
             {"message": "`order` must list every active rule id exactly once. Retired rules "
@@ -847,7 +981,7 @@ def tier_rules_reorder(request):
         )
 
     with transaction.atomic():
-        before = {"order": list(EventTierRule.objects.filter(retired_at__isnull=True)
+        before = {"order": list(_rules_for(competition_type)
                                  .order_by("priority", "created_at")
                                  .values_list("id", flat=True))}
         # priority = position in the supplied order (index 0 = top of the list = evaluated first).
@@ -856,11 +990,68 @@ def tier_rules_reorder(request):
         after = {"order": list(order)}
         _audit(user, "event_tier", "reorder", reason, before=before, after=after)
 
-    qs = EventTierRule.objects.filter(retired_at__isnull=True).order_by("priority", "created_at")
+    qs = _rules_for(competition_type)
     rate_map = _fx_rate_map()
     return Response({
         "results": [serialize_tier_rule(r, rate_map) for r in qs],
-        "contradictions": _contradictions(rate_map),
+        "contradictions": _contradictions(rate_map, competition_type),
+    })
+
+
+# ───────────────────────── COPY A WHOLE SET (seed an empty one) ─────────────────────────
+@api_view(["POST"])
+def tier_rules_copy_from(request):
+    """Seed an EMPTY rule set from another one, so a new set does not start by classifying nothing.
+
+    Purpose:  the scrims set starts with no rules, and no rules means every scrim falls through to
+              the default tier. This copies the tournament rules across as a starting point, after
+              which the two sets are edited independently and never sync again.
+    Auth:     Bearer SessionToken, head_admin only.
+    Request:  ``{"competition_type": "scrims",      # the set being FILLED
+                 "source": "tournament",            # the set being copied FROM, default tournaments
+                 "reason": "at least 10 characters"}``.
+    Response 200: ``{"copied": 12, "results": [...the new set...], "default_tier": 3,
+                     "contradictions": [...]}``.
+    Response 400 when the target already has rules (a seed, never a sync - see ``copy_rule_set``),
+                 or when source and target are the same set.
+
+    Consumed by: the admin Tournament Tiers page, on the empty state of a set with no rules.
+    """
+    user, err = _auth(request, roles=TIER_WRITE_ROLES)
+    if err:
+        return err
+    reason, err = _require_reason(request)
+    if err:
+        return err
+
+    target, scope_err = _competition(request, request.data)
+    if scope_err:
+        return scope_err
+    raw_source = (request.data.get("source") or DEFAULT_COMPETITION).strip()
+    if raw_source not in COMPETITIONS:
+        return Response({"message": f"`source` must be one of {list(COMPETITIONS)}."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if raw_source == target:
+        return Response({"message": "`source` and `competition_type` must be different sets."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    copied = copy_rule_set(raw_source, target, user=user, reason=reason)
+    if copied == 0 and _rules_for(target).exists():
+        # Refused rather than silently doing nothing: the admin pressed a button and is owed an
+        # answer about why the set did not change.
+        return Response(
+            {"message": "That set already has rules. Copying would duplicate them, so it was not "
+                        "done. Retire the existing rules first if you want to start over."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    rate_map = _fx_rate_map()
+    return Response({
+        "copied": copied,
+        "results": [serialize_tier_rule(r, rate_map) for r in _rules_for(target)],
+        "default_tier": _get_config(target).default_tier,
+        "competition_type": target,
+        "contradictions": _contradictions(rate_map, target),
     })
 
 
@@ -884,6 +1075,10 @@ def tier_config_update(request):
     if err:
         return err
 
+    competition_type, scope_err = _competition(request, request.data)
+    if scope_err:
+        return scope_err
+
     default_tier, msg = _validate_tier(request.data.get("default_tier"))
     if msg:
         # Reuse the tier validator (same 1-3 range); reword for this field.
@@ -893,7 +1088,7 @@ def tier_config_update(request):
         )
 
     with transaction.atomic():
-        config = _get_config()
+        config = _get_config(competition_type)
         before = {"default_tier": config.default_tier}
         config.default_tier = default_tier
         config.save(update_fields=["default_tier", "updated_at"])
@@ -902,7 +1097,8 @@ def tier_config_update(request):
 
     return Response({
         "default_tier": config.default_tier,
-        "contradictions": _contradictions(),
+        "competition_type": competition_type,
+        "contradictions": _contradictions(None, competition_type),
     })
 
 
@@ -940,6 +1136,12 @@ def tier_rules_classify(request):
     if err:
         return err
 
+    # Preview against the set the page is showing. Testing a scrim sample against tournament
+    # rules would answer confidently about the wrong table.
+    competition_type, scope_err = _competition(request, request.data)
+    if scope_err:
+        return scope_err
+
     data = request.data
     # Build the sample the classifier compares against. Numeric fields coerce to int;
     # bad input → 400 rather than a silently-wrong preview.
@@ -961,6 +1163,22 @@ def tier_rules_classify(request):
         )
     sample["format"] = fmt
 
+    # ── how the room was set up ──
+    # Tri-state on purpose: true, false, or absent. Absent is not "off" - it is "nobody
+    # recorded it", which is the state most real events are in, and a room rule must not fire
+    # on it in either direction. Sending null previews exactly that case.
+    for field in _ROOM_FLAG_FIELDS:
+        raw = data.get(field)
+        if raw is None:
+            sample[field] = None
+        elif isinstance(raw, bool):
+            sample[field] = raw
+        else:
+            return Response(
+                {"message": f"`{field}` must be true, false, or omitted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     # ── the sample pool, converted into the comparison currency ──
     # Reuses _validate_currency so the preview accepts exactly the codes a saved rule accepts.
     prize_currency, msg = _validate_currency("prize", data.get("prize_currency"), 0)
@@ -978,8 +1196,8 @@ def tier_rules_classify(request):
         )
     sample["prize"] = int(prize_ngn)
 
-    rules = list(EventTierRule.objects.all().order_by("priority", "created_at"))
-    config = _get_config()
+    rules = list(_rules_for(competition_type, include_retired=True))
+    config = _get_config(competition_type)
     result = classify(rules, config.default_tier, sample, rate_map)
     # Stated so the caller cannot present the preview without saying what currency it read.
     result["prize_currency"] = BASE_CURRENCY
