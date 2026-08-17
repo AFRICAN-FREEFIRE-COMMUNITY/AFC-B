@@ -162,17 +162,38 @@ class FantasyLeague(models.Model):
         finished last month."""
         return self.status in ("locked", "settled")
 
+    def event_starts_at(self):
+        """The event's start as a real moment, or None.
+
+        THE TRAP THIS EXISTS FOR: Event stores the start as TWO columns, `start_date` (a DateField)
+        and `event_start_time` (a TimeField). Comparing `timezone.now()` against the time column
+        alone raises TypeError, which is exactly how this shipped the first time and 500'd the
+        whole listing. They have to be combined, and the result made timezone-aware, before it can
+        be compared with anything.
+
+        A date with no time means the start of that day: an event that says "3 August" and nothing
+        more has not started at 00:01 on the 2nd, and locking picks a day early is worse than
+        locking them a few hours late.
+        """
+        if not self.event.start_date:
+            return None
+        from datetime import datetime, time as _time
+
+        naive = datetime.combine(self.event.start_date, self.event.event_start_time or _time.min)
+        return timezone.make_aware(naive, timezone.get_default_timezone())             if timezone.is_naive(naive) else naive
+
     def should_lock_now(self, now=None):
-        """Has this league reached its lock time? Read by the lock task and by every squad write.
+        """Has this league reached its lock time? Read on every read and every squad write.
 
         A league with no `locks_at` locks when the event starts, which is what the spec promises
         ("when the first match of the event starts, picks lock"). Checking it on every squad write
-        as well as on a schedule means a late entry cannot slip in between two runs of the task.
+        as well as on a schedule means a late entry cannot slip in between two runs of a task, and
+        the person who would slip through that window is the person who already knows a result.
         """
         if self.status != "open":
             return False
         now = now or timezone.now()
-        deadline = self.locks_at or self.event.event_start_time
+        deadline = self.locks_at or self.event_starts_at()
         return bool(deadline and now >= deadline)
 
 
