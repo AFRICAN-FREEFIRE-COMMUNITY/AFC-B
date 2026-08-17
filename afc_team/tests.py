@@ -281,12 +281,53 @@ class RuleC_PositionTransferWindowTests(TestCase):
                                 HTTP_AUTHORIZATION=f"Bearer {self.owner_tok}")
 
     def test_position_change_blocked_when_window_closed(self):
+        """The position is still refused, but PER MEMBER rather than by rejecting the whole call.
+
+        This used to assert a blanket 403. It was changed on 2026-08-17 because the roster screen
+        saves every pending change in one request, so refusing the request threw away unrelated
+        management changes made in the same save (see the test below, which is the reported bug).
+        The refusal itself is unchanged: the position does not move, and the reason says so.
+        """
         _make_season(window_open=False)
         res = self._manage([{"member_id": self.player.user_id, "in_game_role": "sniper"}])
-        self.assertEqual(res.status_code, 403)
-        self.assertIn("Positions are locked", res.json()["error"])
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertTrue(body["has_errors"])
+        self.assertIn("Positions are locked", body["results"][0]["reasons"][0])
         self.tm.refresh_from_db()
         self.assertEqual(self.tm.in_game_role, "rusher")  # unchanged
+
+    def test_a_locked_position_does_not_block_a_management_change_beside_it(self):
+        """THE REPORTED BUG (owner, 2026-08-17).
+
+        A team with two captains could not demote one of them, because the same save also moved a
+        player from support to rusher and the whole request was refused with 403. The user saw only
+        "Failed to update roster" and had no way to tell which half was the problem, or that the
+        other half would have been allowed.
+        """
+        _make_season(window_open=False)
+        res = self._manage([
+            {"member_id": self.player.user_id, "in_game_role": "sniper"},      # locked
+            {"member_id": self.player.user_id, "management_role": "vice_captain"},  # allowed
+        ])
+        self.assertEqual(res.status_code, 200)
+        self.tm.refresh_from_db()
+        self.assertEqual(self.tm.in_game_role, "rusher", "the position must still be refused")
+        self.assertEqual(self.tm.management_role, "vice_captain",
+                         "the management change must land despite the locked position")
+
+    def test_resending_an_unchanged_position_is_not_treated_as_a_change(self):
+        """The roster screen re-sends every member's CURRENT position on every save. Testing "the
+        key is present" rather than "the value differs" would refuse every save while the window is
+        shut, including ones that touch no position at all."""
+        _make_season(window_open=False)
+        res = self._manage([{"member_id": self.player.user_id,
+                             "in_game_role": "rusher",              # unchanged
+                             "management_role": "vice_captain"}])
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.json()["has_errors"], res.json()["results"])
+        self.tm.refresh_from_db()
+        self.assertEqual(self.tm.management_role, "vice_captain")
 
     def test_position_change_allowed_when_window_open(self):
         _make_season(window_open=True)
