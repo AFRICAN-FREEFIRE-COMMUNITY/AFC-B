@@ -621,22 +621,17 @@ WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
 
-# ── The two room templates ────────────────────────────────────────────────────────────────────
-# WHATSAPP_ROOM_TEMPLATE       -> the room id and password message. Five variables, in order:
-#                                 player name, event name, room id, room password, map.
-# WHATSAPP_ROOM_3D_TEMPLATE    -> the 3D room joining steps, sent as a SECOND message and only
-#                                 when the map is marked a 3D room (owner 2026-08-05). Two
-#                                 variables: player name, event name.
+# ── The room template ─────────────────────────────────────────────────────────────────────────
+# WHATSAPP_ROOM_TEMPLATE -> the room id and password message, and the ONLY thing AFC sends a player
+#                           on WhatsApp when a map goes live. Six variables, in order: player name,
+#                           event name, map, room name, room id, room key.
 #
-# The 3D one DEFAULTS TO EMPTY on purpose, and empty means "do not send it". A template name that
-# Meta has not approved fails at send time, and the failure would land on the message carrying the
-# room password, which is the one message on AFC that a player cannot play without. So until the
-# owner has an approved name to put here, 3D rooms simply send the room details alone, exactly as
-# they did before. Set it once Meta approves `afc_room_3d_help`.
-#
-# BOTH LANGUAGES ARE EXPLICIT because `en` and `en_US` are DIFFERENT templates to Meta and sending
-# with the wrong one fails. The 3D language falls back to the room-details language, since the two
-# are approved together in practice.
+# THERE IS NO 3D FOLLOW-UP TEMPLATE ANY MORE (owner 2026-08-17). A second message used to go out
+# whenever Match.room_is_3d was on, carrying the joining steps. Meta bills per template message, so
+# that doubled the WhatsApp cost of every 3D map, in order to repeat instructions the player already
+# had on the event page, in their in-app notification and in their email. Removed rather than left
+# switched off: a setting whose only effect is to start costing money the day somebody fills it in
+# is a trap for whoever comes next.
 WHATSAPP_ROOM_TEMPLATE = os.getenv("WHATSAPP_ROOM_TEMPLATE", "room_details")
 # "en", NOT "en_US": WhatsApp Manager shows room_details approved under English (en), and only
 # hello_world (Meta's own sample) is English (US). The default said en_US, which no approved
@@ -644,9 +639,6 @@ WHATSAPP_ROOM_TEMPLATE = os.getenv("WHATSAPP_ROOM_TEMPLATE", "room_details")
 # with 132001. Production sets the variable and has been fine, which is exactly why the wrong
 # default survived: it only bites a fresh box, or the day someone drops the variable.
 WHATSAPP_ROOM_TEMPLATE_LANG = os.getenv("WHATSAPP_ROOM_TEMPLATE_LANG", "en")
-WHATSAPP_ROOM_3D_TEMPLATE = os.getenv("WHATSAPP_ROOM_3D_TEMPLATE", "")
-WHATSAPP_ROOM_3D_TEMPLATE_LANG = os.getenv(
-    "WHATSAPP_ROOM_3D_TEMPLATE_LANG", WHATSAPP_ROOM_TEMPLATE_LANG)
 
 # ── The broadcast template ────────────────────────────────────────────────────────────────────
 # WHATSAPP_BROADCAST_TEMPLATE       -> the admin/organizer broadcast, WhatsApp being the third
@@ -664,7 +656,7 @@ WHATSAPP_ROOM_3D_TEMPLATE_LANG = os.getenv(
 #                                      number throttles the message a player cannot play without.
 #                                      An audience above the cap is REFUSED, never truncated.
 #
-# BLANK MEANS DO NOT SEND, exactly like WHATSAPP_ROOM_3D_TEMPLATE above: a deployment that has not
+# BLANK MEANS DO NOT SEND, the rule every template name here follows: a deployment that has not
 # had this template approved stays silent instead of failing a send per recipient. The default is
 # the approved name so the feature works out of the box, matching WHATSAPP_ROOM_TEMPLATE; set it to
 # an empty string in the environment to switch the channel off everywhere.
@@ -691,7 +683,7 @@ WHATSAPP_BROADCAST_MAX_RECIPIENTS = int(
 #                                       reference, plus TWO quick-reply buttons whose taps come
 #                                       back to afc_shop/buyer_whatsapp.py handle_inbound_message.
 #
-# A BLANK NAME MEANS "DO NOT SEND IT", the same off switch WHATSAPP_ROOM_3D_TEMPLATE uses: a
+# A BLANK NAME MEANS "DO NOT SEND IT", the same off switch WHATSAPP_BROADCAST_TEMPLATE uses: a
 # template Meta has not approved fails at send time, so a deployment that has not registered
 # these yet stays silent and keeps the order emails it already sends, instead of leaving a failed
 # message row behind on every single order.
@@ -699,7 +691,7 @@ WHATSAPP_BROADCAST_MAX_RECIPIENTS = int(
 # ONE SHARED LANGUAGE because all three were approved together under `en`. Note `en`, NOT `en_US`:
 # they are DIFFERENT templates to Meta and sending with the wrong one fails with error 132001.
 # All three default to EMPTY, which means "do not send", the same rule
-# WHATSAPP_ROOM_3D_TEMPLATE follows. Defaulting to the live template names would have started
+# WHATSAPP_BROADCAST_TEMPLATE follows. Defaulting to the live template names would have started
 # messaging real buyers the moment this code was deployed, before anybody chose to turn it on,
 # and a WhatsApp message is not a thing that can be taken back. Set the names in the server .env
 # when you want it live.

@@ -302,7 +302,7 @@ class WhatsAppCodeMethod(TwoFactorMethod):
 
         template = getattr(settings, "WHATSAPP_LOGIN_CODE_TEMPLATE", "") or ""
         if not template:
-            # BLANK MEANS DO NOT SEND, the same off switch WHATSAPP_ROOM_3D_TEMPLATE and the order
+            # BLANK MEANS DO NOT SEND, the same off switch WHATSAPP_BROADCAST_TEMPLATE and the order
             # templates use. Reported as a delivery failure so the caller says "we could not send
             # it" rather than telling somebody to check a phone nothing was sent to.
             print("WhatsApp 2FA code not sent: WHATSAPP_LOGIN_CODE_TEMPLATE is not configured.")
