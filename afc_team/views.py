@@ -2894,15 +2894,26 @@ def manage_team_roster(request):
                     return True
             return False
 
-        wants_position_change = _is_real_position_change()
-        if wants_position_change:
+        # ── PER-MEMBER, NOT A BLANKET REFUSAL (bug, owner 2026-08-17) ─────────────────────────
+        # This used to 403 the ENTIRE request the moment any member's position changed while the
+        # window was shut. The roster screen saves every pending change in one call, so one locked
+        # position change also threw away every management change beside it - and the reported case
+        # was exactly that: a team with TWO captains could not demote one of them, because the same
+        # save also moved somebody from support to rusher. The comment above already promised that
+        # management-role changes are not restricted here; the blanket return broke that promise.
+        #
+        # The endpoint already reports per-member outcomes with partial success, so the lock is
+        # applied there instead: the position change is refused WITH ITS REASON and everything else
+        # in the same save still lands.
+        positions_locked_reason = None
+        if _is_real_position_change():
             from afc_rankings.models import Season
             active_season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
             if active_season and not active_season.is_transfer_window_open():
-                return Response(
-                    {"error": "Positions are locked until the transfer window reopens. You can change positions while the transfer window is open."
-                            + _transfer_window_reopen_hint(active_season)},
-                    status=status.HTTP_403_FORBIDDEN,
+                positions_locked_reason = (
+                    "Positions are locked until the transfer window reopens. You can change "
+                    "positions while the transfer window is open."
+                    + _transfer_window_reopen_hint(active_season)
                 )
 
         # Valid role sets
@@ -3013,7 +3024,13 @@ def manage_team_roster(request):
 
             # In-game role - None means skip, "" means clear
             if new_i_role is not None:
-                if new_i_role == "":
+                # The roster screen re-sends every member's CURRENT in-game role on every save, so
+                # the lock must only bite when the value actually differs. Testing "the key is
+                # present" would refuse every save while the window is shut, including ones that
+                # touch no position at all.
+                if positions_locked_reason and str(new_i_role or "") != str(tm.in_game_role or ""):
+                    failures.append(positions_locked_reason)
+                elif new_i_role == "":
                     tm.in_game_role = None
                 elif new_i_role not in valid_i_roles:
                     failures.append("Invalid in_game_role")
