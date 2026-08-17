@@ -129,7 +129,10 @@ def _serialize_league(league, user=None):
         "entry_type": league.entry_type,
         "entry_fee": str(league.entry_fee) if league.entry_fee is not None else None,
         "entry_fee_currency": league.entry_fee_currency or None,
-        "locks_at": league.locks_at or league.event.event_start_time,
+        # The real moment, not the bare TimeField: the client renders this in the viewer's
+        # timezone, and a time with no date cannot be rendered as one. See
+        # FantasyLeague.event_starts_at for why the two columns have to be combined.
+        "locks_at": league.locks_at or league.event_starts_at(),
         "locked_at": league.locked_at,
         "is_locked": league.is_locked,
         "entries": league.squads.count(),
@@ -231,6 +234,10 @@ def league_table(request, slug):
             "squad_id": r["squad"].squad_id,
             "squad_name": r["squad"].squad_name or r["squad"].user.username,
             "username": r["squad"].user.username,
+            # The id, so the page can highlight YOUR row without comparing display names.
+            # AFC players rename themselves often, and a name match would quietly stop
+            # highlighting the moment somebody did.
+            "user_id": r["squad"].user_id,
             "total": r["total"],
             "matches": r["matches"],
         } for r in rows],
