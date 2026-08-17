@@ -98,6 +98,10 @@ INSTALLED_APPS = [
     # replaced rather than extended. afc_awards stays installed until its historical Vote rows
     # have been migrated in a later phase. See afc_polls/models.py.
     'afc_polls',
+    # Fans pick real players from a real AFC event and score on what those players actually do
+    # (spec WEBSITE/tasks/fantasy-league-spec.md). Scores are computed from match stats that were
+    # being entered anyway, so it adds no organizer work. See afc_fantasy/models.py.
+    'afc_fantasy',
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
