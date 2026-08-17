@@ -30,6 +30,12 @@ urlpatterns = [
     path("player-market/", include('afc_player_market.urls')),
     path("events/", include('afc_ocr.urls')),
     path("rankings/", include('afc_rankings.urls')),
+    # Fantasy League. PUBLIC: fantasy/ (the listing), fantasy/<slug>/ (one league, its priced pool
+    # and its table). fantasy/<slug>/my-squad/ needs a login, because a table has to count people.
+    # The fantasy/admin/... routes are gated on afc_fantasy.permissions.can_manage_league, which is
+    # the existing event-admin gate composed with the existing organizer gate - not a new
+    # permission. See afc_fantasy/urls.py for the full route table.
+    path("fantasy/", include('afc_fantasy.urls')),
     path("organizers/", include('afc_organizers.urls')),
     # Sponsor-system redesign P1 (afc_sponsors): sponsor ENTITIES + admin-assigned members +
     # the member-scoped sponsor portal (a ydpay member sees only ydpay). Spec:
