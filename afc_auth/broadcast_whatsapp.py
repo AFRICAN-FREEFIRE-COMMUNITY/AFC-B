@@ -25,7 +25,7 @@
 # as Meta is concerned). Variables, in the order the body reads:
 #   {{1}} recipient name   {{2}} the message body
 # Name and language come from settings so the owner can repoint them, and a BLANK name means "do
-# not send" rather than "fail every send", exactly like WHATSAPP_ROOM_3D_TEMPLATE.
+# not send" rather than "fail every send", the rule every WhatsApp template name follows.
 #
 # HOW THIS CONNECTS TO THE REST OF THE SYSTEM:
 #   CALLED BY : afc_auth.views.deliver_broadcast, the single delivery chokepoint every broadcast
