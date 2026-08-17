@@ -194,8 +194,15 @@ class TotpTestBase(TestCase):
                           {"purpose": setup.json()["proof_purpose"]}, token=session)
         self.assertEqual(proof.status_code, 200, proof.content)
 
+        # Kept on the instance so the replay test can assert against the code that was ACTUALLY
+        # spent. Re-deriving it later would re-read the clock, and TOTP codes roll every 30
+        # seconds: under a loaded full-suite run the two calls can land in different steps, at
+        # which point the "replayed" code is a different six digits, the sign-in legitimately
+        # succeeds, and the test fails for a reason that has nothing to do with replay protection.
+        # (Observed 2026-08-17 in a 42-minute suite run; the test passes on its own.)
+        self.spent_enrolment_code = self.app_code(secret)
         confirm = self.post("/auth/two-factor/totp/confirm/", {
-            "code": self.app_code(secret),
+            "code": self.spent_enrolment_code,
             "proof_challenge_token": proof.json()["challenge_token"],
             "proof_code": self.sent_codes[-1],
         }, token=session)
@@ -386,9 +393,13 @@ class TotpEnrolmentTests(TotpTestBase):
         _session, secret, _codes = self.enrol_totp()
         SessionToken.objects.filter(user=self.user).delete()
 
+        # THE code the setup screen spent, not a fresh one for whatever step it is now. Those are
+        # the same six digits only while the clock stays inside one 30-second window, so
+        # re-deriving here would make the test assert "a replay is refused" or "a new code works"
+        # depending on how busy the machine was.
         resp = self.post("/auth/two-factor/verify/",
                          {"challenge_token": self.do_login().json()["challenge_token"],
-                          "code": self.app_code(secret)})
+                          "code": self.spent_enrolment_code})
 
         self.assertEqual(resp.status_code, 400, resp.content)
         self.assertFalse(SessionToken.objects.filter(user=self.user).exists())

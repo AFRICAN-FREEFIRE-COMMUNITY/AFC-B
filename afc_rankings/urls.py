@@ -170,6 +170,10 @@ urlpatterns = [
          name="rankings_event_tier_rules_reorder"),
     path("event-tier-rules/classify/", admin_tournament_tiers.tier_rules_classify,
          name="rankings_event_tier_rules_classify"),
+    # Seeds an EMPTY set (scrims) from a full one (tournaments). One-way and one-time by design -
+    # see admin_tournament_tiers.copy_rule_set for why it refuses a set that already has rules.
+    path("event-tier-rules/copy-from/", admin_tournament_tiers.tier_rules_copy_from,
+         name="rankings_event_tier_rules_copy_from"),
     path("event-tier-rules/",
          _route(GET=admin_tournament_tiers.tier_rules_list, POST=admin_tournament_tiers.tier_rule_create),
          name="rankings_event_tier_rules"),
