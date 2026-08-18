@@ -16,7 +16,7 @@ billiard==4.2.1
 blessed==1.22.0
 blinker==1.8.2
 boto3==1.34.149
-botocore==1.40.55
+botocore==1.34.149
 bs4==0.0.2
 cachetools==5.4.0
 celery==5.4.0
@@ -24,7 +24,7 @@ cement==2.10.14
 certifi==2024.7.4
 cffi==2.0.0
 charset-normalizer==3.3.2
-click==8.1.7
+click==8.4.2
 click-didyoumean==0.3.1
 click-plugins==1.1.1
 click-repl==0.3.0
@@ -41,7 +41,6 @@ Deprecated==1.2.18
 distro==1.9.0
 dj-rest-auth==6.0.0
 Django==5.2.16
-django-allauth==64.0.0
 django-celery-beat==2.9.0
 django-cors-headers==4.4.0
 django-filter==24.3
@@ -57,7 +56,7 @@ fabric==3.2.2
 face-recognition==1.3.0
 face_recognition_models==0.3.0
 fastapi==0.116.1
-filelock==3.15.4
+filelock==3.32.3
 fonttools==4.53.1
 frozenlist==1.5.0
 fsspec==2024.6.1
@@ -71,8 +70,8 @@ googleapis-common-protos==1.63.2
 greenlet==3.0.3
 grpcio==1.65.1
 grpcio-status==1.65.1
-h11==0.14.0
-httpcore==1.0.6
+h11==0.16.0
+httpcore==1.0.9
 httpx==0.27.2
 idna==3.18
 imageio==2.34.2
@@ -112,7 +111,7 @@ pillow==12.3.0
 prompt_toolkit==3.0.48
 propcache==0.5.2
 proto-plus==1.24.0
-protobuf==5.27.2
+protobuf==5.29.6
 pyasn1==0.6.4
 pyasn1_modules==0.4.0
 pyclipper==1.3.0.post5
@@ -147,7 +146,7 @@ scikit-image==0.24.0
 scipy==1.14.0
 selenium==4.23.1
 semantic-version==2.10.0
-setuptools==71.1.0
+setuptools==84.0.0
 shapely==2.0.5
 six==1.16.0
 sniffio==1.3.1
@@ -168,7 +167,7 @@ trio==0.26.0
 trio-websocket==0.11.1
 typing_extensions==4.12.2
 tzdata==2024.1
-urllib3==1.26.20
+urllib3==2.7.0
 uvicorn==0.35.0
 vine==5.1.0
 wcwidth==0.2.13
