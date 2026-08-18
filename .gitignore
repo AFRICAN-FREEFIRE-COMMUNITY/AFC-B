@@ -78,3 +78,11 @@ media/match_results/
 # data that lives on the server (and in S3 in production), not source. `git add -A` swept 2,233 of
 # them into a commit on 2026-08-16, which is why this line exists.
 media/
+
+# ── The Discord bot's runtime state (afcbot/, absorbed 2026-08-18) ────────────
+# These are written by the running bot, not by a developer. Committing them would
+# mean every deploy fights the server over what the bot has already seen, and
+# re-announcing a tournament nobody asked about is the visible symptom.
+afcbot/*.json
+afcbot/conversation_history.json
+afcbot/bot_config.json

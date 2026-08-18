@@ -1,0 +1,56 @@
+[Unit]
+# The AFC Discord bot (owner 2026-08-18, absorbing AFCBot into this repo).
+#
+# WHY IT IS HERE NOW. The bot used to live in its own repository and run as a Heroku-style worker
+# dyno (`Procfile: worker: python bot.py`). It polls this backend's API for tournaments, news and
+# bans, so a serializer change in this repo could break a program in another one with nothing to
+# catch it. One repo means one `git pull` updates both, and the bot's control API (which the admin
+# Bot page proxies to) is reachable over loopback because the two now run on the same box.
+#
+# IT RUNS IN ITS OWN VIRTUALENV, DELIBERATELY. discord.py, PyNaCl and the voice-receive extension
+# are a large dependency set that the web application has no use for, and this repo's
+# requirements.txt is separately known to be unresolvable. afcbot/requirements.txt is the bot's own
+# list and stays that way:
+#
+#     python3 -m venv /home/ubuntu/AFC-B/afcbot/venv
+#     /home/ubuntu/AFC-B/afcbot/venv/bin/pip install -r /home/ubuntu/AFC-B/afcbot/requirements.txt
+#
+# THE KNOWLEDGE SCRAPE IS NOT THIS UNIT'S JOB. It used to be a GitHub Action committing to the bot
+# repo every 3 hours; it is now a celery beat task (afc_bot.tasks.refresh_bot_knowledge) writing to
+# disk, so celery-beat must be running for the bot's knowledge to stay current. The bot reads
+# knowledge_base.txt on every reply, so a fresh scrape needs no restart of this service.
+#
+# NO EnvironmentFile ON PURPOSE, matching the celery units beside it: bot.py calls load_dotenv()
+# itself, and pointing systemd at a shell-oriented .env is the usual way these units fail to start.
+# The bot reads afcbot/.env, which is NOT the same file as the Django one and holds DISCORD_TOKEN,
+# OPENAI_API_KEY, the fallback provider keys, and BOT_CONTROL_TOKEN.
+#
+# BOT_CONTROL_TOKEN MUST MATCH the value in the Django .env, or the admin Bot page gets 401 from a
+# bot that is otherwise perfectly healthy. That is the single most likely misconfiguration here.
+Description=AFC Discord bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/AFC-B/afcbot
+ExecStart=/home/ubuntu/AFC-B/afcbot/venv/bin/python bot.py
+
+# The bot holds a websocket to Discord and keeps per-channel conversation history in memory.
+# SIGTERM lets discord.py close the gateway connection cleanly; a hard kill makes Discord treat
+# the session as a crash and slows the reconnect.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Restart=always, because the failure that matters is the silent one: a bot that died at 2am and
+# was not noticed until somebody asked why the tournament was never announced.
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=afc-bot
+
+[Install]
+WantedBy=multi-user.target

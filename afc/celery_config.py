@@ -88,6 +88,16 @@ app.conf.beat_schedule = {
         'task': 'afc_rankings.tasks.sweep_rankings',
         'schedule': crontab(minute=0, hour=4),     # 04:00 every day
     },
+    # ── The Discord bot's knowledge refresh (owner 2026-08-18) ───────────────
+    # Replaces the GitHub Action that used to re-scrape the site every 3 hours and COMMIT the
+    # result to the bot's own repository. Now that the bot lives in this repo, those would be
+    # eight machine commits a day churning this history, so the same job runs here instead and
+    # writes to disk. The bot reads knowledge_base.txt on every reply, so a fresh scrape is live
+    # without a restart. Default queue, like everything else a plain worker must drain.
+    'refresh_bot_knowledge_every_3h': {
+        'task': 'afc_bot.tasks.refresh_bot_knowledge',
+        'schedule': crontab(minute=0, hour='*/3'),   # 00:00, 03:00, 06:00 ...
+    },
 }
 
 @app.task(bind=True)

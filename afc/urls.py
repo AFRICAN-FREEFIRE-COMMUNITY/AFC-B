@@ -79,6 +79,7 @@ urlpatterns = [
     # the awards/ routes above, which stay mounted until the historical votes are migrated.
     # See afc_polls/views.py.
     path("polls/", include('afc_polls.urls')),
+    path('bot/', include('afc_bot.urls')),
 
 ]
 

@@ -1,0 +1,22 @@
+# Secrets — never commit
+.env
+
+# SSH / private keys — never commit
+*.pem
+*.ppk
+*.key
+afc-deploy-key
+afc-deploy-key.pub
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Bot runtime state — regenerated at runtime; must stay untracked so git-based
+# deploys (git reset --hard origin/main) don't fail on a dirty tree or clobber it.
+# (knowledge_base.txt is intentionally NOT ignored — it is committed and refreshed
+#  by the update_knowledge.yml GitHub Action.)
+conversation_history.json
+seen_*.json

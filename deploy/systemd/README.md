@@ -50,7 +50,7 @@ it costs Gemini API calls and has a queue backlog to purge before its first star
 Add to every backend deploy, after `migrate`:
 
 ```bash
-sudo systemctl restart django_app celery-worker celery-beat
+sudo systemctl restart django_app celery-worker celery-beat afc-bot
 ```
 
 Restarting Celery is not optional. Skipping it is exactly how the workers ended up two months
@@ -119,12 +119,13 @@ Do NOT point a worker at these backlogs and let it rip.
     sudo cp deploy/systemd/celery-beat.service     /etc/systemd/system/
     sudo cp deploy/systemd/celery-rankings.service /etc/systemd/system/
     sudo cp deploy/systemd/celery-ocr-ml.service   /etc/systemd/system/
+    sudo cp deploy/systemd/afc-bot.service         /etc/systemd/system/
     sudo systemctl daemon-reload
-    sudo systemctl enable --now celery-worker celery-beat celery-rankings celery-ocr-ml
+    sudo systemctl enable --now celery-worker celery-beat celery-rankings celery-ocr-ml afc-bot
 
 ### Deploy step (updated)
 
-    sudo systemctl restart django_app celery-worker celery-beat celery-rankings celery-ocr-ml
+    sudo systemctl restart django_app celery-worker celery-beat celery-rankings celery-ocr-ml afc-bot
 
 ### OCR learning loop cost, for the record
 
@@ -185,3 +186,23 @@ confirmed).
 NOTE: beat still schedules the two ocr_ml jobs, so the queue slowly refills with nothing
 consuming it. That is deliberate and harmless - purge with `redis-cli -n 0 del ocr_ml` if it
 ever matters.
+
+
+## afc-bot (added 2026-08-18)
+
+The Discord bot moved into this repo from its own (owner's call). It runs as `afc-bot.service`,
+in **its own virtualenv** at `afcbot/venv`, because discord.py and the voice extension are a large
+dependency set the web app has no use for:
+
+    python3 -m venv /home/ubuntu/AFC-B/afcbot/venv
+    /home/ubuntu/AFC-B/afcbot/venv/bin/pip install -r /home/ubuntu/AFC-B/afcbot/requirements.txt
+
+Two things about it are easy to get wrong:
+
+1. **`BOT_CONTROL_TOKEN` must be the SAME value** in `afcbot/.env` and in the Django `.env`, and
+   the Django one also needs `BOT_CONTROL_URL=http://127.0.0.1:8099`. If they disagree, the admin
+   Bot page shows 401 against a bot that is otherwise perfectly healthy.
+2. **The knowledge scrape is celery beat's job now**, not a GitHub Action. It used to commit
+   `knowledge_base.txt` to the bot's repository every 3 hours; here that would be eight machine
+   commits a day in this history. `afc_bot.tasks.refresh_bot_knowledge` writes it to disk instead,
+   so **celery-beat must be running** for the bot's knowledge to stay current.
