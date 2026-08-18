@@ -39,7 +39,7 @@ THE THREE EVENTS (each is one Meta-approved template, all in language "en")
         is set by the vendor or an admin, which is a claim rather than proof. The
         two quick-reply buttons are how AFC finds out whether the buyer agrees.
 
-A BLANK TEMPLATE NAME MEANS "DO NOT SEND", exactly as WHATSAPP_ROOM_3D_TEMPLATE
+A BLANK TEMPLATE NAME MEANS "DO NOT SEND", exactly as WHATSAPP_BROADCAST_TEMPLATE
 works. An unconfigured deployment (a fresh server, a local dev box) then stays
 silent instead of queueing sends Meta refuses with a template-not-found.
 
