@@ -171,12 +171,15 @@ class _FakeMatch:
 
 
 class Room3dWhatsAppFollowUpTests(TestCase):
-    """The 3D joining steps as a SECOND WhatsApp template (owner 2026-08-05).
+    """WhatsApp sends ONE message per player, even for a 3D room (owner 2026-08-17).
 
-    A template's wording is frozen when Meta approves it, so the steps cannot be appended to the
-    room-details message. They go as their own send, and the rules that matter are: only for a 3D
-    room, only to a player who actually received the room details, and never at the cost of the
-    room details themselves.
+    The 3D joining steps used to go out as a SECOND template right behind the room details. Meta
+    bills per template message, so that doubled the WhatsApp cost of every 3D map, to repeat
+    instructions the player already had on the event page, in their notification and in their
+    email.
+
+    These tests are the guard against it coming back: whatever the map is marked as, and whatever
+    is in the settings, one player gets exactly one send.
     """
 
     def setUp(self):
@@ -229,43 +232,40 @@ class Room3dWhatsAppFollowUpTests(TestCase):
                     [self.player], self.event, self.match)
         return queue
 
-    def test_the_steps_go_as_their_own_message_after_the_room_details(self):
-        queue = self._send(WHATSAPP_ROOM_3D_TEMPLATE="afc_room_3d_help")
+    def test_a_3d_room_sends_the_room_details_and_nothing_else(self):
+        """THE COST GUARD. `self.match` is a 3D room, and one player must still cost one message."""
+        queue = self._send()
 
-        self.assertEqual(queue.call_count, 2, "expected the room details AND the follow-up")
-        first, second = queue.call_args_list
-        self.assertEqual(first.args[1], "room_details")
-        self.assertEqual(second.args[1], "afc_room_3d_help")
-        self.assertEqual(
-            second.kwargs["context"], "room_3d_help",
-            "the log row has to say which of the two messages this was")
+        self.assertEqual(queue.call_count, 1,
+                         "a 3D room must not send a second, billed, follow-up")
+        self.assertEqual(queue.call_args_list[0].args[1], "room_details")
 
-    def test_nothing_extra_is_sent_for_an_ordinary_room(self):
+    def test_an_ordinary_room_sends_the_room_details_and_nothing_else(self):
         self.match.room_is_3d = False
         self.match.save(update_fields=["room_is_3d"])
 
+        queue = self._send()
+
+        self.assertEqual(queue.call_count, 1)
+        self.assertEqual(queue.call_args_list[0].args[1], "room_details")
+
+    def test_a_leftover_3d_template_setting_cannot_start_sending_again(self):
+        """The setting is gone from settings.py, but an old server .env may still define it. It
+        must be inert: nothing reads it, so setting it buys a deployment nothing except confusion.
+        This is the test that fails if somebody wires it back up."""
         queue = self._send(WHATSAPP_ROOM_3D_TEMPLATE="afc_room_3d_help")
 
         self.assertEqual(queue.call_count, 1)
         self.assertEqual(queue.call_args_list[0].args[1], "room_details")
 
-    def test_an_unapproved_template_name_does_not_cost_anybody_their_room_password(self):
-        """THE REASON THE SETTING DEFAULTS TO EMPTY. Meta fails a send to a template it has not
-        approved, and until the owner has a name to put here, an eager follow-up would put that
-        failure next to the one message a player cannot play without."""
-        queue = self._send(WHATSAPP_ROOM_3D_TEMPLATE="")
-
-        self.assertEqual(queue.call_count, 1)
-        self.assertEqual(queue.call_args_list[0].args[1], "room_details")
-
-    def test_a_player_who_did_not_get_the_room_details_gets_no_instructions(self):
-        """An opted-out player returns None from queue_template. Sending them joining steps for a
-        room whose id they never received would be noise about a room they cannot enter."""
+    def test_the_counters_still_report_an_opted_out_player_as_skipped(self):
+        """An opted-out player returns None from queue_template, and is counted as skipped rather
+        than queued: `queued` answers "how many players were told their room details", which is the
+        number an organizer uses to chase people."""
         from afc_tournament_and_scrims import whatsapp_room_details
 
         with override_settings(WHATSAPP_ROOM_TEMPLATE="room_details",
-                               WHATSAPP_ROOM_TEMPLATE_LANG="en_US",
-                               WHATSAPP_ROOM_3D_TEMPLATE="afc_room_3d_help"):
+                               WHATSAPP_ROOM_TEMPLATE_LANG="en_US"):
             with patch.object(whatsapp_room_details, "queue_template") as queue:
                 queue.return_value = None  # opted out
                 queued, skipped = whatsapp_room_details.send_room_details(
@@ -322,8 +322,7 @@ class RoomDetailsTemplateParamsTests(TestCase):
         from afc_tournament_and_scrims import whatsapp_room_details
 
         with override_settings(WHATSAPP_ROOM_TEMPLATE="room_details",
-                               WHATSAPP_ROOM_TEMPLATE_LANG="en_US",
-                               WHATSAPP_ROOM_3D_TEMPLATE=""):
+                               WHATSAPP_ROOM_TEMPLATE_LANG="en_US"):
             with patch.object(whatsapp_room_details, "queue_template") as queue:
                 queue.return_value = "wamid.x"
                 whatsapp_room_details.send_room_details([self.player], self.event, self.match)
@@ -406,8 +405,7 @@ class RoomDetailsAsyncDispatchTests(TestCase):
         from afc_tournament_and_scrims import whatsapp_room_details
 
         with override_settings(WHATSAPP_ROOM_TEMPLATE="room_details",
-                               WHATSAPP_ROOM_TEMPLATE_LANG="en",
-                               WHATSAPP_ROOM_3D_TEMPLATE=""):
+                               WHATSAPP_ROOM_TEMPLATE_LANG="en"):
             with patch("afc_whatsapp.tasks.send_whatsapp_message") as task:
                 queued, skipped = whatsapp_room_details.send_room_details(
                     [self.player], self.event, self.match)
@@ -415,17 +413,17 @@ class RoomDetailsAsyncDispatchTests(TestCase):
         self.assertTrue(task.delay.called, "the send must have gone to a worker")
         self.assertEqual((queued, skipped), (1, 0))
 
-    def test_the_3d_follow_up_still_sends_when_the_worker_takes_the_first_message(self):
-        """The half that actually cost players something: the follow-up is gated on the room
-        details having gone out, so a mis-read of the dispatch result silenced it entirely."""
+    def test_exactly_one_message_reaches_the_worker_for_a_3d_room(self):
+        """The same cost guard as the class above, measured one layer lower: at the point where a
+        message is actually handed to a worker and becomes a billable send, a 3D room produces one
+        and only one."""
         from afc_tournament_and_scrims import whatsapp_room_details
 
         with override_settings(WHATSAPP_ROOM_TEMPLATE="room_details",
-                               WHATSAPP_ROOM_TEMPLATE_LANG="en",
-                               WHATSAPP_ROOM_3D_TEMPLATE="room_3d_help"):
+                               WHATSAPP_ROOM_TEMPLATE_LANG="en"):
             with patch("afc_whatsapp.tasks.send_whatsapp_message") as task:
                 whatsapp_room_details.send_room_details(
                     [self.player], self.event, self.match)
 
         templates = [c.kwargs.get("template_name") for c in task.delay.call_args_list]
-        self.assertEqual(templates, ["room_details", "room_3d_help"])
+        self.assertEqual(templates, ["room_details"])

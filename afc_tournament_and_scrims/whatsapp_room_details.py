@@ -33,12 +33,19 @@
 # AUTHENTICATION category, which has a locked format that permits neither six variables nor a URL
 # button. See docs/whatsapp-templates-to-submit.md.
 #
-# THE 3D ROOM STEPS ARE A SECOND TEMPLATE, NOT A SIXTH VARIABLE (owner 2026-08-05). A
-# template's wording is frozen when Meta approves it, so the joining steps that appear
-# under the room details on the event page cannot simply be appended here. The owner
-# chose a separate message, sent only when Match.room_is_3d, over widening this one:
-# this message is scanned for a room id under time pressure, and burying that in a
-# paragraph of instructions is how a player misses it. See WHATSAPP_ROOM_3D_TEMPLATE.
+# THE 3D ROOM STEPS DO NOT GO OUT ON WHATSAPP (owner 2026-08-17). They used to be sent as a
+# SECOND template right after this one whenever Match.room_is_3d was on, which doubled the WhatsApp
+# bill for every player in a 3D room: Meta charges per template message, so a 40-player group cost
+# 80 sends instead of 40, every map.
+#
+# It bought nothing. The same joining steps already reach the player three other ways, all free:
+#   * the EVENT PAGE renders them, translated, from frontend/messages/*/tournaments.json
+#     (components/Room3dJoinHelp.tsx);
+#   * the in-app NOTIFICATION and the EMAIL both carry them, appended by
+#     afc_tournament_and_scrims.room_join_help.append_3d_help, which goes out in the same action
+#     that sends this message.
+# So WhatsApp carries the one thing it is uniquely good at - the room id and password, the message a
+# player cannot play without - and the instructions travel on the channels that cost nothing.
 # ──────────────────────────────────────────────────────────────────────────────
 import logging
 
@@ -79,14 +86,9 @@ def send_room_details(users, event, match):
     template = getattr(settings, "WHATSAPP_ROOM_TEMPLATE", "room_details")
     language = getattr(settings, "WHATSAPP_ROOM_TEMPLATE_LANG", "en_US")
 
-    # The follow-up, sent ONLY for a 3D room and only to players who just received the
-    # room details above. Blank until the owner has an approved template, and a blank
-    # name means the follow-up is skipped entirely rather than failing every send with a
-    # template-not-found: the room id is what matters, and it must go out either way.
-    help_template = getattr(settings, "WHATSAPP_ROOM_3D_TEMPLATE", "")
-    help_language = getattr(
-        settings, "WHATSAPP_ROOM_3D_TEMPLATE_LANG", language)
-    send_3d_help = bool(help_template) and bool(getattr(match, "room_is_3d", False))
+    # EXACTLY ONE MESSAGE PER PLAYER, whether or not the map is a 3D room. See the note at the top
+    # of this file: the 3D joining steps used to be a second billed send, and they now travel with
+    # the notification, the email and the event page instead.
 
     queued = 0
     skipped = 0
@@ -138,26 +140,6 @@ def send_room_details(users, event, match):
                 skipped += 1
             else:
                 queued += 1
-                # Only after the room details actually went out. A player who was opted
-                # out or unreachable above must not receive joining instructions for a
-                # room whose id they never got, and the counters deliberately do NOT
-                # move for this: `queued` answers "how many players were told their room
-                # details", and counting the same player twice would make that number a
-                # lie on exactly the screen an organizer uses to chase people.
-                if send_3d_help:
-                    queue_template(
-                        number,
-                        help_template,
-                        help_language,
-                        body_params=[
-                            _param(getattr(user, "username", "")),
-                            _param(event.event_name),
-                        ],
-                        user=user,
-                        event=event,
-                        match=match,
-                        context="room_3d_help",
-                    )
         except Exception:
             # Best effort per recipient: one bad row must not cost the rest of the group
             # their room password.

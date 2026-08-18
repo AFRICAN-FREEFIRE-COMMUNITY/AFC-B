@@ -247,7 +247,7 @@ class BroadcastWhatsAppTests(TestCase):
     @patch("afc_auth.broadcast_whatsapp.queue_template")
     def test_blank_template_name_sends_nothing(self, mock_queue):
         # A deployment without the approved template stays silent instead of failing a send per
-        # recipient, exactly like WHATSAPP_ROOM_3D_TEMPLATE.
+        # recipient, the rule every WhatsApp template name follows.
         queued, skipped = send_broadcast_whatsapp(self.everyone, "t", "m")
         self.assertEqual((queued, skipped), (0, 5))
         self.assertFalse(mock_queue.called)

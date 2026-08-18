@@ -69,24 +69,12 @@ def _templates():
             "example": ["SYN.HENRYx7", "Legacy Scrims Day 13", "Bermuda",
                         "AFC LOBBY 1", "AFC3D-1234", "284915"],
         },
-        {
-            "setting": "WHATSAPP_ROOM_3D_TEMPLATE",
-            "lang_setting": "WHATSAPP_ROOM_TEMPLATE_LANG",
-            "category": "UTILITY",
-            # "Hi " in front is NOT cosmetic. Meta rejects a body that STARTS or ENDS with a
-            # variable ("Variables can't be at the start or end of the template"), and the doc's
-            # wording opened on {{1}}. Caught on the first real submission, 2026-08-06.
-            "body": (
-                "Hi {{1}}, one more thing about your room for {{2}}: it is a 3D room, so joining "
-                "works differently.\n\n"
-                "Create a group and add all 4 squad members. The group leader then goes to "
-                "Customs, then League, or searches the room ID. Tap the join icon, then enter "
-                "your team name, team tag and password.\n\n"
-                "Use the account registered on the AFC website. If you do not, your results will "
-                "not count and your team could be penalized."
-            ),
-            "example": ["SYN.HENRYx7", "Legacy Scrims Day 13"],
-        },
+        # The 3D-room follow-up template was REMOVED from this registry on 2026-08-17 (owner).
+        # Meta bills per template message, so sending it doubled the WhatsApp cost of every 3D map
+        # in order to repeat joining steps the player already has on the event page, in their
+        # in-app notification and in their email. It is no longer registered, no longer submitted
+        # for approval and no longer sent. The steps themselves are unchanged and still live in
+        # afc_tournament_and_scrims/room_join_help.py.
         {
             "setting": "WHATSAPP_ORDER_RECEIVED_TEMPLATE",
             "lang_setting": "WHATSAPP_ORDER_TEMPLATE_LANG",
