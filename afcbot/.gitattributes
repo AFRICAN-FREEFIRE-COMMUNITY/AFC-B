@@ -1,0 +1,7 @@
+# Force LF on shell scripts and cloud-init / systemd files so they execute
+# correctly when checked out on Linux from a Windows-edited repo.
+*.sh        text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.service   text eol=lf
+Procfile    text eol=lf

@@ -1,0 +1,241 @@
+=== AFC STAFF & OPERATIONS GUIDE ===
+For: Admins, Moderators, Support Team, Scrims Masters
+Last Updated: March 2026
+
+This document is for internal staff use only. Do not share contents with regular users.
+
+--- PLATFORM ARCHITECTURE ---
+Frontend: Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4
+Backend: Django 5, Django REST Framework, MySQL
+Auth: JWT stored in auth_token cookie (7-day, SameSite strict)
+Payments: Paystack
+Hosting: AWS Elastic Beanstalk (backend), Vercel-compatible (frontend)
+Background tasks: Celery + Redis
+
+Backend API base URL: https://api.africanfreefirecommunity.com
+
+--- STAFF ROLES & PERMISSIONS ---
+
+Site-wide user roles (User.role field):
+- admin — full platform access
+- moderator — moderation capabilities
+- support — support team access
+- player — standard user
+
+Granular admin roles (UserRoles table — users can have multiple):
+- head_admin — full access to all admin pages
+- shop_admin — manages /a/shop
+- news_admin — manages /a/news
+- event_admin — manages /a/events and /a/sponsors
+- teams_admin — manages /a/teams
+- partner_admin — manages /a/partner/roster-verification
+- sponsor_admin — manages /a/sponsor-dashboard
+
+Admin dashboard: https://africanfreefirecommunity.com/a/dashboard
+
+--- EVENT / TOURNAMENT MANAGEMENT ---
+
+Django app: afc_tournament_and_scrims
+URL prefix: /events/
+
+Key models:
+- Event → Stages → StageGroups → Match
+- TournamentTeamMatchStats / TournamentPlayerMatchStats / SoloPlayerMatchStats
+- RegisteredCompetitors, StageCompetitor, StageGroupCompetitor
+- EventPrizePayout
+
+Competition types: "tournament" or "scrim" — both use the same Event model and endpoints.
+
+Stage formats supported: BR (Battle Royale) and CS (Classic Survival) variants.
+
+Key endpoints:
+- GET  /events/get-all-events/                          — list all events
+- POST /events/get-all-leaderboard-details-for-event/  — full leaderboard for an event
+- (Admin) POST /events/create-event/                    — create a new event
+- (Admin) POST /events/enter-match-results/             — submit match data
+
+Event admin dashboard: https://africanfreefirecommunity.com/a/events
+
+--- LEADERBOARD ADMIN ---
+Admin leaderboards: https://africanfreefirecommunity.com/a/leaderboards
+Leaderboard data is entered manually by event_admin role holders.
+Admins select an event, stage, group, and enter per-match stats (kills, placement).
+Stats auto-calculate ranking scores based on the scoring formula below.
+
+--- SCORING SYSTEM — FULL DETAIL ---
+
+TOURNAMENT CLASSIFICATION (applied as a multiplier to all performance points):
+- Tier 1: $1,000+ prize OR official Free Fire event → 2.0× multiplier
+- Tier 2: $300–$999 OR LAN event → 1.5× multiplier
+- Tier 3: Below $300 → 1.0× multiplier
+
+PLACEMENT POINTS (per match, per team/player):
+1st=12, 2nd=9, 3rd=8, 4th=7, 5th=6, 6th=5, 7th=4, 8th=3, 9th=2, 10th=1, 11th-12th=0
+
+KILL COMPRESSION SCALE (raw cumulative kills → points):
+0–50=3, 51–100=7, 101–200=12, 201–300=17, 301–500=23, 501–750=28,
+751–1000=33, 1001–1500=38, 1501–2000=43, 2001–3000=50, 3001–5000=58, 5001+=65
+
+PLACEMENT COMPRESSION SCALE (raw cumulative placement pts → points):
+0–50=5, 51–100=10, 101–200=17, 201–300=24, 301–500=31, 501–750=38,
+751–1000=44, 1001–1500=50, 1501–2000=56, 2001–3000=62, 3001+=70
+
+MONTHLY TEAM RANKING FORMULA:
+For each tournament that month:
+  tournament_score = (compress(placements) + compress(kills)) × tier_multiplier
+                   + win_bonus (Tier1=30, Tier2=20, Tier3=12)
+                   + (5 × tier_multiplier) per finals appearance
+
+Scrim points (capped at 30% of tournament total):
+  scrim_pts = (placement_pts × 0.5) + (kill_pts × 0.5) + (wins × 3)
+  counted_scrim_pts = min(scrim_pts, total_tournament_pts × 0.30)
+
+Monthly score = total_tournament_pts + counted_scrim_pts
+
+MONTHLY PLAYER RANKING:
+- Personal kills (compressed, same scale): 3–65 pts
+- MVP award: 5 pts each
+- Finals appearance: 3 pts each
+- Team tournament win: 5 pts
+- Tournament participation: 1 pt per event
+- Scrim kills: 0.5× kill compression value
+- Scrim wins: 1 pt per win
+
+QUARTERLY TIERING — same formula as monthly but over 3 months, plus:
+- Prize money points (₦ equivalent, see scale in ranking spec)
+- Social media points: max 10 pts (Instagram + TikTok combined followers)
+  0–1000=1, 1001–5000=3, 5001–10000=5, 10001–25000=7, 25001–50000=9, 50001+=10
+
+Tier thresholds: Elite=150+, Tier1=90–149, Tier2=40–89, Tier3=below 40
+
+Minimum tournaments for tier assignment: 2 per quarter (else defaults to Tier 3)
+
+ANNUAL LEADERBOARD: sum of all 4 quarterly tier scores. Resets each January.
+
+--- SCRIM ADMINISTRATION ---
+
+Scrims master role ID: 1011438178630107207
+Scrims masters can enter and verify scrim data for teams.
+
+Key scrim rules:
+- Daily cap per team: 4 scrims/day
+- Monthly cap per team: 60 scrims/month
+- Scrim contribution: max 30% of a team's tournament total for that period
+- Scrims do NOT have a tier multiplier (unverified events)
+- Teams cannot self-submit scrim data — admins/scrims masters enter all data
+- Scrims against non-AFC registered teams count but must be admin-verified
+
+Scrim scoring:
+- Scrim placements: 0.5× tournament placement value
+- Scrim kills: 0.5× kill compression value
+- Scrim win bonus: 3 pts flat (no tier multiplier)
+
+--- TRANSFER WINDOWS & ROSTER MANAGEMENT ---
+
+Default schedule each quarter:
+- Weeks 1–2: Transfer Window OPEN — roster changes allowed
+- Week 3 onwards: Roster Lock — no changes until next quarter
+
+Transfer window dates can be changed by Head Admin or Metrics Admin at any time.
+
+Rules:
+- A player can only be on ONE team per quarter
+- Minimum 4 players per team to participate
+- New teams joining after roster lock have their initial tournament roster locked in
+- Late roster approvals require Head Admin or Metrics Admin sign-off
+- Banned/dissolved team situations handled manually by AFC management
+
+--- GHOST TEAMS ---
+
+Ghost teams are provisional records for unregistered teams that compete in AFC events.
+- Created by admins before entering match results
+- Appear in tournament results but NOT on main leaderboard
+- Do not contribute to ranked tier calculations until claimed
+- When the real team registers, they submit a claim request
+- Admin approves → all historical stats transfer to the registered team
+- Historical scores are recalculated retroactively
+- Original ghost record archived for audit trail
+- Only one team can claim a ghost profile
+
+--- USER / AUTH MANAGEMENT ---
+
+Django app: afc_auth, URL prefix: /auth/
+
+Key models:
+- User (extends AbstractUser): role, profile, ban status
+- SessionToken: manages login sessions
+- UserProfile: extended profile data
+- Roles + UserRoles: granular permission system
+- TeamBan, BannedPlayer: ban tracking
+- PasswordResetToken: 6-digit code, 10-minute TTL
+
+Login accepts: email OR username
+Password reset accepts: email OR Free Fire UID
+
+Endpoints relevant to support:
+- GET  /auth/get-user-profile/            — fetch user profile
+- POST /auth/send-verification-token/     — trigger password reset
+- POST /auth/ban-player/                  — ban a player (admin only)
+- GET  /auth/is-discord-account-connected/ — check Discord link status
+- POST /auth/connect-discord/             — initiate Discord OAuth
+
+--- SHOP & PAYMENTS ---
+
+Django app: afc_shop, URL prefix: /shop/
+Payments processed via Paystack (reference stored on Order model).
+
+Key models:
+- Product → ProductVariant (has diamonds_amount, SKU, price)
+- Cart → CartItem
+- Order → OrderItem (Paystack reference on Order)
+- Coupon: percent or fixed discount
+- Fulfillment, Redemption
+
+Tax rate: 7.5% applied client-side on the frontend.
+
+Mintroute Diamond Shop (launching April 2026):
+- Endpoint: GET /shop/mintroute/products/ — available packages
+- Endpoint: POST /shop/mintroute/orders/ — place diamond order
+- Endpoint: GET /shop/mintroute/orders/<id>/ — check order + pin code
+- Rate limits: 10 purchases/min, 5 reservations/5-min
+- Pin code delivered instantly on order completion
+- All sales FINAL — no refunds once pin issued
+
+Admin shop dashboard: https://africanfreefirecommunity.com/a/shop
+
+--- NEWS & ANNOUNCEMENTS ---
+
+Django app includes News model in afc_auth.
+News admin dashboard: https://africanfreefirecommunity.com/a/news
+News admin role: news_admin
+
+--- TEAMS ADMIN ---
+
+Teams admin dashboard: https://africanfreefirecommunity.com/a/teams
+Teams admin role: teams_admin
+
+Key operations:
+- Approve/reject team registrations
+- Manage team bans (TeamBan model)
+- Verify roster submissions
+- Handle ghost team claims
+
+--- DATA INTEGRITY RULES ---
+- All tournament data entered by admins only
+- Scrim data entered by admins/scrims masters — teams cannot self-submit
+- Only AFC-sanctioned and admin-verified events contribute to scores
+- Cheating/manipulation = full point reset for affected team and players
+- Suspended/banned teams earn 0 points during suspension
+- Prize money conversion rate locked at date of award (not date of entry)
+- Ghost team stats transfer only once, only after admin approval
+
+--- SUPPORT ESCALATION TRIGGERS ---
+Escalate to support team for:
+- Account bans, suspensions, lockouts
+- Wrong Free Fire UID — needs admin correction in database
+- Discord role not assigned after OAuth connection
+- Payment or prize disputes
+- Cheating reports and ban appeals
+- Match results missing or wrong after 24 hours
+- Private event invites needed from organiser
+- Any action requiring admin direct intervention on platform

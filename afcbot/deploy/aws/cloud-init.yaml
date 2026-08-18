@@ -1,0 +1,37 @@
+#cloud-config
+# AFC Discord bot — AWS EC2 (Ubuntu 22.04 LTS) first-boot provisioning.
+#
+# Paste this ENTIRE file (including the #cloud-config first line) into:
+#   EC2 → Launch instance → Advanced details → User data
+#   (Lightsail: Create instance → "Add launch script".)
+#
+# Use an Ubuntu 22.04 AMI — NOT Amazon Linux (this relies on apt + the
+# deadsnakes PPA + the default user "ubuntu").
+#
+# It installs Python 3.11 + system deps, clones the bot, runs the shared
+# cloud-agnostic provisioner (deploy/oracle/setup.sh), and starts the systemd
+# service "afc-bot" with an empty .env. After boot, SSH in, fill
+# /home/ubuntu/AFC-Bot/.env with DISCORD_TOKEN + OPENAI_API_KEY, then:
+#     sudo systemctl restart afc-bot
+package_update: true
+package_upgrade: false
+
+packages:
+  - software-properties-common
+  - ca-certificates
+  - curl
+  - git
+  - build-essential
+  - ffmpeg
+  - libffi-dev
+  - libssl-dev
+  - libnacl-dev
+  - libopus-dev
+  - pkg-config
+
+runcmd:
+  - [ bash, -lc, "add-apt-repository -y ppa:deadsnakes/ppa && apt-get update -y && apt-get install -y python3.11 python3.11-venv python3.11-dev" ]
+  - [ bash, -lc, "sudo -u ubuntu git clone https://github.com/AFRICANFREEFIRECOMMUNITY/AFC-Bot.git /home/ubuntu/AFC-Bot" ]
+  - [ bash, -lc, "bash /home/ubuntu/AFC-Bot/deploy/oracle/setup.sh" ]
+
+final_message: "AFC Bot bootstrap complete. SSH in, fill /home/ubuntu/AFC-Bot/.env, then: sudo systemctl restart afc-bot"
