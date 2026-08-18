@@ -1,0 +1,1155 @@
+🔥 AFRICAN FREEFIRE COMMUNITY
+
+AFC Platform Support & User Guide
+
+Complete guide for the Discord Support Bot | Live Platform: africanfreefirecommunity.com ( https://africanfreefirecommunity.com )
+
+Version 1.0 · March 2026
+
+Table of Contents
+
+1. Platform Overview
+
+2. Getting Started Account Creation & Login
+
+3. Email Verification & OTP
+
+4. Password Reset
+
+5. Your Profile & Settings
+
+6. Discord Account Linking
+
+7. Teams Joining, Creating & Managing
+
+8. Events Tournaments & Scrims
+
+9. Leaderboards & Rankings
+
+10. News & Announcements
+
+11. AFC Awards (NFCA Voting)
+
+12. Shop & Diamond Bundles
+
+13. Player Markets & Transfers
+
+14. Sponsors
+
+15. AFC Handbook & Community Rules
+
+16. Quick Links Reference
+
+17. FAQ Common Questions
+
+1. Platform Overview
+
+The African Freefire Community (AFC) is Africa's premier Free Fire competitive esports platform. It connects players, teams, and tournament organisers across the continent with a strong focus on Nigeria and Sub-Saharan Africa.
+
+The platform is live at:
+
+https://africanfreefirecommunity.com
+
+What You Can Do on AFC
+
+ * Create an account and build your player profile using your Free Fire UID
+
+ * Create or join a team with friends
+
+ * Register for and compete in tournaments and scrims
+
+ * View live leaderboards and match standings
+
+ * Read community news and tournament updates
+
+ * Vote in the annual NFCA (Nigerian Free Fire Community Awards)
+
+ * Purchase Diamond bundles and community coins in the shop
+
+ * List yourself or your team in the Player Transfer Market
+
+ * Get your team sponsored
+
+Live Platform Stats (as of March 2026)
+ Metric Value
+
+ Registered Users 4,081
+
+ Teams 323
+
+ Tournaments Held 11
+
+ Total Prize Pool \$5,750
+
+ Total Kills Tracked 1,659
+
+ Award Votes Cast 15,367 from 826 voters
+
+ News Articles 14 published
+
+ Currency Used Nigerian Naira (₦)
+2. Getting Started Account Creation & Login
+
+Creating an Account
+
+Any Free Fire player can register for free. You will need your Free Fire UID to sign up.
+
+Steps to create an account:
+
+1. Go to the homepage and click the green Create Account button, OR go directly to the Join page.
+
+2. Fill in your Username (your AFC display name up to 40 characters).
+
+3. Enter your Full Name.
+
+4. Enter your Free Fire UID (up to 15 digits this must be unique and accurate).
+
+5. Enter your Email Address.
+
+6. Choose a Password (minimum security requirements apply).
+
+7. Select your Country.
+
+8. Click Submit / Create Account.
+
+9. You will receive a verification email check your inbox and follow the steps in Section 3.
+
+Direct link: africanfreefirecommunity.com ( https://africanfreefirecommunity.com )
+
+++
+| 📌 Important |
+| |
+| Your Free Fire UID must be your real in-game UID this is used to verify your identity in tournaments. |
+| |
+| Usernames cannot contain spaces and must be unique across the platform. |
+| |
+| You can only be a member of one team at a time. |
+++
+
+Logging In
+
+Steps to log in:
+
+10. Click 'Log In' in the top navigation bar on any public page.
+
+11. A login modal will appear. Enter your In-Game Name or UID and your Password.
+
+12. Click the Login button.
+
+13. You will be redirected to your player dashboard at /home.
+
+Direct link: https://africanfreefirecommunity.com/home
+
+++
+| 📌 Tip |
+| |
+| If you cannot log in, ensure your UID is entered correctly this is your Free Fire in-game UID, not your username. |
+| |
+| If you forgot your password, see Section 4 Password Reset. |
+++
+
+3. Email Verification & OTP
+
+After registering, AFC sends a verification code (OTP) to the email address you used. You must verify your email before you can fully use the platform.
+
+Steps to verify your email:
+
+14. After signing up, check your email inbox for a message from AFC.
+
+15. The email contains a 6-digit verification code.
+
+16. You will be taken to the Email Confirmation screen automatically after signing up.
+
+17. Enter the 6-digit code into the OTP input boxes on screen.
+
+18. Click Verify. Your account will be activated.
+
+++
+| 📌 Didn't receive the code? |
+| |
+| Check your spam/junk folder first. |
+| |
+| If not there, look for the 'Resend Code' button on the verification screen and click it. |
+| |
+| You can also use the 'Resend Verification Code' option from the login screen. |
+| |
+| Codes expire after a set period if yours expired, request a new one. |
+++
+
+4. Password Reset
+
+If you have forgotten your password, you can reset it via email.
+
+Steps to reset your password:
+
+19. On the login screen, click 'Forgot Password' or look for the reset option.
+
+20. Enter the email address associated with your AFC account.
+
+21. Click Send Reset Link / Submit.
+
+22. Check your email inbox for a password reset message.
+
+23. Click the link in the email (or enter the reset token if prompted).
+
+24. Enter your new password and confirm it.
+
+25. Click Save / Reset Password.
+
+26. Log in with your new password.
+
+++
+| 📌 Note |
+| |
+| Password reset emails may take a few minutes to arrive. |
+| |
+| The reset link typically expires after a short period use it promptly. |
+| |
+| If you do not receive the email, check your spam folder. |
+++
+
+5. Your Profile & Settings
+
+You can edit your profile information and account preferences from the Settings page.
+
+Settings page: https://africanfreefirecommunity.com/a/settings
+
+What You Can Edit
+ Field Description
+
+ Display Username Change your public display name
+
+ Full Name Update your real name on your profile
+
+ Country / Region Update your country of residence
+
+ Profile Picture Upload or change your avatar image
+
+ Email Address Update the email on your account
+
+ Password Change your account password
+
+ Discord Account Link or unlink your Discord account (see Section 6)
+How to Edit Your Profile
+
+27. Log in to your account.
+
+28. Navigate to Settings click your avatar/name at the bottom of the sidebar, or go to https://africanfreefirecommunity.com/a/settings
+
+29. The Settings page has tabs: Admin Users / All Users / Roles & Permissions (admin only) for admin views, and profile fields for regular users.
+
+30. Update the fields you want to change.
+
+31. Click Save / Update.
+
+++
+| 📌 Note |
+| |
+| Your Free Fire UID cannot be changed after registration contact an admin via Discord (https://discord.gg/qgKKZMu4sA) if you entered the wrong UID. |
+| |
+| Changing your email may require re-verification. |
+++
+
+6. Discord Account Linking
+
+AFC is deeply integrated with Discord. Linking your Discord account unlocks automatic tournament role assignments, match room notifications, and community benefits.
+
+How to Link Your Discord Account
+
+32. Log in to AFC and go to Settings: https://africanfreefirecommunity.com/a/settings
+
+33. Find the 'Connect Discord' section.
+
+34. Click 'Connect Discord'.
+
+35. You will be redirected to Discord's authorisation page.
+
+36. Click 'Authorise' to allow AFC to connect to your Discord account.
+
+37. You will be redirected back to AFC with your Discord now linked.
+
+Benefits of Linking Discord
+
+ * Automatic role assignment in the AFC Discord server when you register for tournaments
+
+ * Receive match room details (Room ID & Password) as an extra Discord notification (note: room ID & password are now sent mainly via email and on-site website notifications — Discord is an additional channel if your account is linked)
+
+ * Waitlist role notifications for popular events
+
+ * Community recognition roles based on tournament performance
+
+Join the AFC Discord: https://discord.gg/qgKKZMu4sA
+
+++
+| 📌 Important |
+| |
+| You must be a member of the AFC Discord server to receive role assignments. |
+| |
+| If your Discord role was not assigned after registering for an event, contact a moderator admins have a 'Retry Failed Discord Roles' tool. |
+| |
+| You can check if your Discord is connected from the Settings page. |
+++
+
+7. Teams Joining, Creating & Managing
+
+Teams are the core competitive unit on AFC. Most tournaments are squad-based. You can only be on one team at a time.
+
+Teams page: https://africanfreefirecommunity.com/teams
+
+Browsing Teams
+
+38. Go to https://africanfreefirecommunity.com/teams
+
+39. Use the search bar to search by team name.
+
+40. Filter by 'All Teams' or 'My Team' using the tabs.
+
+41. Each team card shows the team name, logo, number of members, and tier level.
+
+42. Click 'View Team' to see a team's full profile, roster, and stats.
+
+43. Click 'Apply to Join' to send a join request (requires you to be logged in and not already on a team).
+
+Creating a Team
+
+Any registered player who is not already on a team can create one.
+
+44. Log in to your account.
+
+45. Go to https://africanfreefirecommunity.com/teams and click the 'Create Team' button (top right).
+
+46. Fill in your Team Name (unique, up to 60 characters).
+
+47. Enter a Team Tag (short abbreviation, max 5 characters e.g. 'VENT').
+
+48. Upload a Team Logo (optional but recommended).
+
+49. Choose Join Settings: 'Open' (anyone can join) or 'By Request' (members must be approved).
+
+50. Click Create. You are now the Team Owner and Team Captain.
+
+++
+| 📌 Team Name Rules |
+| |
+| Team names must be unique across the platform no two teams can have the same name. |
+| |
+| Team tags are limited to 5 characters. |
+| |
+| You become the Team Owner when you create a team ownership can be transferred later. |
+++
+
+Inviting Members to Your Team
+
+As a team captain or owner, you can invite players in two ways:
+
+Option A Send a Direct Invite
+
+51. Go to your team page.
+
+52. Click 'Invite Member'.
+
+53. Search for the player by username.
+
+54. Send the invite. The player will receive a notification and can accept or decline.
+
+Option B Generate an Invite Link
+
+55. Go to your team management panel.
+
+56. Click 'Generate Invite Link'.
+
+57. Copy the link and share it with the player you want to invite (via Discord, WhatsApp, etc.).
+
+58. The player opens the link, logs in if needed, and clicks Accept to join.
+
+Joining a Team
+
+Option A Apply to Join (Open Teams)
+
+59. Find the team on https://africanfreefirecommunity.com/teams
+
+60. Click 'Apply to Join' on the team card.
+
+61. If the team is set to 'Open', you join immediately.
+
+62. If set to 'By Request', your application goes to the team captain for approval.
+
+Option B Accept an Invite
+
+63. If a team captain sent you a direct invite, you will see a notification.
+
+64. Go to the invite and click 'Accept'.
+
+65. If you received an invite link, open it in your browser and click 'Accept'.
+
+Team Roles
+ Role Permissions
+
+ Team Owner Full control: disband team, transfer ownership, all management
+
+ Team Captain Manage roster, invite/kick members, submit match results
+
+ Vice Captain Assist captain with roster management
+
+ Coach Non-playing coaching role
+
+ Manager Administrative management role
+
+ Analyst Performance analysis role
+
+ Member Standard playing member
+In-game roles (assigned separately):
+ Role Description
+
+ Rusher Aggressive frontline player
+
+ Support Backup and healing support
+
+ Grenader Grenade/explosive specialist
+
+ Sniper Long-range sniper
+Managing Your Team Roster
+
+ * To kick a member: Go to team management → Find member → Click Kick
+
+ * To change a member's role: Go to team management → Manage Roster → Edit role
+
+ * To leave a team: Go to your team page → click 'Exit Team' (you cannot leave if you are the only owner)
+
+ * To transfer ownership: Team management → Transfer Ownership → Select new owner
+
+ * To disband a team: Team management → Disband Team (this is permanent and cannot be undone)
+
+8. Events Tournaments & Scrims
+
+AFC hosts competitive events in two formats: Tournaments (official, ranked, with prize pools) and Scrims (practice matches). Events can be Solo, Duo, or Squad format.
+
+Finding & Viewing Events
+
+66. The homepage shows the platform introduction and a 'Create Account' CTA.
+
+67. Once logged in, go to the Events section from the sidebar: https://africanfreefirecommunity.com/a/events
+
+68. All active, upcoming, and completed events are listed here.
+
+69. Each event card shows: name, type (Tournament/Scrims), date, status, and participant count.
+
+70. Click 'View' or the event name to open the full event detail page.
+
+Understanding Event Details
+
+Each event detail page has the following tabs:
+ Tab What It Shows
+
+ Overview Key stats: registered players, prize pool, days until start, total stages
+
+ Details Full event description, rules, max participants, event type
+
+ Registrations List of all registered teams/players
+
+ Stages Bracket structure (Group Stage, Quarter Finals, Semi-Finals, Finals)
+
+ Prizes Prize pool breakdown by placement
+
+ Engagement Streaming channels and community links
+Event Types & Formats
+ Format/Type Meaning
+
+ Tournament Official ranked competition results affect leaderboards and tier rankings
+
+ Scrims Practice matches more relaxed, not fully ranked
+
+ Solo Individual players compete no team required
+
+ Duo 2-player teams
+
+ Squad Full squad teams (typically 4 players)
+
+ Internal AFC-only event restricted to AFC registered players
+
+ External Open event wider participation allowed
+
+ Virtual (Online) Played remotely players compete from their own devices
+
+ Physical (LAN) In-person event at a physical venue
+
+ Hybrid Mix of online and in-person
+
+ Tier 1 / 2 / 3 Tier indicates prestige Tier 1 is the highest level event
+Registering for an Event
+
+71. Log in to AFC.
+
+72. Find the event you want to join from the Events section.
+
+73. Open the event detail page.
+
+74. Check the event requirements: participant type (solo/duo/squad), registration restrictions, and available slots.
+
+75. Click the 'Register' button on the event page.
+
+76. For Squad events: your team will be registered make sure you are on a team first (see Section 7).
+
+77. For private events: you may need an invite link contact the event organiser.
+
+78. Once registered, your Discord role will be auto-assigned if your Discord is linked (see Section 6).
+
+++
+| 📌 Before Registering Checklist |
+| |
+| ✅ Ensure your Free Fire UID on your AFC profile is correct. |
+| |
+| ✅ For Squad events: make sure you are on a team with enough members. |
+| |
+| ✅ Link your Discord account (OPTIONAL) — only needed for automatic role assignments and notifications. Discord linking is NOT required to register for events. |
+| |
+| ✅ Check the event's regional eligibility (some events are Nigeria-only). |
+| |
+| ✅ For the Dynasty Cup (Nigerian teams only): ensure you have registered on the YDPAY app and completed KYC. During registration, you will be asked to enter your YDPAY ID — make sure it is correct. After submitting, check the site regularly in case your registration is rejected; if it is, edit it to fix the details. Teams from other countries do NOT need YDPAY to participate. |
+| |
+| ✅ Check the registration deadline slots fill up fast. |
+++
+
+Private Events Invite Links
+
+Some events are invite-only. To join a private event:
+
+79. You must receive an invite link from an AFC admin or event organiser.
+
+80. Click the invite link it will open the event registration page.
+
+81. Log in if you are not already logged in.
+
+82. Click Accept / Register to confirm your spot.
+
+83. Invite links are single-use and expire do not share your invite link with others.
+
+Current Active Events (March 2026)
+ Event Status & Details
+
+ DETTY DECEMBER SOLOS Completed Dec 2025 | Solo | 435 participants | ₦1,750 prize
+
+ DYNASTY CUP NIGERIA Upcoming April 1, 2026 | Tournament | 250 slots
+
+ DYNASTY CUP SOUTH AFRICA Upcoming April 1, 2026 | Tournament | 100 slots
+
+ DYNASTY CUP GHANA Upcoming April 1, 2026 | Tournament | 100 slots
+
+ DYNASTY CUP KENYA Upcoming April 1, 2026 | Tournament | 100 slots
+
+ DYNASTY CUP TANZANIA Upcoming April 1, 2026 | Tournament | 100 slots
+
+ DYNASTY CUP ETHIOPIA Upcoming April 1, 2026 | Tournament | 100 slots
+
+ DYNASTY CUP SENEGAL Upcoming April 1, 2026 | Tournament | 100 slots
+
+ DYNASTY CUP MADAGASCAR Upcoming April 1, 2026 | Tournament | 100 slots
+
+ DYNASTY CUP MOZAMBIQUE Upcoming April 1, 2026 | Tournament | 100 slots
+
+ DYNASTY CUP CAPE VERDE Upcoming April 1, 2026 | Tournament | 100 slots
+++
+| 📌 Dynasty Cup Series |
+| |
+| The Dynasty Cup is a major multi-country African tournament series launching April 1, 2026. |
+| |
+| Each country has its own bracket register for your country's cup. |
+| |
+| Go to https://africanfreefirecommunity.com/a/events to view and register for these events. |
+| |
+| ELIGIBILITY NOTES: |
+| • Discord linking is NOT required for registration — it is optional. |
+| • Nigerian teams must register on the YDPAY app, enter their YDPAY ID, complete KYC, and be verified to be eligible. |
+| • Teams from all other African countries do NOT need YDPAY — they are eligible without it. |
+++
+
+Submitting Match Results
+
+After a match, results are submitted via screenshot upload. This is handled by team captains or admins. The platform uses AI to automatically read and process the match screenshots.
+
+Note for players: You do not need to manually enter scores. Submit your end-game screenshot as directed by the tournament organisers. Admins can also manually enter or correct results.
+
+9. Leaderboards & Rankings
+
+AFC maintains leaderboards at the per-match level and overall tournament level, as well as a monthly ranking system and quarterly tiering system.
+
+Leaderboards page: https://africanfreefirecommunity.com/a/leaderboards
+
+How Rankings Work
+ Leaderboard Type Description
+
+ Match Leaderboard Rankings per individual match based on kills and placement within that match
+
+ Overall Leaderboard Cumulative score across all matches in a tournament determines tournament winner
+
+ Monthly Rankings Updated monthly tracks short-term performance across all tournaments and scrims
+
+ Quarterly Tiering Updated every quarter (season) determines your team's Tier classification (Tier 1, 2, or 3)
+How Scores Are Calculated
+
+Scores are based on:
+
+ * Number of kills in the match
+
+ * Final placement/position in the match (1st place = most points)
+
+ * Consistency across multiple matches in a tournament
+
+Team Tier System
+
+Teams are classified into tiers based on their quarterly performance:
+ Tier Description
+
+ Tier 1 Highest tier elite teams best benefits, priority event access
+
+ Tier 2 Competitive mid-level teams
+
+ Tier 3 Entry level all new teams start here
+Tier is determined by a combination of: Tournament Wins, Prize Money Earned, Total Tournament Kills, Tournament Placements, Finals appearances, Social Media metrics, and Scrim performance.
+
+++
+| 📌 Note |
+| |
+| Tier classifications are updated every quarter (season). |
+| |
+| Scrim results have a limited weighting in the ranking formula. |
+| |
+| Rankings feature is marked 'Coming Soon' on some views full rankings display is in development. |
+++
+
+Viewing Leaderboards
+
+84. Log in and go to https://africanfreefirecommunity.com/a/leaderboards
+
+85. Search for a specific event by name, type, or status.
+
+86. Click 'View' next to an event to see its leaderboard.
+
+87. Leaderboard tables show: Rank, Team/Player Name, Kills, Placement, Score.
+
+10. News & Announcements
+
+AFC publishes regular news articles covering tournament updates, community events, Free Fire game news, and African esports developments.
+
+News page: https://africanfreefirecommunity.com/news
+
+Reading News
+
+88. Go to https://africanfreefirecommunity.com/news (public no login required).
+
+89. Browse articles in the 3-column card grid.
+
+90. Filter by category using the 'All Categories' dropdown.
+
+91. Search by title, content, or author using the search bar.
+
+92. Filter by date using the date picker.
+
+93. Click 'Read More' on any card to open the full article.
+
+News Categories
+
+ * General News Platform updates, community stories, Free Fire Africa coverage
+
+ * Tournament Updates Results, brackets, and announcements for AFC events
+
+Recent Articles
+ Article Title Date
+
+ OPPORTUNITIES CREATED BY ESPORTS IN NIGERIA\... March 2, 2026 21 likes
+
+ Does Free Fire Have a Nigeria and SSA Server? February 23, 2026 10 likes
+
+ Pro Gamers Esport Academy Strategic Partnership February 17, 2026 10 likes
+
+ MEA Guild League (MGL) Season 5 (2026) February 17, 2026 6 likes
+
+ African Valentines Cup Announced February 14, 2026 2 likes
+
+ SSA Road to Bangkok (FFWS 2026) February 10, 2026
+
+ WASK Wins Free Fire Clash Cup Morocco 2026 February 7, 2026
+
+ FREE FIRE CLASH CUP NIGERIA 2026 February 7, 2026
+11. AFC Awards (NFCA Voting)
+
+The NFCA (Nigerian Free Fire Community Awards) is AFC's annual community vote that celebrates the best players, content creators, teams, and personalities in the African Free Fire scene.
+
+Awards page: https://africanfreefirecommunity.com/awards
+
+How the Awards Work
+
+The awards are split into two sections:
+
+ * Content Creators Awards for streamers, editors, comedic creators, and educators
+
+ * Esports Awards Awards for competitive players, teams, casters, and organisations
+
+Each section has multiple categories. Community members vote for their favourite nominees in each category. There is one vote per user per category.
+
+NFCA 2025 Winners
+
+Content Creators
+ Category Winner
+
+ Best Overall Creator (Male) JOKKIE
+
+ Best Overall Creator (Female) SCARLETT
+
+ Best Streamer (Male) RUDY
+
+ Best Streamer (Female) SCARLETT
+
+ Funniest Creator (Male) NNAYIZOOM
+
+ Funniest Creator (Female) SUCCESS
+
+ Best Editor (Male) DARKSEIDFF
+
+ Best Editor (Female) STEPHHATESPEOPLE
+
+ Upcoming Creator (Male) THABANG
+
+ Upcoming Creator (Female) LUNA
+
+ Attractive Creator (Male) DMS
+
+ Attractive Creator (Female) SCARLETT
+
+ Educational Content (Male) JOKKIE
+
+ Best Voiceover (Male) XIXSCO
+Esports Awards
+ Category Winner
+
+ Best Esports Team V-ENT ESPORTS
+
+ Best Esports Player VT HYDRA
+
+ Best Esports Rusher 3C SMITH
+
+ Best Esports Bomber 3C MACIEN
+
+ Best Esports Sniper ATH RORO
+
+ Best Esports Caster WHOISZINO
+
+ Best Esports Creator VT HYDRA
+
+ Best Esports Moderator LORD JAY
+
+ Best Esports Tournament DECA CUP
+
+ Best Esports Organisation 1ON8E ESPORTS
+
+ Best Upcoming / Next Rated Team ATHLEGAME
+Voting Stats (2025 Awards)
+ Metric Value
+
+ Total Votes Cast 15,367
+
+ Unique Voters 826
+
+ Completion Rate 81.1% (669 full sessions)
+
+ Average Voting Time 4.2 minutes
+
+ Content Creator Votes 10,794
+
+ Esports Award Votes 4,573
+
+ Total Categories 28 across 2 sections
+++
+| 📌 Next Awards |
+| |
+| Voting for the NFCA 2026 awards will open at a future date. |
+| |
+| Watch the news page and AFC Discord for announcements: https://discord.gg/qgKKZMu4sA |
+| |
+| All registered AFC users will be eligible to vote. |
+++
+
+12. Shop & Diamond Bundles
+
+The AFC Shop allows players to purchase Free Fire Diamond bundles and community coins directly through the platform. Payments are processed in Nigerian Naira (₦).
+
+Shop page: https://africanfreefirecommunity.com/a/shop
+
+++
+| 📌 Shop Status |
+| |
+| The shop is currently in soft-launch / testing mode. |
+| |
+| Products are stocked but purchases are not yet widely active. |
+| |
+| Watch the AFC Discord and news page for the official shop launch announcement. |
+++
+
+Available Products
+ Product Stock Status
+
+ Diamond Pack (DIA-100) 10 units in stock
+
+ Layo's Coins (DIA-100-A) 15 units in stock
+
+ Layo's Coins (bulk) 653 units in stock
+
+ Layo's Coins (bulk) 587 units in stock
+
+ Tomiwa Coins (DIA-102) 0 left sold out
+How to Purchase (Once Fully Active)
+
+94. Log in to AFC.
+
+95. Go to the Shop from the sidebar.
+
+96. Browse available products and select the item you want.
+
+97. Choose the variant/quantity.
+
+98. Click 'Add to Cart' (cart icon visible in the top navigation bar).
+
+99. Open your cart by clicking the cart icon.
+
+100. Review your order and click Checkout.
+
+101. Complete payment in Nigerian Naira (₦).
+
+102. You will receive a confirmation once the order is processed.
+
+13. Player Markets & Transfers
+
+The AFC Player Market is a transfer system where teams can advertise open roster spots and free agents can list themselves as available. The Transfer Window is currently OPEN.
+
+Player Markets: https://africanfreefirecommunity.com/a/player-markets
+
+Current Market Status
+ Metric Status
+
+ Transfer Window 🟢 Open
+
+ Active Team Listings 2 (1 flagged)
+
+ Active Player Listings 2 (1 flagged)
+
+ Active Trials 2
+
+ Pending Reports 1
+For Teams Listing an Open Roster Slot
+
+103. Log in and go to Player Markets.
+
+104. Go to the 'Team Listings' tab.
+
+105. Click 'Create Listing' and fill in the details: position needed, requirements, trial period.
+
+106. Submit your listing it goes live for players to apply.
+
+For Free Agents Listing Yourself
+
+107. Log in and go to Player Markets.
+
+108. Go to the 'Player Listings' tab.
+
+109. Click 'List Yourself' and fill in your details: in-game role, stats, availability.
+
+110. Submit teams can view your listing and contact you for a trial.
+
+Slot Trading Rules (AFC Handbook)
+
+ * Minimum Slot Price applies to all transfers check the AFC Handbook for current rates
+
+ * AFC charges a Transaction Fee on slot sales
+
+ * Slot transfers must be completed within the set Transfer Timeline
+
+ * Slots purchased cannot be immediately resold resale restrictions apply
+
+ * All player contracts must be submitted to AFC for verification
+
+Full transfer rules: https://africanfreefirecommunity.com/rules
+
+14. Sponsors
+
+AFC has an active sponsorship system that connects businesses and brands with the platform's 4,081+ players and competitive events.
+
+For Businesses Becoming a Sponsor
+
+Contact AFC admins via Discord to enquire about sponsorship opportunities:
+
+https://discord.gg/qgKKZMu4sA
+
+Current Sponsors on the Platform
+
+AFC currently has 11 registered sponsor accounts, including YDPAY AFRICA (Nigerian fintech). Sponsors can manage their presence and view registrant data through the Sponsor Dashboard.
+
+Sponsor Verification Process
+
+Teams and players can register for sponsored events. Sponsor IDs are assigned to each registrant and verified by admins (Confirm / Reject). Check your sponsor status from the Sponsor Dashboard.
+
+YDPAY App & Dynasty Cup Eligibility
+
+The YDPAY app is ONLY required for Nigerian teams participating in the Dynasty Cup. Nigerian teams must:
+1. Download and register on the YDPAY app
+2. Complete KYC (identity verification) within the YDPAY app
+3. During the Dynasty Cup registration process on the AFC website, enter your correct YDPAY ID (this is entered as part of the event registration form, NOT on your AFC profile)
+4. Submit the registration and wait for admin verification (Confirm / Reject)
+
+Important: Nigerian teams should regularly check the AFC website to see if their Dynasty Cup registration has been approved or rejected. If it is rejected (e.g. due to an incorrect YDPAY ID or incomplete KYC), they can edit their registration to correct the details and resubmit.
+
+Teams from outside Nigeria (e.g. South Africa, Ghana, Kenya, Tanzania, Ethiopia, Senegal, Madagascar, Mozambique, Cape Verde) do NOT need to download or register on the YDPAY app. They are eligible to play the Dynasty Cup without it.
+
+Discord account linking is NOT required for Dynasty Cup registration or eligibility for any team. The registration process no longer makes Discord linking compulsory.
+
+15. AFC Handbook & Community Rules
+
+The AFC Handbook is the official governing framework for all competitions on the platform. All players, teams, and participants are expected to know and follow these rules.
+
+Full Handbook: https://africanfreefirecommunity.com/rules
+
+The handbook covers 20 major sections, searchable from the rules page:
+ Section Summary
+
+ Player Eligibility Account, age, and regional requirements
+
+ Team Registration How to register teams and submit rosters
+
+ Code of Conduct Cheating, bribery, defamatory statements, controlled substances
+
+ Game Participation Evidence submission, recording protocols, readiness rules
+
+ Equipment Standards Approved devices, prohibited tools, studio equipment
+
+ Dress Code Uniform requirements, identity verification
+
+ Team Ownership Ownership transfers, flipping policy, branding requirements
+
+ Roster Changes & Transfers Transfer windows, loan policy, mid-term recall
+
+ Slot Buying & Selling Minimum prices, AFC fee, dispute resolution
+
+ Contract Management Submission process, mandatory clauses, verification
+
+ Sponsor & Advertising Approval process, exclusivity, obligations
+
+ Competition Structure Match formats, scheduling, mandatory events
+
+ Communication Rules Response times, confidentiality
+
+ Disciplinary Actions Minor/major offenses, sanctions, investigations
+
+ Prize Distribution Payment timelines, forfeiture conditions
+
+ Intellectual Property Media rights, organiser veto rights
+
+ Monthly Rankings How monthly rankings are calculated
+
+ Quarterly Tiering Tier criteria and season system
+
+ Tier Classifications Tier 1/2/3 benefits and thresholds
+
+ Metrics Compliance Data verification, point resets for violations
+++
+| 📌 Key Rule Highlights |
+| |
+| Players may only be on ONE team at a time. |
+| |
+| Cheating, hacking, and account sharing result in immediate bans. |
+| |
+| All contracts must be submitted to AFC admins for verification. |
+| |
+| AFC admins have final veto rights on all rule interpretations. |
+| |
+| For rule clarifications, contact AFC admins via Discord: https://discord.gg/qgKKZMu4sA |
+++
+
+16. Quick Links Reference
+
+Use these links to direct users to the exact pages they need:
+ Page / Resource URL
+
+ Homepage / Landing Page https://africanfreefirecommunity.com
+
+ Create Account / Join https://africanfreefirecommunity.com
+
+ Player Dashboard (after login) https://africanfreefirecommunity.com/home
+
+ Teams Directory https://africanfreefirecommunity.com/teams
+
+ News & Updates https://africanfreefirecommunity.com/news
+
+ AFC Awards (NFCA) https://africanfreefirecommunity.com/awards
+
+ Events Management https://africanfreefirecommunity.com/a/events
+
+ Leaderboards https://africanfreefirecommunity.com/a/leaderboards
+
+ Shop https://africanfreefirecommunity.com/a/shop
+
+ Player Markets https://africanfreefirecommunity.com/a/player-markets
+
+ Sponsors https://africanfreefirecommunity.com/a/sponsors
+
+ Settings (Profile, Discord) https://africanfreefirecommunity.com/a/settings
+
+ AFC Handbook / Rules https://africanfreefirecommunity.com/rules
+
+ Privacy Policy https://africanfreefirecommunity.com/privacy-policy
+
+ Terms of Service https://africanfreefirecommunity.com/terms-of-service
+
+ AFC Discord Server https://discord.gg/qgKKZMu4sA
+
+ AFC YouTube Channel youtube.com/@AFRICANFREEFIRECOMMUNITY1 ( https://youtube.com/@AFRICANFREEFIRECOMMUNITY1 )
+
+ AFC Twitter / X twitter.com/afcdatabase ( https://twitter.com/afcdatabase )
+
+ AFC Instagram instagram.com/africanfreefirecommunity ( https://instagram.com/africanfreefirecommunity )
+
+ AFC TikTok tiktok.com/@africanfreefirecommunity ( https://tiktok.com/@africanfreefirecommunity )
+
+ AFC Facebook facebook.com ( https://facebook.com/share/1G4D9jDyyt/ )
+17. FAQ Common Questions
+
+Account & Login
+
+Q: I forgot my password. What do I do?
+
+A: Go to the login page, click 'Forgot Password', enter your email address, and follow the reset link sent to your inbox. See Section 4 for full steps.
+
+Q: I didn't receive my verification email. What should I do?
+
+A: Check your spam/junk folder. If it's not there, use the 'Resend Code' button on the verification page. See Section 3 for full steps.
+
+Q: I entered the wrong Free Fire UID when signing up. Can I change it?
+
+A: UIDs cannot be self-changed after registration. Contact an AFC admin on Discord at https://discord.gg/qgKKZMu4sA to request a correction.
+
+Q: Can I have multiple accounts?
+
+A: No. Each player is only allowed one account. Multiple accounts or account sharing will result in a ban.
+
+Teams
+
+Q: How do I create a team?
+
+A: Log in, go to https://africanfreefirecommunity.com/teams, and click 'Create Team'. Fill in your team name, tag, and settings. See Section 7 for full steps.
+
+Q: Can I be on two teams at once?
+
+A: No. AFC only allows one active team per player. Leave your current team first before joining another.
+
+Q: I sent an invite but the player hasn't received it. What do I do?
+
+A: Try generating an invite link instead (Section 7 Option B). Share the link directly via Discord or WhatsApp.
+
+Q: How do I leave a team?
+
+A: Go to your team page and click 'Exit Team'. Note: if you are the only owner, you must transfer ownership first before leaving.
+
+Q: How do I disband my team?
+
+A: Only the Team Owner can disband. Go to team management and click 'Disband Team'. This is permanent and cannot be undone.
+
+Events & Tournaments
+
+Q: How do I register for a tournament?
+
+A: Log in, find the event at https://africanfreefirecommunity.com/a/events, open the event page, and click Register. For squad events, make sure you are on a team first. See Section 8 for full details.
+
+Q: I registered but didn't get my Discord role. What should I do?
+
+A: First, make sure your Discord account is linked to your AFC profile (Settings → Connect Discord). If it's connected and the role is still missing, contact a moderator on Discord at https://discord.gg/qgKKZMu4sA admins have a tool to retry failed role assignments.
+
+Q: How do I get a room code / password for my match?
+
+A: Room IDs and passwords are now sent mainly via email and as a notification on the AFC website, so check your registered email inbox (including spam) and your on-site notifications around match time. If your Discord account is linked, you may also receive them as a Discord notification. If it's near match time and you still don't have the details, contact a moderator in the moderation-and-support channel.
+
+Q: Can I enter a tournament without a team?
+
+A: Yes Solo format tournaments allow individual entry. Check the event's Participant Type. Duo and Squad tournaments require a team.
+
+Q: I see an event but the Register button isn't visible. Why?
+
+A: This could mean: (1) registration is closed, (2) the event is full, (3) you don't meet eligibility criteria (e.g. regional restrictions), or (4) it's a private/invite-only event.
+
+Q: Why can't my team register for a specific country's tournament even though some of our members are from that country?
+
+A: Country-locked tournaments only allow teams whose assigned country matches the event's country. A team's country is determined by the location of its members using the following rules:
+
+1. MAJORITY WINS — The country where most members are located becomes the team's country.
+   Example: 6-player team with 3 in Nigeria, 2 in South Africa, 1 in Kenya → Nigerian team.
+
+2. TIE — If two countries are tied for the most members, the team's country is determined by where the team owner/captain is located.
+   Example: 6-player team with 3 in Nigeria, 3 in South Africa → the team's country is wherever the team owner/captain lives.
+
+3. MULTI-WAY TIE / NO MAJORITY — If no single country has a clear majority, the team owner/captain's location decides.
+   Example: 5-player team with 2 in Nigeria, 2 in South Africa, team leader in Kenya → Kenyan team.
+
+If your team is assigned to the wrong country or you believe your country classification is incorrect, contact an AFC admin on Discord at https://discord.gg/qgKKZMu4sA.
+
+Leaderboards & Rankings
+
+Q: Where can I see the leaderboard for a specific tournament?
+
+A: Go to https://africanfreefirecommunity.com/a/leaderboards, search for the event, and click View to see the full leaderboard.
+
+Q: How is my score calculated?
+
+A: Scores are based on kills and final placement in each match. Higher placement (1st = most points) combined with kill count determines your score. See Section 9 for details.
+
+Q: My results don't appear on the leaderboard. What should I do?
+
+A: Results are processed after match screenshots are submitted and verified. If your results are missing after 24 hours, contact an AFC admin on Discord.
+
+Awards
+
+Q: How do I vote in the NFCA Awards?
+
+A: You must be a registered and logged-in AFC user. Go to https://africanfreefirecommunity.com/awards during the voting period. Vote for your favourites in each category one vote per category is allowed.
+
+Q: When is the next NFCA Awards?
+
+A: The 2025 NFCA Awards have concluded. The 2026 Awards will be announced on the news page and Discord. Follow AFC at https://discord.gg/qgKKZMu4sA for updates.
+
+Shop
+
+Q: Is the shop open?
+
+A: The shop is in soft-launch mode. Products are stocked (Diamond Packs, Layo's Coins) but full purchasing may not be active for all users yet. Visit https://africanfreefirecommunity.com/a/shop and watch for an official launch announcement.
+
+Q: What currency does the shop use?
+
+A: All prices are in Nigerian Naira (₦).
+
+Discord & Community
+
+Q: How do I join the AFC Discord?
+
+A: Click this link: https://discord.gg/qgKKZMu4sA or search 'African Freefire Community' on Discord.
+
+Q: I was banned or suspended. What can I do?
+
+A: Contact AFC admins via Discord at https://discord.gg/qgKKZMu4sA to appeal your ban/suspension. Provide your username and the reason you believe the action was unjust.
+
+Q: I want to report a cheater / rule violation. Where do I report?
+
+A: Report via the AFC Discord at https://discord.gg/qgKKZMu4sA. Contact a moderator or admin with your evidence (video, screenshots).
+
+General
+
+Q: Is AFC free to join?
+
+A: Yes. Account registration and participation in the community is completely free. Some shop items require payment.
+
+Q: What countries can join AFC?
+
+A: AFC is open to all African countries. Some events have regional restrictions (e.g. Nigeria-only). Check each event's eligibility requirements.
+
+Q: How do I contact AFC support?
+
+A: The fastest way is via the AFC Discord server at https://discord.gg/qgKKZMu4sA. You can also use the 'Contact Us' option on the website.
+
+© 2026 African Freefire Community. Powered by AFC Gaming.
+
+africanfreefirecommunity.com ( https://africanfreefirecommunity.com )

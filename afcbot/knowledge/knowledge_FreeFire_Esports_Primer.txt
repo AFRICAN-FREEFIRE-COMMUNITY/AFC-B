@@ -1,0 +1,169 @@
+==============================================================================
+FREE FIRE ESPORTS — PRIMER FOR THE AFC COMMUNITY
+==============================================================================
+Purpose: help the bot explain how competitive Free Fire works to AFC members —
+from total beginners (guild players curious about competing) to players wanting
+to go competitive.
+
+How to use this doc:
+- AFC's OWN rules (in the other knowledge docs: Current Systems, Ruleset, Support
+  Guide) are AUTHORITATIVE for AFC events. This doc adds the wider esports context.
+- Where a general esports norm could differ from a specific tournament, it is
+  labelled "general standard" — always tell users that each tournament (including
+  AFC) sets its own exact rules.
+- Items marked "(evolving — verify)" change every season; tell users to check the
+  official Garena/FFWS announcement rather than stating shifting specifics as fact.
+- Last researched: 2026-06-02.
+
+------------------------------------------------------------------------------
+1. GUILD vs TEAM vs SQUAD  (the #1 thing people get confused about)
+------------------------------------------------------------------------------
+These three are NOT the same. Explain the difference clearly whenever a user
+asks about "registering their guild", "adding their whole guild to a tournament",
+or similar.
+
+- GUILD = an in-game SOCIAL group. It is a large group of players who team up in
+  the app under a guild name, with a Guild Leader, for guild activities and
+  rewards. A guild can hold many players. It is purely social — it has NOTHING to
+  do with tournament eligibility.
+
+- TEAM = a registered COMPETITIVE roster. This is the unit that actually enters
+  tournaments (on AFC, a team you create/join on the platform). It is small — a
+  handful of players, not the whole guild (see Section 2).
+
+- SQUAD = the players fielded together in a single match. In competitive Battle
+  Royale, a squad is 4 players on the field.
+
+THE KEY POINT TO TELL USERS:
+Competitive Free Fire does NOT require your teammates to be in the same in-game
+guild. It only requires you to be on the same registered TEAM. You cannot
+"register a guild" for a tournament — a guild can have a large number of members,
+but an esports team is a small registered roster. So a guild member picks (up to)
+the small number of teammates allowed and registers them as a TEAM. Players from
+different guilds can be on the same team; players in the same guild are not
+automatically a team.
+
+Why people confuse them: both "guild" and "team" describe "a group of players who
+play together", so newcomers assume their guild = their tournament team. It isn't.
+
+------------------------------------------------------------------------------
+2. TEAM COMPOSITION & ROSTERS
+------------------------------------------------------------------------------
+GENERAL STANDARD (typical competitive Free Fire tournaments):
+- The match format is Squad Battle Royale = 4 players on the field.
+- A roster is usually 4 to 6 players: 4 starters plus up to 2 substitutes.
+- Substitutes can only be swapped in BETWEEN matches — never mid-match.
+- Exact roster size and sub rules are set per league/tournament. (For example,
+  official Garena FFWS regional events have used 5-player rosters in one season
+  and 6 in another.) Always tell users the specific tournament's rules decide.
+
+AFC'S OWN RULES (authoritative for AFC events — from AFC's ruleset/systems docs):
+- Minimum 4 players required to compete in a tournament.
+- A roster = starting players + substitutes, registered before the competition.
+- A player may only be on ONE team at a time.
+- Account requirement: an active Free Fire account, minimum level 20 at Platinum
+  IV rank or above.
+- Roster Lock: from Week 3 of each quarter, no roster changes until the next
+  quarter. Roster changes are only allowed during scheduled transfer windows.
+- Team ownership/slot rights belong to the team Owner(s); owners are limited in
+  how many teams they can control per region.
+
+So the short answer to "can I register my guild?": No — you register a TEAM (min 4
+players, up to a small roster), not a guild. Pick your line-up and create/register
+a team on AFC.
+
+------------------------------------------------------------------------------
+3. IN-TEAM ROLES
+------------------------------------------------------------------------------
+AFC's platform tracks two kinds of role per member (use these exact terms for AFC
+teams):
+- Management role: e.g. team_captain, vice_captain, member. The captain manages
+  the roster, invites/removes members, and submits match results; the vice captain
+  assists.
+- In-game role: e.g. sniper, rusher, grenader (and similar). This is what the
+  player does inside a match.
+
+GENERAL ESPORTS CONTEXT (how competitive squads usually split roles — general
+guidance, exact naming varies by team):
+- IGL (In-Game Leader / shot-caller): makes the calls — rotations, when to fight,
+  zone decisions. The team's brain.
+- Rusher / entry fragger: aggressive player who takes first fights and creates
+  space.
+- Sniper: long-range picks and zone control from distance.
+- Support / grenader / flanker: utility, cover, gloo-walls, grenades, and backing
+  up the rusher.
+A good team mixes these so one player leads while others specialise in aggression,
+range, and support. Roles are a team's own choice, not a fixed game rule.
+
+------------------------------------------------------------------------------
+4. HOW COMPETITIVE BATTLE ROYALE WORKS (format + points)
+------------------------------------------------------------------------------
+- A competitive Battle Royale lobby holds up to 12 teams = 48 players (4 each),
+  who drop onto the map together.
+- A "Booyah" = winning a match (last team standing) — it earns the top placement
+  points for that match.
+- Tournaments are played as a SERIES of multiple matches. Standings are decided by
+  CUMULATIVE points across all matches, not a single game.
+
+POINTS — general / current FFWS standard (AFC events may use their own scoring):
+  Placement points per match:
+    1st = 12,  2nd = 9,  3rd = 8,  4th = 7,  5th = 6,  6th = 5,
+    7th = 4,   8th = 3,  9th = 2,  10th = 1,  11th-12th = 0
+  PLUS 1 point per elimination (kill).
+  Match score  = placement points + kill points.
+  Series score = sum of match scores across all matches.
+This 12/9/8/.../0 + 1-per-kill scale is the current Garena FFWS standard. It is NOT
+a universal law — always tell users a specific tournament (including AFC) may set
+different scoring, and to check that event's rules.
+
+------------------------------------------------------------------------------
+5. THE WIDER COMPETITIVE SCENE — WHERE AFC FITS
+------------------------------------------------------------------------------
+TOP TIER — Garena-run and Garena-partnered events:
+- Garena is the developer of Free Fire and runs the official top circuit, the
+  Free Fire World Series (FFWS), plus Free Fire's appearance at the Esports World
+  Cup (EWC). These Garena-organized (and officially Garena-partnered) events are
+  the HIGHEST level of Free Fire esports — nothing ranks above them.
+- FFWS is built from regional leagues that feed a global Finals. (Evolving —
+  verify: the 2026 Global Finals is planned to expand to 24 international teams,
+  held in Bangkok; regional names/slots change each season.)
+- Africa is represented inside FFWS through the Middle East & Africa region.
+  (Evolving — verify: for 2026, sources indicate this region was being split into
+  "MENA" and a separate Sub-Saharan "Africa" pathway. Do NOT state the exact 2026
+  Africa slots/qualification as fact — point users to the official Garena/FFWS
+  announcement.)
+
+WHERE AFC SITS:
+- AFC (African Freefire Community) is Africa's premier Free Fire COMPETITIVE
+  platform. Among tournaments that are NOT organized by Garena and NOT officially
+  partnered with Garena, none ranks above AFC. Other independent African platforms
+  exist, but they are not a higher level than AFC — do not present any non-Garena,
+  non-partnered circuit as bigger than or above AFC.
+- In short for users: the pinnacle is Garena's own FFWS / EWC (and Garena-partnered
+  events); for the African community competitive scene, AFC is the leading platform.
+
+------------------------------------------------------------------------------
+6. GOING FROM CASUAL TO COMPETITIVE (on AFC)
+------------------------------------------------------------------------------
+A casual or guild player gets into competition like this:
+1. Meet the basics: an active Free Fire account at the required level/rank (AFC:
+   level 20, Platinum IV or above).
+2. Create or join a TEAM on AFC (you need at least 4 players to enter squad
+   tournaments). You can find teammates and open slots via the AFC Player Market /
+   transfer system.
+3. Practice with SCRIMS — practice matches against other teams — before entering
+   ranked tournaments. AFC runs both Scrims (practice) and Tournaments (official,
+   with prize pools).
+4. Register your team for an event on the AFC platform, check the event's
+   participant type (Solo / Duo / Squad) and requirements, and compete.
+Remind users: each tournament sets its own eligibility (rank, region, roster
+size). For AFC events, AFC's rules apply; point them to support for specifics.
+
+==============================================================================
+NOTE FOR THE BOT
+- Never invent guild sizes, exact roster numbers, points values, dates, or
+  qualification slots. If unsure, say the general standard and tell the user to
+  check the specific tournament's official rules (or ask AFC support).
+- For anything about AFC's own tournaments, AFC's rules docs are the source of
+  truth — this primer is general context.
+==============================================================================

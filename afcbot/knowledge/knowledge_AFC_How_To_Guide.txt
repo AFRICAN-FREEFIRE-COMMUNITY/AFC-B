@@ -1,0 +1,146 @@
+=== AFC HOW-TO GUIDE — Complete Guide for New Members ===
+Source: AFC_How_To_Guide.docx
+Website: africanfreefirecommunity.com
+
+--- AFC BY THE NUMBERS ---
+- 3,560+ Active Players
+- 1,200+ Tournaments Held
+- $500K+ Prize Pool Distributed
+- 256+ Teams Registered
+
+--- SECTION 1: GETTING STARTED ---
+
+Step 1 — Visit the Website
+Go to: https://africanfreefirecommunity.com
+You'll land on the homepage where you can see the latest news, upcoming tournaments, and platform highlights.
+
+Step 2 — Create Your Account
+To participate in tournaments, join a team, or access the full platform, you need a free account.
+1. Click the orange "Join Now" button in the top-right corner of the navigation bar.
+2. Fill in your details on the registration page (username, email, password).
+3. Verify your email address if prompted.
+4. Log in using your new credentials.
+TIP: Use a username that represents your gaming identity — this is how other players will know you across tournaments and leaderboards.
+
+Step 3 — Log In
+Already have an account?
+1. Click "Log In" in the top-right corner of the navigation.
+2. Enter your email and password.
+3. Click "Login" to access your dashboard.
+
+--- SECTION 2: NAVIGATING THE PLATFORM ---
+
+The Navigation Menu gives quick access to all major sections:
+- Home: Overview of the platform, stats, and featured content.
+- Teams: Browse all registered teams, their rosters, and stats.
+- News: Latest updates, announcements, and esports news from AFC.
+- Awards: See who has earned badges, titles, and recognition.
+- Tournaments: Browse all active, upcoming, and past tournaments.
+- About Us: Learn about AFC's mission, vision, and values.
+- Contact: Get in touch with the AFC team via email, Discord, or social media.
+
+--- SECTION 3: HOW TO JOIN A TOURNAMENT ---
+
+Step 1 — Go to the Tournaments Page
+Visit: https://africanfreefirecommunity.com/tournaments
+You'll see a list of all tournaments — both upcoming and completed.
+
+Step 2 — Browse Tournaments
+Each tournament card shows:
+- Tournament name and banner image
+- Date of the event
+- Status: "Upcoming" or "Completed"
+
+Step 3 — View Tournament Details
+Click "View Tournament" on any card to read full details including rules, prize pool, format, and registration deadline.
+
+Step 4 — Connect Your Discord Account (REQUIRED)
+Before registering for any tournament, you MUST:
+1. Join the official AFC Discord server: https://discord.gg/qgKKZMu4sA
+2. Connect your Discord account to your AFC profile by going to your Profile page and clicking "Connect" under Discord.
+Without completing both steps, you CANNOT register for tournaments.
+TIP: Connect your Discord account right after creating your AFC profile so you're always ready when a new tournament opens.
+
+Step 5 — Register for the Tournament
+- Make sure you're logged into your AFC account.
+- Follow the registration instructions on the tournament detail page.
+- For team tournaments, ensure your team is already created (see Section 4).
+TIP: Check tournament dates early and register before the deadline. Spots can fill up fast, especially for high-prize events.
+
+Tournament Status Types:
+- Upcoming — Registration is open or opening soon. Sign up now!
+- Completed — The tournament has ended. You can still view results and highlights.
+
+--- SECTION 4: HOW TO CREATE & MANAGE A TEAM ---
+
+Creating a Team:
+1. Log into your account.
+2. Navigate to the "Teams" section from the top navigation.
+3. Click the "Create Team" button.
+4. Enter your team name, tag/abbreviation, and any other required details.
+5. Save your team profile.
+
+Managing Your Team — Once created, you can:
+- Invite players to join your roster
+- Set player roles and positions
+- Update team information and branding
+- Register your team for upcoming tournaments
+- Track your team's stats and performance
+
+Joining an Existing Team:
+1. Browse teams on the "Teams" page: https://africanfreefirecommunity.com/teams
+2. Find a team that's recruiting players.
+3. Send a join request or contact the team captain directly.
+TIP: Build your team with players you trust and communicate well with. Good teamwork is just as important as individual skill in Free Fire.
+
+--- SECTION 5: RANKINGS & AWARDS ---
+
+Skill Rankings & Leaderboards:
+- Your rank updates based on tournament performance and match results.
+- Check the leaderboards to see where you stand against other players in Africa.
+- Climbing the rankings unlocks prestige and recognition in the community.
+
+Awards & Achievements:
+- Earn badges for milestones like winning your first tournament or reaching a new rank tier.
+- Unlock titles that display on your profile.
+- Special awards are given for community contributions and fair play.
+Visit: https://africanfreefirecommunity.com/awards
+
+--- SECTION 6: STAYING CONNECTED ---
+
+News & Updates:
+- Visit the "News" page regularly: https://africanfreefirecommunity.com/news
+- Follow AFC on all social media channels for real-time updates.
+
+Contact & Support:
+- Email: info@africanfreefirecommunity.com
+- Discord: https://discord.gg/qgKKZMu4sA
+- Twitter/X: @afcdatabase — https://twitter.com/afcdatabase
+- TikTok: @africanfreefirecommunity — https://www.tiktok.com/@africanfreefirecommunity
+- Facebook: https://www.facebook.com/share/1G4D9jDyyt/
+- Instagram: @africanfreefirecommunity — https://www.instagram.com/africanfreefirecommunity
+- YouTube: @AFRICANFREEFIRECOMMUNITY1 — https://www.youtube.com/@AFRICANFREEFIRECOMMUNITY1
+- Contact Form: https://africanfreefirecommunity.com/contact
+
+--- SECTION 7: FREQUENTLY ASKED QUESTIONS ---
+
+Q: Is AFC free to join?
+A: Yes! Creating an account on AFC is completely free. Some tournaments may have entry requirements, so always check the details before registering.
+
+Q: Do I need a team to participate?
+A: Not always. AFC hosts both solo and team-based tournaments. Solo players can compete in individual events like the 'Detty December Solos' tournament. Check each tournament's format before signing up.
+
+Q: How do I find out about new tournaments?
+A: Check the Tournaments page regularly, follow AFC on social media, or join the AFC Discord server to get real-time notifications about upcoming events.
+
+Q: What is AFC's fair play policy?
+A: AFC is committed to fair competition. The platform uses anti-cheat measures and enforces strict fair play policies. Violations can result in disqualification or bans. See: https://africanfreefirecommunity.com/rules
+
+Q: How are prizes distributed?
+A: Prize distribution details are outlined in each tournament's details page. AFC has distributed over $500K in prizes across its tournaments.
+
+Q: Can I report a player for cheating?
+A: Yes. Contact the AFC team via email (info@africanfreefirecommunity.com) or Discord to report suspected cheating or unfair play.
+
+Q: What regions does AFC serve?
+A: AFC is focused on African players but welcomes the wider Free Fire community. The platform is designed to elevate African esports talent to the global stage.
