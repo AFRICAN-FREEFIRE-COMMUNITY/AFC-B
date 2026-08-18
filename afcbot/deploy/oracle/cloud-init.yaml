@@ -1,0 +1,30 @@
+#cloud-config
+# Paste this entire file (including the #cloud-config line) into:
+#   Oracle Console → Create Instance → Show Advanced Options → Management → User Data
+#
+# It installs Python 3.11, clones the bot, drops the systemd unit, and starts the
+# service with an empty .env. After the instance is up, SSH in, fill /home/ubuntu/AFC-Bot/.env
+# with DISCORD_TOKEN and OPENAI_API_KEY, then run:
+#     sudo systemctl restart afc-bot
+package_update: true
+package_upgrade: false
+
+packages:
+  - software-properties-common
+  - ca-certificates
+  - curl
+  - git
+  - build-essential
+  - ffmpeg
+  - libffi-dev
+  - libssl-dev
+  - libnacl-dev
+  - libopus-dev
+  - pkg-config
+
+runcmd:
+  - [ bash, -lc, "add-apt-repository -y ppa:deadsnakes/ppa && apt-get update -y && apt-get install -y python3.11 python3.11-venv python3.11-dev" ]
+  - [ bash, -lc, "sudo -u ubuntu git clone https://github.com/AFRICANFREEFIRECOMMUNITY/AFC-Bot.git /home/ubuntu/AFC-Bot" ]
+  - [ bash, -lc, "bash /home/ubuntu/AFC-Bot/deploy/oracle/setup.sh" ]
+
+final_message: "AFC Bot bootstrap complete. SSH in and fill /home/ubuntu/AFC-Bot/.env, then: sudo systemctl restart afc-bot"

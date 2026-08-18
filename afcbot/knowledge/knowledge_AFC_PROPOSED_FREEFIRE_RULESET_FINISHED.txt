@@ -1,0 +1,297 @@
+﻿Table of Contents
+1.        INTRODUCTION        4
+1.1.        OVERVIEW OF THE TOURNAMENT        4
+1.2.        OBJECTIVES AND PURPOSE        4
+2.        GENERAL RULES AND ELIGIBILITY        4
+2.1.        PLAYER ELIGIBILITY        4
+Account Requirements:        4
+Age Requirement:        4
+Regional Eligibility:        5
+2.2.        TEAM REGISTRATION        5
+Registration Process:        5
+Roster Submission:        5
+2.3.        CODE OF CONDUCT        5
+Player Conduct:        5
+Disallowed Behaviors:        5
+3.        PLAYER RULES        5
+3.1.        ACCOUNT AND REGISTRATION REGULATIONS        5
+3.2.        GAME PARTICIPATION GUIDELINES        5
+Submission of Game Evidence:        5
+3.3.        CONDUCT AND BEHAVIOUR STANDARDS        6
+3.4.        EQUIPMENT AND TECHNICAL CONDUCT        6
+3.5.        COMMUNICATION WITH ORGANIZERS        6
+4.        TEAM REGULATIONS        7
+4.1.        TEAM OWNERSHIP AND MANAGEMENT        7
+Ownership Rules:        7
+Team Flipping:        7
+Ownership Restrictions:        7
+4.2.        ROSTER SUBMISSION AND CHANGES        7
+Roster Registration:        7
+Transfer Periods:        8
+Player Loan:        8
+4.3.        SPONSOR AND JERSEY REGULATIONS        8
+Sponsor Approval:        8
+4.4.        OBLIGATIONS AND RESPONSIBILITIES        8
+Conduct:        8
+Advertising and Exclusivity:        8
+5.        COMPETITION STRUCTURE        8
+5.1.        MATCH FORMAT AND SCHEDULING        8
+Match Format:        8
+Scheduling:        8
+5.2.        PRE-MATCH CHECKS AND TEST EVENTS        8
+Mandatory Attendance:        8
+Pre-Match Protocols:        8
+5.3.        DURING MATCH CONDUCT        9
+Player Readiness:        9
+No Pauses Allowed:        9
+5.4.        UNAUTHORIZED COMMUNICATIONS AND IDENTITY        9
+Communication Restrictions:        9
+Identity Verification:        9
+6.        DISCIPLINARY ACTIONS AND VIOLATIONS        9
+6.1.        MINOR VS. MAJOR OFFENCES        9
+Minor Offences:        9
+Major Offences:        9
+6.2.        REPORTING AND CONSEQUENCES        10
+Investigations:        10
+Sanctions:        10
+Repeated Infractions:        10
+Interim Measures:        10
+Final Determinations:        10
+7.        TOURNAMENT EQUIPMENT GUIDELINES        10
+7.1.        APPROVED DEVICES AND PERIPHERALS        10
+7.2.        DRESS CODE AND UNIFORM REQUIREMENTS        11
+Team Uniform Requirements:        11
+Coaches and Business Attire:        11
+Apparel Compliance:        11
+8.        PRIZE DISTRIBUTION        11
+8.1.        Prize Money Framework        11
+8.2.        Conditions for Prize Forfeiture        11
+9.        Special Provisions and Exceptions        12
+9.1.        VETO RIGHTS OF TOURNAMENT ORGANIZER        12
+9.2.        INTELLECTUAL PROPERTY AND MEDIA RIGHTS        12
+9.3.        RESTRICTIONS ON PLAYER LOANS AND TRANSFERS        12
+
+
+
+
+
+
+________________
+
+
+1. INTRODUCTION
+
+
+   1. OVERVIEW OF THE TOURNAMENT
+The XXX Tournament is a prestigious event that brings together skilled players from various regions to compete in a highly competitive environment. It is designed to test the strategic prowess, teamwork, and individual aiming skills of competitors in a series of matches. The tournament will comprise both online and offline phases, with the initial rounds held virtually and the finals organized at a physical venue. This setup provides an equal platform for all participants to showcase their abilities and vie for the coveted title of XXX Champion.
+Key features of the tournament include:
+* Integration of both online and physical tournament phases to accommodate wider participation.
+* A series of elimination rounds leading up to the finals.
+* Opportunities for players to demonstrate their talents in a global competitive setting.
+   1. OBJECTIVES AND PURPOSE
+The primary objectives and purposes of the XXX Tournament are outlined as follows:
+* Promote Competitive Integrity: Ensuring all games are played fairly and according to established rules to maintain a high standard of competitive integrity.
+* Showcase Talent: Providing a platform where players and teams can showcase their skills to a broad audience, potentially attracting sponsorships and enhancing their career prospects.
+* Enhance Community Engagement: Building a vibrant and interactive FreeFire gaming community that fosters friendships and professional relationships among players, organizers, and fans.
+* Develop Esports Ecosystem: Contributing to the development of the esports industry by introducing new formats, providing professional experiences, and cultivating future esports leaders.
+* Provide Entertainment: Delivering high-quality entertainment to fans and audiences around the world through thrilling matches and engaging storylines.
+
+
+2. GENERAL RULES AND ELIGIBILITY
+   1. PLAYER ELIGIBILITY
+Account Requirements:
+   * Players must operate an official FreeFire account at or above a set rank and level milestone. Any name changes must be communicated and authorized by the tournament officials.
+Age Requirement:
+   * Participants must be of legal age (16) as defined by the tournament regulation or possess parental consent if underage (For LAN).
+Regional Eligibility:
+   * Only players whose accounts are registered in the tournament-approved regions can compete.
+   * If this is a specific country-only tournament, only players of Nigerian nationality will be allowed to participate.
+   * Each team may include only one player of Nigerian nationality residing outside Nigeria.
+   2. TEAM REGISTRATION
+Registration Process:
+   * Teams are required to register via the designated official platform within the assigned time frame, including full roster details consisting of starting players and substitutes.
+Roster Submission:
+   * The comprehensive team information must be accurate and fees may be applicable for certain registration particulars or amendments.
+   3. CODE OF CONDUCT
+Player Conduct:
+   * Participants should exhibit behavior reflecting sportsmanship and adhere to integrity standards.
+   * Players must maintain a healthy lifestyle and play to the best of their ability.
+Disallowed Behaviors:
+   * Includes cheating, use of in-game exploits, unauthorized communication tools, and collusion.
+   * Multiple Teams: Players may not play for or contract with more than one team at a time.
+
+
+3. PLAYER RULES
+   1. ACCOUNT AND REGISTRATION REGULATIONS
+* Active Account Requirement: Each player must own an active FreeFire account, achieving a minimal level of 20 at the Platinum IV ranking.
+* In-Game Name Consistency: Players cannot change their in-game name during the tournament. Any violation will be treated as using an unregistered player, except when authorized by moderators under specific circumstances.
+
+
+   2. GAME PARTICIPATION GUIDELINES
+Submission of Game Evidence:
+   * Each team must provide screenshots of their game results when requested by tournament moderators.
+   * Teams must also submit full game recordings (not replay recordings) upon request to ensure compliance and fairness.
+   * Recording should only end until that team is eliminated.
+   * Multiple Teams: Players may not play for or contract with more than one team at a time.
+* Registration in Database: All teams and players should be registered in the tournament's official player/team database before participation.
+   1. CONDUCT AND BEHAVIOUR STANDARDS
+* Ban on Cheating:
+   * Prohibited activities include stream sniping, using VPNs, and forming alliances with other competitors for unfair advantage.
+   * Unauthorized software, including emulators and hacking tools, will lead to immediate disqualification.
+   * Defamatory Statements: Players may not defame any part of the Tournament or its affiliates.
+* Professional Interaction: Disrespectful behavior towards officials or use of offensive language can result in penalties, typically in the form of point deductions or if necessary, ban.
+* Scandal Management and Reputation Standards: Players must maintain the highest standards of personal conduct both within and outside of esports activities. Any involvement in scandals, irrespective of the domain, that could potentially harm the reputation of the tournament organizers may result in disciplinary measures. The tournament organizers reserve the right to ban the player involved and impose sanctions on their team, should the scandal impact the tournament's integrity or public perception negatively, regardless of the allegations' veracity.
+* False Rumor Prohibition: Players are prohibited from spreading false rumors about fellow players, teams, organizers, or the tournament itself. Such actions undermine the integrity of the competition and warrant sanctions by the organizers, which may extend to include penalties against the responsible player's team.
+* Controlled Substances and Prescription Drugs: The use, possession, or distribution of controlled substances is strictly prohibited during any tournament-related event. Prescription drugs must only be used as directed.
+* Confidentiality and Defamatory Statements: Team Members are forbidden from disclosing any confidential or proprietary information shared by the Tournament Organizer. Additionally, making defamatory statements about the Competition or its affiliates is strictly prohibited.
+   1. EQUIPMENT AND TECHNICAL CONDUCT
+* Approved Equipment: Use of unauthorized equipment, such as non-standard peripherals or devices classified as hacks, is strictly forbidden. Violations may result in disqualification.
+* Account Integrity and Security: Sharing of personal game accounts is strictly forbidden, including among teammates. Each player is expected to maintain sole control and responsibility for their account to ensure fair play and accountability.
+* Studio Interference: Tampering with studio equipment at LAN events is not allowed.
+   1. COMMUNICATION WITH ORGANIZERS
+* Obligatory Response to Requests:
+   * Team members must respond to official communications within specified deadlines: within one business day for emails and within twelve hours if contacted across multiple channels.
+* Timely Response to Payment Information Requests: Failure to provide necessary information for prize distribution within 3 days will lead to prize forfeiture.
+* Unauthorized Communications: Usage of unauthorized communication devices and methods during matches is forbidden.
+* Confidentiality: Players must not disclose any confidential information received from the Tournament Organizer.
+
+
+4. TEAM REGULATIONS
+   1. TEAM OWNERSHIP AND MANAGEMENT
+Ownership Rules:
+   * The registered Owner(s) of a team retain the sole rights to their team's slot in official competitions, as governed by general and competition-specific rules. But if it is a LAN tournament and the team was not a hundred percent sure they will not be able to attend and did not alert the organizer at least seven (7) days before they were required to show up, then such team will incur heavy penalties. A team will own a slot so far they can make it to the event, if they cannot, the tournament organizer retains the right to give said slot to the next in line available team.
+   * Team ownership, including the rights to roster progression in competitions, belongs strictly to the Owner(s), not individual team members.
+   * Ownership transfers to third parties must be approved in writing by the tournament organizer and require the transferee to adhere to all applicable rules.
+Team Flipping:
+   * If an Owner sells a team, they may not own a new team for one full Split, maintaining competitive integrity.
+Ownership Restrictions:
+   * Owners cannot control more than one team per region or more than two teams across all regions, except for specific team categories like Academy or female rosters.
+   * Ownership: Owners must not have stakes in multiple teams unless explicitly permitted by the organizer. Any change in ownership requires prior notification and approval.
+   * Team names and logos must be unique, with any similarities modified for clear distinction.
+   2. ROSTER SUBMISSION AND CHANGES
+Roster Registration:
+   * Teams must register initial rosters, including all starters and substitutes, before an official competition begins and use tools provided by tournament officials for setup.
+   * Teams are required to have a team Instagram account (not a personal account of one person) and be following the tournament sponsors and organizers on social media.
+   * Teams registering for this tournament, must have the contracts with all players of their teams submitted to the organizer and be stored in the database.
+Transfer Periods:
+   * These are pre-scheduled before the competitive year starts. Exact periods will be announced publicly, allowing roster changes only during these intervals, unless otherwise approved.
+Player Loan:
+   * Each team may take on one player on loan from another team during a competitive season.
+   * Loans cannot be taken from teams and players already participating in or that participated in the current tournament.
+   3. SPONSOR AND JERSEY REGULATIONS
+Sponsor Approval:
+   * Any updates related to sponsorships or team jerseys must receive pre-approval from tournament officials with sufficient preparation time.
+   4. OBLIGATIONS AND RESPONSIBILITIES
+Conduct:
+   * Teams and their members must adhere to all marketing and promotional requirements as set out by the tournament organizer.
+   * Prize Distribution: Prize money will be distributed by the Tournament Organizer only to the team. Players must agree to internal team arrangements for distribution.
+Advertising and Exclusivity:
+   * Teams require advance written approval for any advertising or promotional programs. They may not participate in third-party events during the tournament timeframe unless approved.
+
+
+5. COMPETITION STRUCTURE
+   1. MATCH FORMAT AND SCHEDULING
+Match Format:
+   * Matches are conducted following a round-robin or knockout format, depending on the stage of the tournament.
+Scheduling:
+   * The Tournament Organizer is responsible for announcing the match schedules, including exact dates and times.
+   * All teams must adhere to the announced schedule and be present at the designated time.
+   2. PRE-MATCH CHECKS AND TEST EVENTS
+Mandatory Attendance:
+   * Teams are required to participate in rehearsal and test matches organized prior to the main events. Absence without prior approval may lead to penalties.
+Pre-Match Protocols:
+   * Teams must perform pre-match checks, including network and device validation. Issues must be reported immediately to the organizers (for LAN events).
+   * Players must confirm all settings are correct and complete a checklist to ensure compliance and readiness before match commencement.
+   * Before each match, lobby IDs and passwords will be provided through designated channels.
+
+
+   3. DURING MATCH CONDUCT
+Player Readiness:
+   * Players must be logged into the game and positioned in their assigned slots before matches begin. Inactivity or incorrect positioning during this time can result in point forfeiture.
+   * Players must remain seated and in-game until the conclusion of the match.
+No Pauses Allowed:
+   * No breaks or pauses are permitted during gameplay once initiated, barring exceptional circumstances like network failures or environmental disruptions.
+   4. UNAUTHORIZED COMMUNICATIONS AND IDENTITY
+Communication Restrictions:
+   * During matches, only approved and designated communication channels may be used. Unauthorized use of text, emails, or other mediums is prohibited.
+Identity Verification:
+   * Players must not obscure their identity with hats or sunglasses unless it is part of approved team apparel.
+
+
+6. DISCIPLINARY ACTIONS AND VIOLATIONS
+   1. MINOR VS. MAJOR OFFENCES
+Minor Offences:
+   * Late submission of media and team details when requested by organizers.
+   * Usage of alternative game accounts without informing the tournament officials.
+   * Inappropriate nicknames during official matches.
+   * Being late for Media Day or event game days.
+Major Offences:
+   * Use of non-registered game accounts.
+   * Failure to wear proper attire (e.g., slippers or shorts are not allowed; proper attire mandates closed shoes, trousers, and team jerseys as guided by the organizers).
+   * Posting match results publicly before they are officially streamed, when pre-recorded.
+   * Installation of external third-party software or usage of browsers during the LAN finale without admin permission.
+   * Repeated failure to meet the tournament organizer's requirements, such as advertising obligations.
+   * Bribery: Offering or accepting gifts or rewards to influence match outcomes is prohibited.
+
+
+   2. REPORTING AND CONSEQUENCES
+Investigations:
+   * Tournament organizers maintain the right to investigate rule breaches thoroughly. Participants must cooperate by providing accurate information and not withholding evidence.
+Sanctions:
+   * Sanctions imposed may vary based on the severity and frequency of the offense. They include:
+      * Verbal or public written warnings.
+      * Game and tournament forfeitures.
+      * Point deductions
+      * Prize forfeitures.
+      * Suspension or disqualification from current and future tournaments.
+Repeated Infractions:
+   * Repeated rule violations may lead to escalating consequences, including heavier sanctions or permanent disqualification.
+Interim Measures:
+   * Temporary sanctions may be imposed during ongoing investigations, particularly for severe allegations, and may be revised as more information becomes available.
+Final Determinations:
+   * The tournament organizer reserves the right to make binding decisions regarding offenses and sanctions, evaluating rule breaches irrespective of intent
+
+
+7. TOURNAMENT EQUIPMENT GUIDELINES
+   1. APPROVED DEVICES AND PERIPHERALS
+* Handheld Devices: Participants are required to use handheld devices running Android or iOS operating systems. No other type of device, such as emulators or PCs, is permitted.
+* Prohibited Equipment: The use of peripheral devices such as adapters, controllers, Bluetooth keyboards, and mice is strictly forbidden unless officially approved by the tournament organizers.
+* Supported Accessories: Players may only bring and use their own headsets or noise-canceling devices, as long as they comply with the tournament's policy. Unauthorized equipment, including physical/air triggers or any form outside normal game use, will result in a ban.
+   1. DRESS CODE AND UNIFORM REQUIREMENTS
+Team Uniform Requirements:
+   * All players must wear official team uniforms, including jerseys, jackets, hats, and pants, during public tournament appearances such as LAN events.
+   * Uniforms should prominently feature team logos on the front and may include sponsor logos within limits set by the organizers.
+   * Players are required to wear long pants and closed-toe shoes at tournaments.
+   * If provided, teams may be required to wear official competition-themed apparel for special events and interviews. Any failure to comply with dress code requirements can result in a temporary use of official competition apparel, with directives to update their uniforms by a set deadline.
+Coaches and Business Attire:
+   * Coaches, when present, should be dressed in business attire or team merhcnadise at all tournaments and public-facing events.
+Apparel Compliance:
+   * The tournament organizer holds ultimate authority over uniform standards, with the right to refuse entry or participation to any team member failing to adhere to these guidelines.
+
+
+8. PRIZE DISTRIBUTION
+   1. Prize Money Framework
+* Total Prize Money: The overall prize money allocated for the tournament finals is XXXX.
+* Payment Timeline: All prize money will be disbursed to the designated contact for each team within 90 days following the conclusion of the tournament finals, provided all necessary payment information has been submitted by the specified deadline.
+* Prize Execution: Prize distribution is conditional upon the team fulfilling all tournament obligations, including participation in all matches and completion of required promotional activities.
+   1. Conditions for Prize Forfeiture
+* Submission Deadlines: Teams must submit complete and accurate prize request details, including all required information, within three (3) days after being requested by the Tournament Organizer.
+* Failure to Submit: Delays or failure to submit prize-related information in a timely or complete manner may result in forfeiture of the prize money.
+* Intellectual Property Rights: Teams are required to transfer all rights, titles, and interests, including intellectual property rights related to tournament-created content, as a condition of receiving prize money.
+
+
+9. Special Provisions and Exceptions
+   1. VETO RIGHTS OF TOURNAMENT ORGANIZER
+* Organizer Discretion: The Tournament Organizer has the ultimate decision-making authority over various aspects of the tournament. These include the overall format, number of teams participating, prize pool allocations (without reducing the previously announced amount), and studio set-up.
+* Rule Alterations: Adjustments to tournament rules may be made with the intention of improving operations or the tournament's goodwill.
+* Exclusivity: Teams or players cannot participate in third-party competitions on day of tournament without tournament organizer approval.
+* Announcement will be made after an update or addition to the rules.
+
+
+   2. INTELLECTUAL PROPERTY AND MEDIA RIGHTS
+* Ownership Rights: The Tournament Organizer retains all rights to any materials created as part of the tournament. This includes content, broadcasts, and any derivative works.
+* Usage Permissions: Teams and players do not gain ownership or any rights to the tournament's intellectual property. Unauthorized use is considered a rights infringement.
+* Exploitation Rights: The Organizer can exploit the Tournament IP across various media formats without restrictions, and it may assign these rights to third parties as deemed necessary.
+   1. RESTRICTIONS ON PLAYER LOANS AND TRANSFERS
+* Loan Policy: Teams may loan no more than one player from another team in a single competitive season. The loan agreement must adhere to the eligibility criteria outlined by previous tournament rules.
+* Transfer Regulations: Players on loan must have been registered with their prior team for a minimum of six months before the loan starts, with the contract not exceeding a one-year duration.
