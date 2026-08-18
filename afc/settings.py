@@ -98,7 +98,22 @@ INSTALLED_APPS = [
     # replaced rather than extended. afc_awards stays installed until its historical Vote rows
     # have been migrated in a later phase. See afc_polls/models.py.
     'afc_polls',
+    # The AFC admin's Bot page (backlog item 31). Holds no models: it is a permission gate plus a
+    # proxy to the Discord bot's own control API, which runs in a separate process and repo
+    # (AFC/AFCBot). See afc_bot/views.py for why the browser must not call that API directly.
+    'afc_bot',
 ]
+
+# ── Discord bot control API (backlog item 31) ─────────────────────────────────────────────────
+# Where the AFC Discord bot's control API listens, and the shared secret it expects. The bot binds
+# 127.0.0.1 by default, so this is normally a loopback address and the control port is never exposed
+# to the internet: the only thing that needs to reach it is this Django process.
+#
+# BOTH BLANK MEANS THE BOT PAGE IS OFF. afc_bot.views answers 503 with a sentence saying it is not
+# configured, rather than failing in a way an admin has to guess at. Set them in the server .env,
+# and BOT_CONTROL_TOKEN must be the SAME value the bot has.
+BOT_CONTROL_URL = os.getenv("BOT_CONTROL_URL", "")
+BOT_CONTROL_TOKEN = os.getenv("BOT_CONTROL_TOKEN", "")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Which Gemini model the OCR teacher calls. Flash is ~2x faster than Pro (≈12s vs ≈26s on a FF
