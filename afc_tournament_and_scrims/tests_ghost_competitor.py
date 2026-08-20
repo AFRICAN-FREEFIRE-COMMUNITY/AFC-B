@@ -61,10 +61,36 @@ class GhostCompetitorSchemaTests(TestCase):
         self.assertIsNotNone(tt.pk)
         self.assertIsNone(tt.team)
 
-    def test_neither_set_is_rejected_by_the_database(self):
-        with self.assertRaises(IntegrityError):
-            with transaction.atomic():
-                TournamentTeam.objects.create(event=self.event)
+    def test_neither_set_is_rejected_by_model_validation(self):
+        """"Competes as nobody" is refused by clean(), NOT by the database, and the difference is
+        forced on us rather than chosen.
+
+        MySQL cannot defer constraint checks, so when Django cascade-deletes a Team it NULLS the
+        nullable `team` column first and deletes the row immediately after. A strict database XOR
+        rejects that transient instant and makes deleting ANY team fail (it did, in
+        afc_team.tests_transfer_feed). So the DB constraint only forbids BOTH set, and "at least one
+        set" moved to clean(), which is the path a real application write takes.
+        """
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaises(ValidationError):
+            TournamentTeam(event=self.event).clean()
+
+    def test_deleting_a_team_still_works(self):
+        """The regression this constraint change exists for. Deleting a Team cascades to its
+        registrations, and on MySQL Django nulls the column before deleting the row. Under the
+        original strict XOR this raised
+        "Check constraint 'tt_team_xor_ghost' is violated" and no team could ever be deleted."""
+        team = Team.objects.create(
+            team_name="Doomed FC", join_settings="open",
+            team_creator=self.actor, team_owner=self.actor,
+        )
+        TournamentTeam.objects.create(event=self.event, team=team)
+
+        team.delete()
+
+        self.assertFalse(
+            TournamentTeam.objects.filter(event=self.event, team_id=team.pk).exists())
 
     def test_both_set_is_rejected_by_the_database(self):
         with self.assertRaises(IntegrityError):

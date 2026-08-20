@@ -1913,8 +1913,15 @@ def get_team_details(request):
         agg = TournamentTeamMatchStats.objects.filter(
             tournament_team__team=team
         ).aggregate(
-            total_matches=Count("team_stats_id"),
-            total_wins=Count("team_stats_id", filter=Q(placement=1)),
+            # Sum(matches_counted), not Count(rows): an AGGREGATE row stands for a whole group
+            # and carries its real span in matches_counted (owner 2026-08-20, external results
+            # import). Ordinary rows default to 1, so this is unchanged for them.
+            total_matches=Sum("matches_counted"),
+            # Wins likewise cannot be counted by rows for an aggregate: it stores placement=NULL and
+            # its real win count in booyah_count, because "how many times did they win" is not
+            # recoverable from a single summed row.
+            total_wins=Coalesce(Count("team_stats_id", filter=Q(placement=1)), 0)
+            + Coalesce(Sum("booyah_count"), 0),
             total_kills=Sum("kills"),
             avg_kills=Avg("kills"),
             avg_placement=Avg("placement"),
@@ -1960,10 +1967,18 @@ def get_team_details(request):
 
         # Per-event tournament performance
         for tt in tournament_teams:
+            # matches_played is Sum(matches_counted), NOT Count(rows) (owner 2026-08-20, external
+            # results import). An AGGREGATE row summarises a whole group in ONE row and carries the
+            # real span in matches_counted, so counting rows would report a team that played a
+            # 6-match group plus 8 finals matches as having played 9. matches_counted defaults to 1,
+            # so every ordinary row still contributes exactly 1 and this returns what it always did.
+            #
+            # best_placement needs NO guard: an aggregate row stores placement=NULL (its group finish
+            # lives in final_position), and SQL MIN skips NULL, so it contributes nothing correctly.
             tt_agg = TournamentTeamMatchStats.objects.filter(tournament_team=tt).aggregate(
                 total_points=Sum("total_points"),
                 total_kills=Sum("kills"),
-                matches_played=Count("team_stats_id"),
+                matches_played=Sum("matches_counted"),
                 best_placement=Min("placement"),
             )
 
