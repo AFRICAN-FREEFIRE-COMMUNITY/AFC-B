@@ -95,7 +95,9 @@ def _team_payload(tt):
     """Minimal team object for a bracket slot; None when the slot is empty/bye."""
     if tt is None:
         return None
-    return {"tournament_team_id": tt.tournament_team_id, "team_name": tt.team.team_name}
+    # display_name (not .team.team_name): a bracket slot can hold a ghost competitor
+    # (owner 2026-08-20, external results import), which has no .team row.
+    return {"tournament_team_id": tt.tournament_team_id, "team_name": tt.display_name}
 
 
 def _match_payload(m, *, room_scopes=None, show_credentials=False):
@@ -262,7 +264,10 @@ def _bracket_payload(stage, group=None, *, show_credentials=False):
     """
     matches = list(
         head_to_head.bracket_matches(stage, group.group_id if group else None)
-        .select_related("team_a__team", "team_b__team")
+        # ghost_team alongside team (owner 2026-08-20): _team_payload/display_name below reads
+        # whichever of the two is set, so both must be selected or a ghost slot fires an
+        # extra query per match.
+        .select_related("team_a__team", "team_a__ghost_team", "team_b__team", "team_b__ghost_team")
         # prefetch, not a join: every match now carries its per-player lines, and without this
         # the payload would fire one extra query per match on a bracket that can hold 30+.
         .prefetch_related("player_stats")
@@ -315,9 +320,9 @@ def _bracket_payload(stage, group=None, *, show_credentials=False):
     team_names = {c["tournament_team_id"]: c["team_name"] for c in competitors}
     for m in matches:
         if m.team_a_id:
-            team_names[m.team_a_id] = m.team_a.team.team_name
+            team_names[m.team_a_id] = m.team_a.display_name
         if m.team_b_id:
-            team_names[m.team_b_id] = m.team_b.team.team_name
+            team_names[m.team_b_id] = m.team_b.display_name
     sit_outs = _league_sit_outs(rounds["league"], list(team_names), team_names) \
         if rounds["league"] else {}
 
@@ -411,13 +416,13 @@ def _stage_competitor_payload(stage, group=None):
                     # must not be offered in the draw. generate_h2h_bracket refuses them anyway, so
                     # showing them here would only produce a 400 the organizer cannot act on.
                     tournament_team__status="active", tournament_team__is_waitlisted=False)
-            .select_related("tournament_team__team")
+            .select_related("tournament_team__team", "tournament_team__ghost_team")
             .order_by("id")
         )
         payload = [
             {
                 "tournament_team_id": gc.tournament_team.tournament_team_id,
-                "team_name": gc.tournament_team.team.team_name,
+                "team_name": gc.tournament_team.display_name,
             }
             for gc in group_rows
         ]
@@ -429,13 +434,13 @@ def _stage_competitor_payload(stage, group=None):
         .filter(stage=stage, tournament_team__isnull=False,
                 # Same confirmed-participants rule as the group branch above.
                 tournament_team__status="active", tournament_team__is_waitlisted=False)
-        .select_related("tournament_team__team")
+        .select_related("tournament_team__team", "tournament_team__ghost_team")
         .order_by("id")
     )
     return [
         {
             "tournament_team_id": sc.tournament_team.tournament_team_id,
-            "team_name": sc.tournament_team.team.team_name,
+            "team_name": sc.tournament_team.display_name,
         }
         for sc in rows
     ]
@@ -538,10 +543,10 @@ def generate_h2h_bracket(request, stage_id):
         TournamentTeam.objects
         .filter(event=event, tournament_team_id__in=team_ids)
         .exclude(status="active", is_waitlisted=False)
-        .select_related("team")
+        .select_related("team", "ghost_team")
     )
     if unconfirmed:
-        names = ", ".join(f"{t.team.team_name} ({t.status}"
+        names = ", ".join(f"{t.display_name} ({t.status}"
                           f"{', waitlisted' if t.is_waitlisted else ''})" for t in unconfirmed)
         return Response({"message": f"These teams are not confirmed participants and cannot be "
                                     f"seeded: {names}."}, status=400)
@@ -815,7 +820,8 @@ def get_h2h_match_rosters(request, match_id):
 
     match = get_object_or_404(
         HeadToHeadMatch.objects.select_related(
-            "stage__event", "team_a__team", "team_b__team"),
+            "stage__event", "team_a__team", "team_a__ghost_team",
+            "team_b__team", "team_b__ghost_team"),
         h2h_match_id=match_id)
     event = match.stage.event
 
@@ -835,7 +841,7 @@ def get_h2h_match_rosters(request, match_id):
         )
         teams.append({
             "tournament_team_id": tt.tournament_team_id,
-            "team_name": tt.team.team_name,
+            "team_name": tt.display_name,
             "players": [
                 {
                     "player_id": m.user_id,

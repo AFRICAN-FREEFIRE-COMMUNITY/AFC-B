@@ -1375,7 +1375,10 @@ class TournamentTeamMember(models.Model):
         unique_together = ("tournament_team", "user")
 
     def __str__(self):
-        return f"{self.user.username} in {self.tournament_team.team.team_name}"
+        # display_name (not .team.team_name) so this doesn't AttributeError on a ghost-competitor
+        # TournamentTeam (owner 2026-08-20, external results import). __str__ is called by the
+        # Django admin and by repr() in tracebacks, so this bug bites far from the ghost row itself.
+        return f"{self.user.username} in {self.tournament_team.display_name}"
 
 class TournamentTeamMatchStats(models.Model):
     """
@@ -2267,8 +2270,11 @@ class HeadToHeadMatch(models.Model):
         ]
 
     def __str__(self):
-        a = self.team_a.team.team_name if self.team_a else "?"
-        b = self.team_b.team.team_name if self.team_b else "?"
+        # display_name (not .team.team_name): the existing "?" guard only covers an EMPTY slot
+        # (team_a/team_b None), not a ghost competitor, which has team_id=None but ghost_team_id
+        # set. display_name resolves either kind without touching the raw FK.
+        a = self.team_a.display_name if self.team_a else "?"
+        b = self.team_b.display_name if self.team_b else "?"
         return f"H2H {self.bracket} R{self.round_number}.{self.position}: {a} vs {b} ({self.status})"
 
 

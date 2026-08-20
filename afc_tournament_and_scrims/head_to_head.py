@@ -762,7 +762,10 @@ def standings(stage, group_id=None):
     # resolve_bracket_group_id for exactly when that is and is not honest.
     group_id = resolve_bracket_group_id(stage, group_id)
     matches = list(
-        bracket_matches(stage, group_id).select_related("team_a__team", "team_b__team")
+        bracket_matches(stage, group_id)
+        # ghost_team alongside team (owner 2026-08-20): display_name below reads whichever of
+        # the two is set, so both must be selected or a ghost slot fires an extra query per match.
+        .select_related("team_a__team", "team_a__ghost_team", "team_b__team", "team_b__ghost_team")
         .order_by("round_number", "position")
     )
     if not matches:
@@ -772,9 +775,9 @@ def standings(stage, group_id=None):
     team_names = {}
     for m in matches:
         if m.team_a_id:
-            team_names[m.team_a_id] = m.team_a.team.team_name
+            team_names[m.team_a_id] = m.team_a.display_name
         if m.team_b_id:
-            team_names[m.team_b_id] = m.team_b.team.team_name
+            team_names[m.team_b_id] = m.team_b.display_name
 
     # Per-team W/D/L + round tallies over completed REAL matches (both teams present).
     # DRAWS are counted separately (owner 2026-08-12): a league match may legitimately tie, and

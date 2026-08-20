@@ -268,15 +268,19 @@ def serialize_team(tt, partner):
     already integrated exactly as unable to tell a team that played from one that never turned
     up, which is the whole problem it exists to solve. See team_status above.
     """
-    out = {"team": tt.team.team_name, "team_tag": tt.team.team_tag}
+    # GHOST GUARD (owner 2026-08-20, external results import): a ghost competitor has no
+    # AFC account, so it carries no tag, logo, or self-written description - display_name is
+    # the only honest field. tt.team is None on a ghost row, so team_tag/logo_url/description
+    # fall back to the honest empty value instead of crashing on tt.team.team_tag etc.
+    out = {"team": tt.display_name, "team_tag": (None if tt.is_ghost else tt.team.team_tag)}
 
     # Team BRAND art: the logo a broadcaster puts next to the team's name. Absolute url,
-    # None when the team never uploaded one.
+    # None when the team never uploaded one (or the competitor is a ghost).
     if partner.include_media:
-        out["logo_url"] = _media_url(tt.team.team_logo)
+        out["logo_url"] = None if tt.is_ghost else _media_url(tt.team.team_logo)
     # Team COPY: the short self-description shown on the team's site profile.
     if partner.include_text:
-        out["description"] = tt.team.team_description or None
+        out["description"] = None if tt.is_ghost else (tt.team.team_description or None)
 
     # Aggregate this team's finalized per-match stat rows once (avoids N queries below).
     # played_matches rides along in the SAME aggregate (a filtered Count, so it costs no extra
