@@ -162,11 +162,32 @@ def _stage_top_rows(stage, participant_type):
     )
     out = []
     for r in rows:
-        tt = TournamentTeam.objects.select_related("team").filter(
-            tournament_team_id=r["tournament_team_id"],
-        ).first()
-        if tt and tt.team_id:
+        tt = (TournamentTeam.objects
+              .select_related("team", "ghost_team")
+              .filter(tournament_team_id=r["tournament_team_id"])
+              .first())
+        if not tt:
+            continue
+        if tt.team_id:
             out.append({"team_id": tt.team_id, "name": r["team_name"]})
+            continue
+        # GHOST COMPETITOR (owner 2026-08-20, external results import).
+        #
+        # This used to be `if tt and tt.team_id:`, which DROPPED a ghost silently. That was not
+        # cosmetic: these rows are consumed as "who finished where", so a ghost finishing 3rd simply
+        # disappeared and every team below it moved UP a place. A "top 4 qualify" rule would then
+        # promote a team that did not actually qualify.
+        #
+        # So a ghost is emitted, in its real finishing position, carrying its ghost id and name.
+        # Callers that PROMOTE a qualification into a linked event still need a real team, because
+        # EventQualification.team is a FK to afc_team.Team with no ghost sibling; those callers skip
+        # a row with no team_id and say why, rather than the standings quietly lying about the order.
+        out.append({
+            "team_id": None,
+            "ghost_team_id": str(tt.ghost_team_id),
+            "name": tt.display_name,
+            "is_ghost": True,
+        })
     return out
 
 
@@ -342,7 +363,18 @@ def fire_link(link, actor=None):
         return [], "The stage has no standings yet."
 
     created = []
+    skipped_ghosts = []
     for i, row in enumerate(top, start=1):
+        # A GHOST competitor holds a real finishing position (it is emitted in place by
+        # _stage_top_rows so the ORDER below it stays honest), but it cannot be PROMOTED into the
+        # target event: EventQualification names a team or a user, and a ghost is neither. Skip it
+        # and SAY SO rather than writing a qualification row that names nobody.
+        #
+        # The practical answer for an organizer is to claim the ghost onto a real team first
+        # (afc_rankings.admin_ghost), after which this promotes normally on the next run.
+        if row.get("is_ghost"):
+            skipped_ghosts.append(row.get("name") or "an imported competitor")
+            continue
         qual, was_created = EventQualification.objects.get_or_create(
             link=link, placement=i,
             defaults={"team_id": row.get("team_id"), "user_id": row.get("user_id")},
@@ -359,6 +391,13 @@ def fire_link(link, actor=None):
     link.status = "fired"
     link.fired_snapshot = {"top": top, "change_notified": False}
     link.save(update_fields=["status", "fired_snapshot"])
+    if skipped_ghosts and not created:
+        # Nothing was promoted AND the reason is entirely ghosts. Return it as the error so an
+        # organizer sees why instead of an empty, unexplained result.
+        names = ", ".join(skipped_ghosts[:3])
+        more = f" and {len(skipped_ghosts) - 3} more" if len(skipped_ghosts) > 3 else ""
+        return [], (f"Nothing was promoted: {names}{more} are imported competitors with no AFC "
+                    f"team yet. Claim them onto a real team first, then run this again.")
     return created, None
 
 
