@@ -1174,7 +1174,28 @@ class TournamentTeam(models.Model):
     ]
     tournament_team_id = models.AutoField(primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="tournament_teams")
-    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="tournament_entries")
+    # ── WHO is competing: a real AFC team, or a GHOST (owner 2026-08-20, external results import) ──
+    # EXACTLY ONE of these two is set, enforced by the tt_team_xor_ghost CheckConstraint below.
+    #
+    # WHY team IS NULLABLE NOW. AFC carries tournaments it did not run (FFWS Africa is the driving
+    # case). Most competitors in those events have no AFC account at all, so there is no Team row to
+    # point at. afc_rankings.GhostTeam is the identity AFC already uses for exactly this on
+    # standalone leaderboards, complete with a claim lifecycle, so it is reused here rather than
+    # inventing a second "team that is not really a team" concept.
+    #
+    # THE PATTERN IS COPIED, NOT INVENTED: afc_leaderboard.LeaderboardParticipant has carried
+    # team XOR ghost_team with a DB CheckConstraint since the standalone leaderboards were built.
+    #
+    # READERS MUST NOT REACH THROUGH .team. Use display_name / competitor / is_ghost below. A
+    # `tournament_team.team.team_name` on a ghost row is an AttributeError on None in production.
+    team = models.ForeignKey(
+        Team, on_delete=models.CASCADE, related_name="tournament_entries",
+        null=True, blank=True,
+    )
+    ghost_team = models.ForeignKey(
+        "afc_rankings.GhostTeam", on_delete=models.CASCADE,
+        related_name="tournament_entries", null=True, blank=True,
+    )
     status = models.CharField(max_length=20, choices=TEAM_STATUS, default="active")
     registered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     registration_date = models.DateTimeField(auto_now_add=True)
@@ -1243,6 +1264,27 @@ class TournamentTeam(models.Model):
             models.UniqueConstraint(
                 fields=["event", "team"],
                 name="uniq_event_team_registration",
+            ),
+            # ── Exactly one competitor kind (owner 2026-08-20) ────────────────────────────────
+            # Mirrors the XOR on afc_leaderboard.LeaderboardParticipant. Both null would be a row
+            # that competes as nobody; both set would be a row whose identity depends on which
+            # reader you ask. MySQL 8.0.16+ enforces CHECK constraints, and this deployment already
+            # relies on that for the participant XOR, so this is not a new dependency.
+            models.CheckConstraint(
+                name="tt_team_xor_ghost",
+                check=(
+                    models.Q(team__isnull=False, ghost_team__isnull=True)
+                    | models.Q(team__isnull=True, ghost_team__isnull=False)
+                ),
+            ),
+            # The ghost twin of uniq_event_team_registration. A PLAIN unique constraint, for the
+            # reason spelled out on uniq_assigned_letter_per_event above: MySQL IGNORES the partial
+            # index `condition` on a UniqueConstraint, so a conditional form would give zero
+            # enforcement in production. Both databases allow multiple NULLs in a unique index, so
+            # every real-team row (ghost_team NULL) coexists without colliding.
+            models.UniqueConstraint(
+                fields=["event", "ghost_team"],
+                name="uniq_event_ghost_registration",
             ),
         ]
 
