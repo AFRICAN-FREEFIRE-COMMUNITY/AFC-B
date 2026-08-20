@@ -116,6 +116,20 @@ class Event(models.Model):
     # the tier is auto-classified from the event's prize/teams/format. Mirrors the rankings
     # TeamQuarterlyScore.tier_overridden pattern (a manual lock the recalc respects).
     tier_overridden = models.BooleanField(default=False)
+
+    # ── RESULTS IMPORTED FROM A SPREADSHEET (owner 2026-08-20) ────────────────────────────────────
+    # NULL means this event's results were entered the normal way (uploads, manual entry, OCR). A
+    # timestamp means they came from an external organizer's published standings via
+    # afc_results_import, which is what the provenance marker on the event page reads.
+    #
+    # DELIBERATELY NOT event_type="external". That choice already exists and means something else
+    # entirely: registration happens off-platform, and it surfaces a "Register (External Link)"
+    # button to users. Overloading it would put a registration button on a finished tournament.
+    results_imported_at = models.DateTimeField(null=True, blank=True)
+    results_imported_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="events_results_imported",
+    )
     # rankings §4/§7.2 - prize money conversion locked at award date
     prize_currency = models.CharField(max_length=3, default="USD")  # USD | NGN (owner 2026-07-01: AFC enters prizes in USD, the platform base currency)
     usd_to_ngn_rate = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
