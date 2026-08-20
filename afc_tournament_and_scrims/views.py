@@ -709,6 +709,15 @@ def get_all_events(request):
             # Display status computed from the real start instant (not the sweep-lagged stored field)
             # so a started event reads "ongoing" immediately. See effective_event_status.
             "event_status": effective_event_status(event),
+            # Provenance: see the note on the sibling payloads. NULL means AFC ran it.
+            "results_imported": event.results_imported_at is not None,
+        # ── PROVENANCE (owner 2026-08-20, external results import) ──────────────────────
+        # NULL for everything AFC ran. A timestamp means the results came from an external
+        # organizer's published standings rather than being played on AFC, and the event
+        # page shows a marker saying so. Driven off the stored timestamp rather than its own
+        # switch, so it cannot drift out of step with whether an import actually happened.
+        "results_imported": event.results_imported_at is not None,
+        "results_imported_at": event.results_imported_at,
             "competition_type": event.competition_type,
             "number_of_participants": event.max_teams_or_players,
             "prizepool": event.prizepool,
@@ -5229,6 +5238,13 @@ def get_event_details(request):
         # Read-time display status: "ongoing" once start_date+event_start_time has passed, else
         # "upcoming" (completed stays completed). See effective_event_status.
         "event_status": effective_event_status(event),
+        # ── PROVENANCE (owner 2026-08-20, external results import) ──────────────────────
+        # NULL for everything AFC ran. A timestamp means the results came from an external
+        # organizer's published standings rather than being played on AFC, and the event
+        # page shows a marker saying so. Driven off the stored timestamp rather than its own
+        # switch, so it cannot drift out of step with whether an import actually happened.
+        "results_imported": event.results_imported_at is not None,
+        "results_imported_at": event.results_imported_at,
         "registration_link": event.registration_link,
         "tournament_tier": event.tournament_tier,
         # tier_overridden (owner 2026-06-30): True when a head/super admin pinned the tier (vs
@@ -6187,6 +6203,13 @@ def get_event_details_not_logged_in(request):
         # Read-time display status (anon detail): mirror get_event_details so a started event shows
         # "ongoing" without waiting on the sweep. See effective_event_status.
         "event_status": effective_event_status(event),
+        # ── PROVENANCE (owner 2026-08-20, external results import) ──────────────────────
+        # NULL for everything AFC ran. A timestamp means the results came from an external
+        # organizer's published standings rather than being played on AFC, and the event
+        # page shows a marker saying so. Driven off the stored timestamp rather than its own
+        # switch, so it cannot drift out of step with whether an import actually happened.
+        "results_imported": event.results_imported_at is not None,
+        "results_imported_at": event.results_imported_at,
         "registration_link": event.registration_link,
         "tournament_tier": event.tournament_tier,
         "event_banner_url": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
