@@ -4,9 +4,19 @@ afc_rankings.claims - ghost -> real-entity RE-ATTRIBUTION service (the core of t
 PURPOSE
     When an admin APPROVES a ghost-team / ghost-player claim, the ghost's entire ranked history must
     move onto the real team / user so the real entity inherits the ghost's points, rank, and tier.
-    Ghost rankings trace ENTIRELY to standalone leaderboard participation: a ghost only ever scores
-    through afc_rankings.standalone (recalc_ghost_team_* / recalc_ghost_player_*), which reads the
-    ghost's afc_leaderboard.LeaderboardParticipant rows. So re-attribution is exactly:
+
+    A ghost PLAYER's rankings trace ENTIRELY to standalone leaderboard participation: it only ever
+    scores through afc_rankings.standalone (recalc_ghost_player_*), which reads the ghost's
+    afc_leaderboard.LeaderboardParticipant rows. Re-attribution there is exactly the four steps below.
+
+    A ghost TEAM has a SECOND source of history since afc_tournament_and_scrims.TournamentTeam gained
+    a ghost_team FK (plan §ghost-competitors-in-events): it can also hold tournament registrations,
+    not just standalone leaderboard participation. So reattribute_ghost_team moves BOTH kinds in the
+    same transaction - a claim that moved only the leaderboard side would hand the real team half its
+    history while the tournament half stayed attached to a ghost nobody can find. reattribute_ghost_player
+    is unaffected: ghosts-in-events are TEAMS only, a player claim never touches TournamentTeam.
+
+    For the standalone side, re-attribution is:
 
         1. find every LeaderboardParticipant pointing at this ghost,
         2. re-point each one to the real entity (ghost_team -> team / ghost_player -> user, honoring
@@ -15,15 +25,24 @@ PURPOSE
            PlayerMonthly/QuarterlyScore(ghost_player=...)),
         4. recompute the REAL entity for every affected month + season so it now owns the points.
 
-    After this runs, the source-of-truth (the participant rows) points at the real entity, so any
-    FUTURE recompute (a later result edit, a re-publish) stays correct and idempotent without ever
-    looking at the ghost again.
+    For a ghost team, the same transaction additionally re-points every TournamentTeam pointing at the
+    ghost onto the real team (ghost_team -> team, honoring the tt_team_xor_ghost CheckConstraint). No
+    extra recompute step is needed for that half: the win/finals markers (is_tournament_winner,
+    reached_finals, finals_appearances) live as plain columns on the TournamentTeam row itself and move
+    with it, so whatever reads them next (afc_rankings.aggregation) already sees the real team.
+
+    After this runs, the source-of-truth rows (participants + tournament registrations) point at the
+    real entity, so any FUTURE recompute (a later result edit, a re-publish) stays correct and
+    idempotent without ever looking at the ghost again.
 
 CONFLICT GUARD (out of scope to merge - reject + manual, per the design §re-attribution)
     If a leaderboard the ghost participated in ALSO already has the real team/user as a separate
     participant, re-pointing would create two rows for the same entity in one leaderboard (a self-
-    duplicate the standings + rerank cannot reconcile). We refuse the whole claim with a ``ClaimConflict``
-    BEFORE mutating anything, naming the offending leaderboard so the admin can resolve it by hand.
+    duplicate the standings + rerank cannot reconcile). Same idea for tournaments: if the real team is
+    ALREADY registered to an event the ghost is also registered to, re-pointing would violate the
+    uniq_event_team_registration constraint mid-claim. Either case, we refuse the whole claim with a
+    ``ClaimConflict`` BEFORE mutating anything, naming the offending leaderboard/event so the admin can
+    resolve it by hand.
 
 CALLERS
     - admin_ghost.ghost_approve_claim       (teams)   -> reattribute_ghost_team(ghost, ghost.claimed_by, user)
@@ -33,15 +52,20 @@ CALLERS
 
 WHAT IT READS / WRITES
     Reads:  afc_leaderboard.LeaderboardParticipant (the ghost's participations + the conflict check),
-            each participant's StandaloneLeaderboard.effective_date (the month + season to recompute).
-    Writes: re-points the participant rows; deletes the ghost's score rows; then calls
-            recalc.recalc_team_monthly/quarterly (or recalc_player_*), which recompute + rerank the
-            real entity for the affected periods (those readers pick up the now-re-pointed participants
-            via afc_rankings.standalone.standalone_team_inputs / standalone_player_inputs).
+            each participant's StandaloneLeaderboard.effective_date (the month + season to recompute);
+            for a ghost team, also afc_tournament_and_scrims.TournamentTeam (the ghost's tournament
+            registrations + their conflict check).
+    Writes: re-points the participant rows (and, for a ghost team, the TournamentTeam rows); deletes
+            the ghost's score rows; then calls recalc.recalc_team_monthly/quarterly (or
+            recalc_player_*), which recompute + rerank the real entity for the affected periods (those
+            readers pick up the now-re-pointed participants via afc_rankings.standalone.
+            standalone_team_inputs / standalone_player_inputs).
 
 LOAD-ORDER NOTE
     afc_leaderboard.models imports afc_rankings.models, so afc_leaderboard is imported LAZILY inside
     the functions (same pattern as afc_rankings.standalone) to avoid a circular import at app load.
+    afc_tournament_and_scrims.models imports afc_rankings.models too (the ghost_team FK on
+    TournamentTeam), so it is imported lazily alongside afc_leaderboard for the same reason.
 """
 from django.db import transaction
 
@@ -55,10 +79,11 @@ from .models import (
 class ClaimConflict(Exception):
     """Raised when a ghost cannot be re-attributed because the real entity is ALREADY a separate
     participant in one of the ghost's leaderboards (re-pointing would duplicate the entity in that
-    leaderboard). Carries a human message naming the leaderboard; the approve endpoints turn it into
-    a 400 with that message, and because the raise happens before (and rolls back) any write, nothing
-    is committed. Merging the two histories is future scope (design §out-of-scope); for now an admin
-    resolves it manually."""
+    leaderboard), or - for a ghost team - already registered to one of the ghost's tournament events
+    (re-pointing would duplicate the entity in that event). Carries a human message naming the
+    leaderboard/event; the approve endpoints turn it into a 400 with that message, and because the
+    raise happens before (and rolls back) any write, nothing is committed. Merging the two histories
+    is future scope (design §out-of-scope); for now an admin resolves it manually."""
     pass
 
 
@@ -85,38 +110,61 @@ def _affected_periods(leaderboards):
 
 
 def reattribute_ghost_team(ghost, real_team, actor):
-    """Move a ghost TEAM's standalone history onto ``real_team`` (called on claim approval).
+    """Move a ghost TEAM's standalone AND tournament history onto ``real_team`` (claim approval).
 
     Steps (all inside one transaction so a failure leaves nothing half-moved):
-      1. Collect every LeaderboardParticipant with ``ghost_team=ghost``.
+      1. Collect every LeaderboardParticipant with ``ghost_team=ghost`` AND every TournamentTeam
+         with ``ghost_team=ghost`` (a ghost may hold either kind of history, both, or neither).
       2. CONFLICT GUARD (before any mutation): for each such participant's leaderboard, if a
          participant with ``team=real_team`` already exists there, raise ClaimConflict naming it.
+         Same check for tournaments: for each such TournamentTeam's event, if a TournamentTeam with
+         ``team=real_team`` already exists there, raise ClaimConflict naming the event - re-pointing
+         would otherwise violate the uniq_event_team_registration constraint mid-claim, leaving the
+         leaderboard history already moved (step 3 has not run yet, so nothing is moved either way)
+         and the tournament history stranded on the ghost.
       3. Re-point each participant: ``ghost_team=None, team=real_team`` (honors the participant XOR).
+         Re-point each tournament registration the same way: ``ghost_team=None, team=real_team``
+         saved together (honors the tt_team_xor_ghost CheckConstraint, which requires exactly one of
+         the two to be set at all times - saving them separately would fail the constraint mid-save).
       4. Delete the ghost's TeamMonthlyScore / TeamQuarterlyScore rows (now orphaned - its
          participations have moved, so a ghost recompute would produce nothing anyway; deleting is the
-         clean floor).
+         clean floor). Tournament win/finals markers need no equivalent cleanup: they are columns on
+         the TournamentTeam row itself, so re-pointing the row in step 3 carries them along - there is
+         no separate ghost-side score row for tournament history the way there is for standalone.
       5. Recompute the REAL team for every affected month + season (recalc.recalc_team_monthly /
          recalc_team_quarterly), which reads the now-re-pointed participants via
-         standalone.standalone_team_inputs and writes/ranks the real team's rows.
+         standalone.standalone_team_inputs and writes/ranks the real team's rows. This is the
+         standalone-leaderboard recompute only; tournament win/finals aggregation reads the
+         TournamentTeam row directly and needs no equivalent trigger here.
 
     ``actor`` is the approving admin (kept for signature symmetry + future audit hooks; the endpoint
     writes the audit row). Returns a summary dict (counts) for the caller to put in the audit ``after``.
     """
     # Lazy import (load-order): afc_leaderboard.models imports afc_rankings.models.
     from afc_leaderboard.models import LeaderboardParticipant
+    # Lazy import (load-order): afc_tournament_and_scrims.models imports afc_rankings.models (the
+    # ghost_team FK on TournamentTeam), so a module-level import here would be circular too.
+    from afc_tournament_and_scrims.models import TournamentTeam
 
     with transaction.atomic():
-        # 1) every participation this ghost team holds. select_related the leaderboard so the
-        #    conflict check + the effective_date period collapse read it without an N+1.
+        # 1) every participation AND every tournament registration this ghost team holds.
+        #    select_related the leaderboard / event so the conflict checks + the effective_date
+        #    period collapse read them without an N+1.
         participants = list(
             LeaderboardParticipant.objects
             .select_related("leaderboard")
             .filter(ghost_team=ghost)
         )
+        tournament_teams = list(
+            TournamentTeam.objects
+            .select_related("event")
+            .filter(ghost_team=ghost)
+        )
 
-        # 2) conflict guard FIRST, across ALL participations, before mutating anything: if the real
-        #    team is already a separate participant in any of these leaderboards, re-pointing would
-        #    duplicate it there -> abort the whole claim with a clear message naming the leaderboard.
+        # 2) conflict guard FIRST, across ALL participations AND registrations, before mutating
+        #    anything: if the real team is already a separate participant/registrant in any of
+        #    these, re-pointing would duplicate it there -> abort the whole claim with a clear
+        #    message naming the leaderboard/event.
         for p in participants:
             lb = p.leaderboard
             if LeaderboardParticipant.objects.filter(leaderboard=lb, team=real_team).exists():
@@ -125,15 +173,29 @@ def reattribute_ghost_team(ghost, real_team, actor):
                     f"'{lb.name}' (id {lb.id}) alongside this ghost. Resolve the duplicate manually "
                     f"before approving the claim."
                 )
+        for tt in tournament_teams:
+            event = tt.event
+            if TournamentTeam.objects.filter(event=event, team=real_team).exists():
+                raise ClaimConflict(
+                    f"Cannot claim: the real team is already registered for event "
+                    f"'{event.event_name}' (id {event.pk}) alongside this ghost. Resolve the "
+                    f"duplicate manually before approving the claim."
+                )
 
         # 3) collect the affected periods from the (still ghost-pointed) participants' leaderboards,
-        #    then re-point each participant onto the real team.
+        #    then re-point each participant onto the real team. Re-point each tournament
+        #    registration onto the real team too, in the same pass - ghost_team and team move
+        #    together in one save because the XOR constraint requires exactly one to be set.
         leaderboards = [p.leaderboard for p in participants]
         months, season_ids = _affected_periods(leaderboards)
         for p in participants:
             p.ghost_team = None
             p.team = real_team
             p.save(update_fields=["ghost_team", "team"])
+        for tt in tournament_teams:
+            tt.ghost_team = None
+            tt.team = real_team
+            tt.save(update_fields=["ghost_team", "team"])
 
         # 4) delete the ghost's now-orphaned score rows (the participations have moved off it).
         TeamMonthlyScore.objects.filter(ghost_team=ghost).delete()
@@ -149,6 +211,7 @@ def reattribute_ghost_team(ghost, real_team, actor):
 
     return {
         "reattributed_participants": len(participants),
+        "reattributed_tournament_teams": len(tournament_teams),
         "affected_months": sorted(m.isoformat() for m in months),
         "affected_seasons": sorted(season_ids),
         "real_team_id": real_team.pk,
@@ -219,13 +282,30 @@ def reattribute_ghost_player(ghost, real_user, actor):
 # admin spends review time on it. The approval path re-runs the real guard inside the service above
 # (the source of truth), so this is a fail-fast convenience, not a substitute.
 def conflict_for_team_claim(ghost, real_team):
-    """The conflicting leaderboard name if re-pointing ``ghost``'s team participations onto
-    ``real_team`` would duplicate the team in any of them, else None. Read-only (no mutation)."""
+    """The conflicting leaderboard or event if re-pointing ``ghost``'s team participations or
+    tournament registrations onto ``real_team`` would duplicate the team in any of them, else None.
+
+    Returns ``(kind, name)`` where ``kind`` is the literal string ``"leaderboard"`` or ``"event"``,
+    never a bare name: the two conflict kinds read from different tables (afc_leaderboard vs
+    afc_tournament_and_scrims) and a caller that always said "leaderboard" would misdirect an admin
+    to resolve a duplicate in a leaderboard that does not exist when the real conflict is a
+    tournament event. Read-only (no mutation) - this is the fail-fast pre-check the request
+    endpoint runs before a claim goes pending; reattribute_ghost_team re-runs the real guard on
+    approval.
+    """
     from afc_leaderboard.models import LeaderboardParticipant
+    # Lazy import (load-order): afc_tournament_and_scrims.models imports afc_rankings.models, same
+    # reason as the lazy import in reattribute_ghost_team above.
+    from afc_tournament_and_scrims.models import TournamentTeam
+
     for p in (LeaderboardParticipant.objects.select_related("leaderboard").filter(ghost_team=ghost)):
         lb = p.leaderboard
         if LeaderboardParticipant.objects.filter(leaderboard=lb, team=real_team).exists():
-            return lb.name
+            return ("leaderboard", lb.name)
+    for tt in (TournamentTeam.objects.select_related("event").filter(ghost_team=ghost)):
+        event = tt.event
+        if TournamentTeam.objects.filter(event=event, team=real_team).exists():
+            return ("event", event.event_name)
     return None
 
 

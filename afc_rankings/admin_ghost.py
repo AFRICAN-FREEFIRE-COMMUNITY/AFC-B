@@ -893,11 +893,15 @@ def ghost_team_request_claim(request, ghost_team_id):
         )
 
     # conflict pre-check (no mutation): a request that could never be approved is rejected now.
-    conflict_lb = claims.conflict_for_team_claim(ghost, team)
-    if conflict_lb:
+    # claims.conflict_for_team_claim returns (kind, name) - kind is "leaderboard" or "event" - so
+    # the message names the right noun instead of always saying "leaderboard" (RULING 10, plan
+    # §ghost-competitors-in-events task 8: a ghost can now conflict on a tournament event too).
+    conflict = claims.conflict_for_team_claim(ghost, team)
+    if conflict:
+        kind, name = conflict
         return Response(
             {"message": f"Cannot claim: your team is already a participant alongside this ghost in "
-                        f"leaderboard '{conflict_lb}'. An admin must resolve the duplicate first."},
+                        f"{kind} '{name}'. An admin must resolve the duplicate first."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
