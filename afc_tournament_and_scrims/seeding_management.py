@@ -42,6 +42,8 @@ ENDPOINTS (mounted under events/ via afc_tournament_and_scrims/urls.py)
 import random
 
 from django.db import transaction
+from django.db.models import CharField
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 
 from rest_framework.decorators import api_view
@@ -970,17 +972,21 @@ def move_team_between_groups(request):
 
 # ── target resolvers ─────────────────────────────────────────────────────────────────────────────
 def _resolve_target_team(event, data):
-    """Resolve the TournamentTeam a team-event add/remove targets, accepting EITHER identifier the two
-    existing seeding surfaces already send: `tournament_team_id` (the TournamentTeam PK, as
-    move_team_between_groups uses) OR `team_id` (the underlying Team FK, as add_teams_to_group / the FE
-    AddTeamsModal use). Scoped to the event so a Team maps to its single per-event TournamentTeam.
-    Returns TournamentTeam | None."""
+    """Resolve the TournamentTeam a team-event add/remove targets, accepting any of the identifiers
+    the seeding surfaces send: `tournament_team_id` (the TournamentTeam PK, as move_team_between_groups
+    uses), `team_id` (the underlying Team FK, as add_teams_to_group / the FE AddTeamsModal use), or
+    `ghost_team_id` (the underlying afc_rankings.GhostTeam PK - owner 2026-08-20, external results
+    import; a ghost has no Team row so `team_id` can never resolve one). Scoped to the event so a
+    Team/GhostTeam maps to its single per-event TournamentTeam. Returns TournamentTeam | None."""
     tt_id = data.get("tournament_team_id")
     if tt_id not in (None, ""):
         return TournamentTeam.objects.filter(event=event, tournament_team_id=tt_id).first()
     team_id = data.get("team_id")
     if team_id not in (None, ""):
         return TournamentTeam.objects.filter(event=event, team_id=team_id).first()
+    ghost_team_id = data.get("ghost_team_id")
+    if ghost_team_id not in (None, ""):
+        return TournamentTeam.objects.filter(event=event, ghost_team_id=ghost_team_id).first()
     return None
 
 
@@ -1423,27 +1429,41 @@ def list_registered_teams(request):
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only.", "teams": []}, status=400)
 
-    tts = (TournamentTeam.objects.select_related("team")
-           .filter(event=event, status="active").order_by("team__team_name"))
+    # select_related BOTH competitor kinds (owner 2026-08-20, external results import): a ghost row's
+    # .team is None and .ghost_team is the real FK, so fetching only "team" left every ghost's name
+    # lookup below hitting the DB per row. order_by Coalesces the two name columns rather than sorting
+    # on "team__team_name" alone - that column is NULL for every ghost, and NULL sorts first on both
+    # MySQL and Postgres, so a plain team__team_name order would have clumped every ghost at the top of
+    # the picker regardless of its actual name.
+    tts = (TournamentTeam.objects.select_related("team", "ghost_team")
+           .filter(event=event, status="active")
+           .annotate(_sort_name=Coalesce("team__team_name", "ghost_team__team_name", output_field=CharField()))
+           .order_by("_sort_name"))
     teams = []
     for tt in tts:
-        t = tt.team
-        if not t:
-            continue
-        logo = None
-        try:
-            if getattr(t, "team_logo", None):
-                logo = request.build_absolute_uri(t.team_logo.url)
-        except Exception:
-            logo = None
+        # A ghost has no Team row to read through (tt.team is None) but IS a real, seedable
+        # competitor - see TournamentTeam.is_ghost/competitor/display_name in models.py. This used to
+        # be `t = tt.team; if not t: continue`, which silently dropped every ghost from the picker with
+        # no error and no log line.
+        logo = None  # GhostTeam carries no logo asset at all - always None for a ghost row.
+        if not tt.is_ghost:
+            try:
+                if getattr(tt.team, "team_logo", None):
+                    logo = request.build_absolute_uri(tt.team.team_logo.url)
+            except Exception:
+                logo = None
         teams.append({
-            "team_id": t.team_id,
-            "team_name": t.team_name,
+            # A ghost has no Team PK, so team_id stays None for one; tournament_team_id below is the
+            # identifier that works for both kinds and is what _resolve_target_team's first branch
+            # (and the add-teams endpoints) already key off.
+            "team_id": tt.team_id,
+            "team_name": tt.display_name,
             "team_logo": logo,
-            "team_tag": getattr(t, "team_tag", None),
+            "team_tag": None if tt.is_ghost else getattr(tt.team, "team_tag", None),  # GhostTeam has no tag field
             "member_count": tt.members.count(),
-            "country": getattr(t, "country", "") or "",
-            "is_banned": bool(getattr(t, "is_banned", False)),
+            "country": getattr(tt.competitor, "country", "") or "",  # both Team and GhostTeam expose .country
+            "is_banned": False if tt.is_ghost else bool(getattr(tt.team, "is_banned", False)),  # no ban concept for ghosts
             "tournament_team_id": tt.tournament_team_id,
+            "is_ghost": tt.is_ghost,
         })
     return Response({"event_id": event.event_id, "count": len(teams), "teams": teams}, status=200)

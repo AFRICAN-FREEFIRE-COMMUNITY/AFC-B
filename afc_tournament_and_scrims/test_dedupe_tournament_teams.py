@@ -19,6 +19,7 @@ from django.db import connection
 from django.test import TransactionTestCase
 
 from afc_team.models import Team
+from afc_rankings.models import GhostTeam
 from django.contrib.auth import get_user_model
 
 from .models import (
@@ -116,3 +117,74 @@ class DedupeTournamentTeamsTests(TransactionTestCase):
         TournamentTeam.objects.create(event=self.event, team=self.team, status="active")
         call_command("dedupe_tournament_teams", "--apply")  # must not raise
         self.assertEqual(TournamentTeam.objects.filter(event=self.event, team=self.team).count(), 1)
+
+
+class DedupeTournamentTeamsGhostTests(TransactionTestCase):
+    """The (event, team, ghost_team) grouping fix (Task 6, owner 2026-08-20, external results import).
+
+    Before this fix, grouping was keyed on (event, team) alone, so every ghost row in an event has
+    team_id = None and ALL of them landed in the single bucket (event, None). The command then read
+    that bucket as one giant duplicate group and would delete every ghost but one, reattaching their
+    match stats to an unrelated survivor. See the GHOSTS note in dedupe_tournament_teams.py's module
+    docstring."""
+    reset_sequences = False
+
+    def setUp(self):
+        # Same constraint drop as DedupeTournamentTeamsTests.setUp above (needed here too because
+        # test_mixed_real_dupe_and_ghosts_in_same_event_does_not_crash also creates a genuine
+        # real-team duplicate, alongside the ghosts, in the same event).
+        cons = [c for c in TournamentTeam._meta.constraints if c.name == "uniq_event_team_registration"]
+        if cons:
+            with connection.schema_editor(atomic=False) as se:
+                try:
+                    se.remove_constraint(TournamentTeam, cons[0])
+                except Exception:
+                    pass  # already absent on this backend
+
+        self.owner = User.objects.create_user(username=_u("u"), email=f"{_u('e')}@t.local",
+                                               password="pw-strong-9273", role="player")
+        self.event = Event.objects.create(
+            slug=_u("event"), competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=16, event_name="E", event_mode="virtual",
+            start_date=TODAY, end_date=TODAY, registration_open_date=TODAY, registration_end_date=TODAY,
+            prizepool="$1", prize_distribution={}, event_rules="r", event_status="ongoing",
+            registration_link="https://x.co/r", number_of_stages=1,
+        )
+        self.team = Team.objects.create(team_name=_u("T"), join_settings="open",
+                                        team_creator=self.owner, team_owner=self.owner)
+        self.ghost_a = GhostTeam.objects.create(team_name="Ghost A", country="Nigeria", created_by=self.owner)
+        self.ghost_b = GhostTeam.objects.create(team_name="Ghost B", country="Kenya", created_by=self.owner)
+
+    def test_two_different_ghosts_are_not_merged(self):
+        """Two DIFFERENT ghosts registered to the same event must never be reported (or merged) as
+        duplicates of each other."""
+        tt_a = TournamentTeam.objects.create(event=self.event, ghost_team=self.ghost_a, status="active")
+        tt_b = TournamentTeam.objects.create(event=self.event, ghost_team=self.ghost_b, status="active")
+
+        call_command("dedupe_tournament_teams", "--apply")
+
+        # Both survive untouched - neither was ever a duplicate of the other.
+        self.assertTrue(TournamentTeam.objects.filter(pk=tt_a.pk).exists())
+        self.assertTrue(TournamentTeam.objects.filter(pk=tt_b.pk).exists())
+        self.assertEqual(TournamentTeam.objects.filter(event=self.event).count(), 2)
+
+    def test_mixed_real_dupe_and_ghosts_in_same_event_does_not_crash(self):
+        """A real (event, team) duplicate group AND two distinct, non-duplicate ghosts, all in the
+        SAME event. This exercises the sort key used to order dupe groups for the report: once
+        event_id ties across groups, the raw (team_id, ghost_team_id) pairs mix an (int, None) real
+        group against a (None, uuid) ghost group, and Python 3 raises TypeError comparing int/uuid to
+        None unless the sort compares them as strings. Also doubles as the 'a genuine same-team
+        duplicate is still caught' check for this grouping change (the richer version of that check -
+        every child repointed/dropped correctly - already lives in
+        DedupeTournamentTeamsTests.test_merge_repoints_children_and_drops_collisions above)."""
+        TournamentTeam.objects.create(event=self.event, team=self.team, status="active")
+        TournamentTeam.objects.create(event=self.event, team=self.team, status="active")
+        ghost_tt_a = TournamentTeam.objects.create(event=self.event, ghost_team=self.ghost_a, status="active")
+        ghost_tt_b = TournamentTeam.objects.create(event=self.event, ghost_team=self.ghost_b, status="active")
+
+        call_command("dedupe_tournament_teams", "--apply")  # must not raise TypeError
+
+        # The real dupe collapsed to one survivor; both ghosts left completely untouched.
+        self.assertEqual(TournamentTeam.objects.filter(event=self.event, team=self.team).count(), 1)
+        self.assertTrue(TournamentTeam.objects.filter(pk=ghost_tt_a.pk).exists())
+        self.assertTrue(TournamentTeam.objects.filter(pk=ghost_tt_b.pk).exists())
