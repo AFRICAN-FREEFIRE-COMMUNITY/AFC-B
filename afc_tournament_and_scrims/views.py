@@ -58,7 +58,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from datetime import datetime, date, timedelta
 from django.utils import timezone
 from django.db.models import Count, Q, F, Sum, Max
-from django.db.models.functions import TruncDate
+from django.db.models.functions import TruncDate, Coalesce
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -5545,8 +5545,14 @@ def get_event_details(request):
                             # flag under the SAME key `team_country`. F() reads the joined Team's
                             # non-null blank country column. Consumed by the FE per-match stats table.
                             team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
                         )
-                        .order_by("-total_points", "-kills", "tournament_team__team__team_name")
+                        .order_by("-total_points", "-kills", "competitor_name")
                     )
 
                 # Gate room creds (owner 2026-06-17): only the group's registered competitors (and, for
@@ -5638,6 +5644,12 @@ def get_event_details(request):
                         # (country is functionally determined by tournament_team_id, already grouped,
                         # so no row is split). Emitted under the uniform `team_country` key.
                         team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
                     )
                     .annotate(
                         matches_played=Count("match_id", distinct=True),
@@ -6375,8 +6387,14 @@ def get_event_details_not_logged_in(request):
                                  # team_country (owner 2026-07-03): flag on the anonymous per-match
                                  # stats table. Keyword expression goes last; uniform `team_country`.
                                  team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
                              )
-                             .order_by("-total_points", "-kills", "tournament_team__team__team_name"))
+                             .order_by("-total_points", "-kills", "competitor_name"))
 
                 # Anonymous viewer (not logged in) NEVER sees room creds (owner 2026-06-17): room
                 # details are for registered competitors only, after the organizer posts them. Always
@@ -6453,6 +6471,12 @@ def get_event_details_not_logged_in(request):
                                # Extra GROUP BY column functionally determined by the already-grouped
                                # tournament_team_id, so no row splits. Uniform `team_country` key.
                                team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
                            )
                            .annotate(
                                matches_played=Count("match_id", distinct=True),
@@ -6708,6 +6732,24 @@ from collections import Counter
 import pycountry
 
 import pycountry
+
+# ── COMPETITOR NAME / COUNTRY FOR STANDINGS QUERIES (owner 2026-08-20) ───────────────────────────
+# `tournament_team__team__team_name` traverses the REAL team, which is NULL for a ghost competitor,
+# so a ghost arrived at the frontend with no name and fell through its "Player <id>" placeholder in
+# the group standings table. The Registered Teams list was fine, because that path goes through
+# TournamentTeam.display_name; only the ORM-level standings queries were affected.
+#
+# These are annotations, not Python properties, because the standings are built with .values() and
+# ordered in SQL. COALESCE picks the ghost's name when the real team is absent. Exposed under the
+# NEW key `competitor_name`, leaving the original key in place so any other consumer of these
+# payloads keeps working unchanged.
+_COMPETITOR_NAME = Coalesce(
+    "tournament_team__team__team_name", "tournament_team__ghost_team__team_name"
+)
+_COMPETITOR_COUNTRY = Coalesce(
+    "tournament_team__team__country", "tournament_team__ghost_team__country"
+)
+
 
 def normalize_country(country):
     if not country:
@@ -14487,6 +14529,12 @@ def get_all_leaderboard_details_for_event(request):
                             # organizer results editor. Aliased alongside team_name; read off the
                             # annotated object below. Team.country is non-null blank ("" == unknown).
                             team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
                             # effective_total = the stored per-match total_points (placement + kill +
                             # ASSIST + DAMAGE + bonus - penalty), NOT a re-derived placement+kill+
                             # bonus-penalty (which dropped assist/damage and disagreed with the public
@@ -14632,6 +14680,12 @@ def get_all_leaderboard_details_for_event(request):
                         # Aliased like team_name; joins another GROUP BY column that is functionally
                         # determined by the already-grouped tournament_team_id (no row splits).
                         team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
                     )
                     .annotate(
                         matches_played=Count("match_id"),
