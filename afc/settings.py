@@ -76,6 +76,10 @@ INSTALLED_APPS = [
     'afc_player_market',
     'afc_ocr',
     'afc_rankings',
+    # External tournament results import (owner 2026-08-20): reads a published standings
+    # workbook into an event AFC did not run. Kept out of afc_tournament_and_scrims because that
+    # app's views module is already around 27,000 lines.
+    'afc_results_import',
     'afc_organizers',
     'afc_partner_api',
     'afc_sponsors',
