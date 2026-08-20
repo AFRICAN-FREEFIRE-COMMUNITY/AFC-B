@@ -50,6 +50,19 @@ class DedupeTournamentTeamsTests(TransactionTestCase):
                 except Exception:
                     pass  # already absent on this backend
 
+            # PUT IT BACK. TransactionTestCase does not roll back DDL, so without this the index
+            # stays dropped for every LATER test in the process, and
+            # tests_ghost_competitor.test_one_registration_per_ghost_per_event fails with
+            # "IntegrityError not raised" in a completely different module. Invisible when this
+            # module runs alone, which is exactly how it got missed.
+            def _restore(c=cons[0]):
+                with connection.schema_editor(atomic=False) as se2:
+                    try:
+                        se2.add_constraint(TournamentTeam, c)
+                    except Exception:
+                        pass  # already present
+            self.addCleanup(_restore)
+
         self.owner = User.objects.create_user(username=_u("u"), email=f"{_u('e')}@t.local",
                                                password="pw-strong-9273", role="player")
         self.event = Event.objects.create(
@@ -140,6 +153,19 @@ class DedupeTournamentTeamsGhostTests(TransactionTestCase):
                     se.remove_constraint(TournamentTeam, cons[0])
                 except Exception:
                     pass  # already absent on this backend
+
+            # PUT IT BACK. TransactionTestCase does not roll back DDL, so without this the index
+            # stays dropped for every LATER test in the process, and
+            # tests_ghost_competitor.test_one_registration_per_ghost_per_event fails with
+            # "IntegrityError not raised" in a completely different module. Invisible when this
+            # module runs alone, which is exactly how it got missed.
+            def _restore(c=cons[0]):
+                with connection.schema_editor(atomic=False) as se2:
+                    try:
+                        se2.add_constraint(TournamentTeam, c)
+                    except Exception:
+                        pass  # already present
+            self.addCleanup(_restore)
 
         self.owner = User.objects.create_user(username=_u("u"), email=f"{_u('e')}@t.local",
                                                password="pw-strong-9273", role="player")
