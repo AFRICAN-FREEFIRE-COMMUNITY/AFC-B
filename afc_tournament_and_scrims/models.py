@@ -1295,9 +1295,38 @@ class TournamentTeam(models.Model):
         from django.utils import timezone as _tz
         return bool(self.roster_edit_until) and _tz.now() <= self.roster_edit_until
 
+    # ── The competitor accessors (owner 2026-08-20, external results import) ──────────────────
+    # ONE definition each, because there are ~172 places in this codebase that used to reach
+    # through .team and every one of them is an AttributeError on a ghost row. Anything that needs
+    # to name, fetch or test the competitor uses these and never the FKs directly.
+    #
+    # Read by: the event page and bracket serializers, the standings builders, the overlay
+    # renderers, the CSV/xlsx exports, notifications, the partner API, and afc_player_market.
+
+    @property
+    def is_ghost(self) -> bool:
+        """True when this registration represents an unclaimed external competitor."""
+        return self.ghost_team_id is not None
+
+    @property
+    def competitor(self):
+        """The underlying afc_team.Team or afc_rankings.GhostTeam. Never None: the
+        tt_team_xor_ghost constraint guarantees exactly one of the two is set."""
+        return self.ghost_team if self.is_ghost else self.team
+
+    @property
+    def display_name(self) -> str:
+        """What to show a human for this competitor. Both models spell it team_name, so this
+        stays a single attribute read rather than a branch on type.
+
+        Deliberately the SAME NAME as afc_leaderboard.LeaderboardParticipant.display_name, which
+        answers the identical question for the standalone-leaderboard half of the system. One name
+        for one idea across both."""
+        return self.competitor.team_name
+
     def __str__(self):
-        return f"{self.team.team_name} in {self.event.event_name}"
-    
+        return f"{self.display_name} in {self.event.event_name}"
+
 
 class TournamentTeamMember(models.Model):
     """
