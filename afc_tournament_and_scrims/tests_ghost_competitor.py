@@ -90,3 +90,49 @@ class GhostCompetitorSchemaTests(TestCase):
         TournamentTeam.objects.create(event=self.event, ghost_team=self.ghost)
         TournamentTeam.objects.create(event=self.event, ghost_team=other)
         self.assertEqual(TournamentTeam.objects.filter(event=self.event).count(), 2)
+
+
+class GhostCompetitorAccessorTests(TestCase):
+    """The three questions callers actually ask, each with exactly one answer."""
+
+    def setUp(self):
+        self.actor = User.objects.create(username="admin2", email="b@example.com")
+        # Same fixture shape as GhostCompetitorSchemaTests.setUp above (Ruling 4: fixtures are the
+        # implementer's to adapt to build; the brief's setUp was written from the model's field list,
+        # not a running database, and is missing required fields on Event and Team).
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=16, event_name="FFWS Africa 2026 Fall", event_mode="virtual",
+            start_date=datetime.date(2026, 7, 1), end_date=datetime.date(2026, 9, 6),
+            registration_open_date=datetime.date(2026, 6, 1), registration_end_date=datetime.date(2026, 6, 30),
+            prizepool="0", event_rules="rules", event_status="upcoming",
+            registration_link="https://example.com/reg", number_of_stages=4,
+        )
+        self.real_team = Team.objects.create(
+            team_name="Berserk Generation", join_settings="open",
+            team_creator=self.actor, team_owner=self.actor,
+        )
+        self.ghost = GhostTeam.objects.create(
+            team_name="Otaku Gamer", country="Madagascar", created_by=self.actor,
+        )
+        self.tt_real = TournamentTeam.objects.create(event=self.event, team=self.real_team)
+        self.tt_ghost = TournamentTeam.objects.create(event=self.event, ghost_team=self.ghost)
+
+    def test_display_name_reads_the_real_team(self):
+        self.assertEqual(self.tt_real.display_name, "Berserk Generation")
+
+    def test_display_name_reads_the_ghost(self):
+        self.assertEqual(self.tt_ghost.display_name, "Otaku Gamer")
+
+    def test_competitor_returns_the_underlying_object(self):
+        self.assertEqual(self.tt_real.competitor, self.real_team)
+        self.assertEqual(self.tt_ghost.competitor, self.ghost)
+
+    def test_is_ghost(self):
+        self.assertFalse(self.tt_real.is_ghost)
+        self.assertTrue(self.tt_ghost.is_ghost)
+
+    def test_str_does_not_crash_on_a_ghost(self):
+        """__str__ currently reads self.team.team_name and is called by the Django admin, by
+        repr() in tracebacks, and by several log lines. A ghost row must not blow those up."""
+        self.assertIn("Otaku Gamer", str(self.tt_ghost))
