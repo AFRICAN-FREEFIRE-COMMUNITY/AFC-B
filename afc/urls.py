@@ -27,6 +27,9 @@ urlpatterns = [
     path("awards/", include('afc_awards.urls')),
     path("shop/", include('afc_shop.urls')),
     path("player/", include('afc_player.urls')),
+    # External tournament results import (owner 2026-08-20): upload an organizer's published
+    # standings workbook into an event AFC did not run. Template / preview / commit / pair.
+    path("results-import/", include('afc_results_import.urls')),
     path("player-market/", include('afc_player_market.urls')),
     path("events/", include('afc_ocr.urls')),
     path("rankings/", include('afc_rankings.urls')),
