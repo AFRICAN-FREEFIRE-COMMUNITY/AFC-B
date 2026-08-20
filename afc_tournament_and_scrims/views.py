@@ -19831,13 +19831,28 @@ def add_teams_to_stage(request):
         return Response({"message": "No permission"}, status=403)
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
-    teams = TournamentTeam.objects.filter(team_id__in=team_ids, event=event, status="active")
+    # GHOST COMPETITORS (owner 2026-08-20, external results import). `team_ids` are afc_team.Team
+    # ids, and a GHOST registration has team_id NULL, so filtering on them can never select one:
+    # an imported competitor could exist in an event but never be placed into a stage. Accept
+    # `tournament_team_ids` (registration PKs) as an ADDITIVE second route that addresses any
+    # competitor, real or ghost. Existing callers sending team_ids are unaffected.
+    tt_ids = request.data.get("tournament_team_ids", [])
+    if not isinstance(tt_ids, list) or not all(isinstance(t, int) for t in tt_ids):
+        return Response({"message": "tournament_team_ids must be a list of integers"}, status=400)
+
+    teams = TournamentTeam.objects.filter(
+        Q(team_id__in=team_ids) | Q(tournament_team_id__in=tt_ids),
+        event=event, status="active",
+    )
     if not teams.exists():
-        return Response({"message": "No valid teams found for the provided team_ids."}, status=400)
-    existing_team_ids = StageCompetitor.objects.filter(stage=stage, tournament_team__team_id__in=team_ids).values_list("tournament_team__team_id", flat=True)
+        return Response({"message": "No valid teams found for the provided ids."}, status=400)
+    # Keyed on the REGISTRATION pk, not the team pk: every ghost has team_id NULL, so keying on the
+    # team would collapse them all into one "already present" bucket and silently skip all but one.
+    existing_tt_ids = set(StageCompetitor.objects.filter(stage=stage)
+                          .values_list("tournament_team_id", flat=True))
     new_entries = []
     for team in teams:
-        if team.team_id in existing_team_ids:
+        if team.tournament_team_id in existing_tt_ids:
             continue
         new_entries.append(StageCompetitor(stage=stage, tournament_team=team))
     StageCompetitor.objects.bulk_create(new_entries)
@@ -19855,7 +19870,10 @@ def add_teams_to_stage(request):
     return Response({
         "message": f"{len(new_entries)} teams added to stage.",
         "stage_id": stage.stage_id,
+        # team_id is None for a ghost, so echo the REGISTRATION ids too. Kept alongside the
+        # original key so existing consumers are untouched.
         "added_team_ids": [entry.tournament_team.team_id for entry in new_entries],
+        "added_tournament_team_ids": [entry.tournament_team_id for entry in new_entries],
         "group_seeds_added": group_seeds_added,  # how many were also auto-placed into groups
     }, status=200)
 
@@ -22633,14 +22651,27 @@ def add_teams_to_group(request):
         return Response({"message": "Unauthorized."}, status=403)
     if group.stage.event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
-    teams = TournamentTeam.objects.filter(team_id__in=team_ids, event=group.stage.event,
-        status="active")
+    # GHOST COMPETITORS (owner 2026-08-20, external results import). Same reasoning as
+    # add_teams_to_stage: `team_ids` are afc_team.Team ids and a ghost registration has team_id
+    # NULL, so it could never be placed into a group. `tournament_team_ids` is an ADDITIVE route
+    # that addresses any competitor by its registration pk. Existing callers are unaffected.
+    tt_ids_g = request.data.get("tournament_team_ids", [])
+    if not isinstance(tt_ids_g, list) or not all(isinstance(t, int) for t in tt_ids_g):
+        return Response({"message": "tournament_team_ids must be a list of integers"}, status=400)
+
+    teams = TournamentTeam.objects.filter(
+        Q(team_id__in=team_ids) | Q(tournament_team_id__in=tt_ids_g),
+        event=group.stage.event, status="active",
+    )
     if not teams.exists():
-        return Response({"message": "No valid teams found for the provided team_ids."}, status=400)
-    existing_team_ids = StageGroupCompetitor.objects.filter(stage_group=group, tournament_team__team_id__in=team_ids).values_list("tournament_team__team_id", flat=True)
+        return Response({"message": "No valid teams found for the provided ids."}, status=400)
+    # Keyed on the REGISTRATION pk: every ghost has team_id NULL, so keying on the team would
+    # collapse them into one "already present" bucket and skip all but one.
+    existing_tt_ids = set(StageGroupCompetitor.objects.filter(stage_group=group)
+                          .values_list("tournament_team_id", flat=True))
     new_entries = []
     for team in teams:
-        if team.team_id in existing_team_ids:
+        if team.tournament_team_id in existing_tt_ids:
             continue
         new_entries.append(StageGroupCompetitor(stage_group=group, tournament_team=team))
     StageGroupCompetitor.objects.bulk_create(new_entries)
@@ -22656,7 +22687,10 @@ def add_teams_to_group(request):
     return Response({
         "message": f"{len(new_entries)} teams added to group.",
         "group_id": group.group_id,
+        # team_id is None for a ghost, so echo the REGISTRATION ids too. Kept alongside the
+        # original key so existing consumers are untouched.
         "added_team_ids": [entry.tournament_team.team_id for entry in new_entries],
+        "added_tournament_team_ids": [entry.tournament_team_id for entry in new_entries],
     }, status=200)
 
 
