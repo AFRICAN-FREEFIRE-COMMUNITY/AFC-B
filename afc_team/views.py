@@ -1910,8 +1910,15 @@ def get_team_details(request):
         from afc_tournament_and_scrims.final_standings import event_final_standings
 
         # Aggregate match stats across all tournament entries
+        # Career totals EXCLUDE an imported event unless an admin turned its statistics on
+        # (owner 2026-08-20). Same gate as the per-event block below, applied at the query level so
+        # an unapproved import cannot move a team's lifetime kill count or best placement.
+        # results_imported_at is NULL for every ordinary event, so this changes nothing for them.
         agg = TournamentTeamMatchStats.objects.filter(
             tournament_team__team=team
+        ).exclude(
+            tournament_team__event__results_imported_at__isnull=False,
+            tournament_team__event__imported_results_count_in_profile_stats=False,
         ).aggregate(
             # Sum(matches_counted), not Count(rows): an AGGREGATE row stands for a whole group
             # and carries its real span in matches_counted (owner 2026-08-20, external results
@@ -1967,6 +1974,20 @@ def get_team_details(request):
 
         # Per-event tournament performance
         for tt in tournament_teams:
+            # ── IMPORTED EVENTS ARE GATED (owner 2026-08-20) ─────────────────────────────────────
+            # An event whose results came from an external organizer's published standings only
+            # appears here, and only contributes to this team's totals, when an admin has said so.
+            # Both switches default OFF, so an import is inspected before it can change numbers on a
+            # real team's public page.
+            #
+            # visible_on_profiles gates whether the event is LISTED at all; count_in_profile_stats
+            # gates whether its numbers fold into the running totals below. They are separate
+            # because "show that this happened" and "count it" are different questions: a team may
+            # legitimately want an imported tournament visible in its history without it moving its
+            # career kill count.
+            _imported = getattr(tt.event, "results_imported_at", None) is not None
+            if _imported and not tt.event.imported_results_visible_on_profiles:
+                continue
             # matches_played is Sum(matches_counted), NOT Count(rows) (owner 2026-08-20, external
             # results import). An AGGREGATE row summarises a whole group in ONE row and carries the
             # real span in matches_counted, so counting rows would report a team that played a

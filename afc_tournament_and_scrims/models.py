@@ -130,6 +130,31 @@ class Event(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="events_results_imported",
     )
+
+    # ── WHAT AN IMPORTED EVENT IS ALLOWED TO AFFECT (owner 2026-08-20) ────────────────────────────
+    # The owner's decision was "admin decides per event", and BOTH default OFF so an import is
+    # inspected before it reaches real teams' pages. Turning them on is a deliberate act.
+    #
+    # These are the only TWO new switches this feature needs. The other two questions were already
+    # answered by existing machinery and are NOT duplicated here:
+    #   * "does it feed the rankings ladder?" -> afc_rankings.EventCountingControl
+    #     .counts_toward_rankings, which already has per-component trims and is already honoured in
+    #     aggregation.py including prize money.
+    #   * "what tier is it?" -> Event.tournament_tier with tier_overridden=True, so the automatic
+    #     classifier does not tier an imported event off a prize pool the importer never saw.
+    #
+    # WORTH KNOWING when wiring the admin screen: tier is an INPUT to rankings, not an output.
+    # aggregation.py passes tier=ev.tournament_tier as the WEIGHT applied to results, so "counts
+    # toward rankings" and "has a tier" are not independent. Four checkboxes that look orthogonal
+    # are not, and the UI must say so rather than implying otherwise.
+
+    # Does the event show up in a team's list of tournaments at all?
+    imported_results_visible_on_profiles = models.BooleanField(default=False)
+
+    # Do its numbers fold into a team's profile TOTALS (matches played, kills, best placement)?
+    # This is the riskier of the two: it changes numbers on a real team's public page, which is why
+    # the aggregate-row reader corrections had to land before anything could be imported.
+    imported_results_count_in_profile_stats = models.BooleanField(default=False)
     # rankings §4/§7.2 - prize money conversion locked at award date
     prize_currency = models.CharField(max_length=3, default="USD")  # USD | NGN (owner 2026-07-01: AFC enters prizes in USD, the platform base currency)
     usd_to_ngn_rate = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)

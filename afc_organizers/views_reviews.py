@@ -555,7 +555,12 @@ def org_metrics(request, slug):
     matches_per_event = {
         row["group__stage__event"]: row["c"]
         for row in _apply_range(
-            Match.objects.filter(group__stage__event_id__in=event_ids),
+            # Imported matches are EXCLUDED from organizer activity (owner 2026-08-20): whoever
+            # uploads an external tournament's published standings did not organize it, and counting
+            # those matches would overstate their activity. upload_method is NULL or "image_upload"
+            # for everything an organizer really ran.
+            Match.objects.filter(group__stage__event_id__in=event_ids)
+                         .exclude(upload_method="xlsx_import"),
             "match_date", start, end,
         ).values("group__stage__event").annotate(c=Count("match_id"))
     }
@@ -701,7 +706,10 @@ def org_metrics(request, slug):
     # matches per month, windowed on match_date.
     for row in (
         _apply_range(
-            Match.objects.filter(group__stage__event_id__in=event_ids), "match_date", start, end,
+            # Same exclusion as the per-event count above: an imported match is not organizer work.
+            Match.objects.filter(group__stage__event_id__in=event_ids)
+                         .exclude(upload_method="xlsx_import"),
+            "match_date", start, end,
         ).annotate(m=TruncMonth("match_date")).values("m").annotate(c=Count("match_id"))
     ):
         _bump(row["m"], "matches", row["c"])
