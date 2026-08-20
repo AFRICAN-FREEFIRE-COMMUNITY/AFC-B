@@ -46,7 +46,16 @@ def _u(p="x"):
 def _drop_constraint(name):
     """Remove a TournamentTeam unique/check constraint by name so a test can create the legacy
     duplicate row the constraint would otherwise reject. Idempotent (the try/except no-ops once the
-    constraint is already gone), matching the pattern in test_dedupe_tournament_teams.py."""
+    constraint is already gone).
+
+    CALLERS MUST RESTORE IT with _restore_constraint, via self.addCleanup. These are
+    TransactionTestCase classes, so DDL is NOT rolled back between tests: a dropped constraint stays
+    dropped for the rest of the process. Leaving it off made
+    tests_ghost_competitor.test_one_registration_per_ghost_per_event fail with "IntegrityError not
+    raised" on a full-suite run, because by the time it ran the constraint it asserts on no longer
+    existed. The failure surfaced in a DIFFERENT module from its cause, which is what made it
+    expensive to find, and it is invisible when either module is run on its own.
+    """
     cons = [c for c in TournamentTeam._meta.constraints if c.name == name]
     if cons:
         with connection.schema_editor(atomic=False) as se:
@@ -54,6 +63,19 @@ def _drop_constraint(name):
                 se.remove_constraint(TournamentTeam, cons[0])
             except Exception:
                 pass  # already absent on this backend
+
+
+def _restore_constraint(name):
+    """Put back a constraint dropped by _drop_constraint, so the schema this process shares with
+    every later test matches what the models declare. Idempotent and never raises: a backend that
+    never applied it, or a double cleanup, must not turn teardown into an error."""
+    cons = [c for c in TournamentTeam._meta.constraints if c.name == name]
+    if cons:
+        with connection.schema_editor(atomic=False) as se:
+            try:
+                se.add_constraint(TournamentTeam, cons[0])
+            except Exception:
+                pass  # already present, or unsupported on this backend
 
 
 def _make_event(owner):
@@ -73,6 +95,9 @@ class DedupeEventTeamRegistrationsTests(TransactionTestCase):
 
     def setUp(self):
         _drop_constraint("uniq_event_team_registration")
+        # TransactionTestCase does not roll back DDL, so put it back or every LATER test in this
+        # process runs without it (see _drop_constraint).
+        self.addCleanup(_restore_constraint, "uniq_event_team_registration")
 
         self.owner = User.objects.create_user(username=_u("u"), email=f"{_u('e')}@t.local",
                                                password="pw-strong-9273", role="player")
@@ -147,6 +172,9 @@ class DedupeEventTeamRegistrationsGhostTests(TransactionTestCase):
         alongside ghosts (the richer per-child check lives in
         DedupeEventTeamRegistrationsTests.test_duplicate_real_team_collapses_to_the_row_with_stats)."""
         _drop_constraint("uniq_event_team_registration")
+        # TransactionTestCase does not roll back DDL, so put it back or every LATER test in this
+        # process runs without it (see _drop_constraint).
+        self.addCleanup(_restore_constraint, "uniq_event_team_registration")
         TournamentTeam.objects.create(event=self.event, team=self.team, status="active")
         TournamentTeam.objects.create(event=self.event, team=self.team, status="active")
         ghost_tt_a = TournamentTeam.objects.create(event=self.event, ghost_team=self.ghost_a, status="active")
@@ -169,6 +197,7 @@ class DedupeEventTeamRegistrationsGhostTests(TransactionTestCase):
         would otherwise make this row impossible to create through the ORM) - mirroring exactly how
         this command is meant to be run: to clean up legacy rows that predate the constraint."""
         _drop_constraint("uniq_event_ghost_registration")
+        self.addCleanup(_restore_constraint, "uniq_event_ghost_registration")
         ghost_dupe_1 = TournamentTeam.objects.create(event=self.event, ghost_team=self.ghost_a, status="active")
         ghost_dupe_2 = TournamentTeam.objects.create(event=self.event, ghost_team=self.ghost_a, status="active")
 
