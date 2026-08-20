@@ -292,7 +292,9 @@ def get_event_checkin_status(request):
             done = sum(1 for uid in roster if uid in checked_user_ids)
             teams.append({
                 "tournament_team_id": tt.tournament_team_id,
-                "team_name": tt.team.team_name if tt.team else "?",
+                # display_name: a ghost has no .team, and "?" on a check-in list is a
+                # competitor nobody can identify (owner 2026-08-20).
+                "team_name": tt.display_name,
                 "is_waitlisted": tt.is_waitlisted,
                 "roster_total": len(roster),
                 "roster_checked_in": done,

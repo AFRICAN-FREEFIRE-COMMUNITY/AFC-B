@@ -172,12 +172,16 @@ def _walk_player_stats(event, group_ids, request):
 
         row = players.get(p.user_id)
         if row is None:
-            team = s.team_stats.tournament_team.team if s.team_stats.tournament_team else None
+            # display_name resolves a ghost too; `team` stays for anything that needs the real
+            # Team object (a ghost has none). owner 2026-08-20.
+            _tt = s.team_stats.tournament_team
+            team_name_resolved = _tt.display_name if _tt else None
+            team = _tt.team if _tt else None
             row = players[p.user_id] = {
                 "user_id": p.user_id,
                 "username": p.username,
                 "in_game_name": getattr(p, "in_game_name", "") or p.username,
-                "team_name": team.team_name if team else None,
+                "team_name": team_name_resolved,
                 # Team FLAG source (owner 2026-07-03): the country beside the player's team, so a design
                 # can place a team_flag column on a player board too. Team.country is auto-derived; team
                 # is select_related above so this adds no query.

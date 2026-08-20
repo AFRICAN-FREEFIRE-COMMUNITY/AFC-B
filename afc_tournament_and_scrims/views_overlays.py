@@ -214,9 +214,13 @@ def _booyah_live_config(event, config, request):
            .order_by("-match__match_date", "-match__match_id")
            .first())
     if win:
-        team = win.tournament_team.team if win.tournament_team else None
+        # A ghost competitor has no .team, so read the NAME through display_name (which resolves
+        # either kind) and keep `team` only for the logo, which a ghost genuinely does not have.
+        # This feeds a BROADCAST overlay: an empty team_name goes out on stream (owner 2026-08-20).
+        tt_win = win.tournament_team
+        team = tt_win.team if tt_win else None
         config.update({
-            "team_name": team.team_name if team else "",
+            "team_name": tt_win.display_name if tt_win else "",
             "team_logo": (request.build_absolute_uri(team.team_logo.url)
                           if (team and team.team_logo) else None),
             "match_map": win.match.match_map,
