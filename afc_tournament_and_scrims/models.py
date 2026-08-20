@@ -1159,6 +1159,11 @@ class Match(models.Model):
             ('alpine', 'Alpine'),
             ('nexterra', 'Nexterra'),
             ('solara', 'Solara'),
+            # An AGGREGATE result row (TournamentTeamMatchStats.is_aggregate) summarises a whole
+            # group at once, and a BO6 group is played across several maps, so none of the six real
+            # values above is true for its synthetic match. "multiple" says that honestly rather
+            # than picking one arbitrarily or leaving the column blank (owner 2026-08-20).
+            ('multiple', 'Multiple maps'),
         ]
     )
 
@@ -1265,17 +1270,34 @@ class TournamentTeam(models.Model):
                 fields=["event", "team"],
                 name="uniq_event_team_registration",
             ),
-            # ── Exactly one competitor kind (owner 2026-08-20) ────────────────────────────────
-            # Mirrors the XOR on afc_leaderboard.LeaderboardParticipant. Both null would be a row
-            # that competes as nobody; both set would be a row whose identity depends on which
-            # reader you ask. MySQL 8.0.16+ enforces CHECK constraints, and this deployment already
-            # relies on that for the participant XOR, so this is not a new dependency.
+            # ── One competitor kind, never two (owner 2026-08-20) ─────────────────────────────
+            # Forbids BOTH being set: a row whose identity depends on which reader you ask.
+            #
+            # IT DOES NOT FORBID BOTH BEING NULL, AND THAT IS DELIBERATE, NOT AN OVERSIGHT.
+            # This started as a strict XOR (exactly one set). That broke DELETING A TEAM, for every
+            # team, which is a routine moderation action:
+            #
+            #   MySQL cannot defer constraint checks, so when a cascade delete involves a NULLABLE
+            #   FK, Django NULLS THAT COLUMN FIRST and deletes the row immediately afterwards (the
+            #   field_updates pass in django.db.models.deletion runs before the delete pass).
+            #   Confirmed here with a Collector probe: deleting one Team produced
+            #   `TournamentTeam.team -> None` in collector.field_updates AND TournamentTeam in
+            #   collector.data. So the row is briefly (team=NULL, ghost_team=NULL) on its way out,
+            #   a strict XOR rejects that instant, and the whole delete fails with
+            #   "Check constraint 'tt_team_xor_ghost' is violated".
+            #
+            # This could NOT happen before `team` became nullable: Django cannot null a NOT NULL
+            # column, so it simply deleted the row. Making the column nullable changed Django's
+            # deletion STRATEGY, which only a real delete exercises. Caught by
+            # afc_team.tests_transfer_feed, an app whose suite this work had not been running.
+            #
+            # The both-null state is therefore transient and immediately deleted, never readable by
+            # application code. The genuinely dangerous state is both-set, and that is still refused
+            # at the database level. "At least one set" is enforced in clean() below, which is where
+            # a real application write passes through.
             models.CheckConstraint(
                 name="tt_team_xor_ghost",
-                check=(
-                    models.Q(team__isnull=False, ghost_team__isnull=True)
-                    | models.Q(team__isnull=True, ghost_team__isnull=False)
-                ),
+                check=~models.Q(team__isnull=False, ghost_team__isnull=False),
             ),
             # The ghost twin of uniq_event_team_registration. A PLAIN unique constraint, for the
             # reason spelled out on uniq_assigned_letter_per_event above: MySQL IGNORES the partial
@@ -1303,6 +1325,26 @@ class TournamentTeam(models.Model):
     # Read by: the event page and bracket serializers, the standings builders, the overlay
     # renderers, the CSV/xlsx exports, notifications, the partner API, and afc_player_market.
 
+    def clean(self):
+        """A registration must name SOMEBODY: a real team or a ghost.
+
+        The database CheckConstraint only refuses BOTH being set, because Django transiently writes
+        both-NULL while cascade-deleting a Team on MySQL (see tt_team_xor_ghost above). That transient
+        row is on its way out and no reader ever sees it. A row an application deliberately SAVES
+        with neither side set is a different thing: it competes as nobody, and display_name would
+        raise AttributeError on None the first time anything rendered it.
+
+        Called by ModelForm/admin validation and by anything that calls full_clean(). The ordinary
+        create paths pass one side explicitly, so this is a guard against a future caller, not a
+        check the current code needs.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.team_id is None and self.ghost_team_id is None:
+            raise ValidationError(
+                "A tournament registration needs either a team or a ghost_team."
+            )
+
     @property
     def is_ghost(self) -> bool:
         """True when this registration represents an unclaimed external competitor."""
@@ -1310,8 +1352,17 @@ class TournamentTeam(models.Model):
 
     @property
     def competitor(self):
-        """The underlying afc_team.Team or afc_rankings.GhostTeam. Never None: the
-        tt_team_xor_ghost constraint guarantees exactly one of the two is set."""
+        """The underlying afc_team.Team or afc_rankings.GhostTeam.
+
+        Non-None for any row an application saved: clean() refuses a registration with neither side
+        set. It is NOT a database-level guarantee, and the docstring used to claim it was. The
+        tt_team_xor_ghost constraint only forbids BOTH being set, because Django transiently writes
+        both-NULL while cascade-deleting a Team on MySQL (see the constraint's note above). Such a
+        row is mid-delete and no reader reaches it.
+
+        An unsaved instance with neither side set returns None here, and display_name would then
+        raise on None. That is a programming error, not a state the database produces.
+        """
         return self.ghost_team if self.is_ghost else self.team
 
     @property
@@ -1387,7 +1438,55 @@ class TournamentTeamMatchStats(models.Model):
     team_stats_id = models.AutoField(primary_key=True)
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="team_stats")
     tournament_team = models.ForeignKey(TournamentTeam, on_delete=models.CASCADE, related_name="match_stats")
-    placement = models.PositiveIntegerField()
+
+    # ── WHERE THIS TEAM FINISHED IN THIS ONE MATCH ────────────────────────────────────────────────
+    # NULLABLE since the external results import (owner 2026-08-20). An AGGREGATE row (see
+    # is_aggregate below) summarises several matches at once and has no single match placement, so it
+    # stores NULL here and puts the group finish in final_position instead.
+    #
+    # NULL, NOT 0, AND THAT MATTERS. `Min("placement")` is read as "best single map result" on the
+    # team profile. SQL MIN skips NULL for free, so an aggregate row correctly contributes nothing.
+    # A 0 sentinel would WIN every Min() and report a nonexistent "0th place" as each imported team's
+    # best ever result. Never write 0 here.
+    #
+    # Every ordinary write path (upload_team_match_result, manual entry, the edit endpoints,
+    # afc_ocr.services.commit) still sets a real placement, so nothing that exists today changes.
+    placement = models.PositiveIntegerField(null=True, blank=True)
+
+    # ── AGGREGATE ROWS: one row standing for SEVERAL matches (owner 2026-08-20) ───────────────────
+    # AFC carries tournaments it did not run, and their organizers usually publish a standings
+    # GRAPHIC rather than a match log: "6 matches, 3 Booyahs, 47 placement, 82 elims, 129 total" for
+    # a whole group. There is no honest way to split that into six per-match rows (dividing 47 by 6
+    # invents data that is then indistinguishable from real results forever), so ONE flagged row
+    # carries the summed total instead.
+    #
+    # WHY ON THIS MODEL rather than a separate standings table: `Sum("total_points")` over this model
+    # appears in 12+ places across five apps, and 37 non-test files touch it. Storing the total here
+    # means every one of those keeps returning the right number with ZERO changes. Only readers that
+    # COUNT rows have to change, and they use matches_counted below.
+    #
+    # Written by: the xlsx results importer (Plan 3). Read by: the standings builders, the team
+    # profile aggregates in afc_team/views.py, and afc_partner_api.serialize.
+    is_aggregate = models.BooleanField(default=False)
+
+    # How many real matches this row stands for. 1 on an ordinary row, so every row that already
+    # exists is correct on migrate with no backfill, and any reader that SUMS this gets the same
+    # answer it used to get from COUNTING rows.
+    matches_counted = models.PositiveIntegerField(default=1)
+
+    # Wins inside the summed span. UNRECOVERABLE from an aggregate row any other way: `placement=1`
+    # appears at most once per row regardless of how many times the team actually won, which is
+    # exactly how afc_partner_api.serialize._BOOYAH derives Booyahs today. An aggregate row must
+    # contribute this stored count instead. 0 on an ordinary row, where counting placement=1 rows
+    # remains correct.
+    booyah_count = models.PositiveIntegerField(default=0)
+
+    # The team's finishing position in the group this row summarises. NULL on an ordinary row.
+    # Deliberately NOT stored in `placement`: a group finish and a single-match placement are
+    # different quantities, and sharing a column would make a team that topped its group
+    # indistinguishable from one that won a single map.
+    final_position = models.PositiveIntegerField(null=True, blank=True)
+
     kills = models.PositiveIntegerField(default=0)
     damage = models.PositiveIntegerField(default=0)
     assists = models.PositiveIntegerField(default=0)

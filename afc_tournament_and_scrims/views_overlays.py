@@ -331,9 +331,15 @@ def _h2h_payload(event, config, request):
                 continue
             agg = (TournamentTeamMatchStats.objects
                    .filter(match__group__stage__event=event, tournament_team__team=team)
+                   # matches / booyahs are aggregate-row aware (owner 2026-08-20, external results
+                   # import): a summed row stands for a whole group, so counting rows understates
+                   # matches, and it stores placement=NULL so the placement==1 test never fires.
+                   # matches_counted defaults to 1 and booyah_count to 0, so ordinary rows are
+                   # unchanged. This feeds a BROADCAST overlay, where a wrong number is on screen.
                    .aggregate(kills=Sum("kills"), points=Sum("total_points"),
-                              matches=Count("team_stats_id"),
-                              booyahs=Sum(Case(When(placement=1, then=Value(1)),
+                              matches=Sum("matches_counted"),
+                              booyahs=Sum(Case(When(is_aggregate=True, then="booyah_count"),
+                                               When(placement=1, then=Value(1)),
                                                default=Value(0), output_field=IntegerField()))))
             image = (request.build_absolute_uri(team.team_logo.url)
                      if getattr(team, "team_logo", None) else None)
