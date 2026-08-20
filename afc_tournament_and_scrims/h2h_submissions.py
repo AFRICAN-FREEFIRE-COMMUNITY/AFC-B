@@ -73,7 +73,11 @@ def _submission_payload(sub, *, include_players=True):
         "submission_id": sub.submission_id,
         "h2h_match_id": sub.h2h_match_id,
         "tournament_team_id": sub.tournament_team_id,
-        "team_name": sub.tournament_team.team.team_name,
+        # display_name (not .team.team_name): a submission's tournament_team can be a ghost
+        # competitor (owner 2026-08-20) - in practice _my_team_in_match only resolves a real
+        # AFC member's team, but the review queue below reads whatever is on the row, so this
+        # must not assume a real team.
+        "team_name": sub.tournament_team.display_name,
         "submitted_by": sub.submitted_by.username if sub.submitted_by_id else "",
         "submitted_at": sub.submitted_at,
         "score_a": (sub.submitted_payload or {}).get("score_a"),
@@ -232,7 +236,7 @@ def list_h2h_submissions(request, match_id):
     subs = list(
         H2HResultSubmission.objects
         .filter(h2h_match=match)
-        .select_related("tournament_team__team", "submitted_by")
+        .select_related("tournament_team__team", "tournament_team__ghost_team", "submitted_by")
         .order_by("-submitted_at"))
 
     pending = [s for s in subs if s.status == "pending"]
@@ -279,7 +283,7 @@ def approve_h2h_submission(request, submission_id):
     sub = get_object_or_404(
         H2HResultSubmission.objects.select_related(
             "h2h_match__stage__event", "h2h_match__team_a__team", "h2h_match__team_b__team",
-            "tournament_team__team"),
+            "tournament_team__team", "tournament_team__ghost_team"),
         submission_id=submission_id)
     match = sub.h2h_match
     if not _can_review(user, match.stage.event):
@@ -344,7 +348,8 @@ def reject_h2h_submission(request, submission_id):
 
     sub = get_object_or_404(
         H2HResultSubmission.objects.select_related(
-            "h2h_match__stage__event", "tournament_team__team", "submitted_by"),
+            "h2h_match__stage__event", "tournament_team__team", "tournament_team__ghost_team",
+            "submitted_by"),
         submission_id=submission_id)
     if not _can_review(user, sub.h2h_match.stage.event):
         return Response({"message": "You do not have permission to review results for this "

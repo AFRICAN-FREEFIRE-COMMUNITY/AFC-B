@@ -346,7 +346,13 @@ def relegate_unchecked_competitors(event):
         if not roster or not all(uid in checked for uid in roster):
             tt.is_waitlisted = True
             tt.save(update_fields=["is_waitlisted"])
-            RegisteredCompetitors.objects.filter(event=event, team=tt.team, is_waitlisted=False).update(is_waitlisted=True)
+            # GUARD (owner 2026-08-20, ghost competitors): RegisteredCompetitors.team has no ghost
+            # counterpart, so a ghost TournamentTeam has NO matching RC row - team=tt.team would
+            # become team=None, which matches every SOLO registration in the event instead
+            # (RegisteredCompetitors.team is null=True and that is how solo entries are stored).
+            # Skip the RC sync for a ghost; only real teams have an RC row to keep in sync.
+            if tt.team_id:
+                RegisteredCompetitors.objects.filter(event=event, team=tt.team, is_waitlisted=False).update(is_waitlisted=True)
             moved += 1
     # Solos: relegate a user with no check-in.
     for r in RegisteredCompetitors.objects.filter(event=event, user__isnull=False, is_waitlisted=False):
@@ -455,8 +461,11 @@ def promote_checked_in_waitlist(event, freed):
             continue
         tt.is_waitlisted = False
         tt.save(update_fields=["is_waitlisted"])
-        RegisteredCompetitors.objects.filter(
-            event=event, team=tt.team, is_waitlisted=True).update(is_waitlisted=False)
+        # Same guard as relegate_unchecked_competitors above: a ghost has no RegisteredCompetitors
+        # row, and team=None would otherwise catch every solo registration in the event.
+        if tt.team_id:
+            RegisteredCompetitors.objects.filter(
+                event=event, team=tt.team, is_waitlisted=True).update(is_waitlisted=False)
         promoted += 1
     return promoted
 

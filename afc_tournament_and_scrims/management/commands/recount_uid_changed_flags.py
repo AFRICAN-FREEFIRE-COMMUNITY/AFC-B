@@ -53,11 +53,13 @@ class Command(BaseCommand):
             flags.values_list("tournament_team__event_id", flat=True)))
         self.stdout.write(
             f"{flags.count()} stale name_matched_uid_changed flag(s) across {len(event_ids)} event(s).")
-        for f in flags.select_related("tournament_team__team", "match"):
+        for f in flags.select_related("tournament_team__team", "tournament_team__ghost_team", "match"):
             nm = f.name.encode("ascii", "replace").decode()
+            # display_name (not .team.team_name): the flagged row can belong to a ghost
+            # competitor (owner 2026-08-20, external results import), which has no .team row.
             self.stdout.write(
                 f"  event {f.tournament_team.event_id} match {f.match_id} "
-                f"{f.tournament_team.team.team_name.strip()[:18]:18} {nm[:16]:16} +{f.kills} kills")
+                f"{f.tournament_team.display_name.strip()[:18]:18} {nm[:16]:16} +{f.kills} kills")
 
         if not apply:
             self.stdout.write(self.style.WARNING("DRY-RUN. Re-run with --apply to persist + recompute."))
