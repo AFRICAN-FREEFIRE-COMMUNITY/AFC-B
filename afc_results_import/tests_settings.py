@@ -201,3 +201,96 @@ class RankingsSwitchIsAdminOnlyTests(TestCase):
         self.assertEqual(r.status_code, 403)
         self.event.refresh_from_db()
         self.assertFalse(self.event.imported_results_visible_on_profiles)
+
+
+class SummedImportCannotCountTowardsRankingsTests(TestCase):
+    """A summed import has no per-map finishes, and the rankings engine awards placement points
+    from exactly that. Counting it would credit the kills and none of the placement points.
+
+    Measured on the real FFWS import before this guard existed: LAXUS E-SPORTS would have
+    contributed 55 kills and 0 placement points against its published 54.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create(
+            username="sum_admin", email="sm@example.com", role="admin")
+        self.token = SessionToken.objects.create(
+            user=self.admin, token=secrets.token_hex(32)).token
+        self.event = _event("summed-import")
+
+    def _auth(self):
+        return {"HTTP_AUTHORIZATION": f"Bearer {self.token}"}
+
+    def _stat(self, *, is_aggregate):
+        """One result row on this event, summed or per-match."""
+        import datetime as _dt
+        from afc_rankings.models import GhostTeam
+        from afc_tournament_and_scrims.models import (
+            Stages, StageGroups, Match, TournamentTeam, TournamentTeamMatchStats)
+
+        stage = Stages.objects.create(
+            event=self.event, stage_name="S", start_date=TODAY, end_date=TODAY,
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=1)
+        group = StageGroups.objects.create(
+            stage=stage, group_name="A", playing_date=TODAY,
+            playing_time=_dt.time(12, 0), teams_qualifying=1, match_count=1, match_maps=[])
+        match = Match.objects.create(group=group, match_number=1, match_map="m",
+                                     upload_method="xlsx_import", result_inputted=True)
+        ghost = GhostTeam.objects.create(
+            team_name="SUMMED FC", country="NG", created_by=self.admin)
+        tt = TournamentTeam.objects.create(event=self.event, ghost_team=ghost)
+        TournamentTeamMatchStats.objects.create(
+            match=match, tournament_team=tt, kills=10,
+            placement=None if is_aggregate else 1,
+            is_aggregate=is_aggregate, matches_counted=6 if is_aggregate else 1)
+
+    def test_a_summed_import_is_refused_with_the_reason(self):
+        self._stat(is_aggregate=True)
+
+        r = self.client.post(
+            "/results-import/settings/",
+            {"slug": "summed-import", "counts_toward_rankings": True},
+            content_type="application/json", **self._auth())
+
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn("placement", r.json()["message"].lower())
+        self.assertFalse(
+            EventCountingControl.objects.filter(
+                event=self.event, counts_toward_rankings=True).exists())
+
+    def test_a_PER_MATCH_import_may_count(self):
+        """Those rows carry a real placement per map, so they score like any AFC match."""
+        self._stat(is_aggregate=False)
+
+        r = self.client.post(
+            "/results-import/settings/",
+            {"slug": "summed-import", "counts_toward_rankings": True},
+            content_type="application/json", **self._auth())
+
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(
+            EventCountingControl.objects.get(event=self.event).counts_toward_rankings)
+
+    def test_switching_a_summed_import_OFF_is_always_allowed(self):
+        """The guard is about turning counting ON. Turning it off must never be blocked."""
+        self._stat(is_aggregate=True)
+
+        r = self.client.post(
+            "/results-import/settings/",
+            {"slug": "summed-import", "counts_toward_rankings": False},
+            content_type="application/json", **self._auth())
+
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+    def test_the_profile_switches_still_work_for_a_summed_import(self):
+        """Showing an imported event on a profile is unrelated to scoring it."""
+        self._stat(is_aggregate=True)
+
+        r = self.client.post(
+            "/results-import/settings/",
+            {"slug": "summed-import", "visible_on_profiles": True},
+            content_type="application/json", **self._auth())
+
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.event.refresh_from_db()
+        self.assertTrue(self.event.imported_results_visible_on_profiles)
