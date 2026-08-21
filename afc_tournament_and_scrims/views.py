@@ -5567,6 +5567,13 @@ def get_event_details(request):
                             # standings table. New keys, so existing consumers are untouched.
                             competitor_name=_COMPETITOR_NAME,
                             competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                         )
                         .order_by("-total_points", "-kills", "competitor_name")
                     )
@@ -5666,6 +5673,13 @@ def get_event_details(request):
                             # standings table. New keys, so existing consumers are untouched.
                             competitor_name=_COMPETITOR_NAME,
                             competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                     )
                     .annotate(
                         matches_played=Count("match_id", distinct=True),
@@ -6416,6 +6430,13 @@ def get_event_details_not_logged_in(request):
                             # standings table. New keys, so existing consumers are untouched.
                             competitor_name=_COMPETITOR_NAME,
                             competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                              )
                              .order_by("-total_points", "-kills", "competitor_name"))
 
@@ -6500,6 +6521,13 @@ def get_event_details_not_logged_in(request):
                             # standings table. New keys, so existing consumers are untouched.
                             competitor_name=_COMPETITOR_NAME,
                             competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                            )
                            .annotate(
                                matches_played=Count("match_id", distinct=True),
@@ -14567,6 +14595,13 @@ def get_all_leaderboard_details_for_event(request):
                             # standings table. New keys, so existing consumers are untouched.
                             competitor_name=_COMPETITOR_NAME,
                             competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                             # effective_total = the stored per-match total_points (placement + kill +
                             # ASSIST + DAMAGE + bonus - penalty), NOT a re-derived placement+kill+
                             # bonus-penalty (which dropped assist/damage and disagreed with the public
@@ -14721,6 +14756,13 @@ def get_all_leaderboard_details_for_event(request):
                             # standings table. New keys, so existing consumers are untouched.
                             competitor_name=_COMPETITOR_NAME,
                             competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                     )
                     .annotate(
                         matches_played=Count("match_id"),
