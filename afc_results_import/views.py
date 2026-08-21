@@ -257,7 +257,25 @@ def pair_result_team(request):
 
 @api_view(["GET"])
 def results_import_template(request):
-    """GET results-import/template/?slug=... - a workbook pre-filled with this event's structure.
+    """GET results-import/template/?slug=...&kind=summed|per_match - a pre-filled workbook.
+
+    TWO SHAPES, because external organizers publish two kinds of data and which one you have
+    decides what the results can be used for (owner 2026-08-21):
+
+      summed     TEAM MATCHES BOOYAH SCORE ELIMS TOTAL POSITION
+                 One row per team per group: the published standings table. This is what most
+                 organizers put out. It CANNOT count towards the rankings, because the ranking
+                 rules award placement points from a team's finish in each map and a summed row
+                 does not record those.
+
+      per_match  TEAM MATCH MAP PLACE ELIMS
+                 One row per team per map. This DOES count towards the rankings, because every
+                 finish is present and scores through the admin's own scoring config exactly like
+                 a match played on AFC.
+
+    Header spellings are chosen to be unambiguous. "PLACEMENT" would be read as BOTH the summed
+    SCORE column and a per-match finish (see parsing._ALIASES), so the per-match sheet says PLACE.
+    
 
     One sheet per group, already carrying that group's registered competitors in column A and the
     result columns blank. This is the recommended path precisely because it removes two whole
@@ -275,6 +293,13 @@ def results_import_template(request):
     user, err = _gate(request, event)
     if err:
         return err
+
+    kind = (request.query_params.get("kind") or "summed").strip().lower()
+    if kind not in _TEMPLATE_HEADERS:
+        return Response(
+            {"message": f"kind must be one of {sorted(_TEMPLATE_HEADERS)}."},
+            status=status.HTTP_400_BAD_REQUEST)
+    header = _TEMPLATE_HEADERS[kind]
 
     try:
         import openpyxl
@@ -295,11 +320,14 @@ def results_import_template(request):
         for ch in ':\\/?*[]':
             title = title.replace(ch, " ")
         ws = wb.create_sheet(title=title[:31])
-        ws.append(["TEAM", "MATCHES", "BOOYAH", "SCORE", "ELIMS", "TOTAL", "POSITION"])
+        ws.append(list(header))
         for comp in (g.competitors.select_related("tournament_team__team",
                                                   "tournament_team__ghost_team")
                      .filter(tournament_team__isnull=False)):
-            ws.append([comp.tournament_team.display_name, None, None, None, None, None, None])
+            # Name in column A, the rest blank for the admin to type. A per-match sheet gets ONE
+            # pre-filled row per team; the admin copies it down for each map, because the number of
+            # maps a group actually played is in the source document, not in AFC.
+            ws.append([comp.tournament_team.display_name] + [None] * (len(header) - 1))
 
     if not groups:
         # Better than an empty file: tell the admin what to do about it, in the file itself.
@@ -313,7 +341,8 @@ def results_import_template(request):
     resp = HttpResponse(
         buf.getvalue(),
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    resp["Content-Disposition"] = f'attachment; filename="{event.slug or event.pk}-results.xlsx"'
+    resp["Content-Disposition"] = (
+        f'attachment; filename="{event.slug or event.pk}-{kind}-results.xlsx"')
     return resp
 
 
@@ -329,6 +358,16 @@ def results_import_template(request):
 #
 # CONSUMED BY: the Results Import tab (frontend app/(a)/a/events/[slug]/edit ResultsImportTab).
 _TIERS = {"tier_1", "tier_2", "tier_3"}
+
+# The two workbook shapes the template endpoint can emit. Kept beside the endpoint because these
+# strings must stay in step with parsing._ALIASES: the whole value of a generated template is that
+# the site wrote the headers, so they cannot be ones the parser fails to recognise.
+_TEMPLATE_HEADERS = {
+    "summed": ("TEAM", "MATCHES", "BOOYAH", "SCORE", "ELIMS", "TOTAL", "POSITION"),
+    # PLACE, not PLACEMENT: "placement" is an alias of the SUMMED score column as well as of a
+    # per-match finish, so it would be read as both.
+    "per_match": ("TEAM", "MATCH", "MAP", "PLACE", "ELIMS"),
+}
 
 
 def _settings_payload(event):
