@@ -274,7 +274,41 @@ class SummedImportCountsTowardsRankingsTests(TestCase):
 
         self.assertTrue(r.json().get("placement_points_from_source"))
 
+    def test_that_disclosure_SURVIVES_A_RELOAD(self):
+        """It was returned only from the POST at first, so it appeared once when the switch was
+        flipped and vanished the next time the tab was opened - precisely when somebody would be
+        trying to work out where a number came from."""
+        self._stat(is_aggregate=True)
+        self.client.post(
+            "/results-import/settings/",
+            {"slug": "summed-import", "counts_toward_rankings": True},
+            content_type="application/json", **self._auth())
+
+        body = self.client.get(
+            "/results-import/settings/?slug=summed-import", **self._auth()).json()
+
+        self.assertTrue(body.get("placement_points_from_source"))
+
+    def test_it_is_NOT_claimed_while_the_event_does_not_count(self):
+        """Nothing is being contributed, so there is no provenance to disclose."""
+        self._stat(is_aggregate=True)
+
+        body = self.client.get(
+            "/results-import/settings/?slug=summed-import", **self._auth()).json()
+
+        self.assertTrue(body["counts_toward_rankings"])  # no control row yet => counts
+        self.client.post(
+            "/results-import/settings/",
+            {"slug": "summed-import", "counts_toward_rankings": False},
+            content_type="application/json", **self._auth())
+        off = self.client.get(
+            "/results-import/settings/?slug=summed-import", **self._auth()).json()
+
+        self.assertFalse(off["placement_points_from_source"])
+
     def test_a_PER_MATCH_event_is_not_flagged_that_way(self):
+        """Always present, so a caller can read it without knowing whether it applies; False here
+        because a per-match row's placement points ARE derived from its finish by AFC's table."""
         self._stat(is_aggregate=False)
 
         r = self.client.post(
@@ -282,7 +316,7 @@ class SummedImportCountsTowardsRankingsTests(TestCase):
             {"slug": "summed-import", "counts_toward_rankings": True},
             content_type="application/json", **self._auth())
 
-        self.assertNotIn("placement_points_from_source", r.json())
+        self.assertFalse(r.json()["placement_points_from_source"])
 
     def test_a_PER_MATCH_import_may_count(self):
         """Those rows carry a real placement per map, so they score like any AFC match."""
