@@ -383,8 +383,19 @@ _TEMPLATE_HEADERS = {
 def _settings_payload(event):
     """The current state of all four switches, plus what the rankings one resolves to today."""
     from afc_rankings.models import EventCountingControl
+    from afc_tournament_and_scrims.models import TournamentTeamMatchStats
     control = EventCountingControl.objects.filter(event=event).first()
+    counting = control.counts_toward_rankings if control else True
+    # Whether this event's placement points come from the organiser's published totals rather than
+    # being derived from each map's finish, which is the case for a summed import
+    # (afc_rankings.aggregation._collect_team). Computed HERE, in the shared payload, so the screen
+    # still says it after a reload: returning it only from the POST made the disclosure appear once
+    # when the switch was flipped and vanish the next time the tab was opened, which is precisely
+    # when somebody would be trying to work out where a number came from.
+    from_source = counting and TournamentTeamMatchStats.objects.filter(
+        match__group__stage__event=event, is_aggregate=True).exists()
     return {
+        "placement_points_from_source": from_source,
         "slug": event.slug,
         "results_imported_at": event.results_imported_at,
         "visible_on_profiles": event.imported_results_visible_on_profiles,
@@ -421,7 +432,6 @@ def results_import_settings(request):
         return Response(_settings_payload(event))
 
     from afc_tournament_and_scrims.views import _is_event_admin
-    from afc_tournament_and_scrims.models import TournamentTeamMatchStats
 
     def _flag(name):
         """Tri-state: None when the caller did not mention the field, else a real bool."""
@@ -442,19 +452,6 @@ def results_import_settings(request):
     if tier and tier not in _TIERS:
         return Response({"message": f"tournament_tier must be one of {sorted(_TIERS)}."},
                         status=status.HTTP_400_BAD_REQUEST)
-
-    # A SUMMED import CAN count (owner 2026-08-21). It was refused for a while, because the
-    # rankings engine derives placement points from a per-map finish and a summed row has none, so
-    # counting it credited the kills and ZERO placement points. The owner's decision is that these
-    # events count like any other, so aggregation now uses the PUBLISHED placement total for an
-    # aggregate row instead of deriving one (afc_rankings.aggregation._collect_team).
-    #
-    # The response SAYS so rather than letting the screen imply the number was computed here: those
-    # placement points came from the source tournament's ladder. Everything else - kills, the
-    # winner and finals bonuses, participation, and the TIER multiplier - is still AFC's own
-    # configuration.
-    summed_import = bool(rankings) and TournamentTeamMatchStats.objects.filter(
-        match__group__stage__event=event, is_aggregate=True).exists()
 
     changed = []
     if visible is not None:
@@ -481,7 +478,4 @@ def results_import_settings(request):
             control.updated_by = user
             control.save(update_fields=["counts_toward_rankings", "updated_by"])
 
-    payload = _settings_payload(event)
-    if summed_import:
-        payload["placement_points_from_source"] = True
-    return Response(payload)
+    return Response(_settings_payload(event))
