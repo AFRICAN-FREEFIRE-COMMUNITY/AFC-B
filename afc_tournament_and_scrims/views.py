@@ -14620,10 +14620,18 @@ def get_all_leaderboard_details_for_event(request):
                         player_stats = (
                             TournamentPlayerMatchStats.objects
                             .filter(team_stats=team_stat)
-                            .select_related("player")
-                            .annotate(username=F("player__username"))
+                            .select_related("player", "ghost_player")
+                            # GHOST-AWARE (owner 2026-08-21). A per-player IMPORT records an
+                            # external tournament's players as GhostPlayers, because they have no
+                            # AFC account. player__username is NULL for such a row, so the plain
+                            # F() sent every imported player to the frontend nameless. Coalesce
+                            # over the ghost's in-game name, mirroring afc_rankings.recalc, which
+                            # already does exactly this for the score tables. ghost_player_id rides
+                            # along so a reader can tell an unclaimed name from a real account.
+                            .annotate(username=Coalesce("player__username", "ghost_player__ign"))
                             .values(
                                 "player_id",
+                                "ghost_player_id",
                                 "username",
                                 "kills",
                                 "damage",
