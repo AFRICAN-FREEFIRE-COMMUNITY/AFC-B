@@ -47,6 +47,9 @@ _ALIASES = {
     "stage":    {"stage", "phase"},
     "group":    {"group", "grp", "lobby"},
     "advanced": {"advanced", "qualified", "qualifies", "through"},
+    # A PLAYER column turns a per-match sheet into a per-PLAYER one: every row is then one player
+    # in one map, and the team's line for that map is rebuilt from its players' rows.
+    "player":   {"player", "playername", "ign", "nickname", "nick", "gamertag"},
 }
 
 
@@ -149,7 +152,8 @@ def _find_header(rows):
 def parse_sheet(sheet_name, rows):
     """Parse one sheet into {"kind", "group", "stage", "rows", "problems"}.
 
-    kind is "summed" or "per_match". `group` falls back to the sheet name, which is why a
+    kind is "summed", "per_match" or "per_match_players". `group` falls back to the sheet name,
+    which is why a
     sheet-per-group workbook needs no STAGE/GROUP columns at all.
     """
     problems = []
@@ -163,7 +167,16 @@ def parse_sheet(sheet_name, rows):
             ],
         }
 
-    kind = "per_match" if "match" in cols else "summed"
+    # THREE shapes, decided by which columns are present:
+    #   PLAYER + MATCH -> per_match_players : one row per player per map
+    #   MATCH          -> per_match         : one row per team per map
+    #   neither        -> summed            : one row per team, the published standings table
+    if "match" in cols and "player" in cols:
+        kind = "per_match_players"
+    elif "match" in cols:
+        kind = "per_match"
+    else:
+        kind = "summed"
     out = []
 
     for n, row in enumerate(rows[header_idx + 1:], start=header_idx + 2):
@@ -181,6 +194,30 @@ def parse_sheet(sheet_name, rows):
 
         stage = str(cell("stage") or "").strip() or None
         group = str(cell("group") or "").strip() or sheet_name
+
+        if kind == "per_match_players":
+            match_no = _int(cell("match"))
+            if match_no is None:
+                problems.append(
+                    f"Sheet {sheet_name!r} row {n}: MATCH is not a number, row skipped.")
+                continue
+            player = str(cell("player") or "").strip()
+            if not player:
+                problems.append(
+                    f"Sheet {sheet_name!r} row {n} ({team}): no player name, row skipped. A "
+                    f"per-player sheet needs an in-game name on every row.")
+                continue
+            out.append({
+                "team": team, "player": player, "stage": stage, "group": group,
+                "match": match_no,
+                "map": (str(cell("map") or "").strip().lower() or None),
+                # The TEAM's finish for this map, repeated on each of its player rows. The team
+                # line is rebuilt from these, so a row missing it is not fatal on its own.
+                "placement": _int(cell("placement_in_match")),
+                "kills": _int(cell("elims"), 0),
+                "row_number": n,
+            })
+            continue
 
         if kind == "per_match":
             match_no = _int(cell("match"))

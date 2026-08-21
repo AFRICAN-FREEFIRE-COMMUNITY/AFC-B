@@ -27,11 +27,11 @@ TournamentTeamMatchStats/StageCompetitor/StageGroupCompetitor), afc_team.Team, a
 from django.db import transaction
 from django.utils import timezone
 
-from afc_rankings.models import GhostTeam
+from afc_rankings.models import GhostPlayer, GhostTeam
 from afc_team.models import Team
 from afc_tournament_and_scrims.models import (
     Match, StageCompetitor, StageGroupCompetitor, Stages, StageGroups,
-    TournamentTeam, TournamentTeamMatchStats,
+    TournamentTeam, TournamentPlayerMatchStats, TournamentTeamMatchStats,
 )
 
 from .models import ExternalResultTeamAlias
@@ -58,6 +58,65 @@ def norm_team_name(name):
         # that private helper is ever renamed. Casefold + strip non-alphanumerics.
         import re
         return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
+def _norm_player_name(name):
+    """Compare in-game names the way team names are compared: case and spacing do not identify a
+    person, so "Ali Ff", "ALI FF" and "aliff" are the same player in one event."""
+    return "".join(str(name or "").split()).casefold()
+
+
+def _match_player_to_user(tournament_team, name):
+    """The REAL AFC user this in-game name means, or None.
+
+    Only ever looks inside the team's OWN registered roster for this event. A global username
+    search would be worse than useless here: an external tournament's "Sniper" is not AFC's
+    "Sniper", and silently attributing a stranger's kills to a real account would corrupt that
+    person's profile and their ranking. Scoped matching means a real team importing its own
+    match-by-match results gets its real players credited, and nothing else does.
+    """
+    if tournament_team.team_id is None:
+        return None
+    want = _norm_player_name(name)
+    if not want:
+        return None
+    # TournamentTeamMember is the FROZEN per-event roster, which is the right population: who was
+    # actually fielded for THIS event, not who is on the team today.
+    from afc_tournament_and_scrims.models import TournamentTeamMember
+    for member in (TournamentTeamMember.objects
+                   .filter(tournament_team=tournament_team)
+                   .select_related("user")):
+        user = getattr(member, "user", None)
+        if user is None:
+            continue
+        for candidate in (user.username, getattr(user, "uid", None)):
+            if candidate and _norm_player_name(candidate) == want:
+                return user
+    return None
+
+
+def _ghost_player_for(tournament_team, name, *, actor=None):
+    """The GhostPlayer for an in-game name on a GHOST team, created on first sight.
+
+    `actor` is accepted and unused: GhostPlayer records no creator (unlike GhostTeam), and the
+    import that produced the row is already recorded on Event.results_imported_by.
+
+    Returns None for a REAL team, deliberately. A ghost player hangs off a ghost team, and inventing
+    one under a real AFC team would put a name on that team's public page which its owner never
+    added. The caller reports those rows instead of guessing.
+    """
+    if tournament_team.ghost_team_id is None:
+        return None
+    want = _norm_player_name(name)
+    for existing in GhostPlayer.objects.filter(ghost_team_id=tournament_team.ghost_team_id):
+        if _norm_player_name(existing.ign) == want:
+            return existing
+    # slot is the roster's display order and GhostPlayer.Meta orders by it, so append rather than
+    # leaving every imported player on the default slot 1, which would order a roster arbitrarily.
+    next_slot = GhostPlayer.objects.filter(
+        ghost_team_id=tournament_team.ghost_team_id).count() + 1
+    return GhostPlayer.objects.create(
+        ghost_team_id=tournament_team.ghost_team_id, ign=str(name).strip(), slot=next_slot)
 
 
 def resolve_competitor(event, source_name, *, actor=None, create_missing=True):
@@ -262,6 +321,56 @@ def commit_import(imp, data, *, actor=None):
                         "total_points": row["total"],
                     },
                 )
+            elif sheet["kind"] == "per_match_players":
+                # ONE ROW PER PLAYER PER MAP. The team's line for that map is REBUILT from its
+                # players' rows rather than read from the file: placement is the team's finish
+                # (repeated on each of its player rows, so the first non-null one is it) and the
+                # team's kills are the sum of its players'. That keeps the team total and the
+                # player breakdown arithmetically consistent by construction, which a file typed by
+                # hand does not guarantee.
+                key = row["match"]
+                match = per_match_cache.get(key)
+                if match is None:
+                    match = Match.objects.create(
+                        group=group, match_number=key,
+                        match_map=(row["map"] or "multiple"),
+                        upload_method=UPLOAD_METHOD, result_inputted=True,
+                        played_on=group.playing_date,
+                    )
+                    per_match_cache[key] = match
+
+                team_stat, _ = TournamentTeamMatchStats.objects.get_or_create(
+                    match=match, tournament_team=tt,
+                    defaults={"placement": row["placement"], "kills": 0,
+                              "is_aggregate": False, "matches_counted": 1},
+                )
+                if team_stat.placement is None and row["placement"] is not None:
+                    team_stat.placement = row["placement"]
+
+                # The player's identity. A ghost PLAYER hangs off the ghost TEAM when there is one,
+                # which is what lets afc_rankings.claims.reattribute_ghost_player move this history
+                # onto a real user later. get_or_create keyed on (ghost_team, ign) so re-importing
+                # a corrected file reuses the same person instead of creating a second one.
+                ghost_player = None
+                real_user = _match_player_to_user(tt, row["player"])
+                if real_user is None:
+                    ghost_player = _ghost_player_for(tt, row["player"], actor=actor)
+                    if ghost_player is None:
+                        # A real AFC team whose player is not on its roster. Recording an invented
+                        # ghost under a real team would put a name on that team's page that its
+                        # owner never added, so the row is reported and skipped instead.
+                        summary.setdefault("unmatched_players", []).append(
+                            f"{row['player']} ({tt.display_name})")
+                        continue
+
+                TournamentPlayerMatchStats.objects.update_or_create(
+                    team_stats=team_stat,
+                    player=real_user, ghost_player=ghost_player,
+                    defaults={"kills": row["kills"] or 0},
+                )
+                team_stat.kills = sum(
+                    ps.kills for ps in team_stat.player_stats.all())
+                team_stat.save(update_fields=["placement", "kills"])
             else:
                 key = row["match"]
                 match = per_match_cache.get(key)
