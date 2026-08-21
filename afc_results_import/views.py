@@ -421,6 +421,7 @@ def results_import_settings(request):
         return Response(_settings_payload(event))
 
     from afc_tournament_and_scrims.views import _is_event_admin
+    from afc_tournament_and_scrims.models import TournamentTeamMatchStats
 
     def _flag(name):
         """Tri-state: None when the caller did not mention the field, else a real bool."""
@@ -442,38 +443,18 @@ def results_import_settings(request):
         return Response({"message": f"tournament_tier must be one of {sorted(_TIERS)}."},
                         status=status.HTTP_400_BAD_REQUEST)
 
-    # ── Refuse to switch rankings ON for a SUMMED import (owner 2026-08-21) ─────────────────
-    # The rankings engine derives placement points from a per-match FINISH:
-    # aggregation._collect_team does sum(engine.placement_points(s.placement, tables)), and
-    # placement_points is a lookup keyed by that finish. A summed import has no per-map finishes to
-    # look up: commit_import stores placement=None and keeps only the published placement TOTAL.
+    # A SUMMED import CAN count (owner 2026-08-21). It was refused for a while, because the
+    # rankings engine derives placement points from a per-map finish and a summed row has none, so
+    # counting it credited the kills and ZERO placement points. The owner's decision is that these
+    # events count like any other, so aggregation now uses the PUBLISHED placement total for an
+    # aggregate row instead of deriving one (afc_rankings.aggregation._collect_team).
     #
-    # So switching such an event on does not simply work. It contributes the team's KILLS and ZERO
-    # placement points, which is not "this event counts" - it is a silently half-counted event
-    # changing a public ladder. Measured on the FFWS import: LAXUS E-SPORTS would have contributed
-    # 55 kills and 0 placement points against its published 54.
-    #
-    # Carrying the stored placement_points instead is NOT the fix and must not be done casually:
-    # that column holds the SOURCE tournament's scoring (its own points-per-placement ladder), so
-    # importing it injects a foreign scoring system into AFC's rankings, which is the opposite of
-    # what the admin scoring config exists to guarantee. engine.placement_points says as much:
-    # "callers must NOT trust any legacy placement_points column".
-    #
-    # Per-match imported sheets are unaffected: those DO store a real placement per map and score
-    # exactly like any AFC match.
-    if rankings:
-        from afc_tournament_and_scrims.models import TournamentTeamMatchStats
-        summed = TournamentTeamMatchStats.objects.filter(
-            match__group__stage__event=event, is_aggregate=True).exists()
-        if summed:
-            return Response(
-                {"message":
-                    "These results are summed standings, not match-by-match, so they cannot count "
-                    "towards the rankings. The ranking rules award placement points from a team's "
-                    "finish in each map, and a summed import records only the published totals, so "
-                    "counting it would credit the kills and none of the placement points. Import "
-                    "match-by-match results for this event if it needs to count."},
-                status=status.HTTP_400_BAD_REQUEST)
+    # The response SAYS so rather than letting the screen imply the number was computed here: those
+    # placement points came from the source tournament's ladder. Everything else - kills, the
+    # winner and finals bonuses, participation, and the TIER multiplier - is still AFC's own
+    # configuration.
+    summed_import = bool(rankings) and TournamentTeamMatchStats.objects.filter(
+        match__group__stage__event=event, is_aggregate=True).exists()
 
     changed = []
     if visible is not None:
@@ -500,4 +481,7 @@ def results_import_settings(request):
             control.updated_by = user
             control.save(update_fields=["counts_toward_rankings", "updated_by"])
 
-    return Response(_settings_payload(event))
+    payload = _settings_payload(event)
+    if summed_import:
+        payload["placement_points_from_source"] = True
+    return Response(payload)
