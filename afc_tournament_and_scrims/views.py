@@ -5688,7 +5688,7 @@ def get_event_details(request):
                         last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                     )
                     .order_by("-effective_total", "-total_booyah", "-total_kills",
-                              "last_match_placement", "tournament_team__team__team_name")
+                              "last_match_placement", _COMPETITOR_NAME)
                 )
 
             # ── Include SEEDED competitors with no results yet (owner 2026-06-21 bug fix) ──
@@ -6519,7 +6519,7 @@ def get_event_details_not_logged_in(request):
                                last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                            )
                            .order_by("-effective_total", "-total_booyah", "-total_kills",
-                                     "last_match_placement", "tournament_team__team__team_name"))
+                                     "last_match_placement", _COMPETITOR_NAME))
 
             # ── Point-Rush carry-over overlay (anon public view) ──────────────────────────────────
             # Same on-read overlay as get_event_details: materialise the standings so we can fold the
@@ -10815,7 +10815,9 @@ def get_event_details_for_admin(request):
             else:
                 competitors_in_group = list(
                     StageGroupCompetitor.objects.filter(stage_group=group, tournament_team__isnull=False)
-                    .values_list("tournament_team__team__team_name", flat=True)
+                    # Ghost-aware: the plain path is NULL for a ghost, which put a None into a
+                    # list of competitor NAMES. owner 2026-08-21.
+                    .annotate(_cname=_COMPETITOR_NAME).values_list("_cname", flat=True)
                 )
 
             group_details.append({
@@ -14426,7 +14428,11 @@ def _apply_public_carry_over(stage, rows, participant_type):
             -int(r.get("total_booyah") or 0),
             -int(r.get("total_kills") or 0),
             int(r.get("last_match_placement") or 999),
-            r.get(name_key) or "",
+            # competitor_name FIRST (owner 2026-08-21): it is COALESCEd over the ghost in the
+            # standings queries, whereas name_key traverses the REAL team and is None for a ghost.
+            # Without this every imported competitor sorted under an empty string and they clumped
+            # together at one end of the table instead of falling among the real teams by name.
+            r.get("competitor_name") or r.get(name_key) or "",
         ))
     return rows
 
@@ -14547,7 +14553,10 @@ def get_all_leaderboard_details_for_event(request):
                         .filter(match=match)
                         .select_related("tournament_team__team")
                         .annotate(
-                            team_name=F("tournament_team__team__team_name"),
+                            # Ghost-aware (owner 2026-08-21): the plain path traverses the REAL team and is NULL for a
+                            # ghost, so an imported competitor reached the admin standings and the results
+                            # editor with no name at all. _COMPETITOR_NAME coalesces over the ghost.
+                            team_name=_COMPETITOR_NAME,
                             # team_country (owner 2026-07-03): flag beside the team name in the admin/
                             # organizer results editor. Aliased alongside team_name; read off the
                             # annotated object below. Team.country is non-null blank ("" == unknown).
@@ -14698,7 +14707,10 @@ def get_all_leaderboard_details_for_event(request):
                     .filter(match__group=group)
                     .values(
                         "tournament_team_id",
-                        team_name=F("tournament_team__team__team_name"),
+                        # Ghost-aware (owner 2026-08-21): the plain path traverses the REAL team and is NULL for a
+                            # ghost, so an imported competitor reached the admin standings and the results
+                            # editor with no name at all. _COMPETITOR_NAME coalesces over the ghost.
+                            team_name=_COMPETITOR_NAME,
                         # team_country (owner 2026-07-03): flag on each results-editor standings row.
                         # Aliased like team_name; joins another GROUP BY column that is functionally
                         # determined by the already-grouped tournament_team_id (no row splits).
@@ -25530,7 +25542,7 @@ def get_event_flagged_kills(request):
                 .filter(tournament_team__event=event)
                 .select_related("tournament_team__team", "tournament_team__ghost_team",
                                  "registered_user", "match__group__stage")
-                .order_by("tournament_team__team__team_name", "match_id", "uid"))
+                .order_by(_COMPETITOR_NAME, "match_id", "uid"))
     if scoped:
         flags_qs = flags_qs.filter(match__group_id__in=scope_group_ids)
     rows = []
