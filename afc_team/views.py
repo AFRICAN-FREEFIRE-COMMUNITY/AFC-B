@@ -1910,11 +1910,25 @@ def get_team_details(request):
         from afc_tournament_and_scrims.final_standings import event_final_standings
 
         # Aggregate match stats across all tournament entries
+        # Career totals EXCLUDE an imported event unless an admin turned its statistics on
+        # (owner 2026-08-20). Same gate as the per-event block below, applied at the query level so
+        # an unapproved import cannot move a team's lifetime kill count or best placement.
+        # results_imported_at is NULL for every ordinary event, so this changes nothing for them.
         agg = TournamentTeamMatchStats.objects.filter(
             tournament_team__team=team
+        ).exclude(
+            tournament_team__event__results_imported_at__isnull=False,
+            tournament_team__event__imported_results_count_in_profile_stats=False,
         ).aggregate(
-            total_matches=Count("team_stats_id"),
-            total_wins=Count("team_stats_id", filter=Q(placement=1)),
+            # Sum(matches_counted), not Count(rows): an AGGREGATE row stands for a whole group
+            # and carries its real span in matches_counted (owner 2026-08-20, external results
+            # import). Ordinary rows default to 1, so this is unchanged for them.
+            total_matches=Sum("matches_counted"),
+            # Wins likewise cannot be counted by rows for an aggregate: it stores placement=NULL and
+            # its real win count in booyah_count, because "how many times did they win" is not
+            # recoverable from a single summed row.
+            total_wins=Coalesce(Count("team_stats_id", filter=Q(placement=1)), 0)
+            + Coalesce(Sum("booyah_count"), 0),
             total_kills=Sum("kills"),
             avg_kills=Avg("kills"),
             avg_placement=Avg("placement"),
@@ -1960,10 +1974,32 @@ def get_team_details(request):
 
         # Per-event tournament performance
         for tt in tournament_teams:
+            # ── IMPORTED EVENTS ARE GATED (owner 2026-08-20) ─────────────────────────────────────
+            # An event whose results came from an external organizer's published standings only
+            # appears here, and only contributes to this team's totals, when an admin has said so.
+            # Both switches default OFF, so an import is inspected before it can change numbers on a
+            # real team's public page.
+            #
+            # visible_on_profiles gates whether the event is LISTED at all; count_in_profile_stats
+            # gates whether its numbers fold into the running totals below. They are separate
+            # because "show that this happened" and "count it" are different questions: a team may
+            # legitimately want an imported tournament visible in its history without it moving its
+            # career kill count.
+            _imported = getattr(tt.event, "results_imported_at", None) is not None
+            if _imported and not tt.event.imported_results_visible_on_profiles:
+                continue
+            # matches_played is Sum(matches_counted), NOT Count(rows) (owner 2026-08-20, external
+            # results import). An AGGREGATE row summarises a whole group in ONE row and carries the
+            # real span in matches_counted, so counting rows would report a team that played a
+            # 6-match group plus 8 finals matches as having played 9. matches_counted defaults to 1,
+            # so every ordinary row still contributes exactly 1 and this returns what it always did.
+            #
+            # best_placement needs NO guard: an aggregate row stores placement=NULL (its group finish
+            # lives in final_position), and SQL MIN skips NULL, so it contributes nothing correctly.
             tt_agg = TournamentTeamMatchStats.objects.filter(tournament_team=tt).aggregate(
                 total_points=Sum("total_points"),
                 total_kills=Sum("kills"),
-                matches_played=Count("team_stats_id"),
+                matches_played=Sum("matches_counted"),
                 best_placement=Min("placement"),
             )
 

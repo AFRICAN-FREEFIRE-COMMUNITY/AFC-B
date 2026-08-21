@@ -58,7 +58,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from datetime import datetime, date, timedelta
 from django.utils import timezone
 from django.db.models import Count, Q, F, Sum, Max
-from django.db.models.functions import TruncDate
+from django.db.models.functions import TruncDate, Coalesce
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -709,6 +709,15 @@ def get_all_events(request):
             # Display status computed from the real start instant (not the sweep-lagged stored field)
             # so a started event reads "ongoing" immediately. See effective_event_status.
             "event_status": effective_event_status(event),
+            # Provenance: see the note on the sibling payloads. NULL means AFC ran it.
+            "results_imported": event.results_imported_at is not None,
+        # ── PROVENANCE (owner 2026-08-20, external results import) ──────────────────────
+        # NULL for everything AFC ran. A timestamp means the results came from an external
+        # organizer's published standings rather than being played on AFC, and the event
+        # page shows a marker saying so. Driven off the stored timestamp rather than its own
+        # switch, so it cannot drift out of step with whether an import actually happened.
+        "results_imported": event.results_imported_at is not None,
+        "results_imported_at": event.results_imported_at,
             "competition_type": event.competition_type,
             "number_of_participants": event.max_teams_or_players,
             "prizepool": event.prizepool,
@@ -5229,6 +5238,13 @@ def get_event_details(request):
         # Read-time display status: "ongoing" once start_date+event_start_time has passed, else
         # "upcoming" (completed stays completed). See effective_event_status.
         "event_status": effective_event_status(event),
+        # ── PROVENANCE (owner 2026-08-20, external results import) ──────────────────────
+        # NULL for everything AFC ran. A timestamp means the results came from an external
+        # organizer's published standings rather than being played on AFC, and the event
+        # page shows a marker saying so. Driven off the stored timestamp rather than its own
+        # switch, so it cannot drift out of step with whether an import actually happened.
+        "results_imported": event.results_imported_at is not None,
+        "results_imported_at": event.results_imported_at,
         "registration_link": event.registration_link,
         "tournament_tier": event.tournament_tier,
         # tier_overridden (owner 2026-06-30): True when a head/super admin pinned the tier (vs
@@ -5378,7 +5394,7 @@ def get_event_details(request):
     if event.participant_type in ["duo", "squad"]:
         tournament_teams = (
             event.tournament_teams
-            .select_related("team")
+            .select_related("team", "ghost_team")
             .prefetch_related("members__user")
             .all()
         )
@@ -5386,13 +5402,15 @@ def get_event_details(request):
         for tt in tournament_teams:
             tournament_teams_list.append({
                 "tournament_team_id": tt.tournament_team_id,
-                "team_id": tt.team.team_id,
-                "team_name": tt.team.team_name,
+                # team_id (owner 2026-08-20, ghost competitors): a ghost row has no Team, so this is
+                # the raw FK, None for a ghost. Read via display_name/competitor below, never .team.
+                "team_id": tt.team_id,
+                "team_name": tt.display_name,
                 # team_country (owner 2026-07-03): the registered team's auto-derived country so the
                 # RegisteredTeamsTab / TeamLink can render its flag beside the name. Team.country is a
-                # non-null blank CharField ("" == no resolvable country); tt.team is always present
-                # here (same object the team_id/team_name lines above dereference unguarded).
-                "team_country": tt.team.country,
+                # non-null blank CharField ("" == no resolvable country); GhostTeam.country is required
+                # too, so tt.competitor.country works for either kind unguarded.
+                "team_country": tt.competitor.country,
                 "status": tt.status,
                 # F1 (owner 2026-06-19): no-show flag drives the RegisteredTeamsTab toggle + clear path
                 # (see the solo dict above for why this is required).
@@ -5456,19 +5474,22 @@ def get_event_details(request):
     else:
         waitlist_teams = (
             TournamentTeam.objects
-            .select_related("team")
+            .select_related("team", "ghost_team")
             .filter(event=event, is_waitlisted=True)
             .order_by("registration_date")
         )
         for i, tt in enumerate(waitlist_teams, start=1):
             waitlist.append({
                 "tournament_team_id": tt.tournament_team_id,
+                # team_id: raw FK, None for a ghost row (see the ghost-competitor accessors on
+                # TournamentTeam). The old "if tt.team_id else ''" guard predated ghosts (team was
+                # NOT NULL then) and would have blanked a ghost's name instead of showing it;
+                # display_name/competitor are safe to call unconditionally, so it is dropped here.
                 "team_id": tt.team_id,
-                "name": tt.team.team_name if tt.team_id else "",
-                "team_name": tt.team.team_name if tt.team_id else "",
-                # team_country (owner 2026-07-03): flag beside the waitlisted team's name. Guarded on
-                # tt.team_id (mirrors the team_name guard) so a team-less row stays "".
-                "team_country": tt.team.country if tt.team_id else "",
+                "name": tt.display_name,
+                "team_name": tt.display_name,
+                # team_country (owner 2026-07-03): flag beside the waitlisted team's name.
+                "team_country": tt.competitor.country,
                 "position": i,
                 "registration_date": tt.registration_date,
                 "status": tt.status,
@@ -5540,8 +5561,21 @@ def get_event_details(request):
                             # flag under the SAME key `team_country`. F() reads the joined Team's
                             # non-null blank country column. Consumed by the FE per-match stats table.
                             team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                         )
-                        .order_by("-total_points", "-kills", "tournament_team__team__team_name")
+                        .order_by("-total_points", "-kills", "competitor_name")
                     )
 
                 # Gate room creds (owner 2026-06-17): only the group's registered competitors (and, for
@@ -5633,6 +5667,19 @@ def get_event_details(request):
                         # (country is functionally determined by tournament_team_id, already grouped,
                         # so no row is split). Emitted under the uniform `team_country` key.
                         team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                     )
                     .annotate(
                         matches_played=Count("match_id", distinct=True),
@@ -5655,7 +5702,7 @@ def get_event_details(request):
                         last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                     )
                     .order_by("-effective_total", "-total_booyah", "-total_kills",
-                              "last_match_placement", "tournament_team__team__team_name")
+                              "last_match_placement", _COMPETITOR_NAME)
                 )
 
             # ── Include SEEDED competitors with no results yet (owner 2026-06-21 bug fix) ──
@@ -5686,19 +5733,17 @@ def get_event_details(request):
                 _present = {r["tournament_team_id"] for r in overall}
                 for _sc in StageGroupCompetitor.objects.filter(
                     stage_group=group, tournament_team__isnull=False,
-                ).select_related("tournament_team__team"):
+                ).select_related("tournament_team__team", "tournament_team__ghost_team"):
                     if _sc.tournament_team_id in _present:
                         continue
                     overall.append({
                         "tournament_team_id": _sc.tournament_team_id,
                         "tournament_team__team__team_name": (
-                            _sc.tournament_team.team.team_name
-                            if _sc.tournament_team and _sc.tournament_team.team else ""
+                            _sc.tournament_team.display_name if _sc.tournament_team else ""
                         ),
                         # Mirror the queryset's team_country key so seeded 0-rows carry the flag too.
                         "team_country": (
-                            _sc.tournament_team.team.country
-                            if _sc.tournament_team and _sc.tournament_team.team else ""
+                            _sc.tournament_team.competitor.country if _sc.tournament_team else ""
                         ),
                         "matches_played": 0, "total_kills": 0, "total_booyah": 0,
                         "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
@@ -6172,6 +6217,13 @@ def get_event_details_not_logged_in(request):
         # Read-time display status (anon detail): mirror get_event_details so a started event shows
         # "ongoing" without waiting on the sweep. See effective_event_status.
         "event_status": effective_event_status(event),
+        # ── PROVENANCE (owner 2026-08-20, external results import) ──────────────────────
+        # NULL for everything AFC ran. A timestamp means the results came from an external
+        # organizer's published standings rather than being played on AFC, and the event
+        # page shows a marker saying so. Driven off the stored timestamp rather than its own
+        # switch, so it cannot drift out of step with whether an import actually happened.
+        "results_imported": event.results_imported_at is not None,
+        "results_imported_at": event.results_imported_at,
         "registration_link": event.registration_link,
         "tournament_tier": event.tournament_tier,
         "event_banner_url": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
@@ -6310,14 +6362,15 @@ def get_event_details_not_logged_in(request):
 
     # Tournament teams (accepted)
     tournament_teams_list = []
-    for tt in event.tournament_teams.select_related("team").prefetch_related("members__user").all():
+    for tt in event.tournament_teams.select_related("team", "ghost_team").prefetch_related("members__user").all():
         tournament_teams_list.append({
             "tournament_team_id": tt.tournament_team_id,
-            "team_id": tt.team.team_id,
-            "team_name": tt.team.team_name,
+            "team_id": tt.team_id,
+            "team_name": tt.display_name,
             # team_country (owner 2026-07-03): flag beside the accepted team's name on the anonymous
-            # event page. tt.team is present (same object team_id/team_name dereference above).
-            "team_country": tt.team.country,
+            # event page. tt.competitor is never None (tt_team_xor_ghost constraint), works for a
+            # ghost row too.
+            "team_country": tt.competitor.country,
             "members": [{"player_id": m.user.user_id, "username": m.user.username} for m in tt.members.all()]
         })
     event_data["tournament_teams"] = tournament_teams_list
@@ -6371,8 +6424,21 @@ def get_event_details_not_logged_in(request):
                                  # team_country (owner 2026-07-03): flag on the anonymous per-match
                                  # stats table. Keyword expression goes last; uniform `team_country`.
                                  team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                              )
-                             .order_by("-total_points", "-kills", "tournament_team__team__team_name"))
+                             .order_by("-total_points", "-kills", "competitor_name"))
 
                 # Anonymous viewer (not logged in) NEVER sees room creds (owner 2026-06-17): room
                 # details are for registered competitors only, after the organizer posts them. Always
@@ -6449,6 +6515,19 @@ def get_event_details_not_logged_in(request):
                                # Extra GROUP BY column functionally determined by the already-grouped
                                # tournament_team_id, so no row splits. Uniform `team_country` key.
                                team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                            )
                            .annotate(
                                matches_played=Count("match_id", distinct=True),
@@ -6468,7 +6547,7 @@ def get_event_details_not_logged_in(request):
                                last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
                            )
                            .order_by("-effective_total", "-total_booyah", "-total_kills",
-                                     "last_match_placement", "tournament_team__team__team_name"))
+                                     "last_match_placement", _COMPETITOR_NAME))
 
             # ── Point-Rush carry-over overlay (anon public view) ──────────────────────────────────
             # Same on-read overlay as get_event_details: materialise the standings so we can fold the
@@ -6704,6 +6783,24 @@ from collections import Counter
 import pycountry
 
 import pycountry
+
+# ── COMPETITOR NAME / COUNTRY FOR STANDINGS QUERIES (owner 2026-08-20) ───────────────────────────
+# `tournament_team__team__team_name` traverses the REAL team, which is NULL for a ghost competitor,
+# so a ghost arrived at the frontend with no name and fell through its "Player <id>" placeholder in
+# the group standings table. The Registered Teams list was fine, because that path goes through
+# TournamentTeam.display_name; only the ORM-level standings queries were affected.
+#
+# These are annotations, not Python properties, because the standings are built with .values() and
+# ordered in SQL. COALESCE picks the ghost's name when the real team is absent. Exposed under the
+# NEW key `competitor_name`, leaving the original key in place so any other consumer of these
+# payloads keeps working unchanged.
+_COMPETITOR_NAME = Coalesce(
+    "tournament_team__team__team_name", "tournament_team__ghost_team__team_name"
+)
+_COMPETITOR_COUNTRY = Coalesce(
+    "tournament_team__team__country", "tournament_team__ghost_team__country"
+)
+
 
 def normalize_country(country):
     if not country:
@@ -7495,14 +7592,14 @@ def register_for_event(request):
                 tournament_team__event=event,
             )
             .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
-            .select_related("user", "tournament_team__team")
+            .select_related("user", "tournament_team__team", "tournament_team__ghost_team")
         )
         if conflicting_members:
             conflicts = [
                 {
                     "user_id": m.user_id,
                     "username": m.user.username,
-                    "team_name": m.tournament_team.team.team_name,
+                    "team_name": m.tournament_team.display_name,
                 }
                 for m in conflicting_members
             ]
@@ -7983,12 +8080,16 @@ def check_and_activate_team(tournament_team):
             tournament_team.save(update_fields=["status"])
 
         # Only touch rows currently "registered" so we never clobber an explicit
-        # disqualified/withdrawn/left state an admin may have set.
-        RegisteredCompetitors.objects.filter(
-            event=tournament_team.event,
-            team=tournament_team.team,
-            status="registered",
-        ).update(status="pending")
+        # disqualified/withdrawn/left state an admin may have set. A ghost row has no
+        # RegisteredCompetitors row (it never went through register_for_event) and
+        # tournament_team.team is None for one, which would otherwise turn this into an
+        # unscoped team__isnull filter and touch unrelated rows in the same event. Skip.
+        if not tournament_team.is_ghost:
+            RegisteredCompetitors.objects.filter(
+                event=tournament_team.event,
+                team=tournament_team.team,
+                status="registered",
+            ).update(status="pending")
         return
 
     if total == confirmed:
@@ -8006,19 +8107,30 @@ def check_and_activate_team(tournament_team):
         tournament_team.status = "active"
         tournament_team.save(update_fields=["status"])
 
-        RegisteredCompetitors.objects.filter(
-            event=tournament_team.event,
-            team=tournament_team.team
-        ).update(status="registered")
+        # Ghost competitors (owner 2026-08-20): a ghost row has no RegisteredCompetitors row
+        # (never went through register_for_event) and tournament_team.team is None for one,
+        # which would otherwise turn this into an unscoped team__isnull filter and touch
+        # unrelated rows in the same event. Skip.
+        if not tournament_team.is_ghost:
+            RegisteredCompetitors.objects.filter(
+                event=tournament_team.event,
+                team=tournament_team.team
+            ).update(status="registered")
 
         # Idempotent no-op refresh: team + RC are already in the approved state, so stop
         # here without re-notifying anyone.
         if was_already_active:
             return
 
+        # Ghost competitors, continued: no AFC owner/email to notify and no roster to run a
+        # Discord role assignment against. This sponsor-confirmation flow only reaches here
+        # through TournamentTeamMember rows, which import tooling never creates for a ghost,
+        # but skip explicitly rather than AttributeError on tournament_team.team being None.
+        if tournament_team.is_ghost:
+            return
 
         # ---------------- SEND AN EMAIL TO THE TEAM OWNER NOTIFYING THEM -----------------
-        team_name = tournament_team.team.team_name
+        team_name = tournament_team.display_name
         event_name = tournament_team.event.event_name
         team_leader_username = tournament_team.team.team_owner.username
         email = tournament_team.team.team_owner.email
@@ -8201,6 +8313,14 @@ def confirm_player(request):
 
     member.status = "active"
     member.save(update_fields=["status"])
+
+    # Ghost competitors (owner 2026-08-20): a ghost tournament_team has no AFC owner/email to
+    # notify. A TournamentTeamMember pointing at one is not something current import tooling
+    # creates, but guard explicitly rather than AttributeError on .team being None, and still
+    # run TEAM ACTIVATION CHECK below (it self-guards the same way).
+    if member.tournament_team.is_ghost:
+        check_and_activate_team(member.tournament_team)
+        return Response({"message": "Player confirmed."}, status=200)
 
     # ---------------- DATA ----------------
     player_username = member.user.username
@@ -8474,6 +8594,12 @@ def reject_player(request):
     member.status = "rejected"
     member.reason = reason if reason else "No reason provided"
     member.save(update_fields=["status", "reason"])
+
+    # Ghost competitors (owner 2026-08-20): a ghost tournament_team has no AFC owner/email to
+    # notify. A TournamentTeamMember pointing at one is not something current import tooling
+    # creates, but guard explicitly rather than AttributeError on .team being None.
+    if member.tournament_team.is_ghost:
+        return Response({"message": "Player rejected."}, status=200)
 
     # ---------------- DATA ----------------
     player_username = member.user.username
@@ -8766,7 +8892,8 @@ def get_all_competitors_and_their_sponsor_id(request):
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
         return Response({"message": "You do not have permission to view competitors for this event."}, status=403)
 
-    competitors = TournamentTeamMember.objects.filter(event=event).select_related("user", "tournament_team__team").all()
+    competitors = TournamentTeamMember.objects.filter(event=event).select_related(
+        "user", "tournament_team__team", "tournament_team__ghost_team").all()
 
     data = []
     for c in competitors:
@@ -8774,8 +8901,8 @@ def get_all_competitors_and_their_sponsor_id(request):
             "competitor_id": c.id,
             "user_id": c.user.user_id,
             "username": c.user.username,
-            "team_id": c.tournament_team.team.team_id,
-            "team_name": c.tournament_team.team.team_name,
+            "team_id": c.tournament_team.team_id,
+            "team_name": c.tournament_team.display_name,
             "sponsor_id": c.user_id_from_sponsor,
             "status": c.status,
         })
@@ -10716,7 +10843,9 @@ def get_event_details_for_admin(request):
             else:
                 competitors_in_group = list(
                     StageGroupCompetitor.objects.filter(stage_group=group, tournament_team__isnull=False)
-                    .values_list("tournament_team__team__team_name", flat=True)
+                    # Ghost-aware: the plain path is NULL for a ghost, which put a None into a
+                    # list of competitor NAMES. owner 2026-08-21.
+                    .annotate(_cname=_COMPETITOR_NAME).values_list("_cname", flat=True)
                 )
 
             group_details.append({
@@ -14327,7 +14456,11 @@ def _apply_public_carry_over(stage, rows, participant_type):
             -int(r.get("total_booyah") or 0),
             -int(r.get("total_kills") or 0),
             int(r.get("last_match_placement") or 999),
-            r.get(name_key) or "",
+            # competitor_name FIRST (owner 2026-08-21): it is COALESCEd over the ghost in the
+            # standings queries, whereas name_key traverses the REAL team and is None for a ghost.
+            # Without this every imported competitor sorted under an empty string and they clumped
+            # together at one end of the table instead of falling among the real teams by name.
+            r.get("competitor_name") or r.get(name_key) or "",
         ))
     return rows
 
@@ -14448,11 +14581,27 @@ def get_all_leaderboard_details_for_event(request):
                         .filter(match=match)
                         .select_related("tournament_team__team")
                         .annotate(
-                            team_name=F("tournament_team__team__team_name"),
+                            # Ghost-aware (owner 2026-08-21): the plain path traverses the REAL team and is NULL for a
+                            # ghost, so an imported competitor reached the admin standings and the results
+                            # editor with no name at all. _COMPETITOR_NAME coalesces over the ghost.
+                            team_name=_COMPETITOR_NAME,
                             # team_country (owner 2026-07-03): flag beside the team name in the admin/
                             # organizer results editor. Aliased alongside team_name; read off the
                             # annotated object below. Team.country is non-null blank ("" == unknown).
                             team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                             # effective_total = the stored per-match total_points (placement + kill +
                             # ASSIST + DAMAGE + bonus - penalty), NOT a re-derived placement+kill+
                             # bonus-penalty (which dropped assist/damage and disagreed with the public
@@ -14471,10 +14620,18 @@ def get_all_leaderboard_details_for_event(request):
                         player_stats = (
                             TournamentPlayerMatchStats.objects
                             .filter(team_stats=team_stat)
-                            .select_related("player")
-                            .annotate(username=F("player__username"))
+                            .select_related("player", "ghost_player")
+                            # GHOST-AWARE (owner 2026-08-21). A per-player IMPORT records an
+                            # external tournament's players as GhostPlayers, because they have no
+                            # AFC account. player__username is NULL for such a row, so the plain
+                            # F() sent every imported player to the frontend nameless. Coalesce
+                            # over the ghost's in-game name, mirroring afc_rankings.recalc, which
+                            # already does exactly this for the score tables. ghost_player_id rides
+                            # along so a reader can tell an unclaimed name from a real account.
+                            .annotate(username=Coalesce("player__username", "ghost_player__ign"))
                             .values(
                                 "player_id",
+                                "ghost_player_id",
                                 "username",
                                 "kills",
                                 "damage",
@@ -14593,11 +14750,27 @@ def get_all_leaderboard_details_for_event(request):
                     .filter(match__group=group)
                     .values(
                         "tournament_team_id",
-                        team_name=F("tournament_team__team__team_name"),
+                        # Ghost-aware (owner 2026-08-21): the plain path traverses the REAL team and is NULL for a
+                            # ghost, so an imported competitor reached the admin standings and the results
+                            # editor with no name at all. _COMPETITOR_NAME coalesces over the ghost.
+                            team_name=_COMPETITOR_NAME,
                         # team_country (owner 2026-07-03): flag on each results-editor standings row.
                         # Aliased like team_name; joins another GROUP BY column that is functionally
                         # determined by the already-grouped tournament_team_id (no row splits).
                         team_country=F("tournament_team__team__country"),
+                            # Ghost-aware name + country. The plain paths above traverse the
+                            # REAL team and are NULL for a ghost, which is how ghosts fell
+                            # through to the frontend's "Player <id>" placeholder in the
+                            # standings table. New keys, so existing consumers are untouched.
+                            competitor_name=_COMPETITOR_NAME,
+                            competitor_country=_COMPETITOR_COUNTRY,
+                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                            # the frontend whether /teams/<name> exists, so every standings table
+                            # linked imported competitors to a page that cannot be there. Its
+                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                            # also addresses the ghost for a future claim action. Functionally
+                            # dependent on tournament_team, so the GROUP BY does not split rows.
+                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
                     )
                     .annotate(
                         matches_played=Count("match_id"),
@@ -14677,19 +14850,17 @@ def get_all_leaderboard_details_for_event(request):
             else:
                 for _sc in StageGroupCompetitor.objects.filter(
                     stage_group=group, tournament_team__isnull=False,
-                ).select_related("tournament_team__team"):
+                ).select_related("tournament_team__team", "tournament_team__ghost_team"):
                     if _sc.tournament_team_id in _present_ids:
                         continue
                     overall.append({
                         "tournament_team_id": _sc.tournament_team_id,
                         "team_name": (
-                            _sc.tournament_team.team.team_name
-                            if _sc.tournament_team and _sc.tournament_team.team else ""
+                            _sc.tournament_team.display_name if _sc.tournament_team else ""
                         ),
                         # Mirror the queryset's team_country key so seeded 0-rows carry the flag too.
                         "team_country": (
-                            _sc.tournament_team.team.country
-                            if _sc.tournament_team and _sc.tournament_team.team else ""
+                            _sc.tournament_team.competitor.country if _sc.tournament_team else ""
                         ),
                         "matches_played": 0, "total_kills": 0, "total_booyah": 0,
                         "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
@@ -14935,15 +15106,17 @@ def get_event_group_rosters(request):
     # status. Shared by the StageGroupCompetitor branch (real per-competitor status)
     # and the round-robin branch (status defaults "active", RR M2M has none).
     def _team_payload(tournament_team, competitor_status):
-        team = tournament_team.team
+        # Ghost competitors (owner 2026-08-20): tournament_team.team is None for a ghost row, so
+        # every field here goes through display_name/competitor instead. team_tag has no GhostTeam
+        # equivalent (external competitors carry no AFC clan tag) - blank for a ghost.
         return {
             "tournament_team_id": tournament_team.tournament_team_id,
-            "team_id": team.team_id,
-            "team_name": team.team_name,
+            "team_id": tournament_team.team_id,
+            "team_name": tournament_team.display_name,
             # team_country (owner 2026-07-03): flag beside the team name in the group-roster tree
             # (admin "Group Rosters" tab + organizer groups page). Non-null blank CharField.
-            "team_country": team.country,
-            "team_tag": team.team_tag,
+            "team_country": tournament_team.competitor.country,
+            "team_tag": tournament_team.team.team_tag if not tournament_team.is_ghost else "",
             "competitor_status": competitor_status,
             "players": members_by_team.get(tournament_team.tournament_team_id, []),
         }
@@ -14966,7 +15139,7 @@ def get_event_group_rosters(request):
                 stage.round_robin_groups
                 .all()
                 .order_by("order")
-                .prefetch_related("teams__team")
+                .prefetch_related("teams__team", "teams__ghost_team")
             )
             for rr in rr_groups:
                 teams_payload = [
@@ -14997,7 +15170,7 @@ def get_event_group_rosters(request):
             pool_payload = []
             for sc in (StageCompetitor.objects
                        .filter(stage=stage, tournament_team__isnull=False)
-                       .select_related("tournament_team__team")):
+                       .select_related("tournament_team__team", "tournament_team__ghost_team")):
                 if sc.tournament_team_id not in assigned_ids:
                     pool_payload.append(_team_payload(sc.tournament_team, "active"))
             groups_payload.append({
@@ -15066,12 +15239,16 @@ def get_event_group_rosters(request):
                 competitors = (
                     StageGroupCompetitor.objects
                     .filter(stage_group=group, tournament_team__isnull=False)
-                    .select_related("tournament_team__team")
+                    .select_related("tournament_team__team", "tournament_team__ghost_team")
                 )
                 teams_payload = []
                 for c in competitors:
-                    # Skip malformed rows where the expected slot is null.
-                    if c.tournament_team is None or c.tournament_team.team is None:
+                    # Skip malformed rows where the expected slot is null (the filter above already
+                    # guarantees tournament_team is set). A ghost row's tournament_team.team IS None
+                    # by design (tt_team_xor_ghost) - that used to look "malformed" and get skipped
+                    # here, silently dropping ghost teams from the group. is_ghost is the correct
+                    # test now; tournament_team.competitor is never None for either kind.
+                    if c.tournament_team is None:
                         continue
                     teams_payload.append(_team_payload(c.tournament_team, c.status))
                 team_count = len(teams_payload)
@@ -18617,8 +18794,12 @@ def disqualify_team(request):
         tt.status = "disqualified"
         tt.save(update_fields=["status"])
 
-        # Also disqualify the registration row (if you use it for validation)
-        reg_rows = RegisteredCompetitors.objects.filter(event=event, team=tt.team).update(status="disqualified")
+        # Also disqualify the registration row (if you use it for validation). A ghost row never
+        # went through register_for_event, so there is no RegisteredCompetitors row for one - and
+        # tt.team is None for a ghost, which would otherwise turn this into an unscoped
+        # team__isnull filter and touch unrelated rows. Skip for a ghost.
+        reg_rows = 0 if tt.is_ghost else RegisteredCompetitors.objects.filter(
+            event=event, team=tt.team).update(status="disqualified")
 
         # Remove from stage(s)
         stage_rows = StageCompetitor.objects.filter(stage__event=event, tournament_team=tt).update(status="disqualified")
@@ -18636,7 +18817,7 @@ def disqualify_team(request):
         Notifications.objects.create(
             user=user,
             title=f"Team Disqualified from {_noun}",
-            message=f"Your team '{tt.team.team_name}' has been disqualified from the {_noun_lower} '{event.event_name}'. Reason: {reason}",
+            message=f"Your team '{tt.display_name}' has been disqualified from the {_noun_lower} '{event.event_name}'. Reason: {reason}",
             notification_type="tournament_disqualification",
             related_event=event,
         )
@@ -18646,8 +18827,8 @@ def disqualify_team(request):
         "message": "Team disqualified.",
         "event_id": event.event_id,
         "tournament_team_id": tt.tournament_team_id,
-        "team_id": tt.team.team_id,
-        "team_name": tt.team.team_name,
+        "team_id": tt.team_id,
+        "team_name": tt.display_name,
         "reason": reason or None,
         "updated": {
             "tournament_team": 1,
@@ -18717,7 +18898,7 @@ def remove_team_from_event(request):
         }, status=400)
 
     team = tt.team
-    team_name = team.team_name
+    team_name = tt.display_name
     # Best-effort: strip this event's Discord roles from each member before deleting the rows.
     try:
         for m in tt.members.select_related("user").all():
@@ -18743,19 +18924,24 @@ def remove_team_from_event(request):
         StageGroupCompetitor.objects.filter(stage_group__stage__event=event, tournament_team=tt).delete()
         StageCompetitor.objects.filter(stage__event=event, tournament_team=tt).delete()
         TournamentTeamMember.objects.filter(tournament_team=tt).delete()
-        others_remain = TournamentTeam.objects.filter(event=event, team=team).exclude(pk=tt.pk).exists()
-        if explicit_tt_id and others_remain:
-            rc = RegisteredCompetitors.objects.filter(event=event, team=team).order_by("id").first()
-            if rc:
-                rc.delete()
-        else:
-            RegisteredCompetitors.objects.filter(event=event, team=team).delete()
+        # Ghost competitors (owner 2026-08-20): a ghost row never went through register_for_event,
+        # so it has no RegisteredCompetitors row to clean up - and team is None for a ghost, so
+        # reusing the dupe check below would match every OTHER ghost row in this event (all share
+        # team=None) instead of just duplicates of THIS one. Skip the RC step for a ghost.
+        if not tt.is_ghost:
+            others_remain = TournamentTeam.objects.filter(event=event, team=team).exclude(pk=tt.pk).exists()
+            if explicit_tt_id and others_remain:
+                rc = RegisteredCompetitors.objects.filter(event=event, team=team).order_by("id").first()
+                if rc:
+                    rc.delete()
+            else:
+                RegisteredCompetitors.objects.filter(event=event, team=team).delete()
         tt.delete()
 
     return Response({
         "message": f"Team '{team_name}' removed from the event.",
         "event_id": event.event_id,
-        "team_id": team.team_id,
+        "team_id": tt.team_id,
         "team_name": team_name,
     }, status=200)
 
@@ -18772,15 +18958,19 @@ def reactivate_team(request):
     with transaction.atomic():
         tt.status = "active"
         tt.save(update_fields=["status"])
-        RegisteredCompetitors.objects.filter(event=event, team=tt.team).update(status="registered")
+        # Ghost rows have no RegisteredCompetitors row (they skip register_for_event) - and
+        # tt.team is None for a ghost, which would otherwise turn this into an unscoped
+        # team__isnull filter and touch unrelated rows. Skip for a ghost.
+        if not tt.is_ghost:
+            RegisteredCompetitors.objects.filter(event=event, team=tt.team).update(status="registered")
         StageCompetitor.objects.filter(stage__event=event, tournament_team=tt).update(status="active")
         StageGroupCompetitor.objects.filter(stage_group__stage__event=event, tournament_team=tt).update(status="active")
     return Response({
-        "message": f"Team '{tt.team.team_name}' reactivated.",
+        "message": f"Team '{tt.display_name}' reactivated.",
         "event_id": event.event_id,
         "tournament_team_id": tt.tournament_team_id,
-        "team_id": tt.team.team_id,
-        "team_name": tt.team.team_name,
+        "team_id": tt.team_id,
+        "team_name": tt.display_name,
     }, status=200)
 
 
@@ -19232,15 +19422,26 @@ def leave_event(request):
             if not tournament_team:
                 return Response({"message": "You are not part of any team in this event."}, status=400)
 
-            # 🔐 Only captain (registered_by) can leave
-            if tournament_team.team.team_owner != user:
+            # 🔐 Only captain (registered_by) can leave. A ghost row (external, unclaimed
+            # competitor) has no AFC owner and is structurally unreachable here anyway - the
+            # members__user=user filter above requires an AFC member, which ghosts never have -
+            # but the guard is explicit so this fails closed (403) instead of AttributeError (500)
+            # if that invariant is ever loosened.
+            if tournament_team.is_ghost or tournament_team.team.team_owner != user:
                 return Response({
                     "message": "Only the team captain can leave the event."
                 }, status=403)
             
             # Delete All Tournament Team Members
             TournamentTeamMember.objects.filter(tournament_team=tournament_team).delete()
-            RegisteredCompetitors.objects.filter(event=event, team=tournament_team.team).delete()
+            # tournament_team.team is guaranteed non-None here: the guard above already returned
+            # a 403 for tournament_team.is_ghost via short-circuit `or`, and the tt_team_xor_ghost
+            # constraint means is_ghost=False implies team is set. Guarded explicitly anyway
+            # (defense in depth) so this delete can never become an unscoped team__isnull filter
+            # that would wipe every solo competitor's RegisteredCompetitors row in this event if
+            # that invariant is ever loosened above.
+            if not tournament_team.is_ghost:
+                RegisteredCompetitors.objects.filter(event=event, team=tournament_team.team).delete()
 
             # 🔥 Delete entire team entry
             tournament_team.delete()
@@ -19715,13 +19916,28 @@ def add_teams_to_stage(request):
         return Response({"message": "No permission"}, status=403)
     if event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
-    teams = TournamentTeam.objects.filter(team_id__in=team_ids, event=event, status="active")
+    # GHOST COMPETITORS (owner 2026-08-20, external results import). `team_ids` are afc_team.Team
+    # ids, and a GHOST registration has team_id NULL, so filtering on them can never select one:
+    # an imported competitor could exist in an event but never be placed into a stage. Accept
+    # `tournament_team_ids` (registration PKs) as an ADDITIVE second route that addresses any
+    # competitor, real or ghost. Existing callers sending team_ids are unaffected.
+    tt_ids = request.data.get("tournament_team_ids", [])
+    if not isinstance(tt_ids, list) or not all(isinstance(t, int) for t in tt_ids):
+        return Response({"message": "tournament_team_ids must be a list of integers"}, status=400)
+
+    teams = TournamentTeam.objects.filter(
+        Q(team_id__in=team_ids) | Q(tournament_team_id__in=tt_ids),
+        event=event, status="active",
+    )
     if not teams.exists():
-        return Response({"message": "No valid teams found for the provided team_ids."}, status=400)
-    existing_team_ids = StageCompetitor.objects.filter(stage=stage, tournament_team__team_id__in=team_ids).values_list("tournament_team__team_id", flat=True)
+        return Response({"message": "No valid teams found for the provided ids."}, status=400)
+    # Keyed on the REGISTRATION pk, not the team pk: every ghost has team_id NULL, so keying on the
+    # team would collapse them all into one "already present" bucket and silently skip all but one.
+    existing_tt_ids = set(StageCompetitor.objects.filter(stage=stage)
+                          .values_list("tournament_team_id", flat=True))
     new_entries = []
     for team in teams:
-        if team.team_id in existing_team_ids:
+        if team.tournament_team_id in existing_tt_ids:
             continue
         new_entries.append(StageCompetitor(stage=stage, tournament_team=team))
     StageCompetitor.objects.bulk_create(new_entries)
@@ -19739,7 +19955,10 @@ def add_teams_to_stage(request):
     return Response({
         "message": f"{len(new_entries)} teams added to stage.",
         "stage_id": stage.stage_id,
+        # team_id is None for a ghost, so echo the REGISTRATION ids too. Kept alongside the
+        # original key so existing consumers are untouched.
         "added_team_ids": [entry.tournament_team.team_id for entry in new_entries],
+        "added_tournament_team_ids": [entry.tournament_team_id for entry in new_entries],
         "group_seeds_added": group_seeds_added,  # how many were also auto-placed into groups
     }, status=200)
 
@@ -20201,7 +20420,7 @@ def _capture_expected_teams(event, stage, group):
         # Fallback: every team registered to the event that hasn't dropped out.
         tt_qs = TournamentTeam.objects.filter(event=event).exclude(
             status__in=["withdrawn", "left", "disqualified"])
-    tt_list = list(tt_qs.select_related("team").order_by("tournament_team_id"))
+    tt_list = list(tt_qs.select_related("team", "ghost_team").order_by("tournament_team_id"))
     tt_ids_final = [t.tournament_team_id for t in tt_list]
 
     # All members for those teams in one query, grouped by team (IGN = User.username, UID = User.uid).
@@ -20219,7 +20438,7 @@ def _capture_expected_teams(event, stage, group):
         teams_out.append({
             "tournament_team_id": tt.tournament_team_id,
             "team_id": tt.team_id,
-            "team_name": (tt.team.team_name if tt.team else "") or "",
+            "team_name": tt.display_name or "",
             "status": tt.status,
             "players": members_by_tt.get(tt.tournament_team_id, []),
         })
@@ -20317,14 +20536,17 @@ def _overlay_rows_from_standings(standings, max_rows, request):
             event_id=tt0, kind="team_logo").values_list("team_id", flat=True))
     country_by_tt = {}  # country flag column (owner 2026-07-04)
     for tt in TournamentTeam.objects.filter(
-        tournament_team_id__in=tt_ids).select_related("team"):
+        tournament_team_id__in=tt_ids).select_related("team", "ghost_team"):
         try:
+            # Ghost rows have no team_logo (GhostTeam carries no logo field at all) - tt.team is
+            # None so this naturally skips them, same as the overlay's existing no-logo fallback.
             if tt.team and tt.team.team_logo and tt.team.team_id not in _suppressed_team_ids:
                 logo_by_tt[tt.tournament_team_id] = request.build_absolute_uri(tt.team.team_logo.url)
         except Exception:
             pass
-        if tt.team:
-            country_by_tt[tt.tournament_team_id] = tt.team.country or ""
+        # tt.competitor is never None (tt_team_xor_ghost constraint) - GhostTeam.country is
+        # required too, so this covers both kinds without the old `if tt.team:` guard.
+        country_by_tt[tt.tournament_team_id] = tt.competitor.country or ""
 
     # Per-row dicts keyed by field_type - the SAME keys the design's placed fields bind to, so the
     # FE DesignBoard can render whichever columns the chosen design places (pos/team_name/team_logo/
@@ -20411,15 +20633,15 @@ def _overlay_seed_and_carry(standings, event, stage, group):
     else:
         seed_qs = StageGroupCompetitor.objects.filter(
             stage_group__stage=stage, tournament_team__isnull=False)
-    for sc in seed_qs.select_related("tournament_team__team"):
+    for sc in seed_qs.select_related("tournament_team__team", "tournament_team__ghost_team"):
         if sc.tournament_team_id in present:
             continue
         present.add(sc.tournament_team_id)
         tt = sc.tournament_team
         standings.append({
             "tournament_team_id": sc.tournament_team_id,
-            "team_name": (tt.team.team_name if tt and tt.team else ""),
-            "team_country": (tt.team.country if tt and tt.team else ""),
+            "team_name": (tt.display_name if tt else ""),
+            "team_country": (tt.competitor.country if tt else ""),
             "games_played": 0, "total_kills": 0, "total_booyah": 0,
             "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
             "effective_total": 0, "last_match_placement": 999,
@@ -21379,7 +21601,7 @@ def upload_team_match_result(request):
     all_uids = [p["uid"] for t in parsed_teams for p in t["players"]]
 
     members = TournamentTeamMember.objects.select_related(
-        "tournament_team", "tournament_team__team", "user"
+        "tournament_team", "tournament_team__team", "tournament_team__ghost_team", "user"
     ).filter(
         tournament_team__event=event,
         user__uid__in=all_uids
@@ -21421,8 +21643,8 @@ def upload_team_match_result(request):
     def _sing_tname(s):
         return s[:-1] if s.endswith("s") else s
     name_to_tt = {}
-    for _tt in TournamentTeam.objects.filter(event=event).select_related("team"):
-        name_to_tt.setdefault(_norm_tname(_tt.team.team_name), []).append(_tt)
+    for _tt in TournamentTeam.objects.filter(event=event).select_related("team", "ghost_team"):
+        name_to_tt.setdefault(_norm_tname(_tt.display_name), []).append(_tt)
 
     # ── PLAYER NAME-MATCH index (owner 2026-06-29) ───────────────────────────────────────────────
     # When a file player does NOT UID-match a roster member, fall back to matching by in-game NAME so
@@ -21654,7 +21876,7 @@ def upload_team_match_result(request):
                     team_data["_name_matched_tt"] = _site_tt           # advisory relabel still useful
                     roster_mismatch_teams.append({
                         "team_name": team_data["team_name"],
-                        "site_team_name": _site_tt.team.team_name,
+                        "site_team_name": _site_tt.display_name,
                         "site_team_id": _site_tt.team_id,
                         "tournament_team_id": _site_tt.tournament_team_id,
                     })
@@ -21674,7 +21896,7 @@ def upload_team_match_result(request):
                         team_data["_name_matched_tt"] = _attr_tt
                         roster_mismatch_teams.append({
                             "team_name": team_data["team_name"],
-                            "site_team_name": _attr_tt.team.team_name,
+                            "site_team_name": _attr_tt.display_name,
                             "site_team_id": _attr_tt.team_id,
                             "tournament_team_id": _attr_tt.tournament_team_id,
                             "manual": True,          # admin-attributed (vs auto name-match)
@@ -21697,7 +21919,7 @@ def upload_team_match_result(request):
                             team_data["_name_matched_tt"] = _pn_tt
                             roster_mismatch_teams.append({
                                 "team_name": team_data["team_name"],
-                                "site_team_name": _pn_tt.team.team_name,
+                                "site_team_name": _pn_tt.display_name,
                                 "site_team_id": _pn_tt.team_id,
                                 "tournament_team_id": _pn_tt.tournament_team_id,
                                 "by_player_names": True,     # resolved from the lineup, not the team name
@@ -21708,7 +21930,7 @@ def upload_team_match_result(request):
                             if team_data["_name_matched_tt"]:
                                 roster_mismatch_teams.append({
                                     "team_name": team_data["team_name"],
-                                    "site_team_name": team_data["_name_matched_tt"].team.team_name,
+                                    "site_team_name": team_data["_name_matched_tt"].display_name,
                                     "site_team_id": team_data["_name_matched_tt"].team_id,
                                     "tournament_team_id": team_data["_name_matched_tt"].tournament_team_id,
                                 })
@@ -21832,7 +22054,7 @@ def upload_team_match_result(request):
                                 f["registered_user_id"] = other["user_id"]
                                 f["matched_username"] = other["username"]
                                 f["other_team_id"] = tt_by_id[other["tt_id"]].team_id
-                                f["other_team_name"] = tt_by_id[other["tt_id"]].team.team_name
+                                f["other_team_name"] = tt_by_id[other["tt_id"]].display_name
                             else:
                                 # Genuinely unknown -> not_on_roster; count_kills stays None so it
                                 # still follows the event default.
@@ -21925,7 +22147,7 @@ def upload_team_match_result(request):
                 for p in team_data["players"]:
                     unknown_players.append({
                         "team_name": block_team_name,
-                        "site_team_name": _site_tt.team.team_name if _site_tt else None,
+                        "site_team_name": _site_tt.display_name if _site_tt else None,
                         "tournament_team_id": _site_tt.tournament_team_id if _site_tt else None,
                         "site_team_id": _site_tt.team_id if _site_tt else None,
                         "uid": p["uid"],
@@ -21935,7 +22157,7 @@ def upload_team_match_result(request):
                     })
                 continue
 
-            site_team_name = team_obj.team.team_name
+            site_team_name = team_obj.display_name
             block_tt_id = team_obj.tournament_team_id
             # Authoritative classification computed in the team-stats loop (§1d), keyed by uid. Reading
             # it here keeps the RESPONSE row's reason/match fields IDENTICAL to the persisted
@@ -21988,7 +22210,7 @@ def upload_team_match_result(request):
                         "name": p["name"],
                         "kills": p["kills"],
                         "reason": "belongs_to_other_team",
-                        "other_team_name": member.tournament_team.team.team_name,
+                        "other_team_name": member.tournament_team.display_name,
                     })
                     continue
 
@@ -22199,7 +22421,7 @@ def upload_team_match_result(request):
         # "attribute these points to..." dropdown (owner 2026-06-30). Re-uploading with the chosen ids in
         # `team_attributions` scores those blocks for the picked teams. Sorted by name.
         "event_teams": sorted(
-            ({"tournament_team_id": _tt.tournament_team_id, "team_name": _tt.team.team_name}
+            ({"tournament_team_id": _tt.tournament_team_id, "team_name": _tt.display_name}
              for _tt in tt_by_id.values()),
             key=lambda t: (t["team_name"] or "").lower(),
         ),
@@ -22514,14 +22736,27 @@ def add_teams_to_group(request):
         return Response({"message": "Unauthorized."}, status=403)
     if group.stage.event.participant_type == "solo":
         return Response({"message": "This endpoint is for team events only."}, status=400)
-    teams = TournamentTeam.objects.filter(team_id__in=team_ids, event=group.stage.event,
-        status="active")
+    # GHOST COMPETITORS (owner 2026-08-20, external results import). Same reasoning as
+    # add_teams_to_stage: `team_ids` are afc_team.Team ids and a ghost registration has team_id
+    # NULL, so it could never be placed into a group. `tournament_team_ids` is an ADDITIVE route
+    # that addresses any competitor by its registration pk. Existing callers are unaffected.
+    tt_ids_g = request.data.get("tournament_team_ids", [])
+    if not isinstance(tt_ids_g, list) or not all(isinstance(t, int) for t in tt_ids_g):
+        return Response({"message": "tournament_team_ids must be a list of integers"}, status=400)
+
+    teams = TournamentTeam.objects.filter(
+        Q(team_id__in=team_ids) | Q(tournament_team_id__in=tt_ids_g),
+        event=group.stage.event, status="active",
+    )
     if not teams.exists():
-        return Response({"message": "No valid teams found for the provided team_ids."}, status=400)
-    existing_team_ids = StageGroupCompetitor.objects.filter(stage_group=group, tournament_team__team_id__in=team_ids).values_list("tournament_team__team_id", flat=True)
+        return Response({"message": "No valid teams found for the provided ids."}, status=400)
+    # Keyed on the REGISTRATION pk: every ghost has team_id NULL, so keying on the team would
+    # collapse them into one "already present" bucket and skip all but one.
+    existing_tt_ids = set(StageGroupCompetitor.objects.filter(stage_group=group)
+                          .values_list("tournament_team_id", flat=True))
     new_entries = []
     for team in teams:
-        if team.team_id in existing_team_ids:
+        if team.tournament_team_id in existing_tt_ids:
             continue
         new_entries.append(StageGroupCompetitor(stage_group=group, tournament_team=team))
     StageGroupCompetitor.objects.bulk_create(new_entries)
@@ -22537,7 +22772,10 @@ def add_teams_to_group(request):
     return Response({
         "message": f"{len(new_entries)} teams added to group.",
         "group_id": group.group_id,
+        # team_id is None for a ghost, so echo the REGISTRATION ids too. Kept alongside the
+        # original key so existing consumers are untouched.
         "added_team_ids": [entry.tournament_team.team_id for entry in new_entries],
+        "added_tournament_team_ids": [entry.tournament_team_id for entry in new_entries],
     }, status=200)
 
 
@@ -22697,7 +22935,8 @@ def get_list_of_players_in_sponsor_event(request):
                     "email": comp.user.email,
                 })
         else:
-            teams = TournamentTeam.objects.filter(event=event).prefetch_related("members__user")
+            teams = TournamentTeam.objects.filter(event=event).select_related(
+                "team", "ghost_team").prefetch_related("members__user")
 
             # Then use tournament teams to get all tournament team members in those teams and their user info and user id from sponsor
             for team in teams:
@@ -22706,8 +22945,8 @@ def get_list_of_players_in_sponsor_event(request):
                     data.append({
                         "event_id": event.event_id,
                         "event_name": event.event_name,
-                        "team_id": team.team.team_id,
-                        "team_name": team.team.team_name,
+                        "team_id": team.team_id,
+                        "team_name": team.display_name,
                         "member_id": member.id,
                         "member_username": member.user.username,
                         "user_id_from_sponsor": member.user_id_from_sponsor,
@@ -23293,7 +23532,7 @@ def assign_team_letter(request):
         tt.save(update_fields=["assigned_letter"])
         return Response({
             "tournament_team_id": tt.tournament_team_id, "team_id": tt.team_id,
-            "team_name": tt.team.team_name, "assigned_letter": None, "notified": 0,
+            "team_name": tt.display_name, "assigned_letter": None, "notified": 0,
         }, status=200)
 
     letter = _norm_letter_char(raw_letter)
@@ -23312,10 +23551,13 @@ def assign_team_letter(request):
             TournamentTeam.objects
             .select_for_update()
             .filter(event=event)
-            .select_related("team")
+            .select_related("team", "ghost_team")
         )
         # Re-resolve tt from the locked snapshot (same row, now lock-held).
         tt = next((x for x in locked if x.pk == tt.pk), tt)
+        # NOTE (owner 2026-08-20): this scans the WHOLE event's TournamentTeam rows, which now
+        # includes ghost rows too - a ghost can hold the clashing letter just as a real team can,
+        # so clash.display_name (not .team.team_name) is required here.
         clash = next(
             (x for x in locked if x.assigned_letter == letter and x.pk != tt.pk),
             None,
@@ -23323,9 +23565,9 @@ def assign_team_letter(request):
         if clash:
             return Response({
                 "code": "letter_taken",
-                "message": f"Letter {letter} is already assigned to {clash.team.team_name} in this event.",
+                "message": f"Letter {letter} is already assigned to {clash.display_name} in this event.",
                 "conflicting_team_id": clash.team_id,
-                "conflicting_team_name": clash.team.team_name,
+                "conflicting_team_name": clash.display_name,
             }, status=409)
 
         tt.assigned_letter = letter
@@ -23360,7 +23602,7 @@ def assign_team_letter(request):
     return Response({
         "tournament_team_id": tt.tournament_team_id,
         "team_id": tt.team_id,
-        "team_name": tt.team.team_name,
+        "team_name": tt.display_name,
         "assigned_letter": tt.assigned_letter,
         "notified": notified,
     }, status=200)
@@ -23421,7 +23663,7 @@ def get_event_team_letters(request):
 
     base_qs = (
         event.tournament_teams
-        .select_related("team")
+        .select_related("team", "ghost_team")
         .prefetch_related("members__user")
         .order_by("tournament_team_id")
     )
@@ -23431,11 +23673,13 @@ def get_event_team_letters(request):
     teams = []
     for tt in page:
         # The team's event-roster member users feed the live union (+ the team's manual extras).
+        # tt.team is None for a ghost - _letter_avatars_available already treats team=None as "no
+        # manual extras" (a ghost has no afc_team.Team.manual_letter_avatars to union in).
         member_users = [m.user for m in tt.members.all() if m.user]
         teams.append({
             "tournament_team_id": tt.tournament_team_id,
             "team_id": tt.team_id,
-            "team_name": tt.team.team_name,
+            "team_name": tt.display_name,
             "available_letters": _letter_avatars_available(member_users, team=tt.team),
             "assigned_letter": tt.assigned_letter,
             "member_count": len(member_users),
@@ -25346,8 +25590,9 @@ def get_event_flagged_kills(request):
 
     flags_qs = (MatchKillFlag.objects
                 .filter(tournament_team__event=event)
-                .select_related("tournament_team__team", "registered_user", "match__group__stage")
-                .order_by("tournament_team__team__team_name", "match_id", "uid"))
+                .select_related("tournament_team__team", "tournament_team__ghost_team",
+                                 "registered_user", "match__group__stage")
+                .order_by(_COMPETITOR_NAME, "match_id", "uid"))
     if scoped:
         flags_qs = flags_qs.filter(match__group_id__in=scope_group_ids)
     rows = []
@@ -25357,7 +25602,7 @@ def get_event_flagged_kills(request):
             "flag_id": f.id,
             "match_id": f.match_id,
             "tournament_team_id": f.tournament_team_id,
-            "team_name": (f.tournament_team.team.team_name if f.tournament_team.team_id else None),
+            "team_name": f.tournament_team.display_name,
             "uid": f.uid,
             "name": f.name,
             "kills": f.kills,
@@ -25378,7 +25623,7 @@ def get_event_flagged_kills(request):
     # by the SAME stage/group filter so the panel stays coherent with the flags above.
     blocks_qs = (UnmatchedTeamBlock.objects
                  .filter(match__group__stage__event=event)
-                 .select_related("match__group__stage", "attributed_team__team")
+                 .select_related("match__group__stage", "attributed_team__team", "attributed_team__ghost_team")
                  .order_by("team_name", "match_id"))
     if scoped:
         blocks_qs = blocks_qs.filter(match__group_id__in=scope_group_ids)
@@ -25392,8 +25637,7 @@ def get_event_flagged_kills(request):
             "placement": b.placement,
             "kills": b.kills,
             "attributed_team_id": b.attributed_team_id,
-            "attributed_team_name": (b.attributed_team.team.team_name
-                                     if b.attributed_team_id and b.attributed_team.team_id else None),
+            "attributed_team_name": (b.attributed_team.display_name if b.attributed_team_id else None),
             "stage_id": (stg.stage_id if stg else None),
             "stage_name": (stg.stage_name if stg else None),
             "group_id": (grp.group_id if grp else None),
@@ -25401,8 +25645,8 @@ def get_event_flagged_kills(request):
         })
     # Attribution options stay the WHOLE event's teams (unscoped) - a block can be attributed to any team.
     event_teams = sorted(
-        ({"tournament_team_id": tt.tournament_team_id, "team_name": tt.team.team_name}
-         for tt in TournamentTeam.objects.filter(event=event).select_related("team")),
+        ({"tournament_team_id": tt.tournament_team_id, "team_name": tt.display_name}
+         for tt in TournamentTeam.objects.filter(event=event).select_related("team", "ghost_team")),
         key=lambda t: (t["team_name"] or "").lower(),
     )
 
@@ -25755,6 +25999,10 @@ def _event_team_recipient_users(tournament_team):
             users[m.user.user_id] = m.user
     # 2) Team management: owner + captain + anyone holding a management role. Included regardless of
     #    whether they are in the event lineup, so the people running the team always get room details.
+    # Ghost competitors (owner 2026-08-20): team is None for a ghost row, and GhostTeam has no
+    # owner/captain/management concept at all. The getattr(..., None) defaults below and the
+    # TeamMembers filter(team=None) (TeamMembers.team is NOT NULL, so this simply matches nothing)
+    # both already resolve to "no management recipients" for a ghost - intentional, not a gap.
     team = tournament_team.team
     if getattr(team, "team_owner_id", None):
         users.setdefault(team.team_owner_id, team.team_owner)
@@ -26405,8 +26653,12 @@ def mark_no_show(request):
         tt = get_object_or_404(TournamentTeam, tournament_team_id=ttid, event=event)
         tt.is_no_show = bool(value)
         tt.save(update_fields=["is_no_show"])
+        # NoShowRecord.team is an afc_team.Team FK, so a ghost row (tt.team is None) has no
+        # equivalent to record against - _apply_no_show_record already no-ops when team_obj is
+        # None, so the is_no_show flag above still toggles but the platform-wide repeat-no-show
+        # warning is a real-team-only feature.
         _apply_no_show_record(event, team_obj=tt.team, value=value, actor=user)  # F1 history
-        name = tt.team.team_name if tt.team_id else f"team {ttid}"
+        name = tt.display_name
 
     AdminHistory.objects.create(
         admin_user=user, action="mark_no_show",
@@ -26504,7 +26756,7 @@ def detect_no_shows(request):
             stage_group__stage__event=event, status="active",
             tournament_team__isnull=False,
             tournament_team__is_no_show=False, tournament_team__is_waitlisted=False,
-        ).select_related("tournament_team__team")
+        ).select_related("tournament_team__team", "tournament_team__ghost_team")
         played = TournamentTeamMatchStats.objects.filter(match__group__stage__event=event)
         if stage_id:
             sgc = sgc.filter(stage_group__stage_id=stage_id)
@@ -26532,7 +26784,7 @@ def detect_no_shows(request):
             if tt.tournament_team_id not in played_ids:
                 suggestions.append({
                     "tournament_team_id": tt.tournament_team_id,
-                    "name": tt.team.team_name if tt.team_id else f"team {tt.tournament_team_id}",
+                    "name": tt.display_name,
                 })
     else:
         # Solo: registered active non-waitlisted players with no solo stats.
@@ -26580,13 +26832,14 @@ def _promote_competitor(event, *, competitor_id=None, tournament_team_id=None):
         return (reg.user.username if reg.user else "competitor"), [reg.user]
     else:
         tt = TournamentTeam.objects.filter(
-            tournament_team_id=tournament_team_id, event=event, is_waitlisted=True).select_related("team").first()
+            tournament_team_id=tournament_team_id, event=event, is_waitlisted=True
+        ).select_related("team", "ghost_team").first()
         if not tt:
             return None, []
         tt.is_waitlisted = False
         tt.save(update_fields=["is_waitlisted"])
         members = [m.user for m in tt.members.select_related("user").all() if m.user]
-        return (tt.team.team_name if tt.team_id else "team"), members
+        return tt.display_name, members
 
 
 @api_view(["POST"])
@@ -26788,8 +27041,8 @@ def export_participants(request):
                 "Registration Date": rc.registration_date.strftime("%Y-%m-%d %H:%M") if rc.registration_date else "",
             })
     else:
-        for tt in TournamentTeam.objects.select_related("team").filter(event=event).order_by("registration_date"):
-            team_name = tt.team.team_name if tt.team else ""
+        for tt in TournamentTeam.objects.select_related("team", "ghost_team").filter(event=event).order_by("registration_date"):
+            team_name = tt.display_name
             for member in TournamentTeamMember.objects.select_related("user").filter(tournament_team=tt):
                 u = member.user
                 rows.append({

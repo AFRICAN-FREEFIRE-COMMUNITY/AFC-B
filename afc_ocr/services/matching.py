@@ -256,7 +256,11 @@ def get_registered_players(match, event, event_type: str) -> list:
         teams = (
             TournamentTeam.objects
             .filter(event=event, status="active")
-            .select_related("team")
+            # ghost_team alongside team (owner 2026-08-20): a ghost has no AFC roster, so this
+            # loop never actually yields a member for one today, but t_team.team.team_name below
+            # would still AttributeError on a ghost row if that ever changed. display_name below
+            # is null-safe either way and select_related keeps it query-free.
+            .select_related("team", "ghost_team")
             .prefetch_related("members__user")
         )
         for t_team in teams:
@@ -265,7 +269,7 @@ def get_registered_players(match, event, event_type: str) -> list:
                     "user_id":   member.user_id,
                     "username":  member.user.username,
                     "team_id":   t_team.tournament_team_id,
-                    "team_name": t_team.team.team_name,
+                    "team_name": t_team.display_name,
                 })
     else:
         competitors = (

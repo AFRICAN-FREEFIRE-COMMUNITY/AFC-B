@@ -23,6 +23,15 @@ SURVIVOR RULE: within each (event, team) group keep the row with the MOST real d
 match_stats, then most roster members, then the LOWEST id as a stable tiebreak. That survivor is the
 canonical registration every other surface already references.
 
+GHOSTS (owner 2026-08-20, external results import): a TournamentTeam may now point at an
+afc_rankings.GhostTeam instead of a real Team, and a ghost row has team_id = None (see
+TournamentTeam.team's docstring in models.py). Grouping used to be keyed on (event, team) alone, so
+EVERY ghost in an event shared the single bucket (event, None) and the command read them all as one
+giant duplicate group to merge, deleting every ghost but one and reattaching their match stats to an
+unrelated survivor. The grouping key below adds ghost_team so real rows and ghost rows never collide
+on a shared "team_id is None" bucket; a genuine duplicate of either kind still groups together and is
+still merged exactly as before.
+
 SAFE MERGE (never orphan / never lose data): we do NOT bare-delete a duplicate (that would cascade
 away its children). Instead we walk EVERY reverse relation Django knows points at TournamentTeam
 (TournamentTeam._meta.related_objects - TournamentTeamMember, TournamentTeamMatchStats, MatchKillFlag,
@@ -58,17 +67,32 @@ class Command(BaseCommand):
 
     @staticmethod
     def _rank(tt):
-        # Survivor preference: most match_stats, then most roster members. The caller breaks the final
-        # tie with the LOWEST id (so the choice is deterministic + stable across re-runs).
+        # Survivor preference: most match_stats, then most roster members. Both are reverse relations
+        # keyed off tournament_team_id (the row's own PK), never off .team, so this ranking is exactly
+        # as correct for a ghost row as for a real one - nothing here needs to change for ghosts.
         return (tt.match_stats.count(), tt.members.count())
+
+    @staticmethod
+    def _describe(tt):
+        # A ghost's team_id is always None (see models.py), so printing "team None" in the report
+        # would look like a bug rather than a real ghost registration. Name the competitor by kind
+        # instead: real teams keep the numeric id ops already grep prod logs for; ghosts get their
+        # GhostTeam uuid plus display_name so the report line still identifies exactly who is merging.
+        if tt.is_ghost:
+            return f"ghost {tt.ghost_team_id} ({tt.display_name})"
+        return f"team {tt.team_id}"
 
     def handle(self, *args, **options):
         apply = options["apply"]
 
-        # Bucket every TournamentTeam by its (event, team) pair.
+        # Bucket every TournamentTeam by (event, team, ghost_team). team_id and ghost_team_id are
+        # never both set (tt_team_xor_ghost), so a real row's bucket is (event, <id>, None) and a
+        # ghost's is (event, None, <uuid>) - the two kinds can never collide with each other, only
+        # with a genuine duplicate of their own kind. See the GHOSTS note in the module docstring for
+        # why the plain (event, team) key used to merge every ghost in an event into one group.
         groups = defaultdict(list)
         for tt in TournamentTeam.objects.all().order_by("tournament_team_id"):
-            groups[(tt.event_id, tt.team_id)].append(tt)
+            groups[(tt.event_id, tt.team_id, tt.ghost_team_id)].append(tt)
         dupes = {k: v for k, v in groups.items() if len(v) > 1}
 
         if not dupes:
@@ -81,8 +105,14 @@ class Command(BaseCommand):
         fk_rels = [r for r in TournamentTeam._meta.related_objects if not r.many_to_many]
 
         # Resolve the survivor for each group up front so the dry-run shows exactly what --apply will do.
+        # Sort key: team_id/ghost_team_id are compared as strings, not raw values, because within the
+        # SAME event one dupe group can be a real-team group (team_id an int, ghost_team_id None) and
+        # another a ghost group (team_id None, ghost_team_id a uuid) - sorting the raw tuples would try
+        # to compare an int to None (or a uuid to None) once event_id ties, which raises TypeError.
         plan = []
-        for (event_id, team_id), rows in sorted(dupes.items()):
+        for (event_id, team_id, ghost_team_id), rows in sorted(
+            dupes.items(), key=lambda item: (item[0][0], str(item[0][1]), str(item[0][2]))
+        ):
             survivor = max(rows, key=lambda t: (self._rank(t), -t.tournament_team_id))
             losers = [r for r in rows if r.tournament_team_id != survivor.tournament_team_id]
             plan.append((survivor, losers))
@@ -90,7 +120,7 @@ class Command(BaseCommand):
         self.stdout.write(f"Found {len(dupes)} duplicated (event, team) group(s):")
         for survivor, losers in plan:
             self.stdout.write(
-                f"  - event {survivor.event_id}, team {survivor.team_id}: keep #{survivor.tournament_team_id} "
+                f"  - event {survivor.event_id}, {self._describe(survivor)}: keep #{survivor.tournament_team_id} "
                 f"(stats {survivor.match_stats.count()}, members {survivor.members.count()}); "
                 f"merge {[(l.tournament_team_id, l.match_stats.count(), l.members.count()) for l in losers]}"
             )

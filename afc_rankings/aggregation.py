@@ -280,7 +280,29 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date,
         if event_id in excluded:
             continue  # this team's results in this event are opted out of counting
         ev = rows[0][0]
-        raw_placement = sum(engine.placement_points(s.placement, tables) for _, s in rows)
+        # PLACEMENT POINTS, and the one case where they are not derived here (owner 2026-08-21).
+        #
+        # Normally a row's placement points come from its FINISH in that map, looked up in the
+        # admin's own scoring table. An IMPORTED SUMMED row has no per-map finish to look up: the
+        # organizer published a standings table, so `placement` is NULL and the only placement
+        # figure that exists is the total they published, carried in `placement_points`.
+        #
+        # The owner's decision is that such an event counts like any other once an admin switches
+        # it on. So for an aggregate row the published total is used as-is. WHAT THAT MEANS, stated
+        # plainly because it is the thing to check if a ranking ever looks off: those points came
+        # from the SOURCE tournament's placement ladder, not AFC's. In practice the two usually
+        # agree, because AFC's default ladder (12/9/8/7/6/5/4/3/2/1, DEFAULT_PLACEMENT_POINTS) is
+        # the standard Free Fire one that most organizers publish under. Where a source used a
+        # different ladder, its teams' placement points arrive on that source's scale.
+        #
+        # Everything else about the event is still scored by AFC's own configuration: kills, the
+        # winner and finals bonuses, the participation rules, and the TIER multiplier, which is the
+        # weight applied to the whole event. Only this one input is taken as published.
+        raw_placement = sum(
+            (s.placement_points or 0) if s.is_aggregate
+            else engine.placement_points(s.placement, tables)
+            for _, s in rows
+        )
         raw_kills = sum(s.kills for _, s in rows)
         tt = TournamentTeam.objects.filter(event_id=event_id, team=team).first()
         won = bool(tt and tt.is_tournament_winner)

@@ -206,8 +206,22 @@ def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
         # the FE CountryFlag/TeamLink (@/lib/countryFlag) renders beside team_name.
         .values(
             "tournament_team_id",
-            team_name=F("tournament_team__team__team_name"),
-            team_country=F("tournament_team__team__country"),
+            # GHOST-AWARE (owner 2026-08-21). A ghost competitor - one imported from an external
+            # tournament's published results - has NO Team row, so both plain paths above are NULL
+            # for it. This function is the shared core behind combined standings, round-robin
+            # standings, the overlay feed, advancement seeding and event_links, so the un-coalesced
+            # traversal left an imported team NAMELESS on all five at once, and the .order_by()
+            # below sorts on team_name, so every ghost also clumped at one end of the table
+            # regardless of its score. Coalesce falls back to the ghost's own name/country.
+            team_name=Coalesce(
+                "tournament_team__team__team_name", "tournament_team__ghost_team__team_name"),
+            team_country=Coalesce(
+                "tournament_team__team__country", "tournament_team__ghost_team__country"),
+            # NULL for a real team; its presence is how the frontend knows not to render a profile
+            # link for this row (see components/ui/entity-link isGhost). Functionally dependent on
+            # tournament_team, so adding it does not split the GROUP BY - same argument the
+            # team_country comment above makes.
+            competitor_ghost_id=F("tournament_team__ghost_team_id"),
         )
         .annotate(
             # games_played = matches this team has stats in within the fed-in slice.

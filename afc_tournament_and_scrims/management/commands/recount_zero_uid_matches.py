@@ -93,9 +93,11 @@ class Command(BaseCommand):
             # normalize to any registered team (e.g. "BERSERK GEN" vs "BERSERK GENERATION" - an
             # unmatched/attributed block) stays None, which is correct: --apply re-derives it via re-upload.
             _n = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
-            stored = {_n(ts.tournament_team.team.team_name): ts.kills
+            # display_name (not .team.team_name): this match's stats can belong to a ghost
+            # competitor (owner 2026-08-20, external results import), which has no .team row.
+            stored = {_n(ts.tournament_team.display_name): ts.kills
                       for ts in TournamentTeamMatchStats.objects.select_related(
-                          "tournament_team__team").filter(match=m)}
+                          "tournament_team__team", "tournament_team__ghost_team").filter(match=m)}
 
             rows = []
             for blk in parsed:
@@ -158,9 +160,9 @@ class Command(BaseCommand):
                                    HTTP_AUTHORIZATION=f"Bearer {tok.token}")
                 if resp.status_code == 200:
                     repaired += 1
-                    after = {ts.tournament_team.team.team_name: ts.kills
+                    after = {ts.tournament_team.display_name: ts.kills
                              for ts in TournamentTeamMatchStats.objects.select_related(
-                                 "tournament_team__team").filter(match=m)}
+                                 "tournament_team__team", "tournament_team__ghost_team").filter(match=m)}
                     self.stdout.write(self.style.SUCCESS(
                         f"  match {m.match_id}: re-scored OK -> " +
                         ", ".join(f"{n[:14]}={after.get(n)}" for n, *_ in _rows)))

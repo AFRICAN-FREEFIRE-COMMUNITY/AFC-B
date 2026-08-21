@@ -293,10 +293,13 @@ def event_stage_graphic(request, event_id, stage_id):
             if tt_id in present_ids or tt_id in seen_seed:
                 continue  # already scored, or the same team seeded into two of the combined groups
             seen_seed.add(tt_id)
-            team = sc.tournament_team.team if sc.tournament_team else None
+            # display_name resolves a ghost; `team` stays for the logo, which a ghost lacks.
+            _tt = sc.tournament_team
+            team_name_resolved = _tt.display_name if _tt else ""
+            team = _tt.team if _tt else None
             extra_rows.append({
                 "tournament_team_id": tt_id,
-                "team_name": (team.team_name if team else "") or "",
+                "team_name": team_name_resolved or "",
                 "team_country": (team.country if team else "") or "",
                 "games_played": 0, "total_kills": 0, "total_booyah": 0,
                 "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
