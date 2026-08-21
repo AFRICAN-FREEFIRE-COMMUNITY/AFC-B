@@ -252,3 +252,36 @@ class PlayerRowConstraintTests(TestCase):
             with transaction.atomic():
                 TournamentPlayerMatchStats.objects.create(
                     team_stats=team_stat, player=admin, ghost_player=ghost_player, kills=1)
+
+
+class ImportedPlayersAreVisibleTests(PerPlayerImportTests):
+    """Writing rows nobody can read is not a feature. The per-map payload the results screens
+    render must name an imported player, not send a nameless row."""
+
+    def test_the_match_payload_names_an_imported_player(self):
+        self._commit()
+
+        r = self.client.post(
+            "/events/get-all-leaderboard-details-for-event/",
+            {"event_id": self.event.event_id},
+            content_type="application/json", **self._auth())
+        self.assertEqual(r.status_code, 200, r.content[:200])
+
+        names, ghost_ids = [], []
+        def walk(node):
+            if isinstance(node, dict):
+                if "players" in node and isinstance(node["players"], list):
+                    for p in node["players"]:
+                        names.append(p.get("username"))
+                        ghost_ids.append(p.get("ghost_player_id"))
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+        walk(r.json())
+
+        self.assertEqual(sorted(n for n in names if n), ["AliFF", "Zed"])
+        self.assertNotIn(None, names)
+        # And the payload says these are unclaimed names rather than real accounts.
+        self.assertTrue(all(g is not None for g in ghost_ids))
