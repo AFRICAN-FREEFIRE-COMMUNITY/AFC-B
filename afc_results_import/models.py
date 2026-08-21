@@ -67,6 +67,11 @@ class ResultsImport(models.Model):
     # With this on, the import writes ZERO per-player rows, which is the only workable answer.
     # Consequences that are correct rather than gaps: no MVP for such a stage, and no contribution
     # to the per-player ladders.
+    #
+    # ALWAYS TRUE TODAY (owner 2026-08-21). The commit endpoint REFUSES a request that sets it
+    # false, because nothing in the import writes a per-player row, so accepting false silently
+    # promised an option that did not exist. The field stays because it records the mode an import
+    # ran in, which matters if per-player import is ever added; it is not a knob yet.
     team_scores_only = models.BooleanField(default=True)
 
     class Meta:

@@ -60,6 +60,32 @@ def _gate(request, event):
     return user, None
 
 
+def _reject_per_player(request):
+    """Refuse a request asking for per-player import; None when the request is fine.
+
+    team_scores_only is TRUE and cannot currently be anything else, and the endpoints say so rather
+    than accepting a value they will not honour (owner 2026-08-21). The field used to be settable on
+    preview while nothing anywhere wrote a single per-player row, so passing false changed NOTHING
+    and the API silently promised an option that did not exist.
+
+    Per-player import being unavailable is not an oversight: TournamentPlayerMatchStats.player is a
+    foreign key to a real User, and an external tournament has no AFC accounts for its players (FFWS
+    Play-ins Phase 1 alone is roughly 720 of them). Inventing those accounts would be far worse than
+    having no per-player data, so team-only scoring is the answer rather than a limitation to route
+    around. Supporting false means importing player identities first, which is its own feature.
+
+    Checked on BOTH preview and commit: commit accepts a file directly without a prior preview, so
+    guarding only the preview would leave the door open on the path that actually writes.
+    """
+    if str(request.data.get("team_scores_only", "true")).lower() == "false":
+        return Response(
+            {"message": "Per-player results cannot be imported. A player row needs a real AFC "
+                        "account, and an external tournament has none, so an import records team "
+                        "scores only. Leave team_scores_only unset or true."},
+            status=status.HTTP_400_BAD_REQUEST)
+    return None
+
+
 def _event_or_404(request):
     """Resolve the event from slug or event_id, accepting either in body or query string.
 
@@ -110,10 +136,14 @@ def preview_results_import(request):
     if err:
         return err
 
+    err = _reject_per_player(request)
+    if err:
+        return err
+
     imp = ResultsImport.objects.create(
         event=event, uploaded_by=user,
         source_filename=(request.FILES["file"].name or "")[:255],
-        team_scores_only=str(request.data.get("team_scores_only", "true")).lower() != "false",
+        team_scores_only=True,
     )
     try:
         preview = build_preview(event, data)
@@ -155,6 +185,10 @@ def commit_results_import(request):
         return err
 
     imp = None
+    err = _reject_per_player(request)
+    if err:
+        return err
+
     if request.data.get("import_id"):
         imp = ResultsImport.objects.filter(pk=request.data["import_id"], event=event).first()
     if imp is None:
@@ -281,3 +315,107 @@ def results_import_template(request):
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     resp["Content-Disposition"] = f'attachment; filename="{event.slug or event.pk}-results.xlsx"'
     return resp
+
+
+# ── GET / POST results-import/settings/ ────────────────────────────────────────────────────────
+# The four decisions an admin makes about an imported event, in one place because they are not
+# independent and a screen that implies otherwise misleads. Two are about a team's PROFILE, two are
+# about the RANKINGS ladder.
+#
+# WHY THIS EXISTS: the two profile fields shipped enforced but unwritable. Event.
+# imported_results_visible_on_profiles and .imported_results_count_in_profile_stats are both read in
+# afc_team/views.py, both default False, and nothing anywhere could set them, so an imported event
+# was permanently invisible on every team profile and no admin could change it without a shell.
+#
+# CONSUMED BY: the Results Import tab (frontend app/(a)/a/events/[slug]/edit ResultsImportTab).
+_TIERS = {"tier_1", "tier_2", "tier_3"}
+
+
+def _settings_payload(event):
+    """The current state of all four switches, plus what the rankings one resolves to today."""
+    from afc_rankings.models import EventCountingControl
+    control = EventCountingControl.objects.filter(event=event).first()
+    return {
+        "slug": event.slug,
+        "results_imported_at": event.results_imported_at,
+        "visible_on_profiles": event.imported_results_visible_on_profiles,
+        "count_in_profile_stats": event.imported_results_count_in_profile_stats,
+        # No control row means "everything counts" (EventCountingControl's own rule), so report the
+        # EFFECTIVE answer rather than the raw absence of a row.
+        "counts_toward_rankings": control.counts_toward_rankings if control else True,
+        "tournament_tier": event.tournament_tier,
+        "tier_overridden": event.tier_overridden,
+    }
+
+
+@api_view(["GET", "POST"])
+def results_import_settings(request):
+    """GET returns the four switches; POST updates any subset of them.
+
+    Body (POST): slug (required) plus any of visible_on_profiles, count_in_profile_stats,
+    counts_toward_rankings (bool), tournament_tier ("tier_1" | "tier_2" | "tier_3").
+
+    AUTH: the import gate for the two PROFILE switches (whoever may import may decide how the
+    import presents). The two RANKINGS switches additionally require an AFC event admin, because
+    they change points on a public ladder for teams who have nothing to do with this event, and
+    tier is the WEIGHT aggregation applies, not a label.
+    """
+    slug = request.data.get("slug") or request.query_params.get("slug")
+    if not slug:
+        return Response({"message": "slug is required."}, status=status.HTTP_400_BAD_REQUEST)
+    event = get_object_or_404(Event, slug=slug)
+    user, err = _gate(request, event)
+    if err:
+        return err
+
+    if request.method == "GET":
+        return Response(_settings_payload(event))
+
+    from afc_tournament_and_scrims.views import _is_event_admin
+
+    def _flag(name):
+        """Tri-state: None when the caller did not mention the field, else a real bool."""
+        if name not in request.data:
+            return None
+        return str(request.data.get(name)).lower() in ("1", "true", "yes", "on")
+
+    visible = _flag("visible_on_profiles")
+    counts_stats = _flag("count_in_profile_stats")
+    rankings = _flag("counts_toward_rankings")
+    tier = request.data.get("tournament_tier")
+
+    if (rankings is not None or tier) and not _is_event_admin(user):
+        return Response(
+            {"message": "Only an AFC event admin can change what an event contributes to the "
+                        "rankings, or its tier."},
+            status=status.HTTP_403_FORBIDDEN)
+    if tier and tier not in _TIERS:
+        return Response({"message": f"tournament_tier must be one of {sorted(_TIERS)}."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    changed = []
+    if visible is not None:
+        event.imported_results_visible_on_profiles = visible
+        changed.append("imported_results_visible_on_profiles")
+    if counts_stats is not None:
+        event.imported_results_count_in_profile_stats = counts_stats
+        changed.append("imported_results_count_in_profile_stats")
+    if tier:
+        event.tournament_tier = tier
+        # A hand-picked tier is a lock, the same way a head admin's manual tier is: the automatic
+        # classifier must not re-derive it from a prize pool nobody imported.
+        event.tier_overridden = True
+        changed += ["tournament_tier", "tier_overridden"]
+    if changed:
+        event.save(update_fields=changed)
+
+    if rankings is not None:
+        from afc_rankings.models import EventCountingControl
+        control, _ = EventCountingControl.objects.get_or_create(
+            event=event, defaults={"counts_toward_rankings": rankings, "updated_by": user})
+        if control.counts_toward_rankings != rankings:
+            control.counts_toward_rankings = rankings
+            control.updated_by = user
+            control.save(update_fields=["counts_toward_rankings", "updated_by"])
+
+    return Response(_settings_payload(event))

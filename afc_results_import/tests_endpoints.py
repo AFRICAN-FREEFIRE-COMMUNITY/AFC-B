@@ -263,3 +263,76 @@ class ResultsImportEndpointTests(TestCase):
         self.assertEqual(r.status_code, 200)
         row = TournamentTeamMatchStats.objects.get(tournament_team=tt)
         self.assertEqual((row.matches_counted, row.booyah_count, row.total_points), (6, 2, 70))
+
+
+class ImportFailSafeTests(ResultsImportEndpointTests):
+    """GAP 2 + GAP 3: what a commit decides on the admin's behalf, and what it refuses.
+
+    Inherits the fixture above so the workbook, event and tokens are identical to the commit tests.
+    """
+
+    def test_a_first_import_does_NOT_feed_the_rankings_ladder(self):
+        """EventCountingControl's rule is "no row => everything counts", so an import used to reach
+        the official ladder unless somebody remembered to switch it off. It must fail the safe way:
+        an admin turns it ON deliberately, not OFF in a hurry."""
+        from afc_rankings.models import EventCountingControl
+
+        self.client.post(
+            "/results-import/commit/",
+            {"slug": self.event.slug, "file": _upload(_xlsx({"Group A": GROUP_A}))},
+            **self._auth(self.admin_token))
+
+        control = EventCountingControl.objects.get(event=self.event)
+        self.assertFalse(control.counts_toward_rankings)
+
+    def test_a_first_import_PINS_the_tier(self):
+        """Tier is the WEIGHT aggregation applies to results, and the automatic classifier derives
+        it from the prize pool, which for an imported event is whatever somebody typed."""
+        self.client.post(
+            "/results-import/commit/",
+            {"slug": self.event.slug, "file": _upload(_xlsx({"Group A": GROUP_A}))},
+            **self._auth(self.admin_token))
+
+        self.event.refresh_from_db()
+        self.assertTrue(self.event.tier_overridden)
+
+    def test_a_RE_import_does_not_undo_an_admin_who_switched_rankings_on(self):
+        """The fail-safe is for the FIRST import only. Re-running a corrected file must not silently
+        reverse a decision the admin has since made."""
+        from afc_rankings.models import EventCountingControl
+
+        payload = {"slug": self.event.slug}
+        self.client.post("/results-import/commit/",
+                         dict(payload, file=_upload(_xlsx({"Group A": GROUP_A}))),
+                         **self._auth(self.admin_token))
+        control = EventCountingControl.objects.get(event=self.event)
+        control.counts_toward_rankings = True
+        control.save(update_fields=["counts_toward_rankings"])
+
+        self.client.post("/results-import/commit/",
+                         dict(payload, file=_upload(_xlsx({"Group A": GROUP_A}))),
+                         **self._auth(self.admin_token))
+
+        control.refresh_from_db()
+        self.assertTrue(control.counts_toward_rankings)
+
+    def test_per_player_import_is_refused_with_a_reason(self):
+        """GAP 3. team_scores_only used to be accepted as false while nothing wrote a per-player
+        row, so the API promised an option that did not exist."""
+        r = self.client.post(
+            "/results-import/commit/",
+            {"slug": self.event.slug, "team_scores_only": "false",
+             "file": _upload(_xlsx({"Group A": GROUP_A}))},
+            **self._auth(self.admin_token))
+
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn("team scores only", r.json()["message"].lower())
+
+    def test_the_default_still_imports_team_scores(self):
+        r = self.client.post(
+            "/results-import/commit/",
+            {"slug": self.event.slug, "file": _upload(_xlsx({"Group A": GROUP_A}))},
+            **self._auth(self.admin_token))
+
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(r.json()["summary"]["stats_rows"], 2)

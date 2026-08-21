@@ -283,11 +283,38 @@ def commit_import(imp, data, *, actor=None):
         summary["groups"].append({"group": group.group_name, "stage": group.stage.stage_name,
                                   "kind": sheet["kind"], "rows": len(sheet["rows"])})
 
+    # ── FAIL-SAFE on the FIRST import only (owner 2026-08-21) ────────────────────────────────
+    # Rankings and tier are deliberately NOT new fields on Event: rankings is
+    # afc_rankings.EventCountingControl.counts_toward_rankings and tier is Event.tournament_tier.
+    # The problem was the DEFAULT. EventCountingControl documents "no row for an event => everything
+    # counts", and nothing here created a row, so an imported event reached the official ladder
+    # unless somebody remembered to switch it off. That is the opposite of the fail-safe the two
+    # profile switches use, and it moves REAL teams up and down a public ranking.
+    #
+    # Tier matters for the same reason and is easy to miss: aggregation passes tier as the WEIGHT
+    # applied to an event's results, and auto_classify_event derives it from the PRIZE POOL. An
+    # imported event's prize pool is whatever the admin happened to type, not the real one, so
+    # leaving the classifier free to run lets a number nobody imported scale everybody's points.
+    # tier_overridden=True pins it, exactly as a manual admin tier does.
+    #
+    # FIRST import only, keyed off results_imported_at being unset BEFORE this block. A re-import
+    # must not silently undo an admin who has since decided this event should count.
+    first_import = event.results_imported_at is None
+    if first_import:
+        from afc_rankings.models import EventCountingControl
+        EventCountingControl.objects.get_or_create(
+            event=event,
+            defaults={"counts_toward_rankings": False, "updated_by": actor},
+        )
+        if not event.tier_overridden:
+            event.tier_overridden = True
+
     # Mark the event as carrying imported results. NOT event_type="external", which already means
     # "registration happens off-platform" and would surface a Register button (spec section 4.3).
     event.results_imported_at = timezone.now()
     event.results_imported_by = actor
-    event.save(update_fields=["results_imported_at", "results_imported_by"])
+    event.save(update_fields=["results_imported_at", "results_imported_by", "tier_overridden"])
+    summary["rankings_defaulted_off"] = first_import
 
     imp.status = "committed"
     imp.summary = summary
