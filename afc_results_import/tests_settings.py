@@ -203,12 +203,15 @@ class RankingsSwitchIsAdminOnlyTests(TestCase):
         self.assertFalse(self.event.imported_results_visible_on_profiles)
 
 
-class SummedImportCannotCountTowardsRankingsTests(TestCase):
-    """A summed import has no per-map finishes, and the rankings engine awards placement points
-    from exactly that. Counting it would credit the kills and none of the placement points.
+class SummedImportCountsTowardsRankingsTests(TestCase):
+    """A summed import counts (owner 2026-08-21), and the response says where its placement points
+    came from.
 
-    Measured on the real FFWS import before this guard existed: LAXUS E-SPORTS would have
-    contributed 55 kills and 0 placement points against its published 54.
+    The problem this replaced: the engine derives placement points from a per-map FINISH, which a
+    summed row does not have, so such an event used to contribute kills and ZERO placement points.
+    Measured on the real FFWS import: LAXUS E-SPORTS gave 55 kills against its published 54
+    placement points, of which none counted. aggregation._collect_team now uses the published total
+    for an aggregate row.
     """
 
     def setUp(self):
@@ -244,7 +247,10 @@ class SummedImportCannotCountTowardsRankingsTests(TestCase):
             placement=None if is_aggregate else 1,
             is_aggregate=is_aggregate, matches_counted=6 if is_aggregate else 1)
 
-    def test_a_summed_import_is_refused_with_the_reason(self):
+    def test_a_summed_import_MAY_count(self):
+        """Owner decision 2026-08-21: a standings table counts like any other event. It was refused
+        for a while because the engine could not derive placement points from a row with no per-map
+        finish; aggregation now uses the published total for such a row instead."""
         self._stat(is_aggregate=True)
 
         r = self.client.post(
@@ -252,11 +258,31 @@ class SummedImportCannotCountTowardsRankingsTests(TestCase):
             {"slug": "summed-import", "counts_toward_rankings": True},
             content_type="application/json", **self._auth())
 
-        self.assertEqual(r.status_code, 400, r.content[:300])
-        self.assertIn("placement", r.json()["message"].lower())
-        self.assertFalse(
-            EventCountingControl.objects.filter(
-                event=self.event, counts_toward_rankings=True).exists())
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertTrue(
+            EventCountingControl.objects.get(event=self.event).counts_toward_rankings)
+
+    def test_switching_a_summed_import_on_SAYS_where_its_placement_points_came_from(self):
+        """Those points are on the SOURCE tournament's ladder, not AFC's. The screen must be able
+        to say so rather than implying the number was computed here."""
+        self._stat(is_aggregate=True)
+
+        r = self.client.post(
+            "/results-import/settings/",
+            {"slug": "summed-import", "counts_toward_rankings": True},
+            content_type="application/json", **self._auth())
+
+        self.assertTrue(r.json().get("placement_points_from_source"))
+
+    def test_a_PER_MATCH_event_is_not_flagged_that_way(self):
+        self._stat(is_aggregate=False)
+
+        r = self.client.post(
+            "/results-import/settings/",
+            {"slug": "summed-import", "counts_toward_rankings": True},
+            content_type="application/json", **self._auth())
+
+        self.assertNotIn("placement_points_from_source", r.json())
 
     def test_a_PER_MATCH_import_may_count(self):
         """Those rows carry a real placement per map, so they score like any AFC match."""
@@ -294,3 +320,75 @@ class SummedImportCannotCountTowardsRankingsTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.event.refresh_from_db()
         self.assertTrue(self.event.imported_results_visible_on_profiles)
+
+
+class SummedImportReachesTheEngineTests(TestCase):
+    """The switch is only half the story. This checks the NUMBER a summed import contributes.
+
+    Before the owner's 2026-08-21 decision, aggregation derived placement points from each row's
+    per-map finish. A summed row has none, so the lookup returned 0 and such an event contributed
+    its kills and nothing else. The published total is now used for an aggregate row, so a
+    standings table scores like any other event.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create(
+            username="agg_admin", email="ag@example.com", role="admin")
+        self.owner = User.objects.create(username="agg_owner", email="ao@example.com")
+        self.event = _event("agg-summed")
+
+    def _team_with_rows(self, *, is_aggregate, placement_points, kills, placement=None):
+        """One real team holding one result row in this event."""
+        import datetime as _dt
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import (
+            Stages, StageGroups, Match, TournamentTeam, TournamentTeamMatchStats)
+
+        stage = Stages.objects.create(
+            event=self.event, stage_name="S", start_date=TODAY, end_date=TODAY,
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=1)
+        group = StageGroups.objects.create(
+            stage=stage, group_name="A", playing_date=TODAY,
+            playing_time=_dt.time(12, 0), teams_qualifying=1, match_count=1, match_maps=[])
+        match = Match.objects.create(
+            group=group, match_number=1, match_map="m",
+            upload_method="xlsx_import", result_inputted=True, played_on=TODAY)
+        team = Team.objects.create(
+            team_name="AGG FC", join_settings="open",
+            team_creator=self.owner, team_owner=self.owner)
+        tt = TournamentTeam.objects.create(event=self.event, team=team)
+        TournamentTeamMatchStats.objects.create(
+            match=match, tournament_team=tt, placement=placement, kills=kills,
+            placement_points=placement_points, is_aggregate=is_aggregate,
+            matches_counted=6 if is_aggregate else 1)
+        return team
+
+    def test_a_summed_rows_PUBLISHED_placement_points_reach_the_engine(self):
+        from afc_rankings import aggregation
+
+        team = self._team_with_rows(is_aggregate=True, placement_points=54, kills=55)
+
+        collected = aggregation._collect_team(team, TODAY, TODAY + datetime.timedelta(days=1))
+        tournaments = collected[0] if isinstance(collected, tuple) else collected
+
+        rows = [t for t in tournaments] if not isinstance(tournaments, dict) else []
+        self.assertTrue(rows, "no tournament input was produced for the team")
+        self.assertEqual(rows[0].raw_placement_pts, 54)
+        self.assertEqual(rows[0].raw_kills, 55)
+
+    def test_a_per_match_row_is_still_DERIVED_from_its_finish(self):
+        """The published-total shortcut must apply ONLY to aggregate rows. A per-match row carries
+        a real finish, and AFC's own table is what turns that into points: 1st = 12 by default, so
+        a stored 999 must be ignored."""
+        from afc_rankings import aggregation
+
+        team = self._team_with_rows(
+            is_aggregate=False, placement_points=999, kills=3, placement=1)
+
+        collected = aggregation._collect_team(team, TODAY, TODAY + datetime.timedelta(days=1))
+        tournaments = collected[0] if isinstance(collected, tuple) else collected
+        rows = [t for t in tournaments] if not isinstance(tournaments, dict) else []
+
+        self.assertTrue(rows)
+        self.assertNotEqual(rows[0].raw_placement_pts, 999)
+        self.assertEqual(rows[0].raw_placement_pts, 12)
