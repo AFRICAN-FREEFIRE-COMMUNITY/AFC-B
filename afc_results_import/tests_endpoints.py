@@ -336,3 +336,82 @@ class ImportFailSafeTests(ResultsImportEndpointTests):
 
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.assertEqual(r.json()["summary"]["stats_rows"], 2)
+
+
+class TemplateShapeTests(ResultsImportEndpointTests):
+    """A template per data shape, because which shape you have decides what the results can be
+    used for: only a per-match import can count towards the rankings."""
+
+    def test_the_per_match_template_uses_headers_the_parser_reads_as_per_match(self):
+        """The value of a generated template is that the SITE wrote the headers, so a round trip is
+        the only test that proves it. PLACEMENT would be read as the summed score column too, which
+        is why the sheet says PLACE."""
+        import openpyxl
+        from afc_results_import.parsing import parse_sheet
+
+        r = self.client.get(
+            f"/results-import/template/?slug={self.event.slug}&kind=per_match",
+            **self._auth(self.admin_token))
+        self.assertEqual(r.status_code, 200)
+
+        wb = openpyxl.load_workbook(io.BytesIO(r.content))
+        ws = wb[wb.sheetnames[0]]
+        rows = [list(row) for row in ws.iter_rows(values_only=True)]
+        parsed = parse_sheet(ws.title, rows)
+
+        self.assertEqual(parsed["kind"], "per_match")
+
+    def test_the_default_template_is_still_the_summed_one(self):
+        import openpyxl
+        from afc_results_import.parsing import parse_sheet
+
+        r = self.client.get(f"/results-import/template/?slug={self.event.slug}",
+                            **self._auth(self.admin_token))
+
+        wb = openpyxl.load_workbook(io.BytesIO(r.content))
+        ws = wb[wb.sheetnames[0]]
+        parsed = parse_sheet(ws.title, [list(row) for row in ws.iter_rows(values_only=True)])
+        self.assertEqual(parsed["kind"], "summed")
+
+    def test_an_unknown_kind_is_refused(self):
+        r = self.client.get(
+            f"/results-import/template/?slug={self.event.slug}&kind=telepathy",
+            **self._auth(self.admin_token))
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_per_match_template_round_trips_and_CAN_then_count_for_rankings(self):
+        """The whole point of offering this shape: fill it in, import it, and the event is
+        eligible for the rankings because every finish is present."""
+        import openpyxl
+        from afc_rankings.models import EventCountingControl
+
+        tmpl = self.client.get(
+            f"/results-import/template/?slug={self.event.slug}&kind=per_match",
+            **self._auth(self.admin_token)).content
+        wb = openpyxl.load_workbook(io.BytesIO(tmpl))
+        ws = wb[wb.sheetnames[0]]
+        # Type a team name and a real map result, which is what an admin does with a template for
+        # an event whose competitors were never entered on AFC (the sheet then carries the header
+        # only). The importer creates the competitor as an unclaimed ghost.
+        ws.cell(row=2, column=1, value="ELITE HUNTERS")
+        ws.cell(row=2, column=2, value=1)    # MATCH
+        ws.cell(row=2, column=3, value="bermuda")
+        ws.cell(row=2, column=4, value=1)    # PLACE
+        ws.cell(row=2, column=5, value=9)    # ELIMS
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        r = self.client.post(
+            "/results-import/commit/",
+            {"slug": self.event.slug, "file": _upload(buf.getvalue())},
+            **self._auth(self.admin_token))
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+        on = self.client.post(
+            "/results-import/settings/",
+            {"slug": self.event.slug, "counts_toward_rankings": True},
+            content_type="application/json", **self._auth(self.admin_token))
+
+        self.assertEqual(on.status_code, 200, on.content[:300])
+        self.assertTrue(
+            EventCountingControl.objects.get(event=self.event).counts_toward_rankings)
