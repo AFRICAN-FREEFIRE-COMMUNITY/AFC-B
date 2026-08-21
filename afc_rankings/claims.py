@@ -219,7 +219,7 @@ def reattribute_ghost_team(ghost, real_team, actor):
 
 
 def reattribute_ghost_player(ghost, real_user, actor):
-    """Move a ghost PLAYER's standalone solo history onto ``real_user`` (called on claim approval).
+    """Move a ghost PLAYER's solo AND tournament history onto ``real_user`` (on claim approval).
 
     Same shape as reattribute_ghost_team but for the solo side: participant ``ghost_player -> user``,
     delete the ghost's PlayerMonthlyScore / PlayerQuarterlyScore rows, recompute the real user with
@@ -257,6 +257,31 @@ def reattribute_ghost_player(ghost, real_user, actor):
             p.user = real_user
             p.save(update_fields=["ghost_player", "user"])
 
+        # 3b) TOURNAMENT history (owner 2026-08-21, external results import).
+        # A ghost player can now hold TournamentPlayerMatchStats rows: a per-player import records
+        # individual kills against the ghost because the person has no AFC account. On claim those
+        # rows must follow the person, exactly as reattribute_ghost_team re-points TournamentTeam
+        # rows, or a claimed player's imported kills stay stranded on an identity nobody can reach.
+        #
+        # A row is SKIPPED, not moved, when the real user already has a row on the same team line:
+        # that would mean the person appears twice in one map, and the two rows would double their
+        # kills for that map. Reported in the summary so an admin can look rather than wonder.
+        from afc_tournament_and_scrims.models import TournamentPlayerMatchStats
+
+        ghost_match_rows = list(
+            TournamentPlayerMatchStats.objects.filter(ghost_player=ghost))
+        moved_match_rows, skipped_match_rows = 0, 0
+        for row in ghost_match_rows:
+            clash = TournamentPlayerMatchStats.objects.filter(
+                team_stats_id=row.team_stats_id, player=real_user).exists()
+            if clash:
+                skipped_match_rows += 1
+                continue
+            row.ghost_player = None
+            row.player = real_user
+            row.save(update_fields=["ghost_player", "player"])
+            moved_match_rows += 1
+
         # 4) delete the ghost player's now-orphaned score rows.
         PlayerMonthlyScore.objects.filter(ghost_player=ghost).delete()
         PlayerQuarterlyScore.objects.filter(ghost_player=ghost).delete()
@@ -269,6 +294,8 @@ def reattribute_ghost_player(ghost, real_user, actor):
 
     return {
         "reattributed_participants": len(participants),
+        "reattributed_match_rows": moved_match_rows,
+        "skipped_match_rows": skipped_match_rows,
         "affected_months": sorted(m.isoformat() for m in months),
         "affected_seasons": sorted(season_ids),
         "real_user_id": real_user.pk,

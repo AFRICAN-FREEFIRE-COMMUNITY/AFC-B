@@ -1562,7 +1562,27 @@ class TournamentPlayerMatchStats(models.Model):
     """
     player_stats_id = models.AutoField(primary_key=True)
     team_stats = models.ForeignKey(TournamentTeamMatchStats, on_delete=models.CASCADE, related_name="player_stats")
-    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    # ── WHO this row is about: a real AFC user, or a GHOST PLAYER (owner 2026-08-21) ──────────────
+    # At most one of these two is set. Mirrors TournamentTeam.team / .ghost_team exactly, including
+    # the reason the constraint is "not both" rather than a strict XOR - see the comment there:
+    # MySQL cannot defer constraint checks, so a cascade delete NULLS a nullable FK before deleting
+    # the row, and a strict XOR rejects that intermediate state and breaks deleting a USER.
+    #
+    # WHY player IS NULLABLE NOW. An external tournament's players have no AFC accounts (FFWS
+    # Play-ins Phase 1 alone is roughly 720 people). afc_rankings.GhostPlayer is the identity AFC
+    # already uses for a provisional in-game name, complete with a claim lifecycle that
+    # afc_rankings.claims.reattribute_ghost_player uses to move that history onto a real user, so it
+    # is reused here rather than inventing a second "player who is not really a player".
+    #
+    # WHAT A GHOST ROW MUST NOT DO: reach anything that ranks or profiles a PERSON. Every such
+    # reader either filters by a real user (a ghost row has player=NULL so it can never match) or
+    # is listed in the sweep recorded in the results-import handover. A ghost row exists to be
+    # DISPLAYED on the event it came from, and to be re-attributed if the player claims it.
+    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                               null=True, blank=True)
+    ghost_player = models.ForeignKey(
+        "afc_rankings.GhostPlayer", on_delete=models.CASCADE,
+        null=True, blank=True, related_name="tournament_match_stats")
     kills = models.PositiveIntegerField(default=0)
     damage = models.PositiveIntegerField(default=0)
     assists = models.PositiveIntegerField(default=0)
@@ -1604,6 +1624,37 @@ class TournamentPlayerMatchStats(models.Model):
     role_at_match = models.CharField(
         max_length=20, choices=TeamMembers.IN_GAME_ROLE_CHOICES, null=True, blank=True,
     )
+
+    class Meta:
+        constraints = [
+            # NOT BOTH, deliberately not a strict XOR. See TournamentTeam.tt_team_xor_ghost for the
+            # full reasoning: MySQL cannot defer constraint checks, so deleting a User nulls this
+            # row's player column before deleting the row, and a strict "exactly one" rejects that
+            # intermediate state - which would break deleting any user who has ever played a match.
+            models.CheckConstraint(
+                name="tpms_player_xor_ghost",
+                check=~models.Q(player__isnull=False, ghost_player__isnull=False),
+            ),
+        ]
+
+    @property
+    def is_ghost(self) -> bool:
+        """True when this row belongs to an imported player with no AFC account."""
+        return self.ghost_player_id is not None
+
+    @property
+    def competitor(self):
+        """The User or the GhostPlayer, whichever this row is about."""
+        return self.ghost_player if self.is_ghost else self.player
+
+    @property
+    def display_name(self) -> str:
+        """The name to show, without the caller needing to know which kind of row this is.
+
+        A GhostPlayer carries an in-game name (`ign`); a User carries a username."""
+        if self.is_ghost:
+            return self.ghost_player.ign
+        return self.player.username if self.player_id else ""
 
 
 class MatchKillFlag(models.Model):

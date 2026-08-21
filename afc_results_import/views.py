@@ -273,6 +273,13 @@ def results_import_template(request):
                  finish is present and scores through the admin's own scoring config exactly like
                  a match played on AFC.
 
+      per_match_players
+                 TEAM PLAYER MATCH MAP PLACE ELIMS
+                 One row per PLAYER per map, for a source that published individual kills. The
+                 team's line is rebuilt from its players' rows, so the team total and the player
+                 breakdown agree by construction. Players with no AFC account become GhostPlayers
+                 on the ghost team, claimable later exactly as the team itself is.
+
     Header spellings are chosen to be unambiguous. "PLACEMENT" would be read as BOTH the summed
     SCORE column and a per-match finish (see parsing._ALIASES), so the per-match sheet says PLACE.
     
@@ -367,6 +374,9 @@ _TEMPLATE_HEADERS = {
     # PLACE, not PLACEMENT: "placement" is an alias of the SUMMED score column as well as of a
     # per-match finish, so it would be read as both.
     "per_match": ("TEAM", "MATCH", "MAP", "PLACE", "ELIMS"),
+    # One row per PLAYER per map. The team's line for that map is rebuilt from its players' rows,
+    # so PLACE is the TEAM's finish repeated on each of its rows and ELIMS is that player's own.
+    "per_match_players": ("TEAM", "PLAYER", "MATCH", "MAP", "PLACE", "ELIMS"),
 }
 
 
