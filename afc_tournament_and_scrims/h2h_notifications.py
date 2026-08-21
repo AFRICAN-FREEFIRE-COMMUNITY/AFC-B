@@ -85,7 +85,10 @@ def _notify(users, event, title, message):
 
 
 def _team_name(tt):
-    return tt.team.team_name if tt and tt.team_id else "TBD"
+    # display_name, not .team.team_name: a bracket slot can hold a GHOST competitor, whose
+    # team_id is NULL, and naming it "TBD" in a notification would tell a real opponent their
+    # match has no opponent yet when it does (owner 2026-08-20).
+    return tt.display_name if tt else "TBD"
 
 
 # ── 1. the bracket was drawn ─────────────────────────────────────────────────────────────────

@@ -14,6 +14,8 @@ WHY THIS EXISTS
 USAGE
     python tools/shoot.py <out-dir> <url> [<url> ...] [--token=<auth_token>] [--width=390]
                                                       [--height=844] [--mobile] [--wait=3]
+                                                      [--click="Tab" | --click="Open>>Choice"]
+                                                      [--audit=<js, printed AFTER the clicks>]
 
     Every URL is shot at the given viewport and written to <out-dir>/<slug>.png. `--token` sets the
     same `auth_token` cookie AuthContext reads, so an admin page renders signed in.
@@ -24,6 +26,15 @@ HOW IT WORKS
     uses Emulation.setDeviceMetricsOverride for the viewport. A throwaway profile matters: it keeps
     the developer's own cookies, extensions and proxy settings out of the picture, which is the
     whole reason this is more trustworthy than the extension for a layout check.
+
+WHY --audit EXISTS
+    Because this tool kept reporting success while doing nothing. It clicked a different option
+    in a scrolling listbox and photographed the wrong page; it matched a control that was
+    display:none at the other breakpoint and reported the text as missing; it 'clicked' a
+    checkbox whose <label> it could not see and changed nothing. A screenshot cannot catch any
+    of those. --audit runs JS AFTER the clicks and PRINTS the result, so a run asserts a fact
+    about the rendered DOM ("3 linked, 9 plain") instead of leaving a human to squint at a
+    picture. Do NOT write the answer into the page: React re-renders and wipes it. Return it.
 
 WHY IT LIVES IN THIS REPO
     It shoots FRONTEND pages but runs on this repo's virtualenv, which already has websocket-client.
@@ -121,6 +132,13 @@ def slugify(url):
     return re.sub(r"[^a-zA-Z0-9]+", "-", path).strip("-")
 
 
+def _clear_target(cdp):
+    """Drop the data-shoot-target marker so a later click in the same run cannot match it."""
+    cdp.send("Runtime.evaluate", expression=(
+        "document.querySelectorAll('[data-shoot-target]')"
+        ".forEach(function(n) { n.removeAttribute('data-shoot-target'); })"))
+
+
 def main():
     args = [a for a in sys.argv[1:]]
     opts = {a.split("=", 1)[0]: (a.split("=", 1)[1] if "=" in a else True)
@@ -175,8 +193,12 @@ def main():
             # A synthetic .click() is not enough for the shadcn/Radix controls this codebase uses:
             # tabs and selects listen for pointerdown, so a click() alone leaves the tab unchanged
             # and you photograph the page you were already on without noticing.
-            if opts.get("--click"):
-                target = json.dumps(opts["--click"])
+            # A SEQUENCE, separated by ">>", so a control that only reveals its choices once it is
+            # open can be driven: --click="Pick an event>>FFWS Africa 2026". A Radix Select renders
+            # its options in a portal that does not exist until the trigger is pressed, so a single
+            # click can never reach them, and the run silently photographs the unchanged page.
+            for _step in [t.strip() for t in opts.get("--click", "").split(">>") if t.strip()]:
+                target = json.dumps(_step)
                 box = cdp.send("Runtime.evaluate", returnByValue=True, expression=f"""
                     (function() {{
                       var want = {target};
@@ -186,24 +208,122 @@ def main():
                       // Exact first, then STARTS-WITH. A tab can carry a count badge inside the
                       // trigger, so "Approvals" renders as textContent "Approvals1" and an exact
                       // match silently photographs the tab you were already on.
+                      // VISIBLE candidates only. A responsive layout keeps the other
+                      // breakpoint's controls in the DOM as display:none, so at 390px the
+                      // desktop tab strip still matches by text, measures zero, and the run
+                      // reports 'nothing reads exactly ...' while the real target sits
+                      // unexamined in a later pool. An <option> is exempt: its box belongs to
+                      // a dropdown the OS draws, so it legitimately has no size of its own.
+                      function shown(n) {{
+                        if (n.tagName === 'OPTION') return true;
+                        var r = n.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                      }}
                       function pick(nodes) {{
-                        return nodes.find(function(n) {{ return n.textContent.trim() === want; }})
-                            || nodes.find(function(n) {{ return n.textContent.trim().startsWith(want); }});
+                        var vis = nodes.filter(shown);
+                        return vis.find(function(n) {{ return n.textContent.trim() === want; }})
+                            || vis.find(function(n) {{ return n.textContent.trim().startsWith(want); }});
                       }}
                       var el = pick([...document.querySelectorAll('[role="tab"]')])
-                            || pick([...document.querySelectorAll('button,a')]);
+                            || pick([...document.querySelectorAll('[role="option"]')])
+                            || pick([...document.querySelectorAll('button,a')])
+                            // A checkbox/radio row is usually a <label> wrapping the input, and
+                            // clicking the label is exactly how a person toggles it.
+                            || pick([...document.querySelectorAll('label,summary')])
+                            // A native <select> tab strip (this codebase collapses tabs into
+                            // one on a phone viewport). Last, so a real button always wins.
+                            || pick([...document.querySelectorAll('option')]);
                       if (!el) return null;
+                      // MARK IT, do not measure yet. Measured below, once the scroll settles.
+                      el.setAttribute('data-shoot-target', '1');
                       el.scrollIntoView({{block: 'center'}});
-                      var r = el.getBoundingClientRect();
-                      return {{x: r.left + r.width / 2, y: r.top + r.height / 2}};
+                      return true;
                     }})()""")["result"].get("value")
+                # An <option> cannot be clicked by coordinate: the dropdown is drawn by the OS,
+                # not the page. Select it the way React expects instead, then skip the click.
+                if box:
+                    picked = cdp.send(
+                        "Runtime.evaluate", returnByValue=True, expression="""
+                        (function() {
+                          var el = document.querySelector('[data-shoot-target]');
+                          if (!el || el.tagName !== 'OPTION') return false;
+                          el.removeAttribute('data-shoot-target');
+                          var sel = el.closest('select');
+                          if (!sel) return false;
+                          var proto = Object.getPrototypeOf(sel);
+                          var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                          setter.call(sel, el.value);
+                          sel.dispatchEvent(new Event('input', {bubbles: true}));
+                          sel.dispatchEvent(new Event('change', {bubbles: true}));
+                          return true;
+                        })()""")["result"].get("value")
+                    if picked:
+                        time.sleep(2)
+                        continue
+                if box:
+                    # Re-measure AFTER the scroll, and check the element is really the topmost
+                    # thing at its own centre. Without this a covered or freshly scrolled target
+                    # is clicked at a stale point, which silently picks a DIFFERENT option and
+                    # then photographs and audits the wrong page while reporting success.
+                    time.sleep(0.4)
+                    box = cdp.send(
+                        "Runtime.evaluate", returnByValue=True, expression="""
+                        (function() {
+                          var el = document.querySelector('[data-shoot-target]');
+                          if (!el) return null;
+                          var r = el.getBoundingClientRect();
+                          if (!r.width || !r.height) return null;
+                          var x = r.left + r.width / 2, y = r.top + r.height / 2;
+                          var hit = document.elementFromPoint(x, y);
+                          var ok = !!hit && (el === hit || el.contains(hit) || hit.contains(el));
+                          return {x: x, y: y, ok: ok,
+                                  got: hit ? (hit.textContent || '').trim().slice(0, 40) : null};
+                        })()""")["result"].get("value")
+                    if box and not box.get("ok"):
+                        print(f"   !! {_step!r} is not the topmost element at its own centre "
+                              f"(found {box.get('got')!r}); clicking anyway")
                 if not box:
-                    print(f"   !! nothing on the page reads exactly {opts['--click']!r}")
-                else:
+                    print(f"   !! no VISIBLE element reads {_step!r} "
+                          f"(hidden at this viewport, or not rendered yet)")
+                elif box.get("ok"):
                     for kind in ("mousePressed", "mouseReleased"):
                         cdp.send("Input.dispatchMouseEvent", type=kind, x=box["x"], y=box["y"],
                                  button="left", clickCount=1)
+                    _clear_target(cdp)
                     time.sleep(2)
+                else:
+                    # The target is not reachable by coordinate (on a phone viewport a Radix
+                    # listbox puts its later options past the fold, so elementFromPoint at the
+                    # option's centre is null). Drive the element itself with the pointer events
+                    # Radix actually listens for. Coordinates stay the default because they are
+                    # what proves a control is genuinely reachable by a person.
+                    cdp.send("Runtime.evaluate", expression="""
+                        (function() {
+                          var el = document.querySelector('[data-shoot-target]');
+                          if (!el) return;
+                          var opts = {bubbles: true, cancelable: true, pointerId: 1,
+                                      pointerType: 'mouse', button: 0, isPrimary: true};
+                          ['pointerover', 'pointerenter', 'pointermove', 'pointerdown',
+                           'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function(t) {
+                            var C = t.indexOf('pointer') === 0 ? PointerEvent : MouseEvent;
+                            el.dispatchEvent(new C(t, opts));
+                          });
+                        })()""")
+                    _clear_target(cdp)
+                    time.sleep(2)
+            # --audit runs AFTER the clicks and PRINTS its result, which is the difference that
+            # matters: --eval runs before them, so it cannot see a table that only exists once a
+            # control has been driven. Use it to assert a fact about the rendered DOM instead of
+            # squinting at a screenshot, e.g. how many competitor cells are links:
+            #   --audit='[...document.querySelectorAll("table tr")].filter(r=>r.querySelector("td")).length'
+            # Do NOT write the answer into the page (React re-renders and wipes it); return it.
+            if opts.get("--audit"):
+                res = cdp.send("Runtime.evaluate", returnByValue=True, awaitPromise=True,
+                               expression=opts["--audit"])
+                val = res.get("result", {}).get("value")
+                if val is None and "exceptionDetails" in res:
+                    val = f"(threw) {res['exceptionDetails'].get('text')}"
+                print(f"   AUDIT {val}")
             # The console, so a red error on the page is reported rather than silently photographed.
             errors = cdp.send("Runtime.evaluate", expression=(
                 "JSON.stringify({h1: document.querySelector('h1')?.innerText || '',"

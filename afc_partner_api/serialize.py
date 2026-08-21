@@ -268,15 +268,19 @@ def serialize_team(tt, partner):
     already integrated exactly as unable to tell a team that played from one that never turned
     up, which is the whole problem it exists to solve. See team_status above.
     """
-    out = {"team": tt.team.team_name, "team_tag": tt.team.team_tag}
+    # GHOST GUARD (owner 2026-08-20, external results import): a ghost competitor has no
+    # AFC account, so it carries no tag, logo, or self-written description - display_name is
+    # the only honest field. tt.team is None on a ghost row, so team_tag/logo_url/description
+    # fall back to the honest empty value instead of crashing on tt.team.team_tag etc.
+    out = {"team": tt.display_name, "team_tag": (None if tt.is_ghost else tt.team.team_tag)}
 
     # Team BRAND art: the logo a broadcaster puts next to the team's name. Absolute url,
-    # None when the team never uploaded one.
+    # None when the team never uploaded one (or the competitor is a ghost).
     if partner.include_media:
-        out["logo_url"] = _media_url(tt.team.team_logo)
+        out["logo_url"] = None if tt.is_ghost else _media_url(tt.team.team_logo)
     # Team COPY: the short self-description shown on the team's site profile.
     if partner.include_text:
-        out["description"] = tt.team.team_description or None
+        out["description"] = None if tt.is_ghost else (tt.team.team_description or None)
 
     # Aggregate this team's finalized per-match stat rows once (avoids N queries below).
     # played_matches rides along in the SAME aggregate (a filtered Count, so it costs no extra
@@ -417,8 +421,21 @@ def serialize_standings(event, partner):
 # Booyah = a 1st-place finish. Counting these mirrors the admin view's `total_booyah`
 # tiebreaker (Sum of "1 when placement==1 else 0") so partner and official ties break
 # the same way.
-_BOOYAH = Sum(Case(When(placement=1, then=Value(1)), default=Value(0),
-                   output_field=IntegerField()))
+#
+# AGGREGATE ROWS (owner 2026-08-20, external results import): a row with is_aggregate=True
+# summarises a whole group and stores placement=NULL, so the placement==1 test below matches nothing
+# no matter how many times that team actually won. The true count lives in booyah_count, which is
+# exactly why that field exists: it cannot be derived from a summed row. Take booyah_count for an
+# aggregate row and fall back to the placement test for every ordinary row, where booyah_count is 0
+# and counting placement==1 remains correct.
+_BOOYAH = Sum(
+    Case(
+        When(is_aggregate=True, then="booyah_count"),
+        When(placement=1, then=Value(1)),
+        default=Value(0),
+        output_field=IntegerField(),
+    )
+)
 
 # Recomputed-on-read rank metric, identical to the admin view's `effective_total`
 # (placement + kill + bonus - penalty). We never order by the stored total_points,
@@ -447,7 +464,10 @@ def _team_standings(event, partner):
             damage=Sum("damage"),
             assists=Sum("assists"),
             best_placement=Min("placement"),
-            matches_played=Count("team_stats_id"),
+            # Sum(matches_counted), not Count(rows): an aggregate row stands for a whole group and
+            # carries its real span in matches_counted. Ordinary rows default to 1, so this returns
+            # what it always did for them (owner 2026-08-20).
+            matches_played=Sum("matches_counted"),
         )
         .order_by("-effective_total", "-total_booyah", "-kills")
     )

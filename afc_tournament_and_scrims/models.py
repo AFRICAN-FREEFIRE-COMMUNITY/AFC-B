@@ -116,6 +116,45 @@ class Event(models.Model):
     # the tier is auto-classified from the event's prize/teams/format. Mirrors the rankings
     # TeamQuarterlyScore.tier_overridden pattern (a manual lock the recalc respects).
     tier_overridden = models.BooleanField(default=False)
+
+    # ── RESULTS IMPORTED FROM A SPREADSHEET (owner 2026-08-20) ────────────────────────────────────
+    # NULL means this event's results were entered the normal way (uploads, manual entry, OCR). A
+    # timestamp means they came from an external organizer's published standings via
+    # afc_results_import, which is what the provenance marker on the event page reads.
+    #
+    # DELIBERATELY NOT event_type="external". That choice already exists and means something else
+    # entirely: registration happens off-platform, and it surfaces a "Register (External Link)"
+    # button to users. Overloading it would put a registration button on a finished tournament.
+    results_imported_at = models.DateTimeField(null=True, blank=True)
+    results_imported_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="events_results_imported",
+    )
+
+    # ── WHAT AN IMPORTED EVENT IS ALLOWED TO AFFECT (owner 2026-08-20) ────────────────────────────
+    # The owner's decision was "admin decides per event", and BOTH default OFF so an import is
+    # inspected before it reaches real teams' pages. Turning them on is a deliberate act.
+    #
+    # These are the only TWO new switches this feature needs. The other two questions were already
+    # answered by existing machinery and are NOT duplicated here:
+    #   * "does it feed the rankings ladder?" -> afc_rankings.EventCountingControl
+    #     .counts_toward_rankings, which already has per-component trims and is already honoured in
+    #     aggregation.py including prize money.
+    #   * "what tier is it?" -> Event.tournament_tier with tier_overridden=True, so the automatic
+    #     classifier does not tier an imported event off a prize pool the importer never saw.
+    #
+    # WORTH KNOWING when wiring the admin screen: tier is an INPUT to rankings, not an output.
+    # aggregation.py passes tier=ev.tournament_tier as the WEIGHT applied to results, so "counts
+    # toward rankings" and "has a tier" are not independent. Four checkboxes that look orthogonal
+    # are not, and the UI must say so rather than implying otherwise.
+
+    # Does the event show up in a team's list of tournaments at all?
+    imported_results_visible_on_profiles = models.BooleanField(default=False)
+
+    # Do its numbers fold into a team's profile TOTALS (matches played, kills, best placement)?
+    # This is the riskier of the two: it changes numbers on a real team's public page, which is why
+    # the aggregate-row reader corrections had to land before anything could be imported.
+    imported_results_count_in_profile_stats = models.BooleanField(default=False)
     # rankings §4/§7.2 - prize money conversion locked at award date
     prize_currency = models.CharField(max_length=3, default="USD")  # USD | NGN (owner 2026-07-01: AFC enters prizes in USD, the platform base currency)
     usd_to_ngn_rate = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
@@ -1159,6 +1198,11 @@ class Match(models.Model):
             ('alpine', 'Alpine'),
             ('nexterra', 'Nexterra'),
             ('solara', 'Solara'),
+            # An AGGREGATE result row (TournamentTeamMatchStats.is_aggregate) summarises a whole
+            # group at once, and a BO6 group is played across several maps, so none of the six real
+            # values above is true for its synthetic match. "multiple" says that honestly rather
+            # than picking one arbitrarily or leaving the column blank (owner 2026-08-20).
+            ('multiple', 'Multiple maps'),
         ]
     )
 
@@ -1174,7 +1218,28 @@ class TournamentTeam(models.Model):
     ]
     tournament_team_id = models.AutoField(primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="tournament_teams")
-    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="tournament_entries")
+    # ── WHO is competing: a real AFC team, or a GHOST (owner 2026-08-20, external results import) ──
+    # EXACTLY ONE of these two is set, enforced by the tt_team_xor_ghost CheckConstraint below.
+    #
+    # WHY team IS NULLABLE NOW. AFC carries tournaments it did not run (FFWS Africa is the driving
+    # case). Most competitors in those events have no AFC account at all, so there is no Team row to
+    # point at. afc_rankings.GhostTeam is the identity AFC already uses for exactly this on
+    # standalone leaderboards, complete with a claim lifecycle, so it is reused here rather than
+    # inventing a second "team that is not really a team" concept.
+    #
+    # THE PATTERN IS COPIED, NOT INVENTED: afc_leaderboard.LeaderboardParticipant has carried
+    # team XOR ghost_team with a DB CheckConstraint since the standalone leaderboards were built.
+    #
+    # READERS MUST NOT REACH THROUGH .team. Use display_name / competitor / is_ghost below. A
+    # `tournament_team.team.team_name` on a ghost row is an AttributeError on None in production.
+    team = models.ForeignKey(
+        Team, on_delete=models.CASCADE, related_name="tournament_entries",
+        null=True, blank=True,
+    )
+    ghost_team = models.ForeignKey(
+        "afc_rankings.GhostTeam", on_delete=models.CASCADE,
+        related_name="tournament_entries", null=True, blank=True,
+    )
     status = models.CharField(max_length=20, choices=TEAM_STATUS, default="active")
     registered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     registration_date = models.DateTimeField(auto_now_add=True)
@@ -1244,6 +1309,44 @@ class TournamentTeam(models.Model):
                 fields=["event", "team"],
                 name="uniq_event_team_registration",
             ),
+            # ── One competitor kind, never two (owner 2026-08-20) ─────────────────────────────
+            # Forbids BOTH being set: a row whose identity depends on which reader you ask.
+            #
+            # IT DOES NOT FORBID BOTH BEING NULL, AND THAT IS DELIBERATE, NOT AN OVERSIGHT.
+            # This started as a strict XOR (exactly one set). That broke DELETING A TEAM, for every
+            # team, which is a routine moderation action:
+            #
+            #   MySQL cannot defer constraint checks, so when a cascade delete involves a NULLABLE
+            #   FK, Django NULLS THAT COLUMN FIRST and deletes the row immediately afterwards (the
+            #   field_updates pass in django.db.models.deletion runs before the delete pass).
+            #   Confirmed here with a Collector probe: deleting one Team produced
+            #   `TournamentTeam.team -> None` in collector.field_updates AND TournamentTeam in
+            #   collector.data. So the row is briefly (team=NULL, ghost_team=NULL) on its way out,
+            #   a strict XOR rejects that instant, and the whole delete fails with
+            #   "Check constraint 'tt_team_xor_ghost' is violated".
+            #
+            # This could NOT happen before `team` became nullable: Django cannot null a NOT NULL
+            # column, so it simply deleted the row. Making the column nullable changed Django's
+            # deletion STRATEGY, which only a real delete exercises. Caught by
+            # afc_team.tests_transfer_feed, an app whose suite this work had not been running.
+            #
+            # The both-null state is therefore transient and immediately deleted, never readable by
+            # application code. The genuinely dangerous state is both-set, and that is still refused
+            # at the database level. "At least one set" is enforced in clean() below, which is where
+            # a real application write passes through.
+            models.CheckConstraint(
+                name="tt_team_xor_ghost",
+                check=~models.Q(team__isnull=False, ghost_team__isnull=False),
+            ),
+            # The ghost twin of uniq_event_team_registration. A PLAIN unique constraint, for the
+            # reason spelled out on uniq_assigned_letter_per_event above: MySQL IGNORES the partial
+            # index `condition` on a UniqueConstraint, so a conditional form would give zero
+            # enforcement in production. Both databases allow multiple NULLs in a unique index, so
+            # every real-team row (ghost_team NULL) coexists without colliding.
+            models.UniqueConstraint(
+                fields=["event", "ghost_team"],
+                name="uniq_event_ghost_registration",
+            ),
         ]
 
     @property
@@ -1253,9 +1356,67 @@ class TournamentTeam(models.Model):
         from django.utils import timezone as _tz
         return bool(self.roster_edit_until) and _tz.now() <= self.roster_edit_until
 
+    # ── The competitor accessors (owner 2026-08-20, external results import) ──────────────────
+    # ONE definition each, because there are ~172 places in this codebase that used to reach
+    # through .team and every one of them is an AttributeError on a ghost row. Anything that needs
+    # to name, fetch or test the competitor uses these and never the FKs directly.
+    #
+    # Read by: the event page and bracket serializers, the standings builders, the overlay
+    # renderers, the CSV/xlsx exports, notifications, the partner API, and afc_player_market.
+
+    def clean(self):
+        """A registration must name SOMEBODY: a real team or a ghost.
+
+        The database CheckConstraint only refuses BOTH being set, because Django transiently writes
+        both-NULL while cascade-deleting a Team on MySQL (see tt_team_xor_ghost above). That transient
+        row is on its way out and no reader ever sees it. A row an application deliberately SAVES
+        with neither side set is a different thing: it competes as nobody, and display_name would
+        raise AttributeError on None the first time anything rendered it.
+
+        Called by ModelForm/admin validation and by anything that calls full_clean(). The ordinary
+        create paths pass one side explicitly, so this is a guard against a future caller, not a
+        check the current code needs.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.team_id is None and self.ghost_team_id is None:
+            raise ValidationError(
+                "A tournament registration needs either a team or a ghost_team."
+            )
+
+    @property
+    def is_ghost(self) -> bool:
+        """True when this registration represents an unclaimed external competitor."""
+        return self.ghost_team_id is not None
+
+    @property
+    def competitor(self):
+        """The underlying afc_team.Team or afc_rankings.GhostTeam.
+
+        Non-None for any row an application saved: clean() refuses a registration with neither side
+        set. It is NOT a database-level guarantee, and the docstring used to claim it was. The
+        tt_team_xor_ghost constraint only forbids BOTH being set, because Django transiently writes
+        both-NULL while cascade-deleting a Team on MySQL (see the constraint's note above). Such a
+        row is mid-delete and no reader reaches it.
+
+        An unsaved instance with neither side set returns None here, and display_name would then
+        raise on None. That is a programming error, not a state the database produces.
+        """
+        return self.ghost_team if self.is_ghost else self.team
+
+    @property
+    def display_name(self) -> str:
+        """What to show a human for this competitor. Both models spell it team_name, so this
+        stays a single attribute read rather than a branch on type.
+
+        Deliberately the SAME NAME as afc_leaderboard.LeaderboardParticipant.display_name, which
+        answers the identical question for the standalone-leaderboard half of the system. One name
+        for one idea across both."""
+        return self.competitor.team_name
+
     def __str__(self):
-        return f"{self.team.team_name} in {self.event.event_name}"
-    
+        return f"{self.display_name} in {self.event.event_name}"
+
 
 class TournamentTeamMember(models.Model):
     """
@@ -1304,7 +1465,10 @@ class TournamentTeamMember(models.Model):
         unique_together = ("tournament_team", "user")
 
     def __str__(self):
-        return f"{self.user.username} in {self.tournament_team.team.team_name}"
+        # display_name (not .team.team_name) so this doesn't AttributeError on a ghost-competitor
+        # TournamentTeam (owner 2026-08-20, external results import). __str__ is called by the
+        # Django admin and by repr() in tracebacks, so this bug bites far from the ghost row itself.
+        return f"{self.user.username} in {self.tournament_team.display_name}"
 
 class TournamentTeamMatchStats(models.Model):
     """
@@ -1313,7 +1477,55 @@ class TournamentTeamMatchStats(models.Model):
     team_stats_id = models.AutoField(primary_key=True)
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="team_stats")
     tournament_team = models.ForeignKey(TournamentTeam, on_delete=models.CASCADE, related_name="match_stats")
-    placement = models.PositiveIntegerField()
+
+    # ── WHERE THIS TEAM FINISHED IN THIS ONE MATCH ────────────────────────────────────────────────
+    # NULLABLE since the external results import (owner 2026-08-20). An AGGREGATE row (see
+    # is_aggregate below) summarises several matches at once and has no single match placement, so it
+    # stores NULL here and puts the group finish in final_position instead.
+    #
+    # NULL, NOT 0, AND THAT MATTERS. `Min("placement")` is read as "best single map result" on the
+    # team profile. SQL MIN skips NULL for free, so an aggregate row correctly contributes nothing.
+    # A 0 sentinel would WIN every Min() and report a nonexistent "0th place" as each imported team's
+    # best ever result. Never write 0 here.
+    #
+    # Every ordinary write path (upload_team_match_result, manual entry, the edit endpoints,
+    # afc_ocr.services.commit) still sets a real placement, so nothing that exists today changes.
+    placement = models.PositiveIntegerField(null=True, blank=True)
+
+    # ── AGGREGATE ROWS: one row standing for SEVERAL matches (owner 2026-08-20) ───────────────────
+    # AFC carries tournaments it did not run, and their organizers usually publish a standings
+    # GRAPHIC rather than a match log: "6 matches, 3 Booyahs, 47 placement, 82 elims, 129 total" for
+    # a whole group. There is no honest way to split that into six per-match rows (dividing 47 by 6
+    # invents data that is then indistinguishable from real results forever), so ONE flagged row
+    # carries the summed total instead.
+    #
+    # WHY ON THIS MODEL rather than a separate standings table: `Sum("total_points")` over this model
+    # appears in 12+ places across five apps, and 37 non-test files touch it. Storing the total here
+    # means every one of those keeps returning the right number with ZERO changes. Only readers that
+    # COUNT rows have to change, and they use matches_counted below.
+    #
+    # Written by: the xlsx results importer (Plan 3). Read by: the standings builders, the team
+    # profile aggregates in afc_team/views.py, and afc_partner_api.serialize.
+    is_aggregate = models.BooleanField(default=False)
+
+    # How many real matches this row stands for. 1 on an ordinary row, so every row that already
+    # exists is correct on migrate with no backfill, and any reader that SUMS this gets the same
+    # answer it used to get from COUNTING rows.
+    matches_counted = models.PositiveIntegerField(default=1)
+
+    # Wins inside the summed span. UNRECOVERABLE from an aggregate row any other way: `placement=1`
+    # appears at most once per row regardless of how many times the team actually won, which is
+    # exactly how afc_partner_api.serialize._BOOYAH derives Booyahs today. An aggregate row must
+    # contribute this stored count instead. 0 on an ordinary row, where counting placement=1 rows
+    # remains correct.
+    booyah_count = models.PositiveIntegerField(default=0)
+
+    # The team's finishing position in the group this row summarises. NULL on an ordinary row.
+    # Deliberately NOT stored in `placement`: a group finish and a single-match placement are
+    # different quantities, and sharing a column would make a team that topped its group
+    # indistinguishable from one that won a single map.
+    final_position = models.PositiveIntegerField(null=True, blank=True)
+
     kills = models.PositiveIntegerField(default=0)
     damage = models.PositiveIntegerField(default=0)
     assists = models.PositiveIntegerField(default=0)
@@ -1350,7 +1562,27 @@ class TournamentPlayerMatchStats(models.Model):
     """
     player_stats_id = models.AutoField(primary_key=True)
     team_stats = models.ForeignKey(TournamentTeamMatchStats, on_delete=models.CASCADE, related_name="player_stats")
-    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    # ── WHO this row is about: a real AFC user, or a GHOST PLAYER (owner 2026-08-21) ──────────────
+    # At most one of these two is set. Mirrors TournamentTeam.team / .ghost_team exactly, including
+    # the reason the constraint is "not both" rather than a strict XOR - see the comment there:
+    # MySQL cannot defer constraint checks, so a cascade delete NULLS a nullable FK before deleting
+    # the row, and a strict XOR rejects that intermediate state and breaks deleting a USER.
+    #
+    # WHY player IS NULLABLE NOW. An external tournament's players have no AFC accounts (FFWS
+    # Play-ins Phase 1 alone is roughly 720 people). afc_rankings.GhostPlayer is the identity AFC
+    # already uses for a provisional in-game name, complete with a claim lifecycle that
+    # afc_rankings.claims.reattribute_ghost_player uses to move that history onto a real user, so it
+    # is reused here rather than inventing a second "player who is not really a player".
+    #
+    # WHAT A GHOST ROW MUST NOT DO: reach anything that ranks or profiles a PERSON. Every such
+    # reader either filters by a real user (a ghost row has player=NULL so it can never match) or
+    # is listed in the sweep recorded in the results-import handover. A ghost row exists to be
+    # DISPLAYED on the event it came from, and to be re-attributed if the player claims it.
+    player = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                               null=True, blank=True)
+    ghost_player = models.ForeignKey(
+        "afc_rankings.GhostPlayer", on_delete=models.CASCADE,
+        null=True, blank=True, related_name="tournament_match_stats")
     kills = models.PositiveIntegerField(default=0)
     damage = models.PositiveIntegerField(default=0)
     assists = models.PositiveIntegerField(default=0)
@@ -1392,6 +1624,37 @@ class TournamentPlayerMatchStats(models.Model):
     role_at_match = models.CharField(
         max_length=20, choices=TeamMembers.IN_GAME_ROLE_CHOICES, null=True, blank=True,
     )
+
+    class Meta:
+        constraints = [
+            # NOT BOTH, deliberately not a strict XOR. See TournamentTeam.tt_team_xor_ghost for the
+            # full reasoning: MySQL cannot defer constraint checks, so deleting a User nulls this
+            # row's player column before deleting the row, and a strict "exactly one" rejects that
+            # intermediate state - which would break deleting any user who has ever played a match.
+            models.CheckConstraint(
+                name="tpms_player_xor_ghost",
+                check=~models.Q(player__isnull=False, ghost_player__isnull=False),
+            ),
+        ]
+
+    @property
+    def is_ghost(self) -> bool:
+        """True when this row belongs to an imported player with no AFC account."""
+        return self.ghost_player_id is not None
+
+    @property
+    def competitor(self):
+        """The User or the GhostPlayer, whichever this row is about."""
+        return self.ghost_player if self.is_ghost else self.player
+
+    @property
+    def display_name(self) -> str:
+        """The name to show, without the caller needing to know which kind of row this is.
+
+        A GhostPlayer carries an in-game name (`ign`); a User carries a username."""
+        if self.is_ghost:
+            return self.ghost_player.ign
+        return self.player.username if self.player_id else ""
 
 
 class MatchKillFlag(models.Model):
@@ -2196,8 +2459,11 @@ class HeadToHeadMatch(models.Model):
         ]
 
     def __str__(self):
-        a = self.team_a.team.team_name if self.team_a else "?"
-        b = self.team_b.team.team_name if self.team_b else "?"
+        # display_name (not .team.team_name): the existing "?" guard only covers an EMPTY slot
+        # (team_a/team_b None), not a ghost competitor, which has team_id=None but ghost_team_id
+        # set. display_name resolves either kind without touching the raw FK.
+        a = self.team_a.display_name if self.team_a else "?"
+        b = self.team_b.display_name if self.team_b else "?"
         return f"H2H {self.bracket} R{self.round_number}.{self.position}: {a} vs {b} ({self.status})"
 
 

@@ -107,7 +107,9 @@ def build_kit_summary(event, stage=None):
         letter = (tt.assigned_letter or "").upper()
         rows.append({
             "tournament_team_id": tt.pk,
-            "team_name": tt.team.team_name if tt.team else "?",
+            # display_name: a ghost has no .team. This feeds a BROADCAST overlay, where "?"
+            # would go out on stream instead of the team's name (owner 2026-08-20).
+            "team_name": tt.display_name,
             "assigned_letter": tt.assigned_letter or None,
             "headpic_id": LETTER_TO_HEADPIC_ID.get(letter) if letter else None,
             "has_logo": bool(getattr(tt.team, "team_logo", None)) if tt.team else False,
