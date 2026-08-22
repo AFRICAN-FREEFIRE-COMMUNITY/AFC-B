@@ -685,7 +685,15 @@ def _org_hidden(event):
 def get_all_events(request):
     # select_related("organization") avoids an N+1 when we read each event's org name/slug.
     # _ACTIVE_ORG_EVENT hides events whose org was suspended/deleted (keeps AFC + active-org events).
-    events = Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT).select_related("organization")
+    # NEWEST FIRST (owner report 2026-08-22: "it still opens the earliest page and not the latest").
+    # There was no order_by here and Event has no Meta.ordering, so MySQL returned rows in whatever
+    # order it liked, which in practice is insertion order. The list therefore opened on the OLDEST
+    # events and the newest one sat on the LAST page - the opposite of what anyone opening an admin
+    # list wants. -start_date matches get_all_events_paginated, which already ordered this way;
+    # -event_id breaks the tie so the order is total and paging cannot drop or repeat a row (an
+    # unstable sort with LIMIT/OFFSET does exactly that).
+    events = (Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT)
+              .select_related("organization").order_by("-start_date", "-event_id"))
     # optional org filter: when present, scope the list to one organization's events.
     organization_id = request.GET.get("organization_id")
     if organization_id:
@@ -767,7 +775,10 @@ def get_all_events_paginated(request):
     offset = int(request.GET.get("offset", 0))
 
     # select_related("organization") avoids an N+1 when we read each event's org name/slug.
-    events = Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT).select_related("organization").order_by("-start_date")
+    # -event_id is the TIEBREAK, not decoration: many events share a start_date, and an unstable
+    # sort under LIMIT/OFFSET lets a row appear on two pages or on none at all as the offset moves.
+    events = (Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT)
+              .select_related("organization").order_by("-start_date", "-event_id"))
     # optional org filter: when present, scope the list to one organization's events.
     organization_id = request.GET.get("organization_id")
     if organization_id:
@@ -818,7 +829,10 @@ def get_all_events_paginated(request):
 
 @api_view(["GET"])
 def get_all_tournaments_and_scrims(request):
-    events = Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT)  # hide suspended-org events
+    # Newest first, with -event_id as the tiebreak, matching get_all_events. Without an order_by
+    # this returned insertion order, so the oldest events came first (owner report 2026-08-22).
+    events = (Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT)  # hide suspended-org events
+              .order_by("-start_date", "-event_id"))
     event_list = []
     for event in events:
         event_list.append({
@@ -859,8 +873,12 @@ def get_all_tournaments_and_scrims_paginated(request):
 
 @api_view(["GET"])
 def get_all_tournaments_and_scrims_separated(request):
-    tournaments = Event.objects.filter(competition_type="tournament", is_draft=False).filter(_ACTIVE_ORG_EVENT)
-    scrims = Event.objects.filter(competition_type="scrim", is_draft=False).filter(_ACTIVE_ORG_EVENT)
+    # Newest first on BOTH lists, with -event_id as the tiebreak, matching get_all_events. Neither
+    # was ordered, so both opened on the oldest events (owner report 2026-08-22).
+    tournaments = (Event.objects.filter(competition_type="tournament", is_draft=False)
+                   .filter(_ACTIVE_ORG_EVENT).order_by("-start_date", "-event_id"))
+    scrims = (Event.objects.filter(competition_type="scrim", is_draft=False)
+              .filter(_ACTIVE_ORG_EVENT).order_by("-start_date", "-event_id"))
 
     tournament_list = []
     for event in tournaments:
@@ -13861,7 +13879,11 @@ def get_all_leaderboards(request):
     is_staff = user.role in ["admin", "moderator", "support"] or \
         user.userroles.filter(role__role_name__in=["event_admin", "head_admin"]).exists()
 
-    leaderboards = Leaderboard.objects.select_related("event", "stage", "group", "creator")
+    # Newest first (owner report 2026-08-22). Leaderboard has no created_at, so the
+    # autoincrement pk is the creation order and is also a total order, which keeps paging
+    # stable. Without this the admin Leaderboards list opened on the oldest rows.
+    leaderboards = (Leaderboard.objects.select_related("event", "stage", "group", "creator")
+                    .order_by("-leaderboard_id"))
     if is_staff:
         leaderboards = leaderboards.all()
     else:
