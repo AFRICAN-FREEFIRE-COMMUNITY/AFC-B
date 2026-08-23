@@ -242,19 +242,54 @@ def _target_group(event, sheet_name, stage_hint=None):
     Matched loosely (case and punctuation insensitive) against "<stage> - <group>" and against the
     group name alone, because a sheet is realistically called "Phase 1 - Group A", "Group A" or just
     "A". Returns None when nothing matches, and the caller reports that rather than guessing.
+
+    TWO PASSES, EXACT BEFORE LOOSE, and the loose pass must be UNAMBIGUOUS (bug, owner 2026-08-23).
+    A multi-phase tournament reuses group letters: FFWS Africa 2026 Fall has Phase 1 Groups A-L AND
+    Phase 2 Groups A-D. The previous single loop returned the first group that satisfied EITHER
+    test, so the sheet "Phase 2 - Group A" could match the Phase 1 Group A row on the
+    `want.endswith(group_name)` fallback ("phase2groupa" ends with "groupa") before ever reaching
+    the exact "phase2groupa" == combined match. Which one won depended on nothing but the queryset's
+    row order.
+
+    That was silent DATA LOSS, not a mismatch: commit_import REPLACES the rows in whichever group it
+    is handed, so all four Phase 2 sheets landed on Phase 1 Groups A-D and destroyed the real Phase 1
+    results, while the report said 192 rows across 16 groups with no unmatched sheets.
+
+    So: every exact match is tried across ALL groups first, and the loose fallback resolves only when
+    exactly ONE group fits. An ambiguous sheet name returns None and is reported as unmatched, which
+    is the honest answer and leaves the admin able to rename the sheet.
     """
     want = norm_team_name(sheet_name)
-    groups = (StageGroups.objects
-              .filter(stage__event=event)
-              .select_related("stage"))
+    if not want:
+        return None
+    groups = list(StageGroups.objects
+                  .filter(stage__event=event)
+                  .select_related("stage"))
+
+    def _combined(g):
+        return norm_team_name(f"{g.stage.stage_name} {g.group_name}")
+
+    # Pass 1: exact, on "<stage> <group>" first and then on the group name alone. Checking the
+    # combined form across every group BEFORE any group-name-only match is what stops "Phase 2 -
+    # Group A" from being answered by Phase 1's Group A.
     for g in groups:
-        combined = norm_team_name(f"{g.stage.stage_name} {g.group_name}")
-        if want in (norm_team_name(g.group_name), combined):
+        if want == _combined(g):
             return g
-        if want and (want == combined or want.endswith(norm_team_name(g.group_name))):
-            if stage_hint is None or norm_team_name(stage_hint) in combined:
-                return g
-    return None
+    exact_by_group_name = [g for g in groups if want == norm_team_name(g.group_name)]
+    if len(exact_by_group_name) == 1:
+        return exact_by_group_name[0]
+    if len(exact_by_group_name) > 1:
+        # "Group A" alone in an event with two Phase-A groups genuinely cannot be resolved.
+        return None
+
+    # Pass 2: loose suffix match ("Standings Group A" -> Group A), narrowed by the stage hint when
+    # the sheet carried a STAGE column. Resolves ONLY when a single group survives.
+    candidates = [g for g in groups
+                  if norm_team_name(g.group_name) and want.endswith(norm_team_name(g.group_name))]
+    if stage_hint:
+        hint = norm_team_name(stage_hint)
+        candidates = [g for g in candidates if hint in _combined(g)]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 @transaction.atomic

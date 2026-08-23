@@ -1307,7 +1307,11 @@ def get_all_teams(request):
     # TeamMembers count() PER team inside the loop -> ~3 queries x 567 teams (~1700 queries,
     # ~7.5s). Now: select_related the two owner/creator FKs (one join) + a single grouped
     # member-count query assembled into a dict. Same response shape, ~3 queries total.
-    teams = Team.objects.all().select_related("team_creator", "team_owner")
+    # Newest first (owner report 2026-08-22: admin lists opened on the OLDEST rows because
+    # nothing ordered them and Team has no Meta.ordering). Team has no created_at, so the
+    # autoincrement pk is the creation order, and it is also a total order, which keeps
+    # paging stable.
+    teams = Team.objects.all().select_related("team_creator", "team_owner").order_by("-team_id")
 
     member_counts = {
         row["team"]: row["c"]
