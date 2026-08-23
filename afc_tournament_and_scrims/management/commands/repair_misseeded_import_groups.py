@@ -37,6 +37,13 @@ SCOPED, AND SAFE BY DEFAULT:
     python manage.py repair_misseeded_import_groups --event ffws-fall-ssa
     python manage.py repair_misseeded_import_groups --event ffws-fall-ssa --apply
 
+ORDER MATTERS, AND THE WRONG ORDER REMOVES THE RIGHT TEAMS. Re-import with the fixed matcher FIRST,
+then run this. Before the re-import the damaged group still holds the WRONG stats, so "competitor
+with no stats row here" describes the group's own legitimate teams, and this command would remove
+exactly them. After the re-import the stats are correct and the same test describes only the strays.
+Dry-run is the default precisely so the printed names are read before anything is deleted: if that
+list looks like the teams that BELONG in the group, stop, re-import, and run it again.
+
 CONNECTS TO: afc_results_import.services.commit_import (what created the rows), the fixed
 _target_group (what stops it recurring), and the admin Results Import tab that runs both.
 """
@@ -70,6 +77,10 @@ class Command(BaseCommand):
             event = Event.objects.get(slug=slug)
         except Event.DoesNotExist:
             raise CommandError(f"No event with slug {slug!r}.")
+
+        self.stdout.write(self.style.WARNING(
+            "Re-import with the fixed matcher BEFORE running this. Run it first and it removes the "
+            "group's own teams instead of the strays. Read the names below before using --apply."))
 
         groups = (StageGroups.objects.filter(stage__event=event)
                   .select_related("stage")
