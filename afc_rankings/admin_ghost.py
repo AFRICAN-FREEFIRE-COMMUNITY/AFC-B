@@ -1167,3 +1167,171 @@ def ghost_revoke_claim(request, ghost_team_id):
         )
 
     return Response(after)
+
+
+# ───────────────────────── ADMIN-INITIATED ATTRIBUTION (owner 2026-08-24) ─────────────────────────
+# WHY THIS EXISTS: until now the ONLY route from a ghost to a real team was
+# ghost_team_request_claim -> ghost_approve_claim, and the request half is explicitly NOT an admin
+# action (it 403s unless the caller is owner/captain/manager of the target team). An admin could
+# therefore only ever APPROVE a claim somebody else had already asked for.
+#
+# That is backwards for a backfilled tournament. Importing FFWS Africa 2026 Fall created ~150 ghost
+# teams in one afternoon, most of them clubs that ALREADY have an AFC profile; waiting for 150 team
+# captains to each notice their club and file a claim is not a process, it is a wish. The admin doing
+# the import is the person who knows that CRIMSON MYTH the ghost is CRIMSON MYTH the profile.
+#
+# THE HISTORY QUESTION IS ASKED PER TEAM (owner 2026-08-24). Attributing does not always mean the
+# same thing: sometimes the ghost IS that club history and the points should move; sometimes it is a
+# same-named side, or the admin only wants the profiles linked for display. So move_history is a
+# per-request decision rather than a property of the feature, and the bulk endpoint carries ONE
+# choice for the whole batch (the "apply to all" the owner asked for) rather than inventing a
+# per-item default.
+#
+# WHAT IT IS NOT: this does not bypass the approval that ghost_approve_claim exists to enforce, it
+# IS that approval, performed by the same head_admin/metrics_admin gate and writing the same audit
+# row. It reuses claims.reattribute_ghost_team verbatim, including its ClaimConflict guard, so an
+# admin-initiated move cannot do anything a team-requested one could not.
+#
+# CONSUMED BY: the admin ghost-teams screen (frontend app/(a)/a/rankings/ghost-teams).
+
+
+def _attribute_one(ghost, team, user, reason, move_history):
+    """Attribute ONE ghost to ONE real team. Returns the serialized ghost.
+
+    Raises claims.ClaimConflict when the real team already holds history that would collide; the
+    caller decides whether that aborts a single request or one item of a batch.
+
+    move_history=True  -> claims.reattribute_ghost_team moves participations, tournament
+                          registrations, points, rank and tier onto the real team.
+    move_history=False -> the ghost is LINKED only. Its own rows stay exactly where they are, so the
+                          ladder still shows the ghost separately. This is the honest option for "I
+                          know who this is, but its results are not this profile history."
+    """
+    before = serialize_ghost(ghost)
+    summary = None
+    if move_history:
+        summary = claims.reattribute_ghost_team(ghost, team, user)
+
+    ghost.claimed_by = team
+    ghost.claim_status = "claimed"
+    ghost.claimed_at = timezone.now()
+    ghost.claim_approved_by = user
+    ghost.save(update_fields=["claimed_by", "claim_status", "claimed_at", "claim_approved_by"])
+
+    ghost = GhostTeam.objects.prefetch_related("players").get(pk=ghost.pk)
+    after = serialize_ghost(ghost)
+    # Record WHICH of the two things happened, because "claimed" alone cannot tell them apart later
+    # and the difference is the whole point of asking.
+    after["reattribution"] = summary
+    after["history_moved"] = bool(move_history)
+    _audit(user, "ghost_claim", "attribute", reason,
+           object_ref=ghost.ghost_team_id, before=before, after=after)
+    return after
+
+
+def _resolve_real_team(team_id):
+    """(team, error_response). One place turns a posted team_id into a real afc_team.Team."""
+    from afc_team.models import Team
+    if not team_id:
+        return None, Response({"message": "team_id is required."},
+                              status=status.HTTP_400_BAD_REQUEST)
+    team = Team.objects.filter(pk=team_id).first()
+    if team is None:
+        return None, Response({"message": "No team with that id."},
+                              status=status.HTTP_400_BAD_REQUEST)
+    return team, None
+
+
+@api_view(["POST"])
+def ghost_attribute(request, ghost_team_id):
+    """POST ghost-teams/<uuid>/attribute/ - an ADMIN says this ghost IS this real team.
+
+    Request: { team_id (required), reason (>=10 chars), move_history (bool, default true) }
+    Response: 200 the serialized ghost, carrying history_moved and the reattribution summary.
+    Auth: head_admin | metrics_admin (_auth), the same gate as approving a requested claim.
+
+    Refuses a ghost that is already claimed: re-pointing a claimed ghost silently would move history
+    twice. Undo the existing claim first (ghost_revoke_claim), which is visible and audited. A
+    pending ghost IS allowed, because attributing it answers the same question the pending request
+    asks; the audit row records who decided.
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    reason, err = _require_reason(request)
+    if err:
+        return err
+    ghost, err = _get_ghost_or_404(ghost_team_id)
+    if err:
+        return err
+    team, err = _resolve_real_team(request.data.get("team_id"))
+    if err:
+        return err
+
+    if ghost.claim_status == "claimed":
+        return Response(
+            {"message": f"{ghost.team_name} is already claimed. Undo that claim first."},
+            status=status.HTTP_400_BAD_REQUEST)
+
+    # Default TRUE: the common case for an imported club is that this really is its history, and a
+    # silent default of False would quietly strand every point the import created.
+    move_history = str(request.data.get("move_history", "true")).lower() not in ("false", "0", "no")
+
+    try:
+        after = _attribute_one(ghost, team, user, reason, move_history)
+    except claims.ClaimConflict as conflict:
+        return Response({"message": str(conflict)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(after)
+
+
+@api_view(["POST"])
+def ghost_attribute_bulk(request):
+    """POST ghost-teams/attribute-bulk/ - attribute MANY ghosts in one go (the "apply to all").
+
+    Request: { items: [{ghost_team_id, team_id}, ...], reason (>=10), move_history (bool) }
+    Response: 200 { attributed: [...], failed: [{ghost_team_id, message}], moved_history }
+    Auth: head_admin | metrics_admin (_auth).
+
+    PARTIAL SUCCESS IS THE POINT, so this is deliberately NOT one transaction. Each item is
+    independent: one ghost whose real team already holds colliding history must not stop the other
+    hundred from being attributed. Every failure is returned with its reason beside its id so the
+    screen can list exactly what still needs a human, and each success writes its own audit row.
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    reason, err = _require_reason(request)
+    if err:
+        return err
+
+    items = request.data.get("items")
+    if not isinstance(items, list) or not items:
+        return Response({"message": "items must be a non-empty list."},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    # ONE choice for the whole batch: this endpoint IS the "apply to all" answer, so a per-item
+    # override would contradict what the admin was asked on screen.
+    move_history = str(request.data.get("move_history", "true")).lower() not in ("false", "0", "no")
+
+    attributed, failed = [], []
+    for item in items:
+        gid = (item or {}).get("ghost_team_id")
+        ghost, gerr = _get_ghost_or_404(gid)
+        if gerr:
+            failed.append({"ghost_team_id": gid, "message": "No ghost team with that id."})
+            continue
+        team, terr = _resolve_real_team((item or {}).get("team_id"))
+        if terr:
+            failed.append({"ghost_team_id": gid, "message": "No team with that id."})
+            continue
+        if ghost.claim_status == "claimed":
+            failed.append({"ghost_team_id": gid,
+                           "message": f"{ghost.team_name} is already claimed."})
+            continue
+        try:
+            attributed.append(_attribute_one(ghost, team, user, reason, move_history))
+        except claims.ClaimConflict as conflict:
+            failed.append({"ghost_team_id": gid, "message": str(conflict)})
+
+    return Response({"attributed": attributed, "failed": failed,
+                     "moved_history": move_history})
