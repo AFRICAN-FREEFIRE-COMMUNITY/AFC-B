@@ -1375,21 +1375,33 @@ def search_ghost_teams(request):
     if err:
         return err
     q = (request.GET.get("q") or "").strip()
-    if len(q) < 2:
+    # BROWSE MODE (owner 2026-08-24): with browse=1 an EMPTY query lists unclaimed profiles instead
+    # of returning nothing. The typeahead contract is unchanged - without browse, q < 2 still
+    # returns an empty list - but a person looking for their own club has no reason to guess a
+    # search term first, and "searching for ghost teams doesn't bring them up" was exactly the
+    # complaint. unclaimed_only pairs with it so the browse list cannot offer a profile that has
+    # already been taken.
+    browse = str(request.GET.get("browse", "")).lower() in ("1", "true", "yes")
+    unclaimed_only = str(request.GET.get("unclaimed_only", "")).lower() in ("1", "true", "yes")
+    if len(q) < 2 and not browse:
         return Response({"results": [], "total_count": 0})
     try:
         limit = max(1, min(int(request.GET.get("limit", 10)), 25))
     except (TypeError, ValueError):
         limit = 10
 
-    # Same widen-only condition shape as /team/search-teams/: plain icontains OR the
-    # punctuation/leet-normalized comparison (only when the stripped query is non-empty).
-    cond = Q(team_name__icontains=q)
-    stripped = separator_stripped(q)
     qs = GhostTeam.objects.filter(is_active=True).annotate(_norm_name=normalized_column("team_name"))
-    if stripped:
-        cond |= Q(_norm_name__icontains=stripped)
-    qs = qs.filter(cond).order_by("team_name")
+    if unclaimed_only:
+        qs = qs.filter(claim_status__in=["unclaimed", "revoked"])
+    if len(q) >= 2:
+        # Same widen-only condition shape as /team/search-teams/: plain icontains OR the
+        # punctuation/leet-normalized comparison (only when the stripped query is non-empty).
+        cond = Q(team_name__icontains=q)
+        stripped = separator_stripped(q)
+        if stripped:
+            cond |= Q(_norm_name__icontains=stripped)
+        qs = qs.filter(cond)
+    qs = qs.order_by("team_name")
     total = qs.count()
     results = []
     for gt in qs[:limit]:
@@ -1398,6 +1410,8 @@ def search_ghost_teams(request):
             "team_name": gt.team_name,
             "country": gt.country,
             "players_count": gt.players.count(),
+            # Needed by the public browse list so a taken profile is not offered for claiming.
+            "claim_status": gt.claim_status,
         })
     return Response({"results": results, "total_count": total})
 
@@ -1420,19 +1434,28 @@ def search_ghost_players(request):
     if err:
         return err
     q = (request.GET.get("q") or "").strip()
-    if len(q) < 2:
+    # BROWSE MODE, the player twin of the one on search_ghost_teams (owner 2026-08-24): a person
+    # looking for their own IGN should not have to guess a search term before anything appears.
+    # unclaimed_only keeps an already-claimed player out of a list offering claims.
+    browse = str(request.GET.get("browse", "")).lower() in ("1", "true", "yes")
+    unclaimed_only = str(request.GET.get("unclaimed_only", "")).lower() in ("1", "true", "yes")
+    if len(q) < 2 and not browse:
         return Response({"results": [], "total_count": 0})
     try:
         limit = max(1, min(int(request.GET.get("limit", 10)), 25))
     except (TypeError, ValueError):
         limit = 10
 
-    cond = Q(ign__icontains=q)
-    stripped = separator_stripped(q)
     qs = GhostPlayer.objects.select_related("ghost_team").annotate(_norm_ign=normalized_column("ign"))
-    if stripped:
-        cond |= Q(_norm_ign__icontains=stripped)
-    qs = qs.filter(cond).order_by("ign")
+    if unclaimed_only:
+        qs = qs.filter(claim_status__in=["unclaimed", "revoked"])
+    if len(q) >= 2:
+        cond = Q(ign__icontains=q)
+        stripped = separator_stripped(q)
+        if stripped:
+            cond |= Q(_norm_ign__icontains=stripped)
+        qs = qs.filter(cond)
+    qs = qs.order_by("ign")
     total = qs.count()
     results = []
     for gp in qs[:limit]:
