@@ -182,3 +182,69 @@ class GhostQualificationRowTests(TestCase):
         self.assertTrue(row.get("is_ghost"))
         self.assertIsNone(row.get("team_id"))
         self.assertIsNone(row.get("user_id"))
+
+
+class MultiPhaseGroupNameCollisionTests(TestCase):
+    """A multi-phase tournament reuses group letters, and a sheet must land in its OWN phase.
+
+    REGRESSION (owner 2026-08-23, found importing FFWS Africa 2026 Fall). `_target_group` ran one
+    loop that accepted EITHER an exact "<stage> <group>" match OR a `want.endswith(group_name)`
+    fallback, and returned the first row that satisfied either. Since "phase2groupa" ends with
+    "groupa", the sheet "Phase 2 - Group A" could be answered by the PHASE 1 Group A row before the
+    exact match was ever reached, decided by nothing but queryset order.
+
+    That was silent data loss rather than a mismatch: commit_import REPLACES the rows in whichever
+    group it is given, so all four Phase 2 sheets landed on Phase 1 Groups A-D and destroyed the
+    real Phase 1 results, while the summary reported 16 groups, 192 rows and no unmatched sheets.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create(
+            username="collide_admin", email="ca@example.com", role="admin")
+        self.event = Event.objects.create(
+            slug="multi-phase-collision", competition_type="tournament",
+            participant_type="squad", event_type="internal", max_teams_or_players=24,
+            event_name="Multi Phase", event_mode="virtual",
+            start_date=TODAY, end_date=TODAY,
+            registration_open_date=TODAY, registration_end_date=TODAY,
+            prizepool="0", event_rules="r", event_status="ongoing",
+            registration_link="https://example.com/r", number_of_stages=2,
+        )
+        # Two stages that BOTH carry a "Group A", which is the ordinary shape of a play-ins
+        # tournament and the exact shape FFWS has (Phase 1 A-L, Phase 2 A-D).
+        self.groups = {}
+        for order, stage_name, letters in ((1, "Phase 1", "AB"), (2, "Phase 2", "A")):
+            stage = Stages.objects.create(
+                event=self.event, stage_name=stage_name, start_date=TODAY, end_date=TODAY,
+                number_of_groups=len(letters), stage_format="br - normal",
+                teams_qualifying_from_stage=2)
+            for gi, letter in enumerate(letters, start=1):
+                self.groups[(stage_name, letter)] = StageGroups.objects.create(
+                    stage=stage, group_name=f"Group {letter}", playing_date=TODAY,
+                    playing_time=datetime.time(12, 0), teams_qualifying=2,
+                    match_count=1, match_maps=[])
+
+    def test_a_phase_2_sheet_does_not_land_in_phase_1(self):
+        from afc_results_import.services import _target_group
+        got = _target_group(self.event, "Phase 2 - Group A")
+        self.assertEqual(got, self.groups[("Phase 2", "A")])
+
+    def test_a_phase_1_sheet_still_lands_in_phase_1(self):
+        from afc_results_import.services import _target_group
+        got = _target_group(self.event, "Phase 1 - Group A")
+        self.assertEqual(got, self.groups[("Phase 1", "A")])
+
+    def test_an_ambiguous_bare_group_name_is_unmatched_rather_than_guessed(self):
+        """"Group A" exists in both phases, so there is no honest answer. Reported, not guessed."""
+        from afc_results_import.services import _target_group
+        self.assertIsNone(_target_group(self.event, "Group A"))
+
+    def test_a_bare_group_name_unique_to_one_stage_still_resolves(self):
+        """Only Phase 1 has a Group B, so the loose match is unambiguous and must still work."""
+        from afc_results_import.services import _target_group
+        self.assertEqual(_target_group(self.event, "Group B"), self.groups[("Phase 1", "B")])
+
+    def test_a_loose_suffix_match_still_resolves_when_unambiguous(self):
+        from afc_results_import.services import _target_group
+        self.assertEqual(
+            _target_group(self.event, "Standings Group B"), self.groups[("Phase 1", "B")])
