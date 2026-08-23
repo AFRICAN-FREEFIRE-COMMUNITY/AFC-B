@@ -421,7 +421,10 @@ def list_leaderboards(request):
     if q:
         qs = qs.filter(name__icontains=q)
 
-    qs = qs.order_by("-created_at")
+    # Newest first by CREATION, which is already what an admin wants here. -id is the tie-break and
+    # is what makes the sort TOTAL: several leaderboards routinely share a created_at, and on a
+    # non-unique key LIMIT/OFFSET paging can show one row on two pages or skip it entirely.
+    qs = qs.order_by("-created_at", "-id")
     total = qs.count()
     limit, offset = _page_params(request)
     rows = [_serialize_lb(lb) for lb in qs[offset:offset + limit]]
