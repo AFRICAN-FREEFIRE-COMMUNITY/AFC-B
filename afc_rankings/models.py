@@ -133,6 +133,14 @@ class GhostTeam(models.Model):
     )
     claim_revoked_at = models.DateTimeField(null=True, blank=True)
     claim_note = models.TextField(blank=True)
+    # Optional proof the claimant uploads with a request (owner 2026-08-24). The claim form has
+    # always said "Links, screenshots, or anything that helps an admin confirm this is you", while
+    # offering a plain textarea: a screenshot could be described but never attached. An admin
+    # reviewing a claim wants to SEE the roster page or the tournament post, not read a URL that may
+    # already be dead.
+    # One file, not a gallery: a claim is a single yes/no decision and a queue of albums is a queue
+    # nobody works through. A claimant with more can still paste links in claim_note.
+    claim_evidence = models.ImageField(upload_to="claim_evidence/", null=True, blank=True)
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
@@ -673,6 +681,14 @@ class GhostPlayer(models.Model):
     )
     claim_revoked_at = models.DateTimeField(null=True, blank=True)
     claim_note = models.TextField(blank=True)
+    # Optional proof the claimant uploads with a request (owner 2026-08-24). The claim form has
+    # always said "Links, screenshots, or anything that helps an admin confirm this is you", while
+    # offering a plain textarea: a screenshot could be described but never attached. An admin
+    # reviewing a claim wants to SEE the roster page or the tournament post, not read a URL that may
+    # already be dead.
+    # One file, not a gallery: a claim is a single yes/no decision and a queue of albums is a queue
+    # nobody works through. A claimant with more can still paste links in claim_note.
+    claim_evidence = models.ImageField(upload_to="claim_evidence/", null=True, blank=True)
 
     class Meta:
         ordering = ["ghost_team", "slot"]

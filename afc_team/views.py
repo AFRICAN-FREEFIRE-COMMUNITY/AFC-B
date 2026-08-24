@@ -1318,6 +1318,29 @@ def get_all_teams(request):
         for row in TeamMembers.objects.values("team").annotate(c=Count("pk"))
     }
 
+    # ── ACTIVITY, for the "Most active" tab on /teams (owner 2026-08-24) ──────────────────────────
+    # PLAYED, not REGISTERED. This reuses the ruling already applied on the team profile (owner
+    # 2026-08-08: "count events played, matches they participated in where a score was assigned"),
+    # so the number on this list and the number on a team's own page cannot disagree.
+    #
+    # A team's evidence of play is its own scored match lines, so a match counts when a
+    # TournamentTeamMatchStats row exists for it. That is a COUNT OF ROWS and never a truthiness
+    # test on the score: a team that played and scored zero still counts, which is the falsy-zero
+    # trap this repo has hit three times.
+    #
+    # Two grouped queries rather than per-team lookups, because this endpoint returns every team
+    # (~570) and the last performance fix here existed to kill exactly that shape.
+    from afc_tournament_and_scrims.models import TournamentTeamMatchStats
+    _stats = (TournamentTeamMatchStats.objects
+              .filter(tournament_team__team__isnull=False)
+              .values("tournament_team__team")
+              .annotate(matches=Count("pk"),
+                        events=Count("match__group__stage__event", distinct=True)))
+    activity = {
+        row["tournament_team__team"]: {"matches": row["matches"], "events": row["events"]}
+        for row in _stats
+    }
+
     teams_data = []
     for team in teams:
         teams_data.append({
@@ -1338,6 +1361,10 @@ def get_all_teams(request):
             "team_description": team.team_description,
             "country": team.country,
             "member_count": member_counts.get(team.team_id, 0),
+            # Activity, for the "Most active" sort. Both are 0 for a team that has never played,
+            # which is a real answer and not a missing one.
+            "events_played": activity.get(team.team_id, {}).get("events", 0),
+            "matches_played": activity.get(team.team_id, {}).get("matches", 0),
         })
 
     return Response({"teams": teams_data}, status=status.HTTP_200_OK)

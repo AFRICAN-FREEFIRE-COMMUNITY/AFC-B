@@ -105,6 +105,9 @@ def serialize_ghost_player(p, team_name=...):
         "claim_approved_by": p.claim_approved_by_id,         # User id (or None)
         "claim_revoked_at": p.claim_revoked_at.isoformat() if p.claim_revoked_at else None,
         "claim_note": p.claim_note,
+        # The uploaded proof, if the claimant attached one. A URL rather than the raw field so
+        # the admin queue can just render it; None when nothing was attached.
+        "claim_evidence": (p.claim_evidence.url if p.claim_evidence else None),
     }
 
 
@@ -130,6 +133,9 @@ def serialize_ghost(g):
         "claim_approved_by": g.claim_approved_by_id,         # User id (or None)
         "claim_revoked_at": g.claim_revoked_at.isoformat() if g.claim_revoked_at else None,
         "claim_note": g.claim_note,
+        # The uploaded proof, if the claimant attached one. A URL rather than the raw field so
+        # the admin queue can just render it; None when nothing was attached.
+        "claim_evidence": (g.claim_evidence.url if g.claim_evidence else None),
         # provenance
         "created_by": g.created_by_id,
         "created_at": g.created_at.isoformat() if g.created_at else None,
@@ -840,6 +846,36 @@ def ghost_approve_claim(request, ghost_team_id):
     return Response(after)
 
 
+
+# ── Claim evidence upload (owner 2026-08-24) ─────────────────────────────────────────────────────
+# The claim form has always offered "Links, screenshots, or anything that helps an admin confirm
+# this is you" next to a plain textarea, so a screenshot could be described and never attached. An
+# admin reviewing a claim wants to SEE the roster page or the tournament post.
+#
+# Validated HERE rather than trusted, because this is an unauthenticated-adjacent user upload: any
+# logged-in user may file a claim, so the file is size-capped and content-type checked before it
+# reaches storage. ImageField re-verifies it is a real image on save; this check exists to reject
+# the obvious cases with a readable message instead of a 500.
+MAX_CLAIM_EVIDENCE_BYTES = 5 * 1024 * 1024
+_CLAIM_EVIDENCE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+
+
+def _read_claim_evidence(request):
+    """(file_or_None, error_response). The file is optional; only a BAD one is an error."""
+    f = request.FILES.get("evidence_file")
+    if not f:
+        return None, None
+    if f.size > MAX_CLAIM_EVIDENCE_BYTES:
+        return None, Response(
+            {"message": "That image is larger than 5MB. Please upload a smaller one."},
+            status=status.HTTP_400_BAD_REQUEST)
+    if (getattr(f, "content_type", "") or "").lower() not in _CLAIM_EVIDENCE_TYPES:
+        return None, Response(
+            {"message": "Please upload an image (PNG, JPEG, WEBP or GIF)."},
+            status=status.HTTP_400_BAD_REQUEST)
+    return f, None
+
+
 # ───────────────────────── CLAIM REQUEST (user-facing - the initiate step) ─────────────────────────
 @api_view(["POST"])
 def ghost_team_request_claim(request, ghost_team_id):
@@ -906,14 +942,20 @@ def ghost_team_request_claim(request, ghost_team_id):
         )
 
     evidence = (request.data.get("evidence") or "").strip()
+    evidence_file, err = _read_claim_evidence(request)
+    if err:
+        return err
     with transaction.atomic():
         ghost.claim_status = "pending"
         ghost.claim_requested_by = user
         ghost.claim_requested_at = timezone.now()
         ghost.claimed_by = team            # the target, confirmed (or cleared) on approve/reject
         ghost.claim_note = evidence
+        if evidence_file is not None:
+            ghost.claim_evidence = evidence_file
         ghost.save(update_fields=[
             "claim_status", "claim_requested_by", "claim_requested_at", "claimed_by", "claim_note",
+            "claim_evidence",
         ])
         ghost = GhostTeam.objects.prefetch_related("players").get(pk=ghost.pk)
 
@@ -1011,14 +1053,20 @@ def ghost_player_request_claim(request, player_id):
         )
 
     evidence = (request.data.get("evidence") or "").strip()
+    evidence_file, err = _read_claim_evidence(request)
+    if err:
+        return err
     with transaction.atomic():
         player.claim_status = "pending"
         player.claim_requested_by = user
         player.claimed_by = user           # a self-claim: requester == target
         player.claim_requested_at = timezone.now()
         player.claim_note = evidence
+        if evidence_file is not None:
+            player.claim_evidence = evidence_file
         player.save(update_fields=[
             "claim_status", "claim_requested_by", "claimed_by", "claim_requested_at", "claim_note",
+            "claim_evidence",
         ])
         player = GhostPlayer.objects.select_related("ghost_team").get(pk=player.pk)
 
