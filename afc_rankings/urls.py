@@ -113,6 +113,18 @@ urlpatterns = [
     # append ONE ghost player to an existing (unclaimed) ghost team - used by the admin Players page.
     path("ghost-teams/<uuid:ghost_team_id>/players/", admin_ghost.ghost_player_create,
          name="rankings_ghost_player_create"),
+    # ADMIN-initiated attribution (owner 2026-08-24): the admin says "this ghost IS this real team"
+    # WITHOUT waiting for the team to file a claim first. request-claim below is deliberately not an
+    # admin action, so before this an admin could only ever APPROVE somebody else's request, which is
+    # unworkable for an imported tournament that creates ~150 ghosts at once. Same head_admin /
+    # metrics_admin gate and the same claims.reattribute_ghost_team path as approving a claim.
+    path("ghost-teams/<uuid:ghost_team_id>/attribute/", admin_ghost.ghost_attribute,
+         name="rankings_ghost_attribute"),
+    # The batch form, which is the "apply this history choice to all of them" the owner asked for.
+    # Registered BEFORE the <uuid> routes would matter only if it collided; it does not, but it is
+    # kept adjacent to its sibling so the two are read together.
+    path("ghost-teams/attribute-bulk/", admin_ghost.ghost_attribute_bulk,
+         name="rankings_ghost_attribute_bulk"),
     # user-facing initiate step: a real team owner/captain/manager requests to claim this ghost team.
     path("ghost-teams/<uuid:ghost_team_id>/request-claim/", admin_ghost.ghost_team_request_claim,
          name="rankings_ghost_team_request_claim"),
