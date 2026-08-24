@@ -212,7 +212,9 @@ def commit_results_import(request):
 def pair_result_team(request):
     """POST results-import/pair/ - say what a name in the file MEANS.
 
-    Request:  {slug|event_id, source_name, tournament_team_id}
+    Request:  {slug|event_id, source_name, tournament_team_id | team_id}
+              tournament_team_id points at a competitor ALREADY in the event; team_id points at
+              any AFC team and registers it to the event if it is not in it yet.
     Response: 200 {message, alias_id}
 
     This is the correction tool for a renamed club or a name the matcher read wrongly. It is NOT a
@@ -231,17 +233,34 @@ def pair_result_team(request):
 
     source_name = (request.data.get("source_name") or "").strip()
     tt_id = request.data.get("tournament_team_id")
-    if not source_name or not tt_id:
+    # team_id accepts a REAL AFC team that is not yet registered to this event (owner 2026-08-24).
+    # Without it the pairing tool could only ever point a name at a competitor already IN the event,
+    # which excludes the case it is most needed for: the file says "LUMINOUSTY GAMING", the site has
+    # a profile called "LUMINOUSITY GAMING", and that profile has never entered this tournament. The
+    # registration is exactly what the import would have created had the spelling matched, so
+    # creating it here is not a side effect, it is the point.
+    team_id = request.data.get("team_id")
+    if not source_name or not (tt_id or team_id):
         return Response(
-            {"message": "source_name and tournament_team_id are both required."},
+            {"message": "source_name and one of tournament_team_id or team_id are required."},
             status=status.HTTP_400_BAD_REQUEST)
 
     from afc_tournament_and_scrims.models import TournamentTeam
-    tt = TournamentTeam.objects.filter(pk=tt_id, event=event).first()
-    if tt is None:
-        return Response(
-            {"message": "That competitor is not registered to this event."},
-            status=status.HTTP_400_BAD_REQUEST)
+    if tt_id:
+        tt = TournamentTeam.objects.filter(pk=tt_id, event=event).first()
+        if tt is None:
+            return Response(
+                {"message": "That competitor is not registered to this event."},
+                status=status.HTTP_400_BAD_REQUEST)
+    else:
+        from afc_team.models import Team
+        team = Team.objects.filter(pk=team_id).first()
+        if team is None:
+            return Response({"message": "No team with that id."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        # get_or_create, never create: the team may already be registered, and a second row would
+        # violate the uniq_event_team_registration constraint.
+        tt, _ = TournamentTeam.objects.get_or_create(event=event, team=team)
 
     alias, _ = ExternalResultTeamAlias.objects.update_or_create(
         event=event, normalized_name=norm_team_name(source_name),

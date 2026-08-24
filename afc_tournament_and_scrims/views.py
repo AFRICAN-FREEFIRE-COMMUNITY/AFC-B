@@ -693,7 +693,13 @@ def get_all_events(request):
     # -event_id breaks the tie so the order is total and paging cannot drop or repeat a row (an
     # unstable sort with LIMIT/OFFSET does exactly that).
     events = (Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT)
-              .select_related("organization").order_by("-start_date", "-event_id"))
+              # NEWEST FIRST BY CREATION, not by start date (owner 2026-08-24). An admin opening
+              # this list is looking for the thing they just made, and an event's start_date is
+              # often months away or backdated for an imported tournament, so start_date order
+              # buries a brand-new event in the middle of the list. -event_id is the tie-break and
+              # makes the sort TOTAL, which LIMIT/OFFSET paging needs: on a non-unique key a row can
+              # otherwise appear on two pages or on none.
+              .select_related("organization").order_by("-created_at", "-event_id"))
     # optional org filter: when present, scope the list to one organization's events.
     organization_id = request.GET.get("organization_id")
     if organization_id:
@@ -778,7 +784,7 @@ def get_all_events_paginated(request):
     # -event_id is the TIEBREAK, not decoration: many events share a start_date, and an unstable
     # sort under LIMIT/OFFSET lets a row appear on two pages or on none at all as the offset moves.
     events = (Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT)
-              .select_related("organization").order_by("-start_date", "-event_id"))
+              .select_related("organization").order_by("-created_at", "-event_id"))
     # optional org filter: when present, scope the list to one organization's events.
     organization_id = request.GET.get("organization_id")
     if organization_id:
@@ -832,7 +838,7 @@ def get_all_tournaments_and_scrims(request):
     # Newest first, with -event_id as the tiebreak, matching get_all_events. Without an order_by
     # this returned insertion order, so the oldest events came first (owner report 2026-08-22).
     events = (Event.objects.filter(is_draft=False).filter(_ACTIVE_ORG_EVENT)  # hide suspended-org events
-              .order_by("-start_date", "-event_id"))
+              .order_by("-created_at", "-event_id"))
     event_list = []
     for event in events:
         event_list.append({
@@ -876,9 +882,9 @@ def get_all_tournaments_and_scrims_separated(request):
     # Newest first on BOTH lists, with -event_id as the tiebreak, matching get_all_events. Neither
     # was ordered, so both opened on the oldest events (owner report 2026-08-22).
     tournaments = (Event.objects.filter(competition_type="tournament", is_draft=False)
-                   .filter(_ACTIVE_ORG_EVENT).order_by("-start_date", "-event_id"))
+                   .filter(_ACTIVE_ORG_EVENT).order_by("-created_at", "-event_id"))
     scrims = (Event.objects.filter(competition_type="scrim", is_draft=False)
-              .filter(_ACTIVE_ORG_EVENT).order_by("-start_date", "-event_id"))
+              .filter(_ACTIVE_ORG_EVENT).order_by("-created_at", "-event_id"))
 
     tournament_list = []
     for event in tournaments:

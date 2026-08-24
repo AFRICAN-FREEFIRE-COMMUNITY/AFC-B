@@ -415,3 +415,88 @@ class TemplateShapeTests(ResultsImportEndpointTests):
         self.assertEqual(on.status_code, 200, on.content[:300])
         self.assertTrue(
             EventCountingControl.objects.get(event=self.event).counts_toward_rankings)
+
+
+class PairByTeamIdTests(TestCase):
+    """pair/ can target a real AFC team that has never entered this event (owner 2026-08-24).
+
+    WHY: the pairing tool previously accepted only a tournament_team_id, i.e. a competitor ALREADY
+    registered to the event. That excludes the case it is most needed for. The FFWS file says
+    "LUMINOUSTY GAMING", the site has "LUMINOUSITY GAMING", and that profile has never entered this
+    tournament, so there was no id to point at and the near-miss warning had no cure.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create(
+            username="pair_admin", email="pa@example.com", role="admin")
+        self.token = SessionToken.objects.create(
+            user=self.admin, token=secrets.token_hex(32)).token
+        # Reuse the module's own event shape rather than the tests_settings helper, which lives
+        # in a sibling file and is not imported here.
+        self.event = Event.objects.create(
+            slug="pair-by-team-id", competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=16, event_name="Pair By Team Id",
+            event_mode="virtual", start_date=TODAY, end_date=TODAY,
+            registration_open_date=TODAY, registration_end_date=TODAY,
+            prizepool="0", event_rules="r", event_status="completed",
+            registration_link="https://example.com/r", number_of_stages=1)
+        self.team = Team.objects.create(
+            team_name="LUMINOUSITY GAMING", join_settings="open",
+            team_creator=self.admin, team_owner=self.admin)
+
+    def _auth(self):
+        return {"HTTP_AUTHORIZATION": f"Bearer {self.token}"}
+
+    def test_pairing_registers_a_team_that_is_not_in_the_event_yet(self):
+        from afc_tournament_and_scrims.models import TournamentTeam
+        self.assertFalse(
+            TournamentTeam.objects.filter(event=self.event, team=self.team).exists())
+
+        r = self.client.post(
+            "/results-import/pair/",
+            {"slug": self.event.slug, "source_name": "LUMINOUSTY GAMING",
+             "team_id": self.team.pk},
+            content_type="application/json", **self._auth())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(
+            TournamentTeam.objects.filter(event=self.event, team=self.team).exists())
+
+    def test_pairing_twice_does_not_duplicate_the_registration(self):
+        """get_or_create, never create: a second row would break uniq_event_team_registration."""
+        from afc_tournament_and_scrims.models import TournamentTeam
+        for _ in range(2):
+            r = self.client.post(
+                "/results-import/pair/",
+                {"slug": self.event.slug, "source_name": "LUMINOUSTY GAMING",
+                 "team_id": self.team.pk},
+                content_type="application/json", **self._auth())
+            self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(
+            TournamentTeam.objects.filter(event=self.event, team=self.team).count(), 1)
+
+    def test_a_paired_name_then_resolves_to_that_team(self):
+        """The whole point: the next import reads the file name as the paired profile."""
+        self.client.post(
+            "/results-import/pair/",
+            {"slug": self.event.slug, "source_name": "LUMINOUSTY GAMING",
+             "team_id": self.team.pk},
+            content_type="application/json", **self._auth())
+        from afc_results_import.services import resolve_competitor
+        tt, resolution, created = resolve_competitor(self.event, "LUMINOUSTY GAMING")
+        self.assertEqual(resolution, "manually_paired")
+        self.assertFalse(created)
+        self.assertEqual(tt.team_id, self.team.pk)
+
+    def test_neither_id_is_refused(self):
+        r = self.client.post(
+            "/results-import/pair/",
+            {"slug": self.event.slug, "source_name": "LUMINOUSTY GAMING"},
+            content_type="application/json", **self._auth())
+        self.assertEqual(r.status_code, 400)
+
+    def test_an_unknown_team_id_is_refused(self):
+        r = self.client.post(
+            "/results-import/pair/",
+            {"slug": self.event.slug, "source_name": "X", "team_id": 99999999},
+            content_type="application/json", **self._auth())
+        self.assertEqual(r.status_code, 400)
