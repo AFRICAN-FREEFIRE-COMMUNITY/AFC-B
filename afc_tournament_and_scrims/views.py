@@ -59,6 +59,7 @@ from .event_contract import (
     PUBLIC,
     WriteRefused,
     apply_event_writes,
+    duplicate_field_values,
     serialize_event,
 )
 from .views_public_sponsors import serialize_public_sponsors
@@ -2683,92 +2684,42 @@ def duplicate_event(request, event_id):
     # is a pure DB operation.
     with transaction.atomic():
         # ── 1) Clone the Event row: copy every CONFIG field, RESET identity + lifecycle ──
-        # Field list mirrors create_event's Event.objects.create(...) so the two stay in lockstep
-        # (any new config field added to create_event should be added here too).
+        # ── 1) Clone the Event row: EVERY config column, RESET identity and lifecycle ──
+        # This was a hand-typed list of 51 keyword arguments, with a comment claiming it "mirrors
+        # create_event's Event.objects.create(...) so the two stay in lockstep". It had drifted
+        # TWICE, and both times silently, because a missing keyword argument just takes the column
+        # default and nothing raises:
+        #
+        #   - once on the require_* gates, patched by hand (see the note still in create_event)
+        #   - again by 2026-08-26 on require_discord, discord_server_id, discord_invite_link,
+        #     timezone, waitlist_mode, auto_seed_on_start and auto_seed_trigger. The Discord one
+        #     meant duplicating an event that REQUIRED Discord produced a copy that did not: a
+        #     registration gate switching itself off with no error anywhere.
+        #
+        # duplicate_field_values reads the columns off the model, so the default is now INHERIT and
+        # dropping a field takes a deliberate line in event_contract.DUPLICATE_EXCLUDED. A new
+        # field added to Event is carried here without this function being touched.
+        # See test_duplicate_event_fields.py, which pins both halves.
         new_event = Event.objects.create(
-            registration_type=source.registration_type,
-            registration_fee=source.registration_fee,
-            registration_fee_currency=source.registration_fee_currency,
-            country_payment_rules=source.country_payment_rules,
-            competition_type=source.competition_type,
-            participant_type=source.participant_type,
-            event_type=source.event_type,
-            max_teams_or_players=source.max_teams_or_players,
-            # " (Copy)" makes the clone obvious in the events list; trimmed to the field's
-            # 40-char max so a long source name can't overflow event_name.
+            **duplicate_field_values(source),
+            # " (Copy)" makes the clone obvious in the events list; trimmed to the field's 40-char
+            # max so a long source name cannot overflow event_name.
             event_name=(f"{source.event_name} (Copy)")[:40],
-            event_mode=source.event_mode,
             # ── DATES ARE SHIFTED, NOT COPIED (owner backlog item 27) ──
             # Copying them verbatim is the root of "I duplicated an event, gave it a future start
             # date, published it, and it still says Event completed". A clone of a finished event
             # carried that event's PAST dates, and the status sweep that runs every five minutes
-            # re-stamped it "completed" on its own, undoing the reset two lines below before
-            # anybody had a chance to edit it.
-            #
-            # Shifted by the gap between the source's start and today, so the SHAPE of the event
-            # survives: a three day event stays three days, and registration still opens the same
-            # number of days before it starts. Cleared dates would have been simpler and worse,
-            # because the create form treats them as required and the organizer would have had to
-            # reconstruct a schedule they were trying to reuse.
+            # re-stamped it "completed" on its own. The shift preserves the SHAPE: a three day
+            # event stays three days, and registration still opens the same number of days before
+            # it starts.
             **_cloned_dates(source),
-            prizepool=source.prizepool,
-            prizepool_cash_value=source.prizepool_cash_value,
-            prize_distribution=source.prize_distribution,
-            event_rules=source.event_rules,
-            # Config field, so it is copied (owner 2026-08-05, item 26). The event's PUBLIC
-            # SPONSORS are NOT: they are attached rows, and this clone deliberately copies Event
-            # columns only, exactly as it already skips SponsorEvent and StreamChannel (see the
-            # docstring above).
-            event_description=source.event_description,
-            # Lifecycle RESET: a clone is always a fresh upcoming draft.
+            # Lifecycle RESET: a clone is always a fresh upcoming draft owned by whoever made it.
             event_status="upcoming",
-            registration_link=source.registration_link,
-            tournament_tier=source.tournament_tier,
-            prize_currency=source.prize_currency,
-            usd_to_ngn_rate=source.usd_to_ngn_rate,
-            prizepool_ngn_value=source.prizepool_ngn_value,
-            # Media: reference the SAME stored file path (don't re-upload the file). create_event
-            # defaults these from request.FILES; here we carry the existing file reference.
-            event_banner=source.event_banner,
-            number_of_stages=source.number_of_stages,
-            uploaded_rules=source.uploaded_rules,
-            creator=user,                       # the actor owns the clone
-            organization=source.organization,   # KEEP the owning org (null = native AFC event)
-            is_draft=True,                      # always a draft
-            is_public=False,                    # private until the owner publishes
-            rankings_verified=False,            # reset the rankings gate
-            partner_published=False,            # reset the partner-API gate
-            registration_restriction=source.registration_restriction,
-            restriction_mode=source.restriction_mode,
-            restricted_countries=source.restricted_countries,
-            is_sponsored=source.is_sponsored,
-            sponsor_name=source.sponsor_name,
-            sponsor_field_label=source.sponsor_field_label,
-            sponsor_requirement_description=source.sponsor_requirement_description,
-            is_waitlist_enabled=source.is_waitlist_enabled,
-            waitlist_capacity=source.waitlist_capacity,
-            waitlist_discord_role_id=source.waitlist_discord_role_id,
-            event_start_time=source.event_start_time,
-            event_end_time=source.event_end_time,
-            registration_start_time=source.registration_start_time,
-            registration_end_time=source.registration_end_time,
-            # Registration requirements - carry the source's gates onto the clone (these were
-            # previously dropped, so a duplicated event silently lost its require_* toggles). F3.
-            require_team_logo=source.require_team_logo,
-            require_esport_images=source.require_esport_images,
-            require_player_uid=source.require_player_uid,
-            require_player_profile_image=source.require_player_profile_image,
-            # WhatsApp number requirement (owner 2026-08-03): carried like the gates above so a
-            # duplicated event keeps demanding a number instead of silently dropping the gate.
-            require_whatsapp=source.require_whatsapp,
-            # A LIST field: copy it, do not alias it, or editing the clone would silently edit the
-            # original's requirement too. duplicate_event copies every require_* by hand, which is
-            # why a new field forgotten here vanishes from every duplicated event.
-            required_connections=list(source.required_connections or []),
-            # Letter avatars (feature #7): carry the source's registration threshold onto the clone
-            # (the per-team assigned_letter is per-registration and is NOT cloned - the clone has no
-            # registrations yet).
-            min_letter_avatars=source.min_letter_avatars,
+            creator=user,          # the actor owns the clone
+            is_draft=True,         # always a draft
+            is_public=False,       # private until the owner publishes
+            rankings_verified=False,   # reset the rankings gate
+            partner_published=False,   # reset the partner-API gate
         )
 
         # ── 2) Clone each Stage (config only) ──

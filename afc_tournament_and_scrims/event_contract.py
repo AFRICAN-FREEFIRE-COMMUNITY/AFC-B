@@ -466,3 +466,95 @@ def with_defaults(data):
         if f.name not in filled and f.default is not None:
             filled[f.name] = f.default()
     return filled
+
+
+# ── DUPLICATION ───────────────────────────────────────────────────────────────────────────────
+# A duplicate inherits the event's SHAPE. It never inherits identity, results, or history.
+#
+# WHY THIS IS DRIVEN OFF THE MODEL AND NOT OFF EVENT_FIELDS: a copy has to carry INTERNAL config
+# too (scoring switches, check-in settings), and those are deliberately absent from the contract
+# because no reader exposes them. Reading the model means the default is INHERIT, and dropping a
+# field has to be a deliberate line in the list below.
+#
+# That direction matters. duplicate_event used to build the copy from a hand-typed list of 51
+# keyword arguments whose own comment claimed it "mirrors create_event ... so the two stay in
+# lockstep". It had drifted TWICE: once on the require_* gates (patched by hand, comment "these
+# were previously dropped, so a duplicated event silently lost its require_* toggles"), and again
+# by 2026-08-26 on require_discord, discord_server_id, discord_invite_link, timezone,
+# waitlist_mode, auto_seed_on_start and auto_seed_trigger. Nothing failed either time, because a
+# missing keyword argument just takes the column default.
+DUPLICATE_EXCLUDED = {
+    # Identity. The copy is a different row with a different name and its own slug.
+    "event_id",
+    "slug",
+    "event_name",
+    "creator",
+    "created_at",
+    "updated_at",
+    # Lifecycle. A clone is always a fresh unpublished draft, never a finished event.
+    "event_status",
+    "is_draft",
+    "is_public",
+    # The four date fields are SHIFTED rather than copied, by _cloned_dates, so that a clone of a
+    # finished event does not sit in the past and get re-stamped "completed" by the status sweep
+    # (owner backlog item 27). They are supplied by the endpoint, not from here.
+    "start_date",
+    "end_date",
+    "registration_open_date",
+    "registration_end_date",
+    # Results, and the gates that publish them. A copy has played nothing.
+    "results_published",
+    "rankings_verified",
+    "partner_published",
+    "results_imported_at",
+    "results_imported_by",
+    "imported_results_visible_on_profiles",
+    "imported_results_count_in_profile_stats",
+    "auto_complete_suppressed",
+    "auto_seeded_at",
+    # Per-event secrets and live-broadcast targeting, which point at the SOURCE event's stages and
+    # groups. Copying them would aim the clone's overlays at another event's rows.
+    "overlay_token",
+    "broadcast_scope",
+    "broadcast_stage_id",
+    "broadcast_group_id",
+    "broadcast_group_ids",
+    # Windows and overrides that are meaningful only for the run that is happening.
+    "roster_edit_until",
+    "tier_overridden",
+    "checkin_start",
+    "checkin_end",
+    # NOT copied by the hand-written version either, and left that way DELIBERATELY in the commit
+    # that introduced this list: this change fixes the seven fields a test proved were dropped and
+    # otherwise preserves the existing behaviour exactly. Moving any of these into the copy is a
+    # separate decision with its own test, not a side effect of a refactor.
+    "checkin_enabled",
+    "mvp_config",
+    "tie_breakers",
+    "count_flagged_kills",
+    "allow_team_result_submissions",
+}
+
+
+def duplicate_field_values(source):
+    """Every Event column a copy inherits, read straight off the model.
+
+    Returns a dict keyed by ATTNAME, so a foreign key comes back as `organization_id` and is
+    assigned without fetching the related row.
+
+    Lists and dicts are COPIED, never aliased: sharing the same list object between the source and
+    the clone would mean editing one silently edited the other.
+    """
+    from .models import Event
+
+    values = {}
+    for field in Event._meta.concrete_fields:
+        if field.name in DUPLICATE_EXCLUDED:
+            continue
+        value = getattr(source, field.attname)
+        if isinstance(value, list):
+            value = list(value)
+        elif isinstance(value, dict):
+            value = dict(value)
+        values[field.attname] = value
+    return values
