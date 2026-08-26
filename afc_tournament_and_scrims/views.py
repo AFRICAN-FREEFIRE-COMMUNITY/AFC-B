@@ -6949,10 +6949,16 @@ def _clean_required_connections(raw):
     """
     from afc_auth.connections import enabled_providers
 
-    if raw is None:
+    if raw is None or raw == "":
         return []
+    # The create wizards post multipart FormData, where a list can only travel as a JSON STRING.
+    # _as_list is the repo's existing coercion for exactly that (it is what sponsor_usernames and
+    # the other list fields on this endpoint use), so a JSON string and a real list behave the same
+    # and there is no second parser to keep in step.
     if not isinstance(raw, list):
-        raise ValueError("required_connections must be a list")
+        raw = _as_list(raw)
+        if not raw:
+            raise ValueError("required_connections must be a list")
 
     allowed = {p.slug for p in enabled_providers()} - {"discord"}
     cleaned = []
