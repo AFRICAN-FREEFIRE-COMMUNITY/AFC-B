@@ -203,6 +203,59 @@ class WriteAndCloneTests(TestCase):
         self.assertEqual(event.required_connections, ["google"])
 
     @override_settings(GOOGLE_OAUTH_CLIENT_ID="gid")
+    def test_an_admin_can_CLEAR_the_requirement_once_it_is_set(self):
+        """REGRESSION, found in production 2026-08-26. Clearing the picker posts an EMPTY list,
+        which arrives from multipart FormData as the string "[]". The first version of the
+        validator parsed that correctly and then rejected it, because an empty list is FALSY and
+        the guard read `if not raw: raise`. An admin could set the requirement and never remove it.
+        """
+        event = _event(self.admin, required_connections=["google"], event_name="RC Clear Cup")
+
+        resp = Client().post(
+            "/events/edit-event/",
+            {"event_id": event.event_id, "required_connections": []},
+            content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {self.admin_token}",
+        )
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        event.refresh_from_db()
+        self.assertEqual(event.required_connections, [])
+
+    @override_settings(GOOGLE_OAUTH_CLIENT_ID="gid")
+    def test_clearing_works_when_the_empty_list_arrives_as_a_JSON_STRING(self):
+        """The exact shape the admin and organizer EDIT forms send: multipart FormData can only
+        carry strings, so an empty selection travels as "[]". This is the payload that failed in
+        production."""
+        event = _event(self.admin, required_connections=["google"], event_name="RC Clear Str Cup")
+
+        resp = Client().post(
+            "/events/edit-event/",
+            {"event_id": event.event_id, "required_connections": "[]"},
+            content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {self.admin_token}",
+        )
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        event.refresh_from_db()
+        self.assertEqual(event.required_connections, [])
+
+    @override_settings(GOOGLE_OAUTH_CLIENT_ID="gid")
+    def test_genuine_junk_is_still_refused(self):
+        """Clearing must not become a hole that lets any unparseable value through as 'empty'."""
+        event = _event(self.admin, required_connections=["google"], event_name="RC Junk Cup")
+        for junk in ("not json at all", '{"a": 1}', '"google"', "42"):
+            with self.subTest(junk=junk):
+                resp = Client().post(
+                    "/events/edit-event/",
+                    {"event_id": event.event_id, "required_connections": junk},
+                    content_type="application/json",
+                    HTTP_AUTHORIZATION=f"Bearer {self.admin_token}",
+                )
+                self.assertEqual(resp.status_code, 400, resp.content)
+                event.refresh_from_db()
+                self.assertEqual(
+                    event.required_connections, ["google"],
+                    "a refused write must not have changed the stored value",
+                )
+
+    @override_settings(GOOGLE_OAUTH_CLIENT_ID="gid")
     def test_discord_is_not_selectable_here(self):
         """require_discord is its own field and means MORE than this one (connected AND a member of
         the event's server). Two switches for one idea is how an organizer sets one and gets the
