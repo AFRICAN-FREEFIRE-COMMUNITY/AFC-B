@@ -558,3 +558,70 @@ def duplicate_field_values(source):
             value = dict(value)
         values[field.attname] = value
     return values
+
+
+# ── ACCOUNTING FOR EVERY COLUMN ───────────────────────────────────────────────────────────────
+# The rule the checker enforces is NOT "every field must be exposed". Plenty of Event's columns are
+# internal machinery and are correctly invisible. The rule is that every column is accounted for
+# SOMEWHERE: declared in EVENT_FIELDS, exposed through a derived key, or named below as internal.
+# A new column that is in none of those fails the suite, which is what stops the next field being
+# half-added.
+
+# Columns no reader exposes directly, but which reach the wire through a DERIVED key. Listed with
+# the keys that expose them so a reader can follow it without grepping.
+DERIVED_FROM = {
+    "event_banner": ("event_banner_url",),
+    "uploaded_rules": ("uploaded_rules_url",),
+    "organization": ("organization_id", "organization_name", "organization_slug",
+                     "organization_logo"),
+}
+
+# Columns no reader exposes at all, deliberately. Broadcast targeting and the overlay token are
+# operational; check-in, scoring config and draft state are internal; the currency snapshot fields
+# are working values behind prizepool_cash_value.
+INTERNAL_FIELDS = {
+    "auto_complete_suppressed",
+    "auto_seeded_at",
+    "broadcast_group_id",
+    "broadcast_group_ids",
+    "broadcast_scope",
+    "broadcast_stage_id",
+    "checkin_enabled",
+    "checkin_end",
+    "checkin_start",
+    "count_flagged_kills",
+    "creator",
+    "imported_results_count_in_profile_stats",
+    "imported_results_visible_on_profiles",
+    "is_draft",
+    "mvp_config",
+    "overlay_token",
+    "partner_published",
+    "prizepool_ngn_value",
+    "rankings_verified",
+    "results_imported_by",
+    "tie_breakers",
+    "updated_at",
+    "usd_to_ngn_rate",
+}
+
+
+def unaccounted_fields():
+    """Event columns that are in neither EVENT_FIELDS, DERIVED_FROM, nor INTERNAL_FIELDS.
+
+    Used by both the completeness test and tools/check_event_contract.py, so the two cannot
+    disagree about what "accounted for" means.
+    """
+    from .models import Event
+
+    model_fields = {f.name for f in Event._meta.concrete_fields}
+    declared = {f.attr for f in EVENT_FIELDS}
+    return sorted(model_fields - declared - set(DERIVED_FROM) - INTERNAL_FIELDS)
+
+
+def duplicate_field_names():
+    """The Event columns a duplicate inherits, by field name. For the checker's second question."""
+    from .models import Event
+
+    return sorted(f.name for f in Event._meta.concrete_fields
+                  if f.name not in DUPLICATE_EXCLUDED)
