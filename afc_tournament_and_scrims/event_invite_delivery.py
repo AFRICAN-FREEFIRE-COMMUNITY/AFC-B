@@ -139,7 +139,7 @@ def _frontend_origin():
     return (getattr(settings, "FRONTEND_URL", "") or "").rstrip("/")
 
 
-def _invitation_email_html(team, event, organizer_name, note, kind, lang):
+def _invitation_email_html(invitee_name, link_path, event, organizer_name, note, kind, lang):
     """The branded invitation email body, already in `lang`.
 
     Built from the HAND-AUTHORED copy in afc_auth.email_i18n ("event_team_invitation"), so a French
@@ -173,7 +173,7 @@ def _invitation_email_html(team, event, organizer_name, note, kind, lang):
     # The KIND decides exactly one of them: a first-come offer has to say that speed matters and a
     # general offer has to say the place is not being held, which is the difference between a
     # captain answering today and answering next week when the slot is gone.
-    paragraphs = [sentence("intro", team=team.team_name, event=event.event_name)]
+    paragraphs = [sentence("intro", team=invitee_name, event=event.event_name)]
     if organizer_name:
         paragraphs.append(sentence("from_organizer", name=organizer_name))
     paragraphs.append(sentence(f"urgency_{kind}") or sentence("urgency_per_team"))
@@ -199,15 +199,15 @@ def _invitation_email_html(team, event, organizer_name, note, kind, lang):
     cta = sentence("cta")
     cta_html = ""
     if cta:
-        # The team NAME, percent-encoded: /teams/[id] resolves that segment as the team name (see the
-        # long note in deliver_invitation), and unlike the in-app link this one is a raw href in an
-        # HTML document, so a name with a space or an ampersand has to be quoted or the button lands
-        # somewhere else entirely. quote() with no safe characters, because a team name is a single
-        # path segment and a "/" inside one must not be read as a separator.
-        team_path = quote(team.team_name, safe="")
+        # `link_path` is resolved by the caller and already percent-encoded. For a TEAM invitation
+        # it is /teams/<name>: /teams/[id] resolves that segment as the team NAME (see the long note
+        # in deliver_invitation), and unlike the in-app link this one is a raw href in an HTML
+        # document, so a name with a space or an ampersand has to be quoted or the button lands
+        # somewhere else entirely. For a SOLO invitation it is /tournaments/<slug>, because a player
+        # answers on the event page and has no team page to answer on.
         cta_html = (
             f'<tr><td style="padding:6px 44px 34px;">'
-            f'<a href="{_frontend_origin()}/teams/{team_path}" '
+            f'<a href="{_frontend_origin()}{link_path}" '
             f'style="display:inline-block;background:#2c7a4d;color:#ffffff;text-decoration:none;'
             f'font-size:15px;font-weight:600;padding:12px 22px;border-radius:10px;">{cta}</a>'
             f"</td></tr>"
@@ -231,7 +231,9 @@ def _sync():
     return getattr(settings, "EVENT_INVITE_EMAIL_SYNC", getattr(settings, "DEBUG", False))
 
 
-def _send_invitation_emails(recipients, team, event, organizer_name, note, kind):
+def _send_invitation_emails(
+    recipients, invitee_name, link_path, event, organizer_name, note, kind
+):
     """Mail every recipient (a list of Users), each in their own language. Returns how many.
 
     ON A DAEMON THREAD in production, for the same reason deliver_broadcast's email channel is: SMTP
@@ -261,7 +263,9 @@ def _send_invitation_emails(recipients, team, event, organizer_name, note, kind)
                 send_email(
                     address,
                     subject_for("event_team_invitation", lang, event=event.event_name),
-                    _invitation_email_html(team, event, organizer_name, note, kind, lang),
+                    _invitation_email_html(
+                        invitee_name, link_path, event, organizer_name, note, kind, lang
+                    ),
                     language=lang,
                     # The copy arrived already localized from the hand-authored catalog, so the
                     # machine-translation block inside send_email is skipped.
@@ -278,8 +282,8 @@ def _send_invitation_emails(recipients, team, event, organizer_name, note, kind)
 
 
 # ── the one entry point ──────────────────────────────────────────────────────────────────────
-def deliver_invitation(*, team, event, delivery, organizer_name="", note="", kind="per_team",
-                       target_team_id=None):
+def deliver_invitation(*, team=None, player=None, event=None, delivery=None,
+                       organizer_name="", note="", kind="per_team", target_team_id=None):
     """Tell `team` they have been invited to `event`, over the channels named in `delivery`.
 
     delivery   an afc_auth.audience delivery string: "push", "email", "both", "whatsapp", or a
@@ -296,7 +300,13 @@ def deliver_invitation(*, team, event, delivery, organizer_name="", note="", kin
     from afc_auth.audience import EMAIL, PUSH, WHATSAPP, parse_delivery
 
     channels = parse_delivery(delivery)
-    recipients = _decision_makers(team)
+
+    # WHO IS TOLD, WHAT THEY ARE CALLED, AND WHERE THE LINK GOES (owner 2026-08-26).
+    # A TEAM invitation reaches everyone who may answer FOR the team. A SOLO invitation reaches
+    # exactly one person, the invitee, because a solo entrant answers only for themself.
+    is_solo = player is not None
+    recipients = [player] if is_solo else _decision_makers(team)
+    invitee_name = player.username if is_solo else team.team_name
     result = {"recipients": len(recipients), "pushed": 0, "emailed": 0, "whatsapp": 0}
     if not recipients:
         return result
@@ -314,7 +324,18 @@ def deliver_invitation(*, team, event, delivery, organizer_name="", note="", kin
     #   an invitation whose whole purpose is "open your team page and answer" is the difference
     #   between a captain answering and a captain giving up. Resolved to the name here so BOTH the
     #   in-app link and the email button below point at the page that exists.
-    link_team_name = team.team_name
+    # A SOLO invitation links to the EVENT page: that is where a player answers, and they have no
+    # team page to answer on. Everything above about names-not-ids applies to the team case only.
+    if is_solo:
+        link_target_type = "event"
+        link_target_id = event.slug
+        link_path = f"/tournaments/{quote(event.slug, safe='')}"
+        answer_hint = "Open the event page to accept or decline."
+    else:
+        link_target_type = "team"
+        link_target_id = team.team_name
+        link_path = f"/teams/{quote(team.team_name, safe='')}"
+        answer_hint = "Open your team page to accept or decline."
 
     if PUSH in channels:
         # Written in English and translated ON READ by afc_auth.translation via LocaleMiddleware,
@@ -322,8 +343,8 @@ def deliver_invitation(*, team, event, delivery, organizer_name="", note="", kin
         # copies here would bypass that layer and drift from it.
         headline = f"Invitation to {event.event_name}"
         body = (
-            f"{team.team_name} has been invited to {event.event_name}. "
-            "Open your team page to accept or decline."
+            f"{invitee_name} has been invited to {event.event_name}. "
+            f"{answer_hint}"
         )
         if kind == "fcfs":
             body += " Places are first come, first served."
@@ -336,8 +357,8 @@ def deliver_invitation(*, team, event, delivery, organizer_name="", note="", kin
                 title=headline,
                 message=body,
                 related_event=event,
-                target_type="team",
-                target_id=link_team_name,
+                target_type=link_target_type,
+                target_id=link_target_id,
             )
             for user in recipients
         ])
@@ -345,7 +366,7 @@ def deliver_invitation(*, team, event, delivery, organizer_name="", note="", kin
 
     if EMAIL in channels:
         result["emailed"] = _send_invitation_emails(
-            recipients, team, event, organizer_name, note, kind,
+            recipients, invitee_name, link_path, event, organizer_name, note, kind,
         )
 
     if WHATSAPP in channels:
@@ -358,8 +379,8 @@ def deliver_invitation(*, team, event, delivery, organizer_name="", note="", kin
             queued, _skipped = send_broadcast_whatsapp(
                 recipients,
                 f"Invitation to {event.event_name}",
-                f"{team.team_name} has been invited to {event.event_name}. "
-                "Open your team page on AFC to accept or decline.",
+                f"{invitee_name} has been invited to {event.event_name}. "
+                f"{answer_hint}",
             )
             result["whatsapp"] = queued
         except Exception:

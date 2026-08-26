@@ -564,7 +564,21 @@ class EventTeamInvitation(models.Model):
 
     id = models.AutoField(primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="team_invitations")
-    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="event_invitations")
+    # EXACTLY ONE of team / user is set. A team for duo and squad events, a player for solo
+    # events (owner 2026-08-26). Not a CheckConstraint: MySQL enforces CHECK only from 8.0.16 and
+    # the production version is not pinned anywhere we can verify, so the rule is enforced in
+    # create_team_invitations and pinned by a test, the same decision EventRequirementWaiver made.
+    team = models.ForeignKey(
+        Team, on_delete=models.CASCADE, related_name="event_invitations",
+        null=True, blank=True,
+    )
+    # The invited PLAYER, for a solo event. Solo events have no team to address, and force-adding a
+    # player through add_teams_to_event is not an option either: that endpoint is team-only. Before
+    # this, a solo event simply could not invite anybody.
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="event_invitations",
+        null=True, blank=True,
+    )
     # SET_NULL, not CASCADE: an organizer's account being deleted must not silently erase the
     # invitations they sent, because the team may already have accepted one and be in the bracket.
     invited_by = models.ForeignKey(
@@ -698,7 +712,8 @@ class EventInvitationCampaign(models.Model):
     """
     KIND_CHOICES = [
         ("per_team", "One invitation per team"),        # item 34's original behaviour
-        ("fcfs", "First come, first served"),           # more teams asked than there are slots
+        ("per_player", "One invitation per player"),    # the solo-event analogue (owner 2026-08-26)
+        ("fcfs", "First come, first served"),           # more invitees asked than there are slots
         ("bulk", "One general invitation"),             # a single open offer, no addressed rows
     ]
     STATUS_CHOICES = [
@@ -709,7 +724,9 @@ class EventInvitationCampaign(models.Model):
 
     id = models.AutoField(primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="invitation_campaigns")
-    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default="per_team")
+    # max_length 12, not 10: "per_player" is 10 characters and MySQL would have silently
+    # truncated a longer future kind into something no reader matches.
+    kind = models.CharField(max_length=12, choices=KIND_CHOICES, default="per_team")
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="open")
     # The organizer's note, shown to every team this campaign reaches. Length-capped rather than a
     # TextField for the same reason EventTeamInvitation.message is: it is displayed verbatim.
@@ -732,6 +749,10 @@ class EventInvitationCampaign(models.Model):
     # to live. Queried with `audience_team_ids__contains=<team_id>` (a JSON containment lookup MySQL
     # supports) to answer "is this team allowed to see this offer".
     audience_team_ids = models.JSONField(default=list, blank=True)
+    # The same idea for a SOLO bulk offer: which players the open offer was delivered to. Kept
+    # separate from audience_team_ids rather than overloading it, because a team id and a user id
+    # are different keys into different tables and a single list could not be queried safely.
+    audience_user_ids = models.JSONField(default=list, blank=True)
     # PRIVATE events only, and SHARED (is_shared=True) rather than single-use, because a bulk or
     # fcfs campaign is by definition redeemed by more than one team. EventInviteToken already models
     # exactly this ("ONE reusable link that many people register through", see its comment above),
