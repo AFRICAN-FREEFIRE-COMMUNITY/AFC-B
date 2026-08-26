@@ -126,10 +126,179 @@ class Field:
         return self.source or self.name
 
 
-# ── the field table ───────────────────────────────────────────────────────────────────────────
-# Filled in as the readers and writers are converted. Order here IS the output order of every
-# payload, so rows stay grouped the way the existing readers grouped them.
-EVENT_FIELDS = []
+# ── the field table ────────────────────────────────────────────────────────────────
+# Order here is the order the readers used, kept so a reviewer can diff this against the old
+# literal line by line. Every VALUE is verified against a golden captured from the old code, so a
+# transcription slip fails the suite rather than reaching the frontend.
+#
+# `get` receives (event, ctx). ctx["request"] is the DRF request (needed for absolute URIs) and
+# ctx["extra"] carries values the calling endpoint already queried for, so the contract never
+# repeats a query the reader has already run.
+EVENT_FIELDS = [
+    # ── identity and shape ──
+    Field("event_id", read=PUBLIC),
+    Field("competition_type", read=PUBLIC),
+    Field("participant_type", read=PUBLIC),
+    Field("event_type", read=PUBLIC),
+    Field("max_teams_or_players", read=PUBLIC),
+    Field("event_name", read=PUBLIC),
+    Field("event_mode", read=PUBLIC),
+
+    # ── dates ──
+    Field("start_date", read=PUBLIC),
+    Field("end_date", read=PUBLIC),
+    Field("registration_open_date", read=PUBLIC),
+    Field("registration_end_date", read=PUBLIC),
+    # Roster-edit window (owner 2026-06-15): the team-facing UI uses these to show whether captains
+    # may currently edit their roster, and until when. roster_edit_open auto-derives from
+    # roster_edit_until versus now (see Event.roster_edit_open / set_roster_edit_window).
+    Field("roster_edit_until", read=PUBLIC),
+    Field("roster_edit_open", read=PUBLIC),
+
+    # ── money ──
+    Field("prizepool", read=PUBLIC),
+    # Echo the cash value AND its currency (owner bug 2026-07-02): the edit form seeds from this
+    # payload, and without both keys a saved value came back undefined and looked like it vanished.
+    Field("prizepool_cash_value", read=PUBLIC),
+    Field("prize_currency", read=PUBLIC, get=lambda e, ctx: getattr(e, "prize_currency", None)),
+    Field("prize_distribution", read=PUBLIC),
+    # Paid registration (feature "paid-events"): the event page decides free versus paid, and the fee.
+    Field("registration_type", read=PUBLIC),
+    Field("registration_fee", read=PUBLIC),
+    Field("registration_fee_currency", read=PUBLIC),
+    # Per-country payment (owner 2026-06-24): an anonymous viewer has no country to price against,
+    # so your_registration_fee is null for them and the page shows the base fee plus "varies by
+    # country" when rules exist. A signed-in reader passes the real number through extra.
+    Field("country_payment_rules", read=PUBLIC),
+    Field("your_registration_fee", read=PUBLIC,
+          get=lambda e, ctx: ctx["extra"].get("your_registration_fee")),
+
+    # ── content ──
+    # Per-event results visibility (owner 2026-06-29): false withholds the standings and the public
+    # Results view shows "Results not published yet". See set_results_visibility.
+    Field("results_published", read=PUBLIC),
+    Field("event_rules", read=PUBLIC),
+    # What the tournament IS, in the organizer's words (owner 2026-08-05, item 26). Blank on most
+    # events, and the public About block simply does not render until somebody writes one.
+    Field("event_description", read=PUBLIC),
+    Field("public_sponsors", read=PUBLIC, get=lambda e, ctx: ctx["extra"]["public_sponsors"]),
+    # Read-time display status: a started event reads as "ongoing" without waiting on the sweep.
+    Field("event_status", read=PUBLIC, get=lambda e, ctx: ctx["extra"]["event_status"]),
+
+    # ── PROVENANCE (owner 2026-08-20, external results import) ──
+    # NULL for everything AFC ran. A timestamp means the results came from an external organizer's
+    # published standings rather than being played on AFC, and the event page shows a marker saying
+    # so. Driven off the stored timestamp rather than its own switch, so it cannot drift out of
+    # step with whether an import actually happened.
+    Field("results_imported", read=PUBLIC, get=lambda e, ctx: e.results_imported_at is not None),
+    Field("results_imported_at", read=PUBLIC),
+
+    Field("registration_link", read=PUBLIC),
+    # Tournament tier (tier_1/2/3) so the event CARD can show a tier badge (owner 2026-06-29).
+    Field("tournament_tier", read=PUBLIC),
+
+    # ── media and organization, all request-dependent (absolute URIs) ──
+    Field("event_banner_url", read=PUBLIC, get=lambda e, ctx: (
+        ctx["request"].build_absolute_uri(e.event_banner.url) if e.event_banner else None
+    )),
+    # Organizing org, null for AFC-native events. Exposed so the public tournament page can build
+    # the link-embed fallback chain (banner, then ORG LOGO, then the AFC default, owner 2026-06-14)
+    # and fill the SportsEvent JSON-LD organizer. Read by app/(user)/tournaments/[slug]/page.tsx.
+    Field("organization_name", read=PUBLIC,
+          get=lambda e, ctx: e.organization.name if e.organization else None),
+    Field("organization_slug", read=PUBLIC,
+          get=lambda e, ctx: e.organization.slug if e.organization else None),
+    Field("organization_logo", read=PUBLIC, get=lambda e, ctx: (
+        ctx["request"].build_absolute_uri(e.organization.logo.url)
+        if (e.organization and e.organization.logo)
+        else None
+    )),
+    Field("uploaded_rules_url", read=PUBLIC, get=lambda e, ctx: (
+        ctx["request"].build_absolute_uri(e.uploaded_rules.url) if e.uploaded_rules else None
+    )),
+
+    Field("number_of_stages", read=PUBLIC),
+    Field("created_at", read=PUBLIC),
+    Field("stream_channels", read=PUBLIC,
+          get=lambda e, ctx: list(e.stream_channels.values_list("channel_url", flat=True))),
+    Field("is_public", read=PUBLIC),
+
+    # ── Discord registration gate (per-event) ──
+    # require_discord is its own switch and means MORE than required_connections does: connected
+    # AND a member of the event's server, with a paired invite link. A blank discord_server_id
+    # means the main AFC guild.
+    Field("require_discord", read=PUBLIC),
+    Field("discord_server_id", read=PUBLIC),
+    Field("discord_invite_link", read=PUBLIC),
+
+    # ── sponsorship ──
+    Field("is_sponsored", read=PUBLIC),
+    Field("sponsor_name", read=PUBLIC),
+    Field("sponsor_field_label", read=PUBLIC),
+    Field("sponsor_requirement_description", read=PUBLIC),
+    Field("sponsors", read=PUBLIC, get=lambda e, ctx: [
+        {
+            "sponsor_id": se.sponsor.user_id,
+            "sponsor_name": se.sponsor.full_name,
+            "sponsor_username": se.sponsor.username,
+        }
+        for se in ctx["extra"]["sponsors"]
+    ]),
+
+    # ── times, and the derived registration window ──
+    Field("registration_start_time", read=PUBLIC),
+    Field("registration_end_time", read=PUBLIC),
+    Field("event_start_time", read=PUBLIC),
+    Field("event_end_time", read=PUBLIC),
+    Field("registration_opens_at", read=PUBLIC,
+          get=lambda e, ctx: _registration_window(e)[0].isoformat()),
+    Field("registration_closes_at", read=PUBLIC,
+          get=lambda e, ctx: _registration_window(e)[1].isoformat()),
+    Field("registration_is_open", read=PUBLIC, get=lambda e, ctx: _registration_is_open(e)),
+
+    # ── waitlist ──
+    Field("is_waitlist_enabled", read=PUBLIC),
+    Field("waitlist_mode", read=PUBLIC),
+
+    # ── registration requirements ──
+    Field("require_team_logo", read=PUBLIC),
+    Field("require_esport_images", read=PUBLIC),
+    Field("require_player_uid", read=PUBLIC),
+    Field("require_player_profile_image", read=PUBLIC),
+    Field("require_whatsapp", read=PUBLIC),
+    # A list, normalised on the way out so a NULL column reads as [] rather than None. NEVER gate
+    # this on truthiness: empty is a real answer and means "no requirement" (outage, 2026-08-26).
+    Field("required_connections", read=PUBLIC,
+          get=lambda e, ctx: list(e.required_connections or [])),
+    Field("allow_team_result_submissions", read=PUBLIC),
+
+    # ── capacity snapshot, counted by the endpoint with the same rule register_for_event uses ──
+    Field("waitlist_capacity", read=PUBLIC),
+    Field("registered_count", read=PUBLIC, get=lambda e, ctx: ctx["extra"]["active_registered"]),
+    Field("is_full", read=PUBLIC,
+          get=lambda e, ctx: ctx["extra"]["active_registered"] >= e.max_teams_or_players),
+    Field("co_organizers", read=PUBLIC, get=lambda e, ctx: [
+        {
+            "name": c.organization.name,
+            "slug": c.organization.slug,
+            "logo": (ctx["request"].build_absolute_uri(c.organization.logo.url)
+                     if c.organization.logo else None),
+        }
+        for c in e.co_organizers.filter(status="accepted").select_related("organization")
+    ]),
+]
+
+
+def _registration_window(event):
+    """views.registration_window_instants, imported lazily to keep this module import-cycle free."""
+    from .views import registration_window_instants
+    return registration_window_instants(event)
+
+
+def _registration_is_open(event):
+    """views.registration_is_open, imported lazily for the same reason."""
+    from .views import registration_is_open
+    return registration_is_open(event)
 
 
 def serialize_event(event, *, viewer=None, request=None, role=None, table=None,
