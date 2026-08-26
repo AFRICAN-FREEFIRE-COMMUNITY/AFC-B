@@ -2217,6 +2217,16 @@ def create_event(request):
     if _wl_mode not in dict(Event.WAITLIST_MODE_CHOICES):
         _wl_mode = "first_registered"
 
+    # Required connected accounts (owner 2026-08-26): validated BEFORE the atomic block, so an
+    # unknown or unavailable provider slug is a plain 400 rather than a ValueError escaping from
+    # inside Event.objects.create as a 500.
+    try:
+        _required_connections = _clean_required_connections(
+            request.data.get("required_connections")
+        )
+    except ValueError as exc:
+        return Response({"message": str(exc)}, status=400)
+
     # ---------------- CREATE EVERYTHING ----------------
     try:
         with transaction.atomic():
@@ -2298,6 +2308,11 @@ def create_event(request):
                 # WhatsApp number requirement (owner 2026-08-03) - same parse pattern; sent by the
                 # admin + organizer create wizards' Step1EventDetails "Require WhatsApp number" toggle.
                 require_whatsapp=_as_bool(request.data.get("require_whatsapp")),
+                # Required connected accounts (owner 2026-08-26). Validated BEFORE this create call
+                # (see _required_connections above): validating inline here would raise ValueError
+                # from inside Event.objects.create and surface as a 500 rather than the 400 the
+                # organizer needs to see.
+                required_connections=_required_connections,
                 # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars required to
                 # register (0 = off). Clamped 0-26 by the shared parser so a bad payload can't store an
                 # impossible threshold. Enforced in register_for_event; toggled in Step1EventDetails.
@@ -2733,6 +2748,10 @@ def duplicate_event(request, event_id):
             # WhatsApp number requirement (owner 2026-08-03): carried like the gates above so a
             # duplicated event keeps demanding a number instead of silently dropping the gate.
             require_whatsapp=source.require_whatsapp,
+            # A LIST field: copy it, do not alias it, or editing the clone would silently edit the
+            # original's requirement too. duplicate_event copies every require_* by hand, which is
+            # why a new field forgotten here vanishes from every duplicated event.
+            required_connections=list(source.required_connections or []),
             # Letter avatars (feature #7): carry the source's registration threshold onto the clone
             # (the per-team assigned_letter is per-registration and is NOT cloned - the clone has no
             # registrations yet).
@@ -3773,6 +3792,16 @@ def edit_event(request):
     # only affects FUTURE registrations (enforcement lives in register_for_event, not on save).
     if "require_whatsapp" in request.data:
         event.require_whatsapp = _as_bool(request.data.get("require_whatsapp"))
+
+    # Required connected accounts (owner 2026-08-26). An unknown or unavailable slug is a 400 here
+    # rather than a stored requirement nobody could ever satisfy.
+    if "required_connections" in request.data:
+        try:
+            event.required_connections = _clean_required_connections(
+                request.data.get("required_connections")
+            )
+        except ValueError as exc:
+            return Response({"message": str(exc)}, status=400)
     # Letter avatars (feature #7, owner 2026-06-29): editable like the other registration gates;
     # changing it only affects FUTURE registrations. Clamped 0-26 by the shared parser.
     if "min_letter_avatars" in request.data:
@@ -5316,6 +5345,15 @@ def get_event_details(request):
         # wizards rehydrate the toggle, EventRequirementsCard lists it under "Requirements to
         # register", and the register flow's roster panel can badge who still has no number.
         "require_whatsapp": event.require_whatsapp,
+        "required_connections": list(event.required_connections or []),
+        # The REQUESTING viewer's own active waiver, if any (owner 2026-08-26). Not every
+        # waiver on the event: a team has no business reading which other teams were excused.
+        # The requirements panel uses it to say "waived by AFC" instead of showing a red
+        # blocker the team cannot clear but which will not actually stop them registering.
+        "my_waiver": _my_waiver_summary(event, user),
+        # The viewer's own PENDING invitation to this event, if they hold one. A SOLO player has no
+        # team page to answer on, so the event page is where Accept / Decline live.
+        "my_invitation": _my_event_invitation(event, user),
         # Teams filing their own map results (item 6). Emitted so the edit form can
         # rehydrate the switch: without it the form reads undefined, falls back to false,
         # and shows the feature as OFF on an event where it is on.
@@ -6315,6 +6353,7 @@ def get_event_details_not_logged_in(request):
         # WhatsApp number requirement (owner 2026-08-03): logged-out twin of the get_event_details
         # echo, so an anonymous viewer sees the same "Requirements to register" list.
         "require_whatsapp": event.require_whatsapp,
+        "required_connections": list(event.required_connections or []),
         # Teams filing their own map results (item 6). Emitted so the edit form can
         # rehydrate the switch: without it the form reads undefined, falls back to false,
         # and shows the feature as OFF on an event where it is on.
@@ -6900,6 +6939,126 @@ def determine_team_country(roster_users, team_owner):
 # promotions) so the rule lives in ONE place. Returns {user_id: [field_key,...]} for players who
 # are MISSING something; field_key is a stable token the FE maps to localized copy:
 #   "esports_image" | "profile_image" | "uid" | "whatsapp". Empty dict = everyone passes (or no toggle on).
+def _my_event_invitation(event, user):
+    """The REQUESTING viewer's own PENDING invitation to this event, or None (owner 2026-08-26).
+
+    Solo events invite a PLAYER, and a player has no team page to answer on, so the event page is
+    where they answer. Exposing the invitation here means the deep link in their notification lands
+    somewhere that can actually accept it, with no new page to find.
+
+    Scoped to the viewer: a team invitation is resolved through the teams they belong to, a solo
+    invitation by their own id. Never every invitation on the event.
+
+    CONSUMED BY the event page (EventDetailsWrapper), which renders Accept / Decline against
+    events/team-invitations/<id>/accept/ and /decline/.
+    """
+    if not user:
+        return None
+    from afc_team.models import TeamMembers
+
+    from .event_invites import _serialize as _serialize_invitation
+    from .models import EventTeamInvitation
+
+    row = (
+        EventTeamInvitation.objects
+        .filter(event=event, status="pending", user=user)
+        .select_related("event", "team", "user", "invited_by", "campaign")
+        .first()
+    )
+    if row is None:
+        team_ids = list(
+            TeamMembers.objects.filter(member=user).values_list("team_id", flat=True)
+        )
+        row = (
+            EventTeamInvitation.objects
+            .filter(event=event, status="pending", team_id__in=team_ids)
+            .select_related("event", "team", "user", "invited_by", "campaign")
+            .first()
+            if team_ids
+            else None
+        )
+    return _serialize_invitation(row) if row else None
+
+
+def _my_waiver_summary(event, user):
+    """The REQUESTING viewer's own active waiver on this event, or None.
+
+    Deliberately NOT every waiver on the event: a team has no business reading which other teams
+    were excused. Resolved through the viewer's team when they have one, falling back to a solo
+    waiver in their own name.
+
+    CONSUMED BY the event page's requirements panel, which renders a waived requirement as
+    "waived by AFC" instead of a red blocker the team cannot clear. A team that is admitted
+    anyway while the panel still shows a red gate learns that the panel lies.
+    """
+    if not user:
+        return None
+    from afc_team.models import TeamMembers
+
+    from .waivers import serialize as _serialize_waiver
+    from .models import EventRequirementWaiver
+
+    team_ids = list(
+        TeamMembers.objects.filter(member=user).values_list("team_id", flat=True)
+    )
+    row = (
+        EventRequirementWaiver.objects.filter(event=event, active=True, team_id__in=team_ids)
+        .select_related("created_by")
+        .first()
+        if team_ids
+        else None
+    )
+    if row is None:
+        row = (
+            EventRequirementWaiver.objects.filter(event=event, active=True, user=user)
+            .select_related("created_by")
+            .first()
+        )
+    return _serialize_waiver(row) if row else None
+
+
+def _clean_required_connections(raw):
+    """Validate a required-connections list against the provider registry.
+
+    Returns a de-duplicated list of known, ENABLED provider slugs, or raises ValueError naming the
+    bad one. Validating on WRITE rather than on read means a hand-posted ["myspace"] is refused at
+    the door instead of becoming a requirement no player can ever satisfy and no organizer can see
+    is impossible.
+
+    Discord is excluded even though it is a real provider: require_discord is its own field with
+    its own paired invite link and server-membership check. See the Event.required_connections
+    comment for why two switches for one idea is worse than one.
+
+    CALLED BY create_event and edit_event. The picker on the event forms reads the same registry
+    through GET /auth/connections/providers/, so what an organizer can choose and what this accepts
+    cannot drift apart.
+    """
+    from afc_auth.connections import enabled_providers
+
+    if raw is None or raw == "":
+        return []
+    # The create wizards post multipart FormData, where a list can only travel as a JSON STRING.
+    # _as_list is the repo's existing coercion for exactly that (it is what sponsor_usernames and
+    # the other list fields on this endpoint use), so a JSON string and a real list behave the same
+    # and there is no second parser to keep in step.
+    if not isinstance(raw, list):
+        raw = _as_list(raw)
+        if not raw:
+            raise ValueError("required_connections must be a list")
+
+    allowed = {p.slug for p in enabled_providers()} - {"discord"}
+    cleaned = []
+    for item in raw:
+        slug = str(item or "").strip().lower()
+        if not slug:
+            continue
+        if slug not in allowed:
+            raise ValueError(f"unknown or unavailable connection: {slug}")
+        if slug not in cleaned:
+            cleaned.append(slug)
+    return cleaned
+
+
 def _missing_registration_assets(user_ids, event):
     from afc_auth.models import UserProfile
     user_ids = [int(u) for u in user_ids if u is not None]
@@ -6907,7 +7066,14 @@ def _missing_registration_assets(user_ids, event):
     need_profile = bool(getattr(event, "require_player_profile_image", False))
     need_uid = bool(getattr(event, "require_player_uid", False))
     need_whatsapp = bool(getattr(event, "require_whatsapp", False))
-    if not user_ids or not (need_esports or need_profile or need_uid or need_whatsapp):
+    # Required connected accounts (owner 2026-08-26): a list of provider slugs, empty for almost
+    # every event, so the extra query below is skipped entirely in the common case.
+    need_connections = [
+        str(slug) for slug in (getattr(event, "required_connections", None) or []) if slug
+    ]
+    if not user_ids or not (
+        need_esports or need_profile or need_uid or need_whatsapp or need_connections
+    ):
         return {}
     # ONE query for the whole roster (no N+1). UserProfile.user is a plain FK and duplicate rows
     # exist in prod, so a user can have several profiles: order DESCENDING by profile_id so the dict
@@ -6919,6 +7085,18 @@ def _missing_registration_assets(user_ids, event):
         for p in UserProfile.objects.filter(user_id__in=user_ids).order_by("-profile_id")
     }
     uids = dict(User.objects.filter(user_id__in=user_ids).values_list("user_id", "uid"))
+
+    # ONE query for the whole roster's links, the same no-N+1 discipline as the profiles above.
+    # Built as {user_id: {provider, ...}} so the per-user loop below is a set membership test.
+    links = {}
+    if need_connections:
+        from afc_auth.models import ConnectedAccount
+
+        for uid_, provider in ConnectedAccount.objects.filter(
+            user_id__in=user_ids, provider__in=need_connections
+        ).values_list("user_id", "provider"):
+            links.setdefault(uid_, set()).add(provider)
+
     out = {}
     for uid_ in user_ids:
         prof = profiles.get(uid_)
@@ -6934,6 +7112,12 @@ def _missing_registration_assets(user_ids, event):
         # "missing" means no profile row at all, or a blank/whitespace-only number.
         if need_whatsapp and not (getattr(prof, "whatsapp_number", "") or "").strip():
             missing.append("whatsapp")
+        # "connection:<slug>" rather than a bare slug: the frontend switches on the prefix to
+        # render a Connect deep link instead of an Edit-Profile one, and the prefix cannot collide
+        # with a future asset field that happens to be named like a provider.
+        for slug in need_connections:
+            if slug not in links.get(uid_, set()):
+                missing.append(f"connection:{slug}")
         if missing:
             out[uid_] = missing
     return out
@@ -7225,8 +7409,18 @@ def register_for_event(request):
         # require_whatsapp - the last added by the owner on 2026-08-03). The shared
         # _missing_registration_assets helper returns whatever this solo registrant is missing; the
         # structured 403 lets the FE point them straight at the field to fix on their profile.
+        # Requirement waivers (owner 2026-08-26). ONE indexed query, an empty set for almost
+        # every registration. Consulted at each WAIVABLE gate below; bans and payment never read
+        # it. This lives in register_for_event rather than in a special admin path on purpose: an
+        # invited team's accept replays through this SAME endpoint
+        # (event_invites._register_through_the_normal_path), so a waiver granted to an invited
+        # competitor is honoured by the same lines that judge everybody else.
+        from .waivers import waived_codes as _waived_codes_for
+
+        waived = _waived_codes_for(event, user=user)
+
         solo_missing = _missing_registration_assets([user.user_id], event)
-        if solo_missing:
+        if solo_missing and "registration_requirements_unmet" not in waived:
             return Response(_registration_requirements_response(solo_missing), status=403)
 
         # ── Per-event DISCORD requirement (owner 2026-06-22): the registrant must have a connected
@@ -7242,7 +7436,11 @@ def register_for_event(request):
         # When the event requires >=N letter avatars, a SOLO registrant must personally own at least
         # N (their own afc_auth.User.letter_avatars). The structured 403 (code "letter_avatars_required")
         # lets EventDetailsWrapper deep-link them to /profile/edit to add the letters they own.
-        if event.min_letter_avatars and event.min_letter_avatars > 0:
+        if (
+            event.min_letter_avatars
+            and event.min_letter_avatars > 0
+            and "letter_avatars_required" not in waived
+        ):
             available_letters = _letter_avatars_available([user])
             if len(available_letters) < event.min_letter_avatars:
                 return Response(_letter_avatars_required_response(event, available_letters), status=403)
@@ -7482,6 +7680,12 @@ def register_for_event(request):
         # (mirrors afc_team.views._is_player_banned; replicated inline here to avoid a cross-app
         # import in this hot path). The per-roster-member check runs later, once roster_users is
         # resolved. The SOLO path above has its own inline BannedPlayer check.
+        # Requirement waivers for the TEAM path. Resolved before the first waivable gate; the
+        # ban checks immediately below deliberately ignore it.
+        from .waivers import waived_codes as _waived_codes_for_team
+
+        waived = _waived_codes_for_team(event, team=team)
+
         if team.is_banned:
             return Response({"message": "Your team is banned and cannot register for events."}, status=403)
         if BannedPlayer.objects.filter(banned_player=user, is_active=True, ban_end_date__gt=timezone.now()).exists():
@@ -7490,7 +7694,11 @@ def register_for_event(request):
         # ── TEAM-LOGO CRITERIA (owner 2026-06-12) ──
         # When the event creator required team logos, a team cannot register until its logo is
         # uploaded. code lets the FE deep-link the captain to the team edit page.
-        if event.require_team_logo and not team.team_logo:
+        if (
+            event.require_team_logo
+            and not team.team_logo
+            and "team_logo_required" not in waived
+        ):
             return Response({
                 "message": "This event requires a team logo. Upload your team's logo before registering.",
                 "code": "team_logo_required",
@@ -7548,7 +7756,13 @@ def register_for_event(request):
         roster_member_ids = list(dict.fromkeys(roster_member_ids))
 
         if not (min_size <= len(roster_member_ids) <= max_size):
-            return Response({"message": f"Roster must contain {min_size} to {max_size} players."}, status=400)
+            # Given a machine-readable code (owner 2026-08-26) so it can be named in a waiver.
+            # The frontend reads `code` when present and otherwise falls back to `message`, so
+            # adding one changes nothing for existing callers.
+            return Response({
+                "code": "roster_size",
+                "message": f"Roster must contain {min_size} to {max_size} players.",
+            }, status=400)
 
         # Ensure all selected are members of this team.
         #
@@ -7595,7 +7809,7 @@ def register_for_event(request):
         # what, so the structured 403 NAMES each offending player + the fields they must add before
         # retrying (the FE renders a per-player "missing X" panel with Edit-Profile deep links).
         roster_missing = _missing_registration_assets(roster_member_ids, event)
-        if roster_missing:
+        if roster_missing and "registration_requirements_unmet" not in waived:
             return Response(_registration_requirements_response(roster_missing), status=403)
 
         # Prevent players being in two rosters for the same event.
@@ -10993,6 +11207,7 @@ def get_event_details_for_admin(request):
         # WhatsApp number requirement (owner 2026-08-03): admin-detail twin, read by the admin +
         # organizer event EDIT pages to rehydrate the Basic Info requirement toggle.
         "require_whatsapp": event.require_whatsapp,
+        "required_connections": list(event.required_connections or []),
         # Teams filing their own map results (item 6). Emitted so the edit form can
         # rehydrate the switch: without it the form reads undefined, falls back to false,
         # and shows the feature as OFF on an event where it is on.
@@ -22572,6 +22787,87 @@ def add_teams_to_event(request):
 
     teams = Team.objects.filter(team_id__in=team_ids)
 
+    # ── REQUIREMENT GATE (owner 2026-08-26) ──────────────────────────────────────────────────────
+    # This endpoint used to write RegisteredCompetitors directly, skipping bans, per-player
+    # requirements and capacity with NO record that anything had been skipped. An admin who does not
+    # know they are stepping around a rule cannot be said to have waived it, which is the whole
+    # distinction this feature draws. (Measured before the change: across the entire function body
+    # there was not one reference to _missing_registration_assets, is_banned, BannedPlayer or
+    # max_teams_or_players.)
+    #
+    # DELIBERATELY NARROWER THAN register_for_event. Those gates are interleaved with response
+    # building across ~600 lines and cannot be lifted out as a block; extracting them is a refactor
+    # with its own regression risk on the most important endpoint on the site. So this calls the
+    # helpers that already exist and REPORTS which checks it ran, rather than implying parity.
+    # Country rules, sponsor engagements, letter avatars and the paid path are NOT checked here.
+    from .waivers import WAIVABLE_CODES, grant as _grant_waiver, waived_codes as _waived_for
+
+    CHECKS_RUN = [
+        "team_banned", "player_banned", "registration_requirements_unmet",
+        "team_logo_required", "capacity_full",
+    ]
+
+    want_waive = bool(request.data.get("waive"))
+    waive_reason = (request.data.get("reason") or "").strip()
+    if want_waive and not waive_reason:
+        return Response({"message": "A reason is required to waive requirements."}, status=400)
+
+    already_registered = RegisteredCompetitors.objects.filter(event=event).count()
+    capacity = event.max_teams_or_players or 0
+
+    blocked = []
+    for team in teams:
+        waived = _waived_for(event, team=team)
+        codes = []
+
+        # NEVER waivable, checked first so no amount of ticking gets past them.
+        if team.is_banned:
+            codes.append("team_banned")
+        member_ids = list(
+            TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
+        )
+        if BannedPlayer.objects.filter(
+            banned_player_id__in=member_ids, is_active=True, ban_end_date__gt=timezone.now()
+        ).exists():
+            codes.append("player_banned")
+
+        if event.require_team_logo and not team.team_logo and "team_logo_required" not in waived:
+            codes.append("team_logo_required")
+        if (
+            _missing_registration_assets(member_ids, event)
+            and "registration_requirements_unmet" not in waived
+        ):
+            codes.append("registration_requirements_unmet")
+        if capacity and already_registered >= capacity and "capacity_full" not in waived:
+            codes.append("capacity_full")
+
+        if codes:
+            blocked.append(
+                {"team_id": team.team_id, "team_name": team.team_name, "codes": codes}
+            )
+
+    if blocked:
+        # A team blocked ONLY by waivable codes can be admitted with an explicit waiver. A team
+        # blocked by a ban cannot, at any price.
+        all_waivable = all(set(row["codes"]).issubset(WAIVABLE_CODES) for row in blocked)
+        if not (want_waive and all_waivable):
+            return Response({
+                "code": "requirements_unmet",
+                "message": "Some teams do not meet this event's requirements.",
+                "blocked": blocked,
+                "checks_run": CHECKS_RUN,
+            }, status=409)
+
+        # Write a REAL waiver per team, attributed to this admin, BEFORE adding them.
+        for row in blocked:
+            _grant_waiver(
+                event,
+                actor=admin,
+                reason=waive_reason,
+                codes=row["codes"],
+                team=Team.objects.get(team_id=row["team_id"]),
+            )
+
     new_registrations = []
     new_tournament_teams = []
 
@@ -22665,6 +22961,9 @@ def add_teams_to_event(request):
 
     return Response({
         "message": f"{len(new_registrations)} teams registered and {len(new_tournament_teams)} teams added.",
+        # Which checks this endpoint ran. A pass here is NOT the same as passing register_for_event,
+        # and saying so beats letting an admin assume parity.
+        "checks_run": CHECKS_RUN,
         "event_id": event.event_id,
         "added_team_ids": [team.team_id for team in teams],
         "auto_seed": seed_result,  # {stage_id, stage_competitors_added, group_seeds_added}

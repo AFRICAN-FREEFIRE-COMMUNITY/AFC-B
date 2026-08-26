@@ -411,6 +411,29 @@ class Event(models.Model):
     # registration roster-requirements panel (EventDetailsWrapper.memberMissingRequirements).
     require_whatsapp = models.BooleanField(default=False)
 
+    # ── REQUIRED CONNECTED ACCOUNTS (owner 2026-08-26) ───────────────────────────────────────
+    #   required_connections -> every registering player (the solo registrant, or EVERY roster
+    #                           member of a team registration) must have each named outside
+    #                           account linked to their AFC profile before they can register.
+    #
+    # Holds registry slugs from afc_auth.connections.registry, e.g. ["google", "vent"]. A LIST in
+    # one JSON field rather than one boolean per provider, because a boolean per provider means a
+    # migration plus an edit to four event-form surfaces every time a provider is added, which is
+    # exactly how require_discord ended up special-cased.
+    #
+    # DISCORD IS DELIBERATELY NOT SELECTABLE HERE. require_discord above already means "connected
+    # AND a member of this event's Discord server", and it carries a paired discord_invite_link the
+    # create/edit form makes mandatory. Two switches that look the same and behave differently is
+    # how an organizer sets one and gets the other's behaviour. _clean_required_connections()
+    # refuses the slug, and the picker does not offer it.
+    #
+    # Same lifecycle as the require_* flags above: set in create_event / edit_event, copied by
+    # duplicate_event, returned by all THREE event serializers, enforced in the shared
+    # _missing_registration_assets() helper (so solo, team AND event-links qualification promotion
+    # all inherit it), and surfaced to players in EventRequirementsCard plus the roster
+    # requirements panel in EventDetailsWrapper.
+    required_connections = models.JSONField(default=list, blank=True)
+
     # ── Letter avatars (A-Z) registration requirement (feature #7, owner 2026-06-29) ──────────────
     # 0 = off (the default; every existing event is unaffected). When > 0, a team/player may only
     # register once the LETTERS available to them cover at least this many: for a team that is the
@@ -541,7 +564,21 @@ class EventTeamInvitation(models.Model):
 
     id = models.AutoField(primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="team_invitations")
-    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="event_invitations")
+    # EXACTLY ONE of team / user is set. A team for duo and squad events, a player for solo
+    # events (owner 2026-08-26). Not a CheckConstraint: MySQL enforces CHECK only from 8.0.16 and
+    # the production version is not pinned anywhere we can verify, so the rule is enforced in
+    # create_team_invitations and pinned by a test, the same decision EventRequirementWaiver made.
+    team = models.ForeignKey(
+        Team, on_delete=models.CASCADE, related_name="event_invitations",
+        null=True, blank=True,
+    )
+    # The invited PLAYER, for a solo event. Solo events have no team to address, and force-adding a
+    # player through add_teams_to_event is not an option either: that endpoint is team-only. Before
+    # this, a solo event simply could not invite anybody.
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="event_invitations",
+        null=True, blank=True,
+    )
     # SET_NULL, not CASCADE: an organizer's account being deleted must not silently erase the
     # invitations they sent, because the team may already have accepted one and be in the bracket.
     invited_by = models.ForeignKey(
@@ -675,7 +712,8 @@ class EventInvitationCampaign(models.Model):
     """
     KIND_CHOICES = [
         ("per_team", "One invitation per team"),        # item 34's original behaviour
-        ("fcfs", "First come, first served"),           # more teams asked than there are slots
+        ("per_player", "One invitation per player"),    # the solo-event analogue (owner 2026-08-26)
+        ("fcfs", "First come, first served"),           # more invitees asked than there are slots
         ("bulk", "One general invitation"),             # a single open offer, no addressed rows
     ]
     STATUS_CHOICES = [
@@ -686,7 +724,9 @@ class EventInvitationCampaign(models.Model):
 
     id = models.AutoField(primary_key=True)
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="invitation_campaigns")
-    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default="per_team")
+    # max_length 12, not 10: "per_player" is 10 characters and MySQL would have silently
+    # truncated a longer future kind into something no reader matches.
+    kind = models.CharField(max_length=12, choices=KIND_CHOICES, default="per_team")
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="open")
     # The organizer's note, shown to every team this campaign reaches. Length-capped rather than a
     # TextField for the same reason EventTeamInvitation.message is: it is displayed verbatim.
@@ -709,6 +749,10 @@ class EventInvitationCampaign(models.Model):
     # to live. Queried with `audience_team_ids__contains=<team_id>` (a JSON containment lookup MySQL
     # supports) to answer "is this team allowed to see this offer".
     audience_team_ids = models.JSONField(default=list, blank=True)
+    # The same idea for a SOLO bulk offer: which players the open offer was delivered to. Kept
+    # separate from audience_team_ids rather than overloading it, because a team id and a user id
+    # are different keys into different tables and a single list could not be queried safely.
+    audience_user_ids = models.JSONField(default=list, blank=True)
     # PRIVATE events only, and SHARED (is_shared=True) rather than single-use, because a bulk or
     # fcfs campaign is by definition redeemed by more than one team. EventInviteToken already models
     # exactly this ("ONE reusable link that many people register through", see its comment above),
@@ -3028,3 +3072,92 @@ class CSRoomPreset(CSRoomSettingsBase):
     def __str__(self):
         owner = self.organization.name if self.organization_id else "AFC"
         return f"CS preset '{self.name}' ({owner})"
+
+
+class EventRequirementWaiver(models.Model):
+    """An admin's on-the-record decision to excuse one competitor from named event requirements.
+
+    WHY IT EXISTS
+        An invited team is judged by exactly the same gates as a self-registering one
+        (event_invites._register_through_the_normal_path replays the accept through
+        register_for_event, on purpose, and BOTH accept paths use it). When AFC wants a team in
+        regardless, that decision should be a row with a reason and a name on it, not an admin
+        quietly using a bypass endpoint.
+
+    HOW IT CONNECTS END TO END
+      - Written by : afc_tournament_and_scrims/waiver_views.py (the admin endpoints) through
+                     waivers.grant() / waivers.revoke(), and by add_teams_to_event when an admin
+                     adds a failing team with an explicit waiver.
+      - Read by    : afc_tournament_and_scrims/waivers.py waived_codes(), consulted at each
+                     waivable gate inside register_for_event and by add_teams_to_event.
+      - Surfaced on: the admin event registrations list, and player-side in the roster
+                     requirements panel, which renders a waived gate as "waived by AFC" rather
+                     than a red blocker the team cannot clear.
+      - Audited by : afc_auth.AuditLogMiddleware, automatically, because these are mutating admin
+                     requests. That records WHO and WHEN but deliberately not request bodies, so
+                     `reason` living on this row is what makes the record complete.
+
+    WHAT CANNOT BE WAIVED: bans and payment. See waivers.NEVER_WAIVABLE.
+    """
+    waiver_id = models.AutoField(primary_key=True)
+
+    event = models.ForeignKey(
+        "Event", on_delete=models.CASCADE, related_name="requirement_waivers"
+    )
+    # Exactly one of these is set: a team for team events, a user for solo events. NOT expressed as
+    # a CheckConstraint: MySQL enforces CHECK only from 8.0.16 and the production version is not
+    # pinned anywhere we can verify, so the rule is enforced in waivers.grant() and pinned by a
+    # test rather than trusted to the engine.
+    team = models.ForeignKey(
+        "afc_team.Team", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="requirement_waivers",
+    )
+    user = models.ForeignKey(
+        "afc_auth.User", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="requirement_waivers",
+    )
+
+    # Refusal codes this waiver excuses, e.g. ["team_logo_required", "capacity_full"]. The SAME
+    # strings register_for_event puts in its 403 bodies, so what an admin ticks and what the
+    # registration endpoint refuses are the same words.
+    waived_codes = models.JSONField(default=list)
+    # Required. An excuse with no stated reason is unreadable six weeks later, and the automatic
+    # audit log cannot supply it because it deliberately does not record request bodies.
+    reason = models.TextField()
+
+    created_by = models.ForeignKey(
+        "afc_auth.User", on_delete=models.SET_NULL, null=True,
+        related_name="waivers_granted",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # -- THE ACTIVE MARKER. Read this before changing the constraints. ---------------------------
+    # True on a live waiver, NULL on a revoked one. It exists so "one ACTIVE waiver per competitor"
+    # can be a PLAIN unique constraint. The obvious alternative,
+    # UniqueConstraint(condition=Q(revoked_at__isnull=True)), is a PARTIAL INDEX: MySQL has none,
+    # Django SILENTLY SKIPS it, and there would be no enforcement at all in production. That is not
+    # hypothetical here: TournamentTeam.assigned_letter shipped with exactly that mistake and
+    # tests_letter_constraint.py was written to pin the fix, and EventTeamInvitation.Meta declines
+    # to express its own version of this rule for the same reason. MySQL allows many NULLs inside a
+    # unique index, so revoked rows never collide with each other.
+    active = models.BooleanField(null=True, default=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        "afc_auth.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="waivers_revoked",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "team", "active"], name="uniq_active_waiver_team"
+            ),
+            models.UniqueConstraint(
+                fields=["event", "user", "active"], name="uniq_active_waiver_user"
+            ),
+        ]
+        indexes = [models.Index(fields=["event", "active"])]
+
+    def __str__(self):
+        who = self.team_id or self.user_id
+        return f"waiver event {self.event_id} for {who} ({len(self.waived_codes or [])} codes)"
