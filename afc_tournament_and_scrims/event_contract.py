@@ -35,7 +35,7 @@ THE LADDER IS NOT A NEW IDEA, IT IS WHAT THE CODE ALREADY DID
 WHY NOT A DRF ModelSerializer
     Two reasons, both concrete. The events app has ZERO serializer classes, so a serializer layer
     is a paradigm change across every event endpoint. And get_event_details_for_admin emits the
-    registration_open_date COLUMN under the key "registration_start_date" (views.py:11247), which a
+    registration_open_date COLUMN under the key "registration_start_date", which a
     serializer derived from the model cannot produce. A declared contract with an explicit output
     key per field handles that as a one-line `source=`.
 """
@@ -312,6 +312,43 @@ EVENT_FIELDS = [
     # Letter-avatars registration gate (feature #7, owner 2026-06-29): 0 means off.
     Field("min_letter_avatars", read=PLAYER),
     Field("waitlist_discord_role_id", read=PLAYER),
+    # ── ADMIN METRICS ENDPOINT ONLY ───────────────────────────────────────────────────────────
+    # get_event_details_for_admin emits the registration_open_date COLUMN under a DIFFERENT KEY.
+    # Verified in the code on 2026-08-26 and pinned by its own golden test. Whatever admin surface
+    # reads this expects "registration_start_date", so the name is preserved DELIBERATELY rather
+    # than tidied up: renaming it back would look like a cleanup and would break that surface.
+    #
+    # This one row is also the reason a DRF ModelSerializer was rejected for the whole job. A
+    # serializer derived from the model cannot produce a key its column is not called.
+    Field("registration_start_date", read=ADMIN, source="registration_open_date"),
+]
+
+
+# ── the subsets get_event_details_for_admin asks for ──────────────────────────────────────────
+# That endpoint is a registration METRICS view that re-lists some of the event's fields on its way
+# past, in two sub-blocks. Naming the members explicitly is what keeps that payload stable when a
+# new field is added to the contract for the player page: a new field does NOT silently appear in
+# the admin payload.
+#
+# NOT in this list, on purpose: "prizepool". The metrics block emits it as a NUMBER
+# (float(event.prizepool), falling back to the raw value), while the readers emit the raw string.
+# Two endpoints, two types, same key. Letting the contract supply it here would change the type
+# the admin page receives, so the metrics block keeps its own.
+ADMIN_OVERVIEW_FIELDS = [
+    "event_id", "event_name", "roster_edit_until", "roster_edit_open", "prize_distribution",
+    "is_public", "is_sponsored", "sponsor_name", "sponsor_field_label",
+    "sponsor_requirement_description", "sponsors", "is_waitlist_enabled", "require_team_logo",
+    "require_esport_images", "require_player_uid", "require_player_profile_image",
+    "require_whatsapp", "required_connections", "allow_team_result_submissions",
+    "waitlist_capacity", "waitlist_discord_role_id", "waitlist_mode", "event_start_time",
+    "event_end_time", "timezone",
+]
+
+ADMIN_TIMELINE_FIELDS = [
+    "registration_start_date",   # the renamed key, see the Field above
+    "registration_end_date",
+    "registration_start_time",
+    "registration_end_time",
 ]
 
 
