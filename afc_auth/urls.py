@@ -3,6 +3,17 @@ from .views import *
 # Its own module rather than another function in the 3,000-line views.py: it is a
 # self-contained two-endpoint feature with no overlap with account handling.
 from .feature_interest import feature_interest
+# CONNECTED ACCOUNTS (owner 2026-08-26): the player's outside accounts (Discord, Google, v-ent.co).
+# Its own package rather than more functions in views.py, and deliberately routed under /auth/
+# rather than /sso/, see the module docstring for the CSRF reason.
+from .connections.views import (
+    disconnect as disconnect_connection,
+    finish_connection,
+    link_google,
+    list_connections,
+    list_providers as list_connection_providers,
+    start_connection,
+)
 from django.conf import settings
 from django.conf.urls.static import static
 # Player-to-player reports (owner 2026-06-20) live in their own module, mirroring the
@@ -82,6 +93,16 @@ from .views_devices import (
 
 
 urlpatterns = [
+    # -- CONNECTED ACCOUNTS (owner 2026-08-26) ------------------------------------------------
+    # The player's outside accounts. Order matters: the two literal paths must precede the
+    # <str:provider_slug> catch-all or they would be swallowed by it. Consumed by the frontend
+    # lib/connections.ts, rendered at /profile/connected-apps.
+    path("connections/", list_connections, name="list_connections"),
+    path("connections/providers/", list_connection_providers, name="list_connection_providers"),
+    path("connections/google/", link_google, name="link_google"),
+    path("connections/<str:provider_slug>/start/", start_connection, name="start_connection"),
+    path("connections/<str:provider_slug>/callback/", finish_connection, name="finish_connection"),
+    path("connections/<str:provider_slug>/", disconnect_connection, name="disconnect_connection"),
     # path("admin/", admin.site.urls),
     # path('admin-login/', admin_login, name='admin_login'),
     path('signup/', signup, name='signup'),

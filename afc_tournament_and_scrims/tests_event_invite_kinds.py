@@ -480,7 +480,15 @@ class InvitationKindTests(InviteFixtureMixin, TestCase):
         team.team_name = "Les Loups & Co"          # a space AND an ampersand, both illegal raw
         team.save(update_fields=["team_name"])
 
-        html = _invitation_email_html(team, self.event, "organizer", "", "per_team", "en")
+        # The caller resolves the link now (a team page here, an event page for a solo
+        # invitation), so the encoding this test pins is applied by that caller. Built the same way
+        # deliver_invitation builds it, so the two cannot drift apart unnoticed.
+        from urllib.parse import quote
+
+        link_path = f"/teams/{quote(team.team_name, safe='')}"
+        html = _invitation_email_html(
+            team.team_name, link_path, self.event, "organizer", "", "per_team", "en"
+        )
         self.assertIn("/teams/Les%20Loups%20%26%20Co", html)
         self.assertNotIn(f"/teams/{team.team_id}", html)
 
@@ -678,16 +686,24 @@ class InvitationKindTests(InviteFixtureMixin, TestCase):
         # timescale.
         from .event_invite_delivery import _invitation_email_html
 
-        per_team = _invitation_email_html(self.team, self.event, "AFC", "", "per_team", "en")
-        fcfs = _invitation_email_html(self.team, self.event, "AFC", "", "fcfs", "en")
-        bulk = _invitation_email_html(self.team, self.event, "AFC", "", "bulk", "en")
+        link = f"/teams/{self.team.team_name}"
+        per_team = _invitation_email_html(
+            self.team.team_name, link, self.event, "AFC", "", "per_team", "en"
+        )
+        fcfs = _invitation_email_html(
+            self.team.team_name, link, self.event, "AFC", "", "fcfs", "en"
+        )
+        bulk = _invitation_email_html(
+            self.team.team_name, link, self.event, "AFC", "", "bulk", "en"
+        )
 
         self.assertIn("not being offered to anyone else", per_team)
         self.assertIn("first come, first served", fcfs)
         self.assertIn("open invitation", bulk)
         # And the organizer's own note is quoted rather than dropped.
         with_note = _invitation_email_html(
-            self.team, self.event, "AFC", "We saved you a slot", "per_team", "en")
+            self.team.team_name, link, self.event, "AFC", "We saved you a slot", "per_team", "en"
+        )
         self.assertIn("We saved you a slot", with_note)
 
     # ══════════════════════════════════════════════════════════════════════════

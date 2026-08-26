@@ -93,7 +93,9 @@ from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from afc_auth.models import Notifications
+# BannedPlayer and User are needed for the SOLO invitation path (owner 2026-08-26): a player's
+# ban lives on its own table rather than as a flag, unlike Team.is_banned.
+from afc_auth.models import BannedPlayer, Notifications, User
 from afc_auth.views import validate_token
 from afc_team.models import Team, TeamMembers
 
@@ -200,6 +202,12 @@ def _serialize(inv, for_team=False):
         "team_name": inv.team.team_name if inv.team_id else None,
         "team_tag": inv.team.team_tag if inv.team_id else None,
         "team_country": inv.team.country if inv.team_id else None,
+        # SOLO invitations (owner 2026-08-26) address a PLAYER instead of a team. Both shapes are
+        # emitted from the same serializer so the cards can render one list containing either.
+        "user_id": inv.user_id,
+        "username": inv.user.username if inv.user_id else None,
+        "user_country": inv.user.country if inv.user_id else None,
+        "is_solo": inv.user_id is not None,
         "invited_by": inv.invited_by.username if inv.invited_by_id else None,
         "responded_by": inv.responded_by.username if inv.responded_by_id else None,
         # WHICH KIND of offer this row came from. A row written before campaigns existed has no
@@ -330,7 +338,11 @@ def _register_through_the_normal_path(request, invitation):
         if key in source:
             body[key] = source[key]
     body["event_id"] = invitation.event_id
-    body["team_id"] = invitation.team_id
+    # A SOLO invitation carries no team: register_for_event takes the solo branch when team_id is
+    # absent, and the acting user IS the invitee (checked in _load_for_response), so the same
+    # replay-through-the-real-endpoint property holds for both shapes.
+    if invitation.team_id:
+        body["team_id"] = invitation.team_id
 
     # PRIVATE event: satisfy the existing invite-token gate with the token minted when the
     # invitation was created (see create_team_invitations). A caller who supplied their own token
@@ -348,6 +360,29 @@ def _register_through_the_normal_path(request, invitation):
 
 
 # ── notification helpers ─────────────────────────────────────────────────────────────────────
+def _whatsapp_reachable(users):
+    """How many of `users` could actually receive a WhatsApp message: a saved number AND the opt-in
+    left on. Resolved through afc_auth.canonical_profile because duplicate UserProfile rows exist in
+    production and canonical_profile (lowest profile_id) is the row every other reader agrees on,
+    which is the same rule event_invite_delivery.reach_for_teams applies."""
+    try:
+        from afc_auth.models import canonical_profile
+    except Exception:
+        return 0
+    count = 0
+    for user in users:
+        try:
+            profile = canonical_profile(user)
+        except Exception:
+            continue
+        if profile is None:
+            continue
+        number = (getattr(profile, "whatsapp_number", "") or "").strip()
+        if number and getattr(profile, "whatsapp_opt_in", True):
+            count += 1
+    return count
+
+
 def _team_decision_makers(team):
     """The people on `team` who may answer an invitation, i.e. exactly those _user_can_register_team
     accepts: the owner plus captain / vice-captain / manager / coach.
@@ -370,6 +405,19 @@ def _deliver(invitation_or_team, event, campaign, organizer_name):
     Returns the per-channel counts so create_team_invitations can tell the organizer what actually
     went out ("18 notified, 18 emailed, 2 on WhatsApp") instead of just "invited".
     """
+    # A SOLO invitation addresses a player, so there is no team to resolve decision-makers from:
+    # the invitee IS the recipient. Passed through as `player` and handled by the same delivery
+    # function, so both shapes speak one channel vocabulary and produce one set of counts.
+    player = getattr(invitation_or_team, "user", None)
+    if player is not None:
+        return deliver_invitation(
+            player=player,
+            event=event,
+            delivery=campaign.delivery,
+            organizer_name=organizer_name,
+            note=campaign.message,
+            kind=campaign.kind,
+        )
     team = getattr(invitation_or_team, "team", invitation_or_team)
     return deliver_invitation(
         team=team,
@@ -387,11 +435,13 @@ def _notify_inviter(invitation, accepted):
     if not invitation.invited_by_id:
         return
     event = invitation.event
+    # Either shape of invitee, named the way the organizer would name them.
+    who = invitation.team.team_name if invitation.team_id else invitation.user.username
     if accepted:
-        message = f"{invitation.team.team_name} accepted your invitation to {event.event_name}."
+        message = f"{who} accepted your invitation to {event.event_name}."
     else:
         reason = invitation.decline_reason.strip()
-        message = f"{invitation.team.team_name} declined your invitation to {event.event_name}."
+        message = f"{who} declined your invitation to {event.event_name}."
         if reason:
             message += f" Reason: {reason}"
     Notifications.objects.create(
@@ -411,7 +461,9 @@ def _notify_inviter(invitation, accepted):
 # Kinds the create endpoint accepts, and the delivery channels it recognises. Both are validated
 # against these rather than trusted, because both end up steering how many rows get written and how
 # many people get emailed.
-VALID_KINDS = {"per_team", "fcfs", "bulk"}
+# per_player is the SOLO analogue of per_team (owner 2026-08-26): one addressed invitation per
+# invitee. fcfs and bulk mean the same thing for either shape.
+VALID_KINDS = {"per_team", "per_player", "fcfs", "bulk"}
 
 
 def _clean_delivery(raw):
@@ -472,6 +524,9 @@ def create_team_invitations(request):
 
     event_id = request.data.get("event_id")
     team_ids = request.data.get("team_ids") or []
+    # SOLO events invite PLAYERS (owner 2026-08-26). Which list is required is decided by the
+    # event's participant_type below, once the event is loaded.
+    user_ids = request.data.get("user_ids") or []
     message = (request.data.get("message") or "").strip()[:280]
     expires_at = request.data.get("expires_at") or None
     kind = (request.data.get("kind") or "per_team").strip().lower()
@@ -479,11 +534,17 @@ def create_team_invitations(request):
 
     if not event_id:
         return Response({"message": "event_id is required."}, status=400)
-    if not isinstance(team_ids, list) or not team_ids:
-        return Response({"message": "team_ids must be a non-empty list of team ids."}, status=400)
+    if not isinstance(team_ids, list):
+        return Response({"message": "team_ids must be a list of team ids."}, status=400)
+    if not isinstance(user_ids, list):
+        return Response({"message": "user_ids must be a list of player ids."}, status=400)
+    if not team_ids and not user_ids:
+        return Response(
+            {"message": "Pick at least one team or player to invite."}, status=400,
+        )
     if kind not in VALID_KINDS:
         return Response(
-            {"message": "kind must be one of: per_team, fcfs, bulk."}, status=400,
+            {"message": "kind must be one of: per_team, per_player, fcfs, bulk."}, status=400,
         )
     if delivery_error:
         return Response({"message": delivery_error}, status=400)
@@ -510,25 +571,70 @@ def create_team_invitations(request):
     event = get_object_or_404(Event, event_id=event_id)
     if not _can_invite(user, event):
         return Response({"message": "Unauthorized."}, status=403)
-    if event.participant_type == "solo":
-        return Response(
-            {"message": "This is a solo event. Teams can only be invited to duo or squad events."},
-            status=400,
-        )
+    # WHICH SHAPE THIS EVENT TAKES. A solo event has no teams to address and a duo/squad event has
+    # no individual entrants, so sending the wrong list is a mistake worth naming rather than
+    # silently ignoring half the request.
+    is_solo_event = event.participant_type == "solo"
+    if is_solo_event:
+        if team_ids:
+            return Response(
+                {"message": "This is a solo event. Invite players, not teams."}, status=400,
+            )
+        if not user_ids:
+            return Response(
+                {"message": "user_ids must be a non-empty list of player ids."}, status=400,
+            )
+        if kind == "per_team":
+            # An older client that sends no kind defaults to per_team; on a solo event that plainly
+            # means "one invitation per invitee", so it is translated rather than refused.
+            kind = "per_player"
+        if kind == "per_player":
+            pass
+        elif kind not in ("fcfs", "bulk"):
+            return Response(
+                {"message": "kind must be one of: per_player, fcfs, bulk."}, status=400,
+            )
+    else:
+        if user_ids:
+            return Response(
+                {"message": "This event is played in teams. Invite teams, not players."},
+                status=400,
+            )
+        if not team_ids:
+            return Response(
+                {"message": "team_ids must be a non-empty list of team ids."}, status=400,
+            )
+        if kind == "per_player":
+            return Response(
+                {"message": "per_player invitations are for solo events."}, status=400,
+            )
     if effective_event_status(event) in ("cancelled", "completed"):
         return Response({"message": "This event is no longer open for invitations."}, status=400)
 
     # Coerce ids defensively: the dialog sends ints, but a hand-made call must not 500 the batch.
     wanted = []
-    for raw_id in team_ids:
+    for raw_id in (user_ids if is_solo_event else team_ids):
         try:
             wanted.append(int(raw_id))
         except (TypeError, ValueError):
             continue
     if not wanted:
-        return Response({"message": "team_ids must be a non-empty list of team ids."}, status=400)
+        return Response(
+            {"message": "user_ids must be a non-empty list of player ids."}
+            if is_solo_event
+            else {"message": "team_ids must be a non-empty list of team ids."},
+            status=400,
+        )
 
-    teams = {t.team_id: t for t in Team.objects.filter(team_id__in=wanted)}
+    # ONE lookup table keyed by invitee id, whichever shape this event takes, so the loop below is
+    # written once. `label` is what the organizer sees in a skip row.
+    if is_solo_event:
+        invitees = {u.user_id: u for u in User.objects.filter(user_id__in=wanted)}
+        label_of = lambda obj: obj.username                                    # noqa: E731
+    else:
+        invitees = {t.team_id: t for t in Team.objects.filter(team_id__in=wanted)}
+        label_of = lambda obj: obj.team_name                                   # noqa: E731
+
     invited, skipped = [], []
     # Per-channel totals across the whole send, so the organizer is told what actually went out
     # rather than just how many rows were written.
@@ -536,27 +642,48 @@ def create_team_invitations(request):
     organizer_name = getattr(user, "username", "") or ""
 
     with transaction.atomic():
-        # One pending invitation per (event, team) is enforced HERE rather than by a DB constraint:
-        # MySQL has no partial unique index, so a conditional UniqueConstraint would be skipped
-        # silently (see the Meta comment on the model). Both reads happen inside the transaction.
-        already_registered = set(
-            TournamentTeam.objects.filter(event=event, team_id__in=wanted)
-            .values_list("team_id", flat=True)
-        ) | set(
-            RegisteredCompetitors.objects.filter(event=event, team_id__in=wanted)
-            .values_list("team_id", flat=True)
-        )
-        already_pending = set(
-            EventTeamInvitation.objects.filter(
-                event=event, team_id__in=wanted, status="pending",
-            ).values_list("team_id", flat=True)
-        )
+        # One pending invitation per (event, invitee) is enforced HERE rather than by a DB
+        # constraint: MySQL has no partial unique index, so a conditional UniqueConstraint would be
+        # skipped silently (see the Meta comment on the model). Both reads happen inside the
+        # transaction.
+        if is_solo_event:
+            # A solo entrant is a RegisteredCompetitors row carrying a user, with no TournamentTeam
+            # to check: the team tables have nothing to say about a solo event.
+            already_registered = set(
+                RegisteredCompetitors.objects.filter(event=event, user_id__in=wanted)
+                .values_list("user_id", flat=True)
+            )
+            already_pending = set(
+                EventTeamInvitation.objects.filter(
+                    event=event, user_id__in=wanted, status="pending",
+                ).values_list("user_id", flat=True)
+            )
+            banned_ids = set(
+                BannedPlayer.objects.filter(
+                    banned_player_id__in=wanted, is_active=True,
+                    ban_end_date__gt=timezone.now(),
+                ).values_list("banned_player_id", flat=True)
+            )
+        else:
+            already_registered = set(
+                TournamentTeam.objects.filter(event=event, team_id__in=wanted)
+                .values_list("team_id", flat=True)
+            ) | set(
+                RegisteredCompetitors.objects.filter(event=event, team_id__in=wanted)
+                .values_list("team_id", flat=True)
+            )
+            already_pending = set(
+                EventTeamInvitation.objects.filter(
+                    event=event, team_id__in=wanted, status="pending",
+                ).values_list("team_id", flat=True)
+            )
+            banned_ids = set()
 
         # PRIVATE event: mint the token the accept will replay, so the invitation is actually
-        # acceptable without teaching register_for_event a second way in. per_team keeps item 34's
+        # acceptable without teaching register_for_event a second way in. per_team / per_player keep
         # one single-use token PER INVITATION; fcfs and bulk need ONE SHARED token for the campaign,
-        # because by definition more than one team redeems them (EventInviteToken.is_shared already
-        # models exactly that, and register_for_event already honours it).
+        # because by definition more than one invitee redeems them (EventInviteToken.is_shared
+        # already models exactly that, and register_for_event already honours it).
         campaign_token = None
         if not event.is_public and kind in ("fcfs", "bulk"):
             campaign_token = EventInviteToken.objects.create(
@@ -566,50 +693,68 @@ def create_team_invitations(request):
         campaign = EventInvitationCampaign.objects.create(
             event=event, kind=kind, message=message, delivery=delivery, slots=slots,
             expires_at=expires_at or None, created_by=user, invite_token=campaign_token,
-            audience_team_ids=[],
+            audience_team_ids=[], audience_user_ids=[],
         )
 
         audience = []
-        for team_id in wanted:
-            team = teams.get(team_id)
-            if not team:
-                skipped.append({"team_id": team_id, "team_name": None, "reason": "not_found"})
+        for invitee_id in wanted:
+            invitee = invitees.get(invitee_id)
+            id_key = "user_id" if is_solo_event else "team_id"
+            name_key = "username" if is_solo_event else "team_name"
+
+            if not invitee:
+                skipped.append({id_key: invitee_id, name_key: None, "reason": "not_found"})
                 continue
-            if team.is_banned:
-                skipped.append({"team_id": team_id, "team_name": team.team_name, "reason": "banned"})
+            banned = invitee_id in banned_ids if is_solo_event else invitee.is_banned
+            if banned:
+                skipped.append(
+                    {id_key: invitee_id, name_key: label_of(invitee), "reason": "banned"}
+                )
                 continue
-            if team_id in already_registered:
+            if invitee_id in already_registered:
                 skipped.append({
-                    "team_id": team_id, "team_name": team.team_name, "reason": "already_registered",
+                    id_key: invitee_id, name_key: label_of(invitee),
+                    "reason": "already_registered",
                 })
                 continue
             # Only an ADDRESSED kind can collide with an existing addressed invitation. A bulk offer
-            # addresses nobody, so a team holding a pending per_team invitation can still be told
-            # about it.
-            if kind != "bulk" and team_id in already_pending:
+            # addresses nobody, so an invitee holding a pending addressed invitation can still be
+            # told about it.
+            if kind != "bulk" and invitee_id in already_pending:
                 skipped.append({
-                    "team_id": team_id, "team_name": team.team_name, "reason": "already_invited",
+                    id_key: invitee_id, name_key: label_of(invitee), "reason": "already_invited",
                 })
                 continue
 
-            audience.append(team_id)
+            audience.append(invitee_id)
 
             if kind == "bulk":
-                # No row: the offer IS the campaign. The team is delivered to below, and a row gets
-                # written only if they answer (accept_bulk_campaign / decline_bulk_campaign).
-                counts = deliver_invitation(
-                    team=team, event=event, delivery=delivery,
-                    organizer_name=organizer_name, note=message, kind=kind,
+                # No row: the offer IS the campaign. The invitee is delivered to below, and a row
+                # gets written only if they answer (accept_bulk_campaign / decline_bulk_campaign).
+                counts = (
+                    deliver_invitation(
+                        player=invitee, event=event, delivery=delivery,
+                        organizer_name=organizer_name, note=message, kind=kind,
+                    )
+                    if is_solo_event
+                    else deliver_invitation(
+                        team=invitee, event=event, delivery=delivery,
+                        organizer_name=organizer_name, note=message, kind=kind,
+                    )
                 )
             else:
                 token = None
                 if not event.is_public:
-                    # per_team keeps its own single-use token; fcfs shares the campaign's.
+                    # An addressed invitation keeps its own single-use token; fcfs shares the
+                    # campaign's.
                     token = campaign_token or EventInviteToken.objects.create(
                         event=event, created_by=user,
                     )
                 invitation = EventTeamInvitation.objects.create(
-                    event=event, team=team, invited_by=user, message=message,
+                    event=event,
+                    team=None if is_solo_event else invitee,
+                    user=invitee if is_solo_event else None,
+                    invited_by=user, message=message,
                     expires_at=expires_at or None, invite_token=token, campaign=campaign,
                 )
                 counts = _deliver(invitation, event, campaign, organizer_name)
@@ -618,13 +763,18 @@ def create_team_invitations(request):
             for key in delivered:
                 delivered[key] += counts.get(key, 0)
 
-        campaign.audience_team_ids = audience
-        campaign.save(update_fields=["audience_team_ids"])
+        if is_solo_event:
+            campaign.audience_user_ids = audience
+            campaign.save(update_fields=["audience_user_ids"])
+        else:
+            campaign.audience_team_ids = audience
+            campaign.save(update_fields=["audience_team_ids"])
 
+    noun = "player" if is_solo_event else "team"
     if kind == "bulk":
-        summary = f"Open invitation sent to {len(audience)} team(s), {len(skipped)} skipped."
+        summary = f"Open invitation sent to {len(audience)} {noun}(s), {len(skipped)} skipped."
     else:
-        summary = f"{len(invited)} team(s) invited, {len(skipped)} skipped."
+        summary = f"{len(invited)} {noun}(s) invited, {len(skipped)} skipped."
 
     return Response({
         "message": summary,
@@ -669,8 +819,15 @@ def invitation_reach(request):
 
     # Bounded like every other list here: a hand-made call must not be able to ask us to walk the
     # whole team table. MAX_LIMIT is the same ceiling the invitation lists use.
+    # SOLO events send user_ids instead (owner 2026-08-26). Whichever list arrives, the answer has
+    # the same shape, so the composer's "reaches N of these M people" line reads the same.
+    is_solo_reach = bool((request.GET.get("user_ids") or "").strip())
+    raw_ids = (
+        request.GET.get("user_ids") if is_solo_reach else request.GET.get("team_ids")
+    ) or ""
+
     wanted = []
-    for raw_id in (request.GET.get("team_ids") or "").split(","):
+    for raw_id in raw_ids.split(","):
         raw_id = raw_id.strip()
         if not raw_id:
             continue
@@ -683,6 +840,19 @@ def invitation_reach(request):
         return Response(
             {"recipients": 0, "email": 0, "whatsapp": 0, "teams": 0}, status=200,
         )
+
+    if is_solo_reach:
+        # A solo invitation reaches exactly the invitees: there is no roster of decision-makers to
+        # expand, so the count is the players themselves, filtered the same way reach_for_teams
+        # filters (an address must exist to be counted email-reachable).
+        players = list(User.objects.filter(user_id__in=wanted))
+        data = {
+            "recipients": len(players),
+            "email": sum(1 for u in players if (getattr(u, "email", "") or "").strip()),
+            "whatsapp": _whatsapp_reachable(players),
+        }
+        data["teams"] = 0
+        return Response(data, status=200)
 
     teams = list(Team.objects.filter(team_id__in=wanted))
     data = reach_for_teams(teams)
@@ -913,14 +1083,25 @@ def _load_for_response(user, invitation_id):
         # `campaign` is joined here because both callers read it straight afterwards (accept for the
         # fcfs slot claim, decline for the serialized kind), so it costs one join instead of one
         # extra query per answer.
-        EventTeamInvitation.objects.select_related("event", "team", "invited_by", "campaign"),
+        EventTeamInvitation.objects.select_related(
+            "event", "team", "user", "invited_by", "campaign"
+        ),
         id=invitation_id,
     )
     # Answering IS registering, so the permission must be the SAME one register_for_event applies
     # to a self-registration (owner, captain, vice-captain, manager, coach). If these two ever
     # disagreed, a person could accept an invitation and then be refused by the endpoint the accept
     # itself calls.
-    if not _user_can_register_team(user, invitation.team):
+    # A SOLO invitation is addressed to ONE person and only that person may answer it. There is no
+    # roster of decision-makers to consult, and letting anybody else answer would register a player
+    # for an event they never agreed to.
+    if invitation.user_id:
+        if user.user_id != invitation.user_id:
+            return None, Response(
+                {"message": "Only the invited player can answer this invitation."},
+                status=403,
+            )
+    elif not _user_can_register_team(user, invitation.team):
         return None, Response(
             {"message": "Only the team owner, captain, vice-captain, manager, or coach can "
                         "answer an event invitation."},
