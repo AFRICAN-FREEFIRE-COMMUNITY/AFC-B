@@ -3051,3 +3051,92 @@ class CSRoomPreset(CSRoomSettingsBase):
     def __str__(self):
         owner = self.organization.name if self.organization_id else "AFC"
         return f"CS preset '{self.name}' ({owner})"
+
+
+class EventRequirementWaiver(models.Model):
+    """An admin's on-the-record decision to excuse one competitor from named event requirements.
+
+    WHY IT EXISTS
+        An invited team is judged by exactly the same gates as a self-registering one
+        (event_invites._register_through_the_normal_path replays the accept through
+        register_for_event, on purpose, and BOTH accept paths use it). When AFC wants a team in
+        regardless, that decision should be a row with a reason and a name on it, not an admin
+        quietly using a bypass endpoint.
+
+    HOW IT CONNECTS END TO END
+      - Written by : afc_tournament_and_scrims/waiver_views.py (the admin endpoints) through
+                     waivers.grant() / waivers.revoke(), and by add_teams_to_event when an admin
+                     adds a failing team with an explicit waiver.
+      - Read by    : afc_tournament_and_scrims/waivers.py waived_codes(), consulted at each
+                     waivable gate inside register_for_event and by add_teams_to_event.
+      - Surfaced on: the admin event registrations list, and player-side in the roster
+                     requirements panel, which renders a waived gate as "waived by AFC" rather
+                     than a red blocker the team cannot clear.
+      - Audited by : afc_auth.AuditLogMiddleware, automatically, because these are mutating admin
+                     requests. That records WHO and WHEN but deliberately not request bodies, so
+                     `reason` living on this row is what makes the record complete.
+
+    WHAT CANNOT BE WAIVED: bans and payment. See waivers.NEVER_WAIVABLE.
+    """
+    waiver_id = models.AutoField(primary_key=True)
+
+    event = models.ForeignKey(
+        "Event", on_delete=models.CASCADE, related_name="requirement_waivers"
+    )
+    # Exactly one of these is set: a team for team events, a user for solo events. NOT expressed as
+    # a CheckConstraint: MySQL enforces CHECK only from 8.0.16 and the production version is not
+    # pinned anywhere we can verify, so the rule is enforced in waivers.grant() and pinned by a
+    # test rather than trusted to the engine.
+    team = models.ForeignKey(
+        "afc_team.Team", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="requirement_waivers",
+    )
+    user = models.ForeignKey(
+        "afc_auth.User", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="requirement_waivers",
+    )
+
+    # Refusal codes this waiver excuses, e.g. ["team_logo_required", "capacity_full"]. The SAME
+    # strings register_for_event puts in its 403 bodies, so what an admin ticks and what the
+    # registration endpoint refuses are the same words.
+    waived_codes = models.JSONField(default=list)
+    # Required. An excuse with no stated reason is unreadable six weeks later, and the automatic
+    # audit log cannot supply it because it deliberately does not record request bodies.
+    reason = models.TextField()
+
+    created_by = models.ForeignKey(
+        "afc_auth.User", on_delete=models.SET_NULL, null=True,
+        related_name="waivers_granted",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # -- THE ACTIVE MARKER. Read this before changing the constraints. ---------------------------
+    # True on a live waiver, NULL on a revoked one. It exists so "one ACTIVE waiver per competitor"
+    # can be a PLAIN unique constraint. The obvious alternative,
+    # UniqueConstraint(condition=Q(revoked_at__isnull=True)), is a PARTIAL INDEX: MySQL has none,
+    # Django SILENTLY SKIPS it, and there would be no enforcement at all in production. That is not
+    # hypothetical here: TournamentTeam.assigned_letter shipped with exactly that mistake and
+    # tests_letter_constraint.py was written to pin the fix, and EventTeamInvitation.Meta declines
+    # to express its own version of this rule for the same reason. MySQL allows many NULLs inside a
+    # unique index, so revoked rows never collide with each other.
+    active = models.BooleanField(null=True, default=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        "afc_auth.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="waivers_revoked",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["event", "team", "active"], name="uniq_active_waiver_team"
+            ),
+            models.UniqueConstraint(
+                fields=["event", "user", "active"], name="uniq_active_waiver_user"
+            ),
+        ]
+        indexes = [models.Index(fields=["event", "active"])]
+
+    def __str__(self):
+        who = self.team_id or self.user_id
+        return f"waiver event {self.event_id} for {who} ({len(self.waived_codes or [])} codes)"

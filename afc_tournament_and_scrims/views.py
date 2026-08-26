@@ -7323,8 +7323,18 @@ def register_for_event(request):
         # require_whatsapp - the last added by the owner on 2026-08-03). The shared
         # _missing_registration_assets helper returns whatever this solo registrant is missing; the
         # structured 403 lets the FE point them straight at the field to fix on their profile.
+        # Requirement waivers (owner 2026-08-26). ONE indexed query, an empty set for almost
+        # every registration. Consulted at each WAIVABLE gate below; bans and payment never read
+        # it. This lives in register_for_event rather than in a special admin path on purpose: an
+        # invited team's accept replays through this SAME endpoint
+        # (event_invites._register_through_the_normal_path), so a waiver granted to an invited
+        # competitor is honoured by the same lines that judge everybody else.
+        from .waivers import waived_codes as _waived_codes_for
+
+        waived = _waived_codes_for(event, user=user)
+
         solo_missing = _missing_registration_assets([user.user_id], event)
-        if solo_missing:
+        if solo_missing and "registration_requirements_unmet" not in waived:
             return Response(_registration_requirements_response(solo_missing), status=403)
 
         # ── Per-event DISCORD requirement (owner 2026-06-22): the registrant must have a connected
@@ -7340,7 +7350,11 @@ def register_for_event(request):
         # When the event requires >=N letter avatars, a SOLO registrant must personally own at least
         # N (their own afc_auth.User.letter_avatars). The structured 403 (code "letter_avatars_required")
         # lets EventDetailsWrapper deep-link them to /profile/edit to add the letters they own.
-        if event.min_letter_avatars and event.min_letter_avatars > 0:
+        if (
+            event.min_letter_avatars
+            and event.min_letter_avatars > 0
+            and "letter_avatars_required" not in waived
+        ):
             available_letters = _letter_avatars_available([user])
             if len(available_letters) < event.min_letter_avatars:
                 return Response(_letter_avatars_required_response(event, available_letters), status=403)
@@ -7580,6 +7594,12 @@ def register_for_event(request):
         # (mirrors afc_team.views._is_player_banned; replicated inline here to avoid a cross-app
         # import in this hot path). The per-roster-member check runs later, once roster_users is
         # resolved. The SOLO path above has its own inline BannedPlayer check.
+        # Requirement waivers for the TEAM path. Resolved before the first waivable gate; the
+        # ban checks immediately below deliberately ignore it.
+        from .waivers import waived_codes as _waived_codes_for_team
+
+        waived = _waived_codes_for_team(event, team=team)
+
         if team.is_banned:
             return Response({"message": "Your team is banned and cannot register for events."}, status=403)
         if BannedPlayer.objects.filter(banned_player=user, is_active=True, ban_end_date__gt=timezone.now()).exists():
@@ -7588,7 +7608,11 @@ def register_for_event(request):
         # ── TEAM-LOGO CRITERIA (owner 2026-06-12) ──
         # When the event creator required team logos, a team cannot register until its logo is
         # uploaded. code lets the FE deep-link the captain to the team edit page.
-        if event.require_team_logo and not team.team_logo:
+        if (
+            event.require_team_logo
+            and not team.team_logo
+            and "team_logo_required" not in waived
+        ):
             return Response({
                 "message": "This event requires a team logo. Upload your team's logo before registering.",
                 "code": "team_logo_required",
@@ -7646,7 +7670,13 @@ def register_for_event(request):
         roster_member_ids = list(dict.fromkeys(roster_member_ids))
 
         if not (min_size <= len(roster_member_ids) <= max_size):
-            return Response({"message": f"Roster must contain {min_size} to {max_size} players."}, status=400)
+            # Given a machine-readable code (owner 2026-08-26) so it can be named in a waiver.
+            # The frontend reads `code` when present and otherwise falls back to `message`, so
+            # adding one changes nothing for existing callers.
+            return Response({
+                "code": "roster_size",
+                "message": f"Roster must contain {min_size} to {max_size} players.",
+            }, status=400)
 
         # Ensure all selected are members of this team.
         #
@@ -7693,7 +7723,7 @@ def register_for_event(request):
         # what, so the structured 403 NAMES each offending player + the fields they must add before
         # retrying (the FE renders a per-player "missing X" panel with Edit-Profile deep links).
         roster_missing = _missing_registration_assets(roster_member_ids, event)
-        if roster_missing:
+        if roster_missing and "registration_requirements_unmet" not in waived:
             return Response(_registration_requirements_response(roster_missing), status=403)
 
         # Prevent players being in two rosters for the same event.
@@ -22671,6 +22701,87 @@ def add_teams_to_event(request):
 
     teams = Team.objects.filter(team_id__in=team_ids)
 
+    # ── REQUIREMENT GATE (owner 2026-08-26) ──────────────────────────────────────────────────────
+    # This endpoint used to write RegisteredCompetitors directly, skipping bans, per-player
+    # requirements and capacity with NO record that anything had been skipped. An admin who does not
+    # know they are stepping around a rule cannot be said to have waived it, which is the whole
+    # distinction this feature draws. (Measured before the change: across the entire function body
+    # there was not one reference to _missing_registration_assets, is_banned, BannedPlayer or
+    # max_teams_or_players.)
+    #
+    # DELIBERATELY NARROWER THAN register_for_event. Those gates are interleaved with response
+    # building across ~600 lines and cannot be lifted out as a block; extracting them is a refactor
+    # with its own regression risk on the most important endpoint on the site. So this calls the
+    # helpers that already exist and REPORTS which checks it ran, rather than implying parity.
+    # Country rules, sponsor engagements, letter avatars and the paid path are NOT checked here.
+    from .waivers import WAIVABLE_CODES, grant as _grant_waiver, waived_codes as _waived_for
+
+    CHECKS_RUN = [
+        "team_banned", "player_banned", "registration_requirements_unmet",
+        "team_logo_required", "capacity_full",
+    ]
+
+    want_waive = bool(request.data.get("waive"))
+    waive_reason = (request.data.get("reason") or "").strip()
+    if want_waive and not waive_reason:
+        return Response({"message": "A reason is required to waive requirements."}, status=400)
+
+    already_registered = RegisteredCompetitors.objects.filter(event=event).count()
+    capacity = event.max_teams_or_players or 0
+
+    blocked = []
+    for team in teams:
+        waived = _waived_for(event, team=team)
+        codes = []
+
+        # NEVER waivable, checked first so no amount of ticking gets past them.
+        if team.is_banned:
+            codes.append("team_banned")
+        member_ids = list(
+            TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
+        )
+        if BannedPlayer.objects.filter(
+            banned_player_id__in=member_ids, is_active=True, ban_end_date__gt=timezone.now()
+        ).exists():
+            codes.append("player_banned")
+
+        if event.require_team_logo and not team.team_logo and "team_logo_required" not in waived:
+            codes.append("team_logo_required")
+        if (
+            _missing_registration_assets(member_ids, event)
+            and "registration_requirements_unmet" not in waived
+        ):
+            codes.append("registration_requirements_unmet")
+        if capacity and already_registered >= capacity and "capacity_full" not in waived:
+            codes.append("capacity_full")
+
+        if codes:
+            blocked.append(
+                {"team_id": team.team_id, "team_name": team.team_name, "codes": codes}
+            )
+
+    if blocked:
+        # A team blocked ONLY by waivable codes can be admitted with an explicit waiver. A team
+        # blocked by a ban cannot, at any price.
+        all_waivable = all(set(row["codes"]).issubset(WAIVABLE_CODES) for row in blocked)
+        if not (want_waive and all_waivable):
+            return Response({
+                "code": "requirements_unmet",
+                "message": "Some teams do not meet this event's requirements.",
+                "blocked": blocked,
+                "checks_run": CHECKS_RUN,
+            }, status=409)
+
+        # Write a REAL waiver per team, attributed to this admin, BEFORE adding them.
+        for row in blocked:
+            _grant_waiver(
+                event,
+                actor=admin,
+                reason=waive_reason,
+                codes=row["codes"],
+                team=Team.objects.get(team_id=row["team_id"]),
+            )
+
     new_registrations = []
     new_tournament_teams = []
 
@@ -22764,6 +22875,9 @@ def add_teams_to_event(request):
 
     return Response({
         "message": f"{len(new_registrations)} teams registered and {len(new_tournament_teams)} teams added.",
+        # Which checks this endpoint ran. A pass here is NOT the same as passing register_for_event,
+        # and saying so beats letting an admin assume parity.
+        "checks_run": CHECKS_RUN,
         "event_id": event.event_id,
         "added_team_ids": [team.team_id for team in teams],
         "auto_seed": seed_result,  # {stage_id, stage_competitors_added, group_seeds_added}
