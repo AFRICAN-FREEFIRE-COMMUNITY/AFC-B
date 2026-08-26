@@ -9,6 +9,7 @@ Import from here, not from the submodules, so the public surface stays small:
 
     from afc_auth.connections import get_provider, enabled_providers, is_enabled
 """
+from . import oauth, state  # noqa: F401  (re-exported for "from afc_auth.connections import oauth")
 from .registry import Provider, enabled_providers, get_provider, is_enabled
 
 __all__ = ["enabled_providers", "get_provider", "is_enabled", "Provider"]
