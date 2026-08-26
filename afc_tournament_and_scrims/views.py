@@ -48,6 +48,17 @@ from afc_organizers.permissions import org_can, org_can_event, is_platform_org_a
 # One serializer, shared with the write endpoints in that module, so the shape a page reads and
 # the shape a save returns can never drift. Safe to import at module level: views_public_sponsors
 # imports back from this file only INSIDE its functions, so there is no import cycle.
+# ONE CONTRACT PER DOMAIN OBJECT (owner 2026-08-26): every Event field is declared once in
+# event_contract.py, with the role allowed to read it and the role allowed to write it. The
+# readers and writers below serialize and apply through it instead of listing 87 fields by hand.
+from .event_contract import (
+    ADMIN,
+    PLAYER,
+    PUBLIC,
+    WriteRefused,
+    apply_event_writes,
+    serialize_event,
+)
 from .views_public_sponsors import serialize_public_sponsors
 from afc_organizers.models import Organization
 from rest_framework.decorators import api_view
@@ -6235,143 +6246,30 @@ def get_event_details_not_logged_in(request):
             event=event, is_waitlisted=False, is_no_show=False,  # F1: no-show frees the slot
         ).count()
 
-    event_data = {
-        "event_id": event.event_id,
-        "competition_type": event.competition_type,
-        "participant_type": event.participant_type,
-        "event_type": event.event_type,
-        "max_teams_or_players": event.max_teams_or_players,
-        "event_name": event.event_name,
-        "event_mode": event.event_mode,
-        "start_date": event.start_date,
-        "end_date": event.end_date,
-        "registration_open_date": event.registration_open_date,
-        "registration_end_date": event.registration_end_date,
-        # Roster-edit window (owner 2026-06-15): the team-facing UI uses these to show whether
-        # captains may currently edit their roster (and until when). roster_edit_open auto-derives
-        # from roster_edit_until vs now (see Event.roster_edit_open / set_roster_edit_window).
-        "roster_edit_until": event.roster_edit_until,
-        "roster_edit_open": event.roster_edit_open,
-        "prizepool": event.prizepool,
-        # Echo the cash value + currency (owner bug 2026-07-02): the edit form seeds from this
-        # payload; without these keys a saved cash value came back undefined and the field looked
-        # like it "disappeared" after every save/reload.
-        "prizepool_cash_value": event.prizepool_cash_value,
-        "prize_currency": getattr(event, "prize_currency", None),
-        "prize_distribution": event.prize_distribution,
-        # Paid registration (feature "paid-events"): the event page decides free vs paid + fee.
-        "registration_type": event.registration_type,
-        "registration_fee": event.registration_fee,
-        "registration_fee_currency": event.registration_fee_currency,
-        # Per-country payment (owner 2026-06-24): anon viewer -> your_registration_fee is null (the FE
-        # shows the base fee + "varies by country" when rules exist). Rules echoed for completeness.
-        "country_payment_rules": event.country_payment_rules,
-        "your_registration_fee": None,
-        # Per-event results visibility (owner 2026-06-29): false => standings below withheld + the
-        # public Results/Structure view shows "Results not published yet". See results_hidden / set_results_visibility.
-        "results_published": event.results_published,
-        "event_rules": event.event_rules,
-        # Mirror of get_event_details (owner 2026-08-05, item 26). BOTH builders must emit these
-        # two keys or the About block and the sponsor strip vanish the moment a visitor is logged
-        # out, which is precisely the visitor they exist for.
-        "event_description": event.event_description,
-        "public_sponsors": serialize_public_sponsors(event, request),
-        # Read-time display status (anon detail): mirror get_event_details so a started event shows
-        # "ongoing" without waiting on the sweep. See effective_event_status.
-        "event_status": effective_event_status(event),
-        # ── PROVENANCE (owner 2026-08-20, external results import) ──────────────────────
-        # NULL for everything AFC ran. A timestamp means the results came from an external
-        # organizer's published standings rather than being played on AFC, and the event
-        # page shows a marker saying so. Driven off the stored timestamp rather than its own
-        # switch, so it cannot drift out of step with whether an import actually happened.
-        "results_imported": event.results_imported_at is not None,
-        "results_imported_at": event.results_imported_at,
-        "registration_link": event.registration_link,
-        "tournament_tier": event.tournament_tier,
-        "event_banner_url": request.build_absolute_uri(event.event_banner.url) if event.event_banner else None,
-        # Organizing org (may be null for AFC-native events). Exposed so the public
-        # tournament page can (a) build the link-embed / OG image fallback chain
-        # event banner -> ORG LOGO -> AFC default (owner 2026-06-14), and (b) fill the
-        # SportsEvent JSON-LD `organizer` (the FE already reads organization_name/slug
-        # here, previously always null). Consumed by the frontend
-        # app/(user)/tournaments/[slug]/page.tsx generateMetadata + Page.
-        "organization_name": event.organization.name if event.organization else None,
-        "organization_slug": event.organization.slug if event.organization else None,
-        "organization_logo": (
-            request.build_absolute_uri(event.organization.logo.url)
-            if (event.organization and event.organization.logo)
-            else None
-        ),
-        "uploaded_rules_url": request.build_absolute_uri(event.uploaded_rules.url) if event.uploaded_rules else None,
-        "number_of_stages": event.number_of_stages,
-        "created_at": event.created_at,
-        # "is_registered": is_registered,
-        "stream_channels": list(event.stream_channels.values_list("channel_url", flat=True)),
-        "is_public": event.is_public,
-        # Per-event Discord requirement (owner 2026-06-22): echoed so the create/edit forms rehydrate
-        # the toggle + server, and the user event page can show a "Discord required" note.
-        "require_discord": event.require_discord,
-        "discord_server_id": event.discord_server_id,
-        "discord_invite_link": event.discord_invite_link,
-        "is_sponsored": event.is_sponsored,
-        "sponsor_name": event.sponsor_name,
-        "sponsor_field_label": event.sponsor_field_label,
-        "sponsor_requirement_description": event.sponsor_requirement_description,
-        "sponsors": [
-            {
-                "sponsor_id": se.sponsor.user_id,
-                "sponsor_name": se.sponsor.full_name,
-                "sponsor_username": se.sponsor.username
-            }
-            for se in sponsors
-        ],
-        # K: registration/event window times ("HH:MM"), mirrored from the logged-in
-        # response so the public page gates registration on the same window.
-        "registration_start_time": event.registration_start_time,
-        "registration_end_time": event.registration_end_time,
-        "event_start_time": event.event_start_time,
-        "event_end_time": event.event_end_time,
-        # The registration window RESOLVED to absolute instants, ISO-8601 UTC (owner 2026-08-03,
-        # item 38). The naive date+time fields above stay for display, but the frontend must decide
-        # open/closed from THESE, because parsing "<date>T<time>" in the browser silently applies the
-        # VIEWER's timezone and made registration flip early/late by the tz offset (Ethiopia saw
-        # "closed" while Lagos was still open). Computed by registration_window_instants().
-        "registration_opens_at": registration_window_instants(event)[0].isoformat(),
-        "registration_closes_at": registration_window_instants(event)[1].isoformat(),
-        # Server's own verdict on the window, so the UI and the enforcement gate can never disagree.
-        "registration_is_open": registration_is_open(event),
-        # M: waitlist flags + capacity snapshot for the logged-out register CTA.
-        "is_waitlist_enabled": event.is_waitlist_enabled,
-        # Waitlist slot-assignment mode (owner 2026-06-17): shown on the public event page so a
-        # would-be waitlist registrant sees how slots are filled before joining.
-        "waitlist_mode": event.waitlist_mode,
-        # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
-        "require_team_logo": event.require_team_logo,
-        "require_esport_images": event.require_esport_images,
-        "require_player_uid": event.require_player_uid,
-        "require_player_profile_image": event.require_player_profile_image,
-        # WhatsApp number requirement (owner 2026-08-03): logged-out twin of the get_event_details
-        # echo, so an anonymous viewer sees the same "Requirements to register" list.
-        "require_whatsapp": event.require_whatsapp,
-        "required_connections": list(event.required_connections or []),
-        # Teams filing their own map results (item 6). Emitted so the edit form can
-        # rehydrate the switch: without it the form reads undefined, falls back to false,
-        # and shows the feature as OFF on an event where it is on.
-        "allow_team_result_submissions": event.allow_team_result_submissions,
-        "waitlist_capacity": event.waitlist_capacity,
-        "registered_count": active_registered,
-        "is_full": active_registered >= event.max_teams_or_players,
-        # F6 co-ownership (owner 2026-06-19): accepted co-organizers for the public "Organized by
-        # A & B" branding on the logged-out event page. Empty for normal single-org events.
-        "co_organizers": [
-            {
-                "name": c.organization.name,
-                "slug": c.organization.slug,
-                "logo": request.build_absolute_uri(c.organization.logo.url) if c.organization.logo else None,
-            }
-            for c in event.co_organizers.filter(status="accepted").select_related("organization")
-        ],
-    }
+    # ── EVENT FIELDS COME FROM THE CONTRACT (owner 2026-08-26) ─────────────────────────────────
+    # This was a hand-typed dict of 68 keys, one of two near-identical copies (the other lived in
+    # get_event_details). Both are generated from afc_tournament_and_scrims/event_contract.py now,
+    # so a new event field appears on this endpoint without this function being edited at all.
+    #
+    # PUBLIC is passed explicitly rather than resolved: this endpoint serves exactly one audience,
+    # the logged-out visitor, so there is no viewer to resolve a rung from.
+    #
+    # `extra` hands over the values this function has already queried for, so the contract does not
+    # repeat the work: the published sponsors, the sponsor rows, and the capacity snapshot counted
+    # with the same rule register_for_event uses. your_registration_fee is None here because an
+    # anonymous viewer has no country to price against (owner 2026-06-24).
+    event_data = serialize_event(
+        event,
+        role=PUBLIC,
+        request=request,
+        extra={
+            "public_sponsors": serialize_public_sponsors(event, request),
+            "event_status": effective_event_status(event),
+            "sponsors": sponsors,
+            "active_registered": active_registered,
+            "your_registration_fee": None,
+        },
+    )
 
     # i18n TRANSLATE-ON-READ (owner 2026-06-15): the public, logged-out mirror of get_event_details -
     # localize the same copy fields (event_name + event_rules + event_description) to the caller's
