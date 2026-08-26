@@ -7035,16 +7035,36 @@ def _clean_required_connections(raw):
     """
     from afc_auth.connections import enabled_providers
 
-    if raw is None or raw == "":
+    if raw is None:
         return []
-    # The create wizards post multipart FormData, where a list can only travel as a JSON STRING.
-    # _as_list is the repo's existing coercion for exactly that (it is what sponsor_usernames and
-    # the other list fields on this endpoint use), so a JSON string and a real list behave the same
-    # and there is no second parser to keep in step.
+    # The create and edit forms post multipart FormData, where a list can only travel as a JSON
+    # STRING, so "[]" and "[\"google\"]" both arrive here as text.
+    #
+    # AN EMPTY LIST IS A VALID ANSWER AND MEANS "clear the requirement" (production bug, fixed
+    # 2026-08-26). The first version of this guard read:
+    #
+    #     raw = _as_list(raw)
+    #     if not raw:
+    #         raise ValueError("required_connections must be a list")
+    #
+    # _as_list parsed "[]" perfectly well, and then `not raw` was TRUE because an empty list is
+    # falsy, so clearing the picker was refused with "required_connections must be a list". An
+    # admin could switch the requirement on and then never switch it off. The distinction that
+    # matters is "parsed to a list" versus "could not be parsed as a list at all", NOT whether the
+    # list has anything in it, so the two are now told apart explicitly.
     if not isinstance(raw, list):
-        raw = _as_list(raw)
-        if not raw:
+        text = str(raw).strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
             raise ValueError("required_connections must be a list")
+        if not isinstance(parsed, list):
+            # Deliberately strict: a bare string, an object or a number is a caller mistake, not an
+            # empty selection, and silently treating it as "clear" would lose a real requirement.
+            raise ValueError("required_connections must be a list")
+        raw = parsed
 
     allowed = {p.slug for p in enabled_providers()} - {"discord"}
     cleaned = []
