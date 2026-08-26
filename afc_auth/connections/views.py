@@ -99,11 +99,21 @@ def list_providers(request):
 
 @api_view(["GET"])
 def start_connection(request, provider_slug):
-    """Begin a redirect-style link: mint a nonce, send the browser to the provider.
+    """Begin a redirect-style link: mint a nonce and hand back the provider's consent URL.
+
+    WHY THIS RETURNS JSON RATHER THAN A 302, which is the obvious shape:
+    the endpoint authenticates on an `Authorization: Bearer` header, and a browser navigation
+    (window.location = ...) cannot send one. A 302 here would therefore be unauthenticated in the
+    only situation that matters. The alternative, putting the session token in the URL so a plain
+    navigation carries it, is exactly the defect this whole change exists to remove. So the page
+    fetches this with its header, receives the URL, and navigates to it itself.
 
     AUTH     Bearer SessionToken
     REQUEST  ?return_to=<AFC path>, validated against AFC's own origin, never trusted raw
-    RESPONSE 302 to the provider, or 404 when the provider is unknown or not configured
+    RESPONSE 200 {"authorize_url": "https://provider/..."}
+             404 when the provider is unknown or not configured
+             400 for an id_token provider, which links without a redirect
+    CONSUMED BY frontend lib/connections.ts startConnection().
     """
     user, refusal = _require_player(request)
     if refusal:
@@ -125,10 +135,13 @@ def start_connection(request, provider_slug):
         return_to=safe_return_to(request.GET.get("return_to")),
         code_verifier=verifier,
     )
-    return redirect(oauth.authorize_url(
-        provider, nonce=nonce, code_verifier=verifier,
-        redirect_uri=_callback_uri(request, provider.slug),
-    ))
+    return Response(
+        {"authorize_url": oauth.authorize_url(
+            provider, nonce=nonce, code_verifier=verifier,
+            redirect_uri=_callback_uri(request, provider.slug),
+        )},
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(["GET"])

@@ -142,13 +142,21 @@ class StartConnectionTests(TestCase):
     def setUp(self):
         self.user, self.token = _player("startplayer")
 
-    def test_start_redirects_to_the_provider_without_the_session_token(self):
+    def test_start_hands_back_the_provider_url_without_the_session_token(self):
+        """JSON rather than a 302 on purpose: this authenticates on a Bearer header, and a browser
+        navigation cannot send one. Returning the URL lets the page navigate itself with the token
+        never leaving a header."""
         resp = Client().get(
             "/auth/connections/discord/start/", HTTP_AUTHORIZATION=f"Bearer {self.token}",
         )
-        self.assertEqual(resp.status_code, 302)
-        self.assertIn("discord.com", resp["Location"])
-        self.assertNotIn(self.token, resp["Location"])
+        self.assertEqual(resp.status_code, 200)
+        authorize_url = resp.json()["authorize_url"]
+        self.assertIn("discord.com", authorize_url)
+        self.assertNotIn(self.token, authorize_url)
+        self.assertIn("code_challenge_method=S256", authorize_url)
+
+    def test_start_requires_authentication(self):
+        self.assertEqual(Client().get("/auth/connections/discord/start/").status_code, 400)
 
     def test_start_on_a_disabled_provider_is_a_404(self):
         resp = Client().get(
