@@ -60,7 +60,17 @@ VIEWER_RELATIONSHIP_KEYS = {
 # timestamp. Pinning their VALUES would make the golden churn on every run and teach whoever hits
 # it to regenerate the file, which is exactly the habit that makes a golden worthless. Their
 # presence and non-nullness are still asserted; only the value is masked.
-VOLATILE_FIELDS = {"event_id", "created_at"}
+VOLATILE_FIELDS = {
+    "event_id",
+    "created_at",
+    # The admin endpoint's day counts are measured against timezone.localdate(), so they change
+    # every day the suite runs. Masking them keeps the golden stable without weakening what it
+    # actually guards, which is the event's own fields.
+    "days_until_start",
+    "days_until_registration_close",
+    "days_left_for_registration",
+    "average_registrations_per_day",
+}
 _MASK = "<volatile>"
 
 
@@ -259,3 +269,51 @@ class PlayerReaderGoldenTests(GoldenMixin, TestCase):
         player_declared = {f.name for f in ec.EVENT_FIELDS if f.read in (ec.PUBLIC, ec.PLAYER)}
         surplus = sorted(player_declared - set(golden))
         self.assertEqual(surplus, [], f"contract would add keys the reader does not return: {surplus}")
+
+
+@override_settings(GOOGLE_OAUTH_CLIENT_ID="gid", VENT_CLIENT_ID="", VENT_CLIENT_SECRET="")
+class AdminReaderGoldenTests(GoldenMixin, TestCase):
+    """get_event_details_for_admin is NOT a third copy of the field list.
+
+    It is a registration METRICS endpoint (percent full, days to start, average per day, a daily
+    timeseries) that re-lists a subset of the event's fields on its way past, in two sub-blocks:
+    `overview` and `registration_timeline`. Only those event fields move to the contract; every
+    metric stays exactly where it is.
+
+    The timeline block is also where the one RENAMED key lives: it emits the
+    registration_open_date COLUMN under the key "registration_start_date". Two other endpoints call
+    the same column registration_open_date. That single line is why a DRF ModelSerializer was not
+    an option, and it is reproduced here with Field(source=...).
+    """
+
+    def setUp(self):
+        self.staff, self.token = _user("goldenadminstaff", role="admin")
+        self.event = _fully_populated_event(self.staff, slug="contract-golden-cup-admin",
+                                            event_name="Contract Golden Cup Admin")
+
+    def _fetch(self):
+        resp = Client().post(
+            "/events/get-event-details-for-admin/",
+            data=json.dumps({"slug": self.event.slug}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return resp.json()
+
+    def test_admin_overview_block_is_unchanged(self):
+        self.assert_matches_golden("admin_overview", self._fetch()["overview"])
+
+    def test_admin_registration_timeline_block_is_unchanged(self):
+        self.assert_matches_golden("admin_registration_timeline",
+                                   self._fetch()["registration_timeline"])
+
+    def test_the_renamed_key_still_carries_the_registration_open_date_column(self):
+        # Pinned on its own, because this is the single most breakable thing in the conversion:
+        # renaming it back to registration_open_date would look like a tidy-up and would break
+        # whatever admin surface reads it.
+        timeline = self._fetch()["registration_timeline"]
+        self.assertIn("registration_start_date", timeline)
+        self.assertEqual(timeline["registration_start_date"],
+                         str(self.event.registration_open_date))
+        self.assertNotIn("registration_open_date", timeline)

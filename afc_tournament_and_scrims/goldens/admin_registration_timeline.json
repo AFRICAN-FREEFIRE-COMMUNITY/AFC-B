@@ -1,0 +1,12 @@
+{
+  "registration_start_date": "2027-02-01",
+  "registration_end_date": "2027-02-20",
+  "registration_start_time": null,
+  "registration_end_time": null,
+  "registration_window_days": 20,
+  "days_left_for_registration": "<volatile>",
+  "registration_timeseries": [],
+  "peak_registration": 0,
+  "recent_registrations": [],
+  "all_registrations": []
+}

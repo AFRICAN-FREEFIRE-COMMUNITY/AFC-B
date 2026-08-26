@@ -1,0 +1,42 @@
+{
+  "event_id": "<volatile>",
+  "event_name": "Contract Golden Cup Admin",
+  "roster_edit_until": null,
+  "roster_edit_open": false,
+  "total_registered": 0,
+  "max_competitors": 48,
+  "registration_percentage": 0.0,
+  "days_until_start": "<volatile>",
+  "event_duration_days": 3,
+  "registration_close_date": "2027-02-20",
+  "days_until_registration_close": "<volatile>",
+  "average_registrations_per_day": "<volatile>",
+  "prizepool": "1000 USD",
+  "prize_distribution": {
+    "1": 500,
+    "2": 300,
+    "3": 200
+  },
+  "is_public": true,
+  "is_sponsored": false,
+  "sponsor_name": null,
+  "sponsor_field_label": null,
+  "sponsor_requirement_description": null,
+  "sponsors": [],
+  "is_waitlist_enabled": true,
+  "require_team_logo": false,
+  "require_esport_images": false,
+  "require_player_uid": true,
+  "require_player_profile_image": false,
+  "require_whatsapp": true,
+  "required_connections": [
+    "google"
+  ],
+  "allow_team_result_submissions": false,
+  "waitlist_capacity": 8,
+  "waitlist_discord_role_id": null,
+  "waitlist_mode": "first_registered",
+  "event_start_time": "18:00:00",
+  "event_end_time": "21:00:00",
+  "timezone": "Africa/Lagos"
+}

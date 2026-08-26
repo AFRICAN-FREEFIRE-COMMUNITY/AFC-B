@@ -53,6 +53,8 @@ from afc_organizers.permissions import org_can, org_can_event, is_platform_org_a
 # readers and writers below serialize and apply through it instead of listing 87 fields by hand.
 from .event_contract import (
     ADMIN,
+    ADMIN_OVERVIEW_FIELDS,
+    ADMIN_TIMELINE_FIELDS,
     PLAYER,
     PUBLIC,
     WriteRefused,
@@ -10925,14 +10927,25 @@ def get_event_details_for_admin(request):
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
 
     return Response({
+        # ── EVENT FIELDS COME FROM THE CONTRACT (owner 2026-08-26) ─────────────────────────────
+        # This endpoint is a registration METRICS view, not a third copy of the event field list.
+        # The 25 event fields it re-lists now come from event_contract.py; every metric below is
+        # computed here and stays here.
+        #
+        # ADMIN_OVERVIEW_FIELDS names its members explicitly, so a field added to the contract for
+        # the player page does NOT silently appear in this payload.
+        #
+        # "prizepool" is deliberately NOT taken from the contract: this block emits it as a NUMBER
+        # (prizepool_val, a float coercion), while the readers emit the raw string. Same key, two
+        # types, and the admin page expects the number.
         "overview": {
-            "event_id": event.event_id,
-            "event_name": event.event_name,
-            # Roster-edit window (owner 2026-06-15): drives the admin event-manage toggle in
-            # ActionsTab (current state + "open until"). roster_edit_open auto-derives from
-            # roster_edit_until vs now. Set via POST /events/roster-edit-window/.
-            "roster_edit_until": event.roster_edit_until,
-            "roster_edit_open": event.roster_edit_open,
+            **serialize_event(
+                event,
+                role=ADMIN,
+                request=request,
+                fields=ADMIN_OVERVIEW_FIELDS,
+                extra={"sponsors": sponsors},
+            ),
             "total_registered": total_registered,
             "max_competitors": max_competitors,
             "registration_percentage": registration_percentage,
@@ -10942,52 +10955,13 @@ def get_event_details_for_admin(request):
             "days_until_registration_close": days_until_registration_close,
             "average_registrations_per_day": avg_reg_per_day,
             "prizepool": prizepool_val,
-            "prize_distribution": event.prize_distribution,
-            "is_public": event.is_public,
-            "is_sponsored": event.is_sponsored,
-            "sponsor_name": event.sponsor_name,
-            "sponsor_field_label": event.sponsor_field_label,
-            "sponsor_requirement_description": event.sponsor_requirement_description,
-            "sponsors": [
-            {
-                "sponsor_id": se.sponsor.user_id,
-                "sponsor_name": se.sponsor.full_name,
-                "sponsor_username": se.sponsor.username
-            }
-            for se in sponsors
-            ],
-            # M: fixed key names (were emitted with stray spaces, unreadable by clients).
-            "is_waitlist_enabled": event.is_waitlist_enabled,
-        # Media registration criteria (owner 2026-06-12): shown on the event pages + wizard toggles.
-        "require_team_logo": event.require_team_logo,
-        "require_esport_images": event.require_esport_images,
-        "require_player_uid": event.require_player_uid,
-        "require_player_profile_image": event.require_player_profile_image,
-        # WhatsApp number requirement (owner 2026-08-03): admin-detail twin, read by the admin +
-        # organizer event EDIT pages to rehydrate the Basic Info requirement toggle.
-        "require_whatsapp": event.require_whatsapp,
-        "required_connections": list(event.required_connections or []),
-        # Teams filing their own map results (item 6). Emitted so the edit form can
-        # rehydrate the switch: without it the form reads undefined, falls back to false,
-        # and shows the feature as OFF on an event where it is on.
-        "allow_team_result_submissions": event.allow_team_result_submissions,
-            "waitlist_capacity": event.waitlist_capacity,
-            "waitlist_discord_role_id": event.waitlist_discord_role_id,
-            # Waitlist slot-assignment mode (owner 2026-06-17): rehydrates the edit form's mode picker.
-            "waitlist_mode": event.waitlist_mode,
-            # K: event start/end times so the admin analytics view can show them.
-            "event_start_time": event.event_start_time,
-            "event_end_time": event.event_end_time,
-            # Creator/editor tz the times were entered in (owner 2026-06-21); rehydrates
-            # the admin edit form so a resave keeps the same tz.
-            "timezone": event.timezone,
-            },
+        },
+        # The four event fields here come from the contract, INCLUDING the renamed one: this block
+        # emits the registration_open_date COLUMN under the key "registration_start_date", which is
+        # what the admin page reads. Field(source=...) reproduces that exactly. The metrics below
+        # are computed above and stay here.
         "registration_timeline": {
-            "registration_start_date": event.registration_open_date,
-            "registration_end_date": event.registration_end_date,
-            # K: registration window times alongside the dates.
-            "registration_start_time": event.registration_start_time,
-            "registration_end_time": event.registration_end_time,
+            **serialize_event(event, role=ADMIN, request=request, fields=ADMIN_TIMELINE_FIELDS),
             "registration_window_days": registration_window_days,
             "days_left_for_registration": days_until_registration_close,
             "registration_timeseries": timeseries,
