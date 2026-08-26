@@ -5346,6 +5346,11 @@ def get_event_details(request):
         # register", and the register flow's roster panel can badge who still has no number.
         "require_whatsapp": event.require_whatsapp,
         "required_connections": list(event.required_connections or []),
+        # The REQUESTING viewer's own active waiver, if any (owner 2026-08-26). Not every
+        # waiver on the event: a team has no business reading which other teams were excused.
+        # The requirements panel uses it to say "waived by AFC" instead of showing a red
+        # blocker the team cannot clear but which will not actually stop them registering.
+        "my_waiver": _my_waiver_summary(event, user),
         # Teams filing their own map results (item 6). Emitted so the edit form can
         # rehydrate the switch: without it the form reads undefined, falls back to false,
         # and shows the feature as OFF on an event where it is on.
@@ -6931,6 +6936,43 @@ def determine_team_country(roster_users, team_owner):
 # promotions) so the rule lives in ONE place. Returns {user_id: [field_key,...]} for players who
 # are MISSING something; field_key is a stable token the FE maps to localized copy:
 #   "esports_image" | "profile_image" | "uid" | "whatsapp". Empty dict = everyone passes (or no toggle on).
+def _my_waiver_summary(event, user):
+    """The REQUESTING viewer's own active waiver on this event, or None.
+
+    Deliberately NOT every waiver on the event: a team has no business reading which other teams
+    were excused. Resolved through the viewer's team when they have one, falling back to a solo
+    waiver in their own name.
+
+    CONSUMED BY the event page's requirements panel, which renders a waived requirement as
+    "waived by AFC" instead of a red blocker the team cannot clear. A team that is admitted
+    anyway while the panel still shows a red gate learns that the panel lies.
+    """
+    if not user:
+        return None
+    from afc_team.models import TeamMembers
+
+    from .waivers import serialize as _serialize_waiver
+    from .models import EventRequirementWaiver
+
+    team_ids = list(
+        TeamMembers.objects.filter(member=user).values_list("team_id", flat=True)
+    )
+    row = (
+        EventRequirementWaiver.objects.filter(event=event, active=True, team_id__in=team_ids)
+        .select_related("created_by")
+        .first()
+        if team_ids
+        else None
+    )
+    if row is None:
+        row = (
+            EventRequirementWaiver.objects.filter(event=event, active=True, user=user)
+            .select_related("created_by")
+            .first()
+        )
+    return _serialize_waiver(row) if row else None
+
+
 def _clean_required_connections(raw):
     """Validate a required-connections list against the provider registry.
 
