@@ -5351,6 +5351,9 @@ def get_event_details(request):
         # The requirements panel uses it to say "waived by AFC" instead of showing a red
         # blocker the team cannot clear but which will not actually stop them registering.
         "my_waiver": _my_waiver_summary(event, user),
+        # The viewer's own PENDING invitation to this event, if they hold one. A SOLO player has no
+        # team page to answer on, so the event page is where Accept / Decline live.
+        "my_invitation": _my_event_invitation(event, user),
         # Teams filing their own map results (item 6). Emitted so the edit form can
         # rehydrate the switch: without it the form reads undefined, falls back to false,
         # and shows the feature as OFF on an event where it is on.
@@ -6936,6 +6939,47 @@ def determine_team_country(roster_users, team_owner):
 # promotions) so the rule lives in ONE place. Returns {user_id: [field_key,...]} for players who
 # are MISSING something; field_key is a stable token the FE maps to localized copy:
 #   "esports_image" | "profile_image" | "uid" | "whatsapp". Empty dict = everyone passes (or no toggle on).
+def _my_event_invitation(event, user):
+    """The REQUESTING viewer's own PENDING invitation to this event, or None (owner 2026-08-26).
+
+    Solo events invite a PLAYER, and a player has no team page to answer on, so the event page is
+    where they answer. Exposing the invitation here means the deep link in their notification lands
+    somewhere that can actually accept it, with no new page to find.
+
+    Scoped to the viewer: a team invitation is resolved through the teams they belong to, a solo
+    invitation by their own id. Never every invitation on the event.
+
+    CONSUMED BY the event page (EventDetailsWrapper), which renders Accept / Decline against
+    events/team-invitations/<id>/accept/ and /decline/.
+    """
+    if not user:
+        return None
+    from afc_team.models import TeamMembers
+
+    from .event_invites import _serialize as _serialize_invitation
+    from .models import EventTeamInvitation
+
+    row = (
+        EventTeamInvitation.objects
+        .filter(event=event, status="pending", user=user)
+        .select_related("event", "team", "user", "invited_by", "campaign")
+        .first()
+    )
+    if row is None:
+        team_ids = list(
+            TeamMembers.objects.filter(member=user).values_list("team_id", flat=True)
+        )
+        row = (
+            EventTeamInvitation.objects
+            .filter(event=event, status="pending", team_id__in=team_ids)
+            .select_related("event", "team", "user", "invited_by", "campaign")
+            .first()
+            if team_ids
+            else None
+        )
+    return _serialize_invitation(row) if row else None
+
+
 def _my_waiver_summary(event, user):
     """The REQUESTING viewer's own active waiver on this event, or None.
 
