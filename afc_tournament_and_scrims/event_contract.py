@@ -286,6 +286,32 @@ EVENT_FIELDS = [
         }
         for c in e.co_organizers.filter(status="accepted").select_related("organization")
     ]),
+    # ── SIGNED-IN ONLY ────────────────────────────────────────────────────────────────────────
+    # Everything below appeared in get_event_details and NOT in the logged-out reader. Verified
+    # against both captured goldens on 2026-08-26: the public payload is an EXACT subset of the
+    # signed-in one, so PLAYER only ever ADDS. Nothing is withheld from a signed-in viewer that a
+    # logged-out visitor can see.
+    #
+    # NOT here, deliberately: is_registered, my_waiver, my_invitation, your_team_roster_edit_open,
+    # your_team_roster_edit_until, your_team_stage_over and waitlist_competitors. Those describe
+    # the VIEWER's relationship to the event rather than the event itself, so they are computed by
+    # the endpoint and merged in there. A field is only in this table if it belongs to the event.
+    Field("slug", read=PLAYER),
+    Field("timezone", read=PLAYER),
+    Field("organization_id", read=PLAYER),
+    # Geo restriction: WHO may register. Withheld from an anonymous visitor because it describes
+    # the event's gating rather than the event, and the public page has nobody to apply it to.
+    Field("registration_restriction", read=PLAYER),
+    Field("restriction_mode", read=PLAYER),
+    Field("restricted_countries", read=PLAYER),
+    # Auto-seeding: whether the entry stage seeds itself when the event starts, and on what.
+    Field("auto_seed_on_start", read=PLAYER),
+    Field("auto_seed_trigger", read=PLAYER),
+    # Whether an admin overrode the computed tournament tier (see the tier rules engine).
+    Field("tier_overridden", read=PLAYER),
+    # Letter-avatars registration gate (feature #7, owner 2026-06-29): 0 means off.
+    Field("min_letter_avatars", read=PLAYER),
+    Field("waitlist_discord_role_id", read=PLAYER),
 ]
 
 

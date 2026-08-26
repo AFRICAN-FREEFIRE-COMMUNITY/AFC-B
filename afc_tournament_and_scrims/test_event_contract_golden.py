@@ -42,6 +42,20 @@ GOLDEN_DIR = Path(__file__).resolve().parent / "goldens"
 # Keys that live in the same dict but describe OTHER objects. Not part of the event contract.
 NOT_EVENT_FIELDS = {"registered_competitors", "tournament_teams", "stages"}
 
+# Keys the SIGNED-IN reader returns that describe the VIEWER's relationship to the event rather
+# than the event: am I registered, what was I invited to, was a requirement waived for me, can MY
+# team still edit its roster. They belong to the endpoint, not to the event contract, and are
+# listed explicitly so that adding one is a deliberate act rather than a silent exemption.
+VIEWER_RELATIONSHIP_KEYS = {
+    "is_registered",
+    "my_invitation",
+    "my_waiver",
+    "waitlist_competitors",
+    "your_team_roster_edit_open",
+    "your_team_roster_edit_until",
+    "your_team_stage_over",
+}
+
 # Keys whose value cannot be the same twice: the autoincrement primary key, and an auto_now_add
 # timestamp. Pinning their VALUES would make the golden churn on every run and teach whoever hits
 # it to regenerate the file, which is exactly the habit that makes a golden worthless. Their
@@ -221,3 +235,27 @@ class PlayerReaderGoldenTests(GoldenMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assert_matches_golden("player_event_data", self.event_portion(resp.json()))
+
+    def test_contract_covers_the_signed_in_payload(self):
+        """Every EVENT field in the signed-in payload is declared, with the viewer keys named.
+
+        The signed-in reader returns seven keys that are not event fields at all: they describe the
+        VIEWER's relationship to this event. Those stay in the endpoint, so the assertion here is
+        "the contract covers everything except these", with the exceptions listed rather than
+        computed, so adding a new one is a deliberate act.
+        """
+        from afc_tournament_and_scrims import event_contract as ec
+
+        golden = json.loads((GOLDEN_DIR / "player_event_data.json").read_text(encoding="utf-8"))
+        declared = {f.name for f in ec.EVENT_FIELDS}
+        uncovered = sorted(set(golden) - declared - VIEWER_RELATIONSHIP_KEYS)
+        self.assertEqual(
+            uncovered, [],
+            "signed-in payload keys that are neither declared nor named as viewer keys: "
+            f"{uncovered}",
+        )
+        # And nothing declared at PLAYER is missing from the payload, which would mean the contract
+        # is about to ADD a key the endpoint never returned.
+        player_declared = {f.name for f in ec.EVENT_FIELDS if f.read in (ec.PUBLIC, ec.PLAYER)}
+        surplus = sorted(player_declared - set(golden))
+        self.assertEqual(surplus, [], f"contract would add keys the reader does not return: {surplus}")
