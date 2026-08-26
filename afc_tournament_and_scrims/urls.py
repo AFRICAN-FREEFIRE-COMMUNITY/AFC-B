@@ -1,4 +1,9 @@
 from django.urls import path, include
+from afc_tournament_and_scrims.waiver_views import (
+    create_event_waiver,
+    list_event_waivers,
+    revoke_event_waiver,
+)
 from .views import *
 from .views_checkin import (set_event_checkin, player_checkin, get_event_checkin_status, checkin_relegate_now)
 from .views_room_release import release_room_details_to_waitlist
@@ -161,6 +166,13 @@ from django.conf.urls.static import static
 
 
 urlpatterns = [
+    # -- REQUIREMENT WAIVERS (owner 2026-08-26) --------------------------------------------------
+    # An admin excuses ONE competitor from named requirements, with a reason and their name on it.
+    # Same permission gate as add-teams-to-event and the invitation endpoints, because inviting a
+    # team, force-adding one and excusing one are the same authority. Consumed by lib/waivers.ts.
+    path("waivers/", create_event_waiver, name="create_event_waiver"),
+    path("waivers/<int:waiver_id>/", revoke_event_waiver, name="revoke_event_waiver"),
+    path("<int:event_id>/waivers/", list_event_waivers, name="list_event_waivers"),
     # path("admin/", admin.site.urls),
     # path('admin-login/', admin_login, name='admin_login'),
     # Render an event STAGE's standings onto a leaderboard design -> PNG (owner 2026-06-14).
