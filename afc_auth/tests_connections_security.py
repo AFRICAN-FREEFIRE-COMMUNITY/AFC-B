@@ -155,3 +155,56 @@ class LastCredentialTests(TestCase):
         user.refresh_from_db()
         self.assertIsNone(user.discord_id)
         self.assertFalse(user.discord_connected)
+
+
+@override_settings(
+    DISCORD_CLIENT_ID="cid", DISCORD_CLIENT_SECRET="csecret",
+    DISCORD_REDIRECT_URI="https://api.afc.test/auth/connect-discord/callback/",
+    FRONTEND_URL="https://africanfreefirecommunity.com",
+)
+class LegacyDiscordConnectTests(TestCase):
+    """The old endpoint took ?session_token= and put it in the OAuth state sent to discord.com. It
+    now takes a Bearer header like every other AFC endpoint, and sends an opaque nonce."""
+
+    def setUp(self):
+        from afc_auth.models import SessionToken
+
+        self.user = User.objects.create(
+            username="legacyd", email="legacyd@x.com", full_name="Legacy",
+            role="player", password="x", country="Nigeria",
+        )
+        self.token = SessionToken.objects.create(user=self.user, token="tok_legacyd").token
+
+    def test_a_session_token_in_the_query_string_is_no_longer_accepted(self):
+        from django.test import Client
+
+        resp = Client().get(f"/auth/connect-discord-account/?session_token={self.token}")
+        self.assertIn(resp.status_code, (400, 401))
+
+    def test_the_state_sent_to_discord_does_not_contain_the_session_token(self):
+        from django.test import Client
+
+        resp = Client().get(
+            "/auth/connect-discord-account/", HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("discord.com", resp["Location"])
+        self.assertNotIn(self.token, resp["Location"])
+
+    def test_an_external_return_to_is_not_honoured(self):
+        from django.test import Client
+
+        resp = Client().get(
+            "/auth/connect-discord-account/?return_to=https://evil.example/steal",
+            HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertNotIn("evil.example", resp["Location"])
+
+    def test_the_callback_refuses_a_state_it_did_not_mint(self):
+        from django.test import Client
+
+        resp = Client().get("/auth/connect-discord/callback/?code=abc&state=made-up")
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("discord=failed", resp["Location"])
+        self.assertNotIn("evil", resp["Location"])

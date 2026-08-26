@@ -1606,9 +1606,26 @@ def google_auth(request):
 
     full_name = (claims.get("name") or "").strip()[:40]
 
-    # ── find-or-create the AFC user by email (email is the unique link key) ─────
+    # ── find the AFC user: STABLE ID FIRST, then email (owner 2026-08-26) ───────
+    # `sub` is Google's stable subject id and never changes. Email does. Matching on email alone
+    # meant a player who changed their Gmail address became a different person to AFC, and a new
+    # account under the new address would silently absorb their Google sign-in. The email match
+    # stays as the fallback so every account created before this change keeps working on its next
+    # sign-in, which is also when it gains a ConnectedAccount row (see the link write below).
+    from afc_auth.models import ConnectedAccount
+
+    google_sub = str(claims.get("sub") or "").strip()
     is_new = False
-    user = User.objects.filter(email__iexact=email).first()
+    user = None
+    if google_sub:
+        link = (
+            ConnectedAccount.objects.filter(provider="google", provider_user_id=google_sub)
+            .select_related("user")
+            .first()
+        )
+        user = link.user if link else None
+    if user is None:
+        user = User.objects.filter(email__iexact=email).first()
     if user is None:
         is_new = True
         user = User(
@@ -1628,6 +1645,20 @@ def google_auth(request):
     if not user.is_active:
         return Response({"message": "Your account is not active. Please contact support."},
                         status=status.HTTP_403_FORBIDDEN)
+
+    # Record or refresh the Google link so the player can see and manage it at
+    # /profile/connected-apps, and so a per-event "must have Google connected" rule can be
+    # satisfied by simply signing in. Best-effort: a link write must NEVER fail a sign-in.
+    if google_sub:
+        try:
+            from afc_auth.connections.links import link_account
+            from afc_auth.connections.registry import get_provider
+
+            provider = get_provider("google")
+            if provider:
+                link_account(user, "google", provider.normalize(claims))
+        except Exception:
+            _glog.warning("Google link write failed for user %s", user.user_id, exc_info=True)
 
     # ── two-factor gate + session, through the SHARED path (owner 2026-08-06) ───
     # This used to be its own copy of the SessionToken + geo + LoginHistory + language block.
@@ -5350,48 +5381,54 @@ from urllib.parse import quote
 
 @api_view(["GET"])
 def connect_discord_account(request):
-    # Auth (prefer header, not query param)
-    # auth = request.headers.get("Authorization")
-    # if not auth or not auth.startswith("Bearer "):
-    #     return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    """Begin linking a Discord account to the signed-in AFC account.
 
-    session_token = request.GET.get("session_token")
-    if not session_token:
-        return Response({"message": "session_token is required"}, status=400)
+    CHANGED 2026-08-26. This endpoint used to take the player's SESSION TOKEN in the query string
+    and put that same token into the OAuth `state` parameter sent to discord.com. That handed a live
+    credential to a third party and left it in browser history and in any Referer header. It also
+    redirected to an unvalidated `return_to`, which is an open redirect on an AFC domain.
 
-    user = validate_token(session_token)
+    It now takes an ordinary Bearer header like every other AFC endpoint, sends an opaque
+    single-use nonce (afc_auth/connections/state.py), and validates `return_to` against AFC's own
+    origin. The original code's own comment asked for exactly this ("better as short-lived nonce").
+
+    The URL is unchanged, so an older frontend build keeps working apart from the query-string
+    token, which is the thing being removed on purpose.
+
+    AUTH     Bearer SessionToken
+    REQUEST  ?return_to=<AFC path>, validated
+    RESPONSE 302 to discord.com
+    CONSUMED BY the Connect button on frontend /profile/connected-apps.
+    """
+    from afc_auth.connections import oauth as conn_oauth
+    from afc_auth.connections import state as conn_state
+    from afc_auth.connections.redirects import safe_return_to
+    from afc_auth.connections.registry import get_provider
+
+    header = request.headers.get("Authorization")
+    if not header or not header.startswith("Bearer "):
+        return Response({"message": "Authorization header is required"}, status=400)
+
+    user = validate_token(header.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token."},
+                        status=status.HTTP_401_UNAUTHORIZED)
 
-    client_id = settings.DISCORD_CLIENT_ID
-    redirect_uri = settings.DISCORD_REDIRECT_URI  # your backend callback URL
+    provider = get_provider("discord")
+    if not provider or not provider.enabled():
+        return Response({"message": "Discord is not configured."}, status=404)
 
-    # Identify user + (optional) join guild automatically if you want
-    # - identify: get user discord profile
-    # - guilds.join: lets your bot add the user to your server after OAuth
-    scope = "identify guilds.join"
-
-    # Where to send user after successful connect (frontend page)
-    # example: /profile or /settings
-    return_to = request.GET.get("return_to") or f"{settings.FRONTEND_URL}/profile"
-    return_to_enc = quote(return_to)
-
-    # state carries user identity + return path
-    # Use your session token (or a short-lived oauth nonce) - session token is okay but better as short-lived nonce.
-    token = session_token
-    state = f"{token}|{return_to_enc}"
-
-    discord_oauth_url = (
-        "https://discord.com/api/oauth2/authorize"
-        f"?client_id={client_id}"
-        f"&redirect_uri={quote(redirect_uri, safe='')}"
-        "&response_type=code"
-        f"&scope={quote(scope)}"
-        f"&state={state}"
-        "&prompt=consent"
+    verifier = conn_oauth.make_code_verifier()
+    nonce = conn_state.mint(
+        user_id=user.user_id,
+        provider="discord",
+        return_to=safe_return_to(request.GET.get("return_to")),
+        code_verifier=verifier,
     )
-
-    return redirect(discord_oauth_url)
+    return redirect(conn_oauth.authorize_url(
+        provider, nonce=nonce, code_verifier=verifier,
+        redirect_uri=settings.DISCORD_REDIRECT_URI,
+    ))
 
 
 @api_view(["POST"])
@@ -5978,38 +6015,37 @@ def discord_member_has_role(discord_id, role_id):
 
 @api_view(["GET"])
 def discord_callback(request):
+    """Discord sends the player back here after the consent screen.
+
+    CHANGED 2026-08-26. `state` is now an opaque single-use nonce resolved server side, not
+    "<session token>|<return_to>". See connect_discord_account for why. The return URL comes out of
+    the nonce payload, where it was already validated against AFC's own origin at mint time, so
+    this function can no longer be used to redirect anywhere on the internet.
+    """
+    from afc_auth.connections import state as conn_state
+    from afc_auth.connections.links import link_account
+    from afc_auth.connections.redirects import safe_return_to
+    from afc_auth.connections.registry import get_provider
+
     code = request.GET.get("code")
-    state = request.GET.get("state")
-    error = request.GET.get("error")   
+    error = request.GET.get("error")
 
-    # If the user clicked "Cancel", Discord sends ?error=access_denied
-    if error:
-        # state may still be valid, so try parsing return URL
-        try:
-            session_token, encoded_return_url = state.split("|")
-            from urllib.parse import unquote
-            return_url = unquote(encoded_return_url)
-        except:
-            return redirect(f"{settings.FRONTEND_URL}?discord=failed")
+    payload = conn_state.consume(request.GET.get("state"))
+    if not payload or payload.get("provider") != "discord":
+        # Expired, replayed, or minted for a different provider. Nothing here is trustworthy.
+        return redirect(f"{settings.FRONTEND_URL}/profile/connected-apps?discord=failed")
 
-        return redirect(f"{return_url}?discord=failed")
-
-    # If state/code missing → fail safe
-    if not code or not state:
-        return redirect(f"{settings.FRONTEND_URL}?discord=failed")
-
-    # Extract session_token and encoded return URL
-    try:
-        session_token, encoded_return_url = state.split("|")
-        from urllib.parse import unquote
-        return_url = unquote(encoded_return_url)
-    except:
-        return redirect(f"{settings.FRONTEND_URL}?discord=failed")
-
+    return_url = safe_return_to(payload.get("return_to"))
     fail_redirect = f"{return_url}?discord=failed"
 
-    # Validate user session
-    user = validate_token(session_token)
+    # If the player clicked "Cancel", Discord sends ?error=access_denied
+    if error:
+        return redirect(fail_redirect)
+
+    if not code:
+        return redirect(fail_redirect)
+
+    user = User.objects.filter(user_id=payload["user_id"]).first()
     if not user:
         return redirect(fail_redirect)
 
@@ -6072,11 +6108,15 @@ def discord_callback(request):
         return redirect(fail_redirect)
 
     # ---- Save user ----
+    # Written through links.link_account so the ConnectedAccount row and the four legacy
+    # User.discord_* columns are created together. Everything that already reads user.discord_id
+    # (check_discord_membership*, DiscordRoleAssignment, roster_discord.py, the AFC bot) keeps
+    # working untouched, and the new profile page sees the link too.
     try:
-        user.discord_id = discord_id
-        user.discord_username = me.get("username", "")
-        user.discord_connected = True
-        user.save()
+        link_account(
+            user, "discord", get_provider("discord").normalize(me),
+            scopes=("identify", "guilds.join"),
+        )
     except:
         return redirect(fail_redirect)
 
