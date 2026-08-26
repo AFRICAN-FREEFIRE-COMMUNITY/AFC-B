@@ -18,6 +18,7 @@ promotion gate. The link is read off afc_auth.ConnectedAccount.
 
 Run: AFC_TEST_DB_NAME=test_afc_conn python manage.py test afc_tournament_and_scrims.test_required_connections
 """
+import json
 from datetime import date, timedelta
 
 from django.test import Client, TestCase, override_settings
@@ -168,6 +169,107 @@ class TeamRequiredConnectionTests(TestCase):
         self.assertNotEqual(
             resp.json().get("code"), "registration_requirements_unmet", resp.content
         )
+
+
+class CreateEventWithNoConnectionsTests(TestCase):
+    """CREATING an event while requiring NO connections.
+
+    REGRESSION, found in production 2026-08-26 on the organizer create wizard: Step 7 refused with
+    "required_connections must be a list" and the event could not be created at all. Both create
+    wizards ALWAYS append the field, so an untouched picker posts the string "[]", and the old
+    falsy guard rejected it. That made this far worse than the edit-side symptom: not "the
+    requirement cannot be cleared" but "an event cannot be created" unless a provider was ticked,
+    which is itself a plausible reason a provider ended up set on an event nobody meant to set one
+    on.
+
+    The validator is SHARED by create_event and edit_event, so one fix covered both paths; these
+    tests exist so the create half can never regress on its own. Posted as multipart form data (no
+    content_type=json) because that is exactly what the wizards send, which is the whole reason the
+    value arrives as a string.
+    """
+
+    def setUp(self):
+        self.admin, self.admin_token = _user("rccreateadmin", role="admin")
+
+    def _payload(self, **overrides):
+        today = date.today().isoformat()
+        payload = {
+            "competition_type": "tournament",
+            "participant_type": "squad",
+            "event_type": "internal",
+            "max_teams_or_players": 16,
+            "event_name": "RC Create Cup",
+            "event_mode": "virtual",
+            "start_date": today,
+            "end_date": today,
+            "registration_open_date": today,
+            "registration_end_date": today,
+            "prizepool": "0",
+            "event_rules": "rules",
+            "registration_link": "https://x.com/r",
+            "number_of_stages": 1,
+            "is_draft": "false",
+            "event_start_time": "18:00",
+            "event_end_time": "21:00",
+            "registration_start_time": "09:00",
+            "registration_end_time": "17:00",
+            "stages": json.dumps([{
+                "stage_name": "Finals",
+                "start_date": today,
+                "end_date": today,
+                "number_of_groups": 1,
+                "stage_format": "br - normal",
+                "teams_qualifying_from_stage": 2,
+                "stage_order": 1,
+                "groups": [{
+                    "group_name": "Finals Group 1",
+                    "playing_date": today,
+                    "playing_time": "18:00",
+                    "teams_qualifying": 2,
+                    "match_count": 1,
+                    "match_maps": ["bermuda"],
+                }],
+            }]),
+        }
+        payload.update(overrides)
+        return payload
+
+    def _post(self, payload):
+        return Client().post(
+            "/events/create-event/", data=payload,
+            HTTP_AUTHORIZATION=f"Bearer {self.admin_token}",
+        )
+
+    @override_settings(GOOGLE_OAUTH_CLIENT_ID="gid")
+    def test_creating_with_an_empty_selection_succeeds(self):
+        """The exact payload the wizard sends when the organizer never touches the picker."""
+        resp = self._post(self._payload(required_connections="[]"))
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        event = Event.objects.get(event_name="RC Create Cup")
+        self.assertEqual(event.required_connections, [])
+
+    @override_settings(GOOGLE_OAUTH_CLIENT_ID="gid")
+    def test_creating_with_the_field_absent_succeeds(self):
+        """An older client that does not send the field at all must still be able to create."""
+        resp = self._post(self._payload())
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        self.assertEqual(
+            Event.objects.get(event_name="RC Create Cup").required_connections, []
+        )
+
+    @override_settings(GOOGLE_OAUTH_CLIENT_ID="gid")
+    def test_creating_with_a_real_selection_stores_it(self):
+        resp = self._post(self._payload(required_connections='["google"]'))
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        self.assertEqual(
+            Event.objects.get(event_name="RC Create Cup").required_connections, ["google"]
+        )
+
+    @override_settings(GOOGLE_OAUTH_CLIENT_ID="gid")
+    def test_creating_with_junk_is_refused_and_writes_no_event(self):
+        resp = self._post(self._payload(required_connections="not a list"))
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertFalse(Event.objects.filter(event_name="RC Create Cup").exists())
 
 
 class WriteAndCloneTests(TestCase):
