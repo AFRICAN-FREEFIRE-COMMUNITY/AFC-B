@@ -1693,3 +1693,79 @@ class FeatureInterest(models.Model):
 
     def __str__(self):
         return f"{self.user_id} wants {self.feature}"
+
+
+class ConnectedAccount(models.Model):
+    """One outside account a player has linked to their AFC account.
+
+    WHY THIS TABLE EXISTS RATHER THAN MORE COLUMNS ON User
+        Discord shipped as four columns on User (discord_id / discord_username / discord_avatar /
+        discord_connected). That shape does not survive a third provider: every new one costs a
+        migration plus an edit to every reader. This table takes any number of providers with no
+        schema change, and the provider list itself lives in code
+        (afc_auth/connections/registry.py).
+
+    HOW IT CONNECTS END TO END
+      - Written by : afc_auth/connections/links.py (link_account / unlink_account), the ONLY
+                     writers. The Discord adapter additionally dual-writes the legacy User columns
+                     so check_discord_membership*, DiscordRoleAssignment, roster_discord.py and the
+                     AFC bot keep working untouched.
+      - Read by    : afc_auth/connections/views.py (the player's page), and
+                     afc_tournament_and_scrims.views._missing_registration_assets (the per-event
+                     "must have X connected" rule).
+      - Surfaced on: frontend app/(user)/profile/connected-apps/, top section.
+
+    WHAT IS DELIBERATELY NOT STORED: OAuth access and refresh tokens. AFC needs to know THAT an
+    account is linked and WHICH account it is; it never acts at a provider on the player's behalf.
+    Discord's guilds.join scope is used inside the callback and then dropped. Nothing kept here is
+    worth stealing beyond a public username.
+    """
+    connected_account_id = models.AutoField(primary_key=True)
+
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="connected_accounts"
+    )
+
+    # Registry slug: "discord", "google", "vent". Lengths here are not arbitrary, see the index
+    # width note at the end of this class.
+    provider = models.CharField(max_length=20, db_index=True)
+    # The provider's own stable id: a Discord snowflake, a Google `sub`. NEVER an email, which
+    # changes; that is precisely the bug in the pre-existing email-matched Google sign-in.
+    provider_user_id = models.CharField(max_length=171, db_index=True)
+
+    username = models.CharField(max_length=190, blank=True, default="")
+    email = models.CharField(max_length=254, blank=True, default="")
+    avatar_url = models.URLField(blank=True, default="")
+
+    scopes = models.JSONField(default=list, blank=True)
+    # A small NORMALISED subset (display name, verified flags), never the full provider payload:
+    # storing PII we have no use for is a liability, not a feature.
+    raw_profile = models.JSONField(default=dict, blank=True)
+
+    connected_at = models.DateTimeField(auto_now_add=True)
+    last_verified_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # One outside account backs exactly ONE AFC account. Without this, a per-event
+            # "must have X connected" rule is defeated by linking one Discord account to five
+            # AFC accounts.
+            models.UniqueConstraint(
+                fields=["provider", "provider_user_id"], name="uniq_provider_identity"
+            ),
+            # One account per provider per user, which is what the profile page shows.
+            models.UniqueConstraint(fields=["user", "provider"], name="uniq_user_provider"),
+        ]
+        indexes = [models.Index(fields=["user", "provider"])]
+
+    def __str__(self):
+        return f"{self.user_id} -> {self.provider}:{self.provider_user_id}"
+
+    # -- INDEX WIDTH, why max_length looks odd ---------------------------------------------------
+    # uniq_provider_identity spans provider + provider_user_id. MySQL utf8mb4 charges 4 bytes per
+    # character and InnoDB's key limit is 767 bytes on COMPACT/REDUNDANT row formats (3072 only on
+    # DYNAMIC, and the production row format is not pinned anywhere we can check). 20 + 171 = 191
+    # characters = 764 bytes, which fits the smallest case. The obvious 32 + 191 would be 892 bytes
+    # and would fail with "Specified key was too long" ON THE PRODUCTION BOX, because migrations in
+    # this repo are gitignored and generated there. Discord snowflakes are under 20 characters and
+    # Google `sub` values around 21, so 171 is generous.
