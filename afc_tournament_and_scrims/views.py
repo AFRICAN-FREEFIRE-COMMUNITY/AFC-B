@@ -2217,6 +2217,16 @@ def create_event(request):
     if _wl_mode not in dict(Event.WAITLIST_MODE_CHOICES):
         _wl_mode = "first_registered"
 
+    # Required connected accounts (owner 2026-08-26): validated BEFORE the atomic block, so an
+    # unknown or unavailable provider slug is a plain 400 rather than a ValueError escaping from
+    # inside Event.objects.create as a 500.
+    try:
+        _required_connections = _clean_required_connections(
+            request.data.get("required_connections")
+        )
+    except ValueError as exc:
+        return Response({"message": str(exc)}, status=400)
+
     # ---------------- CREATE EVERYTHING ----------------
     try:
         with transaction.atomic():
@@ -2298,6 +2308,11 @@ def create_event(request):
                 # WhatsApp number requirement (owner 2026-08-03) - same parse pattern; sent by the
                 # admin + organizer create wizards' Step1EventDetails "Require WhatsApp number" toggle.
                 require_whatsapp=_as_bool(request.data.get("require_whatsapp")),
+                # Required connected accounts (owner 2026-08-26). Validated BEFORE this create call
+                # (see _required_connections above): validating inline here would raise ValueError
+                # from inside Event.objects.create and surface as a 500 rather than the 400 the
+                # organizer needs to see.
+                required_connections=_required_connections,
                 # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars required to
                 # register (0 = off). Clamped 0-26 by the shared parser so a bad payload can't store an
                 # impossible threshold. Enforced in register_for_event; toggled in Step1EventDetails.
@@ -2733,6 +2748,10 @@ def duplicate_event(request, event_id):
             # WhatsApp number requirement (owner 2026-08-03): carried like the gates above so a
             # duplicated event keeps demanding a number instead of silently dropping the gate.
             require_whatsapp=source.require_whatsapp,
+            # A LIST field: copy it, do not alias it, or editing the clone would silently edit the
+            # original's requirement too. duplicate_event copies every require_* by hand, which is
+            # why a new field forgotten here vanishes from every duplicated event.
+            required_connections=list(source.required_connections or []),
             # Letter avatars (feature #7): carry the source's registration threshold onto the clone
             # (the per-team assigned_letter is per-registration and is NOT cloned - the clone has no
             # registrations yet).
@@ -3773,6 +3792,16 @@ def edit_event(request):
     # only affects FUTURE registrations (enforcement lives in register_for_event, not on save).
     if "require_whatsapp" in request.data:
         event.require_whatsapp = _as_bool(request.data.get("require_whatsapp"))
+
+    # Required connected accounts (owner 2026-08-26). An unknown or unavailable slug is a 400 here
+    # rather than a stored requirement nobody could ever satisfy.
+    if "required_connections" in request.data:
+        try:
+            event.required_connections = _clean_required_connections(
+                request.data.get("required_connections")
+            )
+        except ValueError as exc:
+            return Response({"message": str(exc)}, status=400)
     # Letter avatars (feature #7, owner 2026-06-29): editable like the other registration gates;
     # changing it only affects FUTURE registrations. Clamped 0-26 by the shared parser.
     if "min_letter_avatars" in request.data:
@@ -5316,6 +5345,7 @@ def get_event_details(request):
         # wizards rehydrate the toggle, EventRequirementsCard lists it under "Requirements to
         # register", and the register flow's roster panel can badge who still has no number.
         "require_whatsapp": event.require_whatsapp,
+        "required_connections": list(event.required_connections or []),
         # Teams filing their own map results (item 6). Emitted so the edit form can
         # rehydrate the switch: without it the form reads undefined, falls back to false,
         # and shows the feature as OFF on an event where it is on.
@@ -6315,6 +6345,7 @@ def get_event_details_not_logged_in(request):
         # WhatsApp number requirement (owner 2026-08-03): logged-out twin of the get_event_details
         # echo, so an anonymous viewer sees the same "Requirements to register" list.
         "require_whatsapp": event.require_whatsapp,
+        "required_connections": list(event.required_connections or []),
         # Teams filing their own map results (item 6). Emitted so the edit form can
         # rehydrate the switch: without it the form reads undefined, falls back to false,
         # and shows the feature as OFF on an event where it is on.
@@ -6900,6 +6931,42 @@ def determine_team_country(roster_users, team_owner):
 # promotions) so the rule lives in ONE place. Returns {user_id: [field_key,...]} for players who
 # are MISSING something; field_key is a stable token the FE maps to localized copy:
 #   "esports_image" | "profile_image" | "uid" | "whatsapp". Empty dict = everyone passes (or no toggle on).
+def _clean_required_connections(raw):
+    """Validate a required-connections list against the provider registry.
+
+    Returns a de-duplicated list of known, ENABLED provider slugs, or raises ValueError naming the
+    bad one. Validating on WRITE rather than on read means a hand-posted ["myspace"] is refused at
+    the door instead of becoming a requirement no player can ever satisfy and no organizer can see
+    is impossible.
+
+    Discord is excluded even though it is a real provider: require_discord is its own field with
+    its own paired invite link and server-membership check. See the Event.required_connections
+    comment for why two switches for one idea is worse than one.
+
+    CALLED BY create_event and edit_event. The picker on the event forms reads the same registry
+    through GET /auth/connections/providers/, so what an organizer can choose and what this accepts
+    cannot drift apart.
+    """
+    from afc_auth.connections import enabled_providers
+
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("required_connections must be a list")
+
+    allowed = {p.slug for p in enabled_providers()} - {"discord"}
+    cleaned = []
+    for item in raw:
+        slug = str(item or "").strip().lower()
+        if not slug:
+            continue
+        if slug not in allowed:
+            raise ValueError(f"unknown or unavailable connection: {slug}")
+        if slug not in cleaned:
+            cleaned.append(slug)
+    return cleaned
+
+
 def _missing_registration_assets(user_ids, event):
     from afc_auth.models import UserProfile
     user_ids = [int(u) for u in user_ids if u is not None]
@@ -6907,7 +6974,14 @@ def _missing_registration_assets(user_ids, event):
     need_profile = bool(getattr(event, "require_player_profile_image", False))
     need_uid = bool(getattr(event, "require_player_uid", False))
     need_whatsapp = bool(getattr(event, "require_whatsapp", False))
-    if not user_ids or not (need_esports or need_profile or need_uid or need_whatsapp):
+    # Required connected accounts (owner 2026-08-26): a list of provider slugs, empty for almost
+    # every event, so the extra query below is skipped entirely in the common case.
+    need_connections = [
+        str(slug) for slug in (getattr(event, "required_connections", None) or []) if slug
+    ]
+    if not user_ids or not (
+        need_esports or need_profile or need_uid or need_whatsapp or need_connections
+    ):
         return {}
     # ONE query for the whole roster (no N+1). UserProfile.user is a plain FK and duplicate rows
     # exist in prod, so a user can have several profiles: order DESCENDING by profile_id so the dict
@@ -6919,6 +6993,18 @@ def _missing_registration_assets(user_ids, event):
         for p in UserProfile.objects.filter(user_id__in=user_ids).order_by("-profile_id")
     }
     uids = dict(User.objects.filter(user_id__in=user_ids).values_list("user_id", "uid"))
+
+    # ONE query for the whole roster's links, the same no-N+1 discipline as the profiles above.
+    # Built as {user_id: {provider, ...}} so the per-user loop below is a set membership test.
+    links = {}
+    if need_connections:
+        from afc_auth.models import ConnectedAccount
+
+        for uid_, provider in ConnectedAccount.objects.filter(
+            user_id__in=user_ids, provider__in=need_connections
+        ).values_list("user_id", "provider"):
+            links.setdefault(uid_, set()).add(provider)
+
     out = {}
     for uid_ in user_ids:
         prof = profiles.get(uid_)
@@ -6934,6 +7020,12 @@ def _missing_registration_assets(user_ids, event):
         # "missing" means no profile row at all, or a blank/whitespace-only number.
         if need_whatsapp and not (getattr(prof, "whatsapp_number", "") or "").strip():
             missing.append("whatsapp")
+        # "connection:<slug>" rather than a bare slug: the frontend switches on the prefix to
+        # render a Connect deep link instead of an Edit-Profile one, and the prefix cannot collide
+        # with a future asset field that happens to be named like a provider.
+        for slug in need_connections:
+            if slug not in links.get(uid_, set()):
+                missing.append(f"connection:{slug}")
         if missing:
             out[uid_] = missing
     return out
@@ -10993,6 +11085,7 @@ def get_event_details_for_admin(request):
         # WhatsApp number requirement (owner 2026-08-03): admin-detail twin, read by the admin +
         # organizer event EDIT pages to rehydrate the Basic Info requirement toggle.
         "require_whatsapp": event.require_whatsapp,
+        "required_connections": list(event.required_connections or []),
         # Teams filing their own map results (item 6). Emitted so the edit form can
         # rehydrate the switch: without it the form reads undefined, falls back to false,
         # and shows the feature as OFF on an event where it is on.

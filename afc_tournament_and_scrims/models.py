@@ -411,6 +411,29 @@ class Event(models.Model):
     # registration roster-requirements panel (EventDetailsWrapper.memberMissingRequirements).
     require_whatsapp = models.BooleanField(default=False)
 
+    # ── REQUIRED CONNECTED ACCOUNTS (owner 2026-08-26) ───────────────────────────────────────
+    #   required_connections -> every registering player (the solo registrant, or EVERY roster
+    #                           member of a team registration) must have each named outside
+    #                           account linked to their AFC profile before they can register.
+    #
+    # Holds registry slugs from afc_auth.connections.registry, e.g. ["google", "vent"]. A LIST in
+    # one JSON field rather than one boolean per provider, because a boolean per provider means a
+    # migration plus an edit to four event-form surfaces every time a provider is added, which is
+    # exactly how require_discord ended up special-cased.
+    #
+    # DISCORD IS DELIBERATELY NOT SELECTABLE HERE. require_discord above already means "connected
+    # AND a member of this event's Discord server", and it carries a paired discord_invite_link the
+    # create/edit form makes mandatory. Two switches that look the same and behave differently is
+    # how an organizer sets one and gets the other's behaviour. _clean_required_connections()
+    # refuses the slug, and the picker does not offer it.
+    #
+    # Same lifecycle as the require_* flags above: set in create_event / edit_event, copied by
+    # duplicate_event, returned by all THREE event serializers, enforced in the shared
+    # _missing_registration_assets() helper (so solo, team AND event-links qualification promotion
+    # all inherit it), and surfaced to players in EventRequirementsCard plus the roster
+    # requirements panel in EventDetailsWrapper.
+    required_connections = models.JSONField(default=list, blank=True)
+
     # ── Letter avatars (A-Z) registration requirement (feature #7, owner 2026-06-29) ──────────────
     # 0 = off (the default; every existing event is unaffected). When > 0, a team/player may only
     # register once the LETTERS available to them cover at least this many: for a team that is the

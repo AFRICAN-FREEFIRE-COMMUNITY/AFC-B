@@ -537,6 +537,20 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_TOURNAMENT_DETTY_SOLOS_ROLE_ID = "1447745369403297955"
 
+# ── CONNECTED ACCOUNTS: v-ent.co (owner 2026-08-26) ──────────────────────────────────────────
+# The third provider in afc_auth/connections/registry.py. It is DARK until these are set on the
+# box: the registry's enabled() returns False without a client id and secret, so v-ent is absent
+# from the player's profile page, from the event-requirement picker, and from the registration
+# gate. Nothing here has been exercised against a live v-ent server, because v-ent.co has not
+# issued AFC credentials yet.
+#
+# VENT_ISSUER is the OIDC issuer origin, e.g. "https://v-ent.co". The authorize / token / userinfo
+# endpoints are derived from it by the standard convention in connections/providers/vent.py rather
+# than hardcoded, so a different path layout only changes that one file.
+VENT_CLIENT_ID = os.getenv("VENT_CLIENT_ID")
+VENT_CLIENT_SECRET = os.getenv("VENT_CLIENT_SECRET")
+VENT_ISSUER = os.getenv("VENT_ISSUER")
+
 # Public base for THIS api, used to turn a stored media path into an absolute URL for a
 # third party. The SSO claim builder has no Django request to call build_absolute_uri on
 # (oauthlib passes its own request object), and a partner site cannot resolve "/media/..."
