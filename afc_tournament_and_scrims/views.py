@@ -3543,50 +3543,32 @@ def edit_event(request):
         val = maybe_json(val)
         return val if isinstance(val, list) else []
 
-    def update_field(field_name, parser=None):
-        if field_name in request.data:
-            value = request.data.get(field_name)
-            if parser:
-                value = parser(value)
-            setattr(event, field_name, value)
 
     # --------------------------------------------------
-    # BASIC FIELD UPDATES
+    # FIELD UPDATES COME FROM THE CONTRACT (owner 2026-08-26)
     # --------------------------------------------------
-
-    for field in [
-        "competition_type", "participant_type",
-        "max_teams_or_players", "event_name", "event_mode",
-        "event_status", "registration_link",
-        # event_description (owner 2026-08-05, item 26) rides the plain update_field loop like
-        # event_rules: update_field only writes keys the request actually SENT, so an older client
-        # that does not know about the field can never blank an organizer's description.
-        "event_rules", "event_description", "is_draft", "is_public", "event_type"
-    ]:
-        update_field(field)
-    # NOTE: tournament_tier is intentionally NOT in the loop above (owner 2026-06-30): it is set by
-    # apply_event_tier() after the save below, which auto-classifies from the Tournament Tiers rules
-    # and only lets a HEAD/SUPER admin override + pin it. Letting any editor set it directly here
-    # would bypass that gate.
-
-    for date_field in ["start_date", "end_date", "registration_open_date", "registration_end_date"]:
-        update_field(date_field, parse_date)
-
-    # Times were saved on create but were missing here, so editing an event silently
-    # dropped any time change. Persist them too (raw "HH:MM" string, or None to clear),
-    # matching how create_event stores them.
-    for time_field in [
-        "registration_start_time", "registration_end_time",
-        "event_start_time", "event_end_time",
-    ]:
-        if time_field in request.data:
-            setattr(event, time_field, request.data.get(time_field) or None)
-
-    # Re-capture the creator/editor's tz whenever the edit form sends it, so the stored
-    # times stay paired with the tz they were entered in (owner 2026-06-21). The edit
-    # wizard now always sends both the four times and `timezone`.
-    if "timezone" in request.data:
-        event.timezone = request.data.get("timezone") or None
+    # This was an `update_field` helper plus 45 separate `if "x" in request.data` guards, each one
+    # a place a new event field had to be threaded through by hand. apply_event_writes keeps the
+    # semantics EXACTLY: a key the request omits is left alone, so a partial edit stays partial and
+    # an older client that does not know about a field cannot blank it by not sending it.
+    #
+    # It also validates the WHOLE payload before assigning anything, which the hand-written version
+    # did not: a 400 used to be able to leave the event half-written, because the guards assigned as
+    # they went and returned on the first bad value. See test_event_write_behaviour.
+    #
+    # tournament_tier is deliberately NOT writable through this (write=NOBODY in the contract). It
+    # is owned by apply_event_tier below, which auto-classifies from the Tournament Tiers rules and
+    # lets ONLY a head/super admin override and PIN it via tier_overridden. Making it an ordinary
+    # field write would let it be set without the pin, and the classifier would then undo it.
+    #
+    # Still handled by hand BELOW, because none of these is a plain field write: the banner and
+    # rules uploads (request.FILES), is_sponsored and sponsor_usernames (they delete and re-create
+    # SponsorEvent rows), event_type (it deletes registrations, and is forced to "internal" for org
+    # events), and the cross-field validations that need every value applied first.
+    try:
+        apply_event_writes(event, request.data, role=ADMIN)
+    except WriteRefused as exc:
+        return Response({"message": exc.message, "field": exc.field}, status=400)
 
     if event.registration_open_date and event.registration_end_date:
         if event.registration_open_date > event.registration_end_date:
@@ -3596,14 +3578,7 @@ def edit_event(request):
         if event.start_date > event.end_date:
             return Response({"message": "start_date cannot be after end_date."}, status=400)
 
-    if "prizepool" in request.data:
-        event.prizepool = str(request.data.get("prizepool"))
 
-    if "prizepool_cash_value" in request.data:
-        try:
-            event.prizepool_cash_value = float(request.data.get("prizepool_cash_value"))
-        except:
-            return Response({"message": "prizepool_cash_value must be a number."}, status=400)
 
     # Prize currency (owner 2026-07-01): keep it explicit + default USD (AFC enters prizes in USD).
     # Prevents the legacy NGN default from mis-tagging an edited prizepool. See create_event + models.
@@ -3616,30 +3591,7 @@ def edit_event(request):
     elif "prizepool" in request.data and not event.prize_currency:
         event.prize_currency = "USD"
 
-    if "prize_distribution" in request.data:
-        pd = maybe_json(request.data.get("prize_distribution"))
-        if not isinstance(pd, dict):
-            return Response({"message": "prize_distribution must be a JSON object."}, status=400)
-        event.prize_distribution = pd
 
-    # ── Paid registration (feature "paid-events") ──
-    if "registration_type" in request.data:
-        rt = request.data.get("registration_type")
-        if rt not in ("free", "paid"):
-            return Response({"message": "registration_type must be 'free' or 'paid'."}, status=400)
-        event.registration_type = rt
-    if "registration_fee_currency" in request.data:
-        event.registration_fee_currency = (request.data.get("registration_fee_currency") or "USD").upper()[:3]
-    if "registration_fee" in request.data:
-        raw = request.data.get("registration_fee")
-        if raw in (None, "", "null"):
-            event.registration_fee = None
-        else:
-            from decimal import Decimal, InvalidOperation
-            try:
-                event.registration_fee = Decimal(str(raw))
-            except (InvalidOperation, TypeError):
-                return Response({"message": "registration_fee must be a number."}, status=400)
     # A paid event must end up with a positive fee.
     if event.registration_type == "paid" and (event.registration_fee is None or event.registration_fee <= 0):
         return Response({"message": "A paid event needs a registration_fee greater than 0."}, status=400)
@@ -3662,23 +3614,8 @@ def edit_event(request):
     if "uploaded_rules" in request.FILES:
         event.uploaded_rules = request.FILES.get("uploaded_rules")
 
-    if "number_of_stages" in request.data:
-        event.number_of_stages = int(request.data.get("number_of_stages"))
 
-    if "is_public" in request.data:
-        is_public = request.data.get("is_public")
-        if isinstance(is_public, str):
-            is_public = is_public.lower() in ("1", "true", "yes")
-        event.is_public = is_public
 
-    # Per-event Discord requirement (owner 2026-06-22). PATCH-style: only touched when present.
-    if "require_discord" in request.data:
-        rd = request.data.get("require_discord")
-        event.require_discord = rd.lower() in ("1", "true", "yes") if isinstance(rd, str) else bool(rd)
-    if "discord_server_id" in request.data:
-        event.discord_server_id = (request.data.get("discord_server_id") or "").strip() or None
-    if "discord_invite_link" in request.data:
-        event.discord_invite_link = (request.data.get("discord_invite_link") or "").strip() or None
     # A join link is required whenever Discord is required (so players know where to join).
     if event.require_discord and not event.discord_invite_link:
         return Response({"message": "A Discord invite link is required when 'Require Discord to register' is on."}, status=400)
@@ -3721,79 +3658,15 @@ def edit_event(request):
                 SponsorEvent.objects.create(event=event, sponsor=user)
 
         
-    if "sponsor_name" in request.data:
-        event.sponsor_name = request.data.get("sponsor_name")
 
-    if "sponsor_field_label" in request.data:
-        event.sponsor_field_label = request.data.get("sponsor_field_label")
 
-    if "sponsor_requirement_description" in request.data:
-        event.sponsor_requirement_description = request.data.get("sponsor_requirement_description")
 
-    if "is_waitlist_enabled" in request.data:
-        is_waitlist_enabled = request.data.get("is_waitlist_enabled")
-        if isinstance(is_waitlist_enabled, str):
-            is_waitlist_enabled = is_waitlist_enabled.lower() in ("1", "true", "yes")
-        event.is_waitlist_enabled = is_waitlist_enabled
 
-    # ── Media registration criteria (owner 2026-06-12) ── editable like the other toggles;
-    # enforcement lives in register_for_event so changing them only affects FUTURE registrations.
-    if "auto_seed_on_start" in request.data:
-        event.auto_seed_on_start = _as_bool(request.data.get("auto_seed_on_start"))
-    if "auto_seed_trigger" in request.data:
-        event.auto_seed_trigger = _clean_auto_seed_trigger(
-            request.data.get("auto_seed_trigger"))
-    if "require_team_logo" in request.data:
-        event.require_team_logo = _as_bool(request.data.get("require_team_logo"))
-    if "require_esport_images" in request.data:
-        event.require_esport_images = _as_bool(request.data.get("require_esport_images"))
-    # F3 extra registration requirements (owner 2026-06-19).
-    if "require_player_uid" in request.data:
-        event.require_player_uid = _as_bool(request.data.get("require_player_uid"))
-    if "require_player_profile_image" in request.data:
-        event.require_player_profile_image = _as_bool(request.data.get("require_player_profile_image"))
-    # WhatsApp number requirement (owner 2026-08-03): editable like the gates above; changing it
-    # only affects FUTURE registrations (enforcement lives in register_for_event, not on save).
-    if "require_whatsapp" in request.data:
-        event.require_whatsapp = _as_bool(request.data.get("require_whatsapp"))
 
-    # Required connected accounts (owner 2026-08-26). An unknown or unavailable slug is a 400 here
-    # rather than a stored requirement nobody could ever satisfy.
-    if "required_connections" in request.data:
-        try:
-            event.required_connections = _clean_required_connections(
-                request.data.get("required_connections")
-            )
-        except ValueError as exc:
-            return Response({"message": str(exc)}, status=400)
-    # Letter avatars (feature #7, owner 2026-06-29): editable like the other registration gates;
-    # changing it only affects FUTURE registrations. Clamped 0-26 by the shared parser.
-    if "min_letter_avatars" in request.data:
-        event.min_letter_avatars = _parse_min_letter_avatars(request.data.get("min_letter_avatars"))
-    # Teams submitting their own per-map results (owner 2026-08-04, backlog item 6). Off by
-    # default, and switching it off later only stops NEW submissions: results already approved
-    # are ordinary results and stay exactly as they are. Enforced on every submit in
-    # views_team_submissions.submit_team_map_result, never cached, so the change is immediate.
-    if "allow_team_result_submissions" in request.data:
-        event.allow_team_result_submissions = _as_bool(
-            request.data.get("allow_team_result_submissions"))
 
-    if "waitlist_capacity" in request.data:
-        try:
-            event.waitlist_capacity = int(request.data.get("waitlist_capacity"))
-        except:
-            return Response({"message": "waitlist_capacity must be an integer."}, status=400)
         
 
-    if "waitlist_discord_role_id" in request.data:
-        event.waitlist_discord_role_id = request.data.get("waitlist_discord_role_id")
 
-    # Waitlist slot-assignment mode (owner 2026-06-17): first_registered / fcfs_room / manual_admin.
-    # Ignore unknown values so a bad payload can't corrupt it.
-    if "waitlist_mode" in request.data:
-        _mode = request.data.get("waitlist_mode")
-        if _mode in dict(Event.WAITLIST_MODE_CHOICES):
-            event.waitlist_mode = _mode
 
 
     
