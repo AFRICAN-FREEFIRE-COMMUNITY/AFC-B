@@ -1530,52 +1530,29 @@ def google_auth(request):
     #   • code       : an auth code from the GIS CODE client (the custom full-width
     #                  button, popup) - exchanged server-side for an id token first.
     # The code path needs the client SECRET; the credential path does not.
-    credential = request.data.get("credential") or request.data.get("id_token")
-    code = request.data.get("code")
-    if not credential and not code:
-        return Response({"message": "Google credential is required."},
-                        status=status.HTTP_400_BAD_REQUEST)
-
     # Defensive .strip(): a stray space/CR in the .env value would make the audience
     # check fail with a confusing "could not verify".
     client_id = (getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", None) or "").strip() or None
-    if not client_id:
-        return Response({"message": "Google sign-in is not configured on the server."},
-                        status=status.HTTP_400_BAD_REQUEST)
 
     import logging as _logging
     _glog = _logging.getLogger("afc_auth")
 
-    # ── code flow: exchange the popup auth code for tokens, then take its id_token ──
-    if code and not credential:
-        client_secret = (getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", None) or "").strip() or None
-        if not client_secret:
-            return Response({"message": "Google sign-in is not fully configured on the server."},
-                            status=status.HTTP_400_BAD_REQUEST)
-        try:
-            tok = requests.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "code": code,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "grant_type": "authorization_code",
-                    "redirect_uri": "postmessage",  # GIS popup code client
-                },
-                timeout=10,
-            )
-            if tok.status_code != 200:
-                _glog.warning("Google code exchange failed: %s %s", tok.status_code, tok.text[:200])
-                return Response({"message": "Could not verify your Google sign-in. Please try again."},
-                                status=status.HTTP_401_UNAUTHORIZED)
-            credential = tok.json().get("id_token")
-            if not credential:
-                return Response({"message": "Could not verify your Google sign-in. Please try again."},
-                                status=status.HTTP_401_UNAUTHORIZED)
-        except Exception as exc:
-            _glog.warning("Google code exchange error: %s: %s", type(exc).__name__, exc)
-            return Response({"message": "Could not verify your Google sign-in. Please try again."},
-                            status=status.HTTP_401_UNAUTHORIZED)
+    # ── whichever shape the browser sent becomes an id token here ──────────────
+    # Shared with the CONNECT path (afc_auth.connections.views.link_google) rather than written
+    # twice. The two WERE written twice, and drifted: connect only ever understood a credential,
+    # so it could not link the CODE this button has produced since 2026-06-21 (owner bug
+    # 2026-08-27). One copy is the fix for the class, not just for the instance.
+    from afc_auth.connections.providers.google import GoogleAuthError, resolve_id_token
+
+    try:
+        credential = resolve_id_token(
+            credential=request.data.get("credential") or request.data.get("id_token"),
+            code=request.data.get("code"),
+            client_id=client_id,
+            client_secret=(getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", None) or "").strip() or None,
+        )
+    except GoogleAuthError as exc:
+        return Response({"message": exc.message}, status=exc.status_code)
 
     # ── verify the Google ID token signature + audience (google-auth) ──────────
     # verify_oauth2_token checks the JWT signature against Google's public keys,
