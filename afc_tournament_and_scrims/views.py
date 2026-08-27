@@ -22366,18 +22366,33 @@ def add_teams_to_event(request):
 
         if event.require_team_logo and not team.team_logo and "team_logo_required" not in waived:
             codes.append("team_logo_required")
-        if (
-            _missing_registration_assets(member_ids, event)
-            and "registration_requirements_unmet" not in waived
-        ):
-            codes.append("registration_requirements_unmet")
+        # Keep the per-player detail, not just the code. "Some teams do not meet this event's
+        # requirements" told an admin nothing they could act on (owner 2026-08-27), and the
+        # information to say "3 players have not connected Google" was already computed right here
+        # and then thrown away.
+        missing_map = {}
+        if "registration_requirements_unmet" not in waived:
+            missing_map = _missing_registration_assets(member_ids, event)
+            if missing_map:
+                codes.append("registration_requirements_unmet")
         if capacity and already_registered >= capacity and "capacity_full" not in waived:
             codes.append("capacity_full")
 
         if codes:
-            blocked.append(
-                {"team_id": team.team_id, "team_name": team.team_name, "codes": codes}
-            )
+            row = {"team_id": team.team_id, "team_name": team.team_name, "codes": codes}
+            if missing_map:
+                # Same {user_id, username, fields} shape the registration flow already returns
+                # (_registration_requirements_response), so the frontend renders one panel for both
+                # rather than learning a second vocabulary.
+                names = dict(
+                    User.objects.filter(user_id__in=list(missing_map.keys()))
+                    .values_list("user_id", "username")
+                )
+                row["missing"] = [
+                    {"user_id": uid_, "username": names.get(uid_, str(uid_)), "fields": fields}
+                    for uid_, fields in missing_map.items()
+                ]
+            blocked.append(row)
 
     if blocked:
         # A team blocked ONLY by waivable codes can be admitted with an explicit waiver. A team
