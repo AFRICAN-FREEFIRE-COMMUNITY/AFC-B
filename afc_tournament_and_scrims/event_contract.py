@@ -126,6 +126,131 @@ class Field:
         return self.source or self.name
 
 
+# ── cleaners ──────────────────────────────────────────────────────────────────────────────────
+# Each of these reproduces exactly what edit_event did for that field before the conversion, and
+# the behaviour is pinned by test_event_write_behaviour.py, which was written and run GREEN against
+# the unconverted endpoints first.
+#
+# They raise ValueError to reject. apply_event_writes turns that into a WriteRefused carrying the
+# field name, and the endpoint turns THAT into the 400 the frontend already expects.
+#
+# THE RULE THEY ALL FOLLOW: ask "did this parse as the right type", never "does it contain
+# anything". An empty list, a zero and an empty string are all real answers. Gating on truthiness
+# is what took event creation down on 2026-08-26.
+
+
+def _clean_bool(raw):
+    """A checkbox from a multipart form arrives as the STRING "true" or "false", and "false" is
+    truthy, so a plain bool() would read every unchecked box as checked."""
+    from .views import _as_bool
+    return _as_bool(raw)
+
+
+def _clean_int(raw):
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("must be a whole number.")
+
+
+def _clean_waitlist_capacity(raw):
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("waitlist_capacity must be an integer.")
+
+
+def _clean_cash_value(raw):
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("prizepool_cash_value must be a number.")
+
+
+def _clean_date(raw):
+    from django.utils.dateparse import parse_date
+    return parse_date(raw) if isinstance(raw, str) else raw
+
+
+def _clean_optional_str(raw):
+    """A cleared time or timezone stores NULL, not the empty string, so the column stays nullable
+    in the way every reader already assumes."""
+    return raw or None
+
+
+def _clean_stripped_or_none(raw):
+    return (raw or "").strip() or None
+
+
+def _clean_prizepool(raw):
+    return str(raw)
+
+
+def _clean_currency_code(raw):
+    return (raw or "USD").upper()[:3]
+
+
+def _clean_prize_distribution(raw):
+    import json as _json
+    if isinstance(raw, str):
+        try:
+            raw = _json.loads(raw)
+        except Exception:
+            raise ValueError("prize_distribution must be a JSON object.")
+    if not isinstance(raw, dict):
+        raise ValueError("prize_distribution must be a JSON object.")
+    return raw
+
+
+def _clean_registration_type(raw):
+    if raw not in ("free", "paid"):
+        raise ValueError("registration_type must be 'free' or 'paid'.")
+    return raw
+
+
+def _clean_registration_fee(raw):
+    from decimal import Decimal, InvalidOperation
+    if raw in (None, "", "null"):
+        return None
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, TypeError):
+        raise ValueError("registration_fee must be a number.")
+
+
+def _clean_seed_trigger(raw):
+    from .views import _clean_auto_seed_trigger
+    return _clean_auto_seed_trigger(raw)
+
+
+def _clean_min_letter_avatars(raw):
+    from .views import _parse_min_letter_avatars
+    return _parse_min_letter_avatars(raw)
+
+
+def _clean_connections(raw):
+    from .views import _clean_required_connections
+    return _clean_required_connections(raw)
+
+
+def _clean_waitlist_mode(raw):
+    """An unknown mode is IGNORED rather than refused, which is what edit_event did: a bad payload
+    must not be able to corrupt how slots are assigned, but it also never 400ed for this."""
+    from .models import Event
+    if raw in dict(Event.WAITLIST_MODE_CHOICES):
+        return raw
+    raise _KeepExisting
+
+
+class _KeepExisting(Exception):
+    """Sentinel: this value is not acceptable, but the field keeps what it already had.
+
+    Only waitlist_mode uses it, and only because edit_event silently ignored unknown modes rather
+    than rejecting them. Preserved rather than tidied into a 400, because changing a silent ignore
+    into an error is a behaviour change the frontend was never written for.
+    """
+
+
 # ── the field table ────────────────────────────────────────────────────────────────
 # Order here is the order the readers used, kept so a reviewer can diff this against the old
 # literal line by line. Every VALUE is verified against a golden captured from the old code, so a
@@ -137,18 +262,18 @@ class Field:
 EVENT_FIELDS = [
     # ── identity and shape ──
     Field("event_id", read=PUBLIC),
-    Field("competition_type", read=PUBLIC),
-    Field("participant_type", read=PUBLIC),
+    Field("competition_type", read=PUBLIC, write=ORGANIZER),
+    Field("participant_type", read=PUBLIC, write=ORGANIZER),
     Field("event_type", read=PUBLIC),
-    Field("max_teams_or_players", read=PUBLIC),
-    Field("event_name", read=PUBLIC),
-    Field("event_mode", read=PUBLIC),
+    Field("max_teams_or_players", read=PUBLIC, write=ORGANIZER, clean=_clean_int),
+    Field("event_name", read=PUBLIC, write=ORGANIZER),
+    Field("event_mode", read=PUBLIC, write=ORGANIZER),
 
     # ── dates ──
-    Field("start_date", read=PUBLIC),
-    Field("end_date", read=PUBLIC),
-    Field("registration_open_date", read=PUBLIC),
-    Field("registration_end_date", read=PUBLIC),
+    Field("start_date", read=PUBLIC, write=ORGANIZER, clean=_clean_date),
+    Field("end_date", read=PUBLIC, write=ORGANIZER, clean=_clean_date),
+    Field("registration_open_date", read=PUBLIC, write=ORGANIZER, clean=_clean_date),
+    Field("registration_end_date", read=PUBLIC, write=ORGANIZER, clean=_clean_date),
     # Roster-edit window (owner 2026-06-15): the team-facing UI uses these to show whether captains
     # may currently edit their roster, and until when. roster_edit_open auto-derives from
     # roster_edit_until versus now (see Event.roster_edit_open / set_roster_edit_window).
@@ -156,16 +281,16 @@ EVENT_FIELDS = [
     Field("roster_edit_open", read=PUBLIC),
 
     # ── money ──
-    Field("prizepool", read=PUBLIC),
+    Field("prizepool", read=PUBLIC, write=ORGANIZER, clean=_clean_prizepool),
     # Echo the cash value AND its currency (owner bug 2026-07-02): the edit form seeds from this
     # payload, and without both keys a saved value came back undefined and looked like it vanished.
-    Field("prizepool_cash_value", read=PUBLIC),
+    Field("prizepool_cash_value", read=PUBLIC, write=ORGANIZER, clean=_clean_cash_value),
     Field("prize_currency", read=PUBLIC, get=lambda e, ctx: getattr(e, "prize_currency", None)),
-    Field("prize_distribution", read=PUBLIC),
+    Field("prize_distribution", read=PUBLIC, write=ORGANIZER, clean=_clean_prize_distribution),
     # Paid registration (feature "paid-events"): the event page decides free versus paid, and the fee.
-    Field("registration_type", read=PUBLIC),
-    Field("registration_fee", read=PUBLIC),
-    Field("registration_fee_currency", read=PUBLIC),
+    Field("registration_type", read=PUBLIC, write=ORGANIZER, clean=_clean_registration_type),
+    Field("registration_fee", read=PUBLIC, write=ORGANIZER, clean=_clean_registration_fee),
+    Field("registration_fee_currency", read=PUBLIC, write=ORGANIZER, clean=_clean_currency_code),
     # Per-country payment (owner 2026-06-24): an anonymous viewer has no country to price against,
     # so your_registration_fee is null for them and the page shows the base fee plus "varies by
     # country" when rules exist. A signed-in reader passes the real number through extra.
@@ -177,13 +302,13 @@ EVENT_FIELDS = [
     # Per-event results visibility (owner 2026-06-29): false withholds the standings and the public
     # Results view shows "Results not published yet". See set_results_visibility.
     Field("results_published", read=PUBLIC),
-    Field("event_rules", read=PUBLIC),
+    Field("event_rules", read=PUBLIC, write=ORGANIZER),
     # What the tournament IS, in the organizer's words (owner 2026-08-05, item 26). Blank on most
     # events, and the public About block simply does not render until somebody writes one.
-    Field("event_description", read=PUBLIC),
+    Field("event_description", read=PUBLIC, write=ORGANIZER),
     Field("public_sponsors", read=PUBLIC, get=lambda e, ctx: ctx["extra"]["public_sponsors"]),
     # Read-time display status: a started event reads as "ongoing" without waiting on the sweep.
-    Field("event_status", read=PUBLIC, get=lambda e, ctx: ctx["extra"]["event_status"]),
+    Field("event_status", read=PUBLIC, write=ORGANIZER, get=lambda e, ctx: ctx["extra"]["event_status"]),
 
     # ── PROVENANCE (owner 2026-08-20, external results import) ──
     # NULL for everything AFC ran. A timestamp means the results came from an external organizer's
@@ -193,7 +318,7 @@ EVENT_FIELDS = [
     Field("results_imported", read=PUBLIC, get=lambda e, ctx: e.results_imported_at is not None),
     Field("results_imported_at", read=PUBLIC),
 
-    Field("registration_link", read=PUBLIC),
+    Field("registration_link", read=PUBLIC, write=ORGANIZER),
     # Tournament tier (tier_1/2/3) so the event CARD can show a tier badge (owner 2026-06-29).
     Field("tournament_tier", read=PUBLIC),
 
@@ -217,25 +342,25 @@ EVENT_FIELDS = [
         ctx["request"].build_absolute_uri(e.uploaded_rules.url) if e.uploaded_rules else None
     )),
 
-    Field("number_of_stages", read=PUBLIC),
+    Field("number_of_stages", read=PUBLIC, write=ORGANIZER, clean=_clean_int),
     Field("created_at", read=PUBLIC),
     Field("stream_channels", read=PUBLIC,
           get=lambda e, ctx: list(e.stream_channels.values_list("channel_url", flat=True))),
-    Field("is_public", read=PUBLIC),
+    Field("is_public", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
 
     # ── Discord registration gate (per-event) ──
     # require_discord is its own switch and means MORE than required_connections does: connected
     # AND a member of the event's server, with a paired invite link. A blank discord_server_id
     # means the main AFC guild.
-    Field("require_discord", read=PUBLIC),
-    Field("discord_server_id", read=PUBLIC),
-    Field("discord_invite_link", read=PUBLIC),
+    Field("require_discord", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    Field("discord_server_id", read=PUBLIC, write=ORGANIZER, clean=_clean_stripped_or_none),
+    Field("discord_invite_link", read=PUBLIC, write=ORGANIZER, clean=_clean_stripped_or_none),
 
     # ── sponsorship ──
     Field("is_sponsored", read=PUBLIC),
-    Field("sponsor_name", read=PUBLIC),
-    Field("sponsor_field_label", read=PUBLIC),
-    Field("sponsor_requirement_description", read=PUBLIC),
+    Field("sponsor_name", read=PUBLIC, write=ORGANIZER),
+    Field("sponsor_field_label", read=PUBLIC, write=ORGANIZER),
+    Field("sponsor_requirement_description", read=PUBLIC, write=ORGANIZER),
     Field("sponsors", read=PUBLIC, get=lambda e, ctx: [
         {
             "sponsor_id": se.sponsor.user_id,
@@ -246,10 +371,10 @@ EVENT_FIELDS = [
     ]),
 
     # ── times, and the derived registration window ──
-    Field("registration_start_time", read=PUBLIC),
-    Field("registration_end_time", read=PUBLIC),
-    Field("event_start_time", read=PUBLIC),
-    Field("event_end_time", read=PUBLIC),
+    Field("registration_start_time", read=PUBLIC, write=ORGANIZER, clean=_clean_optional_str),
+    Field("registration_end_time", read=PUBLIC, write=ORGANIZER, clean=_clean_optional_str),
+    Field("event_start_time", read=PUBLIC, write=ORGANIZER, clean=_clean_optional_str),
+    Field("event_end_time", read=PUBLIC, write=ORGANIZER, clean=_clean_optional_str),
     Field("registration_opens_at", read=PUBLIC,
           get=lambda e, ctx: _registration_window(e)[0].isoformat()),
     Field("registration_closes_at", read=PUBLIC,
@@ -257,23 +382,23 @@ EVENT_FIELDS = [
     Field("registration_is_open", read=PUBLIC, get=lambda e, ctx: _registration_is_open(e)),
 
     # ── waitlist ──
-    Field("is_waitlist_enabled", read=PUBLIC),
-    Field("waitlist_mode", read=PUBLIC),
+    Field("is_waitlist_enabled", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    Field("waitlist_mode", read=PUBLIC, write=ORGANIZER, clean=_clean_waitlist_mode),
 
     # ── registration requirements ──
-    Field("require_team_logo", read=PUBLIC),
-    Field("require_esport_images", read=PUBLIC),
-    Field("require_player_uid", read=PUBLIC),
-    Field("require_player_profile_image", read=PUBLIC),
-    Field("require_whatsapp", read=PUBLIC),
+    Field("require_team_logo", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    Field("require_esport_images", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    Field("require_player_uid", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    Field("require_player_profile_image", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    Field("require_whatsapp", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
     # A list, normalised on the way out so a NULL column reads as [] rather than None. NEVER gate
     # this on truthiness: empty is a real answer and means "no requirement" (outage, 2026-08-26).
-    Field("required_connections", read=PUBLIC,
+    Field("required_connections", read=PUBLIC, write=ORGANIZER, clean=_clean_connections,
           get=lambda e, ctx: list(e.required_connections or [])),
-    Field("allow_team_result_submissions", read=PUBLIC),
+    Field("allow_team_result_submissions", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
 
     # ── capacity snapshot, counted by the endpoint with the same rule register_for_event uses ──
-    Field("waitlist_capacity", read=PUBLIC),
+    Field("waitlist_capacity", read=PUBLIC, write=ORGANIZER, clean=_clean_waitlist_capacity),
     Field("registered_count", read=PUBLIC, get=lambda e, ctx: ctx["extra"]["active_registered"]),
     Field("is_full", read=PUBLIC,
           get=lambda e, ctx: ctx["extra"]["active_registered"] >= e.max_teams_or_players),
@@ -297,21 +422,30 @@ EVENT_FIELDS = [
     # the VIEWER's relationship to the event rather than the event itself, so they are computed by
     # the endpoint and merged in there. A field is only in this table if it belongs to the event.
     Field("slug", read=PLAYER),
-    Field("timezone", read=PLAYER),
+    Field("timezone", read=PLAYER, write=ORGANIZER, clean=_clean_optional_str),
     Field("organization_id", read=PLAYER),
     # Geo restriction: WHO may register. Withheld from an anonymous visitor because it describes
     # the event's gating rather than the event, and the public page has nobody to apply it to.
+    #
+    # READ-ONLY here on purpose. edit_event validates these three TOGETHER: the mode and the country
+    # list are required only when the restriction is enabled, and both are cleared when it is set to
+    # "none". That is a cross-field rule, so making them independently writable would let a caller
+    # set a mode with no countries, or leave a stale country list behind a disabled restriction.
     Field("registration_restriction", read=PLAYER),
     Field("restriction_mode", read=PLAYER),
     Field("restricted_countries", read=PLAYER),
     # Auto-seeding: whether the entry stage seeds itself when the event starts, and on what.
-    Field("auto_seed_on_start", read=PLAYER),
-    Field("auto_seed_trigger", read=PLAYER),
+    Field("auto_seed_on_start", read=PLAYER, write=ORGANIZER, clean=_clean_bool),
+    Field("auto_seed_trigger", read=PLAYER, write=ORGANIZER, clean=_clean_seed_trigger),
     # Whether an admin overrode the computed tournament tier (see the tier rules engine).
     Field("tier_overridden", read=PLAYER),
     # Letter-avatars registration gate (feature #7, owner 2026-06-29): 0 means off.
-    Field("min_letter_avatars", read=PLAYER),
-    Field("waitlist_discord_role_id", read=PLAYER),
+    Field("min_letter_avatars", read=PLAYER, write=ORGANIZER, clean=_clean_min_letter_avatars),
+    Field("waitlist_discord_role_id", read=PLAYER, write=ORGANIZER),
+    # WRITE-ONLY. No reader exposes is_draft, so read=NOBODY, but edit_event lets an organizer
+    # flip it, so it still needs a row: a field the contract cannot write is a field that has to be
+    # hand-assigned somewhere else, which is the thing this module exists to stop.
+    Field("is_draft", read=NOBODY, write=ORGANIZER, clean=_clean_bool),
     # ── ADMIN METRICS ENDPOINT ONLY ───────────────────────────────────────────────────────────
     # get_event_details_for_admin emits the registration_open_date COLUMN under a DIFFERENT KEY.
     # Verified in the code on 2026-08-26 and pinned by its own golden test. Whatever admin surface
@@ -434,12 +568,27 @@ def apply_event_writes(event, data, *, actor=None, role=None, table=None):
     for f in rows:
         if f.name not in data:
             continue
+        if f.write == NOBODY:
+            # NEVER writable through the API by anyone, so its presence in the payload is not a
+            # permission problem and must not 400. Ordinary traffic carries these: edit_event is
+            # looked up BY event_id, so every single edit request contains it, and refusing it
+            # would reject every edit. The distinction that matters:
+            #   write=NOBODY        structural, nobody may ever set it   -> ignore it
+            #   write above my rung a real permission boundary           -> refuse loudly
+            # Refusing the second is what surfaces a permission mistake in testing rather than in
+            # production. Refusing the first would only reject normal requests.
+            continue
         if not satisfies(role, f.write):
             raise WriteRefused(f.name, f"You may not set {f.name} on this event.")
         raw = data[f.name]
         if f.clean:
             try:
                 value = f.clean(raw)
+            except _KeepExisting:
+                # The cleaner judged the value unusable but the field keeps what it had, with no
+                # error. Only waitlist_mode does this, preserving edit_event's silent ignore of an
+                # unknown mode. See _clean_waitlist_mode.
+                continue
             except ValueError as exc:
                 raise WriteRefused(f.name, str(exc))
         else:
@@ -491,7 +640,9 @@ DUPLICATE_EXCLUDED = {
     "creator",
     "created_at",
     "updated_at",
-    # Lifecycle. A clone is always a fresh unpublished draft, never a finished event.
+    # Lifecycle. A clone is always a fresh unpublished draft, never a finished event. All three
+    # are passed explicitly by duplicate_event, so they MUST stay excluded here or
+    # Event.objects.create() receives the same keyword twice and raises TypeError.
     "event_status",
     "is_draft",
     "is_public",
@@ -593,7 +744,6 @@ INTERNAL_FIELDS = {
     "creator",
     "imported_results_count_in_profile_stats",
     "imported_results_visible_on_profiles",
-    "is_draft",
     "mvp_config",
     "overlay_token",
     "partner_published",

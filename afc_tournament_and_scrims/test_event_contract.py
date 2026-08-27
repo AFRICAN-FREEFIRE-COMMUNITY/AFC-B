@@ -245,9 +245,19 @@ class WriteTests(TestCase):
                                   role=ec.ORGANIZER, table=self.table)
         self.assertEqual(self.event.event_name, before)
 
-    def test_a_nobody_key_is_refused_even_for_admin(self):
-        with self.assertRaises(ec.WriteRefused):
-            ec.apply_event_writes(self.event, {"event_id": 999}, role=ec.ADMIN, table=self.table)
+    def test_a_never_writable_key_is_IGNORED_rather_than_refused(self):
+        """write=NOBODY is structural, not a permission boundary, so it must not 400.
+
+        Ordinary traffic carries these keys: edit_event is looked up BY event_id, so every edit
+        request contains it. Refusing it rejected every edit the first time this was wired up.
+        A field above the actor's RUNG is different and is still refused loudly, because that one
+        is a real permission mistake worth surfacing (see the test below).
+        """
+        before = self.event.event_id
+        changed = ec.apply_event_writes(self.event, {"event_id": 999}, role=ec.ADMIN,
+                                        table=self.table)
+        self.assertEqual(changed, [])
+        self.assertEqual(self.event.event_id, before, "a NOBODY field was written anyway")
 
     def test_an_empty_list_CLEARS_rather_than_raising(self):
         # THE 2026-08-26 OUTAGE, pinned at the contract level so it cannot come back through a new
