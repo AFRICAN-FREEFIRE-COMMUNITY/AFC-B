@@ -217,3 +217,109 @@ class EditEventWriteBehaviourTests(TestCase):
         original = self.event.event_id
         self._edit({"event_id": original})   # the lookup key itself, never a writable field
         self.assertTrue(Event.objects.filter(event_id=original).exists())
+
+
+@override_settings(GOOGLE_OAUTH_CLIENT_ID="gid", VENT_CLIENT_ID="", VENT_CLIENT_SECRET="")
+class CreateEventWriteBehaviourTests(TestCase):
+    """create_event differs from edit_event in one way that matters to the conversion.
+
+    edit_event leaves an omitted key ALONE. create_event has no existing row to leave alone, so an
+    omitted key has to end up as the column default. Verified before converting: every boolean gate
+    defaults to False on the model and `_as_bool(None)` is False, min_letter_avatars defaults to 0
+    and its parser returns 0 for None, auto_seed_trigger defaults to "event_start" and its cleaner
+    returns "event_start" for None. So skipping an absent key produces exactly what the hand-written
+    call produced by evaluating it.
+    """
+
+    def setUp(self):
+        self.staff, self.token = _user("createbehaviour")
+
+    def _create(self, **over):
+        payload = {
+            "event_name": "Created By Test",
+            "competition_type": "tournament",
+            "participant_type": "solo",
+            "event_type": "online",
+            "event_mode": "single",
+            "max_teams_or_players": 16,
+            "number_of_stages": 1,
+            "start_date": str(date.today() + timedelta(days=30)),
+            "end_date": str(date.today() + timedelta(days=31)),
+            "registration_open_date": str(date.today() + timedelta(days=1)),
+            "registration_end_date": str(date.today() + timedelta(days=20)),
+            "prizepool": "500 USD",
+            "prizepool_cash_value": 500,
+            "event_rules": "Rules.",
+            # create_event has an explicit required-field list and is_draft is on it, so a payload
+            # without it is rejected before any field is read.
+            "is_draft": False,
+            # All four times are required together: create_event refuses a payload missing any of
+            # them, so the stored times are always paired with the timezone they were entered in.
+            "event_start_time": "18:00",
+            "event_end_time": "21:00",
+            "registration_start_time": "10:00",
+            "registration_end_time": "23:00",
+        }
+        payload.update(over)
+        return Client().post(
+            "/events/create-event/",
+            data=json.dumps(payload),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+
+    def _created(self, name="Created By Test"):
+        event = Event.objects.filter(event_name=name).order_by("-event_id").first()
+        self.assertIsNotNone(event, "create_event did not create the event")
+        return event
+
+    def test_a_minimal_create_stores_the_column_defaults_for_omitted_gates(self):
+        resp = self._create()
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        event = self._created()
+        self.assertFalse(event.require_whatsapp)
+        self.assertFalse(event.require_player_uid)
+        self.assertFalse(event.require_team_logo)
+        self.assertFalse(event.auto_seed_on_start)
+        self.assertEqual(event.min_letter_avatars, 0)
+        self.assertEqual(event.auto_seed_trigger, "event_start")
+        self.assertEqual(event.required_connections, [])
+
+    def test_the_values_that_were_sent_are_stored(self):
+        resp = self._create(
+            event_name="Created With Gates",
+            require_whatsapp=True,
+            require_player_uid="true",
+            min_letter_avatars=4,
+            required_connections=["google"],
+            timezone="Africa/Lagos",
+            event_description="A described event.",
+        )
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        event = self._created("Created With Gates")
+        self.assertTrue(event.require_whatsapp)
+        self.assertTrue(event.require_player_uid)
+        self.assertEqual(event.min_letter_avatars, 4)
+        self.assertEqual(event.required_connections, ["google"])
+        self.assertEqual(event.timezone, "Africa/Lagos")
+        self.assertEqual(event.event_description, "A described event.")
+
+    def test_creating_with_an_empty_required_connections_list_succeeds(self):
+        """THE 2026-08-26 OUTAGE at the create endpoint.
+
+        Both create wizards ALWAYS append required_connections, so an untouched picker posts "[]".
+        The original falsy guard refused it, which meant an event could not be created AT ALL
+        unless a provider was ticked.
+        """
+        for payload in ([], "[]"):
+            resp = self._create(event_name=f"Empty Conns {payload!r}",
+                                required_connections=payload)
+            self.assertIn(resp.status_code, (200, 201), resp.content)
+            event = self._created(f"Empty Conns {payload!r}")
+            self.assertEqual(event.required_connections, [])
+
+    def test_an_unknown_connection_provider_is_refused_and_nothing_is_created(self):
+        resp = self._create(event_name="Bad Conns", required_connections=["myspace"])
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(Event.objects.filter(event_name="Bad Conns").exists(),
+                         "a refused create left an event behind")
