@@ -544,12 +544,21 @@ DISCORD_TOURNAMENT_DETTY_SOLOS_ROLE_ID = "1447745369403297955"
 # gate. Nothing here has been exercised against a live v-ent server, because v-ent.co has not
 # issued AFC credentials yet.
 #
-# VENT_ISSUER is the OIDC issuer origin, e.g. "https://v-ent.co". The authorize / token / userinfo
-# endpoints are derived from it by the standard convention in connections/providers/vent.py rather
-# than hardcoded, so a different path layout only changes that one file.
+# TWO hosts, not one, and that is not a style choice. v-ent.co sends the player's BROWSER to
+# https://v-ent.co/partners/authorize and takes the server-to-server token and userinfo calls on
+# https://api.v-ent.co. No path convention derives one host from the other, so each is its own
+# setting. Both default to the published values in connections/providers/vent.py, which quotes
+# v-ent.co's metadata document; in practice only the id and the secret need setting here.
+#
+#   VENT_ISSUER          API host, default https://api.v-ent.co
+#   VENT_AUTHORIZE_BASE  browser host, default https://v-ent.co
+#
+# The provider turns itself on the moment the id AND the secret are both present
+# (Provider.enabled() in connections/registry.py). No code change, no migration, just a restart.
 VENT_CLIENT_ID = os.getenv("VENT_CLIENT_ID")
 VENT_CLIENT_SECRET = os.getenv("VENT_CLIENT_SECRET")
 VENT_ISSUER = os.getenv("VENT_ISSUER")
+VENT_AUTHORIZE_BASE = os.getenv("VENT_AUTHORIZE_BASE")
 
 # Public base for THIS api, used to turn a stored media path into an absolute URL for a
 # third party. The SSO claim builder has no Django request to call build_absolute_uri on
