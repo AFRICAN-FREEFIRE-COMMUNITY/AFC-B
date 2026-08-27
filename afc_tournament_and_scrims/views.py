@@ -2244,94 +2244,70 @@ def create_event(request):
     # ---------------- CREATE EVERYTHING ----------------
     try:
         with transaction.atomic():
-            event = Event.objects.create(
-                auto_seed_on_start=_as_bool(request.data.get("auto_seed_on_start")),
-                # Defaults to "event_start", which is what the switch alone used to mean, so a
-                # caller that does not send it gets exactly the old behaviour.
-                auto_seed_trigger=_clean_auto_seed_trigger(
-                    request.data.get("auto_seed_trigger")),
-                is_waitlist_enabled=_wl_enabled,
-                waitlist_capacity=_wl_capacity,
-                waitlist_discord_role_id=request.data.get("waitlist_discord_role_id") or None,
-                waitlist_mode=_wl_mode,
-                registration_type=registration_type,
-                registration_fee=registration_fee,
-                registration_fee_currency=registration_fee_currency,
-                country_payment_rules=country_payment_rules,
-                competition_type=request.data.get("competition_type"),
-                participant_type=request.data.get("participant_type"),
-                # event_type "external" (off-platform registration link) is an AFC-admin-only
-                # concept. Organizer events (org is not None) are ALWAYS "internal" so the
-                # user-facing page uses on-platform registration, never a "Register (External
-                # Link)" button. This is the source of truth even if the FE sends "external".
-                event_type=("internal" if org else request.data.get("event_type")),
-                max_teams_or_players=int(request.data.get("max_teams_or_players")),
-                event_name=request.data.get("event_name"),
-                event_mode=request.data.get("event_mode"),
-                start_date=start_date,
-                end_date=end_date,
-                registration_open_date=open_date,
-                registration_end_date=close_date,
-                prizepool=str(prizepool),  # your model uses CharField
-                prizepool_cash_value=prizepool_cash_value,
-                prize_currency=prize_currency,  # default USD (owner 2026-07-01)
-                prize_distribution=prize_distribution,
-                event_rules=request.data.get("event_rules", ""),
-                # Free-text "what this tournament is" (owner 2026-08-05, item 26). Sent by the
-                # create wizard's step 1 (Step1EventDetails) on both the admin and organizer
-                # flows; blank when the creator skips it, which every pre-item-26 event also is.
-                event_description=request.data.get("event_description", ""),
-                event_status=request.data.get("event_status", "upcoming"),
-                registration_link=request.data.get("registration_link", ""),
-                tournament_tier=request.data.get("tournament_tier", "tier_3"),
-                event_banner=request.FILES.get("event_banner"),
-                number_of_stages=int(request.data.get("number_of_stages")),
-                uploaded_rules=request.FILES.get("uploaded_rules"),
-                is_draft=is_draft,
-                creator = user,
-                organization=org,  # owning org for organizer-created events; None for native AFC events
+            # ── FIELD WRITES COME FROM THE CONTRACT (owner 2026-08-26) ──────────────────────
+            # This was one Event.objects.create(...) with 58 keyword arguments. 24 of them were
+            # plain reads of request.data with the same coercion the contract's cleaners do, so
+            # they are generated now and a new field of that kind needs no edit here at all.
+            #
+            # ORDER MATTERS AND IS DELIBERATE. The contract runs FIRST, then every pre-validated
+            # local below overwrites it. Those locals are the values this function has already
+            # checked and 400ed on (a paid event's fee, the waitlist trio, the geo-restriction
+            # trio, the sponsor block, the Discord trio), so they must win. Writing them after the
+            # contract is what makes "the contract fills in the rest" safe rather than a race
+            # between two sources of truth.
+            #
+            # An ABSENT key is skipped rather than defaulted, and that is identical to the old
+            # behaviour here: verified field by field that every column default matches what the
+            # hand-written call stored for a missing key (_as_bool(None) is False and the gates
+            # default False, _parse_min_letter_avatars(None) is 0 and the column defaults 0,
+            # _clean_auto_seed_trigger(None) is "event_start" and so is the column).
+            event = Event(creator=user, organization=org)
+            try:
+                apply_event_writes(event, request.data, role=ADMIN)
+            except WriteRefused as exc:
+                return Response({"message": exc.message, "field": exc.field}, status=400)
 
-                # ✅ restriction fields
-                registration_restriction=registration_restriction,
-                restriction_mode=restriction_mode,
-                # restricted_regions=restricted_regions,
-                restricted_countries=restricted_countries,
-                is_public = is_public,
-                require_discord=require_discord,
-                discord_server_id=discord_server_id,
-                discord_invite_link=discord_invite_link,
-                is_sponsored=is_sponsored,
-                sponsor_name=sponsor_name,
-                sponsor_field_label=sponsor_field_label,
-                sponsor_requirement_description=sponsor_requirement_description,
-                event_start_time=request.data.get("event_start_time") or None,
-                event_end_time=request.data.get("event_end_time") or None,
-                registration_start_time=request.data.get("registration_start_time") or None,
-                registration_end_time=request.data.get("registration_end_time") or None,
-                # IANA tz of the creator's browser (owner 2026-06-21) so the times above can
-                # be shown in both the viewer's local tz and the host's tz on the public page.
-                timezone=request.data.get("timezone") or None,
-
-                # ── Media registration criteria (owner 2026-06-12) ── booleans arrive as
-                # "true"/"1"/bool from the wizard toggles; enforced in register_for_event.
-                require_team_logo=_as_bool(request.data.get("require_team_logo")),
-                require_esport_images=_as_bool(request.data.get("require_esport_images")),
-                # F3 extra registration requirements (owner 2026-06-19) - same parse pattern.
-                require_player_uid=_as_bool(request.data.get("require_player_uid")),
-                require_player_profile_image=_as_bool(request.data.get("require_player_profile_image")),
-                # WhatsApp number requirement (owner 2026-08-03) - same parse pattern; sent by the
-                # admin + organizer create wizards' Step1EventDetails "Require WhatsApp number" toggle.
-                require_whatsapp=_as_bool(request.data.get("require_whatsapp")),
-                # Required connected accounts (owner 2026-08-26). Validated BEFORE this create call
-                # (see _required_connections above): validating inline here would raise ValueError
-                # from inside Event.objects.create and surface as a 500 rather than the 400 the
-                # organizer needs to see.
-                required_connections=_required_connections,
-                # Letter avatars (feature #7, owner 2026-06-29): minimum letter avatars required to
-                # register (0 = off). Clamped 0-26 by the shared parser so a bad payload can't store an
-                # impossible threshold. Enforced in register_for_event; toggled in Step1EventDetails.
-                min_letter_avatars=_parse_min_letter_avatars(request.data.get("min_letter_avatars")),
-            )
+            # ── pre-validated values, which OVERRIDE the contract ──
+            # Organizer events are ALWAYS internal: off-platform "external" registration is an
+            # AFC-admin-only concept, so an org event can never flip to it.
+            event.event_type = "internal" if org else request.data.get("event_type")
+            event.is_waitlist_enabled = _wl_enabled
+            event.waitlist_capacity = _wl_capacity
+            event.waitlist_mode = _wl_mode
+            event.registration_type = registration_type
+            event.registration_fee = registration_fee
+            event.registration_fee_currency = registration_fee_currency
+            event.country_payment_rules = country_payment_rules
+            event.start_date = start_date
+            event.end_date = end_date
+            event.registration_open_date = open_date
+            event.registration_end_date = close_date
+            event.prizepool = str(prizepool)          # the model column is a CharField
+            event.prizepool_cash_value = prizepool_cash_value
+            event.prize_currency = prize_currency     # default USD (owner 2026-07-01)
+            event.prize_distribution = prize_distribution
+            event.is_draft = is_draft
+            event.is_public = is_public
+            event.registration_restriction = registration_restriction
+            event.restriction_mode = restriction_mode
+            event.restricted_countries = restricted_countries
+            event.require_discord = require_discord
+            event.discord_server_id = discord_server_id
+            event.discord_invite_link = discord_invite_link
+            event.is_sponsored = is_sponsored
+            event.sponsor_name = sponsor_name
+            event.sponsor_field_label = sponsor_field_label
+            event.sponsor_requirement_description = sponsor_requirement_description
+            # Validated BEFORE this point on purpose: validating inline would raise ValueError from
+            # inside the save and surface as a 500 rather than the 400 the organizer needs to see.
+            event.required_connections = _required_connections
+            # Media: taken from request.FILES, so never a contract field.
+            event.event_banner = request.FILES.get("event_banner")
+            event.uploaded_rules = request.FILES.get("uploaded_rules")
+            # tournament_tier is NOT set here. apply_event_tier below owns it: a head or super
+            # admin's explicit pick overrides and PINS it via tier_overridden, and everyone else's
+            # is auto-classified once the event's final prize, team count and format are visible.
+            event.save()
 
             # Set the tournament tier: a head/super admin's explicit pick overrides, otherwise
             # auto-classify from the Tournament Tiers rules (owner 2026-06-30). Runs after create so
