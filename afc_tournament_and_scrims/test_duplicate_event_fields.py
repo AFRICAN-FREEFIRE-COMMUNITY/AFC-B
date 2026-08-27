@@ -21,6 +21,11 @@ WHAT THIS FOUND, 2026-08-26
         auto_seed_on_start, auto_seed_trigger
             Whether the entry stage seeds itself when the event starts, and on what.
 
+    A SECOND ROUND on 2026-08-27 carried five more, left out of the first fix to keep it to one
+    thing: checkin_enabled, count_flagged_kills, allow_team_result_submissions, mvp_config and
+    tie_breakers. count_flagged_kills is the sharpest, because it defaults to TRUE: an organizer
+    who switched it off got a copy with it back on, silently changing how the copy scores.
+
     Written to FAIL first, against the hand-written list, then to pass once the copy is built from
     the event contract, where inheriting is the default and dropping a field has to be deliberate.
 
@@ -75,6 +80,17 @@ CONFIG_FIELDS = {
     "require_player_profile_image": True,
     "required_connections": ["google"],
     "min_letter_avatars": 3,
+    # SCORING and CHECK-IN config (added 2026-08-27). The first fix carried the seven fields a test
+    # proved were dropped and deliberately left these alone to keep that change to one thing. They
+    # are the same class: configuration an organizer set on the source, which a copy is meant to
+    # reuse. count_flagged_kills is the sharpest of them because it defaults to TRUE, so an
+    # organizer who switched it OFF got a copy with it silently back ON, changing how the copy
+    # scores.
+    "checkin_enabled": True,
+    "count_flagged_kills": False,          # NOT the default, or a drop would be invisible
+    "allow_team_result_submissions": True,
+    "mvp_config": {"metric": "kills"},
+    "tie_breakers": {"first": "placement"},
 }
 
 

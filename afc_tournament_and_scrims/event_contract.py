@@ -670,20 +670,14 @@ DUPLICATE_EXCLUDED = {
     "broadcast_stage_id",
     "broadcast_group_id",
     "broadcast_group_ids",
-    # Windows and overrides that are meaningful only for the run that is happening.
+    # Windows and overrides that are meaningful only for the RUN that is happening, not for the
+    # shape of the event. The check-in WINDOW is a pair of datetimes tied to the source event's
+    # schedule, so it is excluded while the check-in SWITCH is carried, the same way the dates are
+    # shifted while the times are copied.
     "roster_edit_until",
     "tier_overridden",
     "checkin_start",
     "checkin_end",
-    # NOT copied by the hand-written version either, and left that way DELIBERATELY in the commit
-    # that introduced this list: this change fixes the seven fields a test proved were dropped and
-    # otherwise preserves the existing behaviour exactly. Moving any of these into the copy is a
-    # separate decision with its own test, not a side effect of a refactor.
-    "checkin_enabled",
-    "mvp_config",
-    "tie_breakers",
-    "count_flagged_kills",
-    "allow_team_result_submissions",
 }
 
 
