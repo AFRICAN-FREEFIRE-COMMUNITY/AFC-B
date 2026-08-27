@@ -22333,88 +22333,83 @@ def add_teams_to_event(request):
     # with its own regression risk on the most important endpoint on the site. So this calls the
     # helpers that already exist and REPORTS which checks it ran, rather than implying parity.
     # Country rules, sponsor engagements, letter avatars and the paid path are NOT checked here.
-    from .waivers import WAIVABLE_CODES, grant as _grant_waiver, waived_codes as _waived_for
+    from .waivers import grant as _grant_waiver
 
-    CHECKS_RUN = [
-        "team_banned", "player_banned", "registration_requirements_unmet",
-        "team_logo_required", "capacity_full",
-    ]
-
-    want_waive = bool(request.data.get("waive"))
-    waive_reason = (request.data.get("reason") or "").strip()
-    if want_waive and not waive_reason:
-        return Response({"message": "A reason is required to waive requirements."}, status=400)
+    # ── WHO MAY BE ADDED DIRECTLY (owner 2026-08-27) ─────────────────────────────────────────────
+    # An admin or organizer adding a team BY HAND bypasses the event's requirements. That is the
+    # owner's call and it is the right one: the person clicking Add is the authority the
+    # requirements exist to serve, they can see the team in front of them, and making them clear a
+    # checklist they already decided to override is friction with no decision behind it.
+    #
+    # INVITATIONS ARE DIFFERENT and are untouched. An invited team registers ITSELF through
+    # register_for_event, which still enforces every requirement, because there the team is
+    # asserting it qualifies rather than an admin deciding it may play.
+    #
+    # BANS STILL BLOCK. A ban is not a requirement, it is an enforcement decision already taken,
+    # and stepping around it silently is a different act from excusing a missing profile picture.
+    # If that should change it wants saying out loud, not inferring from this endpoint.
+    #
+    # WHAT IS STILL RECORDED. The previous version of this gate existed because a direct add used
+    # to skip bans, requirements and capacity with NO record that anything had been skipped. That
+    # concern was right and survives: when a direct add DOES step over something that would have
+    # stopped a self-registration, a waiver row is written naming exactly what and by whom. The
+    # admin is not asked for anything, and the record still exists afterwards.
+    CHECKS_RUN = ["team_banned", "player_banned"]
 
     already_registered = RegisteredCompetitors.objects.filter(event=event).count()
     capacity = event.max_teams_or_players or 0
 
     blocked = []
+    bypassed = []
     for team in teams:
-        waived = _waived_for(event, team=team)
-        codes = []
-
-        # NEVER waivable, checked first so no amount of ticking gets past them.
-        if team.is_banned:
-            codes.append("team_banned")
         member_ids = list(
             TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
         )
+
+        # ── the only things that still refuse ──
+        codes = []
+        if team.is_banned:
+            codes.append("team_banned")
         if BannedPlayer.objects.filter(
             banned_player_id__in=member_ids, is_active=True, ban_end_date__gt=timezone.now()
         ).exists():
             codes.append("player_banned")
-
-        if event.require_team_logo and not team.team_logo and "team_logo_required" not in waived:
-            codes.append("team_logo_required")
-        # Keep the per-player detail, not just the code. "Some teams do not meet this event's
-        # requirements" told an admin nothing they could act on (owner 2026-08-27), and the
-        # information to say "3 players have not connected Google" was already computed right here
-        # and then thrown away.
-        missing_map = {}
-        if "registration_requirements_unmet" not in waived:
-            missing_map = _missing_registration_assets(member_ids, event)
-            if missing_map:
-                codes.append("registration_requirements_unmet")
-        if capacity and already_registered >= capacity and "capacity_full" not in waived:
-            codes.append("capacity_full")
-
         if codes:
-            row = {"team_id": team.team_id, "team_name": team.team_name, "codes": codes}
-            if missing_map:
-                # Same {user_id, username, fields} shape the registration flow already returns
-                # (_registration_requirements_response), so the frontend renders one panel for both
-                # rather than learning a second vocabulary.
-                names = dict(
-                    User.objects.filter(user_id__in=list(missing_map.keys()))
-                    .values_list("user_id", "username")
-                )
-                row["missing"] = [
-                    {"user_id": uid_, "username": names.get(uid_, str(uid_)), "fields": fields}
-                    for uid_, fields in missing_map.items()
-                ]
-            blocked.append(row)
+            blocked.append(
+                {"team_id": team.team_id, "team_name": team.team_name, "codes": codes}
+            )
+            continue
+
+        # ── what this add is stepping over, recorded rather than enforced ──
+        stepped_over = []
+        if event.require_team_logo and not team.team_logo:
+            stepped_over.append("team_logo_required")
+        if _missing_registration_assets(member_ids, event):
+            stepped_over.append("registration_requirements_unmet")
+        if capacity and already_registered >= capacity:
+            stepped_over.append("capacity_full")
+        if stepped_over:
+            bypassed.append((team, stepped_over))
 
     if blocked:
-        # A team blocked ONLY by waivable codes can be admitted with an explicit waiver. A team
-        # blocked by a ban cannot, at any price.
-        all_waivable = all(set(row["codes"]).issubset(WAIVABLE_CODES) for row in blocked)
-        if not (want_waive and all_waivable):
-            return Response({
-                "code": "requirements_unmet",
-                "message": "Some teams do not meet this event's requirements.",
-                "blocked": blocked,
-                "checks_run": CHECKS_RUN,
-            }, status=409)
+        return Response({
+            "code": "requirements_unmet",
+            "message": "Some teams cannot be added.",
+            "blocked": blocked,
+            "checks_run": CHECKS_RUN,
+        }, status=409)
 
-        # Write a REAL waiver per team, attributed to this admin, BEFORE adding them.
-        for row in blocked:
-            _grant_waiver(
-                event,
-                actor=admin,
-                reason=waive_reason,
-                codes=row["codes"],
-                team=Team.objects.get(team_id=row["team_id"]),
-            )
+    # Attributed to the admin who added them, so "why is that team in this event" has an answer
+    # months later. Written BEFORE the registrations, so a failure here cannot leave a team added
+    # with no record of what it was excused from.
+    for team, stepped_over in bypassed:
+        _grant_waiver(
+            event,
+            actor=admin,
+            reason=f"Added directly to the event by {admin.username}.",
+            codes=stepped_over,
+            team=team,
+        )
 
     new_registrations = []
     new_tournament_teams = []

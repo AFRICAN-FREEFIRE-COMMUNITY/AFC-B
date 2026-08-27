@@ -1,16 +1,24 @@
 """
-add_teams_to_event stops being a silent bypass, and the waiver API.
+add_teams_to_event: bans still refuse, plus the waiver API.
 
-WHAT IT DID: wrote RegisteredCompetitors directly. Across the whole function body there was not one
-reference to _missing_registration_assets, is_banned, BannedPlayer or max_teams_or_players. An admin
-adding teams in bulk skipped every rule with no record that anything had been skipped. Anyone who
-believed invited teams skip requirements was probably looking at the output of THIS endpoint,
-because an invitation accept has always replayed through register_for_event.
+THE RULE CHANGED ON 2026-08-27 (owner): "if an organizer or admin is adding them, they
+automatically bypass those requirements. Invitations is different." A direct add is a human
+decision by the person the requirements exist to serve, so requirements no longer refuse it. An
+invited team still registers ITSELF through register_for_event, which enforces everything.
 
-WHAT IT DOES NOW: runs the checks it can run, reports who fails and why, and adds a failing team
-only with an explicit waiver that writes a real EventRequirementWaiver row attributed to the admin.
+WHAT THIS FILE STILL COVERS: the things that did NOT change. Bans still refuse. An existing waiver
+is still honoured. The waiver API is unchanged.
 
-DELIBERATELY SMALLER THAN register_for_event, and the response says so via checks_run.
+THE NEW RULE IS COVERED IN test_bulk_add_reasons.py, deliberately in one place rather than split
+across two files. Two tests that used to live here (a requirement refusing an add, and a waive
+needing a reason) were REMOVED rather than adjusted, because they pinned behaviour the owner has
+since reversed. Keeping them "passing" by weakening the assertion would have left a test that
+looked like it guarded something it no longer guards.
+
+WHAT IT USED TO DO, worth keeping written down: it wrote RegisteredCompetitors directly, with no
+reference anywhere in the function to _missing_registration_assets, is_banned, BannedPlayer or
+max_teams_or_players. So bans and capacity were skipped too, silently. Bans are now checked and
+a bypassed requirement is now RECORDED, which is the part of that original concern that survives.
 
 Run: AFC_TEST_DB_NAME=test_afc_conn python manage.py test afc_tournament_and_scrims.test_bulk_add_gate
 """
@@ -81,21 +89,13 @@ class BulkAddGateTests(TestCase):
         event = _event(self.admin, event_name="Bulk Cup Checks")
         self.assertIn("checks_run", self._add(event).json())
 
-    def test_a_team_failing_a_requirement_is_refused_and_named(self):
-        event = _event(self.admin, require_team_logo=True, event_name="Bulk Logo Cup")
-        resp = self._add(event)
-        self.assertEqual(resp.status_code, 409, resp.content)
-        body = resp.json()
-        self.assertEqual(body["code"], "requirements_unmet")
-        self.assertEqual(body["blocked"][0]["team_name"], "Bulk FC")
-        self.assertIn("team_logo_required", body["blocked"][0]["codes"])
-        self.assertIn("checks_run", body)
-        self.assertFalse(
-            RegisteredCompetitors.objects.filter(event=event, team=self.team).exists(),
-            "a refused team must not be written",
-        )
+    def test_a_direct_add_over_a_requirement_writes_a_real_waiver_row(self):
+        """The record survives the rule change.
 
-    def test_waive_true_adds_the_team_and_writes_a_real_waiver_row(self):
+        The add now succeeds because a direct add bypasses requirements, not because `waive` was
+        passed; the flag is accepted and ignored. What matters, and what this still pins, is that
+        stepping over a requirement leaves an EventRequirementWaiver naming the code and the admin.
+        """
         event = _event(self.admin, require_team_logo=True, event_name="Bulk Waive Cup")
         resp = self._add(event, waive=True, reason="Invited by AFC, logo coming later")
         self.assertEqual(resp.status_code, 200, resp.content)
@@ -106,14 +106,6 @@ class BulkAddGateTests(TestCase):
         self.assertEqual(waiver.created_by_id, self.admin.user_id)
         self.assertIn("team_logo_required", waiver.waived_codes)
         self.assertTrue(waiver.reason)
-
-    def test_waive_without_a_reason_is_refused(self):
-        event = _event(self.admin, require_team_logo=True, event_name="Bulk No Reason Cup")
-        resp = self._add(event, waive=True)
-        self.assertEqual(resp.status_code, 400)
-        self.assertFalse(
-            RegisteredCompetitors.objects.filter(event=event, team=self.team).exists()
-        )
 
     def test_a_banned_team_cannot_be_waived_in(self):
         event = _event(self.admin, event_name="Bulk Ban Cup")
