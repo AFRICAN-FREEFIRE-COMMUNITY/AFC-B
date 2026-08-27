@@ -203,12 +203,23 @@ def finish_connection(request, provider_slug):
 
 @api_view(["POST"])
 def link_google(request):
-    """Link Google from an ID token the frontend already holds. No redirect round trip.
+    """Link Google from whatever the browser holds. No redirect round trip.
 
     AUTH     Bearer SessionToken
-    REQUEST  {"credential": "<Google ID token>"}
-    RESPONSE 200 {"message", "connections": [...]} | 401 unverifiable | 409 already_linked
+    REQUEST  {"code": "<GIS popup auth code>"} or {"credential": "<Google ID token>"}
+    RESPONSE 200 {"message", "connections": [...]} | 400 misconfigured or neither shape sent
+             | 401 unverifiable | 409 already_linked
     CONSUMED BY frontend lib/connections.ts linkGoogle().
+
+    BOTH SHAPES ARE ACCEPTED, and that is the bug fix (owner 2026-08-27, "We could not start
+    connecting Google"). This used to take `credential` only, which is a Google ID TOKEN. The
+    sign-in button moved to the GIS popup CODE client on 2026-06-21 so it could be a full-width
+    AFC button rather than Google's locked 400px iframe, so the browser has held a CODE ever
+    since. Connect could therefore never succeed: the page had a code and this endpoint only
+    understood id tokens.
+
+    The exchange is NOT reimplemented here. providers.google.resolve_id_token is the one copy,
+    shared with the sign-in path, because those two drifting apart is what caused this.
     """
     user, refusal = _require_player(request)
     if refusal:
@@ -218,9 +229,20 @@ def link_google(request):
     if not provider or not provider.enabled():
         return Response({"message": "Unknown provider."}, status=status.HTTP_404_NOT_FOUND)
 
-    credential = (request.data or {}).get("credential")
-    if not credential:
-        return Response({"message": "credential is required"}, status=status.HTTP_400_BAD_REQUEST)
+    from django.conf import settings
+
+    from .providers.google import GoogleAuthError, resolve_id_token
+
+    payload = request.data or {}
+    try:
+        credential = resolve_id_token(
+            credential=payload.get("credential"),
+            code=payload.get("code"),
+            client_id=provider.client_id(),
+            client_secret=(getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "") or "").strip() or None,
+        )
+    except GoogleAuthError as exc:
+        return Response({"message": exc.message}, status=exc.status_code)
 
     # The SAME verification the sign-in path uses (afc_auth.views.google_auth), so a credential good
     # enough to log in with is good enough to link, and neither can drift from the other.
