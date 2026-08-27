@@ -85,8 +85,107 @@ class VentEndpointsTests(SimpleTestCase):
         self.assertNotIn("identity:teams", get_provider("vent").scopes)
 
 
+# The EXACT body v-ent.co returns, from vent_partners/views_sso.py::sso_userinfo (read 2026-08-28),
+# including the envelope its error responses also use. Kept as data so a drift shows up as a diff.
+REAL_USERINFO = {
+    "status": "success",
+    "message": "Profile",
+    "data": {
+        "sub": "4821",
+        "username": "Layott",
+        "name": "Layo Tunde",
+        "country": "Nigeria",
+        "city": "Lagos",
+        "picture": "https://api.v-ent.co/media/profiles/layott.png",
+        "is_founding_member": True,
+        "email": "layott@example.com",
+        "email_verified": True,
+    },
+}
+
+
+class VentRealUserinfoTests(SimpleTestCase):
+    """The shape v-ent.co actually sends, rather than a shape I hoped for."""
+
+    def test_the_real_response_maps_onto_the_house_shape(self):
+        got = vent.normalize(REAL_USERINFO)
+        self.assertEqual(got["provider_user_id"], "4821")
+        self.assertEqual(got["username"], "Layott")
+        self.assertEqual(got["email"], "layott@example.com")
+        self.assertEqual(got["avatar_url"], "https://api.v-ent.co/media/profiles/layott.png")
+
+    def test_a_player_with_no_avatar_still_links(self):
+        """`picture` is NULL when the player has never uploaded one, which is common."""
+        body = {**REAL_USERINFO, "data": {**REAL_USERINFO["data"], "picture": None}}
+        got = vent.normalize(body)
+        self.assertEqual(got["avatar_url"], "")
+        self.assertEqual(got["provider_user_id"], "4821")
+
+    def test_without_the_email_scope_the_link_still_works(self):
+        """email and email_verified are only present when identity:email was granted. AFC does ask
+        for it, but a player can decline a scope on the consent screen."""
+        data = {k: v for k, v in REAL_USERINFO["data"].items()
+                if k not in ("email", "email_verified")}
+        got = vent.normalize({**REAL_USERINFO, "data": data})
+        self.assertEqual(got["email"], "")
+        self.assertEqual(got["provider_user_id"], "4821")
+
+    def test_the_subject_is_the_v_ent_user_id_and_not_the_username(self):
+        """A username can be changed; the row keyed on it would then point at nobody. `sub` is the
+        stable id, and it is what ConnectedAccount must store."""
+        self.assertEqual(vent.normalize(REAL_USERINFO)["provider_user_id"], "4821")
+
+
+# The EXACT token body, from vent_partners/views_sso.py::sso_token (`_ok({...})`, read 2026-08-28).
+REAL_TOKEN_RESPONSE = {
+    "status": "success",
+    "message": "Token",
+    "data": {"access_token": "vent_at_abc123", "token_type": "Bearer", "expires_in": 3600},
+}
+
+
+class VentAccessTokenTests(SimpleTestCase):
+    """v-ent.co wraps the access token, and reading it flat breaks every connection.
+
+    This is the nastiest of the three defects in this integration, because it fails LATE: the
+    player has already approved AFC on v-ent.co's consent screen by the time it goes wrong, and
+    the error surfaces as a 401 from v-ent.co, so it reads as their fault rather than ours.
+    """
+
+    def test_the_wrapped_token_is_found(self):
+        from afc_auth.connections import oauth
+        provider = get_provider("vent")
+        self.assertEqual(oauth.access_token(provider, REAL_TOKEN_RESPONSE), "vent_at_abc123")
+
+    def test_the_FLAT_read_would_have_returned_nothing(self):
+        """Pins the bug itself. The old call site was tokens.get("access_token"), which is None
+        here, so AFC sent "Bearer None" and v-ent.co answered 401 BAD_TOKEN."""
+        self.assertIsNone(REAL_TOKEN_RESPONSE.get("access_token"))
+
+    def test_a_flat_body_still_works_if_v_ent_ever_changes(self):
+        from afc_auth.connections import oauth
+        provider = get_provider("vent")
+        self.assertEqual(oauth.access_token(provider, {"access_token": "flat"}), "flat")
+
+    def test_other_providers_keep_the_plain_top_level_read(self):
+        """Discord and Google answer the flat OAuth 2 body. Unwrapping them would break both."""
+        from afc_auth.connections import oauth
+        for slug in ("discord", "google"):
+            self.assertEqual(
+                oauth.access_token(get_provider(slug), {"access_token": "flat"}), "flat"
+            )
+
+    def test_a_junk_body_yields_an_empty_token_rather_than_None(self):
+        """An empty string fails the profile fetch cleanly; None would be formatted into the
+        Authorization header as the text "None"."""
+        from afc_auth.connections import oauth
+        provider = get_provider("vent")
+        self.assertEqual(oauth.access_token(provider, None), "")
+        self.assertEqual(oauth.access_token(provider, {"status": "error", "data": None}), "")
+
+
 class VentNormalizeTests(SimpleTestCase):
-    """The claim names are unconfirmed, so the tolerance is what gets tested."""
+    """The tolerance around that shape, kept because renaming a key must not hard-fail a link."""
 
     def test_an_oidc_shaped_profile_is_read(self):
         got = vent.normalize(

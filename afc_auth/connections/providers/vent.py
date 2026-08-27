@@ -1,10 +1,10 @@
 """
 v-ent.co adapter.
 
-STATUS 2026-08-27: endpoints and scopes CORRECTED against v-ent.co's own published metadata, and
-AFC's client registration confirmed live. Still not exercised end to end with a real player token,
-because that needs credentials set on a running box; `normalize()` in particular is written to a
-profile shape that has NOT been seen.
+STATUS 2026-08-28: endpoints and scopes CORRECTED against v-ent.co's own published metadata, AFC's
+client registration confirmed live, and the userinfo claim names confirmed from v-ent.co's source.
+Still not exercised end to end with a real player token, because that needs credentials set on a
+running box.
 
 WHAT WAS WRONG, AND HOW IT WAS FOUND
     This file used to derive the endpoints from VENT_ISSUER by the usual OIDC convention:
@@ -45,12 +45,31 @@ CONFIRMED LIVE (2026-08-27), with AFC's client id and no secret:
     "https://api.africanfreefirecommunity.com/auth/connections/vent/callback/", so AFC's
     registration and its callback URL are both correct on v-ent.co's side.
 
-WHAT IS STILL UNVERIFIED
-    The exact claim names in v-ent.co's userinfo response. Reading it needs a real access token,
-    which needs a signed-in player, so `normalize()` below accepts BOTH the OIDC spellings and the
-    plain ones the scope labels imply ("Your username, display name, country and avatar"). That is
-    a deliberate tolerance, written down rather than hidden: the first real connection confirms it,
-    and a missing optional field must not fail the link.
+THE USERINFO SHAPE, CONFIRMED 2026-08-28
+    Read from v-ent.co's own source (`vent_partners/views_sso.py::sso_userinfo`), not guessed. The
+    body is the same `{"status", "code", "message", "data"}` envelope its error responses use, and
+    `data` carries:
+
+        sub                 the v-ent user id, as a string   <- the subject AFC keys on
+        username            handle
+        name                full name
+        country             ISO country
+        city                (their `state` column)
+        picture             absolute URL, or NULL when the player has no avatar
+        is_founding_member  bool
+        email               ONLY when identity:email was granted
+        email_verified      ONLY when identity:email was granted
+        teams               ONLY when identity:teams was granted, which AFC does not request
+
+    Every field `normalize()` needs resolves: sub, username, email, picture. The tolerance below is
+    kept anyway, because it costs nothing and the alternative is a hard failure if v-ent.co renames
+    a key. `country` is available and deliberately unused: the house shape has no slot for it, and
+    AFC already asks players their country.
+
+    CAVEAT, stated because it is the honest limit: this was read from a checkout of v-ent.co's
+    backend (commit bea71c2b), NOT from a live response, which would need a real player token. The
+    metadata document served by the live API matches that same checkout exactly, which is good
+    evidence the two agree, but it is evidence rather than proof.
 
 SETTINGS
     VENT_CLIENT_ID / VENT_CLIENT_SECRET   issued by v-ent.co
@@ -103,6 +122,32 @@ def endpoints():
 def metadata_url():
     """v-ent.co's own metadata document, for a human checking this file has not drifted."""
     return f"{_base('VENT_ISSUER', DEFAULT_ISSUER)}{METADATA_PATH}"
+
+
+def access_token(payload):
+    """Pull the access token out of v-ent.co's TOKEN response.
+
+    This exists because v-ent.co wraps it. Discord and Google answer the flat OAuth 2 body, so
+    `payload["access_token"]` works there and the generic reader is enough. v-ent.co answers its
+    house envelope, the same one its errors use:
+
+        {"status": "success", "message": "Token",
+         "data": {"access_token": "...", "token_type": "Bearer", "expires_in": 3600}}
+
+    Read from `vent_partners/views_sso.py::sso_token`, which returns `_ok({...})`.
+
+    WHAT THIS PREVENTS, because it is not a small failure: the generic reader returns None here,
+    AFC then calls userinfo with `Authorization: Bearer None`, v-ent.co answers 401 BAD_TOKEN, and
+    the connection fails for EVERY player, AFTER they have already approved AFC on v-ent.co's
+    consent screen. It would have looked like v-ent.co's fault.
+
+    Tolerant in the same way and for the same reason as normalize(): if v-ent.co ever flattens the
+    body, the top level is tried too.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    inner = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    return str(inner.get("access_token") or payload.get("access_token") or "").strip()
 
 
 def normalize(profile):

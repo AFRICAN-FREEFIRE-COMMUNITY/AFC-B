@@ -176,7 +176,10 @@ def finish_connection(request, provider_slug):
             code_verifier=payload.get("code_verifier", ""),
             redirect_uri=_callback_uri(request, provider.slug),
         )
-        profile = oauth.fetch_profile(provider, tokens.get("access_token"))
+        # NOT tokens.get("access_token"): v-ent.co wraps the token in its own envelope, so the
+        # flat read returned None and the profile fetch went out as "Bearer None". oauth.py knows
+        # which providers wrap and which do not.
+        profile = oauth.fetch_profile(provider, oauth.access_token(provider, tokens))
     except oauth.OAuthError:
         return redirect(f"{destination}?connect_error=provider")
 
