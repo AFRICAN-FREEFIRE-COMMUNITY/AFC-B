@@ -26,7 +26,7 @@ from afc_tournament_and_scrims.views import (
 
 
 def _scrims_with_maps(creator, n_maps, all_inputted=True):
-    today = datetime.date.today()
+    today = timezone.localdate()
     ev = Event.objects.create(
         competition_type="scrims", participant_type="squad", event_type="internal",
         max_teams_or_players=12, event_name="Scrim Day 8", event_mode="virtual",
@@ -88,7 +88,7 @@ class EventStatusDisplayTests(TestCase):
         )
 
     def _event(self, **over):
-        today = datetime.date.today()
+        today = timezone.localdate()
         base = dict(
             competition_type="tournament", participant_type="squad", event_type="internal",
             max_teams_or_players=12, event_name="Disp Cup", event_mode="virtual",
@@ -104,13 +104,30 @@ class EventStatusDisplayTests(TestCase):
         self.assertEqual(effective_event_status(ev), "cancelled")
 
     def test_completed_event_reads_completed(self):
-        ev = self._event(event_status="completed")
+        # A genuinely finished event STARTED IN THE PAST, which is the case the reader's guard is
+        # written around: it rescues only an event that "cannot possibly have run yet" from a stale
+        # completed stamp. Anchoring this test a day back states that intent instead of leaving it
+        # balanced on the start instant, where it is one clock tick from asserting the opposite.
+        yesterday = timezone.localdate() - datetime.timedelta(days=1)
+        ev = self._event(start_date=yesterday, end_date=yesterday, event_status="completed")
         self.assertEqual(effective_event_status(ev), "completed")
+
+    def test_a_completed_stamp_on_an_event_that_has_not_started_reads_upcoming(self):
+        """The other half of the same guard, which had no test.
+
+        A clone of a finished event used to carry the source's "completed" stamp with a FUTURE
+        start date, and the badge said completed forever. The reader rescues exactly that case.
+        This pins it, and it is also why the test above must not sit on the boundary: without a
+        deliberate past date, these two tests assert opposite things about the same fixture.
+        """
+        tomorrow = timezone.localdate() + datetime.timedelta(days=1)
+        ev = self._event(start_date=tomorrow, end_date=tomorrow, event_status="completed")
+        self.assertEqual(effective_event_status(ev), "upcoming")
 
     def test_past_end_reads_completed_in_event_timezone(self):
         # Event ended yesterday: regardless of tz it is over, so the badge must read completed
         # (not "ongoing"). Exercises the end-instant completion branch with a real IANA timezone.
-        yesterday = datetime.date.today() - datetime.timedelta(days=1)
+        yesterday = timezone.localdate() - datetime.timedelta(days=1)
         ev = self._event(start_date=yesterday, end_date=yesterday, event_status="ongoing",
                          timezone="Africa/Lagos")
         self.assertEqual(effective_event_status(ev), "completed")
@@ -127,7 +144,7 @@ class UpdateSweepTests(TestCase):
         )
 
     def _past_event(self, suppressed=False):
-        d = datetime.date.today() - datetime.timedelta(days=2)
+        d = timezone.localdate() - datetime.timedelta(days=2)
         return Event.objects.create(
             competition_type="tournament", participant_type="squad", event_type="internal",
             max_teams_or_players=12, event_name="Past Cup", event_mode="virtual",
@@ -181,7 +198,7 @@ class ReopenEventTests(APITestCase):
 
     def test_reopen_past_dated_stuck_upcoming_event(self):
         # Past dates, stored status stuck on "upcoming" (the sweep never ran) = the LEGACY SCRIMS bug.
-        d = datetime.date.today() - datetime.timedelta(days=2)
+        d = timezone.localdate() - datetime.timedelta(days=2)
         ev = self._event(d, d, event_status="upcoming")
         # Sanity: the badge already reads completed, which is why the UI locked it.
         self.assertEqual(effective_event_status(ev), "completed")
@@ -192,19 +209,19 @@ class ReopenEventTests(APITestCase):
         self.assertTrue(ev.auto_complete_suppressed)          # sweep won't re-complete it
 
     def test_reopen_completed_event_still_works(self):
-        d = datetime.date.today() - datetime.timedelta(days=2)
+        d = timezone.localdate() - datetime.timedelta(days=2)
         ev = self._event(d, d, event_status="completed")
         self.assertEqual(self._reopen(ev.event_id).status_code, 200)
 
     def test_reopen_rejects_genuinely_upcoming_event(self):
         # Future dates + upcoming = it has NOT happened; must not be reopenable.
-        future = datetime.date.today() + datetime.timedelta(days=5)
+        future = timezone.localdate() + datetime.timedelta(days=5)
         ev = self._event(future, future, event_status="upcoming")
         res = self._reopen(ev.event_id)
         self.assertEqual(res.status_code, 400)
         self.assertIn("upcoming", res.data["message"].lower())
 
     def test_reopen_rejects_cancelled_event(self):
-        d = datetime.date.today() - datetime.timedelta(days=2)
+        d = timezone.localdate() - datetime.timedelta(days=2)
         ev = self._event(d, d, event_status="cancelled")
         self.assertEqual(self._reopen(ev.event_id).status_code, 400)
