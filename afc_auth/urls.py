@@ -6,6 +6,7 @@ from .feature_interest import feature_interest
 # CONNECTED ACCOUNTS (owner 2026-08-26): the player's outside accounts (Discord, Google, v-ent.co).
 # Its own package rather than more functions in views.py, and deliberately routed under /auth/
 # rather than /sso/, see the module docstring for the CSRF reason.
+from .vent_sso import vent_sso_callback, vent_sso_exchange, vent_sso_start
 from .connections.views import (
     disconnect as disconnect_connection,
     finish_connection,
@@ -173,6 +174,13 @@ urlpatterns = [
          name='sessions_sign_out_others'),
     # Discord sign-in/sign-up (SSO) - start -> Discord, callback exchanges the code +
     # issues a session, exchange swaps the one-time handoff for the token. See views.
+    # Sign in / sign up with v-ent.co (owner 2026-08-28). Same three-step shape as Discord's:
+    # start redirects to the provider, callback lands the code and bounces a one-time handoff to
+    # the frontend, exchange swaps that handoff for the real result. See afc_auth/vent_sso.py.
+    path('vent/sso/start/', vent_sso_start, name='vent_sso_start'),
+    path('vent/sso/callback/', vent_sso_callback, name='vent_sso_callback'),
+    path('vent/sso/exchange/', vent_sso_exchange, name='vent_sso_exchange'),
+
     path('discord/sso/start/', discord_sso_start, name='discord_sso_start'),
     path('discord/sso/callback/', discord_sso_callback, name='discord_sso_callback'),
     path('discord/sso/exchange/', discord_sso_exchange, name='discord_sso_exchange'),
