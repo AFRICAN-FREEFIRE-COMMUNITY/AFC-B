@@ -83,7 +83,12 @@ _REGISTRY = {
         authorize_url="",   # resolved from the issuer at call time, see providers/vent.py
         token_url="",
         userinfo_url="",
-        scopes=("openid", "profile", "email"),
+        # v-ent.co's OWN scope names, from its published metadata (scopes_supported:
+        # identity, identity:email, identity:teams). This used to ask for `openid profile email`,
+        # which v-ent.co does not publish at all. `identity:teams` is deliberately NOT requested:
+        # AFC only needs to know WHO the player is, and asking for their team list would be
+        # collecting something no AFC surface reads.
+        scopes=("identity", "identity:email"),
         normalize=vent.normalize,
     ),
 }

@@ -5268,6 +5268,13 @@ def get_event_details(request):
                             "tournament_team_id",
                             "tournament_team__team__team_name",
                             "placement",
+                            # played (owner report 2026-08-27): whether this team took part in this
+                            # map. It was stored but never SELECTED, so "did not play" never reached
+                            # the browser: the manual entry screen re-seeded every such team as
+                            # played with no placement, and the organizer had to untick them again
+                            # on every single open before the save would be accepted. The column has
+                            # existed all along; only the read was missing.
+                            "played",
                             "kills",
                             "placement_points",
                             "kill_points",
@@ -6021,6 +6028,10 @@ def get_event_details_not_logged_in(request):
                                  "tournament_team_id",
                                  "tournament_team__team__team_name",
                                  "placement",
+                                 # played: see get_event_details above. The public payload must
+                                 # agree with the logged-in one, or a map reads differently
+                                 # depending on who is looking at it.
+                                 "played",
                                  "kills",
                                  "placement_points",
                                  "kill_points",
@@ -14421,6 +14432,10 @@ def get_all_leaderboard_details_for_event(request):
                             # Flag beside the team name (see the team_country annotation above).
                             "team_country": team_stat.team_country,
                             "placement": team_stat.placement,
+                            # played: see get_event_details. Same fact, third hand-built copy of
+                            # the same payload; leaving it out here would let the results editor
+                            # disagree with the event page about whether a team turned up.
+                            "played": team_stat.played,
                             "kills": team_stat.kills,
                             "placement_points": team_stat.placement_points,
                             "kill_points": team_stat.kill_points,
