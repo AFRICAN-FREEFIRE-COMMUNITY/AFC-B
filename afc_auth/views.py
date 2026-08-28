@@ -6245,13 +6245,43 @@ def discord_sso_callback(request):
     if not user.is_active:
         return redirect(f"{fo}/discord/callback?status=inactive")
 
-    # Bonus: auto-link the Discord account (unless it already belongs to someone else).
+    # ── LINK the account, exactly as pressing Connect would (owner 2026-08-28) ──────────────────
+    # "a sign in and sign up should also be the same as linking."
+    #
+    # This used to set three legacy User columns by hand and stop there, so signing in with Discord
+    # produced NO ConnectedAccount row: the player was signed in via Discord and their profile page
+    # still said Discord was not connected. Google already went through link_account; Discord was
+    # the odd one out.
+    #
+    # link_account is the single writer of that table and it ALSO dual-writes the legacy columns
+    # (see connections/links.py), so this is one call replacing the hand-written block rather than
+    # a second write beside it.
+    #
+    # THE GUARD IS KEPT, and it is the part that matters: a Discord identity already attached to a
+    # DIFFERENT AFC account is never taken. Dropping it while tidying would let one Discord account
+    # walk onto somebody else's AFC profile, which is a security regression rather than a cosmetic
+    # one. Losing the link is a bad day; stealing an identity is a much worse one, so a failure
+    # here is swallowed exactly as before: the player is already authenticated and must not be
+    # locked out because a bookkeeping write failed.
     try:
-        if discord_id and not User.objects.filter(discord_id=discord_id).exclude(user_id=user.user_id).exists():
-            user.discord_id = discord_id
-            user.discord_username = me.get("username", "")
-            user.discord_connected = True
-            user.save()
+        if discord_id and not (
+            User.objects.filter(discord_id=discord_id)
+            .exclude(user_id=user.user_id)
+            .exists()
+        ):
+            from afc_auth.connections import links as connection_links
+            from afc_auth.connections.providers import discord as discord_provider
+
+            # The SAME normalize() the Connect flow uses, fed the SAME /users/@me payload, so the
+            # row a sign-in writes is indistinguishable from the row Connect writes. Building the
+            # dict by hand here would have been a second, drifting definition of "a Discord
+            # identity", and the avatar URL in particular is derived, not given.
+            connection_links.link_account(
+                user,
+                "discord",
+                discord_provider.normalize(me),
+                scopes=("identify", "email"),
+            )
     except Exception:
         pass
 
