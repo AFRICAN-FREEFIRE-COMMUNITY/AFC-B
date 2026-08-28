@@ -90,6 +90,21 @@ def exchange_code(provider, code, code_verifier, redirect_uri):
     return response.json()
 
 
+def access_token(provider, token_response):
+    """The access token out of whatever shape the provider answered with.
+
+    Most providers return the flat OAuth 2 body, so the token is at the top level. v-ent.co wraps
+    it in its house `{"status", "data"}` envelope, so it needs its own reader (see
+    providers/vent.py). Routed here rather than at the call site so the caller never has to know
+    which provider it is holding.
+    """
+    if provider.slug == "vent":
+        return vent.access_token(token_response)
+    if not isinstance(token_response, dict):
+        return ""
+    return str(token_response.get("access_token") or "").strip()
+
+
 def fetch_profile(provider, access_token):
     """The provider's own profile document. The token is used here and then dropped: AFC stores no
     provider tokens (see the ConnectedAccount docstring)."""
