@@ -138,6 +138,80 @@ class ConfigureTests(EngagementBase):
         self.assertTrue(row["requires_approval"])
 
 
+class PlayerNoteTests(EngagementBase):
+    """The organizer's explainer for players (owner 2026-08-29).
+
+    "if there can be a place for admins or organizers to add a description of what they want the
+    users to see, like an explainer for players and teams to understand what they need to do."
+
+    It lives on the SPONSORSHIP, not the sponsor: the same brand can back several events and want
+    to say something different on each.
+    """
+
+    def _configure(self, body, tok=None):
+        return self.client.patch(
+            f"/sponsors/{self.sponsor.id}/events/{self.event.event_id}/configure/",
+            data=json.dumps(body), content_type="application/json",
+            **bearer(tok or self.admin_tok),
+        )
+
+    def test_it_saves_and_comes_back(self):
+        note = "Create a Grow account with the link below, then paste the username you chose."
+        self.assertEqual(self._configure({"player_note": note}).status_code, 200)
+        self.assertEqual(
+            EventSponsorship.objects.get(
+                sponsor=self.sponsor, event=self.event).player_note, note)
+
+    def test_PLAYERS_see_it_on_the_public_read(self):
+        """The registration page is the whole point. If it only reached the admin form the field
+        would be decoration."""
+        note = "Follow the page first, then send your username."
+        self._configure({"player_note": note})
+        resp = self.client.get(f"/sponsors/for-event/{self.event.event_id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["results"][0]["player_note"], note)
+
+    def test_absent_means_UNCHANGED_not_cleared(self):
+        """Same rule as engagements and requires_approval. A caller that does not know about this
+        field must not be able to wipe somebody's explainer by saving something else."""
+        self._configure({"player_note": "keep me"})
+        self._configure({"requires_approval": True})
+        self.assertEqual(
+            EventSponsorship.objects.get(
+                sponsor=self.sponsor, event=self.event).player_note, "keep me")
+
+    def test_an_explicit_empty_string_CLEARS_it(self):
+        """Because that is the only way to remove a note once written."""
+        self._configure({"player_note": "temporary"})
+        self._configure({"player_note": ""})
+        self.assertEqual(
+            EventSponsorship.objects.get(
+                sponsor=self.sponsor, event=self.event).player_note, "")
+
+    def test_a_sponsorship_with_no_note_is_unaffected(self):
+        """Every sponsorship that exists today has none, so the empty case is the common case."""
+        resp = self.client.get(f"/sponsors/for-event/{self.event.event_id}/")
+        self.assertEqual(resp.json()["results"][0]["player_note"], "")
+
+    def test_it_is_trimmed(self):
+        self._configure({"player_note": "   padded   "})
+        self.assertEqual(
+            EventSponsorship.objects.get(
+                sponsor=self.sponsor, event=self.event).player_note, "padded")
+
+    def test_an_essay_is_refused_rather_than_silently_truncated(self):
+        """A TextField has no length of its own, so without this the end of a long note would be
+        stored fine and simply overwhelm the registration page. Refusing says so."""
+        resp = self._configure({"player_note": "x" * 2001})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("too long", resp.json()["message"].lower())
+
+    def test_a_player_cannot_set_it(self):
+        """It is organizer copy shown to players, not something a player writes."""
+        resp = self._configure({"player_note": "hacked"}, tok=self.player_tok)
+        self.assertIn(resp.status_code, (401, 403))
+
+
 class SoloRegistrationTests(EngagementBase):
     def test_register_creates_submissions_and_parks_pending(self):
         resp = self._register_solo(self.player_tok, self._full_submissions())

@@ -181,8 +181,27 @@ def configure_sponsorship(request, sponsor_id, event_id):
         sp.engagements = engagements
     if "requires_approval" in request.data:
         sp.requires_approval = bool(request.data.get("requires_approval"))
-    sp.save(update_fields=["engagements", "requires_approval"])
+    if "player_note" in request.data:
+        # The organizer's explainer for players (owner 2026-08-29). Absent means UNCHANGED, the
+        # same rule the two fields above follow, so a caller that does not know about this field
+        # cannot blank it. An explicit "" clears it, which is how a note gets removed.
+        note = request.data.get("player_note")
+        note = "" if note is None else str(note).strip()
+        if len(note) > PLAYER_NOTE_MAX:
+            return Response(
+                {"message": f"That explainer is too long. Keep it under {PLAYER_NOTE_MAX} characters."},
+                status=400,
+            )
+        sp.player_note = note
+    sp.save(update_fields=["engagements", "requires_approval", "player_note"])
     return Response({"message": "Sponsorship updated.", "sponsorship": _serialize_sponsorship(sp)})
+
+
+# Long enough for a real paragraph of instructions, short enough that it cannot be used to paste an
+# essay into a registration page. Enforced on the way in rather than by the column, because a
+# TextField has no length of its own and a silent truncation would lose the end of somebody's
+# sentence without telling them.
+PLAYER_NOTE_MAX = 2000
 
 
 def _serialize_sponsorship(sp):
@@ -198,6 +217,9 @@ def _serialize_sponsorship(sp):
         },
         "requires_approval": sp.requires_approval,
         "engagements": sp.engagements or [],
+        # The organizer's explainer, read by the registration step and by the wizard rehydrate.
+        # Always a string, never null, so the frontend needs no ?? "" at either call site.
+        "player_note": sp.player_note or "",
     }
 
 
