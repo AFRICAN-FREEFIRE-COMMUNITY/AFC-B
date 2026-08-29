@@ -92,6 +92,18 @@ class EventSponsorship(models.Model):
     # P3: ordered engagement entries ({type: collect_id|follow_social|create_account|join_group,
     # ...} - full schema in the design doc). Unused by P1 logic.
     engagements = models.JSONField(default=list, blank=True)
+    # What the ORGANIZER wants players to read before doing the sponsor's tasks (owner 2026-08-29:
+    # "a place for admins or organizers to add a description of what they want the users to see,
+    # like an explainer for players and teams to understand what they need to do").
+    #
+    # WHY IT LIVES ON THE SPONSORSHIP AND NOT ON THE SPONSOR: the same brand can back several
+    # events and ask for something different each time. "Sign up with our referral link and paste
+    # your username" belongs to THIS event's deal, not to the brand for ever.
+    #
+    # Optional by design. A sponsorship without one behaves exactly as before, and the registration
+    # step simply shows the engagement fields on their own, as it always has. It is plain text, not
+    # HTML: it is rendered into a player-facing page and there is no sanitiser in that path.
+    player_note = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
