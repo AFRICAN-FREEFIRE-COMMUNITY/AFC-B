@@ -28,6 +28,7 @@
 # has already decided the request is legitimate.
 # ──────────────────────────────────────────────────────────────────────────────
 import ipaddress
+import os
 from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
@@ -395,7 +396,31 @@ def provision_sso_application(
     # application: a partner with no logo simply renders without one (authorize.html
     # tests resolved_logo_url() before drawing an <img>).
     if logo_file is not None:
-        application.logo = logo_file
+        # SAVE UNDER A BARE FILENAME. The two callers hand very different objects in here:
+        #
+        #   admin_api.py          an UploadedFile straight from request.FILES, whose .name is
+        #                         already bare ("logo.png").
+        #   partner_apply approve the applicant's ALREADY-STORED file, carried across as
+        #                         `application.logo.file`, whose .name is the ABSOLUTE PATH ON
+        #                         DISK ("/home/.../media/partner_application_logos/logo.png").
+        #
+        # Assigning that second one to the field and saving raised SuspiciousFileOperation on
+        # every approval (owner report 2026-08-28). FileField.generate_filename does
+        # posixpath.join(upload_to, name), a join whose right-hand side is absolute DISCARDS the
+        # left, and validate_file_name then refuses the absolute result with "Detected path
+        # traversal attempt in '...'". Django turns that into its own bare 400 HTML page rather
+        # than a JSON body, so the owner saw raw markup in a toast and the server log said
+        # nothing (see the LOGGING block in afc/settings.py, added with this fix).
+        #
+        # Taking the basename is what makes both callers behave identically, and it is the name
+        # upload_to is then prepended to. Backslashes are folded first for the same reason
+        # django.core.files.storage.Storage.generate_filename folds them: a Windows dev box
+        # stores its paths that way.
+        filename = os.path.basename(str(getattr(logo_file, "name", "") or "").replace("\\", "/"))
+        # A file whose name is nothing but a directory would leave us with "", and
+        # validate_file_name rejects an empty basename too. A logo is optional decoration, so a
+        # fixed fallback beats losing the whole approval.
+        application.logo.save(filename or "logo", logo_file, save=False)
         application.save(update_fields=["logo"])
 
     # ── Data grants, only on the approval path ──
