@@ -775,3 +775,55 @@ SHOP_CURRENCY = os.getenv("SHOP_CURRENCY", "NGN")
 # cut) per the owner decision; set e.g. "2.5" to take 2.5%. Stored on each VendorPayout
 # row at settle time so a later change never rewrites past payouts.
 MARKETPLACE_FEE_PERCENT = os.getenv("MARKETPLACE_FEE_PERCENT", "0")
+
+
+# --------------------------------------------------------------------------------------------
+# LOGGING: make a refused request say WHY, in production
+# --------------------------------------------------------------------------------------------
+# ADDED 2026-08-29, after an approval on /a/partners returned Django's bare "Bad Request (400)"
+# HTML page and `journalctl -u django_app | grep -i suspicious` came back EMPTY even though the
+# failure had just happened. The cause was not the grep.
+#
+# Django's DEFAULT_LOGGING declares no `django.security` logger, so those records fall through to
+# the `django` logger, whose only console handler carries the `require_debug_true` filter. With
+# DEBUG=False - which is exactly production - every SuspiciousOperation is therefore logged
+# NOWHERE. The other handler, mail_admins, needs ADMINS and a mail backend, and AFC sets neither.
+#
+# That class of failure is refused BEFORE routing, so no view runs, no middleware of ours sees it,
+# and the response body is a static HTML page with no message in it. The reason existed only in an
+# exception object Django then dropped. This block is what makes it land in journalctl.
+#
+# WHAT IS COVERED, and why each one:
+#   django.security.*  DisallowedHost, SuspiciousFileOperation, RequestDataTooBig,
+#                      TooManyFieldsSent - the ones that produce that unexplained 400.
+#   django.request     4xx/5xx raised out of a view, including the traceback for a 500.
+#
+# level=WARNING deliberately: this is not request logging, gunicorn already does that. Nothing is
+# written here on a healthy request, so it stays quiet in normal operation.
+LOGGING = {
+    "version": 1,
+    # Never disable what is already configured: Celery, django-oauth-toolkit and the app's own
+    # loggers are set up elsewhere, and True here would silence them.
+    "disable_existing_loggers": False,
+    "formatters": {
+        "afc": {
+            # The logger name IS the diagnosis for a security record: Django names the logger
+            # after the exception class ("django.security.SuspiciousFileOperation"), so keeping
+            # it in the line means the grep for it works.
+            "format": "[{asctime}] {levelname} {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        # stderr, unconditionally. NO require_debug_true filter, which is the entire point:
+        # gunicorn/systemd capture this, so it reaches journalctl with DEBUG=False.
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "afc",
+        },
+    },
+    "loggers": {
+        "django.security": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+        "django.request": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+    },
+}
