@@ -22,11 +22,15 @@ boundary and the arguments are asserted.
 """
 import io
 import json
+import pathlib
+import shutil
+import tempfile
 from unittest.mock import patch
 
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
-from django.test import Client, TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 from oauth2_provider.models import get_application_model
 
@@ -728,6 +732,200 @@ class DecisionTests(PartnerApplyTestCase):
 
         self.assertEqual(body["total_count"], 0)
         self.assertEqual(body["pending_count"], 1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# 4b) Approving an application THAT CARRIES A LOGO
+#
+# WHY THIS CLASS EXISTS (owner report 2026-08-28: "APPROVING AN API APPLICATION GAVE THIS ERROR",
+# a screenshot of Django's raw "Bad Request (400)" HTML page).
+#
+# Every other approval test above provisions an application with NO logo, because _body() does not
+# attach one and _submit() posts JSON. So the single line in views_admin.decide_application that
+# carries the applicant's file across to the SSO application:
+#
+#     logo_file=application.logo.file if application.logo else None
+#
+# had never once been executed by the suite. In production, where organisations do upload a logo,
+# it raised SuspiciousFileOperation on EVERY approval: a stored FieldFile's underlying `.file.name`
+# is the ABSOLUTE path on disk, FileField.generate_filename posixpath.joins upload_to onto it (a
+# join whose right-hand side is absolute discards the left), and validate_file_name then refuses it
+# with "Detected path traversal attempt in '/.../media/partner_application_logos/logo.png'".
+#
+# TWO REASONS IT STAYED INVISIBLE, both worth remembering:
+#   * SuspiciousOperation becomes Django's own bare 400 HTML page, never a DRF JSON body, so the
+#     frontend had no message to show and the owner got raw markup in a toast.
+#   * Django's DEFAULT logging routes django.security to a console handler carrying
+#     require_debug_true, so with DEBUG=False in production the reason was recorded NOWHERE. A
+#     journalctl grep came back empty even though it had just happened. See afc/settings.py
+#     LOGGING, added with this fix so the next one is legible.
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+class ApproveWithLogoTests(PartnerApplyTestCase):
+    """The approval path when the applicant actually uploaded a logo, which is the common case."""
+
+    def setUp(self):
+        super().setUp()
+        # A throwaway MEDIA_ROOT: this class writes two real files per test (the applicant's
+        # upload, then AFC's copy of it) and must not leave them in the repo's media directory.
+        media = tempfile.mkdtemp(prefix="afc-apply-logo-")
+        self.addCleanup(shutil.rmtree, media, True)
+        media_override = override_settings(MEDIA_ROOT=media)
+        media_override.enable()
+        self.addCleanup(media_override.disable)
+
+        # Multipart, not JSON: a file cannot ride in the JSON body _submit() sends.
+        body = self._body()
+        body["logo"] = SimpleUploadedFile("logo.png", _png_bytes(), content_type="image/png")
+        body["wants_sso"] = "true"
+        body["wants_data_api"] = "false"
+        resp = self.client.post(SUBMIT_URL, data=body)
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+        self.application = PartnerApplication.objects.get(reference=resp.json()["reference"])
+        # Guard the FIXTURE, not the behaviour. If the upload silently stopped being stored, every
+        # assertion below would pass for the wrong reason: the bug only fires when a logo exists.
+        self.assertTrue(self.application.logo, "setup must produce an application WITH a logo")
+
+    def test_approving_an_application_that_has_a_logo_SUCCEEDS(self):
+        """THE REGRESSION TEST. Before the fix this was Django's 400 HTML page, and the owner saw
+        raw markup in a toast with no way to tell what had gone wrong."""
+        resp = self._approve(self.application)
+
+        self.assertEqual(resp.status_code, 200, resp.content[:400])
+        self.application.refresh_from_db()
+        self.assertEqual(self.application.status, PartnerApplication.APPROVED)
+        self.assertIsNotNone(self.application.sso_application)
+
+    def test_the_logo_is_COPIED_onto_the_provisioned_application(self):
+        """Carrying it across is the whole point of the line: the organisation uploaded the mark
+        once, at apply time, and must never be asked to send it again to get a consent screen."""
+        self._approve(self.application)
+
+        self.application.refresh_from_db()
+        sso = self.application.sso_application
+        self.assertTrue(sso.logo, "the provisioned application should carry the logo")
+        # Byte-for-byte the APPLICANT'S STORED FILE, not the bytes originally posted: the submit
+        # endpoint re-encodes an upload through Pillow (_clean_logo_upload), so what is on disk is
+        # a JPEG even when a PNG was sent. Comparing against the stored file is what makes this a
+        # test of the CARRY rather than of the re-encode.
+        self.application.logo.open("rb")
+        expected = self.application.logo.read()
+        self.application.logo.close()
+        self.assertTrue(expected, "the applicant's stored logo should have bytes")
+        self.assertEqual(sso.logo.read(), expected)
+
+    def test_the_copy_lands_under_the_sso_upload_to_with_a_BARE_name(self):
+        """The precise thing that was wrong. The stored name must be `sso_partner_logos/<file>`,
+        relative and traversal-free, never the absolute source path Django refused."""
+        self._approve(self.application)
+
+        self.application.refresh_from_db()
+        name = self.application.sso_application.logo.name
+        self.assertTrue(name.startswith("sso_partner_logos/"), name)
+        self.assertNotIn("..", name)
+        self.assertFalse(pathlib.PurePosixPath(name).is_absolute(), name)
+
+    def test_the_APPLICANT_still_keeps_their_own_copy(self):
+        """A copy, not a move. The application record is the evidence of what was submitted, and
+        the review screen still renders it after the decision."""
+        before = self.application.logo.name
+
+        self._approve(self.application)
+
+        self.application.refresh_from_db()
+        self.assertEqual(self.application.logo.name, before)
+        self.assertTrue(self.application.logo.storage.exists(before))
+
+    def test_an_application_with_NO_logo_still_approves(self):
+        """The path that already worked, pinned so the fix cannot break it. `logo_file` is None
+        here and nothing should be saved."""
+        # setUp already spent submissions from the per-IP hourly bucket, and this test needs one
+        # more. Same reason, and same remedy, as the cache.clear() in PartnerApplyTestCase.setUp.
+        cache.clear()
+        # A DIFFERENT applicant. Re-submitting the same contact_email is answered with 200 and
+        # `already_pending`, handing back the setUp application rather than making a second one,
+        # which would have made this test approve the logo-carrying row all over again.
+        resp = self.client.post(
+            SUBMIT_URL,
+            data=json.dumps(self._body(
+                organisation_name="Falcon Esports", contact_email="nia@falcon.example")),
+            content_type="application/json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        plain = PartnerApplication.objects.get(reference=resp.json()["reference"])
+        self.assertFalse(plain.logo)
+
+        resp = self._approve(plain)
+
+        self.assertEqual(resp.status_code, 200, resp.content[:400])
+        plain.refresh_from_db()
+        self.assertFalse(plain.sso_application.logo)
+
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# 4c) The reason a refused request gives, in production
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+class SecurityLoggingTests(TestCase):
+    """A request refused before routing must say WHY in the server log.
+
+    This class exists because of how long 4b took to diagnose. The approval was failing with
+    Django's bare 400 HTML page, and `journalctl -u django_app | grep -i suspicious` came back
+    EMPTY, which read as "it never happened" when the truth was "it is never logged".
+
+    Django's DEFAULT_LOGGING declares no `django.security` logger, so those records fall through
+    to the `django` logger, whose console handler carries the `require_debug_true` filter. On
+    production, where DEBUG is False by definition, that filter drops every one of them.
+
+    afc/settings.py now configures it explicitly. These tests assert on the RESOLVED logging tree
+    rather than on the settings dict, because it is the resolved tree that decides whether a line
+    reaches journalctl.
+    """
+
+    def _effective_handlers(self, name):
+        """Every handler a record logged at `name` would actually reach, walking the tree the way
+        logging itself does: up through the ancestors until one stops propagating."""
+        import logging
+
+        handlers, logger = [], logging.getLogger(name)
+        while logger:
+            handlers.extend(logger.handlers)
+            if not logger.propagate:
+                break
+            logger = logger.parent
+        return handlers
+
+    def test_a_SuspiciousOperation_reaches_a_handler_that_DEBUG_cannot_silence(self):
+        """django.security.<ExceptionClass> is the logger Django names for these. The handler that
+        catches it must carry no filter, because require_debug_true is exactly what hid it."""
+        import logging
+
+        handlers = self._effective_handlers("django.security.SuspiciousFileOperation")
+        unfiltered_streams = [
+            h for h in handlers if isinstance(h, logging.StreamHandler) and not h.filters
+        ]
+        self.assertTrue(
+            unfiltered_streams,
+            "no unfiltered StreamHandler: a SuspiciousOperation would be logged nowhere with "
+            f"DEBUG=False. Handlers reached: {handlers!r}",
+        )
+
+    def test_the_handler_accepts_WARNING_and_above(self):
+        """A handler set above ERROR would drop the 4xx warnings that explain a refused request,
+        which is most of what makes this useful day to day."""
+        import logging
+
+        for handler in self._effective_handlers("django.security.SuspiciousFileOperation"):
+            if isinstance(handler, logging.StreamHandler) and not handler.filters:
+                self.assertLessEqual(handler.level, logging.WARNING)
+
+    def test_django_request_is_covered_too(self):
+        """The other half: a 4xx or 5xx raised out of a view, including a 500's traceback."""
+        import logging
+
+        handlers = self._effective_handlers("django.request")
+        self.assertTrue(
+            [h for h in handlers if isinstance(h, logging.StreamHandler) and not h.filters],
+            f"django.request would be silent with DEBUG=False. Handlers reached: {handlers!r}",
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────
