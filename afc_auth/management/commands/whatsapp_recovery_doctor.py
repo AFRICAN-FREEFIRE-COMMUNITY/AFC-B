@@ -166,21 +166,24 @@ class Command(BaseCommand):
                     mark + f"{row.name} [{row.language}] {state}, category "
                     f"{row.category or 'unknown'}, {row.variable_count} variable(s)"
                 )
-                # THE KNOWN GAP, called out by name because it is the one failure that
-                # looks like a healthy configuration. See afc_whatsapp/client.py
-                # send_template: it builds body, quick_reply and url components, and no
-                # copy_code / one-tap OTP button. Meta REQUIRES that component on an
-                # AUTHENTICATION template and rejects the send without it.
+                # AUTHENTICATION templates need an OTP button component on the SEND, on top
+                # of the body parameter, and Meta refuses the send without it.
+                #
+                # This block used to print a FAIL saying client.send_template did not build
+                # one. That was true when this command was written and stopped being true a
+                # few hours later, and the stale warning then told the owner a healthy setup
+                # was broken. Corrected rather than deleted: the requirement is real and
+                # worth confirming out loud, it is simply met now.
                 if (row.category or "").upper() == "AUTHENTICATION":
                     self.stdout.write(
-                        BAD + "  ^ AUTHENTICATION category. client.send_template does NOT "
-                        "build the OTP button"
+                        OK + "  ^ AUTHENTICATION. send_template attaches the copy_code OTP "
+                        "button Meta requires"
                     )
                     self.stdout.write(
-                        INFO + "    component that category requires, so Meta rejects every "
-                        "send of it. This is\n"
-                        + INFO + "    a known, documented gap (see the comment in "
-                        "create_whatsapp_templates.py)."
+                        INFO + "    here (afc_whatsapp/client.py, otp_code), and "
+                        "WhatsAppCodeMethod asks for it.\n"
+                        + INFO + "    If this line is missing on your box, it is running "
+                        "code from before 2026-08-30."
                     )
             if rows and not any(r.language == language for r in rows):
                 # Meta treats "en" and "en_US" as different templates and answers a
