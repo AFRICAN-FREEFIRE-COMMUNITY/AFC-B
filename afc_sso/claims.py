@@ -33,7 +33,38 @@ DENYLIST = (
 )
 
 MINIMUM_AGE_FOR_CONTACT_DATA = 18
-CONTACT_SCOPES = {"email"}
+
+# EMPTY SINCE 2026-08-30, and this is the owner's decision, taken with the measurement in
+# front of them. It used to be {"email"}.
+#
+# WHAT WENT WRONG. `email` was gated on _is_adult, which fails closed on an unknown date of
+# birth. UserProfile.date_of_birth was READ by exactly one line, this module's, and WRITTEN
+# by nothing: not signup, not profile settings, not admin, and nothing in the frontend
+# collects it either. Measured on production data: 0 of 6,780 profile rows carry one, and
+# _is_adult returned False for 500 of 500 users sampled.
+#
+# So the gate did not protect minors. It removed the email claim from EVERY player on every
+# authorization, and always had. Meanwhile discovery advertises `email` in scopes_supported
+# and the consent screen asks the player to share "Your email address". AFC approved
+# partners for a scope it could not fulfil, asked players to consent to it, and sent
+# nothing. V-ENT reported exactly that.
+#
+# The tests passed throughout because each one CREATES a profile carrying a date of birth.
+# A test that hands the code the input it wants proves the code reads that input, never
+# that it arrives. Same shape as the auth_token cookie that never reached the api subdomain.
+#
+# WHY EMPTY RATHER THAN "TREAT UNKNOWN AS ADULT": that spelling would read as a claim that
+# AFC has checked, when it has not. Empty says the true thing, which is that AFC holds no
+# age signal for anybody and therefore enforces no age rule. The player's own consent is
+# what releases the address.
+#
+# TO REINSTATE IT, both of these must be true first, in this order:
+#   1. a date of birth is actually COLLECTED and stored (signup, profile settings, or at
+#      the moment of consent), and
+#   2. this set names the scopes to withhold from a minor.
+# Put a scope in here before step 1 and it is withheld from everyone, which is the bug
+# above. The machinery below is left wired for exactly that reason.
+CONTACT_SCOPES = frozenset()
 
 # How many past events the history claim carries. Bounded because a partner reading
 # userinfo must never be able to make AFC walk a player's entire tournament record.
@@ -203,7 +234,10 @@ def build_claims(user, application, granted_scopes):
     effective = permitted & requested
 
     # Gate 4: AFC's own rules, applied before any resolver runs.
-    if not _is_adult(user):
+    # Guarded on CONTACT_SCOPES being non-empty so an empty set costs nothing: _is_adult
+    # runs a UserProfile query, and doing that on every token and every userinfo call to
+    # subtract nothing is a query per request for no answer.
+    if CONTACT_SCOPES and not _is_adult(user):
         effective -= CONTACT_SCOPES
     if not getattr(user, "stats_visible", False):
         effective.discard("afc.stats")
