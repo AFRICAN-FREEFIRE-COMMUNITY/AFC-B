@@ -292,14 +292,24 @@ def send_template(to, template_name, language, body_params=None, button_payloads
     # OTP button, for AUTHENTICATION templates. Added 2026-08-30 after Meta refused AFC's
     # account-recovery template as INCORRECT_CATEGORY: a one-time code is authentication
     # content, Meta will not accept it as utility, and an authentication template cannot be
-    # sent without this component. The parameter type really is "coupon_code" for a COPY_CODE
-    # button; that is Meta's own naming and not a mistake here.
+    # sent without this component.
+    #
+    # SUB_TYPE IS "url" EVEN WHEN THE BUTTON IS A COPY-CODE BUTTON, and this is the part
+    # that is easy to get wrong. The first version of this sent the marketing coupon shape,
+    # sub_type "copy_code" with a "coupon_code" parameter, which is correct for a coupon on
+    # a MARKETING template and wrong here. Meta answered every send with:
+    #
+    #     132018  There's an issue with the parameters in your template
+    #
+    # An authentication template's OTP button takes the same send shape whatever otp_type it
+    # was approved under: sub_type "url", index "0", one plain text parameter carrying the
+    # code. index is a STRING because that is how Meta documents it.
     if otp_code is not None:
         components.append({
             "type": "button",
-            "sub_type": "copy_code",
-            "index": 0,
-            "parameters": [{"type": "coupon_code", "coupon_code": str(otp_code)}],
+            "sub_type": "url",
+            "index": "0",
+            "parameters": [{"type": "text", "text": str(otp_code)}],
         })
 
     # QUICK-REPLY buttons: one component each, carrying its 0-based position in the
