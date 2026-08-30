@@ -153,6 +153,7 @@ def send_whatsapp_message(
     context="",
     message_id=None,
     redact_variables=False,
+    otp_button=False,
 ):
     """Send exactly ONE WhatsApp message and record what happened.
 
@@ -175,6 +176,11 @@ def send_whatsapp_message(
         message_id:      set by the retry path so a retried send updates the SAME
                          WhatsAppMessage row instead of creating a new one. Callers
                          leave it None.
+        otp_button:      this is an AUTHENTICATION template, so attach the OTP button
+                         component Meta requires. A FLAG, not the code: the code is already
+                         in body_params, and carrying it a second time through the broker
+                         would put a live one-time code somewhere redact_variables does not
+                         reach. See client.send_template.
         redact_variables: do NOT record the body values on the WhatsAppMessage row.
                          For sends whose variables are a SECRET, which today means
                          the account-recovery code (afc_auth.two_factor.
@@ -242,10 +248,25 @@ def send_whatsapp_message(
 
     # ── 3. send ───────────────────────────────────────────────────────────────
     if template_name:
+        # An authentication template needs the code on the button as well as in the body,
+        # and the body is where it already is. Refused locally rather than sent malformed:
+        # Meta's answer to a missing OTP parameter is a 1320xx that names no cause.
+        if otp_button and not body_params:
+            message.mark_failed(
+                error_code=None,
+                error_title="OTP template sent with no code in body_params.",
+            )
+            logger.warning(
+                "whatsapp: refused message #%s: otp_button set but body_params is empty.",
+                message.id,
+            )
+            return message.id
+
         result = client.send_template(
             normalised, template_name, language,
             body_params=body_params, button_payloads=button_payloads,
             url_button_suffix=url_button_suffix,
+            otp_code=body_params[0] if otp_button else None,
         )
     else:
         result = client.send_text(normalised, text)
@@ -336,7 +357,7 @@ def _resolve(user, event, match):
 
 def queue_template(to, template_name, language, *, body_params=None, button_payloads=None,
                    url_button_suffix=None, user=None, country=None, event=None, match=None,
-                   context="", redact_variables=False):
+                   context="", redact_variables=False, otp_button=False):
     """Queue an approved TEMPLATE send. The entry point for anything AFC initiates.
 
     Args:
@@ -352,6 +373,9 @@ def queue_template(to, template_name, language, *, body_params=None, button_payl
         country:         override for that country (ISO-2 code or name).
         event/match:     the Event/Match (or ids) this is about, for the log.
         context:         short trigger label, e.g. "room_details".
+        otp_button:      True for an AUTHENTICATION template, which Meta will not send
+                         without a button carrying the code. A flag rather than the code
+                         itself, so a live one-time code is never put on the broker twice.
         redact_variables: keep the body values OUT of the message log. Pass True when
                          they are a secret (the account-recovery code). See the task's
                          docstring for why the log is not the right place for one.
@@ -386,6 +410,7 @@ def queue_template(to, template_name, language, *, body_params=None, button_payl
         "match_id": match_id,
         "context": context,
         "redact_variables": redact_variables,
+        "otp_button": otp_button,
     })
 
 
