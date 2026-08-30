@@ -26,6 +26,7 @@ from .admin_api import (
     suspend_sso_application,
 )
 from .api import list_connected_apps, revoke_connected_app
+from .brand import brand_kit, brand_logo
 from .handoff import sso_login_handoff
 from .views import AFCAuthorizationView, AFCRPInitiatedLogoutView
 
@@ -39,6 +40,15 @@ urlpatterns = [
     # frontend /login forever, because the auth_token cookie is host-only to the apex
     # domain and never reaches this one. See afc_sso/handoff.py.
     path("handoff/", sso_login_handoff, name="sso-login-handoff"),
+
+    # ── AFC's own brand kit, PUBLIC ──
+    # A partner needs the mark and the short name to draw the button that STARTS a
+    # sign-in, which is before anyone has signed in, so neither route is gated. Added
+    # 2026-08-30 after a partner shipped a "Continue with African Free Fire Community"
+    # button with no logo, because AFC published nothing for them to use. See
+    # afc_sso/brand.py.
+    path("brand/", brand_kit, name="sso-brand-kit"),
+    path("brand/logo/<int:size>.png", brand_logo, name="sso-brand-logo"),
     # RP-initiated logout. Declared BEFORE the library include for the same reason
     # authorize/ is: AFC's subclass has to win the route. The library's own view deletes
     # the player's tokens at EVERY partner, not just the one asking; ours scopes the
