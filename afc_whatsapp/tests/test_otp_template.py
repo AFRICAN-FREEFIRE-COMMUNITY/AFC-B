@@ -51,13 +51,22 @@ class OtpButtonPayloadTests(TestCase):
         payload = _payload(body_params=["481902"], otp_code="481902")
         buttons = _buttons(payload)
         self.assertEqual(len(buttons), 1)
-        self.assertEqual(buttons[0]["sub_type"], "copy_code")
-        self.assertEqual(buttons[0]["index"], 0)
-        # "coupon_code" really is Meta's name for the parameter on a COPY_CODE button. It
-        # reads like a mistake and is not one.
-        self.assertEqual(
-            buttons[0]["parameters"], [{"type": "coupon_code", "coupon_code": "481902"}]
-        )
+        # SUB_TYPE "url" EVEN THOUGH THE BUTTON IS A COPY-CODE BUTTON. The first version
+        # sent the marketing coupon shape (sub_type "copy_code", a "coupon_code" parameter)
+        # and Meta answered every send with 132018, "there's an issue with the parameters in
+        # your template". An authentication template's OTP button takes this shape whatever
+        # otp_type it was approved under. index is a STRING, as Meta documents it.
+        self.assertEqual(buttons[0]["sub_type"], "url")
+        self.assertEqual(buttons[0]["index"], "0")
+        self.assertEqual(buttons[0]["parameters"], [{"type": "text", "text": "481902"}])
+
+    def test_the_button_does_NOT_use_the_marketing_coupon_shape(self):
+        """Pinned by name so the coupon form cannot come back. It is the correct shape for a
+        coupon on a MARKETING template and the wrong one here, and the two are easy to
+        confuse because the button really was approved as COPY_CODE."""
+        button = _buttons(_payload(otp_code="481902"))[0]
+        self.assertNotEqual(button["sub_type"], "copy_code")
+        self.assertNotIn("coupon_code", str(button["parameters"]))
 
     def test_the_code_is_in_the_body_TOO_because_meta_wants_it_in_both(self):
         payload = _payload(body_params=["481902"], otp_code="481902")
@@ -70,7 +79,7 @@ class OtpButtonPayloadTests(TestCase):
         payload = _payload(otp_code="481902")
         body = [c for c in payload["template"]["components"] if c["type"] == "body"][0]
         self.assertEqual(body["parameters"], [{"type": "text", "text": "481902"}])
-        self.assertEqual(_buttons(payload)[0]["parameters"][0]["coupon_code"], "481902")
+        self.assertEqual(_buttons(payload)[0]["parameters"][0]["text"], "481902")
 
     def test_an_ORDINARY_template_send_is_unchanged(self):
         """The regression that would matter most: six approved templates already send fine,
