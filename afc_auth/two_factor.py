@@ -315,6 +315,12 @@ class WhatsAppCodeMethod(TwoFactorMethod):
                 body_params=[code],
                 user=user,
                 context="account_recovery_code",
+                # AUTHENTICATION template, so Meta requires the code on a button as well as
+                # in the body and refuses the send without it. A flag, not the code: the
+                # code is already in body_params above and redact_variables keeps it out of
+                # the log, which a second copy would not be. Added 2026-08-30 after Meta
+                # refused this template as INCORRECT_CATEGORY when submitted as UTILITY.
+                otp_button=True,
                 # The digits must NOT be written to the WhatsApp message log. Everything else
                 # about the send is still recorded (the row, the wamid, the delivery receipts), so
                 # "did my code go out?" is still answerable, but a live one-time code never sits in
