@@ -66,26 +66,49 @@ class ClaimGateTests(TestCase):
         self.user.save()
         self.assertNotIn("afc_stats", build_claims(self.user, self.app, ALL_SCOPES))
 
-    def test_gate_4_minors_never_get_email(self):
-        """Hard rule from the spec: contact data for an under-18 is refused regardless
-        of toggles and consent."""
+    # ── the age rule, removed by the owner on 2026-08-30 ─────────────────────────────
+    # These three used to assert that a minor, an unknown date of birth and a missing
+    # profile row each cost the player their email claim. They passed for months while the
+    # feature was broken, because each of them CREATED a date of birth first. Production
+    # has none: 0 of 6,780 profile rows, so every player was treated as a minor and no
+    # partner ever received an email address.
+    #
+    # THE REPLACEMENTS BELOW ARE WRITTEN FROM THE PRODUCTION SHAPE, which is the whole
+    # lesson: no date of birth anywhere, because nothing collects one.
+
+    def test_a_player_with_NO_date_of_birth_still_releases_their_email(self):
+        """The reported bug, as one assertion. This is every player on the platform: the
+        field is read by claims.py and written by nothing, so nobody has one."""
+        UserProfile.objects.filter(user=self.user).update(date_of_birth=None)
+        claims = build_claims(self.user, self.app, ALL_SCOPES)
+        self.assertIn("email", claims)
+        self.assertEqual(claims["email"], self.user.email)
+
+    def test_a_player_with_NO_profile_row_still_releases_their_email(self):
+        """UserProfile is a plain FK, not a OneToOne, so a player can have no row at all.
+        That used to fail closed too."""
+        UserProfile.objects.filter(user=self.user).delete()
+        self.assertIn("email", build_claims(self.user, self.app, ALL_SCOPES))
+
+    def test_a_minor_ALSO_releases_email_now_and_that_is_the_decision(self):
+        """Recorded deliberately rather than left implicit. AFC holds no age signal, so it
+        enforces no age rule; the player's own consent is what releases the address. If a
+        date of birth is ever collected, put "email" back in CONTACT_SCOPES and this test
+        is the one to invert."""
         profile = UserProfile.objects.get(user=self.user)
         profile.date_of_birth = timezone.now().date() - datetime.timedelta(days=365 * 15)
         profile.save()
-        claims = build_claims(self.user, self.app, ALL_SCOPES)
-        self.assertNotIn("email", claims)
-        self.assertIn("ff_uid", claims, "only contact data is withheld, not everything")
+        self.assertIn("email", build_claims(self.user, self.app, ALL_SCOPES))
 
-    def test_unknown_date_of_birth_is_treated_as_a_minor(self):
-        """Fail closed: no DOB means we cannot prove they are an adult."""
+    def test_the_age_machinery_is_still_wired_for_a_future_contact_scope(self):
+        """CONTACT_SCOPES is empty, not deleted. Putting a scope back in it must withhold
+        that scope again, so the mechanism cannot rot while it is unused."""
+        from unittest.mock import patch
+
         UserProfile.objects.filter(user=self.user).update(date_of_birth=None)
-        self.assertNotIn("email", build_claims(self.user, self.app, ALL_SCOPES))
-
-    def test_missing_profile_row_is_treated_as_a_minor(self):
-        """UserProfile is a plain FK, not a OneToOne, so a player can have no profile row
-        at all. That must fail closed the same way a null date of birth does."""
-        UserProfile.objects.filter(user=self.user).delete()
-        self.assertNotIn("email", build_claims(self.user, self.app, ALL_SCOPES))
+        with patch("afc_sso.claims.CONTACT_SCOPES", frozenset({"email"})):
+            self.assertNotIn("email", build_claims(self.user, self.app, ALL_SCOPES))
+        self.assertIn("email", build_claims(self.user, self.app, ALL_SCOPES))
 
     def test_suspended_account_releases_nothing_but_its_standing(self):
         """A suspended player is exactly the case a partner needs to be able to see, and
