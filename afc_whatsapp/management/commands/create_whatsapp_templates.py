@@ -249,7 +249,8 @@ class Command(BaseCommand):
 
         existing, err = self._graph(
             f"{waba}/message_templates?limit=100"
-            f"&fields=name,language,status,category,rejected_reason,quality_score", token)
+            f"&fields=name,language,status,category,rejected_reason,quality_score,"
+            f"components", token)
         if err:
             self.stderr.write(f"could not read templates: {json.dumps(err)}")
             return
@@ -263,6 +264,22 @@ class Command(BaseCommand):
             if t.get("status") == "REJECTED" and t.get("rejected_reason"):
                 self.stdout.write(self.style.ERROR(
                     f"      rejected: {t['rejected_reason']}"))
+            # The COMPONENTS, for authentication templates only. Added 2026-08-30 after a
+            # send failed with Meta 132018 ("there is an issue with the parameters in your
+            # template"): a wrong button PARAMETER and a template that has no button at all
+            # produce the same error, and neither is visible from name/status/category. So
+            # print what Meta actually stored and stop guessing.
+            if (t.get("category") or "").upper() == "AUTHENTICATION":
+                for comp in t.get("components") or []:
+                    kind = comp.get("type")
+                    if kind == "BUTTONS":
+                        for b in comp.get("buttons") or []:
+                            self.stdout.write(
+                                f"      button: type={b.get('type')} "
+                                f"otp_type={b.get('otp_type')} text={b.get('text')!r}")
+                    else:
+                        detail = {k: v for k, v in comp.items() if k != "type"}
+                        self.stdout.write(f"      {kind.lower()}: {json.dumps(detail)[:120]}")
 
         # Clearing a rejected row frees its NAME. Meta will not accept a second template under a
         # name that already exists, even a rejected one, so a corrected body cannot be submitted
