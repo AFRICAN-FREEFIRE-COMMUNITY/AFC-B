@@ -26,10 +26,19 @@ from .admin_api import (
     suspend_sso_application,
 )
 from .api import list_connected_apps, revoke_connected_app
+from .handoff import sso_login_handoff
 from .views import AFCAuthorizationView, AFCRPInitiatedLogoutView
 
 urlpatterns = [
     path("authorize/", AFCAuthorizationView.as_view(), name="authorize"),
+
+    # The login handoff. Declared beside authorize/ because it exists solely to get a
+    # signed-in player INTO that view: the frontend swaps its session token for a
+    # single-use code, and SSOSessionTokenMiddleware exchanges the code for a real
+    # session on this host. Without it the flow loops between /sso/authorize/ and the
+    # frontend /login forever, because the auth_token cookie is host-only to the apex
+    # domain and never reaches this one. See afc_sso/handoff.py.
+    path("handoff/", sso_login_handoff, name="sso-login-handoff"),
     # RP-initiated logout. Declared BEFORE the library include for the same reason
     # authorize/ is: AFC's subclass has to win the route. The library's own view deletes
     # the player's tokens at EVERY partner, not just the one asking; ours scopes the
