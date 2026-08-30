@@ -26,7 +26,7 @@ from .admin_api import (
     suspend_sso_application,
 )
 from .api import list_connected_apps, revoke_connected_app
-from .brand import brand_kit, brand_logo
+from .brand import brand_kit, brand_logo, brand_logo_svg
 from .handoff import sso_login_handoff
 from .views import AFCAuthorizationView, AFCRPInitiatedLogoutView
 
@@ -48,6 +48,9 @@ urlpatterns = [
     # button with no logo, because AFC published nothing for them to use. See
     # afc_sso/brand.py.
     path("brand/", brand_kit, name="sso-brand-kit"),
+    # The VECTOR first, because it is what a partner should reach for. Declared before the
+    # sized PNG route so the two cannot be confused by a reader; they do not overlap.
+    path("brand/logo.svg", brand_logo_svg, name="sso-brand-logo-svg"),
     path("brand/logo/<int:size>.png", brand_logo, name="sso-brand-logo"),
     # RP-initiated logout. Declared BEFORE the library include for the same reason
     # authorize/ is: AFC's subclass has to win the route. The library's own view deletes
