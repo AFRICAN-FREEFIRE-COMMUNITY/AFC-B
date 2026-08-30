@@ -1,0 +1,41 @@
+{
+  "what": "The AFC mark, traced to vector from the only raster AFC holds.",
+  "source": {
+    "path": "afc_organizers/assets/afc-logo.png",
+    "sha256": "3aeb8b1470e43a198b8bf4b161dcce979a249a7ba5db853fa90cc79be8376ef8",
+    "resolution": [
+      500,
+      500
+    ],
+    "note": "No original vector of the AFC mark exists in either repository or was supplied by anyone. This is a trace of AFC's own file, not a lookalike found elsewhere."
+  },
+  "method": {
+    "tool": "vtracer",
+    "options": {
+      "colormode": "binary",
+      "mode": "spline",
+      "filter_speckle": 25,
+      "corner_threshold": 75,
+      "length_threshold": 24.0,
+      "splice_threshold": 45,
+      "max_iterations": 10,
+      "path_precision": 2
+    },
+    "supersample": 8,
+    "input": "float coverage fields resampled bilinearly, thresholded only after resampling, so the source antialiasing carries the sub-pixel edge into the trace",
+    "script": "tools/trace_afc_mark.py"
+  },
+  "colors": {
+    "dark": "#030303",
+    "green": "#2ba035",
+    "on_dark": "#fafafa"
+  },
+  "agreement": {
+    "silhouette_iou": 0.98805,
+    "green_iou": 0.99736,
+    "coverage_mean_abs_error": 0.00518
+  },
+  "agreement_floor": 0.985,
+  "verified_with": "headless Chrome, rendered at the source resolution",
+  "traced_on": "2026-08-30"
+}
