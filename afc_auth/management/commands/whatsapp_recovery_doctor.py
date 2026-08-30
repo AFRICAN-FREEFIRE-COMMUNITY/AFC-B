@@ -126,10 +126,38 @@ class Command(BaseCommand):
                     + f"No registry row for {template!r} in ANY language."
                 )
                 if total:
+                    # TWO DIFFERENT FAULTS WEAR THIS ONE LINE, and the first version of
+                    # this command named only the second. That sent the owner round a loop
+                    # on 2026-08-30: sync is a READ, so running it against a template Meta
+                    # has never heard of reports the same thing forever.
+                    #
+                    #   a) the template does not exist on Meta at all   -> CREATE it
+                    #   b) it exists and is approved, but AFC has not copied it in -> SYNC
+                    #
+                    # Which one it is cannot be told from the registry alone: a missing row
+                    # is exactly what both look like from here. So name both, and put the
+                    # create step FIRST, because that is the one that gets skipped.
                     self.stdout.write(
                         INFO + "     The registry is non-empty, so is_send_allowed REFUSES "
-                        "this template locally.\n"
-                        + INFO + "     Nothing reaches Meta. Run sync_whatsapp_templates."
+                        "this template locally\n"
+                        + INFO + "     and nothing reaches Meta. TWO things look like this. "
+                        "Check them in order:\n"
+                        + INFO + "\n"
+                        + INFO + "     1. It may not exist on Meta AT ALL. Look for it in the "
+                        "list above; if it is\n"
+                        + INFO + "        absent, CREATE it. sync is a read and will never "
+                        "make one:\n"
+                        + INFO + "           manage.py create_whatsapp_templates "
+                        "--delete-rejected          (dry run)\n"
+                        + INFO + "           manage.py create_whatsapp_templates "
+                        "--delete-rejected --apply\n"
+                        + INFO + "        The dry run prints the CATEGORY it will submit, "
+                        "which is also how you tell\n"
+                        + INFO + "        whether this box is running current code.\n"
+                        + INFO + "\n"
+                        + INFO + "     2. If Meta already has it and it says APPROVED, AFC "
+                        "just has not copied it in:\n"
+                        + INFO + "           manage.py sync_whatsapp_templates"
                     )
             for row in rows:
                 state = "approved" if row.approved else "NOT APPROVED"
