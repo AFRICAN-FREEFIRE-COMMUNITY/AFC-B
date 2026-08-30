@@ -20,21 +20,31 @@
 # WHAT A PARTNER GETS
 #     GET /sso/brand/                 the kit as JSON: names, the button label, colours,
 #                                     logo urls, and the usage rules
-#     GET /sso/brand/logo/<size>.png  the mark itself, at a size that exists
+#     GET /sso/brand/logo.svg         the mark as VECTOR. What to use unless a raster is
+#                                     required. ?on=dark serves the light-wordmark variant
+#     GET /sso/brand/logo/<size>.png  the mark as a raster, at a size that exists
 #
 #     Both are PUBLIC and unauthenticated on purpose. A partner needs the mark to draw the
 #     button that begins the sign-in, which is by definition before anyone has signed in.
 #
 # ON RESOLUTION, which is a house rule and not a detail
-#     The mark AFC holds is a 500x500 PNG, and there is no vector of it anywhere in either
-#     repository. Every size served here is a DOWNSCALE of that one file
-#     (afc_organizers/assets/afc-logo.png, sha256 3aeb8b14...), generated with Lanczos and
-#     committed under brand_assets/. Nothing is ever drawn above its own resolution, which
-#     is why the list stops at 500 rather than offering a rounder 512.
+#     UNTIL 2026-08-30 this section said there was no vector of the AFC mark and that a
+#     partner must not draw it above 500px. There is one now, and the ceiling is gone.
 #
-#     `logo.source_resolution` is published so a partner can see the ceiling rather than
-#     discover it by producing a soft banner. If a real vector is ever produced, add an
-#     `svg` key here and the page at /brand picks it up.
+#     Nobody produced an original: AFC has never held one. tools/trace_afc_mark.py TRACES
+#     the 500x500 PNG (afc_organizers/assets/afc-logo.png, sha256 3aeb8b14...), feeding the
+#     tracer the raw coverage gradient rather than a mask hardened at source resolution, so
+#     the antialiasing carries the sub-pixel edge into the curves. The result is measured
+#     against the source by rendering it in Chrome, and it is only written when it agrees:
+#     0.989 on the silhouette and 0.997 on the green, both against a 0.985 floor. The score
+#     and the source hash are published beside it in afc-mark.provenance.json, and
+#     afc_sso/tests/test_brand_vector.py re-measures on every CI run.
+#
+#     SO: the svg is what a partner should reach for, at any size. The PNGs stay, because a
+#     link preview, an email client and an OG card all still want a raster, and each is
+#     still a DOWNSCALE of that same 500px file. `logo.raster_source_resolution` is
+#     published so a partner choosing a PNG can see the ceiling that still applies to THOSE
+#     rather than discover it by producing a soft banner.
 #
 # CONNECTS TO
 #     afc_sso/urls.py                     mounts both views under /sso/brand/
@@ -56,6 +66,18 @@ _ASSETS_DIR = os.path.join(os.path.dirname(__file__), "brand_assets")
 # a size here without generating the file would publish a url that 404s, so the endpoint
 # reads the directory rather than trusting this list blindly (see _logo_urls).
 LOGO_SIZES = (500, 256, 128, 64, 32)
+
+# The vector, and its light-wordmark twin. Traced from the same 500px file by
+# tools/trace_afc_mark.py, which refuses to write either one unless the render agrees with
+# the source. See afc-mark.provenance.json beside them for the score and the source hash.
+SVG_FILE = "afc-mark.svg"
+SVG_ON_DARK_FILE = "afc-mark-on-dark.svg"
+
+# The default mark's wordmark ("AFRICAN FREEFIRE COMMUNITY") is near-black, so on a dark
+# surface it disappears and the mark reads as the letters alone. The on-dark variant is the
+# same paths with that half in the site's off-white. A partner's login page is usually dark,
+# so this is a real choice and not a nicety.
+SVG_VARIANTS = {"light": SVG_FILE, "dark": SVG_ON_DARK_FILE}
 
 # The name a partner should show. Short deliberately: "African Free Fire Community" set as
 # a button label is what made V-ENT's row look broken next to Google's.
@@ -95,10 +117,15 @@ USAGE = {
         f'Label the button "{BUTTON_LABEL}".',
         "Keep clear space around the mark of at least a quarter of its width.",
         "Use the mark on a dark or light surface with real contrast behind it.",
+        "Prefer the svg. It is the same drawing at every size, and it is what the button "
+        "should use.",
+        "On a dark surface take the on-dark svg. The wordmark in the default mark is "
+        "near-black and vanishes against one.",
     ],
     "dont": [
         "Do not stretch, rotate, recolour or add effects to the mark.",
-        "Do not draw the mark larger than 500px; there is no vector, so it will go soft.",
+        "Do not draw a PNG above its own size; 500px is the largest that exists and "
+        "anything above it goes soft. Use the svg instead, at any size.",
         "Do not use the full name as a button label; it makes the button wider than every "
         "other provider's.",
         "Do not imply AFC endorses your product. The button means a player can sign in, "
@@ -128,6 +155,21 @@ def _logo_urls(request):
     return urls
 
 
+def _svg_urls(request):
+    """The vector, and the on-dark variant, when each exists on disk.
+
+    Same reason _logo_urls reads the directory: a published url that 404s is worse for a
+    partner than a key that is simply absent, because absent is something their code can
+    branch on.
+    """
+    urls = {}
+    if os.path.exists(os.path.join(_ASSETS_DIR, SVG_FILE)):
+        urls["default"] = _absolute(request, "/sso/brand/logo.svg")
+    if os.path.exists(os.path.join(_ASSETS_DIR, SVG_ON_DARK_FILE)):
+        urls["on_dark"] = _absolute(request, "/sso/brand/logo.svg?on=dark")
+    return urls
+
+
 @api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
@@ -150,7 +192,9 @@ def brand_kit(request):
          "colors": {"primary": {"hex", "rgb", "oklch", "use"}, "gold": {...},
                     "surface_dark": {...}},
          "logo": {"format": "png", "source_resolution": 500,
-                  "mark": {"500": "<url>", "256": "<url>", ...}},
+                  "mark": {"500": "<url>", "256": "<url>", ...},
+                  "preferred": "svg",
+                  "vector": {"default": "<url>", "on_dark": "<url>"}},
          "usage": {"do": [...], "dont": [...], "min_size_px": 16,
                    "clear_space_ratio": 0.25}}
 
@@ -167,11 +211,17 @@ def brand_kit(request):
             "brand_page_url": f"{site}/brand",
             "colors": COLORS,
             "logo": {
+                # `format`, `source_resolution` and `mark` describe the RASTER and are left
+                # exactly as first published: a partner may already be reading them, and
+                # repurposing a published key is how an integration breaks quietly.
                 "format": "png",
-                # Published so a partner can see the ceiling rather than discover it by
-                # producing a soft banner. There is no vector of the AFC mark.
+                # The ceiling that still applies to the PNGs. Each is a downscale of one
+                # 500x500 file, so above that they go soft.
                 "source_resolution": 500,
                 "mark": _logo_urls(request),
+                # Added 2026-08-30, when the mark was finally traced to vector.
+                "preferred": "svg",
+                "vector": _svg_urls(request),
             },
             "usage": USAGE,
         }
@@ -207,4 +257,45 @@ def brand_logo(request, size):
         open(path, "rb"),
         content_type="image/png",
         filename=f"afc-mark-{size}.png",
+    )
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+# Same cache as the PNG: a brand mark changes about once a decade, and a partner's login
+# page should not wait on this box to draw its button.
+@cache_control(public=True, max_age=60 * 60 * 24 * 30)
+def brand_logo_svg(request):
+    """The AFC mark as VECTOR. What a partner should use unless a raster is required.
+
+    PURPOSE: to remove the ceiling this endpoint's own sibling used to publish. Until
+    2026-08-30 the largest AFC mark that existed anywhere was a 500x500 PNG, so the kit had
+    to tell partners not to draw it bigger. tools/trace_afc_mark.py traced that file, and
+    afc_sso/tests/test_brand_vector.py re-measures the result against it on every run.
+
+    AUTH: none, for the same reason as brand_kit. This is drawn BEFORE anyone signs in.
+
+    REQUEST: `?on=dark` for the light-wordmark variant. Anything else, including no
+    parameter at all, serves the default. An unknown value is NOT an error here, unlike the
+    PNG size: there are exactly two variants and falling back to the default draws a
+    correct mark, whereas returning a PNG at a size the caller did not ask for silently
+    changes how big our logo is on their page.
+
+    RESPONSE 200: image/svg+xml. 404 only if the file is missing from the deploy, which
+    would mean brand_kit is not publishing the url either (see _svg_urls).
+
+    CONSUMED BY: partners directly, and the frontend /brand page, which offers it as the
+    preferred download and renders it in the example button.
+    """
+    variant = "dark" if request.GET.get("on") == "dark" else "light"
+    path = os.path.join(_ASSETS_DIR, SVG_VARIANTS[variant])
+    if not os.path.exists(path):
+        raise Http404("The AFC mark is not available as a vector on this deploy.")
+
+    return FileResponse(
+        open(path, "rb"),
+        content_type="image/svg+xml",
+        # The name a partner gets if they save it, so it says which variant they took.
+        filename=SVG_VARIANTS[variant],
     )
