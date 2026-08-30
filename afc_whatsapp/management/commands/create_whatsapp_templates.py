@@ -27,11 +27,17 @@
 # sends against these exact names), afc_auth/broadcast_whatsapp.py (the `broadcast` one), and
 # afc_tournament_and_scrims/whatsapp_room_details.py (`room_details` / `room_3d_help`).
 import json
+import time
 import urllib.error
 import urllib.request
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
+
+
+# How long to wait after deleting a template before re-creating the same name. Meta's own
+# error says "less than 1 minute"; 70 seconds gives that a margin rather than racing it.
+_DELETE_SETTLE_SECONDS = 70
 
 
 def _cfg(name, default=""):
@@ -261,6 +267,7 @@ class Command(BaseCommand):
         # Clearing a rejected row frees its NAME. Meta will not accept a second template under a
         # name that already exists, even a rejected one, so a corrected body cannot be submitted
         # until the old row is gone.
+        deleted = []
         if opts["delete_rejected"]:
             for (name, lang), t in sorted(have.items()):
                 if t.get("status") != "REJECTED":
@@ -272,9 +279,34 @@ class Command(BaseCommand):
                 else:
                     self.stdout.write(self.style.SUCCESS(f"  deleted rejected template: {name}"))
                     have.pop((name, lang), None)
+                    deleted.append(name)
 
         if opts["check"]:
             return
+
+        # META'S DELETE IS ASYNCHRONOUS, and creating the same name under a DIFFERENT
+        # category while the old content is still going away is refused:
+        #
+        #   You can't change the category for this message template while the existing
+        #   English content is being deleted. Try again in less than 1 minute or use
+        #   UTILITY as the category.
+        #
+        # Hit on 2026-08-30 taking the account-recovery template from UTILITY to
+        # AUTHENTICATION: `--delete-rejected --apply` deleted and re-created in one breath
+        # and Meta refused the create. Waiting here turns a two-run dance into one command
+        # that works. Only when a delete ACTUALLY happened and we are about to create, so
+        # the ordinary run costs nothing.
+        if deleted and opts["apply"]:
+            self.stdout.write("")
+            self.stdout.write(
+                f"waiting {_DELETE_SETTLE_SECONDS}s for Meta to finish deleting "
+                f"{', '.join(deleted)} before re-creating it."
+            )
+            self.stdout.write(
+                "Meta refuses a category change while the old content is still being "
+                "removed, and its own advice is to try again in under a minute."
+            )
+            time.sleep(_DELETE_SETTLE_SECONDS)
 
         only = {s.strip() for s in opts["only"].split(",") if s.strip()}
         planned = []
