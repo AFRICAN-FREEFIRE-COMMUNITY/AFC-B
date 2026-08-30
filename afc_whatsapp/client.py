@@ -235,7 +235,7 @@ def _wa_id(number):
 
 
 def send_template(to, template_name, language, body_params=None, button_payloads=None,
-                  url_button_suffix=None):
+                  url_button_suffix=None, otp_code=None):
     """Send an APPROVED message TEMPLATE. The business-initiated path.
 
     WhatsApp only permits free-form messages inside 24 hours of the recipient's last
@@ -255,6 +255,12 @@ def send_template(to, template_name, language, body_params=None, button_payloads
         button_payloads: ordered payload strings, one per quick-reply button (max 3).
                          Each is echoed back to our webhook when the recipient taps,
                          which is how a tap is mapped to the thing it acts on.
+        otp_code:        the one-time code, for an AUTHENTICATION template ONLY. Meta owns
+                         the copy of those templates and REQUIRES a button component carrying
+                         the code on top of the body parameter; a send without it is refused.
+                         Passing this also fills body_params when they were not given, because
+                         Meta requires the same code in both places and two arguments that
+                         must match is two chances to get it wrong.
         url_button_suffix: the value for a DYNAMIC URL button. A template approved with
                          a dynamic "Visit website" button stores a fixed base URL ending
                          in {{1}}, and this is what gets appended at send time, e.g. an
@@ -271,11 +277,30 @@ def send_template(to, template_name, language, body_params=None, button_payloads
     if not template_name:
         return _failure("Missing template name.")
 
+    # An authentication template carries the code TWICE, in the body and on the button, and
+    # Meta rejects the send if they disagree. Deriving the body from otp_code when the caller
+    # gave none removes the chance of that.
+    if otp_code is not None and not body_params:
+        body_params = [otp_code]
+
     # BODY component: one {"type": "text"} entry per positional variable, in order.
     components = [{
         "type": "body",
         "parameters": [{"type": "text", "text": str(p)} for p in (body_params or [])],
     }]
+
+    # OTP button, for AUTHENTICATION templates. Added 2026-08-30 after Meta refused AFC's
+    # account-recovery template as INCORRECT_CATEGORY: a one-time code is authentication
+    # content, Meta will not accept it as utility, and an authentication template cannot be
+    # sent without this component. The parameter type really is "coupon_code" for a COPY_CODE
+    # button; that is Meta's own naming and not a mistake here.
+    if otp_code is not None:
+        components.append({
+            "type": "button",
+            "sub_type": "copy_code",
+            "index": 0,
+            "parameters": [{"type": "coupon_code", "coupon_code": str(otp_code)}],
+        })
 
     # QUICK-REPLY buttons: one component each, carrying its 0-based position in the
     # approved template and the payload echoed back on tap. Meta allows at most 3.

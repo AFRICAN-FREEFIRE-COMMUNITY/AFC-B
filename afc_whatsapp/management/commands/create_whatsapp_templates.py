@@ -125,31 +125,41 @@ def _templates():
             # by afc_auth.two_factor.WhatsAppCodeMethod, driven by afc_auth/views_recovery.py.
             "setting": "WHATSAPP_LOGIN_CODE_TEMPLATE",
             "lang_setting": "WHATSAPP_LOGIN_CODE_LANG",
-            # ── READ THIS BEFORE SUBMITTING ──────────────────────────────────────────────────
-            # Meta runs a SEPARATE "AUTHENTICATION" category for one-time codes, with its own
-            # fixed copy and a required OTP button component that afc_whatsapp/client.py does not
-            # build. It has also been seen to re-categorise a UTILITY template that reads like a
-            # code: the room_details entry above carries a comment about exactly that, and its
-            # wording was tuned to stay in UTILITY.
+            # AUTHENTICATION, and this was SETTLED BY META rather than chosen.
             #
-            # So this is submitted as UTILITY with wording that is about ACCOUNT ACCESS rather
-            # than a bare "here is your code", and the outcome is NOT guaranteed. After
-            # `--apply`, run `--check`: if Meta rejects it or moves it to AUTHENTICATION, the
-            # template has to be created in WhatsApp Manager as an authentication template AND
-            # client.send_template needs a copy_code/one-tap button component before it can be
-            # sent. That is a known, deliberately un-guessed gap, not an oversight.
-            "category": "UTILITY",
-            # "Hi" first: Meta rejects a body that starts or ends with a variable (learned on the
-            # 3D room template, 2026-08-06).
-            "body": (
-                "Hi, someone asked to get back into the AFC account linked to this WhatsApp "
-                "number.\n\n"
-                "Your confirmation code is {{1}}\n\n"
-                "Type it on the AFC recovery page to set a new email address for your account. "
-                "It works once and runs out in 10 minutes.\n\n"
-                "If this was not you, ignore this message and nothing changes."
-            ),
-            "example": ["481902"],
+            # First submitted as UTILITY on 2026-08-30, worded about account access rather
+            # than as a bare "here is your code", in the hope of staying out of Meta's
+            # authentication rules. Meta refused it INSTANTLY, which is an automatic policy
+            # match and not a review:
+            #
+            #     afc_account_recovery_code  en  REJECTED   reason: INCORRECT_CATEGORY
+            #
+            # A one-time code is authentication content and Meta will not take it as anything
+            # else. The guess is over.
+            #
+            # AN AUTHENTICATION TEMPLATE HAS NO BODY TEXT OF ITS OWN. Meta owns the copy and
+            # renders "{{1}} is your verification code." plus an optional security line and an
+            # expiry footer. Supplying custom text is refused, which is why `body` and
+            # `example` are gone from this entry and `auth` replaces them, and why the careful
+            # wording that used to live here is not preserved anywhere: there is nowhere to
+            # put it.
+            #
+            # IT ALSO CHANGES THE SEND. An authentication template REQUIRES a button component
+            # carrying the code, on top of the body parameter, and Meta refuses the send
+            # without it. See client.send_template's `otp_code`, added in the same change.
+            # Nothing else in AFC sends one of these.
+            #
+            # Billing: authentication is its own price band, separate from utility.
+            "category": "AUTHENTICATION",
+            # The shape Meta expects. `code_expiration_minutes` is 10 to match the recovery
+            # challenge's own lifetime; if that changes, change this and resubmit, or the
+            # message promises a window AFC does not honour.
+            "auth": {
+                "add_security_recommendation": True,
+                "code_expiration_minutes": 10,
+                "otp_type": "COPY_CODE",
+                "button_text": "Copy code",
+            },
         },
         {
             "setting": "WHATSAPP_BROADCAST_TEMPLATE",
@@ -293,13 +303,31 @@ class Command(BaseCommand):
             if (name, lang) in have:
                 self.stdout.write(f"  {name}: already exists, skipped")
                 continue
-            components = [{
-                "type": "BODY",
-                "text": spec["body"],
-                "example": {"body_text": [spec["example"]]},
-            }]
-            if spec.get("buttons"):
-                components.append({"type": "BUTTONS", "buttons": spec["buttons"]})
+            auth = spec.get("auth")
+            if auth:
+                # An AUTHENTICATION template is built from OPTIONS, never from text: Meta owns
+                # the copy and refuses a body of our own. The OTP button is mandatory rather
+                # than a nicety, and it is what lets the recipient copy the code without
+                # retyping it off a notification.
+                components = [
+                    {"type": "BODY",
+                     "add_security_recommendation": auth["add_security_recommendation"]},
+                    {"type": "FOOTER",
+                     "code_expiration_minutes": auth["code_expiration_minutes"]},
+                    {"type": "BUTTONS", "buttons": [{
+                        "type": "OTP",
+                        "otp_type": auth["otp_type"],
+                        "text": auth["button_text"],
+                    }]},
+                ]
+            else:
+                components = [{
+                    "type": "BODY",
+                    "text": spec["body"],
+                    "example": {"body_text": [spec["example"]]},
+                }]
+                if spec.get("buttons"):
+                    components.append({"type": "BUTTONS", "buttons": spec["buttons"]})
 
             created, err = self._graph(
                 f"{waba}/message_templates", token, method="POST",
