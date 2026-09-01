@@ -101,6 +101,7 @@ from afc_team.models import Team, TeamMembers
 
 from .event_invite_delivery import deliver_invitation, reach_for_teams
 from .models import (
+    INVITE_MESSAGE_MAX_LENGTH,
     Event, EventInvitationCampaign, EventInviteToken, EventTeamInvitation, RegisteredCompetitors,
     TournamentTeam,
 )
@@ -527,7 +528,10 @@ def create_team_invitations(request):
     # SOLO events invite PLAYERS (owner 2026-08-26). Which list is required is decided by the
     # event's participant_type below, once the event is loaded.
     user_ids = request.data.get("user_ids") or []
-    message = (request.data.get("message") or "").strip()[:280]
+    # Trimmed rather than refused, and to the SAME number the column holds (models
+    # .INVITE_MESSAGE_MAX_LENGTH): a note one character over the line must not lose an
+    # organizer the whole batch of invitations they just composed.
+    message = (request.data.get("message") or "").strip()[:INVITE_MESSAGE_MAX_LENGTH]
     expires_at = request.data.get("expires_at") or None
     kind = (request.data.get("kind") or "per_team").strip().lower()
     delivery, delivery_error = _clean_delivery(request.data.get("delivery"))

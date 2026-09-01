@@ -192,8 +192,12 @@ def _invitation_email_html(invitee_name, link_path, event, organizer_name, note,
     if note:
         note_html = (
             f'<tr><td style="padding:0 44px 18px;">'
+            # white-space:pre-line keeps the line breaks the organizer typed. It matters since the
+            # note grew to 2000 characters (2026-09-01): a schedule written on four lines arrived
+            # as one paragraph without it, because HTML collapses newlines.
             f'<div style="border-left:3px solid #2c7a4d;padding:10px 16px;background:#0a120d;'
-            f'font-size:15px;line-height:1.6;color:#cdd6cf;">{escape(note)}</div></td></tr>'
+            f'font-size:15px;line-height:1.6;color:#cdd6cf;white-space:pre-line;">'
+            f'{escape(note)}</div></td></tr>'
         )
 
     cta = sentence("cta")
