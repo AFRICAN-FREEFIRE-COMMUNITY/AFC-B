@@ -518,6 +518,22 @@ class EventInviteToken(models.Model):
     is_shared = models.BooleanField(default=False)
 
 
+# ── the inviter's note: ONE length, declared once ─────────────────────────────────
+# How long an inviter's free-text note may be, declared HERE and nowhere else so the two columns
+# that store it and the endpoint that truncates it cannot drift apart.
+#
+# Raised 280 -> 2000 on 2026-09-01 (owner: "increase the message part to accommodate 2000
+# characters"). 280 is a tweet, and organizers were using this to explain a slot offer, a schedule
+# or why they want that particular team, which does not fit in one.
+#
+# READ BY   EventTeamInvitation.message and EventInvitationCampaign.message (both below), and
+#           event_invites.create_team_invitations, which trims the incoming string to it.
+# MIRRORED  frontend EventTeamInvitesCard.tsx sets <Textarea maxLength> to the same number, so a
+#           typist is stopped before the server ever has to cut anything. The server-side trim
+#           stays regardless: a client-side cap is a courtesy, never the rule.
+INVITE_MESSAGE_MAX_LENGTH = 2000
+
+
 # ── TEAM INVITATIONS TO AN EVENT (owner backlog item 34, 2026-08-06) ─────────────────────────────
 class EventTeamInvitation(models.Model):
     """One ASK: "we would like your team in this event", which the team must ACCEPT or DECLINE.
@@ -587,8 +603,9 @@ class EventTeamInvitation(models.Model):
     )
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default="pending")
     # Optional note from the inviter ("we saved you a slot in the Lagos qualifier"). Shown to the
-    # team verbatim, so it is length-capped rather than a TextField.
-    message = models.CharField(max_length=280, blank=True, default="")
+    # team verbatim, so it is length-capped rather than a TextField. The cap lives in
+    # INVITE_MESSAGE_MAX_LENGTH above, shared with the campaign copy of this field.
+    message = models.CharField(max_length=INVITE_MESSAGE_MAX_LENGTH, blank=True, default="")
     # Optional reason the team gave when declining. The whole point of a decline over silence is
     # that the organizer learns WHY, so it is surfaced on the organizer's invitation list.
     decline_reason = models.CharField(max_length=280, blank=True, default="")
@@ -730,7 +747,8 @@ class EventInvitationCampaign(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="open")
     # The organizer's note, shown to every team this campaign reaches. Length-capped rather than a
     # TextField for the same reason EventTeamInvitation.message is: it is displayed verbatim.
-    message = models.CharField(max_length=280, blank=True, default="")
+    # Same INVITE_MESSAGE_MAX_LENGTH as that field, because it is the same note.
+    message = models.CharField(max_length=INVITE_MESSAGE_MAX_LENGTH, blank=True, default="")
     # WHERE the invitation is delivered, in afc_auth.audience's vocabulary. "both" (in-app + email)
     # is the default because those are the two channels every recipient actually has: all 813 people
     # who can answer an invitation have an email address, where WhatsApp reaches 32 of them.

@@ -43,6 +43,7 @@ from afc_auth.models import Notifications, SessionToken, User
 from afc_team.models import Team, TeamMembers
 
 from .models import (
+    INVITE_MESSAGE_MAX_LENGTH,
     Event, EventInvitationCampaign, EventTeamInvitation, TournamentTeam,
 )
 
@@ -1011,3 +1012,112 @@ class FcfsRaceTests(InviteFixtureMixin, TransactionTestCase):
             EventTeamInvitation.objects.filter(campaign_id=campaign_id).count(), 1,
             "only the team that got in leaves a row behind",
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# 6. THE INVITER'S NOTE IS 2000 CHARACTERS (owner 2026-09-01)
+#
+# "increase the message part to accommodate 2000 characters". It had been 280 since the feature
+# shipped, which is a tweet, while the thing organizers actually write here is a slot offer with a
+# date, a schedule and a reason.
+#
+# THREE PLACES had to move together and the point of these tests is that they cannot drift apart
+# again: the two columns, the endpoint's own trim, and (mirrored, not asserted here)
+# EventTeamInvitesCard.tsx's textarea maxLength.
+#
+# A note at the full length is written with the PRODUCTION shape in mind: MySQL in strict mode
+# REFUSES an over-long value rather than silently cutting it, so a 2000-character note against a
+# 280 column raises DataError and test 1 goes red. That is deliberate. It means these tests fail on
+# a box where the migration has not been applied, which is exactly the failure that would otherwise
+# reach an organizer as a 500 on Send.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+@override_settings(EVENT_INVITE_EMAIL_SYNC=True)
+class InviteNoteLengthTests(InviteFixtureMixin, TestCase):
+    """How long the note may be, proven end to end rather than at the column."""
+
+    def setUp(self):
+        self.client = Client()
+        self.admin = self._user("note_admin", role="admin")
+        self.event = self._event(name="Note Cup", slug="note-cup", capacity=4)
+        self.team, self.captain, self.roster = self._team("Note")
+
+    def _long_note(self, length):
+        """A note of exactly `length` characters that is not one repeated character, so a test
+        cannot pass on a value that was silently rebuilt rather than stored."""
+        seed = ("We are holding a slot for you in the Lagos qualifier on Saturday. "
+                "Rosters lock an hour before the first map. ")
+        return (seed * (length // len(seed) + 1))[:length]
+
+    def test_a_full_length_note_survives_the_whole_round_trip(self):
+        note = self._long_note(INVITE_MESSAGE_MAX_LENGTH)
+
+        sent = []
+        from unittest.mock import patch
+        with patch("afc_auth.views.send_email",
+                   side_effect=lambda addr, subj, html, **kw: sent.append(html)):
+            res = self._post(CREATE_URL, {
+                "event_id": self.event.event_id, "team_ids": [self.team.team_id],
+                "message": note, "delivery": "both",
+            }, self.admin)
+        self.assertEqual(res.status_code, 201, res.content)
+
+        # Stored whole on BOTH rows: the campaign keeps the organizer's copy, the addressed
+        # invitation is what the team page renders.
+        campaign = EventInvitationCampaign.objects.get(event=self.event)
+        invitation = EventTeamInvitation.objects.get(event=self.event, team=self.team)
+        self.assertEqual(len(campaign.message), INVITE_MESSAGE_MAX_LENGTH)
+        self.assertEqual(campaign.message, note)
+        self.assertEqual(invitation.message, note)
+
+        # Returned whole to the team that has to read it, not truncated on the way out.
+        mine = self.client.get(f"{MINE_URL}?team_id={self.team.team_id}",
+                               **self._auth(self.captain))
+        self.assertEqual(mine.status_code, 200, mine.content)
+        listed = [i for i in mine.json()["invitations"] if i["id"] == invitation.id]
+        self.assertEqual(len(listed), 1, mine.content)
+        self.assertEqual(listed[0]["message"], note)
+
+        # And it reaches the email in one piece. The tail is asserted specifically, because a cut
+        # at 280 keeps the opening sentence and would pass a "the note is in there" check.
+        self.assertTrue(sent, "the email never went")
+        self.assertIn(note[-120:], sent[0])
+
+    def test_a_note_one_character_over_the_cap_is_trimmed_not_refused(self):
+        # Trimmed, never a 400. An organizer who pastes a paragraph one character too long must not
+        # lose the batch of invitations they just composed to a validation error.
+        note = self._long_note(INVITE_MESSAGE_MAX_LENGTH + 1)
+        res = self._post(CREATE_URL, {
+            "event_id": self.event.event_id, "team_ids": [self.team.team_id],
+            "message": note, "delivery": "push",
+        }, self.admin)
+        self.assertEqual(res.status_code, 201, res.content)
+
+        invitation = EventTeamInvitation.objects.get(event=self.event, team=self.team)
+        self.assertEqual(len(invitation.message), INVITE_MESSAGE_MAX_LENGTH)
+        self.assertEqual(invitation.message, note[:INVITE_MESSAGE_MAX_LENGTH])
+
+    def test_the_two_columns_and_the_endpoint_agree_on_one_number(self):
+        # The drift guard. Raising one of these three and forgetting the others is how the note
+        # starts arriving cut, or how Send starts 500ing, with nothing in between to notice.
+        self.assertEqual(
+            EventTeamInvitation._meta.get_field("message").max_length,
+            INVITE_MESSAGE_MAX_LENGTH,
+        )
+        self.assertEqual(
+            EventInvitationCampaign._meta.get_field("message").max_length,
+            INVITE_MESSAGE_MAX_LENGTH,
+        )
+        self.assertEqual(INVITE_MESSAGE_MAX_LENGTH, 2000,
+                         "the owner asked for 2000; changing it is a decision, not a refactor")
+
+    def test_a_short_note_is_still_stored_exactly_as_typed(self):
+        # The ordinary case did not change. Raising a cap must not start padding or reformatting a
+        # two-line note, which is what almost every real invitation carries.
+        note = "Saved you a slot. Same room code as last month."
+        res = self._post(CREATE_URL, {
+            "event_id": self.event.event_id, "team_ids": [self.team.team_id],
+            "message": note, "delivery": "push",
+        }, self.admin)
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(
+            EventTeamInvitation.objects.get(event=self.event, team=self.team).message, note)
