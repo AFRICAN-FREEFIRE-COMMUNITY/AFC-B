@@ -239,7 +239,7 @@ class RuleB_TournamentMembershipLockTests(TestCase):
         # Before the fix the member was frozen ("no current event but I can't leave / can't remove").
         _today = datetime.date.today()
         stale = Event.objects.create(
-            event_name="Stale Scrim", competition_type="scrim", participant_type="squad",
+            event_name="Stale Scrim", competition_type="scrims", participant_type="squad",
             event_type="internal", max_teams_or_players=16, event_mode="virtual",
             start_date=_today - datetime.timedelta(days=8),
             end_date=_today - datetime.timedelta(days=7),   # ended a week ago
