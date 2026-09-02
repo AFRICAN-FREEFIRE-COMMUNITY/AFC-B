@@ -897,7 +897,7 @@ def get_all_tournaments_and_scrims_separated(request):
     # was ordered, so both opened on the oldest events (owner report 2026-08-22).
     tournaments = (Event.objects.filter(competition_type="tournament", is_draft=False)
                    .filter(_ACTIVE_ORG_EVENT).order_by("-created_at", "-event_id"))
-    scrims = (Event.objects.filter(competition_type="scrim", is_draft=False)
+    scrims = (Event.objects.filter(competition_type="scrims", is_draft=False)
               .filter(_ACTIVE_ORG_EVENT).order_by("-created_at", "-event_id"))
 
     tournament_list = []
@@ -930,7 +930,7 @@ def get_all_tournaments_and_scrims_separated_paginated(request):
     offset = int(request.GET.get("offset", 0))
 
     tournaments = Event.objects.filter(competition_type="tournament", is_draft=False).filter(_ACTIVE_ORG_EVENT).order_by("-start_date")
-    scrims = Event.objects.filter(competition_type="scrim", is_draft=False).filter(_ACTIVE_ORG_EVENT).order_by("-start_date")
+    scrims = Event.objects.filter(competition_type="scrims", is_draft=False).filter(_ACTIVE_ORG_EVENT).order_by("-start_date")
 
     total_tournaments = tournaments.count()
     total_scrims = scrims.count()
@@ -4346,7 +4346,7 @@ def get_total_tournaments_count(request):
 
 @api_view(["GET"])
 def get_total_scrims_count(request):
-    total_scrims = Event.objects.filter(competition_type="scrim", is_draft=False).count()
+    total_scrims = Event.objects.filter(competition_type="scrims", is_draft=False).count()
     return Response({"total_scrims": total_scrims}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
@@ -24287,7 +24287,11 @@ def total_active_tournaments(request):
 
 @api_view(["GET"])
 def total_published_news(request):
-    count = News.objects.all().count()
+    # is_published, not .all(). This counted EVERY News row and returned it under the name
+    # "published", so a scheduled or unpublished draft was reported to the dashboard as live
+    # (owner audit 2026-09-02). The two numbers only agreed because nothing was unpublished
+    # at the time anybody looked.
+    count = News.objects.filter(is_published=True).count()
 
     return Response({
         "total_published_news": count
