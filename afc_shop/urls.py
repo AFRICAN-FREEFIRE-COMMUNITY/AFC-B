@@ -18,6 +18,7 @@ from .fulfilment import (
     vendor_acknowledge_order,
     vendor_set_ship_date,
     vendor_mark_shipped,
+    vendor_message_buyer,
     order_mark_completed,
     vendor_my_orders,
 )
@@ -168,6 +169,10 @@ urlpatterns = [
     path("fulfilment/mark-shipped/", vendor_mark_shipped, name="vendor_mark_shipped"),
     path("fulfilment/mark-completed/", order_mark_completed, name="order_mark_completed"),
     path("fulfilment/my-orders/", vendor_my_orders, name="vendor_my_orders"),
+    # The vendor writing to the BUYER about one order (owner 2026-09-02). Authorised by the same
+    # gate as the transitions, recorded on VendorOrderMessage, and capped per order.
+    path("fulfilment/orders/<int:order_id>/message/", vendor_message_buyer,
+         name="vendor_message_buyer"),
 
     # ── Marketplace Phase B1: admin vendor management (INVITE-ONLY) ──
     # The admin shop "Manage vendors" surface. Admins LINK an existing User to a new
