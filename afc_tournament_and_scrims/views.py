@@ -6491,6 +6491,35 @@ def determine_team_country(roster_users, team_owner):
 # promotions) so the rule lives in ONE place. Returns {user_id: [field_key,...]} for players who
 # are MISSING something; field_key is a stable token the FE maps to localized copy:
 #   "esports_image" | "profile_image" | "uid" | "whatsapp". Empty dict = everyone passes (or no toggle on).
+def _has_pending_invitation(event, user, team=None):
+    """Does this caller hold a PENDING, addressed invitation to `event`?
+
+    THE PRIVATE-EVENT GATE (both copies below) demanded an EventInviteToken and nothing else, so a
+    team that had been invited PROPERLY, by name, through the invitations feature, was refused with
+    "invite_token is required for private events" when it registered from the event page.
+
+    That was a real bug shipped on 2026-09-02 (v7.1.80): the event page started OFFERING the button
+    to invited teams, correctly, while this gate still refused them. The button opened and the door
+    did not. The owner hit it within a day.
+
+    WHY AN INVITATION SATISFIES THE GATE. The gate exists so a private event admits only people who
+    were let in. An EventInviteToken is an ANONYMOUS link: it proves somebody was given a URL. An
+    EventTeamInvitation is ADDRESSED: it names this exact team or player and was written by an
+    admin or the organizer. It is the STRONGER credential of the two, so accepting it here widens
+    nothing. It also does not depend on a token having been minted, which some invitation rows do
+    not carry.
+
+    Every other gate still applies: this satisfies the private-event door and nothing else.
+    """
+    from .models import EventTeamInvitation
+
+    rows = EventTeamInvitation.objects.filter(event=event, status="pending")
+    # A SOLO invitation addresses the player; a TEAM one addresses the team they are registering.
+    if team is not None:
+        return rows.filter(team=team).exists()
+    return rows.filter(user=user).exists()
+
+
 def _my_event_invitation(event, user):
     """The REQUESTING viewer's own PENDING invitation to this event, or None (owner 2026-08-26).
 
@@ -7023,23 +7052,33 @@ def register_for_event(request):
             # Mirrors the TEAM gate below - keep both in sync.
             invite_token = request.data.get("invite_token")
             if not invite_token:
-                return Response({"message": "invite_token is required for private events."}, status=400)
+                # An ADDRESSED invitation is a stronger credential than an anonymous link,
+                # so it opens the same door. See _has_pending_invitation for why, and for
+                # the bug this fixes.
+                if _has_pending_invitation(event, user, team=None):
+                    invite = None
+                else:
+                    return Response({"message": "invite_token is required for private events."}, status=400)
+            else:
+                # Fetch the token row ONCE so shared/expiry checks all read the same record.
+                invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
+            # Only a supplied TOKEN gets token checks. The invitation path above set
+            # invite to None deliberately: there is no link to validate, expire or
+            # consume, because the credential is the addressed invitation itself.
+            if invite_token:
+                if not invite:
+                    return Response({"message": "Invalid invite token."}, status=403)
 
-            # Fetch the token row ONCE so shared/expiry checks all read the same record.
-            invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
-            if not invite:
-                return Response({"message": "Invalid invite token."}, status=403)
+                # Enforce expiry (previously ignored): an expired link cannot register anyone.
+                if invite.expires_at and timezone.now() > invite.expires_at:
+                    return Response({"message": "This invite link has expired."}, status=403)
 
-            # Enforce expiry (previously ignored): an expired link cannot register anyone.
-            if invite.expires_at and timezone.now() > invite.expires_at:
-                return Response({"message": "This invite link has expired."}, status=403)
-
-            # Single-use tokens are consumed after one registration; a SHARED token is the
-            # reusable FCFS link, so it is accepted regardless of is_used. The event's
-            # capacity check below (active_count >= max_teams_or_players) is what closes a
-            # shared link once all slots are filled.
-            if not invite.is_shared and invite.is_used:
-                return Response({"message": "Invite token has already been used."}, status=403)
+                # Single-use tokens are consumed after one registration; a SHARED token is the
+                # reusable FCFS link, so it is accepted regardless of is_used. The event's
+                # capacity check below (active_count >= max_teams_or_players) is what closes a
+                # shared link once all slots are filled.
+                if not invite.is_shared and invite.is_used:
+                    return Response({"message": "Invite token has already been used."}, status=403)
 
         # Discord checks
         if not user.discord_connected or not user.discord_id:
@@ -7148,7 +7187,8 @@ def register_for_event(request):
                 # 2026-07-09, bug #4): the link was meant for one join, and a waitlist entry IS a join.
                 # SHARED/FCFS links stay open. Mirrors the consume in the registered branch below; without
                 # this a single-use link that overflowed to the waitlist could be reused by someone else.
-                if is_public == False and not invite.is_shared:
+                # invite is None on the ADDRESSED-INVITATION path: no token to consume.
+                if is_public == False and invite is not None and not invite.is_shared:
                     EventInviteToken.objects.filter(event=event, token=invite_token).update(
                         is_used=True, used_by=user, used_at=timezone.now())
 
@@ -7194,7 +7234,12 @@ def register_for_event(request):
             # Mark the token used - but ONLY for single-use tokens. A SHARED token
             # (is_shared=True) is the reusable FCFS link and must stay open for the next
             # registrant; the capacity check above is what eventually closes it.
-            if is_public == False and not invite.is_shared:
+            # `invite` is None when the caller came through an ADDRESSED INVITATION rather
+            # than a link (see the private-event gate above): there is no token to consume,
+            # and the invitation is not spent by registering. Without this guard the whole
+            # registration 500s on NoneType.is_shared AFTER the rows have been written,
+            # which is the worst possible place to fail.
+            if is_public == False and invite is not None and not invite.is_shared:
                 EventInviteToken.objects.filter(event=event, token=invite_token).update(is_used=True, used_by=user, used_at=timezone.now())
 
 
@@ -7537,23 +7582,33 @@ def register_for_event(request):
             # Mirrors the SOLO gate above - keep both in sync.
             invite_token = request.data.get("invite_token")
             if not invite_token:
-                return Response({"message": "invite_token is required for private events."}, status=400)
+                # An ADDRESSED invitation is a stronger credential than an anonymous link,
+                # so it opens the same door. See _has_pending_invitation for why, and for
+                # the bug this fixes.
+                if _has_pending_invitation(event, user, team=team):
+                    invite = None
+                else:
+                    return Response({"message": "invite_token is required for private events."}, status=400)
+            else:
+                # Fetch the token row ONCE so shared/expiry checks all read the same record.
+                invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
+            # Only a supplied TOKEN gets token checks. The invitation path above set
+            # invite to None deliberately: there is no link to validate, expire or
+            # consume, because the credential is the addressed invitation itself.
+            if invite_token:
+                if not invite:
+                    return Response({"message": "Invalid invite token."}, status=403)
 
-            # Fetch the token row ONCE so shared/expiry checks all read the same record.
-            invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
-            if not invite:
-                return Response({"message": "Invalid invite token."}, status=403)
+                # Enforce expiry (previously ignored): an expired link cannot register anyone.
+                if invite.expires_at and timezone.now() > invite.expires_at:
+                    return Response({"message": "This invite link has expired."}, status=403)
 
-            # Enforce expiry (previously ignored): an expired link cannot register anyone.
-            if invite.expires_at and timezone.now() > invite.expires_at:
-                return Response({"message": "This invite link has expired."}, status=403)
-
-            # Single-use tokens are consumed after one registration; a SHARED token is the
-            # reusable FCFS link, so it is accepted regardless of is_used. The event's
-            # capacity check below (active_count >= max_teams_or_players) is what closes a
-            # shared link once all slots are filled.
-            if not invite.is_shared and invite.is_used:
-                return Response({"message": "Invite token has already been used."}, status=403)
+                # Single-use tokens are consumed after one registration; a SHARED token is the
+                # reusable FCFS link, so it is accepted regardless of is_used. The event's
+                # capacity check below (active_count >= max_teams_or_players) is what closes a
+                # shared link once all slots are filled.
+                if not invite.is_shared and invite.is_used:
+                    return Response({"message": "Invite token has already been used."}, status=403)
 
 
         # ── Bug A (waitlist 500) HOIST ──────────────────────────────────────────────────────────────
@@ -7694,7 +7749,8 @@ def register_for_event(request):
                 # Consume a single-use invite even when the team overflows to the waitlist (owner
                 # 2026-07-09, bug #4): the link was for one join and a waitlist entry IS a join. SHARED/
                 # FCFS links stay open. Mirrors the consume in the registered branch below + the solo path.
-                if is_public == False and not invite.is_shared:
+                # invite is None on the ADDRESSED-INVITATION path: no token to consume.
+                if is_public == False and invite is not None and not invite.is_shared:
                     EventInviteToken.objects.filter(event=event, token=invite_token).update(
                         is_used=True, used_by=user, used_at=timezone.now())
 
@@ -7803,7 +7859,12 @@ def register_for_event(request):
             # Mark the token used - but ONLY for single-use tokens. A SHARED token
             # (is_shared=True) is the reusable FCFS link and must stay open for the next
             # team; the capacity check above is what eventually closes it.
-            if is_public == False and not invite.is_shared:
+            # `invite` is None when the caller came through an ADDRESSED INVITATION rather
+            # than a link (see the private-event gate above): there is no token to consume,
+            # and the invitation is not spent by registering. Without this guard the whole
+            # registration 500s on NoneType.is_shared AFTER the rows have been written,
+            # which is the worst possible place to fail.
+            if is_public == False and invite is not None and not invite.is_shared:
                 EventInviteToken.objects.filter(event=event, token=invite_token).update(is_used=True, used_by=user, used_at=timezone.now())
 
 
