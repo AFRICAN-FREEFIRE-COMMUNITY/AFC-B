@@ -58,7 +58,11 @@ from afc_auth.act_as import resolve_acting_vendor
 # checks the template is approved, and hands the send to the "whatsapp" Celery queue. It
 # never raises. This replaces the Kapso middleman notify_vendor used to send through.
 from afc_whatsapp.tasks import queue_template
-from .models import FulfillmentEvidence, Order, Vendor
+from .models import FulfillmentEvidence, Order, Vendor, VendorOrderMessage
+# The buyer-facing senders. A vendor's note rides the SAME branded, localized shell as
+# the milestone mail, so the seller's message cannot look like a different company.
+from .emails import send_vendor_message
+from afc_auth.models import Notifications
 from . import emails
 # The BUYER's half of the same WhatsApp channel (afc_shop/buyer_whatsapp.py). notify_vendor
 # below tells the VENDOR there is work to do; notify_buyer tells the person who PAID what is
@@ -634,10 +638,27 @@ def vendor_my_orders(request):
     403). Admins are NOT the audience here (they have the admin order views); this
     endpoint is specifically the vendor's own list.
 
-    PII FIREWALL (spec: like the partner API): a vendor sees the buyer NAME, the
-    DELIVERY ADDRESS (they have to ship there), the items + quantities, and the
-    fulfilment state. They do NOT get the buyer's email, phone, account id, payment
-    references, or money internals.
+    PII SCOPE, AND THE PART OF IT THE OWNER DELIBERATELY RELAXED ON 2026-09-02.
+
+    A vendor sees the buyer NAME, the DELIVERY ADDRESS (they have to ship there), the
+    items + quantities, the fulfilment state, and - since 2026-09-02 - the buyer's EMAIL
+    and PHONE.
+
+    Those last two were withheld by design, and the marketplace spec asked for a "firewall
+    like the partner API". The owner reversed that:
+
+        "Vendor on the website should be able to see the mail and number of who ordered
+         from them."
+
+    It is a reasonable reversal - somebody shipping a physical parcel has an ordinary need
+    to reach the person receiving it - but it IS a reversal, so it is recorded here rather
+    than left to look like drift. Do not "restore" the firewall without asking, and do not
+    read the relaxation as general permission to widen it further.
+
+    STILL WITHHELD, and deliberately: the buyer's ACCOUNT ID, payment references
+    (paystack/stripe), and every money internal (subtotal, tax, totals, coupons). A vendor
+    needs to deliver a parcel and talk to the person receiving it; none of that requires
+    knowing what AFC charged or how it was paid.
 
     CONSUMED BY: the per-order vendor page / vendor dashboard order list."""
     auth = request.headers.get("Authorization")
@@ -672,12 +693,18 @@ def vendor_my_orders(request):
 
     results = []
     for order in orders:
-        # PII firewall: only the buyer name + delivery address + items + state.
+        # See the PII note in the docstring. Contact details are included since 2026-09-02;
+        # account id, payment references and money internals are NOT, and adding one here
+        # would be a decision rather than a tidy-up.
         results.append({
             "order_id": order.id,
             "fulfilment_state": order.fulfilment_state,
             "ship_date": str(order.ship_date) if order.ship_date else None,
             "buyer_name": f"{order.first_name} {order.last_name}".strip(),
+            # The CHECKOUT address falls back to the account address, mirroring
+            # emails._recipient, so the vendor reaches the same inbox AFC does.
+            "buyer_email": order.email or getattr(order.user, "email", "") or "",
+            "buyer_phone": order.phone_number or "",
             "delivery": {
                 "address": order.address,
                 "city": order.city,
@@ -698,3 +725,112 @@ def vendor_my_orders(request):
     # Pagination metadata shape (best-practice): a small queue today, but return the
     # count so a future paginated vendor dashboard has it.
     return Response({"count": len(results), "results": results}, status=200)
+
+
+# ── VENDOR -> BUYER MESSAGE (owner 2026-09-02) ────────────────────────────────────────────────
+# "also be able to send them notifications concerning what was ordered"
+#
+# The buyer already receives AUTOMATIC milestone mail (received / shipped / completed,
+# afc_shop/emails.py). What did not exist was the vendor saying something of their OWN: "the blue
+# one is out of stock, is red alright", "the courier tried you twice today".
+#
+# WHAT THIS DELIBERATELY IS NOT
+#   Not a chat. There is no thread, no reply path, and no read receipt. A vendor sends a note about
+#   ONE order and the buyer gets it where they already get order mail. Building an inbox would be a
+#   much larger thing than the owner asked for, and a half-built one that cannot be replied to is
+#   worse than an email that can.
+#
+# THE THREE GUARDS, and why each is here rather than left to good behaviour:
+#   1. AUTHORISED per order, through the SAME _authorise the transitions use. A vendor may message
+#      about their own orders and nothing else.
+#   2. RECORDED before it is delivered (VendorOrderMessage). This opens a third-party seller's line
+#      into a member's inbox; a channel with no log is one nobody can audit when it is misused.
+#   3. CAPPED at VendorOrderMessage.MAX_PER_ORDER. An unbounded channel into somebody's inbox is a
+#      spam vector wearing a feature's clothes.
+#
+# DELIVERY goes through the two existing chokepoints, never a new path: the branded, LOCALIZED
+# send_email (the buyer reads it in their own language, same as every other order mail) and an
+# in-app Notifications row carrying a deep link back to the order.
+@api_view(["POST"])
+def vendor_message_buyer(request, order_id):
+    """POST /shop/fulfilment/orders/<order_id>/message/ - the vendor writes to the buyer.
+
+    REQUEST   {message: str}   (1..2000 characters after stripping)
+    RESPONSE  201 {message_id, emailed, notified, remaining}
+              400 empty message; 403 not this order's vendor; 404 unknown order;
+              429 the per-order cap is spent, naming the cap.
+    AUTH      Bearer; this order's vendor, or an AFC admin. Same gate as every transition.
+
+    CONSUMED BY the per-order vendor page (app/(vendor)/vendor/orders/[id]/page.tsx).
+    """
+    order = Order.objects.filter(id=order_id).first()
+    if not order:
+        return Response({"message": "Order not found."}, status=404)
+
+    user, vendor, err = _authorise(request, order)
+    if err:
+        return err
+
+    # 2000 characters, matching the event-invitation note raised on 2026-09-01: the same kind of
+    # thing being written by the same kind of person, so the same room to say it.
+    text = (request.data.get("message") or "").strip()[:2000]
+    if not text:
+        return Response({"message": "A message is required."}, status=400)
+
+    sent = VendorOrderMessage.objects.filter(order=order).count()
+    if sent >= VendorOrderMessage.MAX_PER_ORDER:
+        # Named, not a bare 429: a vendor who hits this should learn WHY and what the number is,
+        # rather than concluding the button is broken.
+        return Response(
+            {"message": f"You have sent the maximum of {VendorOrderMessage.MAX_PER_ORDER} "
+                        f"messages about this order. Contact AFC support if more is needed."},
+            status=429,
+        )
+
+    # Recorded FIRST. If the email bounces or the notification write fails, the fact that somebody
+    # pressed send still exists; the reverse order would lose exactly the events worth auditing.
+    row = VendorOrderMessage.objects.create(
+        order=order, vendor=vendor, sent_by=user, message=text,
+    )
+
+    vendor_name = getattr(vendor, "display_name", "") or "The seller"
+
+    # ── in-app ───────────────────────────────────────────────────────────────────────────────
+    # target_type/target_id so the buyer's "Take me there" opens the order rather than dropping
+    # them on a dashboard to hunt for it.
+    notified = False
+    try:
+        if order.user_id:
+            Notifications.objects.create(
+                user=order.user,
+                notification_type="vendor_order_message",
+                title=f"Message about order #{order.id}",
+                message=f"{vendor_name}: {text}",
+                target_type="order",
+                target_id=str(order.id),
+            )
+            notified = True
+    except Exception:
+        logger.exception("vendor_message_buyer: in-app notification failed for order %s", order.id)
+
+    # ── email ────────────────────────────────────────────────────────────────────────────────
+    # Through afc_shop.emails so it wears the same branded shell and the same language resolution
+    # as the milestone mail. A vendor's note must not look like a different company wrote it.
+    emailed = False
+    try:
+        emailed = bool(send_vendor_message(order, vendor_name, text))
+    except Exception:
+        logger.exception("vendor_message_buyer: email failed for order %s", order.id)
+
+    if emailed or notified:
+        VendorOrderMessage.objects.filter(pk=row.pk).update(emailed=emailed, notified=notified)
+
+    return Response(
+        {
+            "message_id": row.id,
+            "emailed": emailed,
+            "notified": notified,
+            "remaining": VendorOrderMessage.MAX_PER_ORDER - (sent + 1),
+        },
+        status=201,
+    )

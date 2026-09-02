@@ -243,3 +243,60 @@ def send_order_completed(order):
     """Send the order-completed email for `order`. Called by order_mark_completed."""
     lang = _order_language(order)
     return send_email(_recipient(order), subject_for("order_completed", lang), order_completed_email(order, lang), language=lang, prelocalized=True)
+
+
+# ── A VENDOR'S OWN NOTE TO THE BUYER (owner 2026-09-02) ────────────────────────────────────────
+# The milestone mail above is AFC talking. This is the SELLER talking, about one order, and the two
+# must not be confusable: the vendor is named in the subject and again above their words, and their
+# text sits in its own quoted block rather than running on as if AFC wrote it.
+#
+# Escaped, obviously: this is free text from a third party landing in an HTML document.
+# white-space:pre-line so the line breaks they typed survive, the same treatment the event
+# invitation note got on 2026-09-01.
+def vendor_message_email(order, vendor_name, text, lang="en"):
+    """The HTML body for a vendor's message about `order`. Built on the shared branded shell."""
+    from html import escape
+
+    heading = {
+        "en": f"A message about your order #{order.id}",
+        "fr": f"Un message concernant votre commande #{order.id}",
+        "pt": f"Uma mensagem sobre a sua encomenda #{order.id}",
+    }.get(lang, f"A message about your order #{order.id}")
+    lead = {
+        "en": f"{escape(vendor_name)} has sent you a message about this order.",
+        "fr": f"{escape(vendor_name)} vous a envoye un message concernant cette commande.",
+        "pt": f"{escape(vendor_name)} enviou-lhe uma mensagem sobre esta encomenda.",
+    }.get(lang, f"{escape(vendor_name)} has sent you a message about this order.")
+
+    inner = (
+        f'<tr><td style="padding:28px 44px 6px;">'
+        f'<h1 style="margin:0;font-size:22px;color:#ffffff;">{escape(heading)}</h1></td></tr>'
+        f'<tr><td style="padding:0 44px 14px;">'
+        f'<p style="margin:0;font-size:15px;line-height:1.6;color:#cdd6cf;">{lead}</p></td></tr>'
+        f'<tr><td style="padding:0 44px 18px;">'
+        f'<div style="border-left:3px solid #2c7a4d;padding:10px 16px;background:#0a120d;'
+        f'font-size:15px;line-height:1.6;color:#cdd6cf;white-space:pre-line;">'
+        f"{escape(text)}</div></td></tr>"
+        f'{_summary_table(order, lang)}'
+    )
+    return _email_shell(inner, "green")
+
+
+def send_vendor_message(order, vendor_name, text):
+    """Send a vendor's own message about `order` to the buyer, in the buyer's language.
+
+    prelocalized=True for the same reason the milestone senders use it: the copy above is already
+    written per language, so the machine-translation pass must not run over it a second time. The
+    VENDOR's words are passed through untouched in every language, because translating what a
+    seller wrote would put words in their mouth.
+    """
+    lang = _order_language(order)
+    subject = {
+        "en": f"A message about your order #{order.id}",
+        "fr": f"Un message concernant votre commande #{order.id}",
+        "pt": f"Uma mensagem sobre a sua encomenda #{order.id}",
+    }.get(lang, f"A message about your order #{order.id}")
+    return send_email(
+        _recipient(order), subject, vendor_message_email(order, vendor_name, text, lang),
+        language=lang, prelocalized=True,
+    )

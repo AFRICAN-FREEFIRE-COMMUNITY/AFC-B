@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from decimal import Decimal
@@ -948,3 +949,57 @@ class Shipment(models.Model):
 
     def __str__(self):
         return f"Shipment {self.id} - Order {self.order_id} - {self.provider or 'unbooked'} - {self.status}"
+
+class VendorOrderMessage(models.Model):
+    """A message a VENDOR sent to the BUYER about one order.
+
+    WHY IT IS A ROW AND NOT JUST A SEND (owner 2026-09-02: "also be able to send them
+    notifications concerning what was ordered")
+
+    This opens a channel from a third-party seller to an AFC member's inbox. A channel like that
+    with no record is one nobody can audit the day somebody misuses it, and it is also the only way
+    to enforce a sane cap. So every send writes a row BEFORE it is delivered: the vendor, the order,
+    the text, and what actually went out.
+
+    The buyer is NOT stored on the row. It is reachable through order.user, and copying a person's
+    identity onto a log line is how you end up with two answers to who was messaged.
+
+    CONNECTS TO
+      Written by  afc_shop.fulfilment.vendor_message_buyer (the only writer).
+      Read by     the same endpoint, to count a vendor's sends against MAX_PER_ORDER.
+      Delivery    afc_auth.views.send_email (localized, branded) + afc_auth.Notifications, the
+                  same two chokepoints every other buyer-facing message uses.
+    """
+
+    # A small cap, deliberately. A vendor with something to say about one parcel does not need
+    # more, and an unbounded channel into a buyer's inbox is a spam vector wearing a feature's
+    # clothes. Raising it is a decision, so it lives here rather than as a literal in the view.
+    MAX_PER_ORDER = 10
+
+    id = models.AutoField(primary_key=True)
+    order = models.ForeignKey("Order", on_delete=models.CASCADE, related_name="vendor_messages")
+    # SET_NULL, not CASCADE: removing a vendor account must not erase the record of what that
+    # vendor sent to buyers. The log outlives the sender, which is the point of a log.
+    vendor = models.ForeignKey(
+        "Vendor", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="buyer_messages",
+    )
+    # The human who pressed send. An admin acting on a vendor's behalf is a different fact from the
+    # vendor sending, and a log that cannot tell them apart cannot answer "who did this".
+    sent_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="vendor_order_messages_sent",
+    )
+    message = models.TextField()
+    # What actually left the building, so a delivery failure is distinguishable from a send that
+    # never happened. Both are best-effort: a bounced email must not lose the record.
+    emailed = models.BooleanField(default=False)
+    notified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["order", "created_at"])]
+
+    def __str__(self):
+        return f"VendorOrderMessage {self.id} - order {self.order_id}"
