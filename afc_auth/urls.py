@@ -46,7 +46,7 @@ from .views_broadcast_audience import (
 )
 # Admin dashboard aggregate (owner audit 2026-09-02). One request for every number /a/dashboard
 # shows, replacing thirteen, three of which downloaded a whole table to call .length on it.
-from .views_dashboard import admin_dashboard_stats
+from .views_dashboard import admin_dashboard_detail, admin_dashboard_stats
 # Two-factor authentication (owner 2026-08-06, authenticator apps added 2026-08-07). Opt-in codes
 # as a second sign-in step, by email or from an authenticator app; see views_two_factor.py for the
 # endpoint docs and two_factor.py for the rules they enforce.
@@ -326,6 +326,10 @@ urlpatterns = [
     # Every figure on the admin dashboard, computed. Replaces the hardcoded "0" / "N0" that used
     # to sit in the markup, and the count endpoints the page called one by one.
     path("admin/dashboard-stats/", admin_dashboard_stats, name="admin_dashboard_stats"),
+    # The breakdown behind ONE number. <metric> is a key in views_dashboard.DETAIL_BUILDERS, and
+    # an unknown one 404s naming the valid keys rather than rendering an empty metric.
+    path("admin/dashboard-stats/<str:metric>/", admin_dashboard_detail,
+         name="admin_dashboard_detail"),
     # Admin Settings broadcast history (general + direct sends). owner 2026-06-17.
     path("broadcast-history/", get_general_broadcast_history, name="get_general_broadcast_history"),
     # Admin GLOBAL broadcast audit (ALL scopes + senders, incl. organizer event broadcasts). owner 2026-06-27.
