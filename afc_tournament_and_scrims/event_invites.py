@@ -353,6 +353,12 @@ def _register_through_the_normal_path(request, invitation):
 
     raw = json.dumps(body, default=str).encode("utf-8")
     http_request = request._request
+    # Tell the inner register_for_event that the ACCEPT path is already handling this
+    # invitation. Without it the registration would settle the row (settle_pending_invitation)
+    # and this endpoint would settle it again: the organizer notified twice, and an fcfs place
+    # claimed twice for one answer. The accept path keeps its own flip because it also has to
+    # RELEASE the place it claimed when the registration is refused.
+    http_request._afc_invitation_being_accepted = True
     http_request._body = raw
     http_request._read_started = True
     http_request.META["CONTENT_TYPE"] = "application/json"
@@ -454,6 +460,64 @@ def _notify_inviter(invitation, accepted):
         target_type="event",
         target_id=event.slug or str(event.event_id),
     )
+
+
+# -- registering IS accepting, wherever the registration happened -----------------------------
+def settle_pending_invitation(user, event, team=None):
+    """Mark this caller's PENDING invitation to `event` as accepted, because they just registered.
+
+    THE BUG THIS EXISTS FOR (owner 2026-09-03, on a live event): "it says no teams accepted but
+    obviously some have accepted." Three of the eight invited teams were sitting in Registered
+    Teams while the invitations panel read "Accepted 0" and showed all eight as Pending.
+
+    WHY IT HAPPENED. Until 2026-09-02 the only way to say yes was the Accept dialog on the team
+    page, which posts team-invitations/<id>/accept/ and flips the row. That dialog was deleted in
+    favour of sending the team to the EVENT PAGE, because only the event page can resolve a
+    refusal (sponsors, waivers, connections, payment). The event page registers through
+    views.register_for_event, which knew nothing about invitations, so the answer was never
+    recorded. The team got in and the organizer was told nobody had replied.
+
+    accept_team_invitation's own docstring already stated the contract: accepting IS registering.
+    The inverse had simply never been wired: registering is accepting, whichever door was used.
+
+    Best-effort by design: an invitation is bookkeeping ABOUT a registration that has already been
+    written, so nothing in here may undo or block it. Every failure is swallowed.
+
+    user   the person who registered (the captain for a team event, the player for a solo one)
+    event  the event they registered for
+    team   their team for duo/squad, None for solo. A solo invitation addresses the player.
+
+    Returns the settled EventTeamInvitation, or None when there was nothing pending to settle.
+    CALLED BY views.register_for_event at all FOUR of its success returns (solo, solo waitlist,
+    team, team waitlist). A waitlisted registration counts: they answered yes and are in the queue.
+    """
+    try:
+        rows = EventTeamInvitation.objects.filter(event=event, status="pending")
+        invitation = (rows.filter(team=team).first() if team is not None
+                      else rows.filter(user=user).first())
+        if invitation is None:
+            return None
+
+        campaign = invitation.campaign
+        # A first come, first served campaign counts places. Registering through the event page
+        # takes one of them just as pressing Accept would, so claim it. If the claim fails the
+        # places are already gone, and the honest record is still "accepted": the team IS
+        # registered, and refusing to write that down would leave the organizer with the same
+        # wrong screen this function exists to fix.
+        if campaign is not None and campaign.kind == "fcfs" and campaign.slots is not None:
+            campaign.claim_slot()
+
+        invitation.status = "accepted"
+        invitation.responded_by = user
+        invitation.responded_at = timezone.now()
+        invitation.save(update_fields=["status", "responded_by", "responded_at"])
+        _notify_inviter(invitation, accepted=True)
+        if campaign is not None:
+            _close_if_full(campaign)
+        return invitation
+    except Exception:
+        # Never break a registration that has already succeeded.
+        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════

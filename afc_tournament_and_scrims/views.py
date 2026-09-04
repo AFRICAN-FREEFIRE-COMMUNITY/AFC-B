@@ -7192,6 +7192,14 @@ def register_for_event(request):
                     EventInviteToken.objects.filter(event=event, token=invite_token).update(
                         is_used=True, used_by=user, used_at=timezone.now())
 
+                # REGISTERING IS ACCEPTING (owner 2026-09-03). An invited team that registers from the
+                # event page has answered the invitation, so the row is settled here rather than only in
+                # the accept endpoint. Best-effort and after the registration is written: see
+                # event_invites.settle_pending_invitation for the bug it repairs.
+                if not getattr(request, "_afc_invitation_being_accepted", False):
+                    from .event_invites import settle_pending_invitation
+                    settle_pending_invitation(user, event, team=None)
+
                 return Response({
                     "message": "Event is full. You have been added to the waitlist.",
                     "waitlisted": True
@@ -7261,6 +7269,14 @@ def register_for_event(request):
         # WATCHLIST soft-warning (owner 2026-06-21): heads-up to the event's runners if this solo
         # registrant is on the shared watchlist. Advisory only (never blocks); best-effort.
         notify_watchlist_on_register(event, player=user)
+
+        # REGISTERING IS ACCEPTING (owner 2026-09-03). An invited team that registers from the
+        # event page has answered the invitation, so the row is settled here rather than only in
+        # the accept endpoint. Best-effort and after the registration is written: see
+        # event_invites.settle_pending_invitation for the bug it repairs.
+        if not getattr(request, "_afc_invitation_being_accepted", False):
+            from .event_invites import settle_pending_invitation
+            settle_pending_invitation(user, event, team=None)
 
         return Response({
             "message": (
@@ -7754,6 +7770,14 @@ def register_for_event(request):
                     EventInviteToken.objects.filter(event=event, token=invite_token).update(
                         is_used=True, used_by=user, used_at=timezone.now())
 
+                # REGISTERING IS ACCEPTING (owner 2026-09-03). An invited team that registers from the
+                # event page has answered the invitation, so the row is settled here rather than only in
+                # the accept endpoint. Best-effort and after the registration is written: see
+                # event_invites.settle_pending_invitation for the bug it repairs.
+                if not getattr(request, "_afc_invitation_being_accepted", False):
+                    from .event_invites import settle_pending_invitation
+                    settle_pending_invitation(user, event, team=team)
+
                 return Response({
                     "message": "Event is full. Team added to waitlist.",
                     "waitlisted": True,
@@ -7895,6 +7919,14 @@ def register_for_event(request):
         # WATCHLIST soft-warning (owner 2026-06-21): heads-up to the event's runners if this team
         # (or any player on its roster) is on the shared watchlist. Advisory only; best-effort.
         notify_watchlist_on_register(event, team=team)
+
+        # REGISTERING IS ACCEPTING (owner 2026-09-03). An invited team that registers from the
+        # event page has answered the invitation, so the row is settled here rather than only in
+        # the accept endpoint. Best-effort and after the registration is written: see
+        # event_invites.settle_pending_invitation for the bug it repairs.
+        if not getattr(request, "_afc_invitation_being_accepted", False):
+            from .event_invites import settle_pending_invitation
+            settle_pending_invitation(user, event, team=team)
 
         return Response({
             "message": f"Team successfully registered ({participant_type}). Discord roles queued.",

@@ -18,6 +18,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from sympy import Q
+from .history_text import describe_history, event_names, humanize_action
 from .models import AdminHistory, AuditLog, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SentBroadcast, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles, EmailChangeRequest
 from .models import canonical_profile  # dup-safe UserProfile resolution (see models.py)
 # set_audit lets these admin views supply a SPECIFIC human audit summary (entity name + before/after)
@@ -321,6 +322,37 @@ def require_head_admin(request):
         return None, Response({"message": "Head admin access required."}, status=403)
     return user, None
 
+
+
+def _role_words(names):
+    """"head_admin", "shop_admin" -> "head admin, shop admin". The log is read by people, and an
+    underscore-separated slug list is the shape the owner asked us to stop printing."""
+    return ", ".join(str(n).replace("_", " ") for n in names)
+
+
+def _roles_change_sentence(user, before, after):
+    """One sentence saying WHICH roles changed and in which direction.
+
+    "Edited roles for user ARDENT (ID: 1889)" recorded that something happened and nothing about
+    what, which is the complaint that produced this function (owner 2026-09-03). Both sides are
+    named, and the resulting set is stated as well, so the row answers "what do they have now"
+    without a second lookup.
+    """
+    before_set, after_set = set(before), set(after)
+    added = sorted(after_set - before_set)
+    removed = sorted(before_set - after_set)
+    parts = []
+    if added:
+        parts.append(f"added {_role_words(added)}")
+    if removed:
+        parts.append(f"removed {_role_words(removed)}")
+    if not parts:
+        # A save that changed nothing is a real thing that happens, and saying so is more useful
+        # than a sentence implying a change that did not occur.
+        return (f"Saved {user.username}'s roles (ID: {user.user_id}) without changing them. "
+                f"They hold: {_role_words(after) or 'no roles'}.")
+    return (f"Changed {user.username}'s roles (ID: {user.user_id}): {' and '.join(parts)}. "
+            f"They now hold: {_role_words(after) or 'no roles'}.")
 
 
 def generate_session_token(length=16):
@@ -4992,6 +5024,12 @@ def edit_user_roles(request):
             status=status.HTTP_403_FORBIDDEN,
         )
 
+    # WHAT THEY HELD BEFORE. Captured here because the next line deletes it, and once it is gone
+    # no read-time cleverness can recover it. The owner asked on 2026-09-03, looking at the log:
+    # "edited roles for user ARDENT from what to what?" The row said neither half. Now it says
+    # both. See afc_auth/history_text.py for the read-time half of that answer.
+    roles_before = sorted(_user_role_names(user))
+
     # Clear existing roles
     UserRoles.objects.filter(user=user).delete()
 
@@ -5003,7 +5041,10 @@ def edit_user_roles(request):
         AdminHistory.objects.create(
             admin_user=admin_user,
             action="edited_user_roles",
-            description=f"Removed all roles from user {user.username} (ID: {user.user_id})"
+            description=(
+                f"Removed all roles from {user.username} (ID: {user.user_id}). "
+                f"They held: {_role_words(roles_before) or 'no roles'}."
+            )
         )
 
         # Notify the user
@@ -5031,7 +5072,7 @@ def edit_user_roles(request):
     AdminHistory.objects.create(
         admin_user=admin_user,
         action="edited_user_roles",
-        description=f"Edited roles for user {user.username} (ID: {user.user_id})"
+        description=_roles_change_sentence(user, roles_before, sorted(new_role_names))
     )
 
     # Notify the user
@@ -5158,13 +5199,28 @@ def get_all_roles(request):
 
 @api_view(["GET"])
 def get_admin_history(request):
-    histories = AdminHistory.objects.all().order_by('-timestamp')
+    """GET auth/get-admin-history/ - every hand-written admin history row, newest first.
+
+    Each row now carries a `summary` (one plain-English sentence) and `details` (the full change
+    list) alongside the raw `description`, because edit_event stores its row as a JSON document and
+    printing that at a person is what the owner asked us to stop doing on 2026-09-03. See
+    afc_auth/history_text.py. `description` is kept so nothing that reads this endpoint breaks.
+
+    admin_user is a NULLABLE ForeignKey: reading .username off it directly crashes on a row whose
+    admin was deleted, which is a real shape in this table.
+    """
+    histories = list(AdminHistory.objects.select_related("admin_user").order_by("-timestamp"))
+    names = event_names([h.description for h in histories])
     history_data = []
 
     for history in histories:
+        told = describe_history(history.action, history.description, names)
         history_data.append({
-            "admin_user": history.admin_user.username,
+            "admin_user": getattr(history.admin_user, "username", None) or "Unknown",
             "action": history.action,
+            "action_label": humanize_action(history.action),
+            "summary": told["summary"],
+            "details": told["details"],
             "description": history.description,
             "timestamp": history.timestamp
         })
@@ -5250,14 +5306,42 @@ def get_audit_log(request):
     except (TypeError, ValueError):
         offset = 0
 
-    total = qs.count()
-    rows = qs.select_related("actor")[offset:offset + limit]
+    # ── the query, and the ONE failure this endpoint is allowed to explain ─────────────────────
+    # The owner reported on 2026-09-03 that /a/history showed "Could not load the audit log" with
+    # zero rows while the dashboard's own activity list worked. The two read DIFFERENT tables:
+    # the dashboard reads AdminHistory, which is old, and this reads AuditLog, which arrived on
+    # 2026-06-09. Django migrations in this repo are generated ON THE SERVER (see .gitignore), so
+    # a box that has never run makemigrations for afc_auth since that date has the model and not
+    # the table, and every read here dies with (1146) Table ... doesn't exist.
+    #
+    # A generic 500 makes that indistinguishable from a bug in the code above. This says which it
+    # is, and what to run, because the person reading it is the person who can fix it.
+    from django.db import DatabaseError
+
+    try:
+        total = qs.count()
+        rows = list(qs.select_related("actor")[offset:offset + limit])
+    except DatabaseError as exc:
+        return Response(
+            {
+                "message": (
+                    "The audit log table is not present on this server. Run "
+                    "`python manage.py makemigrations afc_auth` then `python manage.py migrate` "
+                    "on the API box, then reload this page."
+                ),
+                "detail": str(exc)[:300],
+                "code": "audit_log_table_missing",
+            },
+            status=503,
+        )
 
     results = [{
         "id": r.id,
         "actor_username": r.actor_username,
         "actor_role": r.actor_role,
-        "summary": r.summary or r.action,  # human short form; fall back to slug for old rows
+        # Human short form. Rows written before summaries existed carry only a slug, so those
+        # fall back to the slug PUT INTO ENGLISH rather than printing "edited_user_roles".
+        "summary": r.summary or humanize_action(r.action),
         "action": r.action,
         "method": r.method,
         "path": r.path,
@@ -7349,13 +7433,26 @@ def get_top_winner_player(request):
 
 @api_view(["GET"])
 def get_admin_activities(request):
-    activities = AdminHistory.objects.all().order_by('-timestamp')[:100]  # limit to latest 100 activities
+    """GET auth/get-admin-activities/ - the latest 100 admin actions, newest first.
+
+    Same shape and the same plain-English treatment as get_admin_history above; see
+    afc_auth/history_text.py for why the raw stored text is not what a reader should be shown.
+    """
+    activities = list(
+        AdminHistory.objects.select_related("admin_user").order_by("-timestamp")[:100]
+    )
+    names = event_names([a.description for a in activities])
     activities_data = []
 
     for activity in activities:
+        told = describe_history(activity.action, activity.description, names)
         activities_data.append({
-            "admin_user": activity.admin_user.username,
+            # admin_user is NULLABLE, so this never dereferences None.
+            "admin_user": getattr(activity.admin_user, "username", None) or "Unknown",
             "action": activity.action,
+            "action_label": humanize_action(activity.action),
+            "summary": told["summary"],
+            "details": told["details"],
             "description": activity.description,
             "timestamp": activity.timestamp
         })

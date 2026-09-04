@@ -55,6 +55,7 @@ from afc_tournament_and_scrims.models import (
     TournamentPlayerMatchStats,
 )
 
+from .history_text import describe_history, event_names, humanize_action
 from .models import AdminHistory, News, User
 
 
@@ -202,16 +203,7 @@ def admin_dashboard_stats(request):
             # The ten rows the dashboard table renders, sent WITH the counts. The page used
             # to pull get-admin-history in full (305 KB, 1,545 rows) and slice(0, 10) in the
             # browser, which is 1,535 rows of network for nothing.
-            "recent": [
-                # admin_user is a ForeignKey, and it is NULLABLE, so this resolves to the
-                # username and falls back rather than serialising a User or crashing on None.
-                {"id": h.action_id,
-                 "admin_user": getattr(h.admin_user, "username", None) or "Unknown",
-                 "action": h.action,
-                 "description": h.description,
-                 "timestamp": h.timestamp.isoformat() if h.timestamp else None}
-                for h in AdminHistory.objects.order_by("-timestamp")[:10]
-            ],
+            "recent": _recent_rows(AdminHistory.objects.order_by("-timestamp")[:10]),
         },
     })
 
@@ -239,6 +231,38 @@ from .country_grouping import group_country_counts
 def _section(key, title, columns, rows, note=""):
     """One table in a detail view. `rows` is a list of lists, already ordered and formatted."""
     return {"key": key, "title": title, "note": note, "columns": columns, "rows": rows}
+
+
+def _recent_rows(rows):
+    """Serialise admin-history rows for a human reader.
+
+    THE COMPLAINT THIS ANSWERS (owner 2026-09-03): the table printed the raw stored text, and
+    edit_event stores its row as a JSON document, so the dashboard showed a line beginning
+    { "event_id": 333, "changes": [ "event_name: ... at a person, escape sequences and all.
+
+    `summary` is now one sentence and `details` carries every individual change for the expander,
+    so nothing is hidden, it is just no longer shouted in JSON. See afc_auth/history_text.py. The
+    event NAME costs ONE extra query for the whole page (event_names), because the stored blob
+    records only an id.
+
+    admin_user is a ForeignKey and it is NULLABLE, so the username is read defensively rather than
+    serialising a User object or crashing on None.
+    """
+    rows = list(rows)
+    names = event_names([r.description for r in rows])
+    out = []
+    for h in rows:
+        told = describe_history(h.action, h.description, names)
+        out.append({
+            "id": h.action_id,
+            "admin_user": getattr(h.admin_user, "username", None) or "Unknown",
+            "action": h.action,
+            "action_label": humanize_action(h.action),
+            "summary": told["summary"],
+            "details": told["details"],
+            "timestamp": h.timestamp.isoformat() if h.timestamp else None,
+        })
+    return out
 
 
 def _stat(label, value, hint=""):
@@ -279,6 +303,15 @@ def _country_rows(queryset, field="country", limit=20):
     for row in rows:
         raw[row[field]] = raw.get(row[field], 0) + row["n"]
     return [[g["label"], g["count"]] for g in group_country_counts(raw)[:limit]]
+
+
+def _counts_raw(queryset, field, limit=None):
+    """[[stored_value, count], ...], biggest first. The sibling of _counts for callers that must
+    translate the value themselves: an action slug becomes a sentence, not a Title Cased slug."""
+    rows = queryset.values(field).annotate(n=Count("pk")).order_by("-n")
+    if limit:
+        rows = rows[:limit]
+    return [[row[field], row["n"]] for row in rows]
 
 
 def _counts(queryset, field, limit=None):
@@ -524,9 +557,18 @@ def _detail_activity(_request):
             # labels each row with a User object rather than a name.
             _section("by_admin", "Busiest admins", ["Admin", "Actions"],
                      _counts(qs, "admin_user__username", limit=20)),
-            _section("by_action", "By action", ["Action", "Count"], _counts(qs, "action", limit=25)),
+            # The action column stores a SLUG (edit_event). Grouping stays on the slug because
+            # that is the identity; only the label is put into English. See history_text.
+            _section("by_action", "By action", ["Action", "Count"],
+                     [[humanize_action(slug), n]
+                      for slug, n in _counts_raw(qs, "action", limit=25)]),
             _section("by_month", "Actions per month", ["Month", "Actions"],
                      _monthly(qs, "timestamp")),
+            # The counts above say HOW MUCH happened. This says WHAT happened, which is the
+            # question somebody opening this page actually has.
+            _section("latest", "Latest 50 actions", ["When", "Admin", "What happened"],
+                     [[r["timestamp"], r["admin_user"], r["summary"]]
+                      for r in _recent_rows(qs.order_by("-timestamp")[:50])]),
         ],
     }
 

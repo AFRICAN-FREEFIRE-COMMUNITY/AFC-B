@@ -18,6 +18,7 @@
 # frontend app/(a)/a/dashboard/page.tsx and app/(a)/a/dashboard/[metric]/page.tsx.
 # ──────────────────────────────────────────────────────────────────────────────
 import datetime
+import json
 import uuid
 
 from django.test import Client, TestCase
@@ -75,6 +76,25 @@ class DashboardStatsTests(TestCase):
                                         description=f"did thing {i}")
         # One with NO admin_user, because the column is nullable and production holds such rows.
         AdminHistory.objects.create(admin_user=None, action="system", description="orphan row")
+        # A row in the shape edit_event ACTUALLY writes: a JSON document, not a sentence. 221 of
+        # the 1,075 rows on the clone look like this, and the dashboard was printing them raw
+        # (owner 2026-09-03: "what does that mean, we need plainer english"). Written last so it
+        # is the newest row and therefore the first the endpoint returns.
+        self.blob_event = Event.objects.create(
+            event_name="Blob Cup", slug="blob-cup", competition_type="tournament",
+            participant_type="squad", event_type="virtual", event_mode="br",
+            max_teams_or_players=16, number_of_stages=1, is_public=True, is_draft=False,
+            start_date=today, end_date=today + datetime.timedelta(days=1),
+            registration_open_date=today - datetime.timedelta(days=1),
+            registration_end_date=today + datetime.timedelta(days=1),
+        )
+        AdminHistory.objects.create(
+            admin_user=self.admin, action="edit_event",
+            description=json.dumps({
+                "event_id": self.blob_event.event_id,
+                "changes": ["is_draft: 'True' → 'False'"],
+            }, indent=2),
+        )
 
     def _auth(self, user):
         token = SessionToken.objects.create(
@@ -82,6 +102,45 @@ class DashboardStatsTests(TestCase):
             expires_at=timezone.now() + datetime.timedelta(days=1),
         ).token
         return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+    # ── plain English (owner 2026-09-03) ──────────────────────────────────────
+    def test_recent_activity_is_a_sentence_not_a_json_document(self):
+        res = self.client.get(SUMMARY_URL, **self._auth(self.admin))
+        self.assertEqual(res.status_code, 200, res.content)
+        rows = res.json()["activity"]["recent"]
+        newest = rows[0]
+        # The exact thing on the owner's screen: a brace, a "changes" key, an escape sequence.
+        self.assertNotIn("{", newest["summary"])
+        self.assertNotIn("changes", newest["summary"])
+        self.assertNotIn(chr(92) + "u", newest["summary"])   # no escape sequences on screen
+        # It names the event, which the stored row records only as an id.
+        self.assertIn("Blob Cup", newest["summary"])
+        self.assertIn("published it", newest["summary"])
+
+    def test_it_works_on_rows_that_are_already_in_the_table(self):
+        # The whole design is read-time, so rows written months ago must improve too. These
+        # fixtures are written by the test, never by the new code path.
+        res = self.client.get(SUMMARY_URL, **self._auth(self.admin))
+        summaries = [r["summary"] for r in res.json()["activity"]["recent"]]
+        self.assertIn("did thing 2", summaries)   # a plain row passes through untouched
+        self.assertTrue(any("Blob Cup" in s for s in summaries))
+
+    def test_a_null_admin_row_still_serialises(self):
+        res = self.client.get(SUMMARY_URL, **self._auth(self.admin))
+        rows = res.json()["activity"]["recent"]
+        self.assertIn("Unknown", [r["admin_user"] for r in rows])
+
+    def test_the_activity_ledger_lists_the_latest_actions_in_english(self):
+        res = self.client.get(_detail_url("activity"), **self._auth(self.admin))
+        self.assertEqual(res.status_code, 200, res.content)
+        sections = {s["key"]: s for s in res.json()["sections"]}
+        self.assertIn("latest", sections)
+        text = " ".join(str(cell) for row in sections["latest"]["rows"] for cell in row)
+        self.assertNotIn("changes", text)
+        # The action breakdown reads as English too, not as a column of slugs.
+        by_action = {row[0] for row in sections["by_action"]["rows"]}
+        self.assertIn("Edited an event", by_action)
+        self.assertNotIn("edit_event", by_action)
 
     # ── auth ──────────────────────────────────────────────────────────────────
     def test_no_authorization_header_is_a_400_not_a_zero(self):
@@ -128,7 +187,7 @@ class DashboardStatsTests(TestCase):
         # At most ten, newest first, so the page never downloads 1,545 rows to show ten.
         body = self.client.get(SUMMARY_URL, **self._auth(self.admin)).json()
         recent = body["activity"]["recent"]
-        self.assertEqual(len(recent), 4, "setUp writes four; an empty list would prove nothing")
+        self.assertEqual(len(recent), 5, "setUp writes five; an empty list would prove nothing")
         for row in recent:
             # A STRING, never a User. Serialising the ForeignKey itself is what 500d.
             self.assertIsInstance(row["admin_user"], str)

@@ -8,6 +8,7 @@ Covers both halves of the feature:
 Run: python manage.py test afc_auth.test_audit_log
 """
 import json
+from unittest.mock import patch
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -368,3 +369,39 @@ class SuperAdminRoleProtectionTests(TestCase):
         resp = self._edit_roles("t_super", "target@x.com", "target", [self.shop_role.role_id])
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(UserRoles.objects.filter(user=self.target, role=self.super_role).exists())
+
+
+class AuditLogTableMissingTests(TestCase):
+    """The failure the owner actually hit on 2026-09-03: "audit log is not working", an empty
+    table and a toast, on a server whose AuditLog TABLE does not exist.
+
+    Migrations here are generated on the server (see .gitignore), so a box that has never run
+    makemigrations for afc_auth since the model landed on 2026-06-09 has the model and not the
+    table. That read dies with a DatabaseError, and a bare 500 makes it indistinguishable from a
+    bug in the view. This pins the endpoint saying which it is, and what to run."""
+
+    def setUp(self):
+        self.client = Client()
+        self.admin = User.objects.create(username="missing_tbl_admin", email="mt@x.com",
+                                         full_name="Missing Table Admin", role="admin",
+                                         password="x")
+        UserRoles.objects.create(user=self.admin,
+                                 role=Roles.objects.create(role_name="head_admin"))
+        self.token = SessionToken.objects.create(user=self.admin, token="tok_missing_tbl")
+
+    def test_a_missing_table_is_reported_as_a_migration_that_has_not_run(self):
+        from django.db import DatabaseError
+
+        with patch("afc_auth.views.AuditLog") as fake:
+            fake.objects.all.return_value.count.side_effect = DatabaseError(
+                "(1146, \"Table 'afc_db.afc_auth_auditlog' doesn't exist\")")
+            res = self.client.get("/auth/get-audit-log/",
+                                  HTTP_AUTHORIZATION="Bearer tok_missing_tbl")
+
+        self.assertEqual(res.status_code, 503, res.content)
+        body = res.json()
+        self.assertEqual(body["code"], "audit_log_table_missing")
+        # The message must name the command, because the person reading it is the person who runs
+        # it. "Something went wrong" sends them back to us.
+        self.assertIn("makemigrations afc_auth", body["message"])
+        self.assertIn("migrate", body["message"])
