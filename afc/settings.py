@@ -529,7 +529,45 @@ CACHES = {
 
 
 
+# The Discord OAuth2 callbacks. BOTH of these strings must be listed, character for
+# character (the trailing slash counts), under OAuth2 -> Redirects on the AFC app in the
+# Discord Developer Portal, or Discord answers the consent request with the page
+# "Invalid OAuth2 redirect_uri" and the user never reaches the consent screen.
+#
+#   DISCORD_REDIRECT_URI      -> connect_discord / connect_discord_account / discord_callback
+#                                (LINKING a Discord account to a logged-in user, from a
+#                                 tournament that requires Discord)
+#   DISCORD_SSO_REDIRECT_URI  -> discord_sso_start / discord_sso_callback
+#                                ("Continue with Discord" on the login + register pages)
+#
+# A THIRD one is not declared here because it is derived per provider in
+# afc_auth/connections/views.py._callback_uri from AFC_API_BASE_URL:
+#
+#   https://api.africanfreefirecommunity.com/auth/connections/discord/callback/
+#                             -> start_connection / finish_connection (the Connected accounts
+#                                card on /profile, ConnectedAccounts.tsx)
+#
+# That third one was MISSING from the portal, which is what broke the profile Connect button on
+# 2026-09-07 while the two flows above kept working. The full set AFC can ever send is asserted in
+# afc_auth/test_discord_redirect_uris.py so a new one cannot be added without someone noticing that
+# it has to be registered too.
+#
+# Owner 2026-09-07: the SSO pair used to be derived from the request Host header via
+# request.build_absolute_uri, so any hostname that reached this API by another name
+# (ALLOWED_HOSTS defaults to "*") produced a redirect_uri that was NOT in the portal list
+# and the sign-in died on that same Discord error page. They are declared here instead, so
+# the value can only ever be one of two strings a human has registered.
 DISCORD_REDIRECT_URI = "https://api.africanfreefirecommunity.com/auth/connect-discord/callback/"
+DISCORD_SSO_REDIRECT_URI = os.getenv(
+    "DISCORD_SSO_REDIRECT_URI",
+    "https://api.africanfreefirecommunity.com/auth/discord/sso/callback/",
+)
+# Local dev only, picked when the request arrives on localhost/127.0.0.1 - same
+# local-vs-prod pair as FRONTEND_URL / FRONTEND_URL_LOCAL below.
+DISCORD_SSO_REDIRECT_URI_LOCAL = os.getenv(
+    "DISCORD_SSO_REDIRECT_URI_LOCAL",
+    "http://localhost:8000/auth/discord/sso/callback/",
+)
 DISCORD_GUILD_ID = "920726990607237160"
 import os
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
