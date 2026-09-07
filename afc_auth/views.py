@@ -6204,7 +6204,8 @@ def discord_callback(request):
 # Developer Portal must list this callback as an OAuth2 redirect:
 #   https://api.africanfreefirecommunity.com/auth/discord/sso/callback/  (prod)
 #   http://localhost:8000/auth/discord/sso/callback/                     (local)
-# redirect_uri is derived from the request host so it matches automatically.
+# Both strings are DECLARED in settings (DISCORD_SSO_REDIRECT_URI / _LOCAL), never built
+# from the incoming request - see _discord_sso_redirect_uri below for why.
 #
 # FRONTEND: components/auth/DiscordSignInButton.tsx (button) + app/(auth)/discord/callback
 # (the exchange page). State carries a CSRF nonce + the post-login path.
@@ -6215,6 +6216,28 @@ def _discord_frontend_origin(request):
     if "localhost" in host or "127.0.0.1" in host:
         return settings.FRONTEND_URL_LOCAL
     return settings.FRONTEND_URL
+
+
+def _discord_sso_redirect_uri(request):
+    """The OAuth2 callback URL sent to Discord, PICKED from settings, never built.
+
+    Owner 2026-09-07. This used to be request.build_absolute_uri("/auth/discord/sso/callback/"),
+    which composes the URL out of the incoming Host header. ALLOWED_HOSTS defaults to "*", so
+    any request that reached this API under a name other than api.africanfreefirecommunity.com
+    (an old deploy hostname, a raw IP, a misconfigured proxy) produced a redirect_uri that is
+    not registered in the Discord Developer Portal, and Discord answered the sign-in with the
+    page "Invalid OAuth2 redirect_uri" instead of the consent screen.
+
+    Now the host only CHOOSES between two strings that a human registered in the portal, the
+    same local-vs-prod shape as _discord_frontend_origin above, so an unknown host falls back
+    to the production value rather than inventing a third one. Used by discord_sso_start (in
+    the consent URL) and discord_sso_callback (the token exchange, where Discord re-checks
+    that the two match exactly).
+    """
+    host = request.get_host()
+    if "localhost" in host or "127.0.0.1" in host:
+        return settings.DISCORD_SSO_REDIRECT_URI_LOCAL
+    return settings.DISCORD_SSO_REDIRECT_URI
 
 
 @api_view(["GET"])
@@ -6235,7 +6258,7 @@ def discord_sso_start(request):
     # State holds a CSRF nonce; we stash the post-login path against it server-side.
     cache.set(f"discord_sso_state:{nonce}", next_path, 600)
 
-    redirect_uri = request.build_absolute_uri("/auth/discord/sso/callback/")
+    redirect_uri = _discord_sso_redirect_uri(request)
     params = {
         "client_id": settings.DISCORD_CLIENT_ID,
         "redirect_uri": redirect_uri,
@@ -6267,7 +6290,7 @@ def discord_sso_callback(request):
         return redirect(fail)  # unknown/expired state (CSRF guard)
     cache.delete(f"discord_sso_state:{state}")
 
-    redirect_uri = request.build_absolute_uri("/auth/discord/sso/callback/")
+    redirect_uri = _discord_sso_redirect_uri(request)
 
     # ── exchange code -> access token ──
     try:
