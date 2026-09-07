@@ -50,10 +50,22 @@ def _require_player(request):
 
 def _callback_uri(request, provider_slug):
     """The redirect_uri registered with the provider. Built from settings.AFC_API_BASE_URL so local
-    dev, staging and production each send the player back to their own API host."""
+    dev, staging and production each send the player back to their own API host.
+
+    For Discord this resolves to
+    https://api.africanfreefirecommunity.com/auth/connections/discord/callback/, which must be
+    listed under OAuth2 -> Redirects in the Discord Developer Portal. It was NOT, which is why the
+    Connect button on /profile died on Discord's "Invalid OAuth2 redirect_uri" page on 2026-09-07
+    while the two older Discord flows, whose callbacks were registered, kept working.
+
+    Owner 2026-09-07: there is deliberately NO request.build_absolute_uri fallback here any more.
+    AFC_API_BASE_URL always has a value (settings.py gives it a production default), so the old
+    fallback was unreachable, and a redirect_uri composed from the incoming Host header is exactly
+    what produces that Discord error page when a request arrives under an unexpected hostname
+    (ALLOWED_HOSTS defaults to "*"). `request` is kept in the signature because both call sites
+    pass it and the shape matches _discord_sso_redirect_uri in afc_auth/views.py.
+    """
     base = (getattr(settings, "AFC_API_BASE_URL", "") or "").rstrip("/")
-    if not base:
-        base = request.build_absolute_uri("/").rstrip("/")
     return f"{base}/auth/connections/{provider_slug}/callback/"
 
 
