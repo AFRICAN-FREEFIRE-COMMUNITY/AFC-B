@@ -471,6 +471,83 @@ def defaults_config() -> dict:
     return config_from_tables(DEFAULT_TABLES)
 
 
+# The blob keys the admin editor draws as a GROUP OF NAMED NUMBERS (one input per key it finds
+# in the object). A key MISSING from a saved blob therefore has no control on screen, while
+# validation.py still demands a number for it - which is exactly how an admin ends up staring at
+# "Flat scrim allowance must be a number" with no field anywhere on the page to fix it.
+# normalize_config() below is what closes that gap.
+SCALAR_GROUPS = ("scrim", "player_weights", "participation_floors")
+
+
+def normalize_config(blob: dict) -> dict:
+    """Complete a saved blob so every number the editor and the validator expect is present.
+
+    WHY THIS EXISTS
+      A stored config is whatever shape the build that saved it emitted. Older blobs are
+      missing keys that later builds added, and one of them (the flat scrim allowance) used a
+      different spelling entirely. tables_from_config already tolerates all of that at SCORING
+      time by falling back to the shipped default, so the number the engine uses is well
+      defined - it simply was not visible or editable. This returns the blob the engine
+      effectively reads, which is the only honest thing to put in front of an admin.
+
+    WHAT IT DOES, in the same precedence order tables_from_config uses
+      1. Folds the pre-v2 top-level ``scrim_flat_cap`` into ``scrim.flat_cap`` and drops the
+         legacy key, so there is ONE editable value instead of two that can disagree.
+      2. Fills any missing (or null) key of a scalar group from defaults_config().
+      3. Fills any missing top-level scalar (currently ``finals_base``) the same way.
+    Lists (tiers, the bracket tables) are left untouched: a missing list is a structural
+    problem validation.py must report, not something to invent rows for.
+
+    Unknown keys ride along unchanged, matching the editor's own "never drop what you do not
+    recognise" contract.
+
+    Callers: admin_scoring_config.scoring_config (the GET the editor loads),
+    scoring_config_validate and scoring_config_save (so what is checked and what is stored is
+    the same completed shape the admin was shown).
+    """
+    if not isinstance(blob, dict):
+        return blob
+
+    out = dict(blob)
+    defaults = defaults_config()
+
+    # ── 1. legacy spelling -> the v2 home ──
+    legacy_flat_cap = out.pop("scrim_flat_cap", None)
+    scrim = out.get("scrim")
+    if isinstance(scrim, dict):
+        scrim = dict(scrim)
+        if scrim.get("flat_cap") is None and legacy_flat_cap is not None:
+            scrim["flat_cap"] = legacy_flat_cap
+        out["scrim"] = scrim
+    elif legacy_flat_cap is not None:
+        out["scrim"] = dict(defaults["scrim"], flat_cap=legacy_flat_cap)
+
+    # ── 2. every scalar group gets the full set of keys ──
+    for group in SCALAR_GROUPS:
+        base = defaults[group]
+        current = out.get(group)
+        if not isinstance(current, dict):
+            out[group] = dict(base)
+            continue
+        # A null value is treated as absent: the engine already reads the default for it, so
+        # showing the default is what the admin is actually scoring under.
+        supplied = {k: v for k, v in current.items() if v is not None}
+        out[group] = {**base, **supplied}
+
+    # ── 3. top-level scalars ──
+    for key, value in defaults.items():
+        # schema_version is deliberately excluded: stamping it on an older blob would claim a
+        # migration that has not happened.
+        if key == "schema_version":
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if out.get(key) is None:
+            out[key] = value
+
+    return out
+
+
 # Every top-level key a saved blob may carry. Anything else is rejected on save, because a
 # mistyped key would silently do nothing while the admin believed the change had landed.
 # The two legacy names are accepted so v1 blobs written before this build still load.

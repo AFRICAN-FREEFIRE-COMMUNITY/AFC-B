@@ -62,6 +62,8 @@ from .admin_views import _auth, _require_reason, _audit
 # validate_token is the house Bearer-token -> User resolver (afc_auth.views). The user-facing
 # request-claim endpoints below use it directly (a normal logged-in user, NOT the admin gate).
 from afc_auth.views import validate_token
+from django.db.models import Prefetch
+
 from .models import GhostTeam, GhostPlayer
 from .serializers import paginate
 # the re-attribution service (the core of claim approval) + its conflict exception / pre-checks.
@@ -69,6 +71,37 @@ from . import claims
 
 
 # ───────────────────────── local serializers (manual-dict, like serializers.py) ─────────────────────────
+# WHY THESE TWO HELPERS EXIST
+#   The claim rows carry FK ids only (claimed_by_id, claim_requested_by_id). An id is enough to
+#   RESOLVE a claim but not to JUDGE one: the admin queue on /a/rankings showed "User #4294 wants
+#   Team #258", which names nobody. These add the human label beside the id, so the queue can say
+#   who asked and what they are asking for, and link to both. The id keys are untouched, so every
+#   existing consumer keeps working.
+def _user_label(user):
+    """A User FK -> (username, uid), or (None, None). ``user`` must already be select_related.
+
+    uid is the in-game UID (nullable). It is what an admin matches a ghost IGN against, so it is
+    worth carrying next to the username.
+    """
+    if user is None:
+        return None, None
+    return user.username, (user.uid or None)
+
+
+def _team_label(team):
+    """A Team FK -> its display name, or None. ``team`` must already be select_related."""
+    return team.team_name if team is not None else None
+
+
+# The roster is serialized inside serialize_ghost, and each player row now reads its own claim
+# FKs. Without this the nested loop is one query per player; with it the roster arrives already
+# joined. Used by the ghost-team LIST and DETAIL reads (the write paths re-fetch for their
+# response and take a couple of extra queries instead, which is not an N+1).
+GHOST_ROSTER_PREFETCH = Prefetch(
+    "players",
+    queryset=GhostPlayer.objects.select_related("claimed_by", "claim_requested_by"),
+)
+
 def serialize_ghost_player(p, team_name=...):
     """One ghost roster slot → dict. ``slot`` is 1-based display order.
 
@@ -99,7 +132,13 @@ def serialize_ghost_player(p, team_name=...):
         # FE claim dialog (to hide the Claim action on an already-pending/claimed ghost).
         "claim_status": p.claim_status,
         "claimed_by": p.claimed_by_id,                       # afc_auth.User id (or None)
+        # the human labels for those ids (added 2026-09-08). A player claim is a SELF claim, so
+        # claimed_by and claim_requested_by are normally the same person; both are emitted so the
+        # queue never has to assume it. The FE links the username to /players/<username>.
+        "claimed_by_username": _user_label(p.claimed_by)[0],
         "claim_requested_by": p.claim_requested_by_id,       # User id (or None)
+        "claim_requested_by_username": _user_label(p.claim_requested_by)[0],
+        "claim_requested_by_uid": _user_label(p.claim_requested_by)[1],
         "claim_requested_at": p.claim_requested_at.isoformat() if p.claim_requested_at else None,
         "claimed_at": p.claimed_at.isoformat() if p.claimed_at else None,
         "claim_approved_by": p.claim_approved_by_id,         # User id (or None)
@@ -127,10 +166,17 @@ def serialize_ghost(g):
         # claim lifecycle (§19.4)
         "claim_status": g.claim_status,
         "claimed_by": g.claimed_by_id,                       # afc_team.Team id (or None)
+        # the human labels for those ids (added 2026-09-08), so the admin claim queue can say
+        # "sweez wants CLIQ ESPORTS" instead of "User #4294 wants Team #258". The FE links the
+        # team name to /teams/<id> and the username to /players/<username>.
+        "claimed_by_name": _team_label(g.claimed_by),
         "claim_requested_by": g.claim_requested_by_id,       # User id (or None)
+        "claim_requested_by_username": _user_label(g.claim_requested_by)[0],
+        "claim_requested_by_uid": _user_label(g.claim_requested_by)[1],
         "claim_requested_at": g.claim_requested_at.isoformat() if g.claim_requested_at else None,
         "claimed_at": g.claimed_at.isoformat() if g.claimed_at else None,
         "claim_approved_by": g.claim_approved_by_id,         # User id (or None)
+        "claim_approved_by_username": _user_label(g.claim_approved_by)[0],
         "claim_revoked_at": g.claim_revoked_at.isoformat() if g.claim_revoked_at else None,
         "claim_note": g.claim_note,
         # The uploaded proof, if the claimant attached one. A URL rather than the raw field so
@@ -154,7 +200,12 @@ def _get_ghost_or_404(ghost_team_id):
         ghost, err = _get_ghost_or_404(ghost_team_id)
         if err: return err
     """
-    ghost = GhostTeam.objects.prefetch_related("players").filter(pk=ghost_team_id).first()
+    ghost = (GhostTeam.objects
+             # select_related feeds the claim LABELS (_user_label / _team_label); the prefetch
+             # does the same for the nested roster rows.
+             .select_related("claimed_by", "claim_requested_by", "claim_approved_by")
+             .prefetch_related(GHOST_ROSTER_PREFETCH)
+             .filter(pk=ghost_team_id).first())
     if not ghost:
         return None, Response({"message": "Ghost team not found."}, status=status.HTTP_404_NOT_FOUND)
     return ghost, None
@@ -248,7 +299,10 @@ def ghost_list(request):
     if err:
         return err
 
-    qs = GhostTeam.objects.prefetch_related("players").all()  # default ordering: -created_at
+    qs = (GhostTeam.objects
+          .select_related("claimed_by", "claim_requested_by", "claim_approved_by")
+          .prefetch_related(GHOST_ROSTER_PREFETCH)
+          .all())  # default ordering: -created_at
 
     claim_status = request.GET.get("claim_status")
     if claim_status:
@@ -522,8 +576,10 @@ def ghost_players_list(request):
     if err:
         return err
 
-    # select_related so serialize_ghost_player can read ghost_team_name without an N+1.
-    qs = GhostPlayer.objects.select_related("ghost_team").all()
+    # select_related so serialize_ghost_player can read ghost_team_name (and the claim labels)
+    # without an N+1.
+    qs = GhostPlayer.objects.select_related(
+        "ghost_team", "claimed_by", "claim_requested_by").all()
 
     # ?unattached=true → standalone players only (team-less parked IGNs).
     if (request.GET.get("unattached") or "").strip().lower() == "true":

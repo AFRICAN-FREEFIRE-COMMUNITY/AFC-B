@@ -59,7 +59,7 @@ from django.utils import timezone
 
 from .admin_views import _auth, _require_reason, _audit
 from .models import ScoringConfig, Season, SeasonScoringConfig, auto_rollover_seasons
-from .scoring.tables import FIELD_META, SCHEMA_VERSION, defaults_config
+from .scoring.tables import FIELD_META, SCHEMA_VERSION, defaults_config, normalize_config
 from .scoring.validation import validate_config
 
 # These controls decide every team's rank, so they are head-admin only - narrower than the
@@ -322,7 +322,13 @@ def scoring_config(request):
     if active:
         body = serialize_scoring_config(active)
         body["is_default"] = False
-        blob = active.config
+        # Completed before it is handed to the editor: a blob saved by an older build can be
+        # missing a key that validation.py still requires, and the editor only draws an input
+        # for the keys it FINDS - so the admin would be blocked by an error naming a field that
+        # has no control anywhere on the page. normalize_config fills those from the shipped
+        # defaults, which is the number the engine was already scoring under.
+        blob = normalize_config(active.config)
+        body["config"] = blob
     else:
         # No saved config yet - surface the constants.py defaults as the "current" config.
         blob = defaults_config()
@@ -511,6 +517,8 @@ def scoring_config_validate(request):
         return Response({"message": "A 'config' object is required."},
                         status=status.HTTP_400_BAD_REQUEST)
 
+    # Same completion the GET applies, so the dry run judges what a save would actually store.
+    config = normalize_config(config)
     checked = validate_config(config)
     seasons, unknown = _resolve_scope(request.data.get("apply_to_seasons"))
     return Response({
@@ -584,6 +592,10 @@ def scoring_config_save(request):
 
     # (3) refuse anything that would corrupt scoring. Contradictions are collected here too
     #     but they are reported with the successful response, not used to block.
+    #     normalize_config first so the stored version carries every key explicitly (and the
+    #     pre-v2 scrim_flat_cap spelling is folded away) instead of inheriting another round of
+    #     invisible gaps.
+    config = normalize_config(config)
     checked = validate_config(config)
     if checked["errors"]:
         return Response(
