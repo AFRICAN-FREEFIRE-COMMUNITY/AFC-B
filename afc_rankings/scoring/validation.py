@@ -292,7 +292,12 @@ def validate_config(blob):
                     if number is not None and number != int(number):
                         errors.append(_err("not_an_integer", f"scrim.{name}",
                                            f"{label} must be a whole number of scrims."))
-    if "scrim_flat_cap" in blob:  # pre-v2 spelling, still honoured
+    # pre-v2 spelling, still honoured - but ONLY when scrim.flat_cap is absent, which is the
+    # same precedence tables_from_config reads it with. Checking it unconditionally meant a
+    # stale legacy key the engine never looks at could block every save, with an error naming a
+    # field the editor does not draw. tables.normalize_config folds this key away on read, so a
+    # blob still carrying it is one written before that landed.
+    if "scrim_flat_cap" in blob and not (isinstance(scrim, dict) and scrim.get("flat_cap") is not None):
         _check_number(blob, "scrim_flat_cap", blob.get("scrim_flat_cap"), errors,
                       minimum=0.0, label="Flat scrim allowance")
 
