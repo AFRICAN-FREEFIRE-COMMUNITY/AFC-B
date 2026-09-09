@@ -60,6 +60,7 @@ from .tables import (
     TierDef,
     config_from_tables,
     defaults_config,
+    normalize_config,
     max_achievable_score,
     tables_from_config,
 )
@@ -144,6 +145,7 @@ __all__ = [
     "TierDef",
     "config_from_tables",
     "defaults_config",
+    "normalize_config",
     "max_achievable_score",
     "tables_from_config",
     "rule_contradictions",
