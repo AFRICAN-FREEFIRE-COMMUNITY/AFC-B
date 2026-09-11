@@ -2823,6 +2823,10 @@ def _member_in_active_event_roster(team, member_id) -> bool:
             user_id=member_id,
         )
         .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+        # An OPEN-ROSTER event never locks a club roster (owner 2026-09-11: "roster lock won't
+        # apply to this event"): whoever it fields did not have to be a club member, so being
+        # fielded there says nothing about club membership.
+        .exclude(tournament_team__event__open_roster=True)
         .filter(tournament_team__event__event_status__in=["upcoming", "ongoing"])
         .select_related("tournament_team", "tournament_team__event")
     )

@@ -112,6 +112,24 @@ def _switched_off_event_ids(controls):
     return {event_id for event_id, c in controls.items() if not c.counts_toward_rankings}
 
 
+def _open_roster_event_ids(event_ids) -> set:
+    """Event ids among ``event_ids`` that are open-roster events (owner 2026-09-11).
+
+    An open-roster event counts for nothing in the rankings or tiers, and this is read off the
+    Event column itself rather than trusting the counting-control row, so a row flipped by hand
+    (or one that never got materialised) cannot let such an event score. The control row is
+    still forced off on save, purely so the Rankings admin shows the truth.
+    """
+    from afc_tournament_and_scrims.models import Event
+
+    if not event_ids:
+        return set()
+    return set(
+        Event.objects.filter(event_id__in=list(event_ids), open_roster=True)
+        .values_list("event_id", flat=True)
+    )
+
+
 def _non_counting_prize_q(*, team=None, player=None) -> Q:
     """Q matching EventPrizePayout rows whose event must NOT contribute prize-money points.
 
@@ -129,7 +147,9 @@ def _non_counting_prize_q(*, team=None, player=None) -> Q:
       * this specific team/player is excluded from the event (ResultExclusion).
     Used with ``.exclude(...)``, so a payout is dropped when EITHER holds.
     """
-    q = Q(event__counting_control__counts_toward_rankings=False)
+    # An open-roster event's prize never scores either (owner 2026-09-11); same reasoning as the
+    # master switch, read from the event itself.
+    q = Q(event__counting_control__counts_toward_rankings=False) | Q(event__open_roster=True)
     if team is not None:
         return q | Q(event__result_exclusions__team=team)
     return q | Q(event__result_exclusions__player=player)
@@ -265,6 +285,7 @@ def _collect_team(team: Team, start: datetime.date, end: datetime.date,
     # An event switched off wholesale is treated exactly like an exclusion: it drops out of the
     # tournament loop AND the scrim rows below, so nothing about it reaches the engine.
     excluded |= _switched_off_event_ids(controls)
+    excluded |= _open_roster_event_ids(event_ids)             # open roster never counts (2026-09-11)
     # The organizer-verification gate is applied to TOURNAMENTS ONLY, on purpose. Every scrim in
     # production today is org-owned with rankings_verified=False, so folding scrims into this gate
     # would silently switch off every scrim that currently counts - the opposite of the owner's
@@ -530,6 +551,7 @@ def _collect_player(player, start: datetime.date, end: datetime.date,
     controls = _counting_controls(event_ids)
     excluded = _excluded_event_ids(event_ids, player=player)
     excluded |= _switched_off_event_ids(controls)            # master switch, see _collect_team
+    excluded |= _open_roster_event_ids(event_ids)             # open roster never counts (2026-09-11)
     excluded |= _unverified_org_event_ids(list(tour.keys()))  # unverified org events don't count
     scrim_rows = [r for r in scrim_rows if r[3] not in excluded]
 
