@@ -35,9 +35,21 @@ Gates P5 and P6 in `WEBSITE/GATES-push-to-deploy.md` hold the numbers from 2026-
 loop at 10/s through nginx across a gunicorn reload and across a full container swap saw zero
 non-expected responses. Repeat any time with `bash deploy/vps/probe-during.sh backend|frontend`.
 
-What a user actually experiences: an open tab keeps working through the deploy. On their next
-click or refresh they get the new build. If that tab asks the new frontend build for a JS chunk
-that only the old build had, Next.js reloads the tab once by itself.
+What a user actually experiences: an open tab keeps working through the deploy, and keeps
+working after it. Every build's `/_next/static` files are kept on the host for 30 days
+(`/var/www/afc-next`, served by nginx ahead of the container), so a tab still on the previous
+build can open a lazy-loaded modal or tab and find its chunks; nothing forces a reload. On the
+next navigation the tab gets the new build. `deploy/vps/probe-old-chunk.sh` proves it: it swaps
+builds and fetches the retired build's manifest, which must answer 200 with `X-AFC-Static: disk`.
+
+Two measured traps, both closed on 2026-09-11:
+- nginx reload is graceful, so OLD workers keep serving browsers on keep-alive connections with
+  the OLD upstream. Retiring the old container straight after the reload refused real requests
+  for a few seconds (seen in the error log at 16:14:19). `deploy-frontend.sh` now waits until no
+  worker older than the reload remains (`worker_shutdown_timeout 30s` in nginx.conf caps it),
+  then retires the port. `probe-during.sh` runs a keep-alive probe (one curl, 400 URLs, like a
+  browser) beside the fresh-connection one: 400/400 after the fix.
+- `curl -o /dev/null` with many URLs only silences the FIRST body; every URL needs its own `-o`.
 
 ## Migrations
 
