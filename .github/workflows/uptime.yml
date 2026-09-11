@@ -1,0 +1,49 @@
+# Uptime check every 5 minutes, from outside, with no third-party account.
+#
+# GitHub runs this on a schedule and emails the repository's watchers when a scheduled run FAILS
+# (Settings > Notifications > Actions, on by default for the person who last touched the
+# workflow). So a red run here is the alert. Nothing is stored, nothing is graphed; this is the
+# minimum that turns "the site is down" from a player's message into an email within about ten
+# minutes. UptimeRobot or a Cloudflare health check can sit on top later; both need an account.
+#
+# What counts as up:
+#   site   200 from https://africanfreefirecommunity.com/ AND the X-AFC-Host: vps header,
+#          which only the VPS nginx sets (so a stale DNS or a wrong box fails too)
+#   api    400 from /auth/connections/ (an auth-required endpoint answering means Django is up
+#          and routing; 502/504 would be nginx with no gunicorn behind it)
+# Each probe retries three times over ~30 s before it counts as down, so a single slow response
+# does not page anyone. Schedules on GitHub can drift by a few minutes under load.
+
+name: Uptime
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Site
+        run: |
+          for i in 1 2 3; do
+            out=$(curl -s -o /dev/null -m 20 -D - https://africanfreefirecommunity.com/ | tr -d '\r')
+            code=$(printf '%s' "$out" | head -1 | awk '{print $2}')
+            host=$(printf '%s' "$out" | grep -i '^x-afc-host:' | awk '{print $2}')
+            echo "attempt $i: HTTP $code, X-AFC-Host=$host"
+            [ "$code" = "200" ] && [ "$host" = "vps" ] && exit 0
+            sleep 10
+          done
+          echo "SITE DOWN OR NOT SERVED BY THE VPS"; exit 1
+      - name: API
+        if: always()
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -m 20 -w '%{http_code}' https://api.africanfreefirecommunity.com/auth/connections/)
+            echo "attempt $i: HTTP $code (400 = up)"
+            [ "$code" = "400" ] && exit 0
+            sleep 10
+          done
+          echo "API DOWN"; exit 1

@@ -33,6 +33,12 @@ holds evidence.
 | 10 | hosts-file rehearsal | operator machine | | runbook section 13, Chrome, desktop + 390x844, gates E1-E8 |
 | 11 | cutover | both + Cloudflare | | maintenance on AWS, final dump + rsync, A records, MX untouched. Gates F1-F5 |
 | 12 | `afc-db-backup.sh` | VPS | root cron 03:15 UTC | nightly dump, 14 days. Gate G1 |
+| 13 | `afc-offsite-backup.sh` | VPS | root cron 03:45 UTC | dumps + media to a bucket once the owner supplies one (`OWNER-RUNBOOK.md` section 3); silent no-op until then |
+| 14 | `afc-restore-test.sh` | VPS | root cron, 1st of the month 04:30 UTC | restores the newest dump into a scratch DB, compares counts, drops it. RESTORE_TEST_OK on 2026-09-11 |
+| 15 | `.github/workflows/uptime.yml` | GitHub | every 5 min | site 200 + `X-AFC-Host: vps`, api 400; a red run is the alert email |
+
+Steps that need YOUR dashboards (key rotation, mail provider, the bucket, retiring AWS):
+`OWNER-RUNBOOK.md`.
 
 ## Three source boxes, not one
 
