@@ -86,7 +86,17 @@ still has. No S3 buckets, no snapshots, no elastic IPs in that account. **You ca
 suspended**; nothing is lost. If you would rather close it cleanly: pay the balance, then
 terminate `afc-frontend` and `afc-bot` and close the account.
 
-The backend account (211125329565) holds `afc-test-1`, fully archived to the VPS
+The backend account (211125329565) was inventoried on 2026-09-11 evening. Besides `afc-test-1`
+it holds four things the site does not use, all still billing:
+
+| Resource | What it is | Do |
+|---|---|---|
+| RDS `database-1` + `database-2` (us-east-1, db.t4g.micro, 20 GiB each, created 2025-10-19) | the pre-June database instances; 0 connections, unreachable even from the live box | RDS → each → Actions → Take snapshot (optional, a few dollars a month) → Delete |
+| Elastic Beanstalk environment `afc-env` (eu-west-2 London, t3.micro 13.41.70.82) | created Oct 2025, never deployed to: `/var/app/current` empty, nothing listening, 46 weeks up | Elastic Beanstalk → Environments → `afc-env` → Actions → Terminate environment |
+| S3 `elasticbeanstalk-eu-west-2-211125329565` | Beanstalk bundles + `backup.sql` of 2026-06-08 (already on the box and in `aws-archive`) | Empty, then Delete, after the environment is gone |
+| EBS snapshot `before-resize` (8 GiB, 2025-11-06) | pre-resize copy of the box's original disk | Delete after `afc-test-1` is retired |
+
+`afc-test-1` itself is fully archived to the VPS
 (`~/aws-archive/afc-backend-home-2026-09-11.tar.gz`, 2.5 GB incl. a second media copy, plus the
 final dump and the nginx/systemd/mysql configs). The rule from the migration runbook:
 
