@@ -21,6 +21,10 @@ case "$target" in
 esac
 
 log=$(mktemp)
+# Two probes side by side. The first opens a NEW connection per request (what a curl loop does).
+# The second is ONE curl invocation with many URLs, which reuses a single keep-alive connection
+# the way a browser does; that is the one that catches the "old nginx worker, old upstream,
+# stopped container" gap of 2026-09-11 that the first never saw.
 (
   end=$(( $(date +%s) + 90 ))
   while [ "$(date +%s)" -lt "$end" ] && [ ! -f "$log.stop" ]; do
@@ -29,6 +33,13 @@ log=$(mktemp)
   done
 ) &
 probe=$!
+ka_log=$(mktemp)
+(
+  urls=""; for n in $(seq 1 400); do urls="$urls -o /dev/null $url"; done
+  # shellcheck disable=SC2086
+  curl -sk -m 200 --keepalive-time 30 -w '%{http_code}\n' --resolve "$res" $urls >> "$ka_log" 2>/dev/null
+) &
+ka=$!
 sleep 3
 
 before=$(grep -oE '300[01]' "$UPSTREAM" 2>/dev/null | head -1 || echo "?")
@@ -42,9 +53,14 @@ fi
 after=$(grep -oE '300[01]' "$UPSTREAM" 2>/dev/null | head -1 || echo "?")
 
 touch "$log.stop"; wait "$probe" 2>/dev/null
+wait "$ka" 2>/dev/null   # let the keep-alive run finish on its own; killing curl loses its buffered -w lines
 total=$(wc -l < "$log"); ok=$(grep -c "^$want$" "$log"); fail=$(( total - ok ))
-echo "target=$target requests=$total expected_$want=$ok failures=$fail"
+ktotal=$(wc -l < "$ka_log"); kok=$(grep -c "^$want$" "$ka_log"); kfail=$(( ktotal - kok ))
+echo "target=$target new-connection requests=$total expected_$want=$ok failures=$fail"
+echo "target=$target keep-alive requests=$ktotal expected_$want=$kok failures=$kfail"
+[ "$kfail" -gt 0 ] && { echo "keep-alive non-$want responses:"; grep -v "^$want$" "$ka_log" | sort | uniq -c; }
+fail=$(( fail + kfail ))
 [ "$target" = frontend ] && { [ "$before" != "$after" ] && echo "port changed $before -> $after" || echo "port DID NOT change ($before)"; }
 [ "$fail" -gt 0 ] && { echo "non-$want responses seen:"; grep -v "^$want$" "$log" | sort | uniq -c; }
-rm -f "$log" "$log.stop"
+rm -f "$log" "$log.stop" "$ka_log"
 [ "$fail" -eq 0 ]
