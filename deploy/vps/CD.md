@@ -79,6 +79,15 @@ a default (or `null=True`), push again.
 | run red: `another deploy still holds the lock after 10 minutes` | a stuck earlier deploy | on the box: `ps -ef | grep deploy-`, kill it, `rm /home/ubuntu/deploy-vps/.deploy.lock`, re-run |
 | run red at "Prepare ssh" / `Host key verification failed` | the VPS was rebuilt and has a new host key | update the pinned key line in BOTH workflow files |
 
+## The known-bug checker runs first
+
+`tools/known_bugs.json` lists every bug this codebase has produced more than once, with both
+sightings and the fix; `tools/check_known_bugs.py` runs it as the first step of every deploy and
+on every PR (`.github/workflows/checks.yml`). The frontend has the same pair
+(`scripts/known-bugs.json`, `scripts/check-known-bugs.mjs`, `pnpm check:bugs`). Owner's rule
+2026-09-11: a bug met twice gets an entry; a red `KNOWN-BUG <id> <file>:<line>` line is fixed
+before anything else, never merged around.
+
 ## Deploying by hand, if GitHub is down
 
     ssh afcvps
