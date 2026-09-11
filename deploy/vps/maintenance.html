@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Updating - African Free Fire Community</title>
+  <!-- Auto-retry: while the deploy is in progress nginx serves this page; every 20s the browser
+       reloads, and the moment the site is back up the real page loads in its place. No user action. -->
+  <meta http-equiv="refresh" content="20" />
+  <style>
+    /* Self-contained (inline) so the page renders even while the app + API are down. AFC theme:
+       dark base ~ oklch(0.141 0.005 285.823), primary green #34d27b, gold #d4af37, DM-Sans-like stack. */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: "DM Sans", system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: #121214;
+      color: #f5f5f7;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; padding: 24px; text-align: center;
+      background-image:
+        radial-gradient(60% 55% at 12% 8%, rgba(52, 210, 123, 0.16), transparent 60%),
+        radial-gradient(60% 55% at 88% 92%, rgba(212, 175, 55, 0.14), transparent 60%);
+      background-attachment: fixed;
+    }
+    .card { max-width: 520px; width: 100%; }
+    /* AFC logo. Hosted on an independent CDN (Vercel blob), so it still loads while AFC's own
+       servers are restarting. If it ever fails, the green "AFC" text fallback shows instead. */
+    .logo { width: 96px; height: 96px; object-fit: contain; margin: 0 auto 28px; display: block; }
+    .logo-fallback { font-size: 40px; font-weight: 800; color: #34d27b; letter-spacing: 2px; margin-bottom: 28px; }
+    h1 { font-size: 26px; font-weight: 700; color: #34d27b; margin-bottom: 14px; line-height: 1.2; }
+    p { font-size: 16px; line-height: 1.6; color: #c4c4cc; margin-bottom: 10px; }
+    .spinner {
+      width: 34px; height: 34px; margin: 30px auto 0;
+      border: 3px solid rgba(255, 255, 255, 0.12); border-top-color: #34d27b;
+      border-radius: 50%; animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .foot { margin-top: 30px; font-size: 13px; color: #7a7a85; }
+    .foot a { color: #34d27b; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <img
+      class="logo"
+      src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/AFC_MAIN_LOGO-removebg-preview-z5q5kSWWMvWdeY4Gf5PeFGS35QBGfV.png"
+      alt="African Free Fire Community"
+      onerror="this.outerHTML='<div class=&quot;logo-fallback&quot;>AFC</div>'"
+    />
+    <h1>We're making some improvements</h1>
+    <p>The African Free Fire Community site is being updated with new features and fixes.</p>
+    <p>We'll be back online shortly. Thanks for your patience, and sorry for the brief interruption.</p>
+    <div class="spinner" aria-hidden="true"></div>
+    <div class="foot">This page refreshes on its own. No need to reload.</div>
+  </main>
+</body>
+</html>

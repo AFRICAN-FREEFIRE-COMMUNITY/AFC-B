@@ -1,0 +1,16 @@
+Cloudflare DNS records for africanfreefirecommunity.com AFTER the cutover, 2026-09-11 15:40 UTC.
+Only the four A records changed; every other row is byte-identical to cloudflare-dns-before-2026-09-11.txt.
+Verified at the authoritative server (aragorn.ns.cloudflare.com) and from the AWS box over public DNS
+(both hosts answered X-AFC-Host: vps at 15:40:35).
+
+  A     africanfreefirecommunity.com          162.35.123.2   DNS only   Auto   (was 34.230.23.212)
+  A     www.africanfreefirecommunity.com      162.35.123.2   DNS only   Auto   (was 34.230.23.212)
+  A     api.africanfreefirecommunity.com      162.35.123.2   DNS only   Auto   (was 3.80.44.105)
+  A     www.api.africanfreefirecommunity.com  162.35.123.2   DNS only   Auto   (was 3.80.44.105)
+
+  MX    africanfreefirecommunity.com          africanfreefirecommunity-com.mail.protection.outlook.com   prio 0   (unchanged, checked 15:40)
+
+Rollback: set the four A records back to the "was" values, then on 3.80.44.105
+`sudo systemctl start django_app celery-worker celery-beat celery-rankings` and on 52.73.8.218
+`sudo systemctl start afc-bot`, and stop the VPS units so two bots never share the token. Data written
+on the VPS after 15:34 UTC would need copying back (mysqldump the other way).

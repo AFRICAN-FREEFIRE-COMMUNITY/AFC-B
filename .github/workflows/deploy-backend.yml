@@ -1,0 +1,57 @@
+# Deploy the backend to the VPS on every push to main (a merged PR is a push).
+#
+# What happens: this job opens ONE ssh connection to the VPS with a key that is allowed to run
+# exactly one program there, deploy/vps/run-deploy.sh (forced command in authorized_keys). It
+# sends "backend <branch>"; the box fetches that branch, runs deploy/vps/deploy-backend.sh
+# (pip from requirements-prod.txt, makemigrations + migrate, gunicorn graceful RELOAD, celery +
+# bot restart, health probe) and streams its log back here. A non-zero exit anywhere turns this
+# run red and leaves the site on the previous code.
+#
+# Secrets (repo settings, set 2026-09-11): VPS_HOST = the box's IP, VPS_SSH_KEY = the private half
+# of the deploy key. The box's host key is pinned below on purpose: no StrictHostKeyChecking=no,
+# no ssh-keyscan at run time. If the VPS is ever rebuilt, update that line.
+#
+# workflow_dispatch lets a branch be deployed by hand (used to test this very workflow before it
+# was merged). Concurrency: one deploy at a time, later ones wait, none is cancelled.
+
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Prepare ssh
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # pinned host key of the VPS (vps3619402, InterServer, 2026-09-11)
+          echo "$VPS_HOST ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIVme6Nys17x9EZga6/u0Pr8IOJSH+rI5uSddT0q2Ike" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy ${{ github.ref_name }}
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+              "ubuntu@$VPS_HOST" "backend ${{ github.ref_name }}"
+
+      - name: Public probe
+        run: |
+          code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' https://api.africanfreefirecommunity.com/auth/connections/)
+          echo "api.africanfreefirecommunity.com/auth/connections/ -> $code (400 = up)"
+          test "$code" = "400"
